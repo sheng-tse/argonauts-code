@@ -1,14 +1,12 @@
 use std::path::{Path, PathBuf};
 
-use argonauts_adapter_codex::{CodexAdapter, TESTED_VERSIONS};
+use argonauts_adapter_codex::{CodexAdapter, FALLBACK_CHEAPEST_MODEL, TESTED_VERSIONS};
 use argonauts_core::events::session::{SubagentKind, SubagentStatus, SubagentUpdate};
-use argonauts_core::limits::{QuotaSource, QuotaStatus};
+use argonauts_core::limits::{PlanUsageSource, PlanUsageStatus};
 use argonauts_core::{
     Adapter, AgentEvent, Report, ReportStatus, SessionRequest, SessionRole, report_json_schema,
 };
 use serde_json::{Value, json};
-
-const VERSION: &str = "0.158.0";
 
 struct Fixture {
     name: String,
@@ -18,8 +16,8 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn load(version: &str, name: &str) -> Self {
-        let base = fixtures_dir().join(version).join(name);
+    fn load(name: &str) -> Self {
+        let base = fixtures_dir().join(name);
         let read = |ext: &str| {
             let path = base.with_extension(ext);
             std::fs::read_to_string(&path)
@@ -121,8 +119,8 @@ fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")
 }
 
-fn fixture_names(version: &str) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(fixtures_dir().join(version))
+fn fixture_names() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(fixtures_dir())
         .unwrap()
         .filter_map(|entry| {
             let name = entry.unwrap().file_name().into_string().unwrap();
@@ -134,53 +132,64 @@ fn fixture_names(version: &str) -> Vec<String> {
 }
 
 #[test]
-fn fixture_folders_match_tested_versions() {
-    let mut versions: Vec<String> = std::fs::read_dir(fixtures_dir())
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect();
-    versions.sort();
-    assert_eq!(versions, TESTED_VERSIONS);
-}
-
-#[test]
-fn every_fixture_replays_cleanly() {
-    for version in TESTED_VERSIONS {
-        let names = fixture_names(version);
-        assert!(!names.is_empty(), "no fixtures for {version}");
-        for name in names {
-            let fixture = Fixture::load(version, &name);
-            let replay = fixture.replay();
-            assert!(
-                !replay
-                    .stdout
-                    .iter()
-                    .any(|e| matches!(e, AgentEvent::Unknown { .. })),
-                "{name}: unrecognized stdout lines in {:?}",
-                replay.stdout
-            );
-            assert!(!replay.session_id().is_empty(), "{name}");
-            let results = replay
-                .all()
-                .iter()
-                .filter(|e| e.type_name() == "result")
-                .count();
-            assert_eq!(results, 1, "{name}");
-            assert_eq!(replay.result().2, fixture.exit_code() != Some(0), "{name}");
-            // An interrupted turn has no closing event, so no usage.
-            if fixture.exit_code() == Some(0) {
-                replay.usage();
-            }
+fn tested_versions_are_the_ones_the_recordings_name() {
+    assert_eq!(CodexAdapter.tested_versions(), TESTED_VERSIONS);
+    assert!(!TESTED_VERSIONS.is_empty());
+    for name in fixture_names() {
+        let meta = Fixture::load(&name).meta;
+        let recorded_with = meta["cli_version"].as_str().unwrap();
+        let also_matches = meta["also_matches"].as_array().unwrap();
+        for version in also_matches
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .chain([recorded_with])
+        {
+            assert!(TESTED_VERSIONS.contains(&version), "{name}: {version}");
         }
     }
 }
 
 #[test]
-fn fixtures_use_the_cheapest_model_and_hold_no_local_paths() {
-    let (model, effort) = CodexAdapter.cheapest_model();
-    for name in fixture_names(VERSION) {
-        let fixture = Fixture::load(VERSION, &name);
-        assert_eq!(fixture.meta["model"], model, "{name}");
+fn every_fixture_replays_cleanly() {
+    let names = fixture_names();
+    assert!(!names.is_empty(), "no fixtures");
+    for name in names {
+        let fixture = Fixture::load(&name);
+        let replay = fixture.replay();
+        assert!(
+            !replay
+                .stdout
+                .iter()
+                .any(|e| matches!(e, AgentEvent::Unknown { .. })),
+            "{name}: unrecognized stdout lines in {:?}",
+            replay.stdout
+        );
+        assert!(!replay.session_id().is_empty(), "{name}");
+        let results = replay
+            .all()
+            .iter()
+            .filter(|e| e.type_name() == "result")
+            .count();
+        assert_eq!(results, 1, "{name}");
+        assert_eq!(replay.result().2, fixture.exit_code() != Some(0), "{name}");
+        // An interrupted turn has no closing event, so no usage.
+        if fixture.exit_code() == Some(0) {
+            replay.usage();
+        }
+    }
+}
+
+#[test]
+fn fixtures_use_the_cheapest_models_and_hold_no_local_paths() {
+    let (cheapest, effort) = CodexAdapter.cheapest_model();
+    for name in fixture_names() {
+        let fixture = Fixture::load(&name);
+        // A recording made before a cheaper model shipped ran on the one that's now the fallback.
+        let model = &fixture.meta["model"];
+        assert!(
+            *model == cheapest || *model == FALLBACK_CHEAPEST_MODEL,
+            "{name} ran {model}"
+        );
         assert_eq!(fixture.meta["effort"], json!(effort), "{name}");
         for text in [&fixture.stdout, &fixture.stderr, &fixture.meta.to_string()] {
             for leak in ["/Users/", "/home/", "/private/", "sk-"] {
@@ -194,7 +203,7 @@ fn recorded_request(fixture: &Fixture) -> SessionRequest {
     let meta = &fixture.meta;
     let resume_session = meta["resumed_from"]
         .as_str()
-        .map(|from| Fixture::load(VERSION, from).replay().session_id());
+        .map(|from| Fixture::load(from).replay().session_id());
     SessionRequest {
         workdir: PathBuf::from("<workdir>"),
         prompt: meta["prompt"].as_str().unwrap().to_owned(),
@@ -221,8 +230,8 @@ fn optional<T: serde::de::DeserializeOwned>(value: &Value) -> Option<T> {
 
 #[test]
 fn command_still_builds_the_recorded_arguments() {
-    for name in fixture_names(VERSION) {
-        let fixture = Fixture::load(VERSION, &name);
+    for name in fixture_names() {
+        let fixture = Fixture::load(&name);
         let spec = CodexAdapter.command(&recorded_request(&fixture)).unwrap();
         let recorded: Vec<String> = serde_json::from_value(fixture.meta["args"].clone()).unwrap();
         assert_eq!(spec.program, fixture.meta["program"], "{}", fixture.name);
@@ -232,7 +241,7 @@ fn command_still_builds_the_recorded_arguments() {
 
 #[test]
 fn read_only_reply() {
-    let replay = Fixture::load(VERSION, "read_only_ok").replay();
+    let replay = Fixture::load("read_only_ok").replay();
     assert_eq!(
         replay.types(),
         ["init", "message", "usage", "context_fill", "result"]
@@ -244,14 +253,14 @@ fn read_only_reply() {
             parent: None
         }
     );
-    assert_eq!(replay.usage(), (13464, 5, 11008));
+    assert_eq!(replay.usage(), (13406, 5, 11008));
     assert_eq!(replay.result(), (Some("ok".into()), None, false));
     assert!(Report::from_text("ok").is_none());
 }
 
 #[test]
 fn build_writes_a_file_and_returns_a_structured_report() {
-    let fixture = Fixture::load(VERSION, "build_hello");
+    let fixture = Fixture::load("build_hello_resumed");
     assert_eq!(fixture.meta["role"], "build");
     assert!(fixture.meta["args"].to_string().contains("workspace-write"));
     let replay = fixture.replay();
@@ -317,8 +326,8 @@ fn build_writes_a_file_and_returns_a_structured_report() {
 
 #[test]
 fn resume_continues_the_session_and_runs_a_command() {
-    let build = Fixture::load(VERSION, "build_hello").replay();
-    let fixture = Fixture::load(VERSION, "resume_ls");
+    let build = Fixture::load("build_hello_resumed").replay();
+    let fixture = Fixture::load("resume_ls");
     assert_eq!(fixture.meta["role"], "read-only");
     let replay = fixture.replay();
     assert_eq!(replay.session_id(), build.session_id());
@@ -361,8 +370,8 @@ fn resume_continues_the_session_and_runs_a_command() {
 
 #[test]
 fn recorded_roles_match_their_sandbox() {
-    for name in fixture_names(VERSION) {
-        let fixture = Fixture::load(VERSION, &name);
+    for name in fixture_names() {
+        let fixture = Fixture::load(&name);
         let role: SessionRole = serde_json::from_value(fixture.meta["role"].clone()).unwrap();
         let args: Vec<String> = serde_json::from_value(fixture.meta["args"].clone()).unwrap();
         let at = args.iter().position(|a| a == "--sandbox").unwrap();
@@ -387,7 +396,7 @@ fn subagent_updates(replay: &Replay) -> Vec<&SubagentUpdate> {
 
 #[test]
 fn interrupt_then_resume_with_a_message() {
-    let fixture = Fixture::load(VERSION, "interrupt_sleep");
+    let fixture = Fixture::load("interrupt_sleep");
     assert_eq!(fixture.meta["interrupted"], true);
     assert_eq!(fixture.exit_code(), Some(1));
     let interrupted = fixture.replay();
@@ -409,14 +418,13 @@ fn interrupt_then_resume_with_a_message() {
     ));
     assert!(interrupted.result().2);
 
-    let fixture = Fixture::load(VERSION, "resume_with_message");
+    let fixture = Fixture::load("resume_with_message");
     let resumed = fixture.replay();
     assert_eq!(resumed.session_id(), interrupted.session_id());
     assert_eq!(resumed.result(), (Some("resumed".into()), None, false));
     // The message went on stdin after `resume <id> -`, with every flag of the first launch.
     let first: Vec<String> =
-        serde_json::from_value(Fixture::load(VERSION, "interrupt_sleep").meta["args"].clone())
-            .unwrap();
+        serde_json::from_value(Fixture::load("interrupt_sleep").meta["args"].clone()).unwrap();
     let args: Vec<String> = serde_json::from_value(fixture.meta["args"].clone()).unwrap();
     let resume = args.iter().position(|a| a == "resume").unwrap();
     assert_eq!(args[..resume], first[..first.len() - 1]);
@@ -425,7 +433,7 @@ fn interrupt_then_resume_with_a_message() {
 
 #[test]
 fn codex_collab_threads_to_subagents() {
-    let fixture = Fixture::load(VERSION, "subagent_spawn");
+    let fixture = Fixture::load("subagent_spawn");
     assert!(
         fixture.meta["args"]
             .to_string()
@@ -459,8 +467,8 @@ fn codex_collab_threads_to_subagents() {
 
 #[test]
 fn codex_messages_arrive_whole() {
-    for name in fixture_names(VERSION) {
-        let fixture = Fixture::load(VERSION, &name);
+    for name in fixture_names() {
+        let fixture = Fixture::load(&name);
         let replay = fixture.replay();
         assert!(!replay.types().contains(&"text_delta"), "{name}");
         let mut items: Vec<String> = fixture
@@ -497,9 +505,9 @@ fn codex_messages_arrive_whole() {
 }
 
 #[test]
-fn context_fill_from_each_vendor() {
-    for name in fixture_names(VERSION) {
-        let fixture = Fixture::load(VERSION, &name);
+fn context_fill_from_each_agent() {
+    for name in fixture_names() {
+        let fixture = Fixture::load(&name);
         let replay = fixture.replay();
         let fills: Vec<(u64, Option<u64>)> = replay
             .all()
@@ -517,7 +525,7 @@ fn context_fill_from_each_vendor() {
         let (input, output, cached) = replay.usage();
         assert_eq!(fills, [(input - cached + output, None)], "{name}");
     }
-    let replay = Fixture::load(VERSION, "resume_with_message").replay();
+    let replay = Fixture::load("resume_with_message").replay();
     assert!(replay.all().contains(&&AgentEvent::ContextFill {
         used: 8430,
         size: None,
@@ -527,17 +535,19 @@ fn context_fill_from_each_vendor() {
 
 #[test]
 fn codex_rate_limits_probe_parses() {
-    let dir = fixtures_dir().join(VERSION);
+    let dir = fixtures_dir();
     let answer = std::fs::read_to_string(dir.join("rate_limits_probe.app-server.jsonl")).unwrap();
     let meta: Value = serde_json::from_str(
         &std::fs::read_to_string(dir.join("rate_limits_probe.meta.json")).unwrap(),
     )
     .unwrap();
-    // The adapter sends the recorded exchange, and asks who is signed in since 0.160.0.
-    let spec = CodexAdapter.quota_probe(Path::new("<live>"), None).unwrap();
+    // The adapter sends the recorded exchange, and now also asks who is signed in.
+    let spec = CodexAdapter
+        .plan_usage_probe(Path::new("<live>"), None)
+        .unwrap();
     assert_eq!(meta["args"], json!(spec.args));
     let now: Value = serde_json::from_str(
-        &std::fs::read_to_string(fixtures_dir().join("0.160.0/plan_usage.meta.json")).unwrap(),
+        &std::fs::read_to_string(fixtures_dir().join("plan_usage.meta.json")).unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -554,12 +564,12 @@ fn codex_rate_limits_probe_parses() {
 
     // Nothing to read until the rate-limit answer arrives.
     let before: String = answer.lines().take(3).map(|l| format!("{l}\n")).collect();
-    assert!(CodexAdapter.parse_quota_probe(&before).is_none());
+    assert!(CodexAdapter.parse_plan_usage_probe(&before).is_none());
 
-    let reading = CodexAdapter.parse_quota_probe(&answer).unwrap();
-    assert_eq!(reading.vendor.0, "codex");
-    assert_eq!(reading.source, QuotaSource::AppServer);
-    assert_eq!(reading.status, QuotaStatus::Allowed);
+    let reading = CodexAdapter.parse_plan_usage_probe(&answer).unwrap();
+    assert_eq!(reading.agent_id.0, "codex");
+    assert_eq!(reading.source, PlanUsageSource::AppServer);
+    assert_eq!(reading.status, PlanUsageStatus::Allowed);
     assert_eq!(reading.used, Some(0.0));
     assert_eq!(reading.window.as_deref(), Some("five_hour"));
     assert_eq!(
@@ -576,8 +586,12 @@ fn codex_rate_limits_probe_parses() {
     // Primary and secondary are two readings, named by their length: 300 minutes is the
     // five-hour window (`5h` on screen) and 10080 the weekly one (`7d`). The plan comes along.
     // 0.158.0 was not asked for the account, so the answer is what came before the end.
-    assert!(CodexAdapter.parse_quota_probe_answer(&answer).is_none());
-    let answer = CodexAdapter.parse_quota_probe_end(&answer).unwrap();
+    assert!(
+        CodexAdapter
+            .parse_plan_usage_probe_answer(&answer)
+            .is_none()
+    );
+    let answer = CodexAdapter.parse_plan_usage_probe_end(&answer).unwrap();
     let windows: Vec<_> = answer
         .windows
         .iter()

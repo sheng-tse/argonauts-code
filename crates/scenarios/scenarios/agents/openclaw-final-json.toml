@@ -1,0 +1,21 @@
+# The fake installed as `openclaw` behind a `final-json` CLI entry: it reads the prompt
+# from stdin, writes hello.txt, and prints one JSON document at exit (openclaw-final.json),
+# which the entry's pointers read.
+
+[version]
+claude = "2.1.284 (Claude Code)"
+codex = "codex-cli 0.158.0"
+agy = "1.2.13"
+openclaw = "1.0.0"   # made up: the fake answers any version
+
+[[rule]]
+argv0 = "openclaw"
+args_contain = ["agent", "exec", "--json"]
+stdin_prompt = "all"
+prompt_contains = "hello.txt"
+[[rule.step]]
+write = { path = "hello.txt", content = "hi\n" }
+[[rule.step]]
+emit_file = "openclaw-final.json"
+[[rule.step]]
+exit = 0

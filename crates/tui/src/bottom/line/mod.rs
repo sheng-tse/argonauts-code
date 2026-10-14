@@ -14,10 +14,10 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::cell::Tone;
+use crate::kit::{Kit, Level};
 use crate::render::RenderCtx;
 use crate::text::{sanitize_line, spans_width, truncate_line, truncate_spans};
 use crate::theme::Role;
-use crate::widgets::Kit;
 
 pub(super) use fit::Give;
 use fit::Shape;
@@ -139,6 +139,15 @@ pub enum PartBody {
         ratio: f64,
         value: String,
         fill: Role,
+    },
+    /// `context · build:due-flag 20%`: what the part measures, whose it is, and how full that
+    /// is, in the colour of how close it is to where something happens.
+    Fill {
+        label: String,
+        who: String,
+        who_role: Role,
+        percent: u32,
+        level: Level,
     },
     /// `~$1.86 ▂▃▁▅▇▃▆`: a number and its last few days.
     Spark {
@@ -486,6 +495,23 @@ impl Drawer<'_> {
                 spans.push(Span::raw(" "));
                 spans.extend(chip::small_bar(kit, *ratio, *fill));
                 spans.push(kit.dim(format!(" {}", sanitize_line(value).trim())));
+                spans
+            }
+            PartBody::Fill {
+                label,
+                who,
+                who_role,
+                percent,
+                level,
+            } => {
+                let who = Span::styled(sanitize_line(who).trim().to_owned(), kit.fg(*who_role));
+                let mut spans = vec![kit.dim(format!("{} · ", sanitize_line(label).trim()))];
+                spans.extend(truncate_spans(&[who], NAME_CELLS));
+                let percent = format!(" {percent}%");
+                spans.push(match level {
+                    Level::Ok => Span::raw(percent),
+                    close => Span::styled(percent, kit.fg(close.number_role())),
+                });
                 spans
             }
             PartBody::Spark { text, values, role } => {

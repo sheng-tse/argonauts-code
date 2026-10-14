@@ -7,10 +7,10 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::session::SessionEnd;
 use argonauts_core::names::{RoleName, SessionKey};
-use argonauts_core::worker::{SessionControl, WorkerEvent};
+use argonauts_core::session_runner::{RunnerEvent, SessionControl};
 
 use crate::engine::host::{Host, crashed_end};
 use crate::error::{EngineError, EngineResult};
@@ -32,12 +32,12 @@ impl Default for LiveSessions {
 #[derive(Debug, Clone)]
 pub struct LiveSession {
     pub role: RoleName,
-    pub card: Option<CardId>,
-    /// Drafters, judges, and blind reviewers: a mention delivered to them carries only your
+    pub task: Option<TaskId>,
+    /// Drafting agents, judges, and blind reviewers: a mention delivered to them carries only your
     /// text.
     pub blind: bool,
     pub control: mpsc::Sender<SessionControl>,
-    /// Cancels a step session (restating, drafting, judging) through its `StepRequest.cancel`.
+    /// Cancels a step session (reading, drafting, judging) through its `StepRequest.cancel`.
     pub cancel: CancellationToken,
 }
 
@@ -123,13 +123,13 @@ impl LiveSessions {
 }
 
 /// Records `events` (text and reasoning deltas merged by the journal buffer) with the session's
-/// card, until `ended` fires; then flushes, records `Session::Ended`, and returns the end. A
+/// task, until `ended` fires; then flushes, records `Session::Ended`, and returns the end. A
 /// session the run paused ends `Paused` and returns `Interrupted`, so its step resumes it.
 pub async fn pump(
     host: &Host,
     key: SessionKey,
-    card: Option<CardId>,
-    mut events: mpsc::Receiver<WorkerEvent>,
+    task: Option<TaskId>,
+    mut events: mpsc::Receiver<RunnerEvent>,
     ended: oneshot::Receiver<SessionEnd>,
 ) -> EngineResult<SessionEnd> {
     let source = host.session_source(&key);
@@ -137,7 +137,7 @@ pub async fn pump(
     while let Some(event) = events.recv().await {
         // Keep draining after a failed write, so the worker never blocks on a full channel.
         if failed.is_none()
-            && let Err(err) = host.record_worker_event(&source, &key, card.as_ref(), event)
+            && let Err(err) = host.record_worker_event(&source, &key, task.as_ref(), event)
         {
             failed = Some(err);
         }
@@ -145,7 +145,7 @@ pub async fn pump(
     let end = ended
         .await
         .unwrap_or_else(|_| crashed_end("the worker ended the session without saying how"));
-    let end = host.finish_session(&key, card.as_ref(), end)?;
+    let end = host.finish_session(&key, task.as_ref(), end)?;
     if let Some(err) = failed {
         return Err(err);
     }

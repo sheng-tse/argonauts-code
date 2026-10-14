@@ -1,4 +1,4 @@
-//! Per role on one harness: the effective compaction and fan-out cap with their effects, and a
+//! Per role on one CLI: the effective compaction and fan-out cap with their effects, and a
 //! warning for every role with lifetime `run` or `project` whose compaction is off.
 
 use argonauts_core::names::RoleName;
@@ -30,7 +30,7 @@ pub fn role_checks(adapter: &dyn Adapter, settings: &Settings) -> Vec<RoleCheck>
     role_checks_in(adapter, settings, &|name| std::env::var(name).ok())
 }
 
-/// Like [`role_checks`], with `env` standing in for the environment sessions inherit.
+/// Like [`role_checks`], with `env` in place of the environment sessions inherit.
 pub fn role_checks_in(
     adapter: &dyn Adapter,
     settings: &Settings,
@@ -42,16 +42,16 @@ pub fn role_checks_in(
         .collect()
 }
 
-/// The default role when it's this harness, every configured role it may fill, and `owner`
-/// for a crew member, since owners come from the crew unless a role says otherwise.
+/// The default role when it's this CLI, every configured role it may fill, and `worker`
+/// for a crew member, since workers come from the crew unless a role says otherwise.
 fn roles_filled_by(adapter_id: &str, settings: &Settings) -> Vec<RoleName> {
     let members = settings.crew.members();
-    let in_crew = members.is_empty() || members.iter().any(|w| w.worker == adapter_id);
+    let in_crew = members.is_empty() || members.iter().any(|w| w.agent == adapter_id);
     let fills = |role: RoleName| match settings.roles.get(&role) {
-        Some(config) if !config.workers.is_empty() => {
-            config.workers.iter().any(|w| w.worker == adapter_id)
+        Some(config) if !config.models.is_empty() => {
+            config.models.iter().any(|w| w.agent == adapter_id)
         }
-        _ if role == RoleName::Main => settings.main_agent.worker == adapter_id,
+        _ if role == RoleName::Main => settings.crew.main.agent == adapter_id,
         _ => in_crew,
     };
     let mut roles: Vec<RoleName> = settings.roles.keys().copied().collect();
@@ -144,7 +144,7 @@ fn effective_compaction(
     }
 }
 
-/// What a harness does when Argonauts passes nothing.
+/// What a CLI does when Argonauts Code passes nothing.
 fn inherited(adapter_id: &str, env: &dyn Fn(&str) -> Option<String>) -> (String, bool) {
     match adapter_id {
         "claude-code" if env(CLAUDE_DISABLE_COMPACT).is_some_and(|v| truthy(&v)) => (
@@ -185,14 +185,14 @@ fn fanout_label(fanout: NativeFanout) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doctor::tests::FakeHarness;
+    use crate::doctor::tests::FakeCli;
     use argonauts_core::LaunchTweak;
-    use argonauts_core::names::WorkerRef;
+    use argonauts_core::names::ModelRef;
     use argonauts_core::settings::roles::RoleSettings;
 
     fn role(workers: &[&str], lifetime: SessionLifetime, compaction: Compaction) -> RoleSettings {
         RoleSettings {
-            workers: workers.iter().map(|w| WorkerRef::new(*w, None)).collect(),
+            models: workers.iter().map(|w| ModelRef::new(*w, None)).collect(),
             lifetime: Some(lifetime),
             compaction: Some(compaction),
             ..RoleSettings::default()
@@ -208,14 +208,14 @@ mod tests {
 
     #[test]
     fn doctor_reports_effective_compaction() {
-        let claude = FakeHarness::named("claude-code").with_compaction(|setting| match setting {
+        let claude = FakeCli::named("claude-code").with_compaction(|setting| match setting {
             Compaction::Off => LaunchTweak {
                 env_set: vec![("DISABLE_AUTO_COMPACT".into(), "1".into())],
                 ..LaunchTweak::default()
             },
             _ => LaunchTweak::default(),
         });
-        let codex = FakeHarness::named("codex").with_compaction(|setting| match setting {
+        let codex = FakeCli::named("codex").with_compaction(|setting| match setting {
             Compaction::Off => LaunchTweak {
                 effect: TweakEffect::Approximated {
                     note: "compacts by 90% of the window at the latest".into(),
@@ -256,7 +256,7 @@ mod tests {
         );
         assert_eq!(consultant.fanout, "max 2");
         assert_eq!(consultant.fanout_effect, TweakEffect::EnforcedByConductor);
-        // Off is fine for a session that ends with its card.
+        // Off is fine for a session that ends with its task.
         let reviewer = check(&claude_checks, RoleName::Reviewer);
         assert!(reviewer.compaction_off);
         assert_eq!(reviewer.warning, None);
@@ -266,7 +266,7 @@ mod tests {
             "inherit → auto, from your Claude Code settings"
         );
         assert_eq!(narrator.warning, None);
-        // claude-code is the default agent and in the default crew.
+        // claude-code is the main agent and in the default crew.
         assert!(claude_checks.iter().any(|c| c.role == RoleName::Main));
         assert!(claude_checks.iter().any(|c| c.role == RoleName::Worker));
 
@@ -300,15 +300,15 @@ mod tests {
 
     #[test]
     fn roles_follow_workers_and_the_crew() {
-        let agy = FakeHarness::named("antigravity-cli");
+        let agy = FakeCli::named("antigravity-cli");
         let mut settings = Settings {
-            crew: vec![WorkerRef::new("claude-code", None)].into(),
+            crew: vec![ModelRef::new("claude-code", None)].into(),
             ..Settings::default()
         };
         assert!(role_checks_in(&agy, &settings, &|_| None).is_empty());
 
         settings.roles.insert(
-            RoleName::Drafter,
+            RoleName::Draft,
             role(
                 &["antigravity-cli"],
                 SessionLifetime::Task,
@@ -317,7 +317,7 @@ mod tests {
         );
         let checks = role_checks_in(&agy, &settings, &|_| None);
         assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].role, RoleName::Drafter);
+        assert_eq!(checks[0].role, RoleName::Draft);
         assert_eq!(
             checks[0].compaction,
             "inherit → auto, agy has no setting for it"

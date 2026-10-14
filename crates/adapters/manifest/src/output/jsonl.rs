@@ -1,4 +1,4 @@
-//! `argonauts-jsonl`: one normalized `AgentEvent` JSON object per line, Argonauts' own plugin
+//! `argonauts-jsonl`: one normalized `AgentEvent` JSON object per line, Argonauts Code's own plugin
 //! protocol. Any other line is kept as `Unknown`.
 
 use argonauts_core::{AgentEvent, StreamParser};

@@ -15,13 +15,12 @@ const GROUPS: &[(&str, CommandCategory)] = &[
     ("approve", CommandCategory::ApprovalsAndLimits),
     ("approvals", CommandCategory::ApprovalsAndLimits),
     ("auto", CommandCategory::ApprovalsAndLimits),
-    ("inbox", CommandCategory::ApprovalsAndLimits),
     ("run-review", CommandCategory::Runs),
     ("records", CommandCategory::Learning),
     ("learned", CommandCategory::Learning),
     ("skills", CommandCategory::Learning),
     ("sync", CommandCategory::Learning),
-    ("init", CommandCategory::SetupAndHelp),
+    ("setup", CommandCategory::SetupAndHelp),
     ("doctor", CommandCategory::SetupAndHelp),
     ("update", CommandCategory::SetupAndHelp),
     ("config", CommandCategory::SetupAndHelp),
@@ -140,10 +139,10 @@ mod tests {
         };
         assert!(at("Session:") < at("  resume "));
         assert!(at("  resume ") < at("Work:"));
-        assert!(at("Approvals and limits:") < at("  inbox "));
+        assert!(at("Approvals and limits:") < at("  approvals "));
         assert!(at("Setup and help:") < at("  help "));
         assert!(at("Options:") < at("--screen-reader"));
-        assert!(!help.contains("supervise"), "{help}");
+        assert!(!help.contains("host"), "{help}");
         assert!(!help.contains("Commands:"), "{help}");
     }
 

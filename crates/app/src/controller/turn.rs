@@ -1,4 +1,4 @@
-//! One chat turn's session: which worker reads it, what the request's record holds, and the
+//! One conversation turn's session: which worker reads it, what the request's record holds, and the
 //! session the step runs in, on its own task: read-only, or for a direct turn, your checkout as
 //! its CLI works in it.
 
@@ -8,28 +8,29 @@ use std::sync::Arc;
 use argonauts_core::NoteLevel;
 use argonauts_core::events::session::{EndReason, InputPart, InputPartKind, loaded_words};
 use argonauts_core::input::EFFORT_LEVELS;
-use argonauts_core::limits::{HealthState, QuotaStatus};
-use argonauts_core::names::{ChatId, RoleName, SessionKey, TurnId, WorkerRef};
+use argonauts_core::limits::{HealthState, ModelState, PlanUsageStatus};
+use argonauts_core::names::{ConversationId, ModelRef, RoleName, SessionKey, TurnId};
 use argonauts_core::paths::create_private_dir_all;
 use argonauts_core::pictures::Picture;
 use argonauts_core::registry::{ModelRegistry, effort_to_run, known_efforts};
+use argonauts_core::session_runner::{
+    Access, Asking, CliWorkflow, RunnerError, RunnerEvent, RunnerKind, SandboxMode, SandboxProfile,
+    SessionControl, SessionLimits, SessionRunner, SessionSpec,
+};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxChoice;
-use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
+use argonauts_core::settings::fallback::FallbackMode;
+use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::sessions::SessionLifetime;
-use argonauts_core::steps::intake::{ChatAnswer, TriageEstimate};
+use argonauts_core::steps::intake::{ConversationAnswer, Estimate};
 use argonauts_core::steps::{
     StepError, StepName, StepObserver, StepOutcome, StepRequest, output_schema,
-};
-use argonauts_core::worker::{
-    Access, Asking, CliWorkflow, SandboxMode, SandboxProfile, SessionControl, SessionLimits,
-    SessionSpec, Worker, WorkerError, WorkerEvent, WorkerKind,
 };
 use argonauts_core::{DEFAULT_SOFT_RATIO, sha256_hex};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::chat::TurnUpdate;
+use super::conversation::TurnUpdate;
 use super::{Ctx, Internal};
 use crate::controller::instructions::Command;
 use crate::env::FolderGit;
@@ -89,30 +90,79 @@ impl Record {
     }
 }
 
-/// The main agent, then its fallbacks in the order `[fallback.main]` gives them.
-pub(crate) fn candidates(settings: &Settings) -> Vec<WorkerRef> {
-    let default = settings.main_agent.clone();
+/// The main agent, then its fallbacks in the order `[fallback.main]` gives them. With no list
+/// anywhere it gets what the crew gets: the other models you have installed.
+pub(crate) fn candidates(ctx: &Ctx) -> Vec<ModelRef> {
+    in_order(ctx.settings(), || default_fallbacks(ctx))
+}
+
+/// How the main session's fallbacks are taken when `stopped` can't go on: `[fallback.main]`'s
+/// own mode, or else the one every role follows.
+pub(crate) fn fallback_mode(settings: &Settings, stopped: &ModelRef) -> FallbackMode {
     let applied = settings
         .fallback
-        .applied_to(RoleName::Main, &default.vendor());
+        .applied_to(RoleName::Main, &stopped.agent_id());
+    applied.mode
+}
+
+/// The main agent first, then the listed fallbacks or else `defaults`, each once. With
+/// `same_cli` only those on the main agent's own CLI stay, and with the mode `wait` nobody
+/// does: the main session never switches.
+fn in_order(settings: &Settings, defaults: impl FnOnce() -> Vec<ModelRef>) -> Vec<ModelRef> {
+    let default = settings.crew.main.clone();
+    let applied = settings
+        .fallback
+        .applied_to(RoleName::Main, &default.agent_id());
+    if applied.mode == FallbackMode::Wait {
+        return vec![default];
+    }
+    let listed: Vec<ModelRef> = if applied.candidates.is_empty() {
+        defaults()
+    } else {
+        let models = applied.candidates.iter().map(|entry| entry.model().clone());
+        models.collect()
+    };
     let mut workers = vec![default];
-    for entry in &applied.candidates {
-        if !workers.contains(entry.worker()) {
-            workers.push(entry.worker().clone());
+    for model in listed {
+        let stays = !applied.same_cli || model.agent == workers[0].agent;
+        if stays && !workers.contains(&model) {
+            workers.push(model);
         }
     }
     workers
 }
 
-/// The first candidate not tried yet whose vendor is neither out of quota nor down. When
+/// The fallbacks when no list names any, as a crew run's jobs get them: the crew's own members
+/// in crew order, then whatever else is installed, CLIs only. Who is down, out of plan usage or
+/// signed out is passed over when a turn picks, so this is only the order.
+pub(crate) fn default_fallbacks(ctx: &Ctx) -> Vec<ModelRef> {
+    let workers = &ctx.services.workers;
+    let available = workers.available();
+    let mut pool: Vec<ModelRef> = ctx
+        .settings()
+        .crew
+        .members()
+        .into_iter()
+        .filter(|model| available.contains(model))
+        .collect();
+    pool.extend(available);
+    pool.retain(|model| {
+        workers
+            .get(model)
+            .is_ok_and(|agent| agent.kind() == RunnerKind::Cli)
+    });
+    pool
+}
+
+/// The first candidate not tried yet whose agent is neither out of plan usage nor down. When
 /// every one is, the first that exists anyway, so its own error says why.
 pub(crate) fn pick(
     ctx: &Ctx,
-    tried: &[WorkerRef],
-) -> Result<(WorkerRef, Arc<dyn Worker>), WorkerError> {
+    tried: &[ModelRef],
+) -> Result<(ModelRef, Arc<dyn SessionRunner>), RunnerError> {
     let mut first_error = None;
     let mut out_of_service = None;
-    for worker in candidates(ctx.settings()) {
+    for worker in candidates(ctx) {
         if tried.contains(&worker) {
             continue;
         }
@@ -123,53 +173,55 @@ pub(crate) fn pick(
                 continue;
             }
         };
-        if vendor_out(ctx, &worker) {
+        if agent_out(ctx, &worker) {
             out_of_service.get_or_insert((worker, handle));
             continue;
         }
         return Ok((worker, handle));
     }
     out_of_service.ok_or_else(|| {
-        first_error.unwrap_or_else(|| WorkerError::Unknown(ctx.settings().main_agent.clone()))
+        first_error.unwrap_or_else(|| RunnerError::Unknown(ctx.settings().crew.main.clone()))
     })
 }
 
-/// The default agent itself, for a turn no fallback can take.
-pub(crate) fn pick_main(ctx: &Ctx) -> Result<(WorkerRef, Arc<dyn Worker>), WorkerError> {
-    let main = ctx.settings().main_agent.clone();
+/// The main agent itself, for a turn no fallback can take.
+pub(crate) fn pick_main(ctx: &Ctx) -> Result<(ModelRef, Arc<dyn SessionRunner>), RunnerError> {
+    let main = ctx.settings().crew.main.clone();
     let handle = ctx.services.workers.get(&main)?;
     Ok((main, handle))
 }
 
-pub(crate) fn vendor_out(ctx: &Ctx, worker: &WorkerRef) -> bool {
-    let vendor = worker.vendor();
-    let down = ctx.services.health.state(&vendor).state == HealthState::Down;
+pub(crate) fn agent_out(ctx: &Ctx, worker: &ModelRef) -> bool {
+    let agent_id = worker.agent_id();
+    let health = &ctx.services.health;
+    let down = health.state(&agent_id).state == HealthState::Down
+        || health.model(worker).state == ModelState::Out;
     let out = ctx
         .services
-        .quota
-        .get(&vendor)
-        .is_some_and(|reading| reading.status == QuotaStatus::Rejected);
+        .plan_usage
+        .get(&agent_id)
+        .is_some_and(|reading| reading.status == PlanUsageStatus::Rejected);
     down || out
 }
 
-/// Failures another vendor might not have, so the next fallback gets the turn.
+/// Failures another agent might not have, so the next fallback gets the turn.
 pub(crate) fn worth_a_fallback(err: &StepError) -> bool {
     match err {
-        StepError::Worker(
-            WorkerError::NotInstalled(_) | WorkerError::Disabled { .. } | WorkerError::Unknown(_),
+        StepError::Runner(
+            RunnerError::NotInstalled(_) | RunnerError::Disabled { .. } | RunnerError::Unknown(_),
         ) => true,
         StepError::Session(end) => matches!(
             end.reason,
             EndReason::UsageLimit { .. }
                 | EndReason::RateLimited
-                | EndReason::VendorError { .. }
+                | EndReason::CliError { .. }
                 | EndReason::Auth { .. }
                 | EndReason::Billing { .. }
                 | EndReason::ModelUnavailable { .. }
                 | EndReason::StartFailed { .. }
         ),
         // A refusal or a local failure would repeat with any worker.
-        StepError::Worker(WorkerError::Refused(_) | WorkerError::Io(_))
+        StepError::Runner(RunnerError::Refused(_) | RunnerError::Io(_))
         | StepError::SchemaMismatch { .. } => false,
     }
 }
@@ -177,11 +229,11 @@ pub(crate) fn worth_a_fallback(err: &StepError) -> bool {
 /// One line for the transcript.
 pub(crate) fn describe(err: &StepError) -> String {
     match err {
-        StepError::Worker(err) => err.to_string(),
+        StepError::Runner(err) => err.to_string(),
         StepError::Session(end) => match &end.reason {
             EndReason::UsageLimit { .. } => "it hit its usage limit".to_owned(),
             EndReason::RateLimited => "it is rate limited".to_owned(),
-            EndReason::VendorError { message, .. }
+            EndReason::CliError { message, .. }
             | EndReason::Auth { message }
             | EndReason::Billing { message }
             | EndReason::StartFailed { message }
@@ -204,13 +256,13 @@ pub(crate) fn describe(err: &StepError) -> String {
 
 /// What the turn asks.
 /// What your checked words change about a direct turn: the main agent's model and effort, a
-/// lower budget for the message, no network, and asking you first. A direct turn has no roles,
-/// so words that give one make the solo checked instead.
+/// lower limit for the message, no network, and asking you first. A direct turn has no roles,
+/// so words that give one make the Captain checked instead.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct DirectWords {
     pub model: Option<String>,
     pub effort: Option<String>,
-    pub budget_usd: Option<f64>,
+    pub limit_usd: Option<f64>,
     pub no_network: bool,
     pub supervised: bool,
     /// What the CLI's own workflow does with this message, such as the `ultracode` you typed.
@@ -222,11 +274,11 @@ pub(crate) struct DirectWords {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum TurnStep {
     /// A new request: answer, change, or unclear.
-    Triage {
+    Estimate {
         uncommitted_note: Option<String>,
-        /// `triage.read_instructions`: the estimate lists how the request says to run it.
+        /// `captain_or_crew.read_instructions`: the estimate lists how the request says to run it.
         read_instructions: bool,
-        /// `/solo` or `/crew` with a task: the estimate reads your words, and the command's
+        /// `/captain` or `/crew` with a task: the estimate reads your words, and the command's
         /// mode stands whatever they or the rules say.
         command: Option<Command>,
     },
@@ -234,7 +286,7 @@ pub(crate) enum TurnStep {
     Ask { run_status: Option<String> },
     /// One of the main agent CLI's own commands. `prompt` is the whole input, so the CLI
     /// reads it as the command, and its reply is plain text with no schema.
-    Vendor {
+    Cli {
         prompt: String,
         /// In a direct conversation the command works in your checkout, so Claude Code's
         /// `/init` writes `CLAUDE.md` as it does in Claude Code. The turn's listener, as for
@@ -243,9 +295,9 @@ pub(crate) enum TurnStep {
     },
     /// `/btw`: an answer from a session of its own, kept out of the conversation.
     Side,
-    /// `/rename` with no name: the lead names the conversation, out of its history too.
+    /// `/rename` with no name: the main agent names the conversation, out of its history too.
     Title,
-    /// Direct solo: your message to the main session, which works in your checkout as its CLI
+    /// Direct Captain: your message to the main session, which works in your checkout as its CLI
     /// does and ends with its own answer. `asking` is the turn's listener for what it asks you,
     /// and for the main session's tools; `None` asks nothing. `go_ahead` is what the session reads
     /// in place of your message when it has it already, as after its estimate or its plan.
@@ -254,7 +306,7 @@ pub(crate) enum TurnStep {
         go_ahead: Option<String>,
         words: DirectWords,
     },
-    /// Plan first in direct solo: your message to the main session, which reads and plans
+    /// Plan first in direct Captain: your message to the main session, which reads and plans
     /// without changing anything and ends with its plan. "Go ahead with this plan?" then resumes
     /// it as a [`TurnStep::Direct`], as Claude Code's plan mode does.
     Plan { words: DirectWords },
@@ -265,11 +317,11 @@ pub(crate) enum TurnStep {
     /// with one, `writer` is the new model, which writes it from that record of the
     /// conversation.
     Carry {
-        writer: WorkerRef,
+        writer: ModelRef,
         resume: Option<String>,
         record: Option<String>,
     },
-    /// `/review` and `/security-review`, by whoever [`crate::controller::chat`] picked.
+    /// `/review` and `/security-review`, by whoever [`crate::controller::conversation`] picked.
     Review {
         security: bool,
         /// Such as "the uncommitted changes".
@@ -277,7 +329,7 @@ pub(crate) enum TurnStep {
         changes: String,
         other_provider: bool,
     },
-    /// Argonauts tells the main session, in the turn's text, what became of a run it started,
+    /// Argonauts Code tells the main session, in the turn's text, what became of a run it started,
     /// and the session says so to you in one line. Read-only, and it starts nothing.
     Told,
 }
@@ -285,18 +337,18 @@ pub(crate) enum TurnStep {
 impl TurnStep {
     fn name(&self) -> StepName {
         match self {
-            Self::Triage { .. } => StepName::TriageEstimate,
+            Self::Estimate { .. } => StepName::Estimate,
             Self::Direct { .. } => StepName::Direct,
             // Read-only, with the tools an answer gets.
-            Self::Plan { .. } => StepName::ChatAnswer,
-            Self::Vendor { .. } => StepName::VendorCommand,
+            Self::Plan { .. } => StepName::ConversationAnswer,
+            Self::Cli { .. } => StepName::CliCommand,
             Self::Ask { .. }
             | Self::Side
             | Self::Title
             | Self::Compact { .. }
             | Self::Carry { .. }
             | Self::Review { .. }
-            | Self::Told => StepName::ChatAnswer,
+            | Self::Told => StepName::ConversationAnswer,
         }
     }
 
@@ -304,7 +356,7 @@ impl TurnStep {
     pub(crate) fn takes_mentions(&self) -> bool {
         matches!(
             self,
-            Self::Triage { .. }
+            Self::Estimate { .. }
                 | Self::Ask { .. }
                 | Self::Side
                 | Self::Direct { .. }
@@ -330,7 +382,7 @@ impl TurnStep {
         self.direct_asking().is_some()
     }
 
-    /// Direct solo's turns, a plan first included, whose own answer is the end.
+    /// Direct Captain's turns, a plan first included, whose own answer is the end.
     pub(crate) fn in_your_checkout(&self) -> bool {
         self.writes() || matches!(self, Self::Plan { .. })
     }
@@ -347,7 +399,7 @@ impl TurnStep {
     fn direct_asking(&self) -> Option<&Option<Asking>> {
         match self {
             Self::Direct { asking, .. } => Some(asking),
-            Self::Vendor { direct, .. } => direct.as_ref(),
+            Self::Cli { direct, .. } => direct.as_ref(),
             _ => None,
         }
     }
@@ -367,22 +419,22 @@ impl TurnStep {
     pub(crate) fn plain_reply(&self) -> bool {
         matches!(
             self,
-            Self::Vendor { .. } | Self::Direct { .. } | Self::Plan { .. }
+            Self::Cli { .. } | Self::Direct { .. } | Self::Plan { .. }
         )
     }
 
     /// Only the main agent knows its own commands, so no fallback takes one.
     pub(crate) fn main_agent_only(&self) -> bool {
-        matches!(self, Self::Vendor { .. })
+        matches!(self, Self::Cli { .. })
     }
 
-    /// A message of yours to the lead, so it hears of the `!` commands you ran before it. A
-    /// vendor command must be the whole prompt, and a side question, a title, a summary, and a
+    /// A message of yours to the main agent, so it hears of the `!` commands you ran before it. A
+    /// CLI command must be the whole prompt, and a side question, a title, a summary, and a
     /// review stand apart from the conversation.
     pub(crate) fn hears_shell(&self) -> bool {
         matches!(
             self,
-            Self::Triage { .. } | Self::Ask { .. } | Self::Direct { .. } | Self::Plan { .. }
+            Self::Estimate { .. } | Self::Ask { .. } | Self::Direct { .. } | Self::Plan { .. }
         ) && !self.continues()
     }
 
@@ -392,21 +444,21 @@ impl TurnStep {
         matches!(self, Self::Side | Self::Title | Self::Carry { .. })
     }
 
-    /// Never resumes the conversation's vendor session, and never becomes it: a side question
-    /// would land in its history, and a reviewer may be another vendor's.
+    /// Never resumes the conversation's CLI session, and never becomes it: a side question
+    /// would land in its history, and a reviewer may be another agent's.
     pub(crate) fn own_session(&self) -> bool {
         self.kept_out() || matches!(self, Self::Review { .. })
     }
 
     fn prompt(&self, text: &str) -> InputPart {
         let (label, prompt) = match self {
-            Self::Triage {
+            Self::Estimate {
                 uncommitted_note,
                 read_instructions,
                 ..
             } => (
                 "estimate",
-                crate::prompts::triage_estimate(
+                crate::prompts::estimate(
                     &argonauts_core::steps::intake::IntakeInput {
                         request: text.to_owned(),
                         uncommitted_note: uncommitted_note.clone(),
@@ -415,18 +467,20 @@ impl TurnStep {
                 ),
             ),
             Self::Ask { run_status } => (
-                "chat answer",
-                crate::prompts::chat_answer(&argonauts_core::steps::intake::ChatAnswerInput {
-                    question: text.to_owned(),
-                    run_status: run_status.clone(),
-                }),
+                "conversation answer",
+                crate::prompts::conversation_answer(
+                    &argonauts_core::steps::intake::ConversationAnswerInput {
+                        question: text.to_owned(),
+                        run_status: run_status.clone(),
+                    },
+                ),
             ),
-            Self::Vendor { prompt, .. } => ("agent command", prompt.clone()),
+            Self::Cli { prompt, .. } => ("agent command", prompt.clone()),
             Self::Direct {
                 go_ahead: Some(words),
                 ..
             } => return part(InputPartKind::Message, "go ahead", words.clone()),
-            // Your words as you typed them, with nothing of Argonauts' own.
+            // Your words as you typed them, with nothing of Argonauts Code's own.
             Self::Direct { .. } => {
                 return part(InputPartKind::Message, "your message", text.to_owned());
             }
@@ -434,17 +488,21 @@ impl TurnStep {
             Self::Plan { .. } => ("plan first", format!("{}\n\n{PLAN_FIRST}", text.trim())),
             Self::Told => (
                 "notice",
-                crate::prompts::chat_answer(&argonauts_core::steps::intake::ChatAnswerInput {
-                    question: text.to_owned(),
-                    run_status: None,
-                }),
+                crate::prompts::conversation_answer(
+                    &argonauts_core::steps::intake::ConversationAnswerInput {
+                        question: text.to_owned(),
+                        run_status: None,
+                    },
+                ),
             ),
             Self::Side => (
                 "side question",
-                crate::prompts::chat_answer(&argonauts_core::steps::intake::ChatAnswerInput {
-                    question: text.to_owned(),
-                    run_status: None,
-                }),
+                crate::prompts::conversation_answer(
+                    &argonauts_core::steps::intake::ConversationAnswerInput {
+                        question: text.to_owned(),
+                        run_status: None,
+                    },
+                ),
             ),
             Self::Title => ("name", crate::prompts::title()),
             Self::Compact { instructions } => {
@@ -475,9 +533,9 @@ impl TurnStep {
 
     fn schema(&self) -> Option<serde_json::Value> {
         match self {
-            Self::Triage { .. } => Some(output_schema::<TriageEstimate>()),
-            Self::Vendor { .. } | Self::Direct { .. } | Self::Plan { .. } => None,
-            _ => Some(output_schema::<ChatAnswer>()),
+            Self::Estimate { .. } => Some(output_schema::<Estimate>()),
+            Self::Cli { .. } | Self::Direct { .. } | Self::Plan { .. } => None,
+            _ => Some(output_schema::<ConversationAnswer>()),
         }
     }
 }
@@ -498,25 +556,27 @@ pub(crate) fn part(kind: InputPartKind, label: &str, text: String) -> InputPart 
 
 /// Everything a turn's session needs besides the settings.
 pub(crate) struct Launch<'a> {
-    pub chat: &'a ChatId,
+    pub conversation: &'a ConversationId,
     pub turn: &'a TurnId,
     pub step: &'a TurnStep,
     pub text: &'a str,
     /// The pictures your message holds, as its `[Image #N]` chips name them.
     pub pictures: Vec<Picture>,
-    pub worker: WorkerRef,
-    pub handle: Arc<dyn Worker>,
-    /// The vendor session to resume, when it belongs to this worker.
+    pub worker: ModelRef,
+    pub handle: Arc<dyn SessionRunner>,
+    /// The CLI session to resume, when it belongs to this worker.
     pub resume: Option<String>,
-    /// For a fresh session: the chat so far.
+    /// Resume it as a copy, which leaves the session itself as it was.
+    pub fork: bool,
+    /// For a fresh session: the conversation so far.
     pub excerpt: Option<InputPart>,
     /// After the step's prompt, such as how to write the answer.
     pub notes: Vec<InputPart>,
-    /// The `!` commands you ran since the lead's last turn, ahead of your message.
+    /// The `!` commands you ran since the main agent's last turn, ahead of your message.
     pub shell: Option<InputPart>,
-    /// `/fast`: the lowest effort the model takes, over the one set.
+    /// `/fast`: the lowest effort the model takes, in place of the one set.
     pub fast: bool,
-    /// Your checkout, or the folder of an agent's session the chat carries on.
+    /// Your checkout, or the folder of an agent's session the conversation carries on.
     pub workdir: PathBuf,
 }
 
@@ -528,15 +588,15 @@ pub(crate) struct Launched {
     pub control: mpsc::Sender<SessionControl>,
 }
 
-/// Starts the step on its own task. Its events and its end come back as `Internal::Chat`.
+/// Starts the step on its own task. Its events and its end come back as `Internal::Conversation`.
 pub(crate) fn launch(ctx: &Ctx, launch: Launch<'_>) -> anyhow::Result<Launched> {
-    let key_text = format!("{}-{}", launch.chat, launch.turn);
+    let key_text = format!("{}-{}", launch.conversation, launch.turn);
     let key = SessionKey::parse(&key_text)
         .ok_or_else(|| anyhow::anyhow!("{key_text:?} can't name a session"))?;
     let session_dir = ctx
         .env
-        .chat_dir()
-        .join(launch.chat.as_str())
+        .conversation_dir()
+        .join(launch.conversation.as_str())
         .join(launch.turn.as_str());
     create_private_dir_all(&session_dir)
         .map_err(|err| anyhow::anyhow!("creating {}: {err}", session_dir.display()))?;
@@ -546,11 +606,11 @@ pub(crate) fn launch(ctx: &Ctx, launch: Launch<'_>) -> anyhow::Result<Launched> 
     }
     let asked_again = ctx.internal.clone();
     let retried = launch.turn.clone();
-    let worker = super::attempts::Attempts::wrap(launch.handle, move || {
+    let worker = super::tries::Tries::wrap(launch.handle, move || {
         let update = TurnUpdate::Retried {
             turn: retried.clone(),
         };
-        let _ = asked_again.send(Internal::Chat(update));
+        let _ = asked_again.send(Internal::Conversation(update));
     });
     let mut request = StepRequest::new(worker, spec);
     let cancel = CancellationToken::new();
@@ -563,12 +623,12 @@ pub(crate) fn launch(ctx: &Ctx, launch: Launch<'_>) -> anyhow::Result<Launched> 
     let done = ctx.internal.clone();
     let turn = launch.turn.clone();
     let seen = turn.clone();
-    let observer: StepObserver = Box::new(move |event: &WorkerEvent| {
+    let observer: StepObserver = Box::new(move |event: &RunnerEvent| {
         let update = TurnUpdate::Event {
             turn: seen.clone(),
             event: event.clone(),
         };
-        let _ = events.send(Internal::Chat(update));
+        let _ = events.send(Internal::Conversation(update));
     });
     tokio::spawn(async move {
         let outcome = if request.spec.json_schema.is_none() {
@@ -577,7 +637,7 @@ pub(crate) fn launch(ctx: &Ctx, launch: Launch<'_>) -> anyhow::Result<Launched> 
             steps.run(request, observer).await
         };
         // After Exit nobody listens, and the outcome has nowhere to go.
-        let _ = done.send(Internal::Chat(TurnUpdate::Done { turn, outcome }));
+        let _ = done.send(Internal::Conversation(TurnUpdate::Done { turn, outcome }));
     });
     Ok(Launched {
         key,
@@ -586,7 +646,7 @@ pub(crate) fn launch(ctx: &Ctx, launch: Launch<'_>) -> anyhow::Result<Launched> 
     })
 }
 
-/// A session whose reply is the CLI's own text, such as a vendor command's, so there is no
+/// A session whose reply is the CLI's own text, such as a CLI command's, so there is no
 /// schema to check or retry against. A session that didn't complete is the error.
 async fn run_plain(
     request: StepRequest,
@@ -617,14 +677,14 @@ async fn run_plain(
     let end = handle
         .ended
         .await
-        .map_err(|_| WorkerError::Io("the session ended without saying how".to_owned()))?;
+        .map_err(|_| RunnerError::Io("the session ended without saying how".to_owned()))?;
     if end.reason != EndReason::Completed {
         return Err(StepError::Session(Box::new(end)));
     }
     Ok(StepOutcome {
         value: serde_json::Value::Null,
         end,
-        attempts: 1,
+        tries: 1,
     })
 }
 
@@ -638,11 +698,14 @@ async fn next_command(
     }
 }
 
-/// The worker and effort a chat turn runs with: the model and effort you set for the agent
-/// when `worker` names none, and the default role's effort over the agent's.
-pub(crate) fn chat_agent(settings: &Settings, worker: &WorkerRef) -> (WorkerRef, Option<String>) {
+/// The worker and effort a conversation turn runs with: the model and effort you set for the agent
+/// when `worker` names none, and the main role's effort over the agent's.
+pub(crate) fn conversation_agent(
+    settings: &Settings,
+    worker: &ModelRef,
+) -> (ModelRef, Option<String>) {
     let role = settings.roles.get(&RoleName::Main);
-    let agent = settings.agents.get(&worker.worker);
+    let agent = settings.agents.get(&worker.agent);
     let mut worker = worker.clone();
     if worker.model.is_none() {
         worker.model = agent.and_then(|agent| agent.model.clone());
@@ -657,7 +720,7 @@ pub(crate) fn chat_agent(settings: &Settings, worker: &WorkerRef) -> (WorkerRef,
 /// known, or for a model fixed at one level, the listed model of its line at the lowest, as
 /// agy lists `gemini-3.8-flash-low` beside `gemini-3.8-flash-high`. `None` when nothing is
 /// faster: a model that takes no effort setting, or one fixed at its line's lowest.
-pub(crate) fn fast_choice(ctx: &Ctx, worker: &WorkerRef) -> Option<(WorkerRef, String)> {
+pub(crate) fn fast_choice(ctx: &Ctx, worker: &ModelRef) -> Option<(ModelRef, String)> {
     let registry = ctx.services.registry.as_ref();
     let Some(levels) = known_efforts(registry, worker) else {
         return Some((worker.clone(), "low".to_owned()));
@@ -678,9 +741,9 @@ pub(crate) fn fast_choice(ctx: &Ctx, worker: &WorkerRef) -> Option<(WorkerRef, S
 /// Among the listed models named like `worker` but for another level, the one at the lowest.
 fn lowest_sibling(
     registry: &dyn ModelRegistry,
-    worker: &WorkerRef,
+    worker: &ModelRef,
     level: &str,
-) -> Option<(WorkerRef, String)> {
+) -> Option<(ModelRef, String)> {
     let stem = |model: &str, level: &str| {
         model
             .strip_suffix(level)
@@ -691,7 +754,7 @@ fn lowest_sibling(
     registry
         .list()
         .into_iter()
-        .filter(|entry| entry.id.worker == worker.worker)
+        .filter(|entry| entry.id.agent == worker.agent)
         .filter_map(|entry| match entry.efforts.as_slice() {
             [only] => {
                 let named = stem(entry.id.model.as_deref()?, only)?;
@@ -702,10 +765,10 @@ fn lowest_sibling(
         .min_by_key(|(_, level)| EFFORT_LEVELS.iter().position(|known| known == level))
 }
 
-/// A chat turn reads your checkout. With `sandbox.mode` set to `tool` or `none` it runs outside
-/// ours only when the CLI keeps it read-only itself, since macOS refuses a CLI's own sandbox
-/// inside ours and its shell commands would fail.
-fn chat_sandbox(choice: SandboxChoice, keeps_read_only: bool) -> SandboxMode {
+/// A conversation turn reads your checkout. With `sandbox.mode` set to `tool` or `none` it runs
+/// outside ours only when the CLI keeps it read-only itself, since macOS refuses a CLI's own
+/// sandbox inside ours and its shell commands would fail.
+fn conversation_sandbox(choice: SandboxChoice, keeps_read_only: bool) -> SandboxMode {
     match choice {
         SandboxChoice::Container => SandboxMode::Container,
         SandboxChoice::Tool | SandboxChoice::None if keeps_read_only => SandboxMode::None,
@@ -732,7 +795,7 @@ pub(crate) fn session_spec(
 ) -> SessionSpec {
     let settings = ctx.settings();
     let role = settings.roles.get(&RoleName::Main);
-    let (mut worker, mut effort) = chat_agent(settings, &launch.worker);
+    let (mut worker, mut effort) = conversation_agent(settings, &launch.worker);
     let words = launch.step.direct_words();
     if let Some(words) = words {
         if let Some(model) = &words.model {
@@ -750,7 +813,7 @@ pub(crate) fn session_spec(
         effort = Some(level);
     }
     // An endpoint has no tools, so it gets an empty folder and no sandbox of its own.
-    let endpoint = launch.handle.kind() == WorkerKind::Endpoint;
+    let endpoint = launch.handle.kind() == RunnerKind::Endpoint;
     let mut prompt: Vec<InputPart> = launch.excerpt.iter().cloned().collect();
     prompt.extend(launch.shell.iter().cloned());
     prompt.push(launch.step.prompt(launch.text));
@@ -768,7 +831,7 @@ pub(crate) fn session_spec(
         (Access::Direct, launch.workdir.clone(), mode)
     } else {
         let keeps_read_only = ctx.services.workers.enforces_read_only(&worker);
-        let mode = chat_sandbox(settings.sandbox.mode, keeps_read_only);
+        let mode = conversation_sandbox(settings.sandbox.mode, keeps_read_only);
         (Access::ReadOnly, launch.workdir.clone(), mode)
     };
     let direct = access == Access::Direct;
@@ -785,11 +848,11 @@ pub(crate) fn session_spec(
         .map_or_else(|| ctx.env.state_dir.clone(), |dir| dir.to_owned());
     SessionSpec {
         run: None,
-        card: None,
+        task: None,
         key,
         role: RoleName::Main,
         step: Some(launch.step.name()),
-        worker,
+        model: worker,
         effort,
         access,
         workdir,
@@ -797,6 +860,7 @@ pub(crate) fn session_spec(
         prompt,
         json_schema: launch.step.schema(),
         resume: launch.resume.clone(),
+        fork: launch.fork,
         lifetime: SessionLifetime::Run,
         keep_input_open: false,
         limits: if direct {
@@ -804,8 +868,8 @@ pub(crate) fn session_spec(
         } else {
             SessionLimits::default()
         },
-        // Sending your message is the approval, as `solo.restate_first = false` already treats
-        // your prompt.
+        // Sending your message is the approval, as `captain.understand_first = false` already
+        // treats your prompt.
         goal_sha256: direct.then(|| sha256_hex(launch.text.as_bytes())),
         sandbox: SandboxProfile {
             mode,
@@ -830,12 +894,12 @@ pub(crate) fn session_spec(
         env: Vec::new(),
         asking,
         cli_workflow: cli_workflow(settings, direct, words),
-        shell: argonauts_core::worker::SessionShell::None,
+        shell: argonauts_core::session_runner::SessionShell::None,
     }
 }
 
 /// A direct turn's CLI runs its own workflow as ultracode and your words say: ultracode on in
-/// solo, or the `ultracode` you typed with this message.
+/// Captain, or the `ultracode` you typed with this message.
 fn cli_workflow(settings: &Settings, direct: bool, words: Option<&DirectWords>) -> CliWorkflow {
     if !direct {
         return CliWorkflow::default();
@@ -861,29 +925,29 @@ fn direct_sandbox(choice: SandboxChoice) -> SandboxMode {
 /// Each message is held to the run's limit when you set one, as a run is: the CLI's own cap
 /// sits just above it, and the meter acts for the rest. With none, nothing stops it.
 fn message_limits(settings: &Settings, words: Option<&DirectWords>) -> SessionLimits {
-    let budget = &settings.limits.budget;
+    let limit = &settings.limits.spend;
     // Your words only ever lower it, so theirs stands in for the setting's.
-    let asked = words.and_then(|words| words.budget_usd);
+    let asked = words.and_then(|words| words.limit_usd);
     let amount = asked
-        .or(budget.spend_per_run)
-        .map(|amount| BudgetAmount {
-            unit: BudgetUnit::Usd,
+        .or(limit.spend_per_run)
+        .map(|amount| LimitAmount {
+            unit: LimitUnit::Usd,
             amount,
         })
         .or_else(|| {
-            budget.run_tokens.map(|tokens| BudgetAmount {
-                unit: BudgetUnit::Tokens,
+            limit.run_tokens.map(|tokens| LimitAmount {
+                unit: LimitUnit::Tokens,
                 amount: tokens as f64,
             })
         });
     SessionLimits {
-        budget: amount,
-        soft_stop: if budget.soft_stop > 0.0 && budget.soft_stop < 1.0 {
-            budget.soft_stop
+        limit: amount,
+        soft_stop: if limit.soft_stop > 0.0 && limit.soft_stop < 1.0 {
+            limit.soft_stop
         } else {
             DEFAULT_SOFT_RATIO
         },
-        max_minutes: budget.run_minutes,
+        max_minutes: limit.run_minutes,
         ..SessionLimits::default()
     }
 }
@@ -891,46 +955,82 @@ fn message_limits(settings: &Settings, words: Option<&DirectWords>) -> SessionLi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::app::{AppEvent, ChatEvent};
+    use argonauts_core::app::{AppEvent, ConversationEvent};
     use argonauts_core::registry::ModelRegistry;
-    use argonauts_core::settings::handoff::{CrewRole, FallbackEntry};
+    use argonauts_core::settings::crew::CrewRole;
+    use argonauts_core::settings::fallback::FallbackEntry;
     use argonauts_testkit::TempRepo;
-    use argonauts_testkit::worker::session_end;
+    use argonauts_testkit::runner::session_end;
 
-    use crate::controller::chat::{self, ChatState};
-    use crate::controller::test_support::{HarnessOptions, TestCtx, WAIT};
-    use crate::host::harnesses::RepoModels;
+    use crate::controller::conversation::{self, ConversationState};
+    use crate::controller::test_support::{CliOptions, TestCtx, WAIT};
+    use crate::host::clis::RepoModels;
     use crate::host::services::{LiveRegistry, SettingsSource, directory};
 
     #[test]
     fn the_main_agent_comes_first_then_its_fallbacks_once_each() {
-        let mut settings = Settings {
-            main_agent: "claude-code".parse().unwrap(),
-            ..Settings::default()
-        };
+        let mut settings = Settings::default();
         let role = settings.fallback.roles.entry(CrewRole::Main).or_default();
         role.order = vec![
-            FallbackEntry::Worker("codex".parse().unwrap()),
-            FallbackEntry::Worker("claude-code".parse().unwrap()),
-            FallbackEntry::Worker("antigravity-cli".parse().unwrap()),
+            FallbackEntry::Model("codex".parse().unwrap()),
+            FallbackEntry::Model("claude-code".parse().unwrap()),
+            FallbackEntry::Model("antigravity-cli".parse().unwrap()),
         ];
-        let names: Vec<String> = candidates(&settings)
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        assert_eq!(names, ["claude-code", "codex", "antigravity-cli"]);
+        let names = |settings: &Settings, defaults: &[&str]| -> Vec<String> {
+            let defaults = || {
+                defaults
+                    .iter()
+                    .map(|model| model.parse().unwrap())
+                    .collect()
+            };
+            let order = in_order(settings, defaults);
+            order.iter().map(ToString::to_string).collect()
+        };
+        assert_eq!(
+            names(&settings, &["opencode"]),
+            ["claude-code", "codex", "antigravity-cli"],
+            "a list you set is the whole order"
+        );
+
+        // With no list anywhere, the main session gets what the crew gets.
+        let unlisted = Settings::default();
+        assert_eq!(
+            names(&unlisted, &["claude-code/sonnet", "claude-code", "codex"]),
+            ["claude-code", "claude-code/sonnet", "codex"]
+        );
+
+        // Staying on its CLI passes over every other one, listed or not.
+        let mut same_cli = Settings::default();
+        same_cli.fallback.same_cli = Some(true);
+        assert_eq!(
+            names(&same_cli, &["claude-code/sonnet", "codex"]),
+            ["claude-code", "claude-code/sonnet"]
+        );
+        settings.fallback.same_cli = Some(true);
+        assert_eq!(names(&settings, &[]), ["claude-code"]);
+
+        // Told to wait, the main session has nobody behind it, listed or not; the mode set
+        // for it alone wins over the one every role follows.
+        let mut waits = Settings::default();
+        waits.fallback.mode = FallbackMode::Wait;
+        assert_eq!(names(&waits, &["codex"]), ["claude-code"]);
+        let main = waits.fallback.roles.entry(CrewRole::Main).or_default();
+        main.mode = FallbackMode::Auto;
+        assert_eq!(names(&waits, &["codex"]), ["claude-code", "codex"]);
+        let claude: ModelRef = "claude-code".parse().unwrap();
+        assert_eq!(fallback_mode(&waits, &claude), FallbackMode::Auto);
     }
 
     #[test]
-    fn vendor_trouble_is_worth_a_fallback_but_a_stop_is_not() {
+    fn agent_trouble_is_worth_a_fallback_but_a_stop_is_not() {
         let ended = |reason| StepError::Session(Box::new(session_end(reason, None, None)));
         assert!(worth_a_fallback(&ended(EndReason::RateLimited)));
         assert!(worth_a_fallback(&ended(EndReason::UsageLimit {
             resets_at: None
         })));
         assert!(!worth_a_fallback(&ended(EndReason::Stopped)));
-        assert!(worth_a_fallback(&StepError::Worker(
-            WorkerError::NotInstalled("codex".to_owned())
+        assert!(worth_a_fallback(&StepError::Runner(
+            RunnerError::NotInstalled("codex".to_owned())
         )));
         assert_eq!(
             describe(&ended(EndReason::RateLimited)),
@@ -938,24 +1038,26 @@ mod tests {
         );
     }
 
-    /// Codex is the default agent and off in the file. Its binary is a path that doesn't exist,
-    /// so a turn never reaches a real vendor.
+    /// Codex is the main agent and off in the file. Its binary is a path that doesn't exist,
+    /// so a turn never reaches a real agent, and the main session stays on its CLI, so with
+    /// Codex off a turn has nowhere else to go.
     fn codex_off(repo: &TempRepo) {
         std::fs::write(
             repo.global_config(),
-            "main_agent = \"codex\"\n\n[agents.codex]\nenabled = false\nbinary = \"/nonexistent/codex\"\n",
+            "crew.main = \"codex\"\n\n[agents.codex]\nenabled = false\nbinary = \"/nonexistent/codex\"\n\n\
+             [fallback.main]\nsame_cli = true\n",
         )
         .unwrap();
     }
 
     #[tokio::test]
     async fn an_agent_turned_on_in_the_app_takes_the_next_turn() {
-        let (mut parts, _) = TestCtx::new(HarnessOptions {
+        let (mut parts, _) = TestCtx::new(CliOptions {
             prepare: Some(Box::new(codex_off)),
-            ..HarnessOptions::default()
+            ..CliOptions::default()
         });
         let ctx = &mut parts.ctx;
-        // The directory the app builds at start, in place of the harness's fake one.
+        // The directory the app builds at start, in place of the CLI's fake one.
         let repo_models = RepoModels::new(&ctx.env.repo_root, &ctx.env.state_dir);
         let registry: Arc<dyn ModelRegistry> = Arc::new(LiveRegistry::new(
             ctx.settings.follow(),
@@ -967,13 +1069,13 @@ mod tests {
             &ctx.env.paths,
             Some(&repo_models),
             Arc::clone(&registry),
-            ctx.services.quota.clone(),
+            ctx.services.plan_usage.clone(),
             ctx.services.health.clone(),
         );
         ctx.services.registry = registry;
-        let mut chat = ChatState::new(ctx).unwrap();
+        let mut conversation = ConversationState::new(ctx).unwrap();
 
-        let off = chat::new_request(ctx, &mut chat, "hi".to_owned())
+        let off = conversation::new_request(ctx, &mut conversation, "hi".to_owned())
             .await
             .unwrap_err();
         assert!(
@@ -985,23 +1087,25 @@ mod tests {
         ctx.settings
             .set_session(&env, "agents.codex.enabled", "true")
             .unwrap();
-        chat::new_request(ctx, &mut chat, "hi".to_owned())
+        conversation::new_request(ctx, &mut conversation, "hi".to_owned())
             .await
             .unwrap();
         let mut started = None;
         while let Ok(event) = parts.events.try_recv() {
-            if let AppEvent::Chat {
-                event: ChatEvent::TurnStarted { worker, .. },
+            if let AppEvent::Conversation {
+                event: ConversationEvent::TurnStarted { worker, .. },
             } = event
             {
                 started = Some(worker);
             }
         }
-        assert_eq!(started, Some(WorkerRef::new("codex", None)));
+        assert_eq!(started, Some(ModelRef::new("codex", None)));
         let done = tokio::time::timeout(WAIT, async {
             loop {
                 match parts.internal.recv().await {
-                    Some(Internal::Chat(update @ TurnUpdate::Done { .. })) => return update,
+                    Some(Internal::Conversation(update @ TurnUpdate::Done { .. })) => {
+                        return update;
+                    }
                     Some(_) => {}
                     None => panic!("the channel closed"),
                 }
@@ -1018,20 +1122,20 @@ mod tests {
                 .is_none_or(|err| !err.contains("enabled is false")),
             "{err:?}"
         );
-        chat::on_update(&mut parts.ctx, &mut chat, done)
+        conversation::on_update(&mut parts.ctx, &mut conversation, done)
             .await
             .unwrap();
     }
 
-    /// The sandbox mode a chat turn on `agent` gets under `[sandbox] mode = <mode>`, through the
-    /// directory the app builds at start.
-    fn chat_sandbox_for(mode: &'static str, agent: &str) -> SandboxMode {
-        let (mut parts, _) = TestCtx::new(HarnessOptions {
+    /// The sandbox mode a conversation turn on `agent` gets under `[sandbox] mode = <mode>`,
+    /// through the directory the app builds at start.
+    fn conversation_sandbox_for(mode: &'static str, agent: &str) -> SandboxMode {
+        let (mut parts, _) = TestCtx::new(CliOptions {
             prepare: Some(Box::new(move |repo: &TempRepo| {
                 let config = format!("[sandbox]\nmode = \"{mode}\"\n");
                 std::fs::write(repo.global_config(), config).unwrap();
             })),
-            ..HarnessOptions::default()
+            ..CliOptions::default()
         });
         let ctx = &mut parts.ctx;
         let repo_models = RepoModels::new(&ctx.env.repo_root, &ctx.env.state_dir);
@@ -1045,23 +1149,22 @@ mod tests {
             &ctx.env.paths,
             Some(&repo_models),
             registry,
-            ctx.services.quota.clone(),
+            ctx.services.plan_usage.clone(),
             ctx.services.health.clone(),
         );
-        let chat = ChatId::numbered(1);
+        let conversation = ConversationId::numbered(1);
         let turn = TurnId::numbered(1);
         let step = TurnStep::Ask { run_status: None };
         let launch = Launch {
-            chat: &chat,
+            conversation: &conversation,
             turn: &turn,
             step: &step,
             text: "what does main do?",
             pictures: Vec::new(),
             worker: agent.parse().unwrap(),
-            handle: Arc::new(argonauts_testkit::worker::FakeWorker::harness(
-                agent, "test",
-            )),
+            handle: Arc::new(argonauts_testkit::runner::FakeRunner::cli(agent, "test")),
             resume: None,
+            fork: false,
             excerpt: None,
             notes: Vec::new(),
             shell: None,
@@ -1069,31 +1172,44 @@ mod tests {
             workdir: ctx.env.repo_root.clone(),
         };
         let key = SessionKey::numbered(1);
-        let dir = ctx.env.state_dir.join("chat-test");
+        let dir = ctx.env.state_dir.join("conversation-test");
         session_spec(ctx, &launch, key, dir).sandbox.mode
     }
 
     #[test]
-    fn with_the_sandbox_off_a_chat_turn_leaves_ours_only_for_a_cli_that_keeps_it_read_only() {
-        assert_eq!(chat_sandbox_for("off", "claude-code"), SandboxMode::None);
-        assert_eq!(chat_sandbox_for("off", "codex"), SandboxMode::None);
-        assert_eq!(chat_sandbox_for("off", "antigravity-cli"), SandboxMode::Os);
-        assert_eq!(chat_sandbox_for("off", "opencode"), SandboxMode::Os);
-        assert_eq!(chat_sandbox_for("os", "claude-code"), SandboxMode::Os);
+    fn with_the_tools_own_sandbox_a_conversation_turn_leaves_ours_only_for_a_cli_that_keeps_it_read_only()
+     {
         assert_eq!(
-            chat_sandbox_for("container", "claude-code"),
+            conversation_sandbox_for("tool", "claude-code"),
+            SandboxMode::None
+        );
+        assert_eq!(conversation_sandbox_for("tool", "codex"), SandboxMode::None);
+        assert_eq!(
+            conversation_sandbox_for("tool", "antigravity-cli"),
+            SandboxMode::Os
+        );
+        assert_eq!(
+            conversation_sandbox_for("tool", "opencode"),
+            SandboxMode::Os
+        );
+        assert_eq!(
+            conversation_sandbox_for("os", "claude-code"),
+            SandboxMode::Os
+        );
+        assert_eq!(
+            conversation_sandbox_for("container", "claude-code"),
             SandboxMode::Container
         );
     }
 
     #[test]
-    fn the_chat_runs_the_agents_model_and_the_default_roles_effort() {
+    fn the_conversation_runs_the_agents_model_and_the_default_roles_effort() {
         let mut settings = Settings::default();
         let agent = settings.agents.entry("codex".to_owned()).or_default();
         agent.model = Some("gpt-5.6-luna".to_owned());
         agent.effort = Some("low".to_owned());
-        let codex: WorkerRef = "codex".parse().unwrap();
-        let (worker, effort) = chat_agent(&settings, &codex);
+        let codex: ModelRef = "codex".parse().unwrap();
+        let (worker, effort) = conversation_agent(&settings, &codex);
         assert_eq!(worker.to_string(), "codex/gpt-5.6-luna");
         assert_eq!(effort.as_deref(), Some("low"));
 
@@ -1104,8 +1220,8 @@ mod tests {
             .unwrap_or_default();
         role.effort = Some("high".to_owned());
         settings.roles.insert(RoleName::Main, role);
-        let named: WorkerRef = "codex/gpt-5.6".parse().unwrap();
-        let (worker, effort) = chat_agent(&settings, &named);
+        let named: ModelRef = "codex/gpt-5.6".parse().unwrap();
+        let (worker, effort) = conversation_agent(&settings, &named);
         assert_eq!(worker.to_string(), "codex/gpt-5.6");
         assert_eq!(effort.as_deref(), Some("high"));
     }

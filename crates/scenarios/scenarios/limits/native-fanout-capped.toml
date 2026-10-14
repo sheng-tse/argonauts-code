@@ -1,4 +1,4 @@
-# Three tasks, one per vendor. Claude Code and Codex finish theirs; agy starts three subagents
+# Three tasks, one per agent. Claude Code and Codex finish theirs; agy starts three subagents
 # at once, one past the role's cap.
 
 [version]
@@ -12,7 +12,7 @@ args_contain = ["-p", "--permission-mode", "acceptEdits"]
 [[rule.step]]
 write = { path = "hello.txt", content = "hi\n" }
 [[rule.step]]
-emit_file = "../../../adapters/claude-code/fixtures/2.1.284/write.stdout.jsonl"
+emit_file = "../../../adapters/claude-code/fixtures/write.stdout.jsonl"
 [[rule.step]]
 exit = 0
 
@@ -22,7 +22,7 @@ args_contain = ["exec"]
 [[rule.step]]
 write = { path = "hello.txt", content = "hi\n" }
 [[rule.step]]
-emit_file = "../../../adapters/codex/fixtures/0.158.0/build_hello.stdout.jsonl"
+emit_file = "../../../adapters/codex/fixtures/build_hello_resumed.stdout.jsonl"
 [[rule.step]]
 exit = 0
 

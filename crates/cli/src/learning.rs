@@ -1,4 +1,4 @@
-//! `argonauts records`, `learned`, `skills`, `sync`, `retro`, and `mcp package`: the learning
+//! `argonauts records`, `learned`, `skills`, `sync`, `run-review`, and `mcp package`: the learning
 //! stream's commands for scripts and the shell. Read commands print text, or JSON with
 //! `--json`.
 
@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use argonauts_app::{LearningShell, learning};
 use argonauts_core::sanitize::sanitize_for_terminal;
 
-use crate::args::{RecipesAction, RecordsAction, SkillsAction};
+use crate::args::{LearnedWorkflowsAction, RecordsAction, SkillsAction};
 
 /// Runs `command` and prints what it said.
 pub async fn run(command: LearningShell, json: bool, set: &[String]) -> anyhow::Result<ExitCode> {
@@ -31,21 +31,29 @@ pub fn records(action: Option<RecordsAction>, as_of: Option<String>) -> Learning
     }
 }
 
-pub fn recipes(action: Option<RecipesAction>) -> LearningShell {
-    match action.unwrap_or(RecipesAction::List) {
-        RecipesAction::List => LearningShell::RecipesList,
-        RecipesAction::Show { name } => LearningShell::RecipesShow { name },
-        RecipesAction::Diff { name, from, to } => LearningShell::RecipesDiff { name, from, to },
-        RecipesAction::Replay => LearningShell::RecipesReplay,
-        RecipesAction::Promote { candidate } => LearningShell::RecipesPromote { candidate },
-        RecipesAction::Rollback { name } => LearningShell::RecipesRollback { name },
+pub fn learned_workflows(action: Option<LearnedWorkflowsAction>) -> LearningShell {
+    match action.unwrap_or(LearnedWorkflowsAction::List) {
+        LearnedWorkflowsAction::List => LearningShell::LearnedWorkflowsList,
+        LearnedWorkflowsAction::Show { name } => LearningShell::LearnedWorkflowsShow { name },
+        LearnedWorkflowsAction::Diff { name, from, to } => {
+            LearningShell::LearnedWorkflowsDiff { name, from, to }
+        }
+        LearnedWorkflowsAction::Replay => LearningShell::LearnedWorkflowsReplay,
+        LearnedWorkflowsAction::Promote { candidate } => {
+            LearningShell::LearnedWorkflowsPromote { candidate }
+        }
+        LearnedWorkflowsAction::Rollback { name } => {
+            LearningShell::LearnedWorkflowsRollback { name }
+        }
     }
 }
 
 pub fn skills(action: Option<SkillsAction>) -> LearningShell {
     match action.unwrap_or(SkillsAction::List) {
         SkillsAction::List => LearningShell::SkillsList,
-        SkillsAction::Export { recipe } => LearningShell::SkillsExport { recipe },
+        SkillsAction::Export { learned_workflow } => {
+            LearningShell::SkillsExport { learned_workflow }
+        }
         SkillsAction::Import { source } => LearningShell::SkillsImport { source },
     }
 }
@@ -88,24 +96,28 @@ mod tests {
             }
         );
         assert!(json);
-        let Command::Recipes { action, json } = parse(&["learned", "diff", "api", "--from", "3"])
+        let Command::LearnedWorkflows { action, json } =
+            parse(&["learned", "diff", "api", "--from", "3"])
         else {
             panic!("learned");
         };
         assert!(!json);
         assert_eq!(
-            recipes(action),
-            LearningShell::RecipesDiff {
+            learned_workflows(action),
+            LearningShell::LearnedWorkflowsDiff {
                 name: "api".to_owned(),
                 from: Some(3),
                 to: None,
             }
         );
-        let Command::Recipes { action, json } = parse(&["learned", "--json"]) else {
+        let Command::LearnedWorkflows { action, json } = parse(&["learned", "--json"]) else {
             panic!("learned");
         };
         assert!(json);
-        assert_eq!(recipes(action), LearningShell::RecipesList);
+        assert_eq!(
+            learned_workflows(action),
+            LearningShell::LearnedWorkflowsList
+        );
         let Command::Skills { action, .. } = parse(&["skills", "import", "../their-skill"]) else {
             panic!("skills");
         };
@@ -126,7 +138,7 @@ mod tests {
         assert!(Cli::try_parse_from(["argonauts", "sync", "--check", "--force"]).is_err());
         assert!(matches!(
             parse(&["run-review", "run-03"]),
-            Command::Retro { .. }
+            Command::RunReview { .. }
         ));
         assert!(matches!(
             parse(&["mcp", "package", "out", "--repo", "."]),

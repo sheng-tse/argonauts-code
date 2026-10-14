@@ -1,11 +1,11 @@
 //! Runs one of doctor's quick commands (`--version`, `--help`, a login check) in its own process
-//! group, with a time limit and without vendor keys. None of them calls a model.
+//! group, with a time limit and without agent keys. None of them calls a model.
 
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use argonauts_core::{StopSignal, VENDOR_KEY_ENV_VARS};
+use argonauts_core::{PROVIDER_KEY_ENV_VARS, StopSignal};
 use tokio::process::Command;
 
 use crate::process::signal_group;
@@ -26,7 +26,7 @@ pub(crate) async fn ask(path: &Path, args: &[&str], timeout: Duration) -> Result
         .stderr(Stdio::piped())
         .process_group(0)
         .kill_on_drop(true);
-    for name in VENDOR_KEY_ENV_VARS {
+    for name in PROVIDER_KEY_ENV_VARS {
         command.env_remove(name);
     }
     let child = command

@@ -6,7 +6,7 @@ mod support;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use argonauts_core::events::session::{SubagentStatus, VendorAgentState};
+use argonauts_core::events::session::{CliAgentState, SubagentStatus};
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_runner::{AgentEnd, Limits, RunInput, Script, ScriptEnd, run};
 use serde_json::{Value, json};
@@ -28,7 +28,7 @@ const UNTIL_ACCEPTED: &str = r#"
 export const meta = {
   name: 'review-until-clean',
   description: 'Build, then review until the reviewer accepts',
-  phases: [{ title: 'Build', detail: 'one worker' }, { title: 'Review' }],
+  phases: [{ name: 'Build', detail: 'one worker' }, { name: 'Review' }],
 }
 const VERDICT = {
   type: 'object',
@@ -39,8 +39,8 @@ let findings = []
 let rounds = 0
 while (true) {
   rounds++
-  await agent(`Build: ${args.request}\n${findings.join('\n')}`, { role: 'workers', phase: 'Build', label: 'build', attempt: rounds })
-  const verdict = await agent('Review the change.', { role: 'reviewers', phase: 'Review', label: 'review', schema: VERDICT, attempt: rounds })
+  await agent(`Build: ${args.request}\n${findings.join('\n')}`, { role: 'worker', phase: 'Build', label: 'build', tryNumber: rounds })
+  const verdict = await agent('Review the change.', { role: 'reviewer', phase: 'Review', label: 'review', schema: VERDICT, tryNumber: rounds })
   if (verdict && verdict.accept) break
   findings = verdict ? verdict.findings : []
   log(`round ${rounds}: sent back`)
@@ -52,7 +52,7 @@ return { rounds }
 async fn a_script_loops_until_a_review_accepts() {
     let reviews = AtomicU32::new(0);
     let host = Fake::new(move |call| match call.role {
-        CrewRole::Reviewers => match reviews.fetch_add(1, Ordering::Relaxed) {
+        CrewRole::Reviewer => match reviews.fetch_add(1, Ordering::Relaxed) {
             0 => reject(&["handle the empty list"]),
             1 => reject(&["name the helper"]),
             _ => accept(),
@@ -70,12 +70,12 @@ async fn a_script_loops_until_a_review_accepts() {
     assert_eq!(
         host.asked(),
         [
-            "build workers 1",
-            "review reviewers 1",
-            "build workers 2",
-            "review reviewers 2",
-            "build workers 3",
-            "review reviewers 3",
+            "build worker 1",
+            "review reviewer 1",
+            "build worker 2",
+            "review reviewer 2",
+            "build worker 3",
+            "review reviewer 3",
         ]
     );
     assert!(
@@ -97,7 +97,7 @@ async fn a_script_loops_until_a_review_accepts() {
     assert_eq!(report.phases[0].detail, "one worker");
     assert_eq!(report.count(1), Some((3, 3)));
     assert_eq!(report.count(2), Some((3, 3)));
-    assert_eq!(report.agents[3].attempt, 2);
+    assert_eq!(report.agents[3].try_number, 2);
     assert_eq!(report.summary.as_deref(), Some("round 2: sent back"));
     assert_eq!(report.status, SubagentStatus::Done);
 }
@@ -111,7 +111,7 @@ async fn parallel_is_a_barrier_pipeline_is_not_and_a_failed_agent_is_null() {
         text(&call.prompt.to_uppercase())
     });
     let source = r#"
-export const meta = { name: 'sweep', description: 'Sweep', phases: [{ title: 'Find' }, { title: 'Fix' }] }
+export const meta = { name: 'sweep', description: 'Sweep', phases: [{ name: 'Find' }, { name: 'Fix' }] }
 phase('Find')
 const found = await parallel(['a', 'b', 'c'].map((name) => () => agent('find ' + name)))
 const thrown = await parallel([() => { throw new Error('no') }, () => agent('find d')])
@@ -137,7 +137,7 @@ return { found, thrown, fixed, dropped }
     let failed: Vec<&str> = report
         .agents
         .iter()
-        .filter(|agent| agent.state == VendorAgentState::Failed)
+        .filter(|agent| agent.state == CliAgentState::Failed)
         .map(|agent| agent.label.as_str())
         .collect();
     assert_eq!(failed, ["find:2"]);
@@ -150,7 +150,7 @@ return { found, thrown, fixed, dropped }
 #[tokio::test]
 async fn a_phase_the_script_never_declared_gets_a_group_of_its_own_at_the_end() {
     let host = Fake::new(|_| text("ok"));
-    let source = "export const meta = { name: 'a', description: 'b', phases: [{ title: 'Second' }] }\n\
+    let source = "export const meta = { name: 'a', description: 'b', phases: [{ name: 'Second' }] }\n\
                   phase('Extra')\nawait agent('one')\nawait agent('two', { phase: 'Second' })\n";
     let ended = run(&script(source), input(Value::Null), &host).await;
     let titles: Vec<&str> = ended
@@ -179,7 +179,7 @@ return [a, b, c]
     assert_eq!(ended.agents_run, 3);
     let saved = first.journal.lock().unwrap().clone();
     assert_eq!(saved.len(), 3);
-    assert_eq!((saved[1].index, saved[1].label.as_str()), (1, "workers:2"));
+    assert_eq!((saved[1].index, saved[1].label.as_str()), (1, "worker:2"));
     assert_eq!(saved[1].tokens, 1_000);
 
     // The same script and args: every answer comes from the journal, and no agent runs.
@@ -191,7 +191,7 @@ return [a, b, c]
     let same = run(&script(source), replayed, &again).await;
     assert_eq!(same.result, ended.result);
     assert_eq!(same.agents_run, 0);
-    assert_eq!(same.report.agents[2].state, VendorAgentState::Done);
+    assert_eq!(same.report.agents[2].state, CliAgentState::Done);
     assert_eq!(same.report.tokens, 3_000);
     assert!(again.journal.lock().unwrap().is_empty());
     // The host hears which row each saved call took, since no agent() comes for them.
@@ -205,7 +205,7 @@ return [a, b, c]
     };
     let partly = run(&script(source), replayed, &changed).await;
     assert_eq!(partly.agents_run, 1);
-    assert_eq!(changed.asked(), ["workers:3 workers 1"]);
+    assert_eq!(changed.asked(), ["worker:3 worker 1"]);
     assert_eq!(changed.journal.lock().unwrap()[0].index, 2);
     assert_eq!(
         partly.result.expect("ended")[2],
@@ -301,20 +301,20 @@ async fn a_failed_agent_runs_again_on_resume_with_everything_after_it() {
 async fn a_script_written_for_a_workflow_file_keeps_to_the_files_roles() {
     let host = Fake::new(|_| text("ok"));
     let source = "export const meta = { name: 'a', description: 'b' }\n\
-                  await agent('build', { role: 'workers' })\n\
+                  await agent('build', { role: 'worker' })\n\
                   try { await agent('sign off', { role: 'judge' }) } catch (error) { return String(error.message) }\n";
     let limited = RunInput {
-        roles: Some(BTreeSet::from([CrewRole::Workers, CrewRole::Reviewers])),
+        roles: Some(BTreeSet::from([CrewRole::Worker, CrewRole::Reviewer])),
         ..input(Value::Null)
     };
     let ended = run(&script(source), limited, &host).await;
     assert_eq!(
         ended.result,
         Ok(json!(
-            "agent(): this workflow's file has no judge step; its roles are workers, reviewers"
+            "agent(): this workflow's file has no judge step; its roles are worker, reviewer"
         ))
     );
-    assert_eq!(host.asked(), ["workers:1 workers 1"]);
+    assert_eq!(host.asked(), ["worker:1 worker 1"]);
 }
 
 #[tokio::test]
@@ -323,11 +323,11 @@ async fn a_script_the_orchestrator_wrote_never_picks_a_model_or_a_nested_workflo
     let source = "export const meta = { name: 'a', description: 'b' }\n\
                   const said = []\n\
                   for (const opts of [{ model: 'claude-code/opus' }, { effort: 'max' }, { ownWorkflow: true }]) {\n\
-                    try { await agent('build', { role: 'workers', ...opts }) } catch (error) { said.push(error.message) }\n\
+                    try { await agent('build', { role: 'worker', ...opts }) } catch (error) { said.push(error.message) }\n\
                   }\n\
                   return said\n";
     let written = RunInput {
-        roles: Some(BTreeSet::from([CrewRole::Workers])),
+        roles: Some(BTreeSet::from([CrewRole::Worker])),
         ..input(Value::Null)
     };
     let ended = run(&script(source), written, &host).await;
@@ -349,11 +349,11 @@ async fn a_script_the_orchestrator_wrote_never_picks_a_model_or_a_nested_workflo
 async fn a_script_the_orchestrator_wrote_keeps_to_the_tasks_you_fixed() {
     let host = Fake::new(|_| text("ok"));
     let source = "export const meta = { name: 'a', description: 'b' }\n\
-                  await agent('build', { role: 'workers', task: 'switch-reads' })\n\
-                  try { await agent('split', { role: 'workers', task: 'backfill-rows' }) } catch (error) { return String(error.message) }\n";
+                  await agent('build', { role: 'worker', task: 'switch-reads' })\n\
+                  try { await agent('split', { role: 'worker', task: 'backfill-rows' }) } catch (error) { return String(error.message) }\n";
     let fixed = RunInput {
         args: json!({"request": "r", "tasks": ["switch reads to the new table"]}),
-        roles: Some(BTreeSet::from([CrewRole::Workers])),
+        roles: Some(BTreeSet::from([CrewRole::Worker])),
         ..input(Value::Null)
     };
     let ended = run(&script(source), fixed, &host).await;
@@ -478,16 +478,16 @@ async fn a_token_target_is_a_hard_ceiling() {
     let source = r#"
 export const meta = { name: 'deep', description: 'As deep as the tokens allow' }
 let done = 0
-while (budget.total && budget.remaining() > 0) {
+while (limit.total && limit.remaining() > 0) {
   await agent('dig')
   done++
 }
 let refused = null
 try { await agent('one more') } catch (error) { refused = error.message }
-return { done, total: budget.total, left: budget.remaining(), refused }
+return { done, total: limit.total, left: limit.remaining(), refused }
 "#;
     let targeted = RunInput {
-        token_budget: Some(2_500),
+        token_limit: Some(2_500),
         ..input(Value::Null)
     };
     let ended = run(&script(source), targeted, &host).await;
@@ -505,11 +505,11 @@ return { done, total: budget.total, left: budget.remaining(), refused }
 #[tokio::test]
 async fn a_workflow_runs_another_as_one_step() {
     let mut host = Fake::new(|call| text(&call.prompt));
-    let child = "export const meta = { name: 'lint', description: 'Lint', phases: [{ title: 'Lint' }] }\n\
+    let child = "export const meta = { name: 'lint', description: 'Lint', phases: [{ name: 'Lint' }] }\n\
                  phase('Lint')\nconst out = await agent('lint ' + args.path)\nreturn out + '!'\n";
     host.workflows.insert("lint".to_owned(), script(child));
     let source = r#"
-export const meta = { name: 'ship', description: 'Ship', phases: [{ title: 'Build' }] }
+export const meta = { name: 'ship', description: 'Ship', phases: [{ name: 'Build' }] }
 await agent('build', { phase: 'Build' })
 const linted = await workflow('lint', { path: 'src' })
 let missing = null
@@ -681,7 +681,7 @@ async fn a_script_that_throws_fails_the_workflow_with_its_line() {
     assert!(said.contains("TypeError"), "{said}");
     assert!(said.contains(":4"), "the author's own line number: {said}");
     assert_eq!(ended.report.status, SubagentStatus::Failed);
-    assert_eq!(ended.report.agents[0].state, VendorAgentState::Done);
+    assert_eq!(ended.report.agents[0].state, CliAgentState::Done);
     assert!(
         ended
             .report

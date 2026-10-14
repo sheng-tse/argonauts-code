@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use argonauts_core::AgentEvent;
-use argonauts_core::app::ChatEvent;
+use argonauts_core::app::ConversationEvent;
 use time::OffsetDateTime;
 
 use super::session::ToolRecord;
@@ -23,12 +23,12 @@ pub struct TalkTime {
 }
 
 impl TalkTime {
-    pub(super) fn apply(&mut self, event: &ChatEvent, now: OffsetDateTime) {
+    pub(super) fn apply(&mut self, event: &ConversationEvent, now: OffsetDateTime) {
         match event {
-            ChatEvent::TurnStarted { .. } => {
+            ConversationEvent::TurnStarted { .. } => {
                 self.started.get_or_insert(now);
             }
-            ChatEvent::TurnFinished { elapsed_ms, .. } => {
+            ConversationEvent::TurnFinished { elapsed_ms, .. } => {
                 self.worked += Duration::from_millis(*elapsed_ms);
             }
             _ => {}
@@ -37,8 +37,8 @@ impl TalkTime {
 
     /// Adds what an edit changed once it went through. Read before the finish reaches `tools`,
     /// so a call already marked finished is never counted twice.
-    pub(super) fn count_edit(&mut self, event: &ChatEvent, tools: &[ToolRecord]) {
-        let ChatEvent::Agent {
+    pub(super) fn count_edit(&mut self, event: &ConversationEvent, tools: &[ToolRecord]) {
+        let ConversationEvent::Agent {
             event: AgentEvent::ToolFinished { id, ok: true, .. },
             ..
         } = event

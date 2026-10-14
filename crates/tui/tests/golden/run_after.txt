@@ -1,9 +1,0 @@
-╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ Add due dates · Orchestrator · Claude Code's own workflow                    2 of 3 steps · 1m 36s · ↓ 264k tokens │
-│                                                                                                                    │
-│ Phases          Build · 3 steps   each agent on the model its role names                                           │
-│ ✓ Build    1/1  ✓ build:add-due-dates   Haiku 4.5 on Claude Code    210k tok · 1m 9s                               │
-│ ◐ Review   1/2  ✓ review:due-dates      GPT 5.6 Luna on Codex       17.7k tok · asked for changes                  │
-│ ○ Final         ◐ final:due-dates       GPT 5.6 Luna on Codex       36.4k tok · 15s                                │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-↑↓ select · enter opens an agent · x stop · p pause · esc back

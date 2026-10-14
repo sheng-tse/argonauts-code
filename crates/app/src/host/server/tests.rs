@@ -3,15 +3,15 @@ use std::os::unix::process::CommandExt as _;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, PoisonError};
 
-use argonauts_core::api::{CheckpointAnswer, StatusSummary};
+use argonauts_core::api::{ApprovalAnswer, StatusSummary};
 use argonauts_core::control::ClientKind;
 use argonauts_core::engine::EngineCommand;
 use argonauts_core::engine::EventSink as _;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::checkpoint::AnswerAction;
+use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::journal::{Journal, RunLock};
 use argonauts_core::layout::run_files;
-use argonauts_core::names::{CheckpointId, MessageId};
+use argonauts_core::names::{ApprovalId, MessageId};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::{Note, NoteLevel};
 use tokio::net::unix::OwnedReadHalf;
@@ -46,7 +46,7 @@ pub(crate) fn command_name(command: &EngineCommand) -> &'static str {
         EngineCommand::Status { .. } => "status",
         EngineCommand::Diff { .. } => "diff",
         EngineCommand::Raw { .. } => "raw",
-        EngineCommand::Revert { .. } => "revert",
+        EngineCommand::Rewind { .. } => "rewind",
         EngineCommand::SpotCheck { .. } => "spot_check",
         EngineCommand::ProposeWorkflowChange { .. } => "propose_workflow_change",
         EngineCommand::Goal { .. } => "goal",
@@ -61,7 +61,7 @@ pub(crate) fn answer_command(command: EngineCommand, log: &Log) {
     match command {
         EngineCommand::Answer { reply, .. }
         | EngineCommand::Reassign { reply, .. }
-        | EngineCommand::Revert { reply, .. }
+        | EngineCommand::Rewind { reply, .. }
         | EngineCommand::SpotCheck { reply, .. }
         | EngineCommand::Goal { reply, .. } => {
             let _ = reply.send(Ok(()));
@@ -209,12 +209,12 @@ impl Client {
 
 pub(crate) fn answer(token: &str) -> ControlRequest {
     ControlRequest::Answer {
-        answer: CheckpointAnswer {
-            id: CheckpointId::numbered(1),
+        answer: ApprovalAnswer {
+            id: ApprovalId::numbered(1),
             action: AnswerAction::Approve,
             text: None,
             evidence_sha256: "e".repeat(64),
-            cards: Vec::new(),
+            tasks: Vec::new(),
         },
         token: token.to_owned(),
     }
@@ -223,7 +223,7 @@ pub(crate) fn answer(token: &str) -> ControlRequest {
 fn guidance() -> ControlRequest {
     ControlRequest::Guidance {
         text: "keep the tests fast".to_owned(),
-        front_end: None,
+        outside_agent: None,
     }
 }
 
@@ -268,7 +268,7 @@ async fn socket_binds_and_connects_with_a_long_run_dir() {
     let connection = crate::client::socket::Connection::connect(&run_dir, ClientKind::App)
         .await
         .unwrap()
-        .expect("the supervisor answers");
+        .expect("the run host answers");
     assert_eq!(connection.pid, std::process::id());
 
     let link = socket_address(&run_dir)
@@ -303,8 +303,8 @@ async fn socket_refuses_answer_without_token() {
     };
     assert_error(&client.call(4, mode).await, "token");
     let reassign = ControlRequest::Reassign {
-        card: argonauts_core::CardId::new("task-001").unwrap(),
-        to: argonauts_core::names::WorkerRef::new("codex", None),
+        task: argonauts_core::TaskId::new("task-001").unwrap(),
+        to: argonauts_core::names::ModelRef::new("codex", None),
         rule_override: Some("review.other_provider".to_owned()),
         token: None,
     };
@@ -478,7 +478,7 @@ async fn approval_refused_under_a_registered_agent() {
 
 fn spot_check() -> ControlRequest {
     ControlRequest::SpotCheck {
-        id: CheckpointId::numbered(3),
+        id: ApprovalId::numbered(3),
         correct: true,
     }
 }
@@ -515,7 +515,8 @@ async fn subscribe_replays_the_journal_then_streams_live_events() {
         })
     };
     for text in ["zero", "one", "two"] {
-        sink.record(None, None, "conductor", note(text)).unwrap();
+        sink.record(None, None, "argonauts-code", note(text))
+            .unwrap();
     }
     let socket = fixture.serve();
     let mut client = Client::connect(&socket).await;
@@ -538,7 +539,8 @@ async fn subscribe_replays_the_journal_then_streams_live_events() {
         seen.push(event.seq);
     }
     assert_eq!(seen, [1, 2]);
-    sink.record(None, None, "conductor", note("three")).unwrap();
+    sink.record(None, None, "argonauts-code", note("three"))
+        .unwrap();
     let ControlReply::Event { event } = client.next().await.body else {
         panic!("expected a live event");
     };
@@ -583,7 +585,7 @@ async fn a_subscriber_gets_the_event_recorded_as_the_host_closes() {
             level: NoteLevel::Info,
             text: format!("round {round}"),
         });
-        sink.record(None, None, "conductor", note).unwrap();
+        sink.record(None, None, "argonauts-code", note).unwrap();
         closing.cancel();
         task.await.unwrap();
         let frame = frames.recv().await;
@@ -599,14 +601,15 @@ async fn a_subscriber_gets_the_event_recorded_as_the_host_closes() {
 }
 
 #[tokio::test]
-async fn a_parked_run_wakes_only_for_requests_that_need_the_engine() {
+async fn a_waiting_run_wakes_only_for_requests_that_need_the_engine() {
     let fixture = Fixture::new(false, test_markers());
-    fixture.state.door.park();
+    fixture.state.door.wait();
     assert_error(
         &apply(
             &fixture.state,
             ControlRequest::StopSession {
                 session: argonauts_core::names::SessionKey::numbered(1),
+                again: false,
             },
             Origin::Pending,
         )
@@ -632,7 +635,7 @@ async fn a_parked_run_wakes_only_for_requests_that_need_the_engine() {
 }
 
 #[tokio::test]
-async fn a_parked_run_answers_status_diff_and_raw_from_its_files() {
+async fn a_waiting_run_answers_status_diff_and_raw_from_its_files() {
     let fixture = Fixture::new(false, test_markers());
     let lock = RunLock::try_acquire(fixture.dir.path()).unwrap().unwrap();
     let journal = Journal::open(&fixture.state.journal, &lock).unwrap();
@@ -641,13 +644,14 @@ async fn a_parked_run_answers_status_diff_and_raw_from_its_files() {
         fixture.state.run.clone(),
         fixture.state.events.clone(),
     );
-    let card = argonauts_core::CardId::new("task-001").unwrap();
+    let task = argonauts_core::TaskId::new("task-001").unwrap();
     std::fs::write(fixture.dir.path().join("task-001.diff"), "+hello\n").unwrap();
-    let diff = RunEventKind::Card(argonauts_core::events::card::CardEvent::Diff {
+    let diff = RunEventKind::Task(argonauts_core::events::task::TaskEvent::Diff {
         stat: argonauts_core::DiffStat::default(),
         path: PathBuf::from("task-001.diff"),
     });
-    sink.record(Some(&card), None, "conductor", diff).unwrap();
+    sink.record(Some(&task), None, "argonauts-code", diff)
+        .unwrap();
     let session = argonauts_core::names::SessionKey::numbered(1);
     let session_dir = argonauts_core::layout::session_dir(fixture.dir.path(), &session);
     std::fs::create_dir_all(&session_dir).unwrap();
@@ -656,13 +660,13 @@ async fn a_parked_run_answers_status_diff_and_raw_from_its_files() {
         "{\"line\":1}\n",
     )
     .unwrap();
-    fixture.state.door.park();
+    fixture.state.door.wait();
 
     let status = apply(&fixture.state, ControlRequest::Status, Origin::Pending).await;
     assert!(matches!(status, ControlReply::Status { .. }), "{status:?}");
     let request = ControlRequest::Diff {
-        card: card.clone(),
-        scope: argonauts_core::api::DiffScope::Card,
+        task: task.clone(),
+        scope: argonauts_core::api::DiffScope::Task,
     };
     match apply(&fixture.state, request, Origin::Pending).await {
         ControlReply::Diff { diff } => assert_eq!(diff.text, "+hello\n"),
@@ -681,17 +685,17 @@ async fn a_parked_run_answers_status_diff_and_raw_from_its_files() {
     assert!(fixture.log().is_empty(), "no engine was needed");
     assert_eq!(
         fixture.state.door.state(),
-        super::super::door::EngineState::Parked
+        super::super::door::EngineState::Waiting
     );
 }
 
 #[tokio::test]
-async fn a_parked_run_wakes_for_the_last_turns_diff() {
+async fn a_waiting_run_wakes_for_the_last_turns_diff() {
     let fixture = Fixture::new(false, test_markers());
-    fixture.state.door.park();
+    fixture.state.door.wait();
     let state = fixture.state.clone();
     let request = ControlRequest::Diff {
-        card: argonauts_core::CardId::new("task-001").unwrap(),
+        task: argonauts_core::TaskId::new("task-001").unwrap(),
         scope: DiffScope::LastTurn,
     };
     let waiting = tokio::spawn(async move { apply(&state, request, Origin::Pending).await });

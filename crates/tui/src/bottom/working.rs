@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 
 use crate::format;
 use crate::render::{Clock, RenderCtx};
-use crate::text::{KEEP, Part, fit_parts, sanitize_line};
+use crate::text::{KEEP, Part, fit_parts, sanitize_line, truncate_line};
 use crate::theme::{ColorLevel, Role, Theme};
 
 /// How long each spinner frame shows, except at the two ends of its sweep.
@@ -18,8 +18,16 @@ pub const SPINNER_HOLD: Duration = Duration::from_millis(450);
 /// The part in parentheses joins after this long.
 pub const STATUS_AFTER: Duration = Duration::from_secs(1);
 
-/// How long the fade toward the warning color takes on terminals that can blend colors.
+/// How long the fade takes once Argonauts Code itself says the stream stalled.
 const STALL_FADE: Duration = Duration::from_secs(2);
+
+/// How long the stream may go without a token before the line starts toward red, and how long
+/// one spell of thinking lasts before it starts toward amber. Claude Code uses the same ten
+/// seconds for both.
+pub const QUIET_AFTER: Duration = Duration::from_secs(10);
+
+/// How long either fade takes, so the line is fully red twenty seconds after the last token.
+pub const QUIET_FADE: Duration = Duration::from_secs(10);
 
 /// The band's width in cells, and the steps it rests off the verb between sweeps.
 const SHIMMER_WIDTH: usize = 3;
@@ -29,22 +37,42 @@ const SHIMMER_PAUSE: usize = 6;
 pub struct WorkingLine {
     /// Without the ellipsis.
     pub verb: String,
+    /// The task in hand, from the CLI's own task list. It takes the verb's place.
+    pub task: Option<String>,
+    /// The first task still waiting on that list, drawn under the line as `⎿ Next: …`.
+    pub next: Option<String>,
     pub started_at: Instant,
     pub tokens_down: u64,
     pub activity: Activity,
+    /// Whether the parentheses say what the agent is doing. Several agents at once leave it
+    /// out, since the words would jump from one to the next, while what they do between them
+    /// still decides the line's color.
+    pub says_activity: bool,
+    /// The effort the model thinks with, as in `thinking with xhigh effort`.
+    pub effort: Option<String>,
     pub details: Vec<String>,
-    /// When the conductor said the stream stalled. The line fades toward the warning color
-    /// from then until the agent is heard from again.
+    /// When the agent was last heard from, for a line that follows one. Ten seconds on with
+    /// no tool running and no thinking, the line starts toward red, and the next token brings
+    /// it back.
+    pub heard_at: Option<Instant>,
+    /// What the agent had sent when it was last heard from, so a sync that brings nothing new
+    /// leaves `heard_at` alone.
+    pub pulse: u64,
+    /// When Argonauts Code said the stream stalled. The line goes red from then until the
+    /// agent is heard from again.
     pub stalled_since: Option<Instant>,
-    /// For chat turns, as in Claude Code and Codex. A crew run keeps its line, since the live
-    /// blocks carry the streaming text.
+    /// For conversation turns, as in Claude Code and Codex. A crew run keeps its line, since the
+    /// live blocks carry the streaming text.
     pub hide_while_text_streams: bool,
     /// Starts the parentheses with the elapsed time. `Pausing… (esc again to stop now)`
     /// leaves it out and shows its words at once.
     pub timed: bool,
-    /// Esc stops what this line shows: a chat turn, or a run that's pausing. A run's agents
-    /// keep going past Esc, so the mode line makes no such offer for them.
+    /// Esc stops what this line shows: a conversation turn, or a run that's pausing. A run's agents
+    /// keep going past Esc, so the bottom line makes no such offer for them.
     pub esc_stops: bool,
+    /// The word this stretch of work was given, kept while `verb` says what the agent writes
+    /// instead, such as a workflow's script.
+    pub usual_verb: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -65,7 +93,8 @@ pub enum Activity {
 }
 
 impl Activity {
-    pub fn wording(&self, now: Instant) -> Option<String> {
+    /// `effort` joins the thinking words, as in `thinking with xhigh effort`.
+    pub fn wording(&self, now: Instant, effort: Option<&str>) -> Option<String> {
         match self {
             Activity::None => None,
             Activity::Thinking { since } => {
@@ -77,7 +106,11 @@ impl Activity {
                     30..45 => "thinking some more",
                     _ => "deep in thought",
                 };
-                Some(words.to_owned())
+                let effort = effort.map(str::trim).filter(|effort| !effort.is_empty());
+                Some(match effort {
+                    Some(effort) => format!("{words} with {effort} effort"),
+                    None => words.to_owned(),
+                })
             }
             Activity::RunningTool { since } => {
                 let elapsed = now.saturating_duration_since(*since);
@@ -105,14 +138,21 @@ impl WorkingLine {
     pub fn new(verb: impl Into<String>, started_at: Instant) -> Self {
         Self {
             verb: verb.into(),
+            task: None,
+            next: None,
             started_at,
             tokens_down: 0,
             activity: Activity::None,
+            says_activity: true,
+            effort: None,
             details: Vec::new(),
+            heard_at: None,
+            pulse: 0,
             stalled_since: None,
             hide_while_text_streams: false,
             timed: true,
             esc_stops: true,
+            usual_verb: None,
         }
     }
 
@@ -137,16 +177,17 @@ impl WorkingLine {
             glyphs.spinner[frame]
         };
 
-        let stall = self.stall(clock.now);
-        let lead = lead_style(theme, stall);
-        let mut spans = vec![Span::styled(format!("{glyph} "), lead)];
+        let fade = self.fade(clock.now);
+        let style = verb_style(theme, fade);
+        let mut spans = vec![Span::styled(format!("{glyph} "), style)];
 
-        let verb = format!("{}{}", sanitize_line(&self.verb), glyphs.ellipsis);
-        if still || stall.is_some() {
-            spans.push(Span::styled(verb, lead));
+        let words = self.task.as_deref().unwrap_or(&self.verb);
+        let verb = format!("{}{}", sanitize_line(words).trim(), glyphs.ellipsis);
+        if still || fade.is_some() {
+            spans.push(Span::styled(verb, style));
         } else {
             let step = clock.frame(SPINNER_PERIOD, usize::MAX);
-            spans.extend(shimmer(&verb, step, lead, theme.style(Role::Shimmer)));
+            spans.extend(shimmer(&verb, step, style, theme.style(Role::Shimmer)));
         }
 
         let dim = theme.style(Role::Dim);
@@ -155,12 +196,22 @@ impl WorkingLine {
             // The rightmost part gives way first and the elapsed time last.
             let words = self.parts(clock.now, theme);
             let count = words.len();
+            // A long think colors its own words too, as Claude Code's does.
+            let thinking = match fade {
+                Some(Fade::LongThink(_)) => self.activity_words(clock.now),
+                _ => None,
+            };
             for (i, word) in words.into_iter().enumerate() {
                 let joiner = if i == 0 { " (" } else { " · " };
                 let rank = (count - i) as u16;
+                let word_style = if thinking.as_deref() == Some(word.as_str()) {
+                    style
+                } else {
+                    dim
+                };
                 parts.push(Part::joined(
                     Span::styled(joiner, dim),
-                    vec![Span::styled(word, dim)],
+                    vec![Span::styled(word, word_style)],
                     rank.saturating_sub(1),
                 ));
             }
@@ -172,6 +223,37 @@ impl WorkingLine {
             line.spans.push(Span::styled(")", dim));
         }
         line
+    }
+
+    /// The line, and under it the task that comes next when the CLI's list names one.
+    pub fn lines(&self, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
+        let mut lines = vec![self.line(ctx)];
+        lines.extend(self.next_line(ctx));
+        lines
+    }
+
+    fn next_line(&self, ctx: &RenderCtx<'_>) -> Option<Line<'static>> {
+        let next = sanitize_line(self.next.as_deref()?);
+        let next = next.trim();
+        if next.is_empty() {
+            return None;
+        }
+        let dim = ctx.theme.style(Role::Dim);
+        let line = Line::from(vec![
+            Span::styled(format!("  {} ", ctx.theme.glyphs.result), dim),
+            Span::styled(format!("Next: {next}"), dim),
+        ]);
+        Some(truncate_line(&line, usize::from(ctx.width)))
+    }
+
+    fn effort(&self) -> Option<&str> {
+        self.effort.as_deref()
+    }
+
+    fn activity_words(&self, now: Instant) -> Option<String> {
+        self.says_activity
+            .then(|| self.activity.wording(now, self.effort()))
+            .flatten()
     }
 
     pub fn next_change(&self, clock: &Clock, theme: &Theme) -> Option<Instant> {
@@ -205,7 +287,7 @@ impl WorkingLine {
                 format::tokens(self.tokens_down)
             ));
         }
-        parts.extend(self.activity.wording(now));
+        parts.extend(self.activity_words(now));
         parts.extend(
             self.details
                 .iter()
@@ -215,12 +297,41 @@ impl WorkingLine {
         parts
     }
 
-    /// How far the line has faded toward the warning color while the stream is stalled, fully
-    /// at 1 and above.
-    fn stall(&self, now: Instant) -> Option<f32> {
-        let since = self.stalled_since?;
-        Some(now.saturating_duration_since(since).as_secs_f32() / STALL_FADE.as_secs_f32())
+    /// Which color the line is on its way to, and how far along it is.
+    ///
+    /// A stream Argonauts Code called stalled goes red whatever else is happening. Otherwise a
+    /// running tool keeps the line as it is, a long spell of thinking takes it toward amber,
+    /// and silence takes it toward red.
+    fn fade(&self, now: Instant) -> Option<Fade> {
+        if let Some(since) = self.stalled_since {
+            let along = now.saturating_duration_since(since).as_secs_f32();
+            return Some(Fade::Quiet(along / STALL_FADE.as_secs_f32()));
+        }
+        match self.activity {
+            Activity::RunningTool { .. } => None,
+            Activity::Thinking { since } => along_fade(since, now).map(Fade::LongThink),
+            Activity::None | Activity::Thought { .. } | Activity::Text(_) => {
+                along_fade(self.heard_at?, now).map(Fade::Quiet)
+            }
+        }
     }
+}
+
+/// A color the line fades toward, with how far it has come: 0 at the start, 1 once there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Fade {
+    /// No token for a while: toward red.
+    Quiet(f32),
+    /// One spell of thinking has run long: toward amber.
+    LongThink(f32),
+}
+
+/// How far a fade that starts `QUIET_AFTER` past `since` has come, once it has started.
+fn along_fade(since: Instant, now: Instant) -> Option<f32> {
+    let past = now
+        .saturating_duration_since(since)
+        .checked_sub(QUIET_AFTER)?;
+    (!past.is_zero()).then(|| (past.as_secs_f32() / QUIET_FADE.as_secs_f32()).min(1.0))
 }
 
 /// The frame at `elapsed` and how long until the next. The first frame and the middle one,
@@ -249,22 +360,24 @@ pub fn spinner_frame(elapsed: Duration, frames: usize) -> (usize, Duration) {
     (0, SPINNER_PERIOD)
 }
 
-/// Truecolor blends over the fade. Other levels, and reduced motion, switch at once.
-fn lead_style(theme: &Theme, stall: Option<f32>) -> Style {
+/// Truecolor blends over the fade. Other levels, and reduced motion, switch halfway.
+fn verb_style(theme: &Theme, fade: Option<Fade>) -> Style {
     let accent = theme.style(Role::Accent);
-    let Some(stall) = stall else {
-        return accent;
+    let (toward, along) = match fade {
+        None => return accent,
+        Some(Fade::Quiet(along)) => (theme.style(Role::Danger), along),
+        Some(Fade::LongThink(along)) => (theme.style(Role::Warn), along),
     };
-    let warning = theme.style(Role::Warning);
     let blend = theme.level == ColorLevel::TrueColor && !theme.reduced_motion;
-    match (accent.fg, warning.fg) {
-        (Some(Color::Rgb(ar, ag, ab)), Some(Color::Rgb(wr, wg, wb))) if blend => {
-            let t = stall.min(1.0);
+    match (accent.fg, toward.fg) {
+        (Some(Color::Rgb(ar, ag, ab)), Some(Color::Rgb(tr, tg, tb))) if blend => {
+            let t = along.clamp(0.0, 1.0);
             let mix =
-                |a: u8, w: u8| (f32::from(a) + (f32::from(w) - f32::from(a)) * t).round() as u8;
-            accent.fg(Color::Rgb(mix(ar, wr), mix(ag, wg), mix(ab, wb)))
+                |a: u8, to: u8| (f32::from(a) + (f32::from(to) - f32::from(a)) * t).round() as u8;
+            accent.fg(Color::Rgb(mix(ar, tr), mix(ag, tg), mix(ab, tb)))
         }
-        _ => warning,
+        _ if along >= 0.5 => toward,
+        _ => accent,
     }
 }
 
@@ -359,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn a_chat_turn_steps_aside_while_text_streams() {
+    fn a_conversation_turn_steps_aside_while_text_streams() {
         let t0 = Instant::now();
         let mut line = WorkingLine::new("Rowing", t0);
         assert!(line.shows(true), "a run keeps its line");
@@ -376,7 +489,11 @@ mod tests {
     fn thinking_reads_differently_as_time_passes() {
         let t0 = Instant::now();
         let thinking = Activity::Thinking { since: t0 };
-        let at = |secs| thinking.wording(t0 + Duration::from_secs(secs)).unwrap();
+        let at = |secs| {
+            thinking
+                .wording(t0 + Duration::from_secs(secs), None)
+                .unwrap()
+        };
         assert_eq!(at(0), "thinking");
         assert_eq!(at(9), "thinking");
         assert_eq!(at(10), "still thinking");
@@ -386,10 +503,18 @@ mod tests {
         assert_eq!(at(45), "deep in thought");
         let tool = Activity::RunningTool { since: t0 };
         assert_eq!(
-            tool.wording(t0 + Duration::from_secs(3)).unwrap(),
+            tool.wording(t0 + Duration::from_secs(3), Some("high"))
+                .unwrap(),
             "running tool for 3s"
         );
-        assert_eq!(Activity::None.wording(t0), None);
+        assert_eq!(Activity::None.wording(t0, None), None);
+        let with_effort = |secs| {
+            thinking
+                .wording(t0 + Duration::from_secs(secs), Some("xhigh"))
+                .unwrap()
+        };
+        assert_eq!(with_effort(0), "thinking with xhigh effort");
+        assert_eq!(with_effort(12), "still thinking with xhigh effort");
     }
 
     #[test]
@@ -448,32 +573,142 @@ mod tests {
         assert_eq!(lit_at(12), "");
     }
 
+    fn glyph_fg(line: &WorkingLine, theme: &Theme, t0: Instant, secs: f32) -> Option<Color> {
+        let now = t0 + Duration::from_secs_f32(secs);
+        let ctx = RenderCtx::new(80, theme, Clock::new(t0, now));
+        line.line(&ctx).spans[0].style.fg
+    }
+
     #[test]
-    fn a_stall_fades_toward_the_warning_color() {
+    fn a_reported_stall_fades_to_red() {
         let theme = theme();
         let t0 = Instant::now();
-        let stalled_at = t0 + Duration::from_secs(40);
         let mut line = WorkingLine::new("Rowing", t0);
-        let glyph_fg = |line: &WorkingLine, theme: &Theme, secs: f32| {
-            let now = t0 + Duration::from_secs_f32(secs);
-            let ctx = RenderCtx::new(80, theme, Clock::new(t0, now));
-            line.line(&ctx).spans[0].style.fg
-        };
         let accent = theme.style(Role::Accent).fg;
-        let warning = theme.style(Role::Warning).fg;
-        // Quiet alone is no stall: a model can think for minutes.
-        assert_eq!(glyph_fg(&line, &theme, 600.0), accent);
+        let red = theme.style(Role::Danger).fg;
+        // A line that follows no agent never fades by itself.
+        assert_eq!(glyph_fg(&line, &theme, t0, 600.0), accent);
 
-        line.stalled_since = Some(stalled_at);
-        assert_eq!(glyph_fg(&line, &theme, 40.0), accent);
-        let halfway = glyph_fg(&line, &theme, 41.0);
-        assert!(halfway != accent && halfway != warning, "{halfway:?}");
-        assert_eq!(glyph_fg(&line, &theme, 42.0), warning);
+        line.stalled_since = Some(t0 + Duration::from_secs(40));
+        assert_eq!(glyph_fg(&line, &theme, t0, 40.0), accent);
+        let halfway = glyph_fg(&line, &theme, t0, 41.0);
+        assert!(halfway != accent && halfway != red, "{halfway:?}");
+        assert_eq!(glyph_fg(&line, &theme, t0, 42.0), red);
+        // Argonauts Code's own report counts through a tool call too.
+        line.activity = Activity::RunningTool { since: t0 };
+        assert_eq!(glyph_fg(&line, &theme, t0, 42.0), red);
 
         let ansi = Theme::dark().with_level(ColorLevel::Ansi256);
-        assert_eq!(glyph_fg(&line, &ansi, 40.0), ansi.style(Role::Warning).fg);
+        assert_eq!(
+            glyph_fg(&line, &ansi, t0, 42.0),
+            ansi.style(Role::Danger).fg
+        );
         line.stalled_since = None;
-        assert_eq!(glyph_fg(&line, &ansi, 600.0), ansi.style(Role::Accent).fg);
+        assert_eq!(
+            glyph_fg(&line, &ansi, t0, 600.0),
+            ansi.style(Role::Accent).fg
+        );
+    }
+
+    #[test]
+    fn ten_seconds_without_a_token_starts_the_fade_to_red_and_twenty_ends_it() {
+        let theme = theme();
+        let t0 = Instant::now();
+        let mut line = WorkingLine::new("Rowing", t0);
+        line.heard_at = Some(t0 + Duration::from_secs(30));
+        let accent = theme.style(Role::Accent).fg;
+        let red = theme.style(Role::Danger).fg;
+        assert_eq!(glyph_fg(&line, &theme, t0, 39.0), accent);
+        assert_eq!(glyph_fg(&line, &theme, t0, 40.0), accent);
+        let halfway = glyph_fg(&line, &theme, t0, 45.0);
+        assert!(halfway != accent && halfway != red, "{halfway:?}");
+        assert_eq!(glyph_fg(&line, &theme, t0, 50.0), red);
+        assert_eq!(glyph_fg(&line, &theme, t0, 300.0), red);
+        // The verb goes with the glyph, and holds still rather than shimmer.
+        let ctx = RenderCtx::new(80, &theme, Clock::new(t0, t0 + Duration::from_secs(50)));
+        let drawn = line.line(&ctx);
+        assert_eq!(drawn.spans[1].content, "Rowing…");
+        assert_eq!(drawn.spans[1].style.fg, red);
+
+        // The next token brings the color back at once.
+        line.heard_at = Some(t0 + Duration::from_secs(50));
+        assert_eq!(glyph_fg(&line, &theme, t0, 50.0), accent);
+
+        // A terminal that can't blend switches halfway.
+        let ansi = Theme::dark().with_level(ColorLevel::Ansi256);
+        line.heard_at = Some(t0);
+        assert_eq!(
+            glyph_fg(&line, &ansi, t0, 14.0),
+            ansi.style(Role::Accent).fg
+        );
+        assert_eq!(
+            glyph_fg(&line, &ansi, t0, 15.0),
+            ansi.style(Role::Danger).fg
+        );
+    }
+
+    #[test]
+    fn a_running_tool_never_reads_as_quiet_and_a_long_think_goes_amber() {
+        let theme = theme();
+        let t0 = Instant::now();
+        let mut line = WorkingLine::new("Rowing", t0);
+        line.heard_at = Some(t0);
+        let accent = theme.style(Role::Accent).fg;
+        let amber = theme.style(Role::Warn).fg;
+
+        line.activity = Activity::RunningTool { since: t0 };
+        assert_eq!(glyph_fg(&line, &theme, t0, 600.0), accent);
+
+        line.activity = Activity::Thinking { since: t0 };
+        line.effort = Some("xhigh".into());
+        assert_eq!(glyph_fg(&line, &theme, t0, 10.0), accent);
+        let halfway = glyph_fg(&line, &theme, t0, 15.0);
+        assert!(halfway != accent && halfway != amber, "{halfway:?}");
+        assert_eq!(glyph_fg(&line, &theme, t0, 20.0), amber);
+        assert_eq!(glyph_fg(&line, &theme, t0, 600.0), amber);
+        // Its own words take the color with it; the time beside them stays dim.
+        let ctx = RenderCtx::new(80, &theme, Clock::new(t0, t0 + Duration::from_secs(25)));
+        let drawn = line.line(&ctx);
+        let words = drawn
+            .spans
+            .iter()
+            .find(|span| span.content == "thinking more with xhigh effort")
+            .expect("the thinking words");
+        assert_eq!(words.style.fg, amber);
+        let time = drawn.spans.iter().find(|span| span.content == "25s");
+        assert_eq!(time.unwrap().style, theme.style(Role::Dim));
+    }
+
+    #[test]
+    fn the_task_in_hand_takes_the_verbs_place_and_the_next_one_sits_under_it() {
+        let theme = theme();
+        let t0 = Instant::now();
+        let mut line = WorkingLine::new("Rowing", t0);
+        line.task = Some("Add the due date column".into());
+        line.next = Some("Run the tests".into());
+        let ctx = RenderCtx::new(60, &theme, Clock::new(t0, t0 + Duration::from_secs(3)));
+        assert_eq!(
+            plain_text(&line.lines(&ctx)),
+            "✼ Add the due date column… (3s)\n  ⎿ Next: Run the tests"
+        );
+        let next = &line.lines(&ctx)[1];
+        assert!(
+            next.spans
+                .iter()
+                .all(|span| span.style == theme.style(Role::Dim))
+        );
+
+        // With nothing waiting there's no second row, and with no task the verb is back.
+        line.next = None;
+        line.task = None;
+        assert_eq!(plain_text(&line.lines(&ctx)), "✼ Rowing… (3s)");
+
+        // A long task is cut at the screen's edge rather than wrapped.
+        line.next = Some("x".repeat(100));
+        let narrow = RenderCtx::new(20, &theme, Clock::new(t0, t0));
+        let rows = line.lines(&narrow);
+        assert_eq!(rows.len(), 2);
+        assert!(crate::text::spans_width(&rows[1].spans) <= 20);
     }
 
     #[test]

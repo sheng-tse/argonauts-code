@@ -15,7 +15,7 @@ use argonauts_learning::records::{Beta, Book, LiveRecords, POOLED_ALL_TYPES, POO
 use argonauts_learning::types::Assignment;
 use time::{Duration, OffsetDateTime};
 
-use records_support::{AS_OF, cards, close, days_ago, lines, outcome, worker};
+use records_support::{AS_OF, close, days_ago, lines, outcome, tasks, worker};
 
 /// Every cell scored on its own evidence, so a test sees one cell's arithmetic.
 fn own_cells() -> RoutingSettings {
@@ -25,10 +25,10 @@ fn own_cells() -> RoutingSettings {
     }
 }
 
-fn configured_prior(owner: &str, task_type: &str, rate: f64) -> RoutingSettings {
+fn configured_prior(worker: &str, task_type: &str, rate: f64) -> RoutingSettings {
     let mut settings = own_cells();
     settings.priors = BTreeMap::from([(
-        owner.to_owned(),
+        worker.to_owned(),
         BTreeMap::from([(
             task_type.to_owned(),
             PriorRates {
@@ -47,9 +47,9 @@ fn with_model(mut outcome: Outcome, model: Option<&str>) -> Outcome {
 
 #[test]
 fn track_records_same_log_same_book() {
-    let mut log = cards(1, "codex", "backend", 6, 2, 3.0);
-    log.extend(cards(20, "claude-code/opus", "frontend", 3, 1, 10.0));
-    log.extend(cards(40, "claude-code/opus", "backend", 1, 2, 40.0));
+    let mut log = tasks(1, "codex", "backend", 6, 2, 3.0);
+    log.extend(tasks(20, "claude-code/opus", "frontend", 3, 1, 10.0));
+    log.extend(tasks(40, "claude-code/opus", "backend", 1, 2, 40.0));
     log[0].reviewer = Some(worker("claude-code/opus"));
     log[0].approved_first_review = Some(true);
     log[1].minutes = Some(12.0);
@@ -101,7 +101,7 @@ fn track_records_same_log_same_book() {
         outcome.at = Some(OffsetDateTime::now_utc() - Duration::days(1));
         LogLine::Outcome(outcome)
     };
-    let first: Vec<LogLine> = cards(1, "codex", "backend", 6, 2, 0.0)
+    let first: Vec<LogLine> = tasks(1, "codex", "backend", 6, 2, 0.0)
         .into_iter()
         .map(yesterday)
         .collect();
@@ -131,12 +131,12 @@ fn track_records_same_log_same_book() {
 fn records_pool_sparse_cells_into_groups() {
     let settings = RoutingSettings::default();
     assert_eq!(settings.own_type_after, 10);
-    let mut log = cards(1, "codex", "backend", 8, 0, 0.0);
-    log.extend(cards(20, "claude-code", "frontend", 0, 4, 0.0));
-    log.extend(cards(30, "claude-code", "migration", 1, 1, 0.0));
+    let mut log = tasks(1, "codex", "backend", 8, 0, 0.0);
+    log.extend(tasks(20, "claude-code", "frontend", 0, 4, 0.0));
+    log.extend(tasks(30, "claude-code", "migration", 1, 1, 0.0));
     let book = Book::build(&lines(log.clone()), &settings, AS_OF);
 
-    // Eight backend cards are too few alone, so backend and data share them.
+    // Eight backend tasks are too few alone, so backend and data share them.
     let backend = book.record(&worker("codex"), "backend");
     let data = book.record(&worker("codex"), "data");
     assert_eq!(backend.pooled_from.as_deref(), Some("backend_and_data"));
@@ -163,8 +163,8 @@ fn records_pool_sparse_cells_into_groups() {
     let failing = book.record(&worker("claude-code"), "frontend");
     assert!(failing.pass.mean() < crew_rate && crew_rate < backend.pass.mean());
 
-    // Past ten recent cards, a cell stands on its own.
-    log.extend(cards(50, "codex", "backend", 2, 2, 0.0));
+    // Past ten recent tasks, a cell stands on its own.
+    log.extend(tasks(50, "codex", "backend", 2, 2, 0.0));
     let book = Book::build(&lines(log), &settings, AS_OF);
     let backend = book.record(&worker("codex"), "backend");
     assert_eq!(backend.pooled_from, None);
@@ -178,13 +178,13 @@ fn records_pool_sparse_cells_into_groups() {
 #[test]
 fn records_decay_by_half_life_prior_stays() {
     let settings = configured_prior("codex", "backend", 0.8);
-    let failures = |days: f64| lines(cards(1, "codex", "backend", 0, 12, days));
+    let failures = |days: f64| lines(tasks(1, "codex", "backend", 0, 12, days));
 
     let fresh = Book::build(&failures(0.0), &settings, AS_OF).record(&worker("codex"), "backend");
     assert!(close(fresh.evidence, 12.0, 1e-9));
     assert!(close(fresh.pass.mean(), 2.4 / 15.0, 1e-9));
 
-    // Two half-lives: each card counts a quarter.
+    // Two half-lives: each task counts a quarter.
     let old = Book::build(&failures(60.0), &settings, AS_OF).record(&worker("codex"), "backend");
     assert!(close(old.evidence, 3.0, 1e-9));
     assert!(close(old.pass.mean(), 2.4 / 6.0, 1e-9));
@@ -210,7 +210,7 @@ fn records_decay_by_half_life_prior_stays() {
 fn records_shrink_when_model_id_changes() {
     let settings = own_cells();
     let history = |old: Option<&str>, new: Option<&str>| {
-        let mut log: Vec<Outcome> = cards(1, "codex", "backend", 0, 10, 0.0)
+        let mut log: Vec<Outcome> = tasks(1, "codex", "backend", 0, 10, 0.0)
             .into_iter()
             .map(|outcome| with_model(outcome, old))
             .collect();
@@ -233,7 +233,7 @@ fn records_shrink_when_model_id_changes() {
         "the new model gets tried again"
     );
 
-    // A harness update that names no model resets nothing.
+    // A CLI update that names no model resets nothing.
     let unnamed = history(None, Some("gpt-5.5"));
     assert!(close(unnamed.evidence, 11.0, 1e-9));
     assert_eq!(unnamed.pass, same.pass);
@@ -242,7 +242,7 @@ fn records_shrink_when_model_id_changes() {
 #[test]
 fn records_retries_and_fallbacks_not_first_pass() {
     let settings = own_cells();
-    let mut log = cards(1, "codex", "backend", 3, 0, 0.0);
+    let mut log = tasks(1, "codex", "backend", 3, 0, 0.0);
     for (n, assigned) in [(10, Assignment::Fallback), (11, Assignment::Retry)] {
         for i in 0..3 {
             let mut inherited = outcome(n * 10 + i, "codex", "backend", false, 0.0);
@@ -283,13 +283,13 @@ fn records_pins_and_resets_from_settings() {
         ("claude-code".to_owned(), "2026-09-20".to_owned()),
         ("opencode".to_owned(), "last tuesday".to_owned()),
     ]);
-    let mut log = cards(1, "codex/gpt-5.6", "backend", 10, 0, 0.0);
-    log.extend(cards(20, "claude-code/opus", "backend", 0, 10, 21.0));
-    log.extend(cards(40, "claude-code/opus", "backend", 2, 0, 5.0));
-    log.extend(cards(60, "opencode", "backend", 1, 1, 30.0));
+    let mut log = tasks(1, "codex/gpt-5.6", "backend", 10, 0, 0.0);
+    log.extend(tasks(20, "claude-code/opus", "backend", 0, 10, 21.0));
+    log.extend(tasks(40, "claude-code/opus", "backend", 2, 0, 5.0));
+    log.extend(tasks(60, "opencode", "backend", 1, 1, 30.0));
     let book = Book::build(&lines(log), &settings, AS_OF);
 
-    // A harness's pin covers every model it runs, whatever the outcomes say.
+    // A CLI's pin covers every model it runs, whatever the outcomes say.
     let pinned = book.record(&worker("codex/gpt-5.6"), "backend");
     assert!(pinned.pinned);
     assert!(close(pinned.pass.mean(), 0.3, 1e-12));
@@ -316,10 +316,10 @@ fn records_pins_and_resets_from_settings() {
 #[test]
 fn records_claim_little_below_threshold() {
     let settings = own_cells();
-    let mut log = cards(1, "opencode", "backend", 6, 4, 0.0);
-    log.extend(cards(20, "agy", "backend", 4, 6, 0.0));
-    log.extend(cards(40, "codex", "frontend", 45, 5, 0.0));
-    log.extend(cards(100, "claude-code", "frontend", 15, 35, 0.0));
+    let mut log = tasks(1, "opencode", "backend", 6, 4, 0.0);
+    log.extend(tasks(20, "agy", "backend", 4, 6, 0.0));
+    log.extend(tasks(40, "codex", "frontend", 45, 5, 0.0));
+    log.extend(tasks(100, "claude-code", "frontend", 15, 35, 0.0));
     let book = Book::build(&lines(log), &settings, AS_OF);
     let (codex, claude) = (worker("codex"), worker("claude-code"));
 
@@ -370,11 +370,11 @@ fn records_claim_little_below_threshold() {
 #[test]
 fn records_approval_against_each_reviewers_usual_rate() {
     let settings = own_cells();
-    let reviewed = |n: u32, owner: &str, reviewer: &str, approved: bool| {
-        let mut card = outcome(n, owner, "backend", true, 0.0);
-        card.reviewer = Some(worker(reviewer));
-        card.approved_first_review = Some(approved);
-        card
+    let reviewed = |n: u32, who: &str, reviewer: &str, approved: bool| {
+        let mut task = outcome(n, who, "backend", true, 0.0);
+        task.reviewer = Some(worker(reviewer));
+        task.approved_first_review = Some(approved);
+        task
     };
     let mut log = Vec::new();
     for i in 0..10 {

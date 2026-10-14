@@ -2,7 +2,7 @@
 //! quotes, and typed text turned back into TOML.
 
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::approvals::Decides;
 use time::OffsetDateTime;
@@ -11,7 +11,7 @@ use crate::format::setting_value;
 use crate::views::resume::ago;
 
 /// The four answers to "where to save it", in order, with their files. They answer to their
-/// numbers, as every card's options do.
+/// numbers, as every question's options do.
 pub const SCOPES: [(SettingScope, &str, &str); 4] = [
     (SettingScope::Session, "Just this session", "until you quit"),
     (
@@ -47,7 +47,7 @@ pub fn layer_words(layer: &str) -> String {
 }
 
 /// The scope a Reset drops the key from: a settings file or this session. Built-in values,
-/// the preset, and `--set` flags can't be reset in the app.
+/// the workflow, and `--set` flags can't be reset in the app.
 pub fn reset_scope(layer: &str) -> Option<SettingScope> {
     match layer {
         "global" => Some(SettingScope::Global),
@@ -76,12 +76,12 @@ const FILE_SCOPES: [SettingScope; 3] = [
 ];
 
 /// Said once over the scopes when `layer` wins over every file, so no row repeats it: a
-/// preset, a `--set` flag, or this session's own value. A preset picked in a file
-/// (`preset_from`) gives way to that file, so it never wins over every one.
-pub fn hidden_from_files(layer: &str, preset_from: Option<&str>) -> Option<String> {
+/// workflow, a `--set` flag, or this session's own value. A workflow picked in a file
+/// (`workflow_from`) gives way to that file, so it never wins over every one.
+pub fn hidden_from_files(layer: &str, workflow_from: Option<&str>) -> Option<String> {
     if !FILE_SCOPES
         .iter()
-        .all(|scope| scope.hidden_by_value(layer, preset_from))
+        .all(|scope| scope.hidden_by_value(layer, workflow_from))
     {
         return None;
     }
@@ -119,7 +119,7 @@ pub fn freshness(
 }
 
 /// Why saving in `scope` won't show while `layer` sets the key, and what to do instead.
-pub fn hidden_note(layer: &str, preset_from: Option<&str>, scope: SettingScope) -> String {
+pub fn hidden_note(layer: &str, workflow_from: Option<&str>, scope: SettingScope) -> String {
     let saving = match scope {
         SettingScope::Session => "for this session",
         SettingScope::ProjectLocal => "for you in this project",
@@ -135,7 +135,7 @@ pub fn hidden_note(layer: &str, preset_from: Option<&str>, scope: SettingScope) 
             "Your own project file sets this, so saving it {saving} won't change this repo. \
              Pick This project, just me instead."
         ),
-        "workflow" if preset_from.is_some() => format!(
+        "workflow" if workflow_from.is_some() => format!(
             "The workflow sets this, and it's picked in a later file, so saving it {saving} won't \
              change it. Save it where you picked the workflow, or later."
         ),
@@ -209,14 +209,14 @@ pub fn worker_words(worker: &str) -> String {
     if let Some(word) = word_for_a_model(worker) {
         return word.to_owned();
     }
-    match worker.parse::<WorkerRef>() {
+    match worker.parse::<ModelRef>() {
         Ok(worker) => DisplayNames::default().worker(&worker),
         Err(_) => worker.to_owned(),
     }
 }
 
 /// A row's value in words. An empty one says what it stands for where unset means something,
-/// such as the approver picked for each piece of work.
+/// such as the judge picked for each piece of work.
 pub fn row_value_words(key: &str, toml: &str) -> String {
     let words = value_words(toml);
     match default_meaning(key) {
@@ -231,7 +231,7 @@ fn default_meaning(key: &str) -> Option<&'static str> {
     Some(match segments.as_slice() {
         ["approvals", "decides"] => "cheapest, other provider",
         ["approvals", "answers"] => "you or main, by mode",
-        ["approvals", "approver", "second_model"] => "none, one approver",
+        ["approvals", "judge", "second_model"] => "none, one judge",
         ["fallback", "order"] | ["fallback", _, "order"] => "other logged-in CLIs",
         ["roles", _, "sandbox", _] => "same as every agent",
         _ => return None,
@@ -268,7 +268,7 @@ pub fn quote(text: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-/// A role as rows name it: the default agent, or the role's own name.
+/// A role as rows name it: the main agent, or the role's own name.
 pub fn role_words(role: Option<RoleName>) -> String {
     match role {
         None | Some(RoleName::Main) => "Main agent".to_owned(),
@@ -276,14 +276,13 @@ pub fn role_words(role: Option<RoleName>) -> String {
     }
 }
 
-/// The role a key picks workers for, as `/model` lists them. `None` for a key that isn't one.
+/// The role a key picks models for, as `/model` lists them. `None` for a key that isn't one.
 pub fn model_role(key: &str) -> Option<Option<RoleName>> {
     match key {
-        "main_agent" => Some(None),
+        "crew.main" => Some(None),
         "narrator.model" => Some(Some(RoleName::Narrator)),
-        "approvals.decides" => Some(Some(RoleName::Approver)),
         _ => {
-            let role = key.strip_prefix("roles.")?.strip_suffix(".workers")?;
+            let role = key.strip_prefix("roles.")?.strip_suffix(".models")?;
             let role = parse_role(role)?;
             Some((role != RoleName::Main).then_some(role))
         }
@@ -298,7 +297,7 @@ pub fn parse_role(name: &str) -> Option<RoleName> {
 pub fn value_note(key: &str, value: &str) -> &'static str {
     let segments: Vec<&str> = key.split('.').collect();
     match segments.as_slice() {
-        ["workflow"] => preset_note(value),
+        ["workflow"] => workflow_note(value),
         ["goal", "default"] => match value {
             "off" => "A request has a goal only when you set one",
             "from-request" => {
@@ -322,13 +321,13 @@ pub fn value_note(key: &str, value: &str) -> &'static str {
     }
 }
 
-/// What each `at_hard_limit` does in full auto.
+/// What each `at_hard_limit` does in autopilot.
 fn hard_limit_note(value: &str) -> &'static str {
     match value {
         "stop" => "End that part safely and keep its work",
         "send_back" => "Run another round, or decline the change",
         "open_pull_request" => "Open a pull request for you to review",
-        "park" => "Leave the approval for you; the run waits",
+        "wait" => "Leave the approval for you; the run waits",
         _ => "",
     }
 }
@@ -348,13 +347,15 @@ fn goal_check_note(value: &str) -> &'static str {
 fn role_goal_note(value: &str) -> &'static str {
     match value {
         "off" => "A task is done when its agent says so and its checks pass",
-        "cli" => "The CLI's own goal, which Codex has; Argonauts still runs the check",
-        "argonauts" => "Argonauts runs the check after each try and sends back what still fails",
+        "cli" => "The CLI's own goal, which Codex has; Argonauts Code still runs the check",
+        "argonauts" => {
+            "Argonauts Code runs the check after each try and sends back what still fails"
+        }
         _ => "",
     }
 }
 
-/// What a replacement gets for each `handoff.context`.
+/// What a fallback gets for each `fallback.context`.
 fn context_note(value: &str) -> &'static str {
     match value {
         "fresh" => "The task only",
@@ -365,12 +366,12 @@ fn context_note(value: &str) -> &'static str {
     }
 }
 
-/// One line on what a built-in preset does, for `/preset`.
-pub fn preset_note(name: &str) -> &'static str {
+/// One line on what a built-in workflow does, for `/workflow`.
+pub fn workflow_note(name: &str) -> &'static str {
     match name {
         "council" => "Everyone proposes and challenges, the judge decides, then they build",
         "orchestrator" => "The orchestrator plans and delegates, workers build",
-        "solo" => "The main agent does it, as its CLI would",
+        "captain" => "The CLI you talk to does the work itself",
         "maker-checker" => "A worker builds, a reviewer sends it back until it holds",
         "best-of-n" => "Several workers try the same task and the judge picks one",
         "draft-and-vote" => "Agents draft plans and vote on one",
@@ -430,7 +431,7 @@ mod tests {
         for layer in ["built-in", "global", "project", "project-local"] {
             assert_eq!(hidden_from_files(layer, None), None, "{layer}");
         }
-        // Picked in a file, the preset gives way to that file and the later ones.
+        // Picked in a file, the workflow gives way to that file and the later ones.
         assert_eq!(hidden_from_files("workflow", Some("global")), None);
         let note = hidden_note("workflow", Some("project"), SettingScope::Global);
         assert!(note.contains("picked in a later file"), "{note}");
@@ -453,7 +454,7 @@ mod tests {
         assert_eq!(workers_words("\"judge\""), "the judge");
         assert_eq!(word_for_a_model("codex/gpt-5.6"), None);
         assert_eq!(
-            row_value_words("fallback.workers.order", "[]"),
+            row_value_words("fallback.worker.order", "[]"),
             "other logged-in CLIs"
         );
         assert_eq!(
@@ -467,12 +468,12 @@ mod tests {
     }
 
     #[test]
-    fn handoff_contexts_say_what_the_replacement_gets() {
+    fn fallback_contexts_say_what_the_fallback_gets() {
         for key in [
             "fallback.context",
-            "fallback.workers.context",
+            "fallback.worker.context",
             "fallback.replace.codex.context",
-            "fallback.workers.replace.codex.context",
+            "fallback.worker.replace.codex.context",
         ] {
             assert_eq!(value_note(key, "fresh"), "The task only", "{key}");
             for value in ["note", "note+transcript", "note+summary"] {
@@ -482,23 +483,20 @@ mod tests {
         assert_eq!(value_note("narrator.context", "fresh"), "");
         assert_eq!(value_note("fallback.strategy", "first"), "");
         assert_eq!(
-            value_note("workflow", "solo"),
-            "The main agent does it, as its CLI would"
+            value_note("workflow", "captain"),
+            "The CLI you talk to does the work itself"
         );
     }
 
     #[test]
     fn model_roles_from_keys() {
-        assert_eq!(model_role("main_agent"), Some(None));
-        assert_eq!(model_role("roles.main.workers"), Some(None));
+        assert_eq!(model_role("crew.main"), Some(None));
+        assert_eq!(model_role("roles.main.models"), Some(None));
         assert_eq!(
-            model_role("roles.reviewer.workers"),
+            model_role("roles.reviewer.models"),
             Some(Some(RoleName::Reviewer))
         );
-        assert_eq!(
-            model_role("approvals.decides"),
-            Some(Some(RoleName::Approver))
-        );
+        assert_eq!(model_role("approvals.decides"), None);
         assert_eq!(model_role("roles.reviewer.effort"), None);
     }
 }

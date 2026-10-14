@@ -1,5 +1,5 @@
-//! Control calls: over the socket when a supervisor is live, else appended to
-//! `pending-answers.jsonl` under the run lock, and a supervisor started to take them.
+//! Control calls: over the socket when a run host is live, else appended to
+//! `pending-answers.jsonl` under the run lock, and a run host started to take them.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -7,31 +7,31 @@ use std::time::Duration;
 
 use argonauts_core::api::{ApiError, DiffScope, DiffView, RawView, StatusSummary, SteerAck};
 use argonauts_core::control::{ControlReply, ControlRequest};
-use argonauts_core::events::checkpoint::CheckpointEvent;
+use argonauts_core::events::approval::ApprovalEvent;
 use argonauts_core::events::run::{RunLifecycle, RunOutcome};
 use argonauts_core::events::session::QueuedMessage;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::journal::{RunLock, read_all};
 use argonauts_core::layout::run_files as names;
-use argonauts_core::names::{CheckpointId, MessageId, SessionKey};
+use argonauts_core::names::{ApprovalId, MessageId, SessionKey};
 use argonauts_core::policy::DecisionPoint;
-use argonauts_core::{CardId, RunId};
+use argonauts_core::{RunId, TaskId};
 use tokio::time::Instant;
 
 use super::Client;
 use super::approvals::approving_settings;
 use super::journal_ends;
 use super::socket::Connection;
-use super::start::{self, WELCOME_TIMEOUT, supervisor_error};
+use super::start::{self, WELCOME_TIMEOUT, run_host_error};
 use crate::ancestry::{self, AgentMarkers};
 use crate::commands;
-use crate::host::{SUPERVISOR_EXITING, log_views};
+use crate::host::{RUN_HOST_EXITING, log_views};
 use crate::run_files;
 
 /// How often `resume` looks at a woken run's log and lock.
 const WAKE_POLL: Duration = Duration::from_millis(50);
 
-/// A supervisor's reply, or `Deferred` when the request went to `pending-answers.jsonl`.
+/// A run host's reply, or `Deferred` when the request went to `pending-answers.jsonl`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Reply {
     Now(Box<ControlReply>),
@@ -49,7 +49,7 @@ impl Reply {
         }
     }
 
-    /// A deferred message gets its id when the next supervisor delivers it, so there is none to
+    /// A deferred message gets its id when the next run host delivers it, so there is none to
     /// take back until then.
     pub(crate) fn queued(self) -> Result<MessageId, ApiError> {
         match self {
@@ -70,7 +70,7 @@ impl Reply {
         }
     }
 
-    /// Only a live supervisor can say which messages it still held, so a deferred take-back is
+    /// Only a live run host can say which messages it still held, so a deferred take-back is
     /// an error rather than an empty answer, which would read as all of them delivered.
     pub(crate) fn taken_back(self) -> Result<Vec<QueuedMessage>, ApiError> {
         match self.now()? {
@@ -93,12 +93,12 @@ impl Reply {
         }
     }
 
-    /// The supervisor's reply; a deferred request has none.
+    /// The run host's reply; a deferred request has none.
     fn now(self) -> Result<ControlReply, ApiError> {
         match self {
             Self::Now(reply) => Ok(*reply),
             Self::Deferred => Err(ApiError::NotNow(
-                "the run's supervisor isn't running".to_owned(),
+                "the run's run host isn't running".to_owned(),
             )),
         }
     }
@@ -107,15 +107,15 @@ impl Reply {
 fn unexpected(reply: ControlReply) -> ApiError {
     match reply {
         ControlReply::Error { message } => ApiError::Refused(message),
-        reply => ApiError::Supervisor(format!("unexpected reply: {reply:?}")),
+        reply => ApiError::RunHost(format!("unexpected reply: {reply:?}")),
     }
 }
 
-/// What a request does when no supervisor is live.
+/// What a request does when no run host is live.
 enum Offline {
-    /// Into `pending-answers.jsonl` for the next supervisor, which is started.
+    /// Into `pending-answers.jsonl` for the next run host, which is started.
     Defer,
-    /// It needs a live reply: start a supervisor, then ask it.
+    /// It needs a live reply: start a run host, then ask it.
     StartThenAsk,
     Refuse(&'static str),
 }
@@ -134,7 +134,7 @@ fn offline(request: &ControlRequest) -> Offline {
         | ControlRequest::Goal { .. } => Offline::Defer,
         ControlRequest::TakeOver { .. }
         | ControlRequest::TakeBack { .. }
-        | ControlRequest::Revert { .. } => Offline::StartThenAsk,
+        | ControlRequest::Rewind { .. } => Offline::StartThenAsk,
         ControlRequest::Steer { .. } => Offline::Refuse("no agent is running in this run"),
         ControlRequest::Pause { .. } | ControlRequest::CancelPause => {
             Offline::Refuse("the run isn't running")
@@ -143,7 +143,7 @@ fn offline(request: &ControlRequest) -> Offline {
         | ControlRequest::Subscribe { .. }
         | ControlRequest::Status
         | ControlRequest::Diff { .. }
-        | ControlRequest::Raw { .. } => Offline::Refuse("the run's supervisor isn't running"),
+        | ControlRequest::Raw { .. } => Offline::Refuse("the run's run host isn't running"),
     }
 }
 
@@ -162,26 +162,26 @@ fn needs_a_person(request: &ControlRequest) -> bool {
     }
 }
 
-/// Tries before giving up on a run whose supervisors keep exiting as requests arrive.
-const ATTEMPTS: usize = 3;
+/// Tries before giving up on a run whose run hosts keep exiting as requests arrive.
+const TRIES: usize = 3;
 
-/// Sends `request` to the live supervisor, or defers it for the next one and starts it.
+/// Sends `request` to the live run host, or defers it for the next one and starts it.
 pub(crate) async fn call(
     client: &Client,
     run: &RunId,
     request: ControlRequest,
 ) -> Result<Reply, ApiError> {
     let run_dir = existing_run_dir(client, run)?;
-    for _ in 0..ATTEMPTS {
-        if let Some(reply) = attempt(client, run, &run_dir, &request).await? {
+    for _ in 0..TRIES {
+        if let Some(reply) = try_once(client, run, &run_dir, &request).await? {
             return Ok(reply);
         }
     }
     Err(kept_exiting())
 }
 
-/// One try. `None` when the supervisor was on its way out, so the next try finds it gone.
-async fn attempt(
+/// One try. `None` when the run host was on its way out, so the next try finds it gone.
+async fn try_once(
     client: &Client,
     run: &RunId,
     run_dir: &Path,
@@ -215,31 +215,34 @@ async fn attempt(
         return live(connected(client, run_dir).await?, request.clone()).await;
     }
     if needs_a_person(request) {
-        // The supervisor trusts pending frames, because whoever wrote them passed this check.
+        // The run host trusts pending frames, because whoever wrote them passed this check.
         ancestry::check_self(&client.env.paths, &AgentMarkers::builtin())
             .map_err(|err| ApiError::Refused(format!("{err:#}")))?;
     }
-    let lock = RunLock::try_acquire(run_dir).map_err(supervisor_error)?;
+    let lock = RunLock::try_acquire(run_dir).map_err(run_host_error)?;
     let Some(lock) = lock else {
-        // A supervisor holds the lock without answering: it's starting, or on its way out.
+        // A run host holds the lock without answering: it's starting, or on its way out.
         if !start::await_holder(client, run_dir).await? {
             return Ok(None);
         }
         return live(connected(client, run_dir).await?, request.clone()).await;
     };
-    run_files::append_pending(run_dir, request).map_err(supervisor_error)?;
+    run_files::append_pending(run_dir, request).map_err(run_host_error)?;
     drop(lock);
     start::launch(client, run, run_dir).await?;
     Ok(Some(Reply::Deferred))
 }
 
-/// Starts a supervisor unless one is live, and wakes one that is waiting out its park grace. A
-/// merged run refuses. A stopped one is reopened: a `CancelPause` saved for its next supervisor
+/// Starts a run host unless one is live, and wakes one that is in its wait grace. A
+/// merged run refuses. A stopped one is reopened: a `CancelPause` saved for its next run_host
 /// asks that engine to go on from the run's last committed state.
 pub(crate) async fn resume(client: &Client, run: &RunId) -> Result<(), ApiError> {
     let run_dir = existing_run_dir(client, run)?;
+    if let Some(why) = super::list::cant_be_resumed(&run_dir) {
+        return Err(ApiError::NotNow(why));
+    }
     let events = run_dir.join(names::EVENTS);
-    for _ in 0..ATTEMPTS {
+    for _ in 0..TRIES {
         let (stopped, merged) = match finished(&events) {
             Some((seq, RunOutcome::Stopped)) => (Some(seq), false),
             Some((_, outcome)) => (None, outcome == RunOutcome::Merged),
@@ -249,23 +252,23 @@ pub(crate) async fn resume(client: &Client, run: &RunId) -> Result<(), ApiError>
             return Err(ApiError::Merged(run.clone()));
         }
         if let Some(connection) = connect(client, &run_dir).await? {
-            match (stopped, parked_at(&events)) {
-                // The supervisor that stopped it is on its way out, unless another reopened it.
+            match (stopped, waiting_at(&events)) {
+                // The run host that stopped it is on its way out, unless another reopened it.
                 (Some(stopped), _) => {
                     if moved_on_or_released(&run_dir, &events, stopped).await? {
                         return Ok(());
                     }
                 }
                 (None, None) => return Ok(()),
-                (None, Some(parked)) => {
-                    // A parked supervisor starts its engine again only for a request that needs
+                (None, Some(waiting)) => {
+                    // A waiting run host starts its engine again only for a request that needs
                     // one. `CancelPause` does, and asks for nothing more, since the pause is
                     // over.
                     let woken = ask(connection, ControlRequest::CancelPause)
                         .await
                         .and_then(Reply::ok);
                     match woken {
-                        Ok(()) => return moved_on(&events, parked).await,
+                        Ok(()) => return moved_on(&events, waiting).await,
                         // It was exiting at the end of its grace, so a new one starts below.
                         Err(_) if released(&run_dir).await => {}
                         Err(err) => return Err(err),
@@ -273,11 +276,11 @@ pub(crate) async fn resume(client: &Client, run: &RunId) -> Result<(), ApiError>
                 }
             }
         }
-        match RunLock::try_acquire(&run_dir).map_err(supervisor_error)? {
+        match RunLock::try_acquire(&run_dir).map_err(run_host_error)? {
             Some(lock) => {
                 if stopped.is_some() {
                     run_files::append_pending(&run_dir, &ControlRequest::CancelPause)
-                        .map_err(supervisor_error)?;
+                        .map_err(run_host_error)?;
                 }
                 drop(lock);
                 start::launch(client, run, &run_dir).await?;
@@ -298,10 +301,10 @@ pub(crate) async fn resume(client: &Client, run: &RunId) -> Result<(), ApiError>
     Err(kept_exiting())
 }
 
-/// The `seq` of the `Parked` the log ends on.
-fn parked_at(events: &Path) -> Option<u64> {
+/// The `seq` of the `Waiting` the log ends on.
+fn waiting_at(events: &Path) -> Option<u64> {
     journal_ends::last_stage_event(events)
-        .filter(|event| matches!(event.kind, RunEventKind::Run(RunLifecycle::Parked { .. })))
+        .filter(|event| matches!(event.kind, RunEventKind::Run(RunLifecycle::Waiting { .. })))
         .map(|event| event.seq)
 }
 
@@ -314,7 +317,7 @@ fn finished(events: &Path) -> Option<(u64, RunOutcome)> {
     }
 }
 
-/// Waits for a live supervisor of a stopped run to exit, or for the run to move on from the
+/// Waits for a live run host of a stopped run to exit, or for the run to move on from the
 /// `Finished` at `stopped`. True when it moved on.
 async fn moved_on_or_released(
     run_dir: &Path,
@@ -336,7 +339,7 @@ async fn moved_on_or_released(
     }
 }
 
-/// Waits for the woken engine to move the run on from the `Parked` or `Finished` at `settled`,
+/// Waits for the woken engine to move the run on from the `Waiting` or `Finished` at `settled`,
 /// which it does by recording `Resumed` as it rebuilds the run from the log.
 async fn moved_on(events: &Path, settled: u64) -> Result<(), ApiError> {
     let deadline = Instant::now() + WELCOME_TIMEOUT;
@@ -345,8 +348,8 @@ async fn moved_on(events: &Path, settled: u64) -> Result<(), ApiError> {
             return Ok(());
         }
         if Instant::now() >= deadline {
-            return Err(ApiError::Supervisor(format!(
-                "the run's supervisor didn't resume it within {} s",
+            return Err(ApiError::RunHost(format!(
+                "the run's run host didn't resume it within {} s",
                 WELCOME_TIMEOUT.as_secs()
             )));
         }
@@ -354,7 +357,7 @@ async fn moved_on(events: &Path, settled: u64) -> Result<(), ApiError> {
     }
 }
 
-/// Waits for the run's supervisor to let go of the run. False when it still holds it at the
+/// Waits for the run's run host to let go of the run. False when it still holds it at the
 /// timeout.
 async fn released(run_dir: &Path) -> bool {
     let deadline = Instant::now() + WELCOME_TIMEOUT;
@@ -368,12 +371,12 @@ async fn released(run_dir: &Path) -> bool {
 }
 
 /// Your verdict goes to the run's engine, the live one or the next. A finished run has no
-/// engine left to take it, so the app records it with the repo's policy, for the checkpoint
+/// engine left to take it, so the app records it with the repo's policy, for the approval
 /// the run's log queued.
 pub(crate) async fn spot_check(
     client: &Client,
     run: &RunId,
-    id: &CheckpointId,
+    id: &ApprovalId,
     correct: bool,
 ) -> Result<(), ApiError> {
     let run_dir = existing_run_dir(client, run)?;
@@ -391,7 +394,7 @@ pub(crate) async fn spot_check(
     }
     let settings = approving_settings(&client.env).map_err(ApiError::Refused)?;
     let events = read_all(&run_dir.join(names::EVENTS))
-        .map_err(|err| ApiError::Supervisor(format!("reading the run's log: {err}")))?
+        .map_err(|err| ApiError::RunHost(format!("reading the run's log: {err}")))?
         .events;
     let point = queued_point(run, id, &events).ok_or_else(|| {
         ApiError::Refused(format!("{id} of {run} isn't waiting for a spot check"))
@@ -400,33 +403,33 @@ pub(crate) async fn spot_check(
     Ok(())
 }
 
-/// The decision point of checkpoint `id`, when the log put it in the spot-check queue.
-fn queued_point(run: &RunId, id: &CheckpointId, events: &[RunEvent]) -> Option<DecisionPoint> {
+/// The decision point of approval `id`, when the log put it in the spot-check queue.
+fn queued_point(run: &RunId, id: &ApprovalId, events: &[RunEvent]) -> Option<DecisionPoint> {
     let queued = events.iter().any(|event| {
         matches!(
             &event.kind,
-            RunEventKind::Checkpoint(CheckpointEvent::SpotCheckQueued { id: queued })
+            RunEventKind::Approval(ApprovalEvent::SpotCheckQueued { id: queued })
                 if queued == id
         )
     });
     let kind = events.iter().find_map(|event| match &event.kind {
-        RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) if opened.id == *id => {
+        RunEventKind::Approval(ApprovalEvent::Opened(opened)) if opened.id == *id => {
             Some(opened.kind)
         }
         _ => None,
     })?;
     queued.then(|| DecisionPoint {
         run: run.clone(),
-        checkpoint: id.clone(),
+        approval: id.clone(),
         kind,
-        recipe: None,
+        learned_workflow: None,
         authors: Vec::new(),
         mode_override: None,
-        lead: None,
+        main_agent: None,
     })
 }
 
-/// From the live supervisor, else built from the journal by `status::summary`.
+/// From the live run host, else built from the journal by `status::summary`.
 pub(crate) async fn status(client: &Client, run: &RunId) -> Result<StatusSummary, ApiError> {
     let run_dir = existing_run_dir(client, run)?;
     if let Some(connection) = connect(client, &run_dir).await?
@@ -443,16 +446,16 @@ pub(crate) async fn status(client: &Client, run: &RunId) -> Result<StatusSummary
     log_views::status(&run_dir, run)
 }
 
-/// From the live supervisor, else the card's last diff from the journal.
+/// From the live run host, else the task's last diff from the journal.
 pub(crate) async fn diff(
     client: &Client,
     run: &RunId,
-    card: &CardId,
+    task: &TaskId,
     scope: DiffScope,
 ) -> Result<DiffView, ApiError> {
     let run_dir = existing_run_dir(client, run)?;
     let request = ControlRequest::Diff {
-        card: card.clone(),
+        task: task.clone(),
         scope,
     };
     if let Some(connection) = connect(client, &run_dir).await?
@@ -460,10 +463,10 @@ pub(crate) async fn diff(
     {
         return reply.diff();
     }
-    log_views::diff(&run_dir, card, scope, |path| client.env.display(path))
+    log_views::diff(&run_dir, task, scope, |path| client.env.display(path))
 }
 
-/// From the live supervisor, else read from the session's raw files.
+/// From the live run host, else read from the session's raw files.
 pub(crate) async fn raw(
     client: &Client,
     run: &RunId,
@@ -488,8 +491,8 @@ pub(crate) async fn raw(
 }
 
 fn kept_exiting() -> ApiError {
-    ApiError::Supervisor(
-        "the run's supervisor kept exiting as the request arrived; send it again".to_owned(),
+    ApiError::RunHost(
+        "the run's run host kept exiting as the request arrived; send it again".to_owned(),
     )
 }
 
@@ -505,30 +508,27 @@ fn existing_run_dir(client: &Client, run: &RunId) -> Result<PathBuf, ApiError> {
 async fn connect(client: &Client, run_dir: &Path) -> Result<Option<Connection>, ApiError> {
     Connection::connect(run_dir, client.kind)
         .await
-        .map_err(supervisor_error)
+        .map_err(run_host_error)
 }
 
-/// A connection to a supervisor that just greeted.
+/// A connection to a run host that just greeted.
 async fn connected(client: &Client, run_dir: &Path) -> Result<Connection, ApiError> {
-    connect(client, run_dir).await?.ok_or_else(|| {
-        ApiError::Supervisor("the run's supervisor went away as it started".to_owned())
-    })
+    connect(client, run_dir)
+        .await?
+        .ok_or_else(|| ApiError::RunHost("the run's run host went away as it started".to_owned()))
 }
 
 async fn ask(mut connection: Connection, request: ControlRequest) -> Result<Reply, ApiError> {
-    let reply = connection
-        .request(request)
-        .await
-        .map_err(supervisor_error)?;
+    let reply = connection.request(request).await.map_err(run_host_error)?;
     Ok(Reply::Now(Box::new(reply)))
 }
 
-/// The live supervisor's reply, or `None` when it refused the request unseen on its way out.
+/// The live run host's reply, or `None` when it refused the request unseen on its way out.
 async fn live(connection: Connection, request: ControlRequest) -> Result<Option<Reply>, ApiError> {
     let reply = ask(connection, request).await?;
     let exiting = matches!(
         &reply,
-        Reply::Now(now) if matches!(&**now, ControlReply::Error { message } if message == SUPERVISOR_EXITING)
+        Reply::Now(now) if matches!(&**now, ControlReply::Error { message } if message == RUN_HOST_EXITING)
     );
     Ok((!exiting).then_some(reply))
 }

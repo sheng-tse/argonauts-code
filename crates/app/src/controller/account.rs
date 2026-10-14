@@ -1,6 +1,6 @@
 //! You and your agents' accounts, whatever CLI the main agent is: `/usage` shows plan usage
 //! and spend, `/login` and `/logout` hand the terminal to an agent CLI's own login, and
-//! `/release-notes` and `/feedback` are about Argonauts itself.
+//! `/release-notes` and `/feedback` are about Argonauts Code itself.
 
 use std::io::Write as _;
 use std::os::unix::fs::OpenOptionsExt as _;
@@ -10,24 +10,26 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::{Context as _, bail};
 use argonauts_core::api::{
-    CardBrief, PlanUsage, RunProgress, RunSummary, UsagePeriod, UsageSummary,
+    PlanUsage, RunProgress, RunSummary, TaskBrief, UsagePeriod, UsageSummary,
 };
-use argonauts_core::app::{AppEvent, QuotaChip, SettingRow, ViewData};
-use argonauts_core::events::card::CardState;
-use argonauts_core::limits::{HealthBoard, HealthState, QuotaBoard, QuotaReading, QuotaStatus};
-use argonauts_core::names::VendorId;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::app::{AppEvent, PlanUsageChip, SettingRow, ViewData};
+use argonauts_core::events::task::TaskState;
+use argonauts_core::limits::{
+    HealthBoard, HealthState, PlanUsageBoard, PlanUsageReading, PlanUsageStatus,
+};
+use argonauts_core::names::AgentId;
+use argonauts_core::names::ModelRef;
 use argonauts_core::plan_usage::LiveUsage;
+use argonauts_core::session_runner::RunnerDirectory;
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::budget::{BudgetAmount, BudgetSettings, BudgetUnit};
-use argonauts_core::settings::handoff::FallbackEntry;
+use argonauts_core::settings::fallback::FallbackEntry;
+use argonauts_core::settings::limit::{LimitAmount, LimitUnit, SpendLimits};
 use argonauts_core::settings::stats::{STATS_FILE, StatsPeriod, StatsSettings};
-use argonauts_core::worker::WorkerDirectory;
 use argonauts_core::{AuthMode, NoteLevel, RunId, Spend};
 use time::{Duration, OffsetDateTime};
 
+use super::header_and_bottom_line::plan_usage_chips;
 use super::settings::setting_rows;
-use super::status_line::quota_chips;
 use super::{Ctx, Effect};
 use crate::usage_ledger::{self, UsageLedger, local_day};
 
@@ -38,17 +40,19 @@ const RELEASE_NOTES: &[&[&str]] = &[&[
     "Argonauts Code 0.0.1",
     "Runs Claude Code, Codex, agy, OpenCode, and model endpoints as one crew, in a screen that \
      works like Claude Code's.",
-    "Chat with the main agent; /solo and /crew hand work to one agent or the crew.",
+    "Talk with the main agent; with /captain its CLI does the work itself, and /crew hands it \
+     to the crew.",
     "The commands the agent CLIs share work whatever CLI the main agent is: /compact, /rename, \
      /branch, /fork, /btw, /recap, /copy, /export, /cd, /add-dir, /plan, /goal, /fast, \
      /output-style, /diff, /review, /security-review, /usage, /login, and /logout.",
     "Reviews go to an agent from another provider than the main agent's when the crew has one.",
 ]];
 
-/// The span `/usage` adds spend and runs up over. Quota is always now.
+/// The span `/usage` adds spend and runs up over. PlanUsage is always now.
 pub(crate) fn parse_period(word: Option<&str>) -> anyhow::Result<UsagePeriod> {
     Ok(match word.map(str::to_ascii_lowercase).as_deref() {
-        None | Some("day" | "daily" | "today") => UsagePeriod::Today,
+        None => UsagePeriod::OPENS_ON,
+        Some("day" | "daily" | "today") => UsagePeriod::Today,
         Some("week" | "weekly") => UsagePeriod::Week,
         Some("month" | "monthly") => UsagePeriod::Month,
         Some("all" | "cumulative" | "total") => UsagePeriod::All,
@@ -65,7 +69,7 @@ fn title(period: UsagePeriod) -> &'static str {
     }
 }
 
-/// `/usage [day|week|month|all]`: each agent's quota now, what the conversation spent, then
+/// `/usage [day|week|month|all]`: each agent's plan usage now, what the conversation spent, then
 /// what the period spent by the usage ledger and this repo's runs in it. Reads only what's
 /// recorded, so it costs nothing.
 pub(crate) async fn usage(
@@ -76,26 +80,29 @@ pub(crate) async fn usage(
     let period = parse_period(period.as_deref())?;
     let now = OffsetDateTime::now_utc();
     let settings = ctx.settings();
-    let mut crew = vec![settings.main_agent.clone()];
+    let mut crew = vec![settings.crew.main.clone()];
     crew.extend(settings.crew.members());
-    let chips = quota_chips(
+    let chips = plan_usage_chips(
         &crew,
-        ctx.services.quota.as_ref(),
+        ctx.services.plan_usage.as_ref(),
         ctx.services.health.as_ref(),
     );
-    let mut lines: Vec<String> = chips.iter().map(|chip| quota_line(chip, now)).collect();
+    let mut lines: Vec<String> = chips
+        .iter()
+        .map(|chip| plan_usage_line(chip, now))
+        .collect();
     if let Some(spent) = conversation {
         lines.push(format!("This conversation · {}", usd(&spent)));
     }
-    let quotas = crew
+    let plan_windows = crew
         .iter()
-        .flat_map(|worker| ctx.services.quota.windows(&worker.vendor()))
+        .flat_map(|worker| ctx.services.plan_usage.windows(&worker.agent_id()))
         .collect();
     let listed = ctx.services.conductor.list().await;
     let ledger = UsageLedger::new(&ctx.env.paths);
     let runs = listed.as_deref().unwrap_or_default();
     let span = (period, ctx.settings().periods.week_starts);
-    let summary = usage_ledger::summary(&ledger, span, local_day(now), runs, quotas);
+    let summary = usage_ledger::summary(&ledger, span, local_day(now), runs, plan_windows);
     lines.push(format!(
         "Spent · {} · {} tokens",
         usd(&summary.total),
@@ -143,14 +150,17 @@ pub(crate) async fn limits_report(
     let now = OffsetDateTime::now_utc();
     let summary = usage_summary(ctx, conversation, UsagePeriod::Today).await;
     let settings = ctx.settings();
-    let mut crew = vec![settings.main_agent.clone()];
+    let mut crew = vec![settings.crew.main.clone()];
     crew.extend(settings.crew.members());
-    let chips = quota_chips(
+    let chips = plan_usage_chips(
         &crew,
-        ctx.services.quota.as_ref(),
+        ctx.services.plan_usage.as_ref(),
         ctx.services.health.as_ref(),
     );
-    let mut lines: Vec<String> = chips.iter().map(|chip| quota_line(chip, now)).collect();
+    let mut lines: Vec<String> = chips
+        .iter()
+        .map(|chip| plan_usage_line(chip, now))
+        .collect();
     lines.push(match summary.plan_limit {
         Some(limit) => format!("Plan usage limit · {:.0}% of a window", limit * 100.0),
         None => "Plan usage · no limit set".to_owned(),
@@ -170,7 +180,7 @@ pub(crate) async fn limits_report(
 /// Asks this far apart mean the panel was closed in between, so the next ask opens it again.
 const OPENED_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// A read started this long ago that hasn't landed isn't coming.
+/// A read started this long ago that hasn't merged isn't coming.
 const READ_GIVES_UP: std::time::Duration = std::time::Duration::from_secs(45);
 
 /// After a reset passes, the CLI is read again at most this often, so one whose read fails
@@ -202,30 +212,33 @@ async fn usage_summary(
 ) -> UsageSummary {
     let now = OffsetDateTime::now_utc();
     let settings = ctx.settings();
-    let mut crew = vec![settings.main_agent.clone()];
+    let mut crew = vec![settings.crew.main.clone()];
     crew.extend(settings.crew.members());
-    let quota = &ctx.services.quota;
+    let plan_usage = &ctx.services.plan_usage;
     let limits = setting_rows(&ctx.settings, Some("limits"), None);
     let plan_limit = limit_of(&limits, PLAN_USAGE_LIMIT);
     let plans = {
         let named = Named {
-            cli: &|id| ctx.names.harness(id),
+            cli: &|id| ctx.names.cli(id),
             worker: &|worker| ctx.names.worker(worker),
         };
         let boards = Boards {
-            quota: quota.as_ref(),
+            plan_usage: plan_usage.as_ref(),
             health: ctx.services.health.as_ref(),
         };
-        plan_usage(&crew, settings, &boards, &named, plan_limit, now)
+        plan_usage_cards(&crew, settings, &boards, &named, plan_limit, now)
     };
     let opened = panel_opened(std::time::Instant::now());
     let plans = read_again(ctx, &crew, plans, opened, now);
-    let quotas = plans.iter().flat_map(|plan| plan.windows.clone()).collect();
+    let plan_windows = plans.iter().flat_map(|plan| plan.windows.clone()).collect();
     let listed = ctx.services.conductor.list().await;
     let ledger = UsageLedger::new(&ctx.env.paths);
     let runs = listed.as_deref().unwrap_or_default();
     let span = (period, ctx.settings().periods.week_starts);
-    let mut summary = usage_ledger::summary(&ledger, span, local_day(now), runs, quotas);
+    let mut summary = usage_ledger::summary(&ledger, span, local_day(now), runs, plan_windows);
+    for share in &mut summary.by_agent {
+        share.pays_per_token = pays_per_token(settings, &AgentId(share.agent_id.clone()));
+    }
     if let Some(stats) = &mut summary.stats {
         let clis: Vec<String> = stats.work.iter().map(|row| row.agent.clone()).collect();
         let defaults = super::names::cli_defaults(ctx, clis.iter().map(String::as_str));
@@ -253,7 +266,7 @@ async fn usage_summary(
         plans,
         conversation,
         progress: run_progress(ctx, &summary.runs).await,
-        task_limit: task_limit(&settings.limits.budget),
+        task_limit: task_limit(&settings.limits.spend),
         spend_limit: limit_of(&limits, SPEND_LIMIT),
         plan_limit,
         limits,
@@ -275,20 +288,20 @@ fn limit_of(limits: &[SettingRow], key: &str) -> Option<f64> {
 
 /// The limit of a task that has none of its own, in the unit you set it in. The keys are
 /// one choice, so the first one set is the only one.
-fn task_limit(limits: &BudgetSettings) -> Option<BudgetAmount> {
-    let amount = |unit, amount| BudgetAmount { unit, amount };
-    let usd = limits.per_task_usd.map(|usd| amount(BudgetUnit::Usd, usd));
+fn task_limit(limits: &SpendLimits) -> Option<LimitAmount> {
+    let amount = |unit, amount| LimitAmount { unit, amount };
+    let usd = limits.per_task_usd.map(|usd| amount(LimitUnit::Usd, usd));
     usd.or_else(|| {
         let tokens = limits.per_task_tokens;
-        tokens.map(|tokens| amount(BudgetUnit::Tokens, tokens as f64))
+        tokens.map(|tokens| amount(LimitUnit::Tokens, tokens as f64))
     })
     .or_else(|| {
         let share = limits.per_task_plan_usage;
-        share.map(|share| amount(BudgetUnit::Quota, share))
+        share.map(|share| amount(LimitUnit::PlanUsage, share))
     })
     .or_else(|| {
         let minutes = limits.per_task_minutes;
-        minutes.map(|minutes| amount(BudgetUnit::Minutes, minutes))
+        minutes.map(|minutes| amount(LimitUnit::Minutes, minutes))
     })
     .filter(|limit| limit.amount > 0.0)
 }
@@ -319,7 +332,7 @@ async fn run_progress(ctx: &Ctx, runs: &[RunSummary]) -> Vec<RunProgress> {
         let started = crate::run_files::read_start(&ctx.env.run_dir(&run.run))
             .ok()
             .map(|start| start.created);
-        let read = tasks_of(&run.run, &status.cards, started);
+        let read = tasks_of(&run.run, &status.tasks, started);
         READ.lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(run.run.clone(), (run.updated, read.clone()));
@@ -328,17 +341,17 @@ async fn run_progress(ctx: &Ctx, runs: &[RunSummary]) -> Vec<RunProgress> {
     progress
 }
 
-/// A run's tasks as `done of all`. A task that was cancelled or that another took over is
-/// no longer one the run means to do.
-fn tasks_of(run: &RunId, tasks: &[CardBrief], started: Option<OffsetDateTime>) -> RunProgress {
-    let count = |keep: &dyn Fn(CardState) -> bool| {
+/// A run's tasks as `done of all`. A task that was cancelled, or whose work a fallback does
+/// now, is no longer one the run means to do.
+fn tasks_of(run: &RunId, tasks: &[TaskBrief], started: Option<OffsetDateTime>) -> RunProgress {
+    let count = |keep: &dyn Fn(TaskState) -> bool| {
         let kept = tasks.iter().filter(|task| keep(task.state)).count();
         u32::try_from(kept).unwrap_or(u32::MAX)
     };
     RunProgress {
         run: run.clone(),
-        tasks_done: count(&|state| state == CardState::Integrated),
-        tasks: count(&|state| !matches!(state, CardState::Cancelled | CardState::TakenOver)),
+        tasks_done: count(&|state| state == TaskState::Merged),
+        tasks: count(&|state| !matches!(state, TaskState::Cancelled | TaskState::TakenOver)),
         started,
     }
 }
@@ -346,12 +359,12 @@ fn tasks_of(run: &RunId, tasks: &[CardBrief], started: Option<OffsetDateTime>) -
 /// How the screen names a CLI and an agent.
 struct Named<'a> {
     cli: &'a dyn Fn(&str) -> String,
-    worker: &'a dyn Fn(&WorkerRef) -> String,
+    worker: &'a dyn Fn(&ModelRef) -> String,
 }
 
 /// Where each CLI's plan usage and health are read from.
 struct Boards<'a> {
-    quota: &'a dyn QuotaBoard,
+    plan_usage: &'a dyn PlanUsageBoard,
     health: &'a dyn HealthBoard,
 }
 
@@ -360,72 +373,79 @@ struct Boards<'a> {
 /// that followed it, so it's dropped rather than shown as old. A CLI whose plan ran out,
 /// that can't be reached, or that has a window as full as `limit` lets it get, names who
 /// takes its tasks.
-fn plan_usage(
-    crew: &[WorkerRef],
+fn plan_usage_cards(
+    crew: &[ModelRef],
     settings: &Settings,
     boards: &Boards<'_>,
     named: &Named<'_>,
     limit: Option<f64>,
     now: OffsetDateTime,
 ) -> Vec<PlanUsage> {
-    let Boards { quota, health } = *boards;
+    let Boards { plan_usage, health } = *boards;
     let mut plans: Vec<PlanUsage> = Vec::new();
     for worker in crew {
-        let vendor = worker.vendor();
-        if plans.iter().any(|plan| plan.agent == vendor.0) {
+        let agent_id = worker.agent_id();
+        if plans.iter().any(|plan| plan.agent == agent_id.0) {
             continue;
         }
-        let pays_per_token =
-            settings.endpoints.contains_key(&vendor.0) || bills_api_key(settings, &vendor);
+        let pays_per_token = pays_per_token(settings, &agent_id);
         // Only the CLI's own live reading of the account signed in now. One a failed read or
         // a sign-in has cast doubt on is kept apart, to be drawn as from before.
-        let kept = quota
-            .live(&vendor)
+        let kept = plan_usage
+            .live(&agent_id)
             .filter(|live| live.shown_at(now) && !pays_per_token);
         let (live, last) = match kept {
-            Some(kept) if kept.current_at(now, quota.doubted_at(&vendor)) => (Some(kept), None),
+            Some(kept) if kept.current_at(now, plan_usage.doubted_at(&agent_id)) => {
+                (Some(kept), None)
+            }
             kept => (None, kept),
         };
-        let mut windows: Vec<QuotaReading> = live
+        let mut windows: Vec<PlanUsageReading> = live
             .iter()
-            .flat_map(LiveUsage::quota_readings)
+            .flat_map(LiveUsage::plan_usage_readings)
             .filter(|reading| reading.resets_at.is_none_or(|resets| resets > now))
             .collect();
         windows.sort_by_key(|reading| window_rank(reading.window.as_deref()));
-        let down = health.state(&vendor).state == HealthState::Down;
+        let down = health.state(&agent_id).state == HealthState::Down;
         let out = windows
             .iter()
-            .any(|reading| reading.status == QuotaStatus::Rejected && !reading.wrap_up);
+            .any(|reading| reading.status == PlanUsageStatus::Rejected && !reading.wrap_up);
         let at_limit = limit.is_some_and(|limit| {
-            let reached = |reading: &QuotaReading| reading.used.is_some_and(|used| used >= limit);
+            let reached =
+                |reading: &PlanUsageReading| reading.used.is_some_and(|used| used >= limit);
             windows.iter().any(reached)
         });
         plans.push(PlanUsage {
-            name: (named.cli)(&vendor.0),
+            name: (named.cli)(&agent_id.0),
             plan: live.as_ref().and_then(|live| live.plan.clone()),
             in_use: plans.is_empty(),
             down,
             pays_per_token,
             moved_to: (down || out || at_limit)
-                .then(|| takes_over(settings, &vendor))
+                .then(|| fallback_of(settings, &agent_id))
                 .flatten()
                 .map(named.worker),
             windows,
             live,
             reading: false,
-            failed: quota.failed(&vendor),
+            failed: plan_usage.failed(&agent_id),
             last,
-            agent: vendor.0,
+            agent: agent_id.0,
         });
     }
     plans
 }
 
+/// The agent bills for each token: an endpoint, or a CLI signed in with an API key.
+fn pays_per_token(settings: &Settings, agent_id: &AgentId) -> bool {
+    settings.endpoints.contains_key(&agent_id.0) || bills_api_key(settings, agent_id)
+}
+
 /// The CLI bills an API key rather than a plan, so there's no plan to read.
-fn bills_api_key(settings: &Settings, vendor: &VendorId) -> bool {
+fn bills_api_key(settings: &Settings, agent_id: &AgentId) -> bool {
     settings
         .agents
-        .get(&vendor.0)
+        .get(&agent_id.0)
         .is_some_and(|agent| agent.auth == AuthMode::ApiKey)
 }
 
@@ -443,17 +463,17 @@ fn window_rank(window: Option<&str>) -> u8 {
     }
 }
 
-/// Who the fallback order gives `vendor`'s work to: the first entry on another CLI.
-fn takes_over<'a>(settings: &'a Settings, vendor: &VendorId) -> Option<&'a WorkerRef> {
+/// Who the fallback order gives `agent`'s work to: the first entry on another CLI.
+fn fallback_of<'a>(settings: &'a Settings, agent_id: &AgentId) -> Option<&'a ModelRef> {
     settings
         .fallback
         .order
         .iter()
         .map(|entry| match entry {
-            FallbackEntry::Worker(worker) => worker,
-            FallbackEntry::WithRules(rules) => &rules.worker,
+            FallbackEntry::Model(worker) => worker,
+            FallbackEntry::WithRules(rules) => &rules.model,
         })
-        .find(|worker| worker.vendor() != *vendor)
+        .find(|worker| worker.agent_id() != *agent_id)
 }
 
 /// The CLIs being read live now, with when each read started.
@@ -473,7 +493,7 @@ fn panel_opened(now: std::time::Instant) -> bool {
 /// plan says whether a read is on its way; the answer lands on the board for the next ask.
 fn read_again(
     ctx: &Ctx,
-    crew: &[WorkerRef],
+    crew: &[ModelRef],
     mut plans: Vec<PlanUsage>,
     opened: bool,
     now: OffsetDateTime,
@@ -496,7 +516,7 @@ fn read_again(
             }
             due
         };
-        let worker = crew.iter().find(|worker| worker.vendor().0 == plan.agent);
+        let worker = crew.iter().find(|worker| worker.agent_id().0 == plan.agent);
         if let Some(worker) = worker.filter(|_| due) {
             read_live_for(ctx, worker);
         }
@@ -508,11 +528,11 @@ fn read_again(
 /// `r` on the Usage tab: every CLI of the crew read live again now.
 pub(crate) fn read_plan_usage(ctx: &Ctx) {
     let settings = ctx.settings();
-    let mut crew = vec![settings.main_agent.clone()];
+    let mut crew = vec![settings.crew.main.clone()];
     crew.extend(settings.crew.members());
     for worker in &crew {
-        let vendor = worker.vendor();
-        if !settings.endpoints.contains_key(&vendor.0) && !bills_api_key(settings, &vendor) {
+        let agent_id = worker.agent_id();
+        if !settings.endpoints.contains_key(&agent_id.0) && !bills_api_key(settings, &agent_id) {
             read_live_for(ctx, worker);
         }
     }
@@ -520,15 +540,16 @@ pub(crate) fn read_plan_usage(ctx: &Ctx) {
 
 /// The crew's workers whose CLI is read live for its account, by the CLI's id: one each, for
 /// CLIs a plan read can name the account of.
-pub(crate) fn live_readers(ctx: &Ctx) -> Vec<WorkerRef> {
+pub(crate) fn live_readers(ctx: &Ctx) -> Vec<ModelRef> {
     let settings = ctx.settings();
-    let mut crew = vec![settings.main_agent.clone()];
+    let mut crew = vec![settings.crew.main.clone()];
     crew.extend(settings.crew.members());
-    let mut readers: Vec<WorkerRef> = Vec::new();
+    let mut readers: Vec<ModelRef> = Vec::new();
     for worker in crew {
-        let vendor = worker.vendor();
-        let paid = settings.endpoints.contains_key(&vendor.0) || bills_api_key(settings, &vendor);
-        if !paid && !readers.iter().any(|known| known.vendor() == vendor) {
+        let agent_id = worker.agent_id();
+        let paid =
+            settings.endpoints.contains_key(&agent_id.0) || bills_api_key(settings, &agent_id);
+        if !paid && !readers.iter().any(|known| known.agent_id() == agent_id) {
             readers.push(worker);
         }
     }
@@ -538,20 +559,20 @@ pub(crate) fn live_readers(ctx: &Ctx) -> Vec<WorkerRef> {
 /// Reads `worker`'s CLI live, as the Usage tab does, then calls `then`: for a CLI whose
 /// login check doesn't name the account, which its plan read does, as Codex's.
 pub(crate) fn read_account_live(
-    workers: &dyn WorkerDirectory,
-    quota: &Arc<dyn QuotaBoard>,
+    workers: &dyn RunnerDirectory,
+    plan_usage: &Arc<dyn PlanUsageBoard>,
     internal: tokio::sync::mpsc::UnboundedSender<super::ctx::Internal>,
-    worker: &WorkerRef,
+    worker: &ModelRef,
     then: impl FnOnce() + Send + 'static,
 ) {
-    read_live(workers, quota, worker, move || {
+    read_live(workers, plan_usage, worker, move || {
         let _ = internal.send(super::ctx::Internal::PlanUsageRead);
         then();
     });
 }
 
-/// `/login` and `/logout` commands handed to the terminal, with the CLI each signs in or out.
-static SIGNING: Mutex<Vec<(Vec<String>, WorkerRef)>> = Mutex::new(Vec::new());
+/// `/login` and `/logout` commands passed to the terminal, with the CLI each signs in or out.
+static SIGNING: Mutex<Vec<(Vec<String>, ModelRef)>> = Mutex::new(Vec::new());
 
 /// The screen is back from a command it ran in the terminal. After a CLI's `/login` or
 /// `/logout`, the account may have changed, so the reading kept from before stops standing as
@@ -564,20 +585,21 @@ pub(crate) fn terminal_returned(ctx: &Ctx, argv: &[String]) {
         };
         signing.remove(at).1
     };
-    ctx.services.quota.doubt(&worker.vendor());
+    ctx.services.plan_usage.doubt(&worker.agent_id());
     let _ = ctx.internal.send(super::ctx::Internal::PlanUsageRead);
     read_live_for(ctx, &worker);
 }
 
-/// A live read whose answer brings a new status line, so the bottom line shows it too.
-fn read_live_for(ctx: &Ctx, worker: &WorkerRef) {
+/// A live read whose answer goes out with a new header and bottom line, so the bottom line
+/// shows it too.
+fn read_live_for(ctx: &Ctx, worker: &ModelRef) {
     let internal = ctx.internal.clone();
     let read = move || {
         let _ = internal.send(super::ctx::Internal::PlanUsageRead);
     };
     read_live(
         ctx.services.workers.as_ref(),
-        &ctx.services.quota,
+        &ctx.services.plan_usage,
         worker,
         read,
     );
@@ -587,9 +609,9 @@ fn read_live_for(ctx: &Ctx, worker: &WorkerRef) {
 /// free answers nothing, and its card says it has no live reading. Its probe is registered
 /// when its worker is built, which no session may have done yet, so the worker is built first.
 fn read_live(
-    workers: &dyn WorkerDirectory,
-    quota: &Arc<dyn QuotaBoard>,
-    worker: &WorkerRef,
+    workers: &dyn RunnerDirectory,
+    plan_usage: &Arc<dyn PlanUsageBoard>,
+    worker: &ModelRef,
     read: impl FnOnce() + Send + 'static,
 ) {
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
@@ -598,25 +620,25 @@ fn read_live(
     if workers.get(worker).is_err() {
         return;
     }
-    let vendor = worker.vendor();
+    let agent_id = worker.agent_id();
     let now = std::time::Instant::now();
     {
         let mut reading = READING.lock().unwrap_or_else(PoisonError::into_inner);
         let busy = reading
-            .get(&vendor.0)
+            .get(&agent_id.0)
             .is_some_and(|at| now.saturating_duration_since(*at) < READ_GIVES_UP);
         if busy {
             return;
         }
-        reading.insert(vendor.0.clone(), now);
+        reading.insert(agent_id.0.clone(), now);
     }
-    let quota = Arc::clone(quota);
+    let plan_usage = Arc::clone(plan_usage);
     runtime.spawn(async move {
-        quota.probe(&vendor).await;
+        plan_usage.probe(&agent_id).await;
         READING
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .remove(&vendor.0);
+            .remove(&agent_id.0);
         read();
     });
 }
@@ -629,7 +651,7 @@ fn reading_now(agent: &str) -> bool {
 }
 
 /// `Claude · 42% of the five_hour window · resets in 2h 10m`.
-fn quota_line(chip: &QuotaChip, now: OffsetDateTime) -> String {
+fn plan_usage_line(chip: &PlanUsageChip, now: OffsetDateTime) -> String {
     let mut parts = vec![chip.label.clone()];
     if chip.health == HealthState::Down {
         parts.push("down".to_owned());
@@ -644,13 +666,13 @@ fn quota_line(chip: &QuotaChip, now: OffsetDateTime) -> String {
         .map(|window| window.replace('_', "-"))
         .unwrap_or_else(|| "current".to_owned());
     match (reading.status, reading.used) {
-        (QuotaStatus::Rejected, _) => parts.push(format!("out of the {window} window")),
+        (PlanUsageStatus::Rejected, _) => parts.push(format!("out of the {window} window")),
         (_, Some(used)) => parts.push(format!(
             "{:.0}% of the {window} window used",
             (used * 100.0).clamp(0.0, 100.0)
         )),
-        (QuotaStatus::Warning, None) => parts.push(format!("near the {window} limit")),
-        (QuotaStatus::Allowed | QuotaStatus::Unknown, None) => {
+        (PlanUsageStatus::Warning, None) => parts.push(format!("near the {window} limit")),
+        (PlanUsageStatus::Allowed | PlanUsageStatus::Unknown, None) => {
             parts.push(format!("{window} window open"));
         }
     }
@@ -676,21 +698,21 @@ fn usd(spend: &Spend) -> String {
 }
 
 /// `/login` and `/logout`: the screen steps aside while the agent CLI's own command runs in
-/// the terminal, as when you take over a card. No agent means the main agent's CLI.
+/// the terminal, as when you take over a task. No agent means the main agent's CLI.
 pub(crate) fn login(
     ctx: &mut Ctx,
     agent: Option<String>,
     log_in: bool,
 ) -> anyhow::Result<Vec<Effect>> {
     let command = if log_in { "/login" } else { "/logout" };
-    let agent = agent.unwrap_or_else(|| ctx.settings().main_agent.worker.clone());
+    let agent = agent.unwrap_or_else(|| ctx.settings().crew.main.agent.clone());
     let adapters = crate::commands::adapters_turning_on(
         Some(&ctx.env),
         ctx.settings.resolved(),
         std::slice::from_ref(&agent),
     )?;
     let Some(adapter) = adapters.iter().find(|adapter| adapter.id() == agent) else {
-        bail!("{agent} isn't an agent CLI Argonauts knows. /agents lists them.");
+        bail!("{agent} isn't an agent CLI Argonauts Code knows. /agents lists them.");
     };
     let Some(login) = adapter.setup_hints().login else {
         bail!(
@@ -726,9 +748,9 @@ pub(crate) fn login(
         NoteLevel::Info,
         format!("Running `{shown}`. The screen comes back when it ends."),
     );
-    let worker = match ctx.settings().main_agent.clone() {
-        main if main.worker == agent => main,
-        _ => WorkerRef::new(agent, None),
+    let worker = match ctx.settings().crew.main.clone() {
+        main if main.agent == agent => main,
+        _ => ModelRef::new(agent, None),
     };
     SIGNING
         .lock()
@@ -816,20 +838,25 @@ pub(crate) fn feedback(ctx: &mut Ctx, text: Option<String>) -> anyhow::Result<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::limits::{QuotaReading, QuotaSource};
-    use argonauts_core::names::VendorId;
+    use argonauts_core::limits::{PlanUsageReading, PlanUsageSource};
+    use argonauts_core::names::AgentId;
+    use argonauts_core::settings::crew::CrewSettings;
 
-    fn chip(status: QuotaStatus, used: Option<f64>, resets_in: Option<Duration>) -> QuotaChip {
+    fn chip(
+        status: PlanUsageStatus,
+        used: Option<f64>,
+        resets_in: Option<Duration>,
+    ) -> PlanUsageChip {
         let now = OffsetDateTime::from_unix_timestamp(1_790_000_000).unwrap();
-        QuotaChip {
+        PlanUsageChip {
             label: "Codex".to_owned(),
-            reading: Some(QuotaReading {
-                vendor: VendorId("codex".to_owned()),
+            reading: Some(PlanUsageReading {
+                agent_id: AgentId("codex".to_owned()),
                 status,
                 used,
                 resets_at: resets_in.map(|left| now + left),
                 window: Some("five_hour".to_owned()),
-                source: QuotaSource::AppServer,
+                source: PlanUsageSource::AppServer,
                 observed_at: now,
                 detail: None,
                 wrap_up: false,
@@ -839,15 +866,15 @@ mod tests {
         }
     }
 
-    fn window(agent: &str, name: &str, used: f64, resets_in: Duration) -> QuotaReading {
+    fn window(agent: &str, name: &str, used: f64, resets_in: Duration) -> PlanUsageReading {
         let now = OffsetDateTime::from_unix_timestamp(1_790_000_000).unwrap();
-        QuotaReading {
-            vendor: VendorId(agent.to_owned()),
-            status: QuotaStatus::Allowed,
+        PlanUsageReading {
+            agent_id: AgentId(agent.to_owned()),
+            status: PlanUsageStatus::Allowed,
             used: Some(used),
             resets_at: Some(now + resets_in),
             window: Some(name.to_owned()),
-            source: QuotaSource::AppServer,
+            source: PlanUsageSource::AppServer,
             observed_at: now - Duration::minutes(2),
             detail: None,
             wrap_up: false,
@@ -857,7 +884,7 @@ mod tests {
     /// A live reading of `agent` for `account`, read two minutes before the tests' now, with
     /// windows of `(name, used, resets in)`.
     fn live(
-        quota: &dyn QuotaBoard,
+        plan_usage: &dyn PlanUsageBoard,
         agent: &str,
         account: Option<&str>,
         windows: &[(&str, f64, Duration)],
@@ -865,8 +892,8 @@ mod tests {
         use argonauts_core::plan_usage::LiveWindow;
         let now = OffsetDateTime::from_unix_timestamp(1_790_000_000).unwrap();
         let mut reading = LiveUsage::new(
-            VendorId(agent.to_owned()),
-            QuotaSource::AppServer,
+            AgentId(agent.to_owned()),
+            PlanUsageSource::AppServer,
             now - Duration::minutes(2),
         );
         reading.account = account.map(str::to_owned);
@@ -878,35 +905,35 @@ mod tests {
                     .resets_at(Some(now + *resets_in))
             })
             .collect();
-        quota.observe_live(reading);
+        plan_usage.observe_live(reading);
     }
 
     fn plans_of(
         settings: &Settings,
-        quota: &dyn QuotaBoard,
+        plan_usage: &dyn PlanUsageBoard,
         health: &dyn HealthBoard,
     ) -> Vec<PlanUsage> {
-        plans_under(settings, quota, health, None)
+        plans_under(settings, plan_usage, health, None)
     }
 
     /// The crew's plan usage with a plan usage limit set, or none.
     fn plans_under(
         settings: &Settings,
-        quota: &dyn QuotaBoard,
+        plan_usage: &dyn PlanUsageBoard,
         health: &dyn HealthBoard,
         limit: Option<f64>,
     ) -> Vec<PlanUsage> {
         let now = OffsetDateTime::from_unix_timestamp(1_790_000_000).unwrap();
-        let mut crew = vec![settings.main_agent.clone()];
+        let mut crew = vec![settings.crew.main.clone()];
         crew.extend(settings.crew.members());
         let named = Named {
             cli: &|id| id.to_uppercase(),
             worker: &|worker| format!("<{worker}>"),
         };
-        plan_usage(
+        plan_usage_cards(
             &crew,
             settings,
-            &Boards { quota, health },
+            &Boards { plan_usage, health },
             &named,
             limit,
             now,
@@ -915,19 +942,24 @@ mod tests {
 
     #[test]
     fn each_cli_shows_its_windows_shortest_first_and_none_that_has_reset() {
-        use argonauts_testkit::services::{MemoryHealthBoard, MemoryQuotaBoard};
+        use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
 
         let settings = Settings {
-            main_agent: WorkerRef::new("claude-code", Some("opus".into())),
-            crew: argonauts_core::settings::crew::CrewSettings::of(vec![
-                WorkerRef::new("codex", None),
-                WorkerRef::new("claude-code", Some("haiku".into())),
-            ]),
+            crew: CrewSettings {
+                main: ModelRef::new("claude-code", Some("opus".into())),
+                ..CrewSettings::of(vec![
+                    ModelRef::new("codex", None),
+                    ModelRef::new("claude-code", Some("haiku".into())),
+                ])
+            },
             ..Settings::default()
         };
-        let (quota, health) = (MemoryQuotaBoard::default(), MemoryHealthBoard::default());
+        let (plan_usage, health) = (
+            MemoryPlanUsageBoard::default(),
+            MemoryHealthBoard::default(),
+        );
         live(
-            &quota,
+            &plan_usage,
             "claude-code",
             Some("me@example.com"),
             &[
@@ -935,12 +967,12 @@ mod tests {
                 ("five_hour", 0.71, Duration::hours(3)),
             ],
         );
-        let mut max = quota.live(&VendorId("claude-code".into())).unwrap();
+        let mut max = plan_usage.live(&AgentId("claude-code".into())).unwrap();
         max.plan = Some("Max".into());
-        quota.observe_live(max);
+        plan_usage.observe_live(max);
         // Read before its window ended: it says nothing about the window open now.
         live(
-            &quota,
+            &plan_usage,
             "codex",
             Some("me@example.com"),
             &[
@@ -949,7 +981,7 @@ mod tests {
             ],
         );
 
-        let plans = plans_of(&settings, &quota, &health);
+        let plans = plans_of(&settings, &plan_usage, &health);
         let [claude, codex] = plans.as_slice() else {
             panic!("one entry per CLI, in crew order: {plans:?}");
         };
@@ -969,35 +1001,37 @@ mod tests {
 
     #[test]
     fn only_a_live_reading_of_the_account_signed_in_shows() {
-        use argonauts_testkit::services::{MemoryHealthBoard, MemoryQuotaBoard};
+        use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
 
         let settings = Settings {
-            main_agent: WorkerRef::new("codex", None),
-            crew: argonauts_core::settings::crew::CrewSettings::of(vec![WorkerRef::new(
-                "antigravity-cli",
-                None,
-            )]),
+            crew: CrewSettings {
+                main: ModelRef::new("codex", None),
+                ..CrewSettings::of(vec![ModelRef::new("antigravity-cli", None)])
+            },
             ..Settings::default()
         };
-        let (quota, health) = (MemoryQuotaBoard::default(), MemoryHealthBoard::default());
+        let (plan_usage, health) = (
+            MemoryPlanUsageBoard::default(),
+            MemoryHealthBoard::default(),
+        );
         // A session's stream reading names no account, so it never stands for one.
-        quota.observe(window("codex", "five_hour", 0.5, Duration::hours(2)));
-        let plans = plans_of(&settings, &quota, &health);
+        plan_usage.observe(window("codex", "five_hour", 0.5, Duration::hours(2)));
+        let plans = plans_of(&settings, &plan_usage, &health);
         assert!(plans[0].windows.is_empty() && plans[0].live.is_none());
 
         live(
-            &quota,
+            &plan_usage,
             "codex",
             Some("one@example.com"),
             &[("five_hour", 0.2, Duration::hours(2))],
         );
         live(
-            &quota,
+            &plan_usage,
             "codex",
             Some("two@example.com"),
             &[("five_hour", 0.9, Duration::hours(1))],
         );
-        let plans = plans_of(&settings, &quota, &health);
+        let plans = plans_of(&settings, &plan_usage, &health);
         let shown = plans[0].live.as_ref().unwrap();
         assert_eq!(shown.account.as_deref(), Some("two@example.com"));
         assert_eq!(plans[0].windows[0].used, Some(0.9));
@@ -1005,46 +1039,48 @@ mod tests {
         // A reading that names no account shows only while it's fresh.
         let now = OffsetDateTime::from_unix_timestamp(1_790_000_000).unwrap();
         let mut stale = LiveUsage::new(
-            VendorId("antigravity-cli".into()),
-            QuotaSource::UsageProbe,
+            AgentId("antigravity-cli".into()),
+            PlanUsageSource::UsageProbe,
             now - Duration::minutes(30),
         );
         stale.windows =
             vec![argonauts_core::plan_usage::LiveWindow::new("w", "w", "w").used(Some(0.1))];
-        quota.observe_live(stale);
-        let plans = plans_of(&settings, &quota, &health);
+        plan_usage.observe_live(stale);
+        let plans = plans_of(&settings, &plan_usage, &health);
         assert!(plans[1].live.is_none() && plans[1].windows.is_empty());
     }
 
     #[test]
     fn a_cli_that_is_out_names_who_takes_its_work_and_an_endpoint_has_no_plan() {
         use argonauts_core::settings::agents::EndpointSettings;
-        use argonauts_testkit::services::{MemoryHealthBoard, MemoryQuotaBoard};
+        use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
 
         let mut settings = Settings {
-            main_agent: WorkerRef::new("antigravity-cli", None),
-            crew: argonauts_core::settings::crew::CrewSettings::of(vec![WorkerRef::new(
-                "openrouter",
-                Some("qwen".into()),
-            )]),
+            crew: CrewSettings {
+                main: ModelRef::new("antigravity-cli", None),
+                ..CrewSettings::of(vec![ModelRef::new("openrouter", Some("qwen".into()))])
+            },
             ..Settings::default()
         };
         settings.fallback.order = vec![
-            FallbackEntry::Worker(WorkerRef::new("antigravity-cli", Some("flash".into()))),
-            FallbackEntry::Worker(WorkerRef::new("codex", Some("gpt-5.6".into()))),
+            FallbackEntry::Model(ModelRef::new("antigravity-cli", Some("flash".into()))),
+            FallbackEntry::Model(ModelRef::new("codex", Some("gpt-5.6".into()))),
         ];
         settings
             .endpoints
             .insert("openrouter".into(), EndpointSettings::default());
-        let (quota, health) = (MemoryQuotaBoard::default(), MemoryHealthBoard::default());
+        let (plan_usage, health) = (
+            MemoryPlanUsageBoard::default(),
+            MemoryHealthBoard::default(),
+        );
         live(
-            &quota,
+            &plan_usage,
             "antigravity-cli",
             None,
             &[("day", 1.0, Duration::hours(20))],
         );
 
-        let plans = plans_of(&settings, &quota, &health);
+        let plans = plans_of(&settings, &plan_usage, &health);
         assert_eq!(plans[0].moved_to.as_deref(), Some("<codex/gpt-5.6>"));
         assert!(plans[1].pays_per_token && plans[1].windows.is_empty());
         assert_eq!(plans[1].moved_to, None);
@@ -1052,23 +1088,25 @@ mod tests {
 
     #[test]
     fn a_cli_at_your_plan_usage_limit_names_who_takes_its_tasks() {
-        use argonauts_testkit::services::{MemoryHealthBoard, MemoryQuotaBoard};
+        use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
 
         let mut settings = Settings {
-            main_agent: WorkerRef::new("codex", Some("gpt-5.6".into())),
-            crew: argonauts_core::settings::crew::CrewSettings::of(vec![WorkerRef::new(
-                "claude-code",
-                Some("opus".into()),
-            )]),
+            crew: CrewSettings {
+                main: ModelRef::new("codex", Some("gpt-5.6".into())),
+                ..CrewSettings::of(vec![ModelRef::new("claude-code", Some("opus".into()))])
+            },
             ..Settings::default()
         };
-        settings.fallback.order = vec![FallbackEntry::Worker(WorkerRef::new(
+        settings.fallback.order = vec![FallbackEntry::Model(ModelRef::new(
             "claude-code",
             Some("sonnet".into()),
         ))];
-        let (quota, health) = (MemoryQuotaBoard::default(), MemoryHealthBoard::default());
+        let (plan_usage, health) = (
+            MemoryPlanUsageBoard::default(),
+            MemoryHealthBoard::default(),
+        );
         live(
-            &quota,
+            &plan_usage,
             "codex",
             Some("me@example.com"),
             &[
@@ -1077,20 +1115,20 @@ mod tests {
             ],
         );
         live(
-            &quota,
+            &plan_usage,
             "claude-code",
             Some("me@example.com"),
             &[("five_hour", 0.71, Duration::hours(3))],
         );
 
-        let plans = plans_under(&settings, &quota, &health, Some(0.8));
+        let plans = plans_under(&settings, &plan_usage, &health, Some(0.8));
         assert_eq!(plans[0].moved_to.as_deref(), Some("<claude-code/sonnet>"));
         assert_eq!(
             plans[1].moved_to, None,
             "under the limit, it keeps its tasks"
         );
         // With no limit a plan is used until its provider says it's out.
-        let plans = plans_of(&settings, &quota, &health);
+        let plans = plans_of(&settings, &plan_usage, &health);
         assert_eq!(plans[0].moved_to, None);
     }
 
@@ -1100,7 +1138,7 @@ mod tests {
             key: key.to_owned(),
             value: value.to_owned(),
             layer: "project".to_owned(),
-            preset_from: None,
+            workflow_from: None,
             default_scope: argonauts_core::settings::SettingScope::Project,
             safety: false,
             allowed: Vec::new(),
@@ -1122,11 +1160,11 @@ mod tests {
     }
 
     #[test]
-    fn a_quota_line_says_how_much_is_used_and_when_it_resets() {
+    fn a_plan_usage_line_says_how_much_is_used_and_when_it_resets() {
         let now = OffsetDateTime::from_unix_timestamp(1_790_000_000).unwrap();
-        let line = quota_line(
+        let line = plan_usage_line(
             &chip(
-                QuotaStatus::Allowed,
+                PlanUsageStatus::Allowed,
                 Some(0.42),
                 Some(Duration::minutes(130)),
             ),
@@ -1136,23 +1174,24 @@ mod tests {
             line,
             "Codex · 42% of the five-hour window used · resets in 2h 10m"
         );
-        let out = quota_line(&chip(QuotaStatus::Rejected, Some(1.0), None), now);
+        let out = plan_usage_line(&chip(PlanUsageStatus::Rejected, Some(1.0), None), now);
         assert_eq!(out, "Codex · out of the five-hour window");
-        let none = QuotaChip {
+        let none = PlanUsageChip {
             reading: None,
             health: HealthState::Down,
             windows: Vec::new(),
-            ..chip(QuotaStatus::Unknown, None, None)
+            ..chip(PlanUsageStatus::Unknown, None, None)
         };
         assert_eq!(
-            quota_line(&none, now),
+            plan_usage_line(&none, now),
             "Codex · down · no plan usage reading yet"
         );
     }
 
     #[test]
-    fn periods_take_the_vendors_words_too() {
-        assert_eq!(parse_period(None).unwrap(), UsagePeriod::Today);
+    fn periods_take_the_agents_words_too() {
+        assert_eq!(parse_period(None).unwrap(), UsagePeriod::All);
+        assert_eq!(parse_period(Some("today")).unwrap(), UsagePeriod::Today);
         assert_eq!(parse_period(Some("weekly")).unwrap(), UsagePeriod::Week);
         assert_eq!(parse_period(Some("monthly")).unwrap(), UsagePeriod::Month);
         assert_eq!(parse_period(Some("cumulative")).unwrap(), UsagePeriod::All);
@@ -1191,25 +1230,25 @@ mod tests {
 
     #[test]
     fn a_tasks_limit_is_the_one_you_set_in_its_own_unit() {
-        let unset = BudgetSettings {
+        let unset = SpendLimits {
             per_task_usd: None,
-            ..BudgetSettings::default()
+            ..SpendLimits::default()
         };
         assert_eq!(task_limit(&unset), None);
-        let dollars = BudgetSettings {
+        let dollars = SpendLimits {
             per_task_usd: Some(1.5),
             ..unset.clone()
         };
         let limit = task_limit(&dollars).expect("a limit");
-        assert_eq!((limit.unit, limit.amount), (BudgetUnit::Usd, 1.5));
-        let tokens = BudgetSettings {
+        assert_eq!((limit.unit, limit.amount), (LimitUnit::Usd, 1.5));
+        let tokens = SpendLimits {
             per_task_tokens: Some(200_000),
             ..unset.clone()
         };
         let limit = task_limit(&tokens).expect("a limit");
-        assert_eq!((limit.unit, limit.amount), (BudgetUnit::Tokens, 200_000.0));
+        assert_eq!((limit.unit, limit.amount), (LimitUnit::Tokens, 200_000.0));
         // Zero dollars is no limit to fill toward.
-        let zero = BudgetSettings {
+        let zero = SpendLimits {
             per_task_usd: Some(0.0),
             ..unset
         };
@@ -1218,44 +1257,46 @@ mod tests {
 
     #[test]
     fn a_run_counts_the_tasks_it_merged_of_those_it_still_means_to_do() {
-        let task = |n: u32, state: CardState| CardBrief {
-            card: argonauts_core::CardId::numbered(n),
+        let task = |n: u32, state: TaskState| TaskBrief {
+            task: argonauts_core::TaskId::numbered(n),
             title: format!("task {n}"),
             state,
-            owner: None,
+            worker: None,
             note: String::new(),
         };
         let tasks = [
-            task(1, CardState::Integrated),
-            task(2, CardState::Running),
-            task(3, CardState::Waiting),
-            task(4, CardState::Cancelled),
-            task(5, CardState::TakenOver),
+            task(1, TaskState::Merged),
+            task(2, TaskState::Running),
+            task(3, TaskState::Waiting),
+            task(4, TaskState::Cancelled),
+            task(5, TaskState::TakenOver),
         ];
         let run = RunId::new("run-03").unwrap();
         let progress = tasks_of(&run, &tasks, None);
         assert_eq!((progress.tasks_done, progress.tasks), (1, 3));
-        assert_eq!(tasks_of(&run, &[], None).tasks, 0, "a solo run has none");
+        assert_eq!(tasks_of(&run, &[], None).tasks, 0, "a Captain run has none");
     }
 
     /// Builds only the workers it was given, and says which it was asked for.
     #[derive(Default)]
     struct Building {
-        built: argonauts_testkit::worker::FakeDirectory,
+        built: argonauts_testkit::runner::FakeDirectory,
         asked: Mutex<Vec<String>>,
     }
 
-    impl WorkerDirectory for Building {
+    impl RunnerDirectory for Building {
         fn get(
             &self,
-            worker: &WorkerRef,
-        ) -> Result<Arc<dyn argonauts_core::worker::Worker>, argonauts_core::worker::WorkerError>
-        {
+            worker: &ModelRef,
+        ) -> Result<
+            Arc<dyn argonauts_core::session_runner::SessionRunner>,
+            argonauts_core::session_runner::RunnerError,
+        > {
             self.asked.lock().unwrap().push(worker.to_string());
             self.built.get(worker)
         }
 
-        fn available(&self) -> Vec<WorkerRef> {
+        fn available(&self) -> Vec<ModelRef> {
             self.built.available()
         }
     }
@@ -1264,49 +1305,49 @@ mod tests {
     /// set.
     #[derive(Default)]
     struct Probed {
-        board: argonauts_testkit::services::MemoryQuotaBoard,
+        board: argonauts_testkit::services::MemoryPlanUsageBoard,
         probed: Mutex<Vec<String>>,
         failed: Option<String>,
         /// When the failed read happened.
         failed_at: Option<OffsetDateTime>,
     }
 
-    impl QuotaBoard for Probed {
-        fn observe(&self, reading: QuotaReading) {
+    impl PlanUsageBoard for Probed {
+        fn observe(&self, reading: PlanUsageReading) {
             self.board.observe(reading);
         }
-        fn get(&self, vendor: &VendorId) -> Option<QuotaReading> {
-            self.board.get(vendor)
+        fn get(&self, agent_id: &AgentId) -> Option<PlanUsageReading> {
+            self.board.get(agent_id)
         }
-        fn all(&self) -> Vec<QuotaReading> {
+        fn all(&self) -> Vec<PlanUsageReading> {
             self.board.all()
         }
-        fn windows(&self, vendor: &VendorId) -> Vec<QuotaReading> {
-            self.board.windows(vendor)
+        fn windows(&self, agent_id: &AgentId) -> Vec<PlanUsageReading> {
+            self.board.windows(agent_id)
         }
-        fn plan(&self, vendor: &VendorId) -> Option<String> {
-            self.board.plan(vendor)
+        fn plan(&self, agent_id: &AgentId) -> Option<String> {
+            self.board.plan(agent_id)
         }
-        fn observe_plan(&self, vendor: &VendorId, plan: String) {
-            self.board.observe_plan(vendor, plan);
+        fn observe_plan(&self, agent_id: &AgentId, plan: String) {
+            self.board.observe_plan(agent_id, plan);
         }
         fn observe_live(&self, reading: LiveUsage) {
             self.board.observe_live(reading);
         }
-        fn live(&self, vendor: &VendorId) -> Option<LiveUsage> {
-            self.board.live(vendor)
+        fn live(&self, agent_id: &AgentId) -> Option<LiveUsage> {
+            self.board.live(agent_id)
         }
-        fn failed(&self, _: &VendorId) -> Option<String> {
+        fn failed(&self, _: &AgentId) -> Option<String> {
             self.failed.clone()
         }
-        fn doubted_at(&self, _: &VendorId) -> Option<OffsetDateTime> {
+        fn doubted_at(&self, _: &AgentId) -> Option<OffsetDateTime> {
             self.failed_at
         }
         fn probe(
             &self,
-            vendor: &VendorId,
-        ) -> argonauts_core::future::BoxFuture<'_, Option<QuotaReading>> {
-            self.probed.lock().unwrap().push(vendor.0.clone());
+            agent_id: &AgentId,
+        ) -> argonauts_core::future::BoxFuture<'_, Option<PlanUsageReading>> {
+            self.probed.lock().unwrap().push(agent_id.0.clone());
             Box::pin(async { None })
         }
     }
@@ -1316,14 +1357,17 @@ mod tests {
         use argonauts_testkit::services::MemoryHealthBoard;
 
         let settings = Settings {
-            main_agent: WorkerRef::new("codex", None),
+            crew: CrewSettings {
+                main: ModelRef::new("codex", None),
+                ..CrewSettings::default()
+            },
             ..Settings::default()
         };
-        let quota = Probed {
+        let plan_usage = Probed {
             failed: Some("failed to fetch codex rate limits".into()),
             ..Probed::default()
         };
-        let plans = plans_of(&settings, &quota, &MemoryHealthBoard::default());
+        let plans = plans_of(&settings, &plan_usage, &MemoryHealthBoard::default());
         assert_eq!(
             plans[0].failed.as_deref(),
             Some("failed to fetch codex rate limits")
@@ -1338,39 +1382,42 @@ mod tests {
         use argonauts_testkit::services::MemoryHealthBoard;
 
         let settings = Settings {
-            main_agent: WorkerRef::new("codex", None),
+            crew: CrewSettings {
+                main: ModelRef::new("codex", None),
+                ..CrewSettings::default()
+            },
             ..Settings::default()
         };
         let now = OffsetDateTime::from_unix_timestamp(1_790_000_000).unwrap();
-        let quota = Probed {
+        let plan_usage = Probed {
             failed: Some("failed to fetch codex rate limits".into()),
             failed_at: Some(now - Duration::minutes(1)),
             ..Probed::default()
         };
         live(
-            &quota,
+            &plan_usage,
             "codex",
             Some("one@example.com"),
             &[("five_hour", 0.95, Duration::hours(1))],
         );
-        let plans = plans_of(&settings, &quota, &MemoryHealthBoard::default());
+        let plans = plans_of(&settings, &plan_usage, &MemoryHealthBoard::default());
         assert!(plans[0].live.is_none());
         assert!(plans[0].windows.is_empty());
         let last = plans[0].last.as_ref().unwrap();
         assert_eq!(last.account.as_deref(), Some("one@example.com"));
 
         // A reading after the failure stands again.
-        let quota = Probed {
+        let plan_usage = Probed {
             failed_at: Some(now - Duration::minutes(5)),
             ..Probed::default()
         };
         live(
-            &quota,
+            &plan_usage,
             "codex",
             Some("one@example.com"),
             &[("five_hour", 0.95, Duration::hours(1))],
         );
-        let plans = plans_of(&settings, &quota, &MemoryHealthBoard::default());
+        let plans = plans_of(&settings, &plan_usage, &MemoryHealthBoard::default());
         assert!(plans[0].live.is_some() && plans[0].last.is_none());
     }
 
@@ -1379,7 +1426,7 @@ mod tests {
     #[test]
     fn a_cli_that_bills_an_api_key_has_no_plan_windows() {
         use argonauts_core::settings::agents::AgentSettings;
-        use argonauts_testkit::services::{MemoryHealthBoard, MemoryQuotaBoard};
+        use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
 
         let mut settings = Settings::default();
         settings.agents.insert(
@@ -1389,20 +1436,26 @@ mod tests {
                 ..AgentSettings::default()
             },
         );
-        let quota = MemoryQuotaBoard::default();
+        let plan_usage = MemoryPlanUsageBoard::default();
         live(
-            &quota,
+            &plan_usage,
             "claude-code",
             Some("someone@example.com"),
             &[("five_hour", 0.4, Duration::hours(1))],
         );
-        let plans = plans_of(&settings, &quota, &MemoryHealthBoard::default());
+        let plans = plans_of(&settings, &plan_usage, &MemoryHealthBoard::default());
         let claude = plans
             .iter()
             .find(|plan| plan.agent == "claude-code")
             .unwrap();
         assert!(claude.pays_per_token);
         assert!(claude.windows.is_empty() && claude.live.is_none() && claude.last.is_none());
+        // What it spends is charged, which the spend card tells from spend inside a plan.
+        assert!(pays_per_token(
+            &settings,
+            &AgentId("claude-code".to_owned())
+        ));
+        assert!(!pays_per_token(&settings, &AgentId("codex".to_owned())));
     }
 
     /// A CLI's probe is registered when its worker is built, so a live read on a fresh start,
@@ -1413,28 +1466,28 @@ mod tests {
         let directory = Building::default();
         directory
             .built
-            .add_worker(Arc::new(argonauts_testkit::FakeWorker::harness(
+            .add_worker(Arc::new(argonauts_testkit::FakeRunner::cli(
                 "live-built/m",
                 "m",
             )));
         let probed = Arc::new(Probed::default());
-        let quota: Arc<dyn QuotaBoard> = probed.clone();
-        let built: WorkerRef = "live-built/m".parse().unwrap();
-        let missing: WorkerRef = "live-missing/m".parse().unwrap();
+        let plan_usage: Arc<dyn PlanUsageBoard> = probed.clone();
+        let built: ModelRef = "live-built/m".parse().unwrap();
+        let missing: ModelRef = "live-missing/m".parse().unwrap();
         let answered = Arc::new(Mutex::new(Vec::new()));
         let said = |name: &'static str| {
             let answered = Arc::clone(&answered);
             move || answered.lock().unwrap().push(name)
         };
-        read_live(&directory, &quota, &built, said("built"));
-        read_live(&directory, &quota, &missing, said("missing"));
+        read_live(&directory, &plan_usage, &built, said("built"));
+        read_live(&directory, &plan_usage, &missing, said("missing"));
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert_eq!(
             *directory.asked.lock().unwrap(),
             ["live-built/m", "live-missing/m"]
         );
         assert_eq!(*probed.probed.lock().unwrap(), ["live-built"]);
-        // The answer that landed is said, so the bottom line is drawn again.
+        // The answer that merged is said, so the bottom line is drawn again.
         assert_eq!(*answered.lock().unwrap(), ["built"]);
     }
 
@@ -1443,41 +1496,47 @@ mod tests {
     #[test]
     fn the_usage_card_and_the_bottom_line_read_the_same_live_reading() {
         use argonauts_core::plan_usage::LiveWindow;
-        use argonauts_testkit::services::{MemoryHealthBoard, MemoryQuotaBoard};
+        use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
 
         let settings = Settings {
-            main_agent: WorkerRef::new("codex", None),
+            crew: CrewSettings {
+                main: ModelRef::new("codex", None),
+                ..CrewSettings::default()
+            },
             ..Settings::default()
         };
-        let (quota, health) = (MemoryQuotaBoard::default(), MemoryHealthBoard::default());
+        let (plan_usage, health) = (
+            MemoryPlanUsageBoard::default(),
+            MemoryHealthBoard::default(),
+        );
         let now = OffsetDateTime::now_utc();
         let resets = now + Duration::hours(2);
         let read = |account: &str, used: f64| {
             let mut reading =
-                LiveUsage::new(VendorId("codex".to_owned()), QuotaSource::AppServer, now);
+                LiveUsage::new(AgentId("codex".to_owned()), PlanUsageSource::AppServer, now);
             reading.account = Some(account.to_owned());
             reading.windows = vec![
                 LiveWindow::new("five_hour", "five_hour", "five_hour")
                     .used(Some(used))
                     .resets_at(Some(resets)),
             ];
-            quota.observe_live(reading);
+            plan_usage.observe_live(reading);
         };
         read("one@example.com", 0.2);
         read("two@example.com", 0.9);
 
-        let crew = vec![settings.main_agent.clone()];
+        let crew = vec![settings.crew.main.clone()];
         let named = Named {
             cli: &|id| id.to_owned(),
             worker: &|worker| worker.to_string(),
         };
         let boards = Boards {
-            quota: &quota,
+            plan_usage: &plan_usage,
             health: &health,
         };
-        let cards = plan_usage(&crew, &settings, &boards, &named, None, now);
-        let chips = quota_chips(&crew, &quota, &health);
-        let shares = |windows: &[QuotaReading]| -> Vec<(Option<String>, Option<f64>, Option<OffsetDateTime>)> {
+        let cards = plan_usage_cards(&crew, &settings, &boards, &named, None, now);
+        let chips = plan_usage_chips(&crew, &plan_usage, &health);
+        let shares = |windows: &[PlanUsageReading]| -> Vec<(Option<String>, Option<f64>, Option<OffsetDateTime>)> {
             windows
                 .iter()
                 .map(|reading| (reading.window.clone(), reading.used, reading.resets_at))

@@ -95,7 +95,7 @@ pub(crate) fn make(
 }
 
 /// `SettingChanged` for each key, `UiSettings` when a `ui.` value changed, and the effects that
-/// apply the change: a new status, the narrator, and a fresh chat for a new default agent.
+/// apply the change: a new status, the narrator, and a fresh conversation for a new main agent.
 pub(crate) fn announce(
     ctx: &mut Ctx,
     before: Before,
@@ -127,8 +127,8 @@ pub(crate) fn announce(
         send_ui(ctx);
     }
     let mut effects = Vec::new();
-    if ctx.settings().main_agent != before.settings.main_agent {
-        effects.push(Effect::FreshChat);
+    if ctx.settings().crew.main != before.settings.crew.main {
+        effects.push(Effect::FreshConversation);
     }
     effects.push(Effect::SettingsApplied { keys });
     effects
@@ -150,8 +150,8 @@ pub(crate) fn send_ui(ctx: &Ctx) {
 pub(crate) fn scope_for_change(ctx: &Ctx, key: &str, picked: Option<SettingScope>) -> SettingScope {
     picked.unwrap_or_else(|| {
         let layer = ctx.settings.layer(key);
-        let preset_from = ctx.settings.preset_from(&layer);
-        SettingScope::for_change(&layer, preset_from.as_deref())
+        let workflow_from = ctx.settings.workflow_from(&layer);
+        SettingScope::for_change(&layer, workflow_from.as_deref())
     })
 }
 
@@ -293,7 +293,7 @@ fn write_and_reload(
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::settings::ui::WidgetName;
+    use argonauts_core::settings::ui::ModName;
 
     use super::super::tests::Fixture;
     use super::*;
@@ -330,7 +330,7 @@ mod tests {
         assert!(!file_sets(&global, pinned));
         assert_eq!(
             ctx.settings().ui.above_input.mods,
-            [WidgetName::Quota, WidgetName::Context]
+            [ModName::PlanUsage, ModName::Context]
         );
 
         // Still at its default, so it goes to everywhere.
@@ -339,7 +339,7 @@ mod tests {
         assert_eq!(scope, SettingScope::Global);
         make(ctx, &set(parts, "[\"runs\"]"), scope, TrustAfter::Carry).unwrap();
         assert!(file_sets(&global, parts));
-        assert_eq!(ctx.settings().ui.views.status.mods, [WidgetName::Runs]);
+        assert_eq!(ctx.settings().ui.views.status.mods, [ModName::Runs]);
         assert_eq!(scope_for_change(ctx, parts, None), SettingScope::Global);
 
         // Each flag picks its layer, whatever set the value.
@@ -376,10 +376,10 @@ mod tests {
 
     #[test]
     fn pinning_edits_the_file_the_band_came_from() {
-        use argonauts_core::input::{ViewAction, WidgetChange, WidgetsAction};
+        use argonauts_core::input::{ModPlaceChange, ModsAction, ViewAction};
         use argonauts_core::settings::ui::Place;
 
-        use crate::controller::widgets;
+        use crate::controller::mod_places;
 
         let mut fixture = Fixture::new(false, |repo| {
             repo.write(
@@ -394,39 +394,39 @@ mod tests {
 
         // /context pin, then again to unpin.
         let pin = ViewAction::Pin { scope: None };
-        widgets::tab(ctx, Place::Context, pin).unwrap();
+        mod_places::tab(ctx, Place::Context, pin).unwrap();
         assert_eq!(
             ctx.settings().ui.above_input.mods,
-            [WidgetName::Quota, WidgetName::Context]
+            [ModName::PlanUsage, ModName::Context]
         );
         let project = std::fs::read_to_string(ctx.env.project_config()).unwrap();
         assert!(project.contains("\"context\""), "{project}");
         assert!(!file_sets(&ctx.env.global_config(), "ui.above_input.mods"));
-        widgets::tab(ctx, Place::Context, pin).unwrap();
-        assert_eq!(ctx.settings().ui.above_input.mods, [WidgetName::Quota]);
+        mod_places::tab(ctx, Place::Context, pin).unwrap();
+        assert_eq!(ctx.settings().ui.above_input.mods, [ModName::PlanUsage]);
 
         // /pin run-limits --global writes your global file, under the project's list.
-        let show = WidgetsAction::Change {
-            widget: WidgetName::Budget,
-            change: WidgetChange::Show {
+        let show = ModsAction::Change {
+            the_mod: ModName::RunLimits,
+            change: ModPlaceChange::Show {
                 place: Place::AboveInput,
             },
         };
-        widgets::command(ctx, show, Some(SettingScope::Global)).unwrap();
+        mod_places::command(ctx, show, Some(SettingScope::Global)).unwrap();
         let global = std::fs::read_to_string(ctx.env.global_config()).unwrap();
         assert!(global.contains("\"run-limits\""), "{global}");
 
-        // Folding a widget whose `open` is still its default goes to everywhere.
-        let fold = WidgetsAction::Change {
-            widget: WidgetName::Quota,
-            change: WidgetChange::Fold,
+        // Folding a mod whose `open` is still its default goes to everywhere.
+        let fold = ModsAction::Change {
+            the_mod: ModName::PlanUsage,
+            change: ModPlaceChange::Fold,
         };
-        widgets::command(ctx, fold, None).unwrap();
+        mod_places::command(ctx, fold, None).unwrap();
         assert!(file_sets(
             &ctx.env.global_config(),
             "ui.mods.plan-usage.open"
         ));
-        assert!(!ctx.settings().ui.widget(WidgetName::Quota).open);
+        assert!(!ctx.settings().ui.the_mod(ModName::PlanUsage).open);
     }
 
     #[test]

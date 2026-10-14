@@ -1,5 +1,5 @@
 //! The workflows on disk and the built-in ones: the project's `.argonauts/workflows/`, then
-//! `~/.argonauts/workflows/`, then what ships with Argonauts.
+//! `~/.argonauts/workflows/`, then what ships with Argonauts Code.
 
 use std::fs;
 use std::io;
@@ -8,23 +8,11 @@ use std::path::{Path, PathBuf};
 use crate::file::{FileError, WorkflowFile};
 use crate::script::{Script, ScriptError};
 
-/// The built-in workflows, as the files `/setup` writes out. Solo has none: it is the CLI
-/// itself.
-pub const BUILT_IN: &[(&str, &str)] = &[
-    ("council", include_str!("../workflows/council.toml")),
-    (
-        "orchestrator",
-        include_str!("../workflows/orchestrator.toml"),
-    ),
-    (
-        "maker-checker",
-        include_str!("../workflows/maker-checker.toml"),
-    ),
-    ("best-of-n", include_str!("../workflows/best-of-n.toml")),
-];
-
 /// What `workflows/README.md` says: every key of a step, and what a script may use.
-pub const README: &str = include_str!("../workflows/README.md");
+pub use argonauts_core::workflow_files::README;
+/// The built-in workflows that have steps, as `(name, the file's text)`. Captain has none: it
+/// is the CLI itself.
+pub use argonauts_core::workflow_files::with_steps as built_ins;
 
 const NAME_LIMIT: usize = 40;
 const STEPS: &str = "toml";
@@ -132,8 +120,8 @@ impl Library {
                 });
             }
         }
-        for (name, text) in BUILT_IN {
-            if listed.iter().any(|known| known.name == *name) {
+        for (name, text) in built_ins() {
+            if listed.iter().any(|known| known.name == name) {
                 continue;
             }
             let about = WorkflowFile::parse(text)
@@ -142,7 +130,7 @@ impl Library {
                 .map(|file| file.about)
                 .unwrap_or_default();
             listed.push(Listed {
-                name: (*name).to_owned(),
+                name: name.to_owned(),
                 origin: Origin::BuiltIn,
                 path: None,
                 about,
@@ -167,10 +155,7 @@ impl Library {
                 return Some((origin, Some(path)));
             }
         }
-        BUILT_IN
-            .iter()
-            .any(|(built_in, _)| *built_in == name)
-            .then_some((Origin::BuiltIn, None))
+        built_in(name).map(|_| (Origin::BuiltIn, None))
     }
 
     /// The workflow, read and checked.
@@ -228,7 +213,7 @@ impl Library {
             None => template(name, &shown),
             Some(from) => {
                 let source = built_in(from).ok_or_else(|| {
-                    let names: Vec<&str> = BUILT_IN.iter().map(|(name, _)| *name).collect();
+                    let names: Vec<&str> = built_ins().map(|(name, _)| name).collect();
                     LibraryError::Name(format!(
                         "{from} isn't a built-in workflow. The built-in ones are {}",
                         names.join(", ")
@@ -255,11 +240,11 @@ impl Library {
     }
 }
 
+/// The text of a built-in workflow that has steps.
 pub fn built_in(name: &str) -> Option<&'static str> {
-    BUILT_IN
-        .iter()
+    built_ins()
         .find(|(built_in, _)| *built_in == name)
-        .map(|(_, text)| *text)
+        .map(|(_, text)| text)
 }
 
 /// A workflow's name is a command, so it is lowercase letters, digits and dashes, and never a
@@ -376,19 +361,19 @@ adapt = false            # false: the steps below run exactly as written · true
 
 [[step]]
 name = "Plan"
-role = "orchestrator"    # orchestrator · workers · reviewers · judge
+role = "orchestrator"    # orchestrator · worker · reviewer · judge
 does = "Split the request into tasks: {{request}}"
 
 [[step]]
 name       = "Build"
-role       = "workers"
+role       = "worker"
 for_each   = "task"      # one agent per task, side by side
 max_rounds = 3           # the first try and two returns from Review, then it stops
 # until    = "its own tests pass"    # optional: a goal on this step
 
 [[step]]
 name         = "Review"
-role         = "reviewers"
+role         = "reviewer"
 for_each     = "task"
 send_back_to = "Build"   # until the reviewer accepts
 
@@ -436,7 +421,7 @@ mod tests {
         let council = project.join("council.toml");
         fs::write(
             &council,
-            "name = \"council\"\n[[step]]\nname = \"Do\"\nrole = \"workers\"\n",
+            "name = \"council\"\n[[step]]\nname = \"Do\"\nrole = \"worker\"\n",
         )
         .unwrap();
         assert_eq!(
@@ -456,11 +441,11 @@ mod tests {
 
     #[test]
     fn every_built_in_reads_and_names_itself() {
-        for (name, text) in BUILT_IN {
+        for (name, text) in built_ins() {
             let file = WorkflowFile::parse(text)
                 .unwrap_or_else(|err| panic!("{name}: {err}"))
                 .expect("has steps");
-            assert_eq!(file.name, *name);
+            assert_eq!(file.name, name);
             assert!(file.adapt, "{name} lets the orchestrator write the steps");
             assert!(
                 !file.about.is_empty() && !file.about.contains('\n'),
@@ -547,7 +532,17 @@ mod tests {
         };
         assert_eq!(file.name, "my-council");
         assert_eq!(file.steps.len(), 6);
-        let unknown = library.create("other", Some("peer-crew"), &[]).unwrap_err();
+        // The copy is the whole workflow: its phases come with its steps, under the new name.
+        let written = dir.path().join("repo/.argonauts/workflows/my-council.toml");
+        let text = fs::read_to_string(written).expect("reads");
+        let phases = argonauts_core::workflow_files::phases(&text, "the-file")
+            .expect("reads")
+            .expect("has phases");
+        assert_eq!(phases.name, "my-council");
+        assert_eq!(phases.phases.len(), 4);
+        let unknown = library
+            .create("other", Some("no-such-workflow"), &[])
+            .unwrap_err();
         assert!(
             unknown.to_string().contains("isn't a built-in workflow"),
             "{unknown}"
@@ -563,7 +558,7 @@ mod tests {
         fs::create_dir_all(&yours).unwrap();
         fs::write(
             yours.join(argonauts_core::required::FILE),
-            "[[step]]\nname = \"benchmark\"\nrole = \"workers\"\n",
+            "[[step]]\nname = \"benchmark\"\nrole = \"worker\"\n",
         )
         .unwrap();
         assert!(library.list().iter().all(|listed| listed.name != "always"));
@@ -581,7 +576,7 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         fs::create_dir_all(&yours).unwrap();
         let steps = |about: &str| {
-            format!("about = \"{about}\"\n[[step]]\nname = \"Do\"\nrole = \"workers\"\n")
+            format!("about = \"{about}\"\n[[step]]\nname = \"Do\"\nrole = \"worker\"\n")
         };
         fs::write(project.join("ship.toml"), steps("the project's")).unwrap();
         fs::write(yours.join("ship.toml"), steps("yours")).unwrap();

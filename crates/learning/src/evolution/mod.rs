@@ -1,9 +1,9 @@
-//! The evolution loop. The retro proposes one change; the mutation rules check it before a cent
-//! is spent; a replay compares it with its parent task by task against a threshold fixed in
-//! advance, then on the holdout; the promotion checkpoint decides under your approval settings;
-//! and a canary watches the next runs and rolls back on any tripwire.
+//! The evolution loop. The run review proposes one change; the mutation rules check it before a
+//! cent is spent; a replay compares it with its parent task by task against a threshold fixed in
+//! advance, then on the holdout; the promotion approval decides under your approval settings; and a
+//! canary watches the next runs and rolls back on any tripwire.
 //!
-//! Candidates and canaries live in the conductor's state, outside every sandbox, so a version
+//! Candidates and canaries live in Argonauts Code's state, outside every sandbox, so a version
 //! under test never reaches your repo until it has earned it. A promotion that passes its
 //! canary becomes a commit on its own branch that waits for you; a rollback takes effect at once.
 
@@ -21,12 +21,12 @@ use time::OffsetDateTime;
 
 use argonauts_core::RunId;
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::card::ProcessChange;
+use argonauts_core::steps::task::ProcessChange;
 
 use crate::error::{LearningError, Result};
-use crate::recipes::{self, Change, ChangeClass, LoadedRecipe};
+use crate::learned_workflows::{self, Change, ChangeClass, LoadedLearnedWorkflow};
 use crate::store::Store;
-use crate::types::{RecipeRef, RunRecord};
+use crate::types::{LearnedWorkflowRef, RunRecord};
 
 pub use rules::{check_evolvable, check_mutation};
 pub use stats::{
@@ -38,11 +38,11 @@ pub use stats::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
-    /// Saves what worked as a recipe.
+    /// Saves what worked as a learned workflow.
     Record,
-    /// The retro proposes; you apply.
+    /// The run review proposes; you apply.
     Suggest,
-    /// Replay-tested candidates wait for you at the promotion checkpoint.
+    /// Replay-tested candidates wait for you at the promotion approval.
     Evolve,
     /// Your rules promote the classes they allow; replay, holdout, and canary still run.
     Auto,
@@ -70,12 +70,12 @@ pub struct Thresholds {
     pub not_worse: bool,
 }
 
-/// A proposed recipe version and where it stands.
+/// A proposed learned workflow version and where it stands.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Candidate {
     /// Such as `api-feature-v4`.
     pub id: String,
-    pub parent: RecipeRef,
+    pub parent: LearnedWorkflowRef,
     pub version: u32,
     pub change: Change,
     pub why: String,
@@ -92,7 +92,7 @@ pub struct Candidate {
 pub enum CandidateState {
     /// Stage 2: shown to you, applied by hand.
     Suggested,
-    /// Waiting for the evolution budget or its turn.
+    /// Waiting for the evolution limit or its turn.
     Queued,
     Replaying {
         spent_usd: f64,
@@ -101,7 +101,7 @@ pub enum CandidateState {
     Rejected {
         reason: String,
     },
-    /// Passed replay and holdout; the promotion checkpoint decides.
+    /// Passed replay and holdout; the promotion approval decides.
     AwaitingPromotion,
     Canary {
         runs: u32,
@@ -130,10 +130,10 @@ pub struct Verdict {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tripwire {
-    Escalations,
+    StuckTasks,
     FailedFinalChecks,
     Cost,
-    /// You rejected one of its checkpoints.
+    /// You rejected one of its approvals.
     Rejected,
     /// You reverted one of its merges.
     Reverted,
@@ -143,26 +143,29 @@ pub enum Tripwire {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Action {
-    /// Replay this candidate when the budget and the replay worker allow.
+    /// Replay this candidate when the limit and the replay worker allow.
     Replay { candidate: String },
-    /// Open the promotion checkpoint, with this evidence packet.
+    /// Open the promotion approval, with this evidence packet.
     AskPromotion {
         candidate: String,
         packet: serde_json::Value,
     },
     /// A version became current; its branch waits for you.
     Promoted {
-        recipe: RecipeRef,
+        learned_workflow: LearnedWorkflowRef,
         branch: String,
         pr_command: Vec<String>,
     },
     RolledBack {
-        recipe: RecipeRef,
+        learned_workflow: LearnedWorkflowRef,
         to: u32,
         reason: String,
     },
-    /// Stage 1: a workflow that worked, proposed as a recipe's first version.
-    Recorded { recipe: RecipeRef, branch: String },
+    /// Stage 1: a workflow that worked, proposed as a learned workflow's first version.
+    Recorded {
+        learned_workflow: LearnedWorkflowRef,
+        branch: String,
+    },
     /// Something you should know, in one line.
     Tell { text: String },
 }
@@ -218,7 +221,7 @@ impl Evolution {
         Ok(self.candidates()?.into_iter().find(|c| c.id == id))
     }
 
-    /// Canaries running now, by recipe.
+    /// Canaries running now, by learned workflow.
     pub fn canaries(&self) -> Result<state::Canaries> {
         state::read(&self.file(state::CANARIES))
     }
@@ -227,79 +230,92 @@ impl Evolution {
         state::write(&self.file(state::CANARIES), canaries)
     }
 
-    fn recipe_states(&self) -> Result<state::Recipes> {
-        state::read(&self.file(state::RECIPES))
+    fn learned_workflow_states(&self) -> Result<state::LearnedWorkflows> {
+        state::read(&self.file(state::LEARNED_WORKFLOWS))
     }
 
-    fn save_recipe_states(&self, recipes: &state::Recipes) -> Result<()> {
-        state::write(&self.file(state::RECIPES), recipes)
+    fn save_learned_workflow_states(
+        &self,
+        learned_workflows: &state::LearnedWorkflows,
+    ) -> Result<()> {
+        state::write(&self.file(state::LEARNED_WORKFLOWS), learned_workflows)
     }
 
-    /// The candidate's own recipe folder, where its replays read it from.
+    /// The candidate's own learned workflow folder, where its replays read it from.
     pub fn candidate_dir(&self, id: &str) -> PathBuf {
         self.file(state::CANDIDATE_DIRS).join(id)
     }
 
-    /// A candidate's recipe as written in its folder.
-    pub fn candidate_recipe(&self, id: &str) -> Result<LoadedRecipe> {
+    /// A candidate's learned workflow as written in its folder.
+    pub fn candidate_learned_workflow(&self, id: &str) -> Result<LoadedLearnedWorkflow> {
         let candidate = self
             .candidate(id)?
             .ok_or_else(|| LearningError::Refused(format!("there's no candidate `{id}`")))?;
-        recipes::load_file(
+        learned_workflows::load_file(
             &self
                 .candidate_dir(id)
-                .join(recipes::version_file(candidate.version)),
+                .join(learned_workflows::version_file(candidate.version)),
         )
     }
 
-    /// The version a recipe's runs use now: a canary's, else the current one.
-    pub fn running_version(&self, recipe: &str) -> Result<Option<u32>> {
-        if let Some(canary) = self.canaries()?.get(recipe) {
+    /// The version a learned workflow's runs use now: a canary's, else the current one.
+    pub fn running_version(&self, learned_workflow: &str) -> Result<Option<u32>> {
+        if let Some(canary) = self.canaries()?.get(learned_workflow) {
             return Ok(Some(canary.version));
         }
-        let checkout = self.checkout_current(recipe)?;
-        let mut states = self.recipe_states()?;
-        let Some(pointer) = states.get(recipe).and_then(|state| state.pointer.clone()) else {
+        let checkout = self.checkout_current(learned_workflow)?;
+        let mut states = self.learned_workflow_states()?;
+        let Some(pointer) = states
+            .get(learned_workflow)
+            .and_then(|state| state.pointer.clone())
+        else {
             return Ok(checkout);
         };
         if pointer.checkout_was == checkout {
             return Ok(Some(pointer.version));
         }
         // You merged the pointer's branch or moved `current` yourself: the checkout speaks for
-        // the recipe again, and the old pointer must not wake up if `current` moves back.
-        if let Some(state) = states.get_mut(recipe) {
+        // the learned workflow again, and the old pointer must not wake up if `current` moves back.
+        if let Some(state) = states.get_mut(learned_workflow) {
             state.pointer = None;
         }
-        self.save_recipe_states(&states)?;
+        self.save_learned_workflow_states(&states)?;
         Ok(checkout)
     }
 
-    /// The recipe version a run of `recipe` should use, from the checkout or, for a canary or a
-    /// promotion that hasn't merged yet, from the conductor's state.
-    pub fn running(&self, recipe: &str) -> Result<Option<LoadedRecipe>> {
-        match self.running_version(recipe)? {
-            Some(version) => self.load_version(recipe, version),
+    /// The learned workflow version a run of `learned_workflow` should use, from the checkout or,
+    /// for a canary or a promotion that hasn't merged yet, from Argonauts Code's state.
+    pub fn running(&self, learned_workflow: &str) -> Result<Option<LoadedLearnedWorkflow>> {
+        match self.running_version(learned_workflow)? {
+            Some(version) => self.load_version(learned_workflow, version),
             None => Ok(None),
         }
     }
 
-    fn checkout_set(&self, recipe: &str) -> Result<Option<recipes::RecipeSet>> {
-        let folder = self.store.recipes_dir().join(recipe);
+    fn checkout_set(
+        &self,
+        learned_workflow: &str,
+    ) -> Result<Option<learned_workflows::LearnedWorkflowSet>> {
+        let folder = self.store.learned_workflows_dir().join(learned_workflow);
         if folder.is_dir() {
-            recipes::load_set(&folder)
+            learned_workflows::load_set(&folder)
         } else {
             Ok(None)
         }
     }
 
-    fn checkout_current(&self, recipe: &str) -> Result<Option<u32>> {
-        Ok(self.checkout_set(recipe)?.map(|set| set.current))
+    fn checkout_current(&self, learned_workflow: &str) -> Result<Option<u32>> {
+        Ok(self.checkout_set(learned_workflow)?.map(|set| set.current))
     }
 
     /// A version from the checkout, or from a candidate's folder when only the loop has it.
-    pub fn load_version(&self, recipe: &str, version: u32) -> Result<Option<LoadedRecipe>> {
+    pub fn load_version(
+        &self,
+        learned_workflow: &str,
+        version: u32,
+    ) -> Result<Option<LoadedLearnedWorkflow>> {
         if let Some(loaded) = self
-            .checkout_set(recipe)?
+            .checkout_set(learned_workflow)?
             .and_then(|set| set.version(version).cloned())
         {
             return Ok(Some(loaded));
@@ -307,39 +323,41 @@ impl Evolution {
         let candidate = self
             .candidates()?
             .into_iter()
-            .find(|c| c.parent.name == recipe && c.version == version);
+            .find(|c| c.parent.name == learned_workflow && c.version == version);
         match candidate {
-            Some(candidate) => self.candidate_recipe(&candidate.id).map(Some),
+            Some(candidate) => self.candidate_learned_workflow(&candidate.id).map(Some),
             None => Ok(None),
         }
     }
 
     /// One past every version the checkout or a candidate has used, so ids never repeat.
-    fn next_version(&self, recipe: &str) -> Result<u32> {
+    fn next_version(&self, learned_workflow: &str) -> Result<u32> {
         let checkout = self
-            .checkout_set(recipe)?
-            .and_then(|set| set.versions.last().map(|l| l.recipe.version))
+            .checkout_set(learned_workflow)?
+            .and_then(|set| set.versions.last().map(|l| l.learned_workflow.version))
             .unwrap_or(0);
         let candidates = self
             .candidates()?
             .iter()
-            .filter(|c| c.parent.name == recipe)
+            .filter(|c| c.parent.name == learned_workflow)
             .map(|c| c.version)
             .max()
             .unwrap_or(0);
         Ok(checkout.max(candidates) + 1)
     }
 
-    /// When a version of the recipe last started its canary, which a rollback doesn't undo.
-    pub fn last_promoted(&self, recipe: &str) -> Result<Option<OffsetDateTime>> {
+    /// When a version of the learned workflow last started its canary, which a rollback doesn't
+    /// undo.
+    pub fn last_promoted(&self, learned_workflow: &str) -> Result<Option<OffsetDateTime>> {
         Ok(self
-            .recipe_states()?
-            .get(recipe)
+            .learned_workflow_states()?
+            .get(learned_workflow)
             .and_then(|state| state.last_promoted))
     }
 
-    /// After a run's retro: record the run under its recipe, check a canary's tripwires, save
-    /// what worked (stage 1), and queue the retro's proposal under the stage in effect.
+    /// After a run's run review: record the run under its learned workflow, check a canary's
+    /// tripwires, save what worked (stage 1), and queue the run review's proposal under the stage
+    /// in effect.
     pub fn after_run(
         &self,
         settings: &Settings,
@@ -347,8 +365,8 @@ impl Evolution {
         proposal: Option<&ProcessChange>,
     ) -> Result<Vec<Action>> {
         let stage = stage(settings);
-        let mut actions = match &run.recipe {
-            Some(recipe) => self.watch_canary(settings, run, recipe)?,
+        let mut actions = match &run.learned_workflow {
+            Some(learned_workflow) => self.watch_canary(settings, run, learned_workflow)?,
             None => self.record(settings, run)?,
         };
         if let Some(proposal) = proposal
@@ -373,7 +391,7 @@ impl Evolution {
     }
 }
 
-/// The branch a recipe version waits on.
-pub fn recipe_branch(name: &str, version: u32) -> String {
+/// The branch a learned workflow version waits on.
+pub fn learned_workflow_branch(name: &str, version: u32) -> String {
     format!("argonauts/learned/{name}-v{version}")
 }

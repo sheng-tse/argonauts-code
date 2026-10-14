@@ -1,0 +1,23 @@
+---
+source: crates/tui/tests/snap_questions.rs
+expression: text(&lines)
+---
+● Claude Code is down
+  overload errors on 3 sessions in 2 min
+  A test task tries it again at 2:40 PM
+  paused    title        role
+  task-003  Middleware   worker
+  task-002  Redis store  reviewer
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Claude Code is down
+  overload errors on 3 sessions in 2 min
+  Two tasks are paused, their work so far kept.
+
+  ❯ 1. One agent for every paused task
+    2. Choose per task
+       an agent for each, from every installed CLI
+    3. Wait for Claude Code
+       tried again at 2:40 PM
+
+  Enter to choose · Tab to add a note · Esc to carry on without me · shift+tab to cycle modes

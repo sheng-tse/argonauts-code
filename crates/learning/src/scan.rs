@@ -252,7 +252,7 @@ static PERMISSIONS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)\b(?:read|print|send|upload|share|copy|cat|export|post|paste|reveal|show|leak|exfiltrate|commit|echo)\b[^.\n]{0,40}?(?:\b(?:api[_ -]?keys?|(?:access|auth|api|bearer|session|refresh|oauth) tokens?|passwords?|credentials?|secrets?|ssh keys?|private keys?|keychain)\b|\.env\b|\.ssh\b|\.aws\b|\.netrc\b)",
         // Approvals.
         r"(?i)\bauto[- ]?approve\b|\bapprove\b[^.\n]{0,30}?\b(?:automatically|without|every|all)\b",
-        r"(?i)\b(?:skip|bypass|disable|ignore)\s+(?:the\s+|all\s+|any\s+)?(?:approvals?|reviews?|gates?|checks?|tests?|checkpoints?)\b",
+        r"(?i)\b(?:skip|bypass|disable|ignore)\s+(?:the\s+|all\s+|any\s+)?(?:approvals?|reviews?|checks?|tests?)\b",
         r"(?i)\bwithout (?:asking|approval|review|confirmation|a review)\b|\bno need to ask\b|\bdon'?t ask (?:for|the user|first)\b|\bmerge (?:it )?without\b",
     ])
 });
@@ -364,7 +364,7 @@ mod tests {
     #[test]
     fn plain_facts_pass() {
         for text in [
-            "Integration tests need redis running.",
+            "End-to-end tests need redis running.",
             "The limiter's counters expire with the window, so tests must advance the fake clock.",
             "Redis counters act as the cache; the parser disregards blanks.",
             "Make sure the migrations run before the API tests.",

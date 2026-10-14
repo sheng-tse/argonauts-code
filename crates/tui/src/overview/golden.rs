@@ -3,9 +3,9 @@
 //! `.html` of the same characters in coloured spans, in `pictures/`.
 //!
 //! Colours in a picture are names, such as `--term-dim` or `--v-claude`; each stands for the
-//! theme roles that draw it. Text in the terminal's own colour may be drawn in the theme's
-//! normal or bright text. A blank cell's text colour and weight can't be seen, so only its fill
-//! is compared.
+//! theme roles that draw it. A colour written as its value, such as `#b4472a`, is that colour
+//! exactly. Text in the terminal's own colour may be drawn in the theme's normal or bright
+//! text. A blank cell's text colour and weight can't be seen, so only its fill is compared.
 
 use std::ops::Range;
 use std::path::PathBuf;
@@ -29,6 +29,8 @@ pub struct PictureCell {
 pub struct Picture {
     pub name: String,
     pub rows: Vec<Vec<PictureCell>>,
+    /// Roles a colour name stands for in this picture alone, beside the ones it always does.
+    also: Vec<(&'static str, Role)>,
 }
 
 impl Picture {
@@ -43,6 +45,7 @@ impl Picture {
         let picture = Picture {
             name: name.to_owned(),
             rows,
+            also: Vec::new(),
         };
         let from_text: Vec<&str> = text.lines().collect();
         assert_eq!(
@@ -51,6 +54,15 @@ impl Picture {
             "{name}: the .txt and the .html disagree"
         );
         picture
+    }
+
+    /// A picture of `rows` made in a test, where a file would say no more.
+    pub fn of(name: &str, rows: Vec<Vec<PictureCell>>) -> Picture {
+        Picture {
+            name: name.to_owned(),
+            rows,
+            also: Vec::new(),
+        }
     }
 
     pub fn text(&self) -> Vec<String> {
@@ -63,6 +75,32 @@ impl Picture {
     pub fn width(&self) -> usize {
         self.rows.iter().map(Vec::len).max().unwrap_or(0)
     }
+
+    /// In this picture `name` stands for `role` too, as where the page draws a model in a
+    /// colour it gives the same value as that model's own.
+    pub fn standing_for(mut self, name: &'static str, role: Role) -> Picture {
+        self.also.push((name, role));
+        self
+    }
+
+    /// The colours a cell named `name` may be drawn in.
+    fn colors(&self, name: &str, theme: &Theme) -> Vec<Color> {
+        if let Some(exact) = exact_color(name) {
+            return vec![exact];
+        }
+        let also = self.also.iter().filter(|(known, _)| *known == name);
+        roles(name)
+            .iter()
+            .chain(also.map(|(_, role)| role))
+            .map(|role| theme.color(*role).unwrap_or(Color::Reset))
+            .collect()
+    }
+}
+
+/// `#b4472a` as the colour it is.
+fn exact_color(name: &str) -> Option<Color> {
+    let hex = u32::from_str_radix(name.strip_prefix('#')?, 16).ok()?;
+    Some(Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8))
 }
 
 /// The theme pictures are drawn in: dark, in full colour, with Unicode glyphs.
@@ -94,7 +132,7 @@ impl Region {
     }
 }
 
-/// Every cell in `region` where `buf` differs from the picture, in characters, colours or
+/// Every cell in `region` where `buf` is different from the picture, in characters, colours or
 /// weight, one line each.
 pub fn differences(picture: &Picture, buf: &Buffer, region: &Region, theme: &Theme) -> Vec<String> {
     let mut found = Vec::new();
@@ -124,7 +162,7 @@ pub fn differences(picture: &Picture, buf: &Buffer, region: &Region, theme: &The
                 ));
                 continue;
             }
-            if !matches_bg(want.bg.as_deref(), got.bg, theme) {
+            if !matches_bg(picture, want.bg.as_deref(), got.bg, theme) {
                 found.push(format!(
                     "{place} {:?}: fill {:?} where the picture has {:?}",
                     ch, got.bg, want.bg
@@ -133,7 +171,7 @@ pub fn differences(picture: &Picture, buf: &Buffer, region: &Region, theme: &The
             if ch == ' ' {
                 continue;
             }
-            if !matches_fg(want.fg.as_deref(), got.fg, theme) {
+            if !matches_fg(picture, want.fg.as_deref(), got.fg, theme) {
                 found.push(format!(
                     "{place} {:?}: colour {:?} where the picture has {:?}",
                     ch, got.fg, want.fg
@@ -151,7 +189,7 @@ pub fn differences(picture: &Picture, buf: &Buffer, region: &Region, theme: &The
     found
 }
 
-/// Fails with the cells that differ, the first few in full.
+/// Fails with the cells that are different, the first few in full.
 pub fn assert_matches(picture: &Picture, buf: &Buffer, region: &Region, theme: &Theme) {
     let whole = region.rows == (0..picture.rows.len()) && region.columns.start == 0;
     let name = if whole {
@@ -189,7 +227,7 @@ pub fn assert_matches(picture: &Picture, buf: &Buffer, region: &Region, theme: &
         })
         .collect();
     panic!(
-        "{}: {} cells differ\n{}\n\ndrawn:\n{}\n\npicture:\n{}",
+        "{}: {} cells are different\n{}\n\ndrawn:\n{}\n\npicture:\n{}",
         picture.name,
         found.len(),
         found
@@ -210,19 +248,20 @@ fn roles(name: &str) -> &'static [Role] {
         "--term-dim" => &[Role::Dim],
         "--term-faint" => &[
             Role::Faint,
-            Role::WidgetBorder,
+            Role::ModBorder,
             Role::Rule,
             Role::BarTrack,
             Role::Denominator,
         ],
-        "--term-acc" => &[Role::Card, Role::Accent],
+        "--term-acc" => &[Role::Question, Role::Accent],
         "--term-grn" => &[Role::Success],
-        "--term-amb" => &[Role::Warning],
-        "--term-red" => &[Role::Error],
-        "--term-org" => &[Role::AgentOrange],
-        "--term-blu" => &[Role::AgentBlue],
-        "--term-cyn" => &[Role::AgentCyan],
-        "--term-pur" => &[Role::Ultracode],
+        "--term-amb" => &[Role::Warn],
+        "--term-red" => &[Role::Danger],
+        // A picture may name a CLI's colour by its hue, which is the same colour on the page.
+        "--term-org" => &[Role::AgentOrange, Role::CliClaude],
+        "--term-blu" => &[Role::AgentBlue, Role::CliCodex],
+        "--term-cyn" => &[Role::AgentCyan, Role::CliAgy],
+        "--term-pur" => &[Role::Ultracode, Role::AgentPurple],
         "--term-bg" => &[Role::BadgeText],
         "--term-band" => &[Role::UserBand],
         "--v-claude" => &[Role::CliClaude],
@@ -232,25 +271,20 @@ fn roles(name: &str) -> &'static [Role] {
     }
 }
 
-fn matches_fg(want: Option<&str>, got: Color, theme: &Theme) -> bool {
+fn matches_fg(picture: &Picture, want: Option<&str>, got: Color, theme: &Theme) -> bool {
     let colors: Vec<Color> = match want {
         None => vec![Color::Reset],
-        Some(name) => roles(name)
-            .iter()
-            .map(|role| theme.color(*role).unwrap_or(Color::Reset))
-            .collect(),
+        Some(name) => picture.colors(name, theme),
     };
     // The terminal's own colour is the theme's normal or bright text.
     let own = [Role::Text, Role::Bright].map(|role| theme.color(role).unwrap_or(Color::Reset));
     colors.contains(&got) || ((want.is_none() || want == Some("--term-fg")) && own.contains(&got))
 }
 
-fn matches_bg(want: Option<&str>, got: Color, theme: &Theme) -> bool {
+fn matches_bg(picture: &Picture, want: Option<&str>, got: Color, theme: &Theme) -> bool {
     match want {
         None => got == Color::Reset,
-        Some(name) => roles(name)
-            .iter()
-            .any(|role| theme.color(*role) == Some(got)),
+        Some(name) => picture.colors(name, theme).contains(&got),
     }
 }
 
@@ -311,15 +345,16 @@ fn parse_style(style: &str) -> (Option<String>, Option<String>, bool) {
         let Some((key, value)) = part.split_once(':') else {
             continue;
         };
+        let value = value.trim();
         let name = value
-            .trim()
             .strip_prefix("var(")
             .and_then(|name| name.strip_suffix(')'))
+            .or_else(|| value.starts_with('#').then_some(value))
             .map(str::to_owned);
         match key.trim() {
             "color" => fg = name,
             "background" => bg = name,
-            "font-weight" => bold = value.trim() == "700" || value.trim() == "bold",
+            "font-weight" => bold = value == "700" || value == "bold",
             _ => {}
         }
     }
@@ -341,19 +376,19 @@ mod tests {
 
     #[test]
     fn a_picture_reads_the_same_from_its_text_and_its_colours() {
-        let picture = Picture::load("status_after");
+        let picture = Picture::load("status_clis");
         assert_eq!(picture.width(), 118);
-        let first = &picture.rows[1][2];
+        let first = &picture.rows[8][2];
         assert_eq!(first.ch, '◆');
         assert_eq!(first.fg.as_deref(), Some("--term-acc"));
         // `who you&#x27;re` reads as one apostrophe in one cell.
-        assert!(picture.text()[1].contains("who you're logged in as"));
+        assert!(picture.text()[8].contains("who you're signed in as"));
     }
 
     /// A buffer painted from the picture's own cells matches it, and one changed cell is one
     /// difference.
     #[test]
-    fn the_comparison_finds_each_cell_that_differs() {
+    fn the_comparison_finds_each_cell_that_is_different() {
         let picture = Picture::load("limits_after");
         let theme = theme();
         let color = |name: Option<&str>| {

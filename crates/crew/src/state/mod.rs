@@ -13,17 +13,17 @@ use argonauts_core::names::SessionKey;
 
 use crate::error::{EngineError, EngineResult};
 
+pub mod approvals;
 pub mod blackboard;
-pub mod cards;
-pub mod checkpoints;
 pub mod divide;
 pub mod goal;
 pub mod ids;
-pub mod integration;
+pub mod merge;
 pub mod plan;
-pub mod retro;
 pub mod run;
+pub mod run_review;
 pub mod sessions;
+pub mod tasks;
 pub mod workflow;
 
 /// Bumped whenever the snapshot's shape changes. A snapshot of another version can't be
@@ -37,15 +37,15 @@ pub struct RunState {
     pub run: run::RunInfo,
     pub ids: ids::Counters,
     pub sessions: sessions::Sessions,
-    pub checkpoints: checkpoints::Checkpoints,
+    pub approvals: approvals::Approvals,
     pub workflows: workflow::Workflows,
     pub goal: goal::GoalState,
     pub plan: plan::PlanState,
     pub divide: divide::DivideState,
-    pub cards: cards::Cards,
-    pub integration: integration::IntegrationState,
+    pub tasks: tasks::Tasks,
+    pub merge: merge::MergeState,
     pub blackboard: blackboard::Board,
-    pub retro: retro::RetroState,
+    pub run_review: run_review::RunReviewState,
 }
 
 impl RunState {
@@ -100,18 +100,21 @@ impl RunState {
             RunEventKind::Goal(e) => self.goal.apply(e, event),
             RunEventKind::Plan(e) => self.plan.apply(e, event),
             RunEventKind::Divide(e) => self.divide.apply(e, event),
-            RunEventKind::Card(e) => self.cards.apply(e, event),
+            RunEventKind::Task(e) => self.tasks.apply(e, event),
             RunEventKind::Session(e) => {
-                if let (SessionEvent::Started(_), Some(card)) = (e, &event.card_id) {
-                    self.run.card_active(card);
+                if let (SessionEvent::Started(_), Some(task)) = (e, &event.task_id) {
+                    self.run.task_active(task);
+                }
+                if let SessionEvent::Started(started) = e {
+                    self.run.job_started(started, event.task_id.as_ref());
                 }
                 self.sessions.apply(e, event);
-                // An agent got through a session, so the next park nobody could take a seat in
-                // starts its waits over.
+                // An agent got through a session, so the next wait where no agent could take a job
+                // over starts its waits over.
                 if let SessionEvent::Ended(end) = e
                     && end.reason == EndReason::Completed
                 {
-                    self.run.stand_in_waits = 0;
+                    self.run.fallback_waits = 0;
                 }
                 if let (SessionEvent::Ended(end), Some(key)) = (e, &event.session)
                     && end.reason == EndReason::Stopped
@@ -122,21 +125,21 @@ impl RunState {
                 }
             }
             RunEventKind::Agent(e) => self.sessions.apply_agent(e, event),
-            RunEventKind::Gate(e) => self.cards.apply_gate(e, event),
-            RunEventKind::Review(e) => self.cards.apply_review(e, event),
-            RunEventKind::Integration(e) => self.integration.apply(e, event),
-            RunEventKind::Checkpoint(e) => {
-                self.run.apply_checkpoint(e, event);
-                self.checkpoints.apply(e, event);
+            RunEventKind::Check(e) => self.tasks.apply_check(e, event),
+            RunEventKind::Review(e) => self.tasks.apply_review(e, event),
+            RunEventKind::Merge(e) => self.merge.apply(e, event),
+            RunEventKind::Approval(e) => {
+                self.run.apply_approval(e, event);
+                self.approvals.apply(e, event);
             }
-            RunEventKind::Handoff(e) => {
-                self.run.apply_handoff(e, event);
-                self.cards.apply_handoff(e, event);
+            RunEventKind::Fallback(e) => {
+                self.run.apply_fallback(e, event);
+                self.tasks.apply_fallback(e, event);
             }
-            RunEventKind::Vendor(e) => self.run.apply_vendor(e, event),
-            RunEventKind::Budget(e) => self.run.apply_budget(e, event),
+            RunEventKind::AgentStatus(e) => self.run.apply_agent(e, event),
+            RunEventKind::Spend(e) => self.run.apply_limit(e, event),
             RunEventKind::Blackboard(e) => self.blackboard.apply(e, event),
-            RunEventKind::Retro(e) => self.retro.apply(e, event),
+            RunEventKind::RunReview(e) => self.run_review.apply(e, event),
             RunEventKind::Note(note) => self.run.noted(note, event.seq),
             RunEventKind::Workflow(e) => self.workflows.apply(e, event),
         }
@@ -198,23 +201,23 @@ pub(crate) mod tests {
     use time::OffsetDateTime;
 
     use argonauts_core::event::AgentEvent;
+    use argonauts_core::events::agent_status::{AgentStatusEvent, FallbackEvent};
     use argonauts_core::events::run::{
-        ParkReason, Party, ResumeCause, RunMode, RunOutcome, RunResumed, RunStarted,
+        Party, ResumeCause, RunMode, RunOutcome, RunResumed, RunStarted, WaitReason,
     };
     use argonauts_core::events::session::{EndReason, SessionEnd, SessionStarted};
-    use argonauts_core::events::vendor::{HandoffEvent, VendorEvent};
-    use argonauts_core::limits::{HealthState, VendorHealth};
-    use argonauts_core::names::{RoleName, SessionKey, VendorId, WorkerRef};
+    use argonauts_core::limits::{AgentHealth, HealthState};
+    use argonauts_core::names::{AgentId, ModelRef, RoleName, SessionKey};
+    use argonauts_core::session_runner::{Access, RunnerKind};
     use argonauts_core::settings::approvals::ApprovalMode;
     use argonauts_core::settings::sessions::SessionLifetime;
-    use argonauts_core::worker::{Access, WorkerKind};
-    use argonauts_core::{CardId, RunId, Spend};
+    use argonauts_core::{RunId, Spend, TaskId};
 
     use crate::state::sessions::SessionRecord;
 
     pub(crate) fn envelope(
         seq: u64,
-        card: Option<&str>,
+        task: Option<&str>,
         session: Option<&str>,
         kind: RunEventKind,
     ) -> RunEvent {
@@ -222,9 +225,9 @@ pub(crate) mod tests {
             seq,
             ts: OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(seq as i64),
             run_id: RunId::new("run-01").unwrap(),
-            card_id: card.map(|card| CardId::new(card).unwrap()),
+            task_id: task.map(|task| TaskId::new(task).unwrap()),
             session: session.map(|key| SessionKey::parse(key).unwrap()),
-            source: "conductor".to_owned(),
+            source: "argonauts-code".to_owned(),
             kind,
         }
     }
@@ -237,8 +240,8 @@ pub(crate) mod tests {
             forced: false,
             workflow: "council".to_owned(),
             estimate: None,
-            triage: None,
-            chat_turn: None,
+            captain_or_crew: None,
+            conversation_turn: None,
             continues: None,
             repo_root: "/repo".into(),
             base_branch: Some("main".to_owned()),
@@ -248,20 +251,20 @@ pub(crate) mod tests {
             settings_sha256: "hash".to_owned(),
             settings: serde_json::Value::Null,
             overrides: Vec::new(),
-            harness_versions: BTreeMap::new(),
+            cli_versions: BTreeMap::new(),
             version: "0.0.1".to_owned(),
-            front_end: None,
+            outside_agent: None,
             instructions: Vec::new(),
             required_steps: Vec::new(),
         }
     }
 
-    pub(crate) fn session_started(worker: &WorkerRef, role: RoleName) -> SessionStarted {
+    pub(crate) fn session_started(worker: &ModelRef, role: RoleName) -> SessionStarted {
         SessionStarted {
             worker: worker.clone(),
-            vendor: worker.vendor(),
-            family: "fake".to_owned(),
-            kind: WorkerKind::Harness,
+            agent_id: worker.agent_id(),
+            provider: "fake".to_owned(),
+            kind: RunnerKind::Cli,
             role,
             step: None,
             access: Access::ReadOnly,
@@ -274,29 +277,29 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn session_record(key: &str, worker: &WorkerRef, role: RoleName) -> SessionRecord {
+    pub(crate) fn session_record(key: &str, worker: &ModelRef, role: RoleName) -> SessionRecord {
         SessionRecord {
             key: SessionKey::parse(key).unwrap(),
-            card: None,
+            task: None,
             started: session_started(worker, role),
             since: 0,
             starts: 1,
-            vendor_session: None,
+            cli_session: None,
             transcript: None,
             context_used: None,
             context_window: None,
             end: None,
             stopped_with_run: false,
             asked: None,
-            vendor_failures: Vec::new(),
+            agent_failures: Vec::new(),
             written: Default::default(),
             workflow: None,
         }
     }
 
-    pub(crate) fn end(reason: EndReason, vendor: Option<&str>) -> SessionEnd {
+    pub(crate) fn end(reason: EndReason, agent_id: Option<&str>) -> SessionEnd {
         SessionEnd {
-            vendor_session: vendor.map(str::to_owned),
+            cli_session: agent_id.map(str::to_owned),
             exit_code: Some(0),
             signal: None,
             duration_ms: 1,
@@ -310,20 +313,20 @@ pub(crate) mod tests {
         }
     }
 
-    /// An open checkpoint as the checkpoint fold would hold it. Built through serde, so
+    /// An open approval as the approval fold would hold it. Built through serde, so
     /// fields the fold adds with defaults don't break it.
-    pub(crate) fn open_checkpoint(
+    pub(crate) fn open_approval(
         n: u32,
-        kind: argonauts_core::events::checkpoint::CheckpointKind,
+        kind: argonauts_core::events::approval::ApprovalKind,
         needs_you: bool,
-    ) -> crate::state::checkpoints::CheckpointRecord {
-        use argonauts_core::events::checkpoint::{CheckpointOpened, CheckpointPacket, FreeText};
-        let opened = CheckpointOpened {
-            id: argonauts_core::names::CheckpointId::numbered(n),
+    ) -> crate::state::approvals::ApprovalRecord {
+        use argonauts_core::events::approval::{ApprovalOpened, ApprovalPacket, FreeText};
+        let opened = ApprovalOpened {
+            id: argonauts_core::names::ApprovalId::numbered(n),
             kind,
-            title: "Checkpoint".to_owned(),
-            card: None,
-            packet: CheckpointPacket::WorkflowPromotion(serde_json::json!({})),
+            title: "Approval".to_owned(),
+            task: None,
+            packet: ApprovalPacket::WorkflowPromotion(serde_json::json!({})),
             evidence_sha256: "evidence".to_owned(),
             mode: ApprovalMode::Supervised,
             decide_with: argonauts_core::settings::approvals::DecideWith::Rules,
@@ -346,7 +349,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_run_fold_tracks_start_pause_stop_park_and_finish() {
+    fn the_run_fold_tracks_start_pause_stop_wait_and_finish() {
         let mut state = RunState::default();
         state.apply(&lifecycle(
             0,
@@ -373,24 +376,24 @@ pub(crate) mod tests {
         assert!(state.run.paused);
         state.apply(&lifecycle(
             4,
-            RunLifecycle::Parked {
-                reason: ParkReason::Paused,
+            RunLifecycle::Waiting {
+                reason: WaitReason::Paused,
                 waiting_on: Vec::new(),
             },
         ));
-        assert_eq!(state.run.parked, Some(ParkReason::Paused));
+        assert_eq!(state.run.waiting, Some(WaitReason::Paused));
         state.apply(&lifecycle(
             5,
             RunLifecycle::Resumed(RunResumed {
                 cause: ResumeCause::User,
                 settings_changed: false,
-                harness_versions_changed: Vec::new(),
+                cli_versions_changed: Vec::new(),
                 main_moved_by: None,
                 sessions: Vec::new(),
             }),
         ));
         assert!(!state.run.paused);
-        assert_eq!(state.run.parked, None);
+        assert_eq!(state.run.waiting, None);
         assert_eq!(state.run.resumes, 1);
         state.apply(&lifecycle(
             6,
@@ -424,9 +427,9 @@ pub(crate) mod tests {
         use argonauts_core::Note;
         use argonauts_core::log::NoteLevel;
 
-        let worker = WorkerRef::new("claude-code", None);
+        let worker = ModelRef::new("claude-code", None);
         let started = |seq: u64, key: &str| {
-            let started = session_started(&worker, RoleName::PhaseLead);
+            let started = session_started(&worker, RoleName::TieBreaker);
             let kind = RunEventKind::Session(SessionEvent::Started(Box::new(started)));
             envelope(seq, None, Some(key), kind)
         };
@@ -452,8 +455,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_session_fold_keeps_vendor_ids_ends_and_resumes() {
-        let worker = WorkerRef::new("codex", None);
+    fn the_session_fold_keeps_agent_ids_ends_and_resumes() {
+        let worker = ModelRef::new("codex", None);
         let started = || {
             RunEventKind::Session(SessionEvent::Started(Box::new(session_started(
                 &worker,
@@ -487,7 +490,7 @@ pub(crate) mod tests {
         ));
         let key = SessionKey::numbered(4);
         let record = state.sessions.get(&key).unwrap();
-        assert_eq!(record.vendor_session.as_deref(), Some("v-1"));
+        assert_eq!(record.cli_session.as_deref(), Some("v-1"));
         assert_eq!(record.context_used, Some(1200));
         assert_eq!(record.since, 3);
         assert_eq!(state.sessions.running().count(), 1);
@@ -504,7 +507,7 @@ pub(crate) mod tests {
         ));
         let record = state.sessions.get(&key).unwrap();
         assert!(record.paused() && record.resumable());
-        assert_eq!(record.vendor_session.as_deref(), Some("v-2"));
+        assert_eq!(record.cli_session.as_deref(), Some("v-2"));
         assert_eq!(state.sessions.running().count(), 0);
 
         state.apply(&envelope(7, Some("task-001"), Some("s-004"), started()));
@@ -514,15 +517,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn vendor_health_quota_and_waits_are_folded() {
-        let vendor = VendorId("codex".to_owned());
+    fn agent_health_plan_usage_and_waits_are_folded() {
+        let agent_id = AgentId("codex".to_owned());
         let mut state = RunState::default();
         state.apply(&envelope(
             0,
             None,
             None,
-            RunEventKind::Vendor(VendorEvent::Health(VendorHealth {
-                vendor: vendor.clone(),
+            RunEventKind::AgentStatus(AgentStatusEvent::Health(AgentHealth {
+                agent_id: agent_id.clone(),
                 state: HealthState::Down,
                 since: OffsetDateTime::UNIX_EPOCH,
                 reason: None,
@@ -530,19 +533,20 @@ pub(crate) mod tests {
                 disabled: None,
             })),
         ));
-        assert!(state.run.vendor_out(&vendor));
+        assert!(state.run.agent_out(&agent_id));
         state.apply(&envelope(
             1,
             None,
             None,
-            RunEventKind::Handoff(HandoffEvent::Waiting {
-                card: CardId::new("task-002").unwrap(),
-                vendor: vendor.clone(),
+            RunEventKind::Fallback(FallbackEvent::Waiting {
+                task: TaskId::new("task-002").unwrap(),
+                agent_id: agent_id.clone(),
                 until: None,
+                kept_off: None,
             }),
         ));
-        assert_eq!(state.run.vendor_waits.len(), 1);
-        let worker = WorkerRef::new("claude-code", None);
+        assert_eq!(state.run.agent_waits.len(), 1);
+        let worker = ModelRef::new("claude-code", None);
         state.apply(&envelope(
             2,
             Some("task-002"),
@@ -552,23 +556,23 @@ pub(crate) mod tests {
                 RoleName::Worker,
             )))),
         ));
-        assert!(state.run.vendor_waits.is_empty(), "the task has work again");
+        assert!(state.run.agent_waits.is_empty(), "the task has work again");
     }
 
     #[test]
-    fn a_rejected_quota_counts_until_its_reset() {
-        use argonauts_core::limits::{QuotaReading, QuotaSource, QuotaStatus};
+    fn a_rejected_plan_usage_counts_until_its_reset() {
+        use argonauts_core::limits::{PlanUsageReading, PlanUsageSource, PlanUsageStatus};
 
-        let vendor = VendorId("claude-code".to_owned());
+        let agent_id = AgentId("claude-code".to_owned());
         let at = |seconds: i64| OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(seconds);
         let reading = |status, resets_at: Option<i64>| {
-            RunEventKind::Vendor(VendorEvent::Quota(QuotaReading {
-                vendor: vendor.clone(),
+            RunEventKind::AgentStatus(AgentStatusEvent::PlanUsage(PlanUsageReading {
+                agent_id: agent_id.clone(),
                 status,
                 used: None,
                 resets_at: resets_at.map(at),
                 window: None,
-                source: QuotaSource::RateLimitEvent,
+                source: PlanUsageSource::RateLimitEvent,
                 observed_at: at(0),
                 detail: None,
                 wrap_up: false,
@@ -579,31 +583,31 @@ pub(crate) mod tests {
             0,
             None,
             None,
-            reading(QuotaStatus::Rejected, Some(100)),
+            reading(PlanUsageStatus::Rejected, Some(100)),
         ));
-        assert!(state.run.vendor_out(&vendor));
-        assert!(state.run.vendor_out_at(&vendor, at(99)));
-        assert!(!state.run.vendor_out_at(&vendor, at(100)));
-        assert_eq!(state.run.next_quota_reset(at(50)), Some(100));
-        assert_eq!(state.run.next_quota_reset(at(100)), None);
+        assert!(state.run.agent_out(&agent_id));
+        assert!(state.run.agent_out_at(&agent_id, at(99)));
+        assert!(!state.run.agent_out_at(&agent_id, at(100)));
+        assert_eq!(state.run.next_plan_usage_reset(at(50)), Some(100));
+        assert_eq!(state.run.next_plan_usage_reset(at(100)), None);
 
         // Without a reset it counts until a new reading says otherwise.
         state.apply(&envelope(
             1,
             None,
             None,
-            reading(QuotaStatus::Rejected, None),
+            reading(PlanUsageStatus::Rejected, None),
         ));
-        assert!(state.run.vendor_out_at(&vendor, at(1_000)));
-        assert_eq!(state.run.next_quota_reset(at(0)), None);
+        assert!(state.run.agent_out_at(&agent_id, at(1_000)));
+        assert_eq!(state.run.next_plan_usage_reset(at(0)), None);
         state.apply(&envelope(
             2,
             None,
             None,
-            reading(QuotaStatus::Allowed, Some(100)),
+            reading(PlanUsageStatus::Allowed, Some(100)),
         ));
-        assert!(!state.run.vendor_out(&vendor));
-        assert!(state.run.quota_resets.is_empty());
+        assert!(!state.run.agent_out(&agent_id));
+        assert!(state.run.plan_usage_resets.is_empty());
     }
 
     #[test]
@@ -611,9 +615,9 @@ pub(crate) mod tests {
         let mut state = RunState::default();
         state.apply(&lifecycle(
             0,
-            RunLifecycle::Started(Box::new(run_started(RunMode::Solo))),
+            RunLifecycle::Started(Box::new(run_started(RunMode::Captain))),
         ));
-        let worker = WorkerRef::new("codex", None);
+        let worker = ModelRef::new("codex", None);
         state.apply(&envelope(
             1,
             None,
@@ -670,12 +674,12 @@ pub(crate) mod tests {
     fn a_snapshot_it_cant_restore_is_skipped_in_a_log_read_from_its_start() {
         let started = lifecycle(
             0,
-            RunLifecycle::Started(Box::new(run_started(RunMode::Solo))),
+            RunLifecycle::Started(Box::new(run_started(RunMode::Captain))),
         );
         let other = serde_json::json!({ "version": ENGINE_STATE_VERSION + 1, "state": {} });
         let log = [started, lifecycle(1, snapshot_of(other))];
         let state = RunState::rebuild(&log).unwrap();
-        assert_eq!(state.run.mode, Some(RunMode::Solo));
+        assert_eq!(state.run.mode, Some(RunMode::Captain));
         assert_eq!(state.seq, Some(1));
         assert_eq!(RunState::fold(&log), state);
     }
@@ -685,7 +689,7 @@ pub(crate) mod tests {
         let mut state = RunState::default();
         state.apply(&lifecycle(
             0,
-            RunLifecycle::Started(Box::new(run_started(RunMode::Solo))),
+            RunLifecycle::Started(Box::new(run_started(RunMode::Captain))),
         ));
         let snapshot = crate::engine::snapshot::build(
             &state,
@@ -693,7 +697,7 @@ pub(crate) mod tests {
             Vec::new(),
         )
         .unwrap();
-        let worker = WorkerRef::new("codex", None);
+        let worker = ModelRef::new("codex", None);
         state.apply(&envelope(
             1,
             None,

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use argonauts_core::app::{AppEvent, RepoRuns, ViewData, ViewRequest};
+use argonauts_core::events::context::ContextDetail;
 use argonauts_core::events::run::RunLifecycle;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::ids::RepoId;
@@ -36,8 +37,8 @@ pub(super) fn run_events(ctx: &Ctx, runs: &RunsState, run: &RunId) -> Vec<RunEve
         .unwrap_or_default()
 }
 
-/// Before the lead's brief holds, Ctrl+T and Enter on the run's row open the lead at work, so
-/// only a run the screen doesn't hold yet gets this.
+/// Before the main agent's brief holds, Ctrl+T and Enter on the run's row open the main agent at
+/// work, so only a run the screen doesn't hold yet gets this.
 const NO_WORKFLOW_YET: &str = "This run hasn't started a workflow yet.";
 
 fn show(ctx: &Ctx, data: ViewData) {
@@ -49,15 +50,16 @@ fn show(ctx: &Ctx, data: ViewData) {
 /// `Runs`, `Status`, `Diff`, `Raw`, `Workflow`, `Agent`, and `AllRepos`.
 pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest) -> Handled {
     match view {
-        ViewRequest::Runs => runs::show_runs(ctx).await?,
+        ViewRequest::Runs => runs::show_runs(ctx, false).await?,
+        ViewRequest::SessionsEverywhere => runs::show_runs(ctx, true).await?,
         ViewRequest::Status => return status(ctx, runs).await,
         ViewRequest::Context => return context(ctx, runs, None).await,
-        ViewRequest::Diff { run, card, scope } => {
-            let diff = match ctx.services.conductor.diff(&run, &card, scope).await {
+        ViewRequest::Diff { run, task, scope } => {
+            let diff = match ctx.services.conductor.diff(&run, &task, scope).await {
                 Ok(diff) => diff,
                 Err(err) => {
                     return super::refused(ctx, err, || {
-                        format!("Couldn't show the diff of {card}")
+                        format!("Couldn't show the diff of {task}")
                     });
                 }
             };
@@ -91,6 +93,18 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
                 None => ctx.hint(format!("{run} has no session {session}.")),
             }
         }
+        ViewRequest::InnerAgent { run, agent, .. } => {
+            let events = run_events(ctx, runs, &run);
+            match views::inner_agent_view(&events, &run, &agent) {
+                Some(view) => show(
+                    ctx,
+                    ViewData::Agent {
+                        view: Box::new(view),
+                    },
+                ),
+                None => ctx.hint(format!("{run} no longer reports that agent.")),
+            }
+        }
         ViewRequest::Goal { run } => {
             let events = run_events(ctx, runs, &run);
             match views::goal_view(&events, &run) {
@@ -107,7 +121,7 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
             let repos = all_repos(ctx).await?;
             show(ctx, ViewData::AllRepos { repos });
         }
-        ViewRequest::Crew => anyhow::bail!("the crew panel isn't one run's view"),
+        ViewRequest::Crew => anyhow::bail!("the agent panel isn't one run's view"),
         ViewRequest::StatusTab => anyhow::bail!("the Status tab isn't one run's view"),
         ViewRequest::Mods { .. } => anyhow::bail!("the mods aren't a run's"),
         ViewRequest::Config
@@ -122,7 +136,7 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
         ViewRequest::Overview { .. } => anyhow::bail!("the Overview isn't one run's view"),
         ViewRequest::RepoFiles => anyhow::bail!("the repo's files aren't a run's"),
         ViewRequest::AgentSessions { .. } => {
-            anyhow::bail!("a run's agents' sessions are the chat's to list")
+            anyhow::bail!("a run's agents' sessions are the conversation's to list")
         }
         ViewRequest::Learning { .. } => anyhow::bail!("the Learning pickers aren't run views"),
     }
@@ -213,14 +227,14 @@ pub(super) fn asks_for_status(question: &str) -> bool {
         || PHRASES.iter().any(|phrase| question.contains(phrase))
 }
 
-/// `/context`: every live session's context, including the chat's own row. The tab asks again
-/// while work runs, so a list that fails only leaves the other runs out.
+/// `/context`: every live session's context, including the conversation's own row. The tab asks
+/// again while work runs, so a list that fails only leaves the other runs out.
 pub(crate) async fn context(
     ctx: &mut Ctx,
     runs: &mut RunsState,
-    chat: Option<ContextRow>,
+    conversation: Option<ContextRow>,
 ) -> Handled {
-    let (rows, _) = context_rows(ctx, runs, chat).await;
+    let (rows, _) = context_rows(ctx, runs, conversation).await;
     show(
         ctx,
         ViewData::Context {
@@ -230,59 +244,42 @@ pub(crate) async fn context(
     Ok(Vec::new())
 }
 
-/// `/context print`: the same sessions, once, as lines in the conversation.
+/// `/context print`: the same sessions, once, for the conversation. The screen prints them
+/// with the main session's own count, as it draws the tab.
 pub(crate) async fn context_report(
     ctx: &mut Ctx,
     runs: &mut RunsState,
-    chat: Option<ContextRow>,
+    conversation: Option<ContextRow>,
 ) -> Handled {
-    let (rows, left_out) = context_rows(ctx, runs, chat).await;
+    let (rows, left_out) = context_rows(ctx, runs, conversation).await;
     if let Some(err) = left_out {
         ctx.notice(
             NoteLevel::Warn,
             format!("Other runs' sessions are left out: {err}"),
         );
     }
-    let mut lines: Vec<String> = rows.iter().map(|row| context_line(ctx, row)).collect();
-    if lines.is_empty() {
-        lines.push("No live sessions".to_owned());
-    }
-    ctx.send(AppEvent::Report {
-        title: "Context".to_owned(),
-        lines,
-    });
+    show(
+        ctx,
+        ViewData::ContextPrint {
+            view: ContextView { rows },
+        },
+    );
     Ok(Vec::new())
 }
 
-/// `main · chat · Opus 5.5 on Claude Code · 212k of 1M (21%) · 41 tool calls`.
-fn context_line(ctx: &Ctx, row: &ContextRow) -> String {
-    use argonauts_tui::format::tokens;
-    let used = match row.window.or(row.cap).filter(|window| *window > 0) {
-        Some(window) => format!(
-            "{} of {} ({:.0}%)",
-            tokens(row.used),
-            tokens(window),
-            row.used as f64 / window as f64 * 100.0
-        ),
-        None => tokens(row.used),
-    };
-    let calls = match row.tool_calls {
-        1 => "1 tool call".to_owned(),
-        n => format!("{n} tool calls"),
-    };
-    let worker = ctx.names.worker(&row.worker);
-    format!("{} · {worker} · {used} · {calls}", row.label.trim())
-}
-
-/// Every live session's context: the chat's own, the run on screen, then the other runs
+/// Every live session's context: the conversation's own, the run on screen, then the other runs
 /// that work now, with why the other runs are missing when they couldn't be listed.
 async fn context_rows(
     ctx: &mut Ctx,
     runs: &mut RunsState,
-    chat: Option<ContextRow>,
+    conversation: Option<ContextRow>,
 ) -> (Vec<ContextRow>, Option<anyhow::Error>) {
     let rotate_at = ctx.settings().sessions.rotate_at.clone();
-    let mut rows: Vec<ContextRow> = chat.into_iter().collect();
+    let clis = ContextClis::here(ctx);
+    let mut rows: Vec<ContextRow> = conversation
+        .into_iter()
+        .map(|row| clis.said_of(row))
+        .collect();
     let attached = runs::attached(runs).cloned();
     if let Some(run) = &attached {
         let finished = runs
@@ -290,7 +287,8 @@ async fn context_rows(
             .as_ref()
             .is_some_and(|attached| matches!(attached.stage, Stage::Finished(_)));
         if !finished {
-            rows.extend(capped_rows(&run_events(ctx, runs, run), run, &rotate_at));
+            let events = run_events(ctx, runs, run);
+            rows.extend(capped_rows(&events, run, &rotate_at, &clis));
         }
     }
     let list = match ctx.services.conductor.list().await {
@@ -302,21 +300,64 @@ async fn context_rows(
         .filter(|summary| summary.live && Some(&summary.run) != attached.as_ref())
     {
         let events = run_events(ctx, runs, &other.run);
-        rows.extend(capped_rows(&events, &other.run, &rotate_at));
+        rows.extend(capped_rows(&events, &other.run, &rotate_at, &clis));
     }
     (rows, None)
 }
 
 /// A run's live sessions, each capped where it rotates. A share of the window gives each
 /// session its own cap, and none while its window is unknown.
-fn capped_rows(events: &[RunEvent], run: &RunId, rotate_at: &RotateAt) -> Vec<ContextRow> {
+fn capped_rows(
+    events: &[RunEvent],
+    run: &RunId,
+    rotate_at: &RotateAt,
+    clis: &ContextClis,
+) -> Vec<ContextRow> {
     views::context_rows(events, run, 0)
         .into_iter()
         .map(|row| ContextRow {
             cap: rotate_at.tokens(row.window).ok().flatten(),
-            ..row
+            ..clis.said_of(row)
         })
         .collect()
+}
+
+/// What the CLIs here can say of a session's context.
+#[derive(Debug, Default)]
+struct ContextClis {
+    /// Those whose fill is worked out and not read off a request.
+    estimating: Vec<String>,
+    /// Those that can say what fills a session.
+    counting: Vec<String>,
+}
+
+impl ContextClis {
+    fn here(ctx: &Ctx) -> Self {
+        let Ok(adapters) = crate::commands::adapters_here(Some(&ctx.env), ctx.settings.resolved())
+        else {
+            return Self::default();
+        };
+        let ids = |keep: &dyn Fn(&dyn argonauts_core::adapter::Adapter) -> bool| {
+            adapters
+                .iter()
+                .filter(|adapter| keep(adapter.as_ref()))
+                .map(|adapter| adapter.id().to_owned())
+                .collect()
+        };
+        Self {
+            estimating: ids(&|adapter| adapter.estimates_context_fill()),
+            counting: ids(&|adapter| adapter.context_usage_line(ContextDetail::Summary).is_some()),
+        }
+    }
+
+    /// The row with what its CLI can say of it.
+    fn said_of(&self, row: ContextRow) -> ContextRow {
+        ContextRow {
+            estimated: self.estimating.contains(&row.worker.agent),
+            counts: self.counting.contains(&row.worker.agent),
+            ..row
+        }
+    }
 }
 
 /// `s` in the workflow view: the run's workflow as it is now, after any approved change, goes
@@ -324,7 +365,7 @@ fn capped_rows(events: &[RunEvent], run: &RunId, rotate_at: &RotateAt) -> Vec<Co
 pub(crate) async fn save_workflow(
     ctx: &mut Ctx,
     runs: &mut RunsState,
-    vendor: &crate::controller::vendor_commands::VendorCommands,
+    agent_id: &crate::controller::cli_commands::CliCommands,
     run: RunId,
     workflow: Option<WorkflowId>,
 ) -> Handled {
@@ -339,7 +380,7 @@ pub(crate) async fn save_workflow(
     // Steps the runner ran are a script, which saves as a workflow of yours.
     let script = crate::controller::workflows::save_script(
         ctx,
-        vendor,
+        agent_id,
         &run,
         &events,
         workflow.as_ref(),
@@ -375,8 +416,8 @@ pub(crate) async fn save_workflow(
     ctx.notice(
         NoteLevel::Info,
         format!(
-            "Saved its phases as {saved_name} in {}. A workflow file that says phases = \
-             \"{saved_name}\" runs them.",
+            "Saved its phases as {saved_name} in {}. /workflow {saved_name} makes it the \
+             workflow in use.",
             ctx.env.display(&path)
         ),
     );
@@ -436,7 +477,7 @@ fn show_workflow(
     None
 }
 
-/// This repo first, then every other repo with a live supervisor, newest update first.
+/// This repo first, then every other repo with a live run host, newest update first.
 pub(crate) async fn all_repos(ctx: &Ctx) -> anyhow::Result<Vec<RepoRuns>> {
     let here = ctx
         .services
@@ -445,11 +486,11 @@ pub(crate) async fn all_repos(ctx: &Ctx) -> anyhow::Result<Vec<RepoRuns>> {
         .await
         .context("listing this repo's runs")?;
     let mut others: BTreeMap<PathBuf, Vec<argonauts_core::api::RunSummary>> = BTreeMap::new();
-    for live in live_registry::live_supervisors(&ctx.env.paths) {
+    for live in live_registry::live_run_hosts(&ctx.env.paths) {
         if live.repo_root == ctx.env.repo_root {
             continue;
         }
-        // A repo that moved or vanished since its supervisor registered has nothing to show.
+        // A repo that moved or vanished since its run host registered has nothing to show.
         let Ok(repo) = RepoId::for_repo(&live.repo_root) else {
             continue;
         };

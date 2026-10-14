@@ -2,7 +2,7 @@
 //! what the file has instead, and for a shape that's easy to get wrong, the shape to write.
 
 use argonauts_core::sanitize::escape_controls;
-use argonauts_core::settings::protocol::GateCommand;
+use argonauts_core::settings::protocol::CheckCommand;
 use toml::{Table, Value};
 
 use crate::catalog::setting_meta;
@@ -95,8 +95,8 @@ pub(crate) fn written_at<'a>(table: &'a Table, key: &str) -> Option<&'a Value> {
 /// Each check named by its words before any flag, so `cargo clippy -- -D warnings` is `clippy`,
 /// and a second `test` is spelled out as `cargo-test`. A command is split on spaces, never run
 /// through a shell.
-pub fn gate_commands(lines: &[String]) -> Vec<GateCommand> {
-    let mut gates: Vec<GateCommand> = Vec::new();
+pub fn check_commands(lines: &[String]) -> Vec<CheckCommand> {
+    let mut checks: Vec<CheckCommand> = Vec::new();
     for line in lines {
         let command: Vec<String> = line.split_whitespace().map(str::to_owned).collect();
         let words: Vec<&str> = command
@@ -105,17 +105,17 @@ pub fn gate_commands(lines: &[String]) -> Vec<GateCommand> {
             .take_while(|word| !word.starts_with('-'))
             .collect();
         let Some(last) = words.last() else { continue };
-        let name = if gates.iter().any(|gate| gate.name == *last) {
+        let name = if checks.iter().any(|check| check.name == *last) {
             words.join("-")
         } else {
             (*last).to_owned()
         };
-        gates.push(GateCommand { name, command });
+        checks.push(CheckCommand { name, command });
     }
-    gates
+    checks
 }
 
-/// `gates.run` and its kin take `[[key]]` tables. The usual slip is a command written as a
+/// `checks.run` and its kin take `[[key]]` tables. The usual slip is a command written as a
 /// string, so the fix is built from the strings the file has.
 fn command_list(key: &str, problem: &Problem, written: Option<&Value>) -> Option<String> {
     let shape = format!("a list of checks, each a [[{key}]] table with a name and a command");
@@ -166,9 +166,9 @@ fn command_list(key: &str, problem: &Problem, written: Option<&Value>) -> Option
 
 /// One `[[key]]` table for each command.
 fn example(key: &str, commands: &[String]) -> String {
-    gate_commands(commands)
+    check_commands(commands)
         .iter()
-        .map(|gate| entry(key, &gate.name, &gate.command))
+        .map(|check| entry(key, &check.name, &check.command))
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -188,10 +188,10 @@ fn list_entry(key: &str, table: &Table) -> String {
     }
     let name = match table.get("name").and_then(Value::as_str) {
         Some(name) => name.to_owned(),
-        None => gate_commands(&[command.join(" ")])
+        None => check_commands(&[command.join(" ")])
             .into_iter()
             .next()
-            .map_or_else(|| "check".to_owned(), |gate| gate.name),
+            .map_or_else(|| "check".to_owned(), |check| check.name),
     };
     entry(key, &name, &command)
 }
@@ -412,8 +412,8 @@ mod tests {
             "steps.review.when can't be \"later\"; it takes \"always\", \"never\", or \"ask\""
         );
         assert_eq!(
-            type_message("main_agent", "invalid worker \"a b\"", None),
-            "main_agent: invalid worker \"a b\""
+            type_message("crew.main", "invalid model \"a b\"", None),
+            "crew.main: invalid model \"a b\""
         );
     }
 
@@ -431,11 +431,11 @@ mod tests {
     }
 
     #[test]
-    fn a_gate_of_flags_alone_still_shows_the_shape() {
+    fn a_check_of_flags_alone_still_shows_the_shape() {
         let written = Value::Array(vec![Value::String("--all".to_owned())]);
         let message = type_message(
             "checks.run",
-            "invalid type: string \"--all\", expected struct GateCommand",
+            "invalid type: string \"--all\", expected struct CheckCommand",
             Some(&written),
         );
         assert!(

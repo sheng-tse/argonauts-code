@@ -1,13 +1,13 @@
-//! Shared steps for the limits scenarios: a fake vendor script with its reset times filled in,
-//! your settings, starting a run, answering cards, and reading the journal and the fake log.
+//! Shared steps for the limits scenarios: a fake agent script with its reset times filled in,
+//! your settings, starting a run, answering questions, and reading the journal and the fake log.
 
 // Each test file uses only some of these.
 #![allow(dead_code, unused_imports)]
 
-mod cards;
 mod events;
 mod fakes;
 mod probe;
+mod questions;
 mod render;
 
 use std::fs;
@@ -22,27 +22,27 @@ use argonauts_core::paths::Paths;
 use argonauts_scenarios::{Scenario, WAIT};
 use argonauts_testkit::Pty;
 
-pub use cards::*;
 pub use events::*;
 pub use fakes::*;
 pub use probe::*;
+pub use questions::*;
 pub use render::{RESET_LATER, RESET_SOON, SOON, render as render_scenario};
 
-/// The task every card here gets. The recorded build runs of all three vendors answered it.
+/// The prompt every task here gets. The recorded build runs of all three agents answered it.
 pub const TASK: &str =
     "Create a file named hello.txt containing the word hi. Then reply with: done";
 
 /// The footer shows this when the prompt is idle.
 pub const IDLE: &str = "for shortcuts";
 
-/// A whole card: its sessions, a handoff, and the merge checkpoint.
-pub const CARD_WAIT: Duration = Duration::from_secs(90);
+/// A whole task: its sessions, a fallback, and the merge approval.
+pub const LONG_WAIT: Duration = Duration::from_secs(90);
 
-/// The app checks parked runs on start and once a minute, so a wake can take that long after
+/// The app checks waiting runs on start and once a minute, so a wake can take that long after
 /// the time it waits for.
 pub const WAKE_WAIT: Duration = Duration::from_secs(150);
 
-/// A scenario whose fake vendor script lives in a temp folder, rendered from
+/// A scenario whose fake agent script lives in a temp folder, rendered from
 /// `scenarios/limits/<name>.toml`.
 pub struct Limits {
     pub scenario: Scenario,
@@ -78,13 +78,13 @@ impl Limits {
     }
 
     /// Replaces your global config, for settings that name files the scenario made. These
-    /// scenarios follow solo runs, so solo is checked unless the settings say how it runs.
+    /// scenarios follow Captain runs, so Captain is checked unless the settings say how it runs.
     /// Their fake CLIs write files directly, with none of their edit tools' events, so every
     /// new file counts as their work unless the settings say what a commit takes.
     pub fn write_settings(&self, settings: &str) -> anyhow::Result<()> {
         let mut settings = settings.to_owned();
-        if !settings.contains("[solo]") {
-            settings.push_str("\n[solo]\nkind = \"checked\"\n");
+        if !settings.contains("[captain]") {
+            settings.push_str("\n[captain]\nkind = \"checked\"\n");
         }
         if !settings.contains("[commit]") {
             settings.push_str("\n[commit]\nunclaimed = \"keep\"\n");
@@ -99,14 +99,14 @@ impl Limits {
         Ok(pty)
     }
 
-    /// The interactive app with a solo run started on [`TASK`].
+    /// The interactive app with a Captain run started on [`TASK`].
     pub fn start(&self) -> anyhow::Result<Pty> {
         let mut pty = self.open()?;
-        pty.send(&format!("/solo {TASK}\r"))?;
+        pty.send(&format!("/captain {TASK}\r"))?;
         Ok(pty)
     }
 
-    /// `argonauts run` on [`TASK`], which keeps the card's branch at the end instead of asking.
+    /// `argonauts run` on [`TASK`], which keeps the task's branch at the end instead of asking.
     pub fn run(&self, extra: &[&str]) -> anyhow::Result<Pty> {
         let mut args = vec!["run", "--merge", "leave"];
         args.extend_from_slice(extra);

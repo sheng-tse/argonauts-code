@@ -1,4 +1,4 @@
-// What a workflow script may use: agent, parallel, pipeline, phase, log, workflow, check, budget
+// What a workflow script may use: agent, parallel, pipeline, phase, log, workflow, check, limit
 // and args, on top of plain JavaScript. Everything else the engine offers is taken away, so a
 // script can't read a clock, roll dice, or reach anything but the host's one door.
 (function (host, limits) {
@@ -30,7 +30,7 @@
     );
   };
   Math.random = () => replays('Math.random()');
-  // The real constructor loses its clock itself, since a script can reach it past any stand-in:
+  // The real constructor loses its clock itself, since a script can reach it past any placeholder:
   // through a subclass's prototype, `Date.prototype.constructor`, or by calling it bare.
   const RealDate = Date;
   RealDate.now = () => replays('Date.now()');
@@ -81,9 +81,9 @@
 
   let current = null;
   const api = {
-    phase(title) {
-      current = text(title, 'phase(title)');
-      send('phase', { title: current });
+    phase(name) {
+      current = text(name, 'phase(name)');
+      send('phase', { name: current });
     },
     log(message) {
       send('log', { message: String(message) });
@@ -126,8 +126,8 @@
       const given = options(about, 'check(condition, about)');
       return ask('check', Object.assign({}, given, { condition: text(condition, 'check(condition)') }));
     },
-    budget: Object.freeze({
-      total: limits.budget == null ? null : limits.budget,
+    limit: Object.freeze({
+      total: limits.limit == null ? null : limits.limit,
       spent: () => Number(send('spent')),
       remaining() {
         return this.total === null ? Infinity : Math.max(0, this.total - this.spent());

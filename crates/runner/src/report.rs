@@ -3,7 +3,7 @@
 //! at the bottom and the workflow view draw from this alone, whatever the steps are.
 
 use argonauts_core::events::session::{
-    SubagentStatus, VendorAgent, VendorAgentState, VendorPhase, VendorWorkflow,
+    CliAgent, CliAgentState, CliPhase, CliWorkflowRun, SubagentStatus,
 };
 
 use crate::script::Meta;
@@ -16,7 +16,7 @@ const PHASES: usize = 200;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Progress {
-    workflow: VendorWorkflow,
+    workflow: CliWorkflowRun,
 }
 
 impl Progress {
@@ -25,14 +25,14 @@ impl Progress {
             .phases
             .iter()
             .enumerate()
-            .map(|(index, phase)| VendorPhase {
+            .map(|(index, phase)| CliPhase {
                 index: number(index),
-                title: phase.title.clone(),
+                title: phase.name.clone(),
                 detail: phase.detail.clone(),
             })
             .collect();
         Self {
-            workflow: VendorWorkflow {
+            workflow: CliWorkflowRun {
                 id: id.to_owned(),
                 call: None,
                 name: meta.name.clone(),
@@ -49,18 +49,18 @@ impl Progress {
         }
     }
 
-    pub fn workflow(&self) -> &VendorWorkflow {
+    pub fn workflow(&self) -> &CliWorkflowRun {
         &self.workflow
     }
 
     /// The phase's number, added at the end when the script didn't declare it. Past
-    /// [`PHASES`] a new title joins the last phase, so a script can't grow the list forever.
-    pub fn phase(&mut self, title: &str) -> u32 {
+    /// [`PHASES`] a new name joins the last phase, so a script can't grow the list forever.
+    pub fn phase(&mut self, name: &str) -> u32 {
         if let Some(phase) = self
             .workflow
             .phases
             .iter()
-            .find(|phase| phase.title == title)
+            .find(|phase| phase.title == name)
         {
             return phase.index;
         }
@@ -68,37 +68,44 @@ impl Progress {
             return number(PHASES - 1);
         }
         let index = number(self.workflow.phases.len());
-        self.workflow.phases.push(VendorPhase {
+        self.workflow.phases.push(CliPhase {
             index,
-            title: title.to_owned(),
+            title: name.to_owned(),
             detail: String::new(),
         });
         index
     }
 
     /// A new agent, waiting for its turn. Returns its place in `agents`.
-    pub fn queue(&mut self, label: &str, phase: Option<&str>, attempt: u32, prompt: &str) -> usize {
-        let phase = phase.map(|title| self.phase(title));
-        self.workflow.agents.push(VendorAgent {
+    pub fn queue(
+        &mut self,
+        label: &str,
+        phase: Option<&str>,
+        try_number: u32,
+        prompt: &str,
+    ) -> usize {
+        let phase = phase.map(|name| self.phase(name));
+        self.workflow.agents.push(CliAgent {
             index: number(self.workflow.agents.len()),
             label: label.to_owned(),
             phase,
             model: None,
-            state: VendorAgentState::Queued,
+            state: CliAgentState::Queued,
             tokens: 0,
             tool_calls: 0,
             duration_ms: 0,
             started_at_ms: None,
-            attempt,
+            try_number,
             prompt: Some(shortened(prompt)),
             result: None,
+            ..CliAgent::default()
         });
         self.workflow.agents.len() - 1
     }
 
     pub fn started(&mut self, agent: usize, model: Option<String>, now_ms: u64) {
         let agent = &mut self.workflow.agents[agent];
-        agent.state = VendorAgentState::Running;
+        agent.state = CliAgentState::Running;
         agent.model = model;
         agent.started_at_ms = Some(now_ms);
     }
@@ -106,9 +113,9 @@ impl Progress {
     pub fn ended(&mut self, agent: usize, end: &AgentTotals, result: Option<&str>) {
         let row = &mut self.workflow.agents[agent];
         row.state = if result.is_some() {
-            VendorAgentState::Done
+            CliAgentState::Done
         } else {
-            VendorAgentState::Failed
+            CliAgentState::Failed
         };
         if end.model.is_some() {
             row.model.clone_from(&end.model);
@@ -141,11 +148,8 @@ impl Progress {
             self.say(summary);
         }
         for agent in &mut self.workflow.agents {
-            if matches!(
-                agent.state,
-                VendorAgentState::Queued | VendorAgentState::Running
-            ) {
-                agent.state = VendorAgentState::Failed;
+            if matches!(agent.state, CliAgentState::Queued | CliAgentState::Running) {
+                agent.state = CliAgentState::Failed;
             }
         }
     }

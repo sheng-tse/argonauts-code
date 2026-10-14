@@ -344,7 +344,7 @@ pub fn copy_text(screen: &Buffer, start: Point, end: Point) -> String {
         } else {
             area.right().saturating_sub(1)
         };
-        // A wrapped row resumes the row above, so whatever leads it, such as a hanging
+        // A wrapped row resumes the row above, so whatever starts it, such as a hanging
         // indent, stays out. The first row joins nothing.
         let join = match row_join(&cells) {
             Some((join, resumes)) if !rows.is_empty() => {

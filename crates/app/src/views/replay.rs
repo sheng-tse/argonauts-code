@@ -2,20 +2,20 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use argonauts_core::RunId;
 use argonauts_core::app::{AppEvent, ReplayTurn};
-use argonauts_core::events::card::{CardEvent, CardState};
-use argonauts_core::events::checkpoint::{
-    AnswerAction, CheckpointEvent, CheckpointKind, CheckpointOpened, CheckpointPacket,
+use argonauts_core::events::agent_status::FallbackEvent;
+use argonauts_core::events::approval::{
+    AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
 };
 use argonauts_core::events::goal::GoalEvent;
-use argonauts_core::events::run::{ParkReason, Party, ResumeCause, RunLifecycle, RunOutcome};
+use argonauts_core::events::run::{Party, ResumeCause, RunLifecycle, RunOutcome, WaitReason};
 use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::vendor::HandoffEvent;
+use argonauts_core::events::task::{TaskEvent, TaskState};
 use argonauts_core::events::workflow::WorkflowEvent;
-use argonauts_core::events::{IntegrationEvent, RunEvent, RunEventKind};
-use argonauts_core::names::{CheckpointId, MessageId, SessionKey, WorkerRef};
+use argonauts_core::events::{MergeEvent, RunEvent, RunEventKind};
+use argonauts_core::names::{ApprovalId, MessageId, ModelRef, SessionKey};
 use argonauts_core::sanitize::sanitize_for_terminal;
 
-/// Chat turns a resumed run repeats word for word; older ones are one Ctrl+O away.
+/// Conversation turns a resumed run repeats word for word; older ones are one Ctrl+O away.
 const REPLAY_TURNS: usize = 6;
 
 /// What a resumed run prints in place of its history: the last turns word for word, one line
@@ -38,24 +38,24 @@ pub(crate) fn condensed_replay(
     })
 }
 
-/// What you and the front ends said to the run, and what its agents asked you. A question
-/// still open is left out, since its card shows it.
+/// What you and the outside agents said to the run, and what its agents asked you. A question
+/// still open is left out, since it shows itself.
 fn turns(events: &[RunEvent]) -> Vec<ReplayTurn> {
-    let mut workers: BTreeMap<SessionKey, WorkerRef> = BTreeMap::new();
+    let mut workers: BTreeMap<SessionKey, ModelRef> = BTreeMap::new();
     let mut seen: BTreeSet<MessageId> = BTreeSet::new();
-    let mut open: BTreeMap<CheckpointId, usize> = BTreeMap::new();
+    let mut open: BTreeMap<ApprovalId, usize> = BTreeMap::new();
     let mut turns = Vec::new();
     let say = |turns: &mut Vec<ReplayTurn>, from: Party, text: &str| {
         let text = sanitize_for_terminal(text.trim());
         if !text.is_empty() {
-            turns.push(ReplayTurn { from, text });
+            turns.push(ReplayTurn::said(from, text));
         }
     };
     for event in events {
         match &event.kind {
             RunEventKind::Run(RunLifecycle::Started(started)) => {
-                let from = match &started.front_end {
-                    Some(client) => Party::FrontEnd {
+                let from = match &started.outside_agent {
+                    Some(client) => Party::OutsideAgent {
                         client: client.clone(),
                     },
                     None => Party::User,
@@ -72,8 +72,8 @@ fn turns(events: &[RunEvent]) -> Vec<ReplayTurn> {
             {
                 say(&mut turns, message.from.clone(), &message.text);
             }
-            RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) => {
-                if let CheckpointPacket::Question(question) = &opened.packet {
+            RunEventKind::Approval(ApprovalEvent::Opened(opened)) => {
+                if let ApprovalPacket::Question(question) = &opened.packet {
                     let from = match &event.session {
                         Some(session) => Party::Agent {
                             session: session.clone(),
@@ -82,7 +82,7 @@ fn turns(events: &[RunEvent]) -> Vec<ReplayTurn> {
                                 .cloned()
                                 .unwrap_or_else(|| question.from.clone()),
                         },
-                        None => Party::Conductor,
+                        None => Party::ArgonautsCode,
                     };
                     let at = turns.len();
                     say(&mut turns, from, &question.text);
@@ -91,7 +91,7 @@ fn turns(events: &[RunEvent]) -> Vec<ReplayTurn> {
                     }
                 }
             }
-            RunEventKind::Checkpoint(CheckpointEvent::Decided(decided)) => {
+            RunEventKind::Approval(ApprovalEvent::Decided(decided)) => {
                 open.remove(&decided.id);
                 if from_a_person(&decided.by)
                     && let Some(text) = &decided.text
@@ -99,7 +99,7 @@ fn turns(events: &[RunEvent]) -> Vec<ReplayTurn> {
                     say(&mut turns, decided.by.clone(), text);
                 }
             }
-            RunEventKind::Checkpoint(CheckpointEvent::Withdrawn { id, .. }) => {
+            RunEventKind::Approval(ApprovalEvent::Withdrawn { id, .. }) => {
                 open.remove(id);
             }
             _ => {}
@@ -118,56 +118,56 @@ fn turns(events: &[RunEvent]) -> Vec<ReplayTurn> {
 }
 
 fn from_a_person(party: &Party) -> bool {
-    matches!(party, Party::User | Party::FrontEnd { .. })
+    matches!(party, Party::User | Party::OutsideAgent { .. })
 }
 
-/// One line per milestone, oldest first, such as "Plan approved · 5 cards".
+/// One line per milestone, oldest first, such as "Plan approved · 5 tasks".
 pub(crate) fn milestones(events: &[RunEvent]) -> Vec<String> {
-    let mut opened: BTreeMap<CheckpointId, (CheckpointKind, usize)> = BTreeMap::new();
+    let mut opened: BTreeMap<ApprovalId, (ApprovalKind, usize)> = BTreeMap::new();
     let mut titles: BTreeMap<String, String> = BTreeMap::new();
     let mut lines = Vec::new();
     for event in events {
-        let card = event.card_id.as_ref().map(ToString::to_string);
+        let task = event.task_id.as_ref().map(ToString::to_string);
         let line = match &event.kind {
             RunEventKind::Goal(GoalEvent::Approved { .. }) => Some("Goal approved".to_owned()),
-            RunEventKind::Checkpoint(CheckpointEvent::Opened(checkpoint)) => {
-                opened.insert(checkpoint.id.clone(), opened_entry(checkpoint));
+            RunEventKind::Approval(ApprovalEvent::Opened(approval)) => {
+                opened.insert(approval.id.clone(), opened_entry(approval));
                 None
             }
-            RunEventKind::Checkpoint(CheckpointEvent::Decided(decided)) => {
+            RunEventKind::Approval(ApprovalEvent::Decided(decided)) => {
                 match (opened.get(&decided.id), &decided.action) {
                     (
-                        Some((CheckpointKind::Plan, cards)),
+                        Some((ApprovalKind::Plan, tasks)),
                         AnswerAction::Approve | AnswerAction::ApproveWithEdits,
-                    ) => Some(format!("Plan approved · {}", count(*cards, "task"))),
+                    ) => Some(format!("Plan approved · {}", count(*tasks, "task"))),
                     _ => None,
                 }
             }
-            RunEventKind::Card(CardEvent::Created(spec)) => {
+            RunEventKind::Task(TaskEvent::Created(spec)) => {
                 titles.insert(spec.id.to_string(), sanitize_for_terminal(&spec.title));
                 None
             }
-            RunEventKind::Card(CardEvent::State { to, .. }) => {
-                let card = card.unwrap_or_default();
+            RunEventKind::Task(TaskEvent::State { to, .. }) => {
+                let task = task.unwrap_or_default();
                 let title = titles
-                    .get(&card)
+                    .get(&task)
                     .map(|title| format!(" · {title}"))
                     .unwrap_or_default();
                 match to {
-                    CardState::Integrated => Some(format!("{card} merged into the run{title}")),
-                    CardState::Failed => Some(format!("{card} failed{title}")),
-                    CardState::Escalated => Some(format!("{card} needs you{title}")),
+                    TaskState::Merged => Some(format!("{task} merged into the run{title}")),
+                    TaskState::Failed => Some(format!("{task} failed{title}")),
+                    TaskState::NeedsYou => Some(format!("{task} needs you{title}")),
                     _ => None,
                 }
             }
-            RunEventKind::Card(CardEvent::Reverted { to, .. }) => Some(format!(
-                "{} reverted to fallback-{to}",
-                card.unwrap_or_default()
+            RunEventKind::Task(TaskEvent::Rewound { to, .. }) => Some(format!(
+                "{} rewound to fallback-{to}",
+                task.unwrap_or_default()
             )),
-            RunEventKind::Handoff(HandoffEvent::HandedOff { card, to, .. }) => {
-                Some(format!("{card} handed off to {to}"))
+            RunEventKind::Fallback(FallbackEvent::FellBack { task, to, .. }) => {
+                Some(format!("{task} fell back to {to}"))
             }
-            RunEventKind::Integration(IntegrationEvent::FinalCheck { passed }) => Some(
+            RunEventKind::Merge(MergeEvent::FinalCheck { passed }) => Some(
                 if *passed {
                     "Final check passed"
                 } else {
@@ -175,23 +175,21 @@ pub(crate) fn milestones(events: &[RunEvent]) -> Vec<String> {
                 }
                 .to_owned(),
             ),
-            RunEventKind::Integration(IntegrationEvent::Landed { target, .. }) => {
+            RunEventKind::Merge(MergeEvent::RunMerged { target, .. }) => {
                 Some(format!("Merged into {}", sanitize_for_terminal(target)))
             }
-            RunEventKind::Integration(IntegrationEvent::PullRequest { url, .. }) => {
-                Some(match url {
-                    Some(url) => format!("Pull request opened · {}", sanitize_for_terminal(url)),
-                    None => "Pull request suggested".to_owned(),
-                })
-            }
+            RunEventKind::Merge(MergeEvent::PullRequest { url, .. }) => Some(match url {
+                Some(url) => format!("Pull request opened · {}", sanitize_for_terminal(url)),
+                None => "Pull request suggested".to_owned(),
+            }),
             RunEventKind::Workflow(WorkflowEvent::Changed(change)) => Some(format!(
                 "Workflow changed · {}",
                 sanitize_for_terminal(&change.reason)
             )),
             // A stream that starts here never saw these open, so a later answer still counts.
             RunEventKind::Run(RunLifecycle::Snapshot(snapshot)) => {
-                for checkpoint in &snapshot.open_checkpoints {
-                    opened.insert(checkpoint.id.clone(), opened_entry(checkpoint));
+                for approval in &snapshot.open_approvals {
+                    opened.insert(approval.id.clone(), opened_entry(approval));
                 }
                 None
             }
@@ -203,13 +201,13 @@ pub(crate) fn milestones(events: &[RunEvent]) -> Vec<String> {
     lines
 }
 
-/// The checkpoint's kind, and a plan's card count.
-fn opened_entry(checkpoint: &CheckpointOpened) -> (CheckpointKind, usize) {
-    let cards = match &checkpoint.packet {
-        CheckpointPacket::Plan(plan) => plan.graph.cards.len(),
+/// The approval's kind, and a plan's task count.
+fn opened_entry(approval: &ApprovalOpened) -> (ApprovalKind, usize) {
+    let tasks = match &approval.packet {
+        ApprovalPacket::Plan(plan) => plan.graph.tasks.len(),
         _ => 0,
     };
-    (checkpoint.kind, cards)
+    (approval.kind, tasks)
 }
 
 fn lifecycle_line(lifecycle: &RunLifecycle) -> Option<String> {
@@ -218,7 +216,7 @@ fn lifecycle_line(lifecycle: &RunLifecycle) -> Option<String> {
             match resumed.cause {
                 ResumeCause::User => "Resumed",
                 ResumeCause::Answer => "Resumed for your answer",
-                ResumeCause::VendorBack => "Resumed as an agent came back",
+                ResumeCause::AgentBack => "Resumed as an agent came back",
                 ResumeCause::AskTimeout => "Resumed as a fallback question timed out",
                 ResumeCause::Crash => "Resumed after a crash",
             }
@@ -227,14 +225,14 @@ fn lifecycle_line(lifecycle: &RunLifecycle) -> Option<String> {
         RunLifecycle::ApprovalModeChanged { mode, .. } => {
             Some(format!("Approval mode set to {}", mode.label()))
         }
-        RunLifecycle::Parked { reason, .. } => Some(format!(
+        RunLifecycle::Waiting { reason, .. } => Some(format!(
             "Waiting · {}",
             match reason {
-                ParkReason::Checkpoint => "waiting for you".to_owned(),
-                ParkReason::Paused => "paused".to_owned(),
-                ParkReason::AllVendorsOut { .. } => "every agent is out".to_owned(),
-                ParkReason::WaitingForVendor { vendor, .. } => format!("waiting for {vendor}"),
-                ParkReason::NoStandIn { detail, .. } => detail.clone(),
+                WaitReason::Approval => "waiting for you".to_owned(),
+                WaitReason::Paused => "paused".to_owned(),
+                WaitReason::AllAgentsOut { .. } => "every agent is out".to_owned(),
+                WaitReason::WaitingForAgent { agent_id, .. } => format!("waiting for {agent_id}"),
+                WaitReason::NoFallback { detail, .. } => detail.clone(),
             }
         )),
         RunLifecycle::Finished { outcome, .. } => Some(
@@ -264,31 +262,31 @@ fn count(n: usize, noun: &str) -> String {
 mod tests {
     use super::*;
     use crate::client::test_support::{
-        card_event, checkpoint_decided, event, plan_checkpoint, queued, run_id, run_started,
+        approval_decided, event, plan_approval, queued, run_id, run_started, task_event,
     };
     use argonauts_core::events::run::RunResumed;
 
     #[test]
     fn milestones_are_one_line_each_oldest_first() {
-        let card = argonauts_core::CardId::new("task-001").unwrap();
-        let plan = CheckpointId::numbered(1);
+        let task = argonauts_core::TaskId::new("task-001").unwrap();
+        let plan = ApprovalId::numbered(1);
         let events = vec![
             run_started(0, "Add --json to export", None),
-            plan_checkpoint(1, &plan, 5),
-            checkpoint_decided(2, &plan, AnswerAction::Approve, Party::User, None),
-            card_event(
+            plan_approval(1, &plan, 5),
+            approval_decided(2, &plan, AnswerAction::Approve, Party::User, None),
+            task_event(
                 3,
-                &card,
-                CardEvent::State {
-                    from: Some(CardState::Integrating),
-                    to: CardState::Integrated,
+                &task,
+                TaskEvent::State {
+                    from: Some(TaskState::Merging),
+                    to: TaskState::Merged,
                     reason: "merged".to_owned(),
                 },
             ),
             event(
                 4,
-                RunEventKind::Run(RunLifecycle::Parked {
-                    reason: ParkReason::Paused,
+                RunEventKind::Run(RunLifecycle::Waiting {
+                    reason: WaitReason::Paused,
                     waiting_on: Vec::new(),
                 }),
             ),
@@ -297,7 +295,7 @@ mod tests {
                 RunEventKind::Run(RunLifecycle::Resumed(RunResumed {
                     cause: ResumeCause::User,
                     settings_changed: false,
-                    harness_versions_changed: Vec::new(),
+                    cli_versions_changed: Vec::new(),
                     main_moved_by: None,
                     sessions: Vec::new(),
                 })),
@@ -316,9 +314,8 @@ mod tests {
 
     #[test]
     fn a_plan_open_at_the_snapshot_is_approved_after_it() {
-        let plan = CheckpointId::numbered(1);
-        let RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) =
-            plan_checkpoint(1, &plan, 5).kind
+        let plan = ApprovalId::numbered(1);
+        let RunEventKind::Approval(ApprovalEvent::Opened(opened)) = plan_approval(1, &plan, 5).kind
         else {
             unreachable!()
         };
@@ -326,7 +323,7 @@ mod tests {
             upto: 1,
             engine: serde_json::Value::Null,
             summary: argonauts_core::api::StatusSummary::default(),
-            open_checkpoints: vec![*opened],
+            open_approvals: vec![*opened],
             running: Vec::new(),
         };
         let events = vec![
@@ -334,7 +331,7 @@ mod tests {
                 2,
                 RunEventKind::Run(RunLifecycle::Snapshot(Box::new(snapshot))),
             ),
-            checkpoint_decided(3, &plan, AnswerAction::Approve, Party::User, None),
+            approval_decided(3, &plan, AnswerAction::Approve, Party::User, None),
         ];
         assert_eq!(milestones(&events), ["Plan approved · 5 tasks"]);
     }
@@ -349,13 +346,13 @@ mod tests {
 
     #[test]
     fn a_condensed_replay_repeats_the_last_turns_word_for_word() {
-        let plan = CheckpointId::numbered(1);
+        let plan = ApprovalId::numbered(1);
         let mut events = vec![run_started(0, "Add --json to export", Some("hermes"))];
         for seq in 1..=7 {
             events.push(queued(seq, &format!("note {seq}"), Party::User));
         }
-        events.push(plan_checkpoint(8, &plan, 2));
-        events.push(checkpoint_decided(
+        events.push(plan_approval(8, &plan, 2));
+        events.push(approval_decided(
             9,
             &plan,
             AnswerAction::Approve,
@@ -387,30 +384,30 @@ mod tests {
         };
         assert_eq!(
             turns[0].from,
-            Party::FrontEnd {
+            Party::OutsideAgent {
                 client: "hermes".to_owned()
             }
         );
         assert_eq!(turns[0].text, "Add --json to export");
     }
 
-    /// An agent's question still open isn't repeated above the card that asks it; once
+    /// An agent's question still open isn't repeated above where it asks; once
     /// answered, the question and your answer read as turns.
     #[test]
-    fn an_open_question_is_left_to_its_card() {
-        use argonauts_core::events::checkpoint::{FreeText, QuestionPacket};
+    fn an_open_question_is_left_to_its_task() {
+        use argonauts_core::events::approval::{FreeText, QuestionPacket};
         use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 
-        let id = CheckpointId::numbered(1);
-        let card = argonauts_core::CardId::new("task-001").unwrap();
-        let opened = CheckpointOpened {
+        let id = ApprovalId::numbered(1);
+        let task = argonauts_core::TaskId::new("task-001").unwrap();
+        let opened = ApprovalOpened {
             id: id.clone(),
-            kind: CheckpointKind::Question,
+            kind: ApprovalKind::Question,
             title: "Question from build:greet".to_owned(),
-            card: Some(card.clone()),
-            packet: CheckpointPacket::Question(QuestionPacket {
-                from: WorkerRef::new("codex", None),
-                card,
+            task: Some(task.clone()),
+            packet: ApprovalPacket::Question(QuestionPacket {
+                from: ModelRef::new("codex", None),
+                task,
                 text: "Keep the old name as an alias?".to_owned(),
                 options: Vec::new(),
             }),
@@ -425,7 +422,7 @@ mod tests {
             run_started(0, "Rename the config loader", None),
             event(
                 1,
-                RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(opened))),
+                RunEventKind::Approval(ApprovalEvent::Opened(Box::new(opened))),
             ),
             queued(2, "rename it everywhere", Party::User),
         ];
@@ -436,7 +433,7 @@ mod tests {
             texts(&events),
             ["Rename the config loader", "rename it everywhere"]
         );
-        events.push(checkpoint_decided(
+        events.push(approval_decided(
             3,
             &id,
             AnswerAction::Answer,

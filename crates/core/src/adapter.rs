@@ -1,4 +1,4 @@
-//! The traits each vendor adapter implements.
+//! The traits each agent adapter implements.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -7,16 +7,16 @@ use std::time::Duration;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::cli_commands::{BuiltinCommand, CliCommand, CommandKind};
+use crate::cli_sessions::{CliScan, CliSession, CliTurn, ResumeLaunch};
 use crate::driver::SessionDriver;
 use crate::event::AgentEvent;
 use crate::events::context::ContextDetail;
 use crate::keywords::Keyword;
-use crate::limits::{QuotaAnswer, QuotaReading};
+use crate::limits::{PlanUsageAnswer, PlanUsageReading};
 use crate::screen::ScreenRequest;
 use crate::session::{CommandSpec, SessionRequest};
 use crate::settings::sessions::{Compaction, NativeFanout};
-use crate::vendor_commands::{BuiltinCommand, CommandKind, VendorCommand};
-use crate::vendor_sessions::{ResumeLaunch, VendorScan, VendorSession, VendorTurn};
 
 pub const KNOWN_AGENT_IDS: &[&str] = &["claude-code", "codex", "antigravity-cli"];
 
@@ -44,7 +44,7 @@ pub trait StreamParser: Send {
     }
 }
 
-/// One vendor CLI, described well enough to run it headlessly.
+/// One CLI, described well enough to run it headlessly.
 pub trait Adapter: Send + Sync {
     /// Stable id, such as `claude-code`.
     fn id(&self) -> &'static str;
@@ -67,7 +67,7 @@ pub trait Adapter: Send + Sync {
     fn cheapest_model(&self) -> (&'static str, Option<&'static str>);
     fn stop_plan(&self) -> StopPlan;
 
-    /// Stdin text that delivers `message` mid-run. `None` means the conductor interrupts instead.
+    /// Stdin text that delivers `message` mid-run. `None` means Argonauts Code interrupts instead.
     fn wrap_up_input(&self, message: &str) -> Option<String> {
         let _ = message;
         None
@@ -133,43 +133,49 @@ pub trait Adapter: Send + Sync {
         None
     }
 
-    /// A command that reads quota without spending any, such as `agy -p "/usage"`. `model` is
-    /// the one the vendor's sessions use, for a CLI that names a model on every call.
-    fn quota_probe(&self, workdir: &Path, model: Option<&str>) -> Option<CommandSpec> {
+    /// The context fill this CLI's stream gives is worked out from the session's totals,
+    /// because it never says how large the last request was. A screen marks it with `~`.
+    fn estimates_context_fill(&self) -> bool {
+        false
+    }
+
+    /// A command that reads plan usage without spending any, such as `agy -p "/usage"`. `model` is
+    /// the one the agent's sessions use, for a CLI that names a model on every call.
+    fn plan_usage_probe(&self, workdir: &Path, model: Option<&str>) -> Option<CommandSpec> {
         let _ = (workdir, model);
         None
     }
 
-    fn parse_quota_probe(&self, stdout: &str) -> Option<QuotaReading> {
+    fn parse_plan_usage_probe(&self, stdout: &str) -> Option<PlanUsageReading> {
         let _ = stdout;
         None
     }
 
     /// The answer from what the probe printed before it ended or ran out of time. By default
-    /// the same as [`Adapter::parse_quota_probe_answer`].
-    fn parse_quota_probe_end(&self, stdout: &str) -> Option<QuotaAnswer> {
-        self.parse_quota_probe_answer(stdout)
+    /// the same as [`Adapter::parse_plan_usage_probe_answer`].
+    fn parse_plan_usage_probe_end(&self, stdout: &str) -> Option<PlanUsageAnswer> {
+        self.parse_plan_usage_probe_answer(stdout)
     }
 
     /// A first part of the answer worth showing while the rest is on its way, such as Claude
     /// Code's windows before its slower scan. It must name the same account the whole answer
     /// will, or the two read as a change of account. `None` by default.
-    fn parse_quota_probe_early(&self, stdout: &str) -> Option<QuotaAnswer> {
+    fn parse_plan_usage_probe_early(&self, stdout: &str) -> Option<PlanUsageAnswer> {
         let _ = stdout;
         None
     }
 
-    /// The session's own stream says when quota changes, so its probe is only for when
+    /// The session's own stream says when plan usage changes, so its probe is only for when
     /// nothing runs, and isn't repeated while a session does.
-    fn stream_reports_quota(&self) -> bool {
+    fn stream_reports_plan_usage(&self) -> bool {
         false
     }
 
     /// Every window the probe's answer reports, one reading each, and the plan when it names
-    /// one. By default, the one reading `parse_quota_probe` gives.
-    fn parse_quota_probe_answer(&self, stdout: &str) -> Option<QuotaAnswer> {
-        let reading = self.parse_quota_probe(stdout)?;
-        Some(QuotaAnswer {
+    /// one. By default, the one reading `parse_plan_usage_probe` gives.
+    fn parse_plan_usage_probe_answer(&self, stdout: &str) -> Option<PlanUsageAnswer> {
+        let reading = self.parse_plan_usage_probe(stdout)?;
+        Some(PlanUsageAnswer {
             windows: vec![reading],
             plan: None,
             live: None,
@@ -207,15 +213,15 @@ pub trait Adapter: Send + Sync {
         }
     }
 
-    /// The vendor's interactive UI on the same session, for take-over:
+    /// The agent's interactive UI on the same session, for take-over:
     /// `claude --resume <id>`, `codex resume <id>`, `agy --conversation <id>`.
     fn interactive_resume(&self, session_id: &str, workdir: &Path) -> Option<CommandSpec> {
         let _ = (session_id, workdir);
         None
     }
 
-    /// The model family when the registry has no entry, such as `claude` or `gpt`.
-    fn default_family(&self) -> &'static str {
+    /// The model provider when the registry has no entry, such as `anthropic` or `openai`.
+    fn default_provider(&self) -> &'static str {
         "unknown"
     }
 
@@ -232,21 +238,60 @@ pub trait Adapter: Send + Sync {
     }
 
     /// Arguments that run the CLI's own updater, such as `["update"]` for `claude update`.
-    /// `None` when Argonauts knows of none, so `/update` leaves the CLI as it is.
+    /// `None` when Argonauts Code knows of none, so `/update` leaves the CLI as it is.
     fn update_args(&self) -> Option<&'static [&'static str]> {
         None
     }
 
-    /// The CLI names who is signed in only on the screen it draws as it starts, so Argonauts
+    /// Commands that say what the CLI can use, for a CLI that keeps a list of providers in
+    /// place of one account, as OpenCode does. Each is run with no model call, and what it
+    /// prints goes to [`providers`](Adapter::providers) in the same order.
+    fn provider_checks(&self) -> &'static [&'static [&'static str]] {
+        &[]
+    }
+
+    /// The providers and the default model, from what the
+    /// [`provider_checks`](Adapter::provider_checks) printed. `None` when they don't say.
+    fn providers(&self, _outputs: &[String]) -> Option<CliProviders> {
+        None
+    }
+
+    /// The message the CLI sends as a session starts, with the fields of it Argonauts Code
+    /// reads, so a version that stops sending one is noticed. `None` for a CLI that sends none.
+    fn startup_message(&self) -> Option<&'static StartupMessage> {
+        None
+    }
+
+    /// Where the CLI can be installed from. The default knows none, so its newest version is
+    /// never asked for.
+    fn install_sources(&self) -> InstallSources {
+        InstallSources::default()
+    }
+
+    /// Versions known not to work with Argonauts Code, which need an update whatever else is
+    /// true of them.
+    fn broken_versions(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// The CLI names who is signed in only on the screen it draws as it starts, so Argonauts Code
     /// may start it in a hidden terminal, send it nothing, and read that screen once.
     fn reads_banner(&self) -> bool {
         false
     }
 
-    /// Who is signed in, as the start-up screen `screen` shows it, for a CLI that
-    /// [`reads_banner`](Adapter::reads_banner). `None` when the screen says neither way.
+    /// What the start-up screen `screen` says of who is signed in, for a CLI that
+    /// [`reads_banner`](Adapter::reads_banner). `None` while it says nothing yet, as while the
+    /// CLI still loads a saved login.
     fn banner_account(&self, _screen: &str) -> Option<BannerAccount> {
         None
+    }
+
+    /// The variables that keep the CLI from updating itself, such as
+    /// `DISABLE_AUTOUPDATER=1` for Claude Code, so nothing Argonauts Code starts switches
+    /// versions halfway. Empty for a CLI that never updates itself.
+    fn updater_off_env(&self) -> &'static [(&'static str, &'static str)] {
+        &[]
     }
 
     fn transport(&self) -> Transport {
@@ -254,37 +299,33 @@ pub trait Adapter: Send + Sync {
     }
 
     /// The driver for a two-way protocol, which gets the child's pipes instead of the parser.
-    /// The harness worker still owns the process.
+    /// The CLI runner still owns the process.
     fn session_driver(&self) -> Option<Arc<dyn SessionDriver>> {
         None
     }
 
     /// The CLI's own sessions that ran in `scan.folder`, newest first, at most `limit`. Reads
     /// only the CLI's session list and transcripts, never its credentials. Blocking file reads.
-    fn vendor_sessions(
-        &self,
-        scan: &VendorScan,
-        limit: usize,
-    ) -> anyhow::Result<Vec<VendorSession>> {
+    fn cli_sessions(&self, scan: &CliScan, limit: usize) -> anyhow::Result<Vec<CliSession>> {
         let _ = (scan, limit);
         Ok(Vec::new())
     }
 
     /// The last `count` turns of one of those sessions, oldest first, to reprint when it's
     /// resumed.
-    fn vendor_session_turns(
+    fn cli_session_turns(
         &self,
-        scan: &VendorScan,
+        scan: &CliScan,
         session: &str,
         count: usize,
-    ) -> anyhow::Result<Vec<VendorTurn>> {
+    ) -> anyhow::Result<Vec<CliTurn>> {
         let _ = (scan, session, count);
         Ok(Vec::new())
     }
 
-    /// How the chat's next turn carries on `session` through the CLI's own resume. The default
-    /// suits a CLI whose `command` resumes [`SessionRequest::resume_session`].
-    fn resume_launch(&self, session: &VendorSession) -> Option<ResumeLaunch> {
+    /// How the conversation's next turn carries on `session` through the CLI's own resume. The
+    /// default suits a CLI whose `command` resumes [`SessionRequest::resume_session`].
+    fn resume_launch(&self, session: &CliSession) -> Option<ResumeLaunch> {
         Some(ResumeLaunch::of(session))
     }
 
@@ -300,15 +341,15 @@ pub trait Adapter: Send + Sync {
 
     /// Custom commands, skills, and plugin commands the CLI loads for `scan.folder`: the
     /// project's, the home folder's, and installed plugins'. Blocking file reads.
-    fn discover_commands(&self, scan: &VendorScan) -> anyhow::Result<Vec<VendorCommand>> {
+    fn discover_commands(&self, scan: &CliScan) -> anyhow::Result<Vec<CliCommand>> {
         let _ = scan;
         Ok(Vec::new())
     }
 
     /// The prompt that runs `command` in the main agent's session, such as `/review src`.
     /// `None` when it can't run there.
-    fn command_prompt(&self, command: &VendorCommand, args: &str) -> Option<String> {
-        matches!(command.kind, CommandKind::Vendor).then(|| command.invocation(args))
+    fn command_prompt(&self, command: &CliCommand, args: &str) -> Option<String> {
+        matches!(command.kind, CommandKind::Cli).then(|| command.invocation(args))
     }
 
     /// The project's instruction files, such as `AGENTS.md`, that the CLI loads by itself in
@@ -319,7 +360,7 @@ pub trait Adapter: Send + Sync {
     }
 }
 
-/// How the harness worker talks to the agent's process.
+/// How the CLI runner talks to the agent's process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Transport {
@@ -330,7 +371,7 @@ pub enum Transport {
     Acp,
 }
 
-/// Help for a harness that isn't ready, for the guided setup and the startup header.
+/// Help for a CLI that isn't ready, for the guided setup and the startup header.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SetupHints {
     pub install: Option<String>,
@@ -340,14 +381,70 @@ pub struct SetupHints {
     pub login_check: Option<Vec<String>>,
 }
 
-/// Who a CLI's start-up screen says is signed in.
+/// What a CLI that keeps its own list of providers can use.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct BannerAccount {
-    pub account: Option<String>,
-    /// The plan as the CLI names it, such as `Google AI Pro`.
-    pub plan: Option<String>,
-    /// The screen says no one is signed in.
-    pub signed_out: bool,
+pub struct CliProviders {
+    pub providers: Vec<crate::status_tab::CliProvider>,
+    /// The model it uses when none is named, as it routes it, such as `openrouter/z-ai/glm-5`,
+    /// and the name of that model's provider.
+    pub default_model: Option<(String, String)>,
+}
+
+/// The message a CLI sends as a session starts, as one line of JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartupMessage {
+    /// Text every such line holds, so any other line is passed over without being parsed.
+    pub marker: &'static str,
+    /// What makes a line this message: each JSON pointer with the text it holds.
+    pub is: &'static [(&'static str, &'static str)],
+    pub fields: &'static [StartupField],
+}
+
+/// One field of a start-up message that Argonauts Code reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartupField {
+    /// Where it is in the message, as a JSON pointer such as `/init/model`.
+    pub pointer: &'static str,
+    /// What it is, as said in `no longer reports its model`.
+    pub what: &'static str,
+    /// What is lost without it, as said after `so`.
+    pub without: &'static str,
+}
+
+/// Where a CLI can be installed from. Its newest version is asked of the place the installed
+/// one came from, and the update command is that place's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct InstallSources {
+    /// Its Homebrew formula or cask, such as `codex`.
+    pub homebrew: Option<&'static str>,
+    /// Its npm package, such as `@openai/codex`.
+    pub npm: Option<&'static str>,
+    pub own: Option<OwnInstaller>,
+}
+
+/// A CLI's own installer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnInstaller {
+    /// A part of the path it keeps the program under, such as `/claude/versions/`.
+    pub path_part: &'static str,
+    /// The address whose answer is the newest version's number, where it has one.
+    pub newest_url: Option<&'static str>,
+}
+
+/// What a CLI's start-up screen says of who is signed in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BannerAccount {
+    /// Its banner names the account.
+    SignedIn {
+        account: String,
+        /// The plan as the CLI names it, such as `Google AI Pro`.
+        plan: Option<String>,
+    },
+    /// It asks how to sign in, which it does only when no one is.
+    SignedOut,
+    /// It asks whether to trust the folder before it shows anything else. Only you answer
+    /// that.
+    UntrustedFolder,
 }
 
 /// Extra flags and environment for one launch setting, and how faithfully they apply.
@@ -358,7 +455,7 @@ pub struct LaunchTweak {
     pub effect: TweakEffect,
 }
 
-/// How faithfully a setting applies to a harness.
+/// How faithfully a setting applies to a CLI.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "effect", rename_all = "snake_case")]
 pub enum TweakEffect {
@@ -370,7 +467,7 @@ pub enum TweakEffect {
     NotPossible {
         note: String,
     },
-    /// The conductor counts events and interrupts past the cap (agy subagents).
+    /// Argonauts Code counts events and interrupts past the cap (agy subagents).
     EnforcedByConductor,
 }
 
@@ -416,7 +513,7 @@ impl Default for Capabilities {
     }
 }
 
-/// A signal the conductor sends to the agent's process group.
+/// A signal Argonauts Code sends to the agent's process group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StopSignal {
@@ -435,12 +532,12 @@ pub struct StopStep {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StopPlan {
-    /// The conductor stops early once the process exits.
+    /// Argonauts Code stops early once the process exits.
     pub steps: Vec<StopStep>,
 }
 
 impl StopPlan {
-    pub fn escalating(after_interrupt: Duration, after_terminate: Duration) -> Self {
+    pub fn stepped(after_interrupt: Duration, after_terminate: Duration) -> Self {
         Self {
             steps: vec![
                 StopStep {
@@ -462,7 +559,7 @@ impl StopPlan {
 
 impl Default for StopPlan {
     fn default() -> Self {
-        Self::escalating(Duration::from_secs(5), Duration::from_secs(5))
+        Self::stepped(Duration::from_secs(5), Duration::from_secs(5))
     }
 }
 
@@ -566,10 +663,10 @@ mod tests {
         let adapter: Box<dyn Adapter> = Box::new(Fake);
         let dir = Path::new("/w");
         assert!(adapter.input_line("hi").is_none());
-        assert!(adapter.quota_probe(dir, None).is_none());
-        assert!(adapter.parse_quota_probe("{}").is_none());
+        assert!(adapter.plan_usage_probe(dir, None).is_none());
+        assert!(adapter.parse_plan_usage_probe("{}").is_none());
         assert!(adapter.interactive_resume("s1", dir).is_none());
-        assert_eq!(adapter.default_family(), "unknown");
+        assert_eq!(adapter.default_provider(), "unknown");
         assert_eq!(
             adapter.compaction(Compaction::Inherit),
             LaunchTweak::default()
@@ -589,29 +686,29 @@ mod tests {
     }
 
     #[test]
-    fn a_vendor_without_sessions_or_commands_lists_none() {
-        use crate::names::VendorId;
-        use crate::vendor_commands::{CommandSource, VendorCommandSet};
+    fn an_agent_without_sessions_or_commands_lists_none() {
+        use crate::cli_commands::{CliCommandSet, CommandSource};
+        use crate::names::AgentId;
 
         let adapter: Box<dyn Adapter> = Box::new(Fake);
-        let scan = VendorScan::new("/w", "/home");
-        assert!(adapter.vendor_sessions(&scan, 20).unwrap().is_empty());
+        let scan = CliScan::new("/w", "/home");
+        assert!(adapter.cli_sessions(&scan, 20).unwrap().is_empty());
         assert!(
             adapter
-                .vendor_session_turns(&scan, "s1", 4)
+                .cli_session_turns(&scan, "s1", 4)
                 .unwrap()
                 .is_empty()
         );
         assert!(adapter.builtin_commands().is_empty());
         assert!(adapter.discover_commands(&scan).unwrap().is_empty());
-        let set = VendorCommandSet::of(adapter.as_ref(), &scan).unwrap();
-        assert_eq!(set.vendor, VendorId("fake".into()));
+        let set = CliCommandSet::of(adapter.as_ref(), &scan).unwrap();
+        assert_eq!(set.agent_id, AgentId("fake".into()));
         assert!(set.commands.is_empty());
         assert!(adapter.keywords().is_empty());
         assert!(set.keywords.is_empty());
 
-        let session = VendorSession {
-            vendor: VendorId("fake".into()),
+        let session = CliSession {
+            agent_id: AgentId("fake".into()),
             id: "s1".into(),
             title: "Hi".into(),
             prompt: None,
@@ -620,6 +717,7 @@ mod tests {
             model: None,
             branch: None,
             last_message: None,
+            turns: 0,
         };
         let launch = adapter.resume_launch(&session).unwrap();
         assert_eq!(
@@ -627,12 +725,12 @@ mod tests {
             ("s1", dir())
         );
 
-        let mut command = VendorCommand {
+        let mut command = CliCommand {
             name: "review".into(),
             aliases: Vec::new(),
             args: "[target]".into(),
             help: "Review".into(),
-            kind: CommandKind::Vendor,
+            kind: CommandKind::Cli,
             source: CommandSource::BuiltIn,
         };
         assert_eq!(
@@ -666,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn default_stop_plan_escalates() {
+    fn default_stop_plan_steps_up() {
         let plan = StopPlan::default();
         let signals: Vec<_> = plan.steps.iter().map(|s| s.signal).collect();
         assert_eq!(

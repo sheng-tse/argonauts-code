@@ -1,13 +1,13 @@
-//! `parser`: a built-in adapter's parser, for a CLI that prints another harness's stream. The
-//! checks around it stamp the manifest's own vendor on every quota reading.
+//! `parser`: a built-in adapter's parser, for a CLI that prints another CLI's stream. The
+//! checks around it stamp the manifest's own agent on every plan usage reading.
 
 use std::sync::Arc;
 
-use argonauts_core::registry::HarnessManifest;
+use argonauts_core::registry::CliManifest;
 use argonauts_core::{Adapter, AgentEvent, ErrorCategory, StreamParser};
 
 pub(super) fn parser(
-    manifest: &HarnessManifest,
+    manifest: &CliManifest,
     reused: Option<&Arc<dyn Adapter>>,
 ) -> Box<dyn StreamParser> {
     match reused {

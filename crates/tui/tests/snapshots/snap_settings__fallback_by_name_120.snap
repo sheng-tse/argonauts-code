@@ -1,0 +1,17 @@
+---
+source: crates/tui/tests/snap_settings.rs
+expression: "picker_lines(&picker, width)"
+---
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Fallback
+  Who an agent falls back to when it stops, and what they're told
+
+  ❯ 1. When an agent stops              auto · built-in
+    2. Who it falls back to             other logged-in CLIs · built-in
+    3. Broken work in progress          continue · built-in
+    4. What the fallback is told        note+summary · this project
+    5. Who summarizes the old session   unset · built-in
+    6. Main agent                       same as every agent
+    7. workers                          Its own: When an agent stops: ask
+
+  Enter to choose · ↑↓ to move · type to filter · Esc to close

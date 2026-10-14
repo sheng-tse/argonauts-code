@@ -1,5 +1,6 @@
-# The fake Claude Code reports a version Argonauts hasn't tested, and its output no longer
-# has the shape the adapter knows: no result, only lines of an unknown type. Codex takes over.
+# The fake Claude Code reports a version Argonauts Code hasn't tested, and its output no longer
+# has the shape the adapter knows: no result, only lines of an unknown type. The task falls back
+# to Codex.
 
 [version]
 claude = "9.0.0 (Claude Code)"
@@ -12,7 +13,7 @@ args_contain = ["exec"]
 [[rule.step]]
 write = { path = "hello.txt", content = "hi\n" }
 [[rule.step]]
-emit_file = "../../../adapters/codex/fixtures/0.158.0/build_hello.stdout.jsonl"
+emit_file = "../../../adapters/codex/fixtures/build_hello_resumed.stdout.jsonl"
 [[rule.step]]
 exit = 0
 

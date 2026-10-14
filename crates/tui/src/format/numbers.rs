@@ -1,4 +1,4 @@
-//! One wording for each kind of number, so every widget, row, and card reads the same.
+//! One wording for each kind of number, so every mod, row, and card reads the same.
 
 use std::time::Duration;
 
@@ -16,9 +16,9 @@ pub enum TokenUnit {
     Lower,
 }
 
-/// Whether quota says how much is used or how much is left.
+/// Whether plan usage says how much is used or how much is left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum QuotaWords {
+pub enum PlanUsageWords {
     #[default]
     Used,
     Left,
@@ -28,7 +28,7 @@ pub enum QuotaWords {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Formats {
     pub tokens: TokenUnit,
-    pub quota: QuotaWords,
+    pub plan_usage: PlanUsageWords,
     pub reset: ResetStyle,
     pub clock: ClockStyle,
 }
@@ -77,14 +77,14 @@ pub fn percent(ratio: f64) -> String {
     }
 }
 
-/// Quota after its vendor and window, as `71% used`, or `29% left` with
-/// `ui.format.quota = "left"`. A stale reading is marked `~71% used`.
-pub fn quota(used: f64, words: QuotaWords, stale: bool) -> String {
+/// Plan usage after its CLI and window, as `71% used`, or `29% left` with
+/// `ui.format.plan_usage = "left"`. A stale reading is marked `~71% used`.
+pub fn plan_usage(used: f64, words: PlanUsageWords, stale: bool) -> String {
     let used = used.max(0.0) * 100.0;
     let mark = if stale { "~" } else { "" };
     match words {
-        QuotaWords::Used => format!("{mark}{used:.0}% used"),
-        QuotaWords::Left => format!("{mark}{:.0}% left", (100.0 - used).max(0.0)),
+        PlanUsageWords::Used => format!("{mark}{used:.0}% used"),
+        PlanUsageWords::Left => format!("{mark}{:.0}% left", (100.0 - used).max(0.0)),
     }
 }
 
@@ -146,11 +146,11 @@ mod tests {
     }
 
     #[test]
-    fn quota_says_used_or_left() {
-        assert_eq!(quota(0.71, QuotaWords::Used, false), "71% used");
-        assert_eq!(quota(0.71, QuotaWords::Left, false), "29% left");
-        assert_eq!(quota(0.71, QuotaWords::Used, true), "~71% used");
-        assert_eq!(quota(1.05, QuotaWords::Left, false), "0% left");
+    fn plan_usage_says_used_or_left() {
+        assert_eq!(plan_usage(0.71, PlanUsageWords::Used, false), "71% used");
+        assert_eq!(plan_usage(0.71, PlanUsageWords::Left, false), "29% left");
+        assert_eq!(plan_usage(0.71, PlanUsageWords::Used, true), "~71% used");
+        assert_eq!(plan_usage(1.05, PlanUsageWords::Left, false), "0% left");
     }
 
     #[test]

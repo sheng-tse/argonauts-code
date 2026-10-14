@@ -1,15 +1,15 @@
 //! The permission scope a session driver answers permission requests from. It mirrors the OS
 //! profile, so what the driver approves is what the sandbox would allow anyway, plus the paths no
-//! card may touch whoever the agent is.
+//! task may touch whoever the agent is.
 
 use std::path::{Path, PathBuf};
 
 use argonauts_core::driver::PermissionScope;
-use argonauts_core::worker::{Access, SandboxProfile};
+use argonauts_core::session_runner::{Access, SandboxProfile};
 
 use super::profile::resolve_path;
 
-/// Relative to the worktree. A card's own forbidden paths come on top.
+/// Relative to the worktree. A task's own forbidden paths come on top.
 pub const FORBIDDEN_PATHS: &[&str] = &[
     ".argonauts/**",
     ".claude/**",
@@ -25,14 +25,14 @@ pub const FORBIDDEN_PATHS: &[&str] = &[
 
 /// The workdir is the only root. A no-tools session gets no roots and nothing writable, so its
 /// driver rejects every request. A denied area that holds the workdir or a writable path, such
-/// as `~/.argonauts` around a card's worktree, is left out of `deny`: the driver approves
+/// as `~/.argonauts` around a task's worktree, is left out of `deny`: the driver approves
 /// nothing outside the roots and writable paths anyway, and the OS sandbox still denies the
 /// rest of that area.
 pub fn permission_scope(
     profile: &SandboxProfile,
     workdir: &Path,
     access: Access,
-    card_forbidden: &[String],
+    task_forbidden: &[String],
 ) -> PermissionScope {
     let uses_tools = access != Access::NoTools;
     let roots = if uses_tools {
@@ -64,7 +64,7 @@ pub fn permission_scope(
         .iter()
         .map(|glob| glob.to_string())
         .collect();
-    for glob in card_forbidden {
+    for glob in task_forbidden {
         if !forbidden.contains(glob) {
             forbidden.push(glob.clone());
         }
@@ -97,7 +97,7 @@ mod tests {
         let status = session.join(session_files::STATUS);
         let input = ProfileInput {
             access: Access::Build,
-            vendor: "claude-code",
+            agent_id: "claude-code",
             workdir: &tree,
             session_dir: &session,
             argonauts_home: &argonauts,
@@ -105,7 +105,7 @@ mod tests {
             base_worktree: None,
             status_file: Some(&status),
             extra_writable: &[],
-            sees_other_copies: false,
+            sees_other_worktrees: false,
             commits: false,
         };
         let requested = SandboxProfile {
@@ -113,8 +113,8 @@ mod tests {
             ..SandboxProfile::default()
         };
         let profile = session_profile(&requested, &input);
-        let card = vec!["migrations/**".to_owned(), ".claude/**".to_owned()];
-        let scope = permission_scope(&profile, &tree, Access::Build, &card);
+        let task = vec!["migrations/**".to_owned(), ".claude/**".to_owned()];
+        let scope = permission_scope(&profile, &tree, Access::Build, &task);
 
         assert_eq!(scope.roots, std::slice::from_ref(&tree));
         assert_eq!(scope.writable, profile.writable);

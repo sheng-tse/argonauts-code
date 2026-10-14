@@ -1,4 +1,4 @@
-//! Tasks that record beside the loop, counted so the loop can wait for them before it parks
+//! Tasks that record beside the loop, counted so the loop can wait for them before it waits
 //! or finishes.
 
 use std::future::Future;

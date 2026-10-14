@@ -1,7 +1,7 @@
 //! Dependencies: new entries in `package.json`, `Cargo.toml`, `pyproject.toml`,
 //! `requirements*.txt`, or `go.mod` that aren't on `limits.dependency_allowlist`, and any
-//! lockfile edit. The conductor adds allowlisted dependencies itself, in its own commits, so a
-//! card's diff has no reason to add any.
+//! lockfile edit. Argonauts Code adds allowlisted dependencies itself, in its own commits, so a
+//! task's diff has no reason to add any.
 //!
 //! A hunk may start inside a section whose header it doesn't show. Then an entry that looks
 //! like a dependency counts as one.
@@ -52,7 +52,7 @@ pub fn check(changes: &[FileChange], settings: &Settings) -> Vec<Violation> {
     if !locks.is_empty() {
         violations.push(violation(
             HardLimit::Lockfile,
-            "edits lockfiles, which only the conductor updates",
+            "edits lockfiles, which only Argonauts Code updates",
             locks,
         ));
     }

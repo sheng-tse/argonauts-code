@@ -1,10 +1,10 @@
-//! The `@` list: workers in the run, cards, roles, follow numbers, and `all`, from the run on
+//! The `@` list: workers in the run, tasks, roles, follow numbers, and `all`, from the run on
 //! screen. A name that matches more than one session asks which.
 
 use argonauts_core::app::UiCommand;
-use argonauts_core::events::card::CardState;
+use argonauts_core::events::task::TaskState;
 use argonauts_core::input::{MentionTarget, ParsedInput, parse_input};
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -16,7 +16,7 @@ use crate::text::{sanitize_line, truncate_line};
 use crate::theme::Role;
 use crate::views::{View, ViewCtx, ViewOutcome, list};
 
-/// Everyone you can mention in the attached run, in the list's order: workers, cards, roles,
+/// Everyone you can mention in the attached run, in the list's order: workers, tasks, roles,
 /// follow numbers, then `all`. Empty with no run on screen, since a mention needs one.
 pub fn candidates(state: &AppState) -> Vec<MenuItem> {
     let Some(run) = state.attached_run() else {
@@ -27,13 +27,13 @@ pub fn candidates(state: &AppState) -> Vec<MenuItem> {
 
     let mut workers: Vec<&str> = Vec::new();
     for session in &live {
-        if !workers.contains(&session.worker.worker.as_str()) {
-            workers.push(&session.worker.worker);
+        if !workers.contains(&session.worker.agent.as_str()) {
+            workers.push(&session.worker.agent);
         }
     }
     for worker in workers {
         let sessions: Vec<&&SessionState> =
-            live.iter().filter(|s| s.worker.worker == worker).collect();
+            live.iter().filter(|s| s.worker.agent == worker).collect();
         let description = match sessions.as_slice() {
             [one] => session_summary(one),
             many => format!(
@@ -48,8 +48,8 @@ pub fn candidates(state: &AppState) -> Vec<MenuItem> {
         items.push(MenuItem::new(worker, description).with_kind("agent"));
     }
 
-    for card in run.cards.values().filter(|card| !finished(card.state)) {
-        items.push(MenuItem::new(card.id.as_str(), card.title.clone()).with_kind("task"));
+    for task in run.tasks.values().filter(|task| !finished(task.state)) {
+        items.push(MenuItem::new(task.id.as_str(), task.title.clone()).with_kind("task"));
     }
 
     let mut roles: Vec<RoleName> = Vec::new();
@@ -79,19 +79,19 @@ pub fn candidates(state: &AppState) -> Vec<MenuItem> {
     items
 }
 
-fn finished(state: Option<CardState>) -> bool {
-    matches!(state, Some(CardState::Integrated | CardState::Cancelled))
+fn finished(state: Option<TaskState>) -> bool {
+    matches!(state, Some(TaskState::Merged | TaskState::Cancelled))
 }
 
-/// `owner on card-002`, or the role alone.
+/// `worker on task-002`, or the role alone.
 fn session_place(session: &SessionState) -> String {
-    match &session.card {
-        Some(card) => format!("{} on {card}", session.role.as_str()),
+    match &session.task {
+        Some(task) => format!("{} on {task}", session.role.as_str()),
         None => session.role.as_str().to_owned(),
     }
 }
 
-/// `opus · owner on card-002`.
+/// `opus · worker on task-002`.
 fn session_summary(session: &SessionState) -> String {
     match &session.worker.model {
         Some(model) => format!("{model} · {}", session_place(session)),
@@ -99,10 +99,10 @@ fn session_summary(session: &SessionState) -> String {
     }
 }
 
-/// `codex on card-003`, or the worker alone.
+/// `codex on task-003`, or the worker alone.
 fn worker_place(session: &SessionState) -> String {
-    match &session.card {
-        Some(card) => format!("{} on {card}", session.worker),
+    match &session.task {
+        Some(task) => format!("{} on {task}", session.worker),
         None => session.worker.to_string(),
     }
 }
@@ -124,7 +124,7 @@ pub fn resolve(name: &str, state: &AppState) -> Resolved {
 }
 
 /// A worker name matches every session of that worker, so with more than one it's ambiguous:
-/// the picker offers each session and all of them. A card or follow number must be in the run.
+/// the picker offers each session and all of them. A task or follow number must be in the run.
 /// A role or a worker nobody runs yet is fine, since the message waits for its next turn.
 pub fn resolve_target(target: &MentionTarget, state: &AppState) -> Resolved {
     let Some(run) = state.attached_run() else {
@@ -132,9 +132,9 @@ pub fn resolve_target(target: &MentionTarget, state: &AppState) -> Resolved {
     };
     match target {
         MentionTarget::Worker(worker) => resolve_worker(target, worker, run),
-        MentionTarget::Card(card) => {
-            let known = run.cards.contains_key(card)
-                || run.sessions.values().any(|s| s.card.as_ref() == Some(card));
+        MentionTarget::Task(task) => {
+            let known = run.tasks.contains_key(task)
+                || run.sessions.values().any(|s| s.task.as_ref() == Some(task));
             if known {
                 Resolved::One(target.clone())
             } else {
@@ -152,7 +152,7 @@ pub fn resolve_target(target: &MentionTarget, state: &AppState) -> Resolved {
     }
 }
 
-fn resolve_worker(target: &MentionTarget, worker: &WorkerRef, run: &RunState) -> Resolved {
+fn resolve_worker(target: &MentionTarget, worker: &ModelRef, run: &RunState) -> Resolved {
     let sessions: Vec<&SessionState> = run
         .sessions_in_order()
         .filter(|s| s.is_running() && answers_to(worker, &s.worker))
@@ -178,23 +178,23 @@ fn resolve_worker(target: &MentionTarget, worker: &WorkerRef, run: &RunState) ->
     Resolved::Ambiguous(choices)
 }
 
-fn answers_to(name: &WorkerRef, worker: &WorkerRef) -> bool {
-    name.worker == worker.worker && (name.model.is_none() || name.model == worker.model)
+fn answers_to(name: &ModelRef, worker: &ModelRef) -> bool {
+    name.agent == worker.agent && (name.model.is_none() || name.model == worker.model)
 }
 
-/// A target that reaches this one session: its follow key, or the card it owns.
+/// A target that reaches this one session: its follow key, or the task it owns.
 fn session_target(session: &SessionState) -> Option<MentionTarget> {
     if let Some(key) = session.follow {
         return Some(MentionTarget::Number(key));
     }
-    let card = session
-        .card
+    let task = session
+        .task
         .clone()
         .filter(|_| session.role == RoleName::Worker)?;
-    Some(MentionTarget::Card(card))
+    Some(MentionTarget::Task(task))
 }
 
-/// Asks which session a mention meant: numbered rows with a `❯` pointer, as a card asks.
+/// Asks which session a mention meant: numbered rows with a `❯` pointer, as a question asks.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MentionPicker {
     /// As typed after the `@`.
@@ -226,7 +226,7 @@ impl MentionPicker {
         let mut lines = vec![
             Line::styled(
                 format!("@{name} matches more than one agent"),
-                theme.style(Role::Card),
+                theme.style(Role::Question),
             ),
             Line::styled(format!("Who gets \"{text}\"?"), dim),
             Line::default(),
@@ -238,7 +238,7 @@ impl MentionPicker {
                 " "
             };
             let style = if index == self.selected {
-                theme.style(Role::Card)
+                theme.style(Role::Question)
             } else {
                 theme.style(Role::Text)
             };
@@ -322,12 +322,12 @@ impl View for MentionPicker {
 #[cfg(test)]
 pub(crate) mod fixture {
     use argonauts_core::app::AppMode;
-    use argonauts_core::events::card::CardState;
-    use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
-    use argonauts_core::{CardId, RunId};
+    use argonauts_core::events::task::TaskState;
+    use argonauts_core::names::{ModelRef, RoleName, SessionKey};
+    use argonauts_core::{RunId, TaskId};
     use time::OffsetDateTime;
 
-    use crate::state::{AppState, CardRow, Doing, RunState, SessionState, SessionStatus};
+    use crate::state::{AppState, Doing, RunState, SessionState, SessionStatus, TaskRow};
 
     pub fn run_id() -> RunId {
         RunId::new("run-20260930-101500-3fa2").unwrap()
@@ -338,18 +338,18 @@ pub(crate) mod fixture {
         worker: &str,
         model: Option<&str>,
         role: RoleName,
-        card: Option<&str>,
+        task: Option<&str>,
         follow: Option<u8>,
     ) -> SessionState {
         SessionState {
             key: SessionKey::numbered(n),
             follow,
-            worker: WorkerRef::new(worker, model.map(str::to_owned)),
+            worker: ModelRef::new(worker, model.map(str::to_owned)),
             model_assumed: false,
-            vendor: worker.to_owned(),
+            agent_id: worker.to_owned(),
             role,
             step: None,
-            card: card.map(|card| CardId::new(card).unwrap()),
+            task: task.map(|task| TaskId::new(task).unwrap()),
             workflow_step: None,
             label: None,
             status: SessionStatus::Working,
@@ -373,30 +373,30 @@ pub(crate) mod fixture {
             inputs: Vec::new(),
             queued: Vec::new(),
             retry: None,
-            standing_in_for: None,
+            fallback_for: None,
             end: None,
             unknown: Vec::new(),
             doing: Doing::Nothing,
             stalled: false,
-            vendor_session: None,
+            cli_session: None,
         }
     }
 
-    fn card(id: &str, title: &str, state: CardState) -> CardRow {
-        CardRow {
-            id: CardId::new(id).unwrap(),
+    fn task(id: &str, title: &str, state: TaskState) -> TaskRow {
+        TaskRow {
+            id: TaskId::new(id).unwrap(),
             title: title.to_owned(),
             state: Some(state),
-            owner: None,
-            attempt: 1,
+            worker: None,
+            try_number: 1,
             diff: None,
-            standing_in_for: None,
+            fallback_for: None,
             debt: Vec::new(),
             checkpoints: 0,
             rotations: 0,
-            last_gate: None,
+            last_check: None,
             reviews: 0,
-            waiting_on_vendor: None,
+            waiting_on_agent: None,
             item: None,
         }
     }
@@ -435,12 +435,12 @@ pub(crate) mod fixture {
             run.session_order.push(session.key.clone());
             run.sessions.insert(session.key.clone(), session);
         }
-        for card in [
-            card("task-002", "Add the JSON writer", CardState::Running),
-            card("task-003", "Fix the flaky export test", CardState::InReview),
-            card("task-001", "Set up the crate", CardState::Integrated),
+        for task in [
+            task("task-002", "Add the JSON writer", TaskState::Running),
+            task("task-003", "Fix the flaky export test", TaskState::InReview),
+            task("task-001", "Set up the crate", TaskState::Merged),
         ] {
-            run.cards.insert(card.id.clone(), card);
+            run.tasks.insert(task.id.clone(), task);
         }
         let mut state = AppState::default();
         state.attached = Some(run_id());
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn ambiguous_mention_lists_sessions() {
         let state = fixture::working_state();
-        let codex = WorkerRef::new("codex", None);
+        let codex = ModelRef::new("codex", None);
         let Resolved::Ambiguous(choices) = resolve("codex", &state) else {
             panic!("codex runs twice");
         };
@@ -565,7 +565,7 @@ mod tests {
         );
         assert_eq!(
             resolve("claude-code", &state),
-            Resolved::One(MentionTarget::Worker(WorkerRef::new("claude-code", None)))
+            Resolved::One(MentionTarget::Worker(ModelRef::new("claude-code", None)))
         );
         assert_eq!(resolve("9", &state), Resolved::Unknown);
         assert_eq!(resolve("task-404", &state), Resolved::Unknown);

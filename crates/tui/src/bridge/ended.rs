@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! ✗ review:due-dates · GPT 5.6 Luna on Codex · 2s
-//!   ⎿  Codex refused the answer format Argonauts asked for · r shows the raw error
+//!   ⎿  Codex refused the answer format Argonauts Code asked for · r shows the raw error
 //! ```
 
 use std::time::Duration;
@@ -49,7 +49,7 @@ mod tests {
             .with_state(ToolState::Failed);
         let row = failed_row(
             &whole,
-            Some("Codex refused the answer format Argonauts asked for".to_owned()),
+            Some("Codex refused the answer format Argonauts Code asked for".to_owned()),
             Some("r shows the raw error"),
             Duration::from_secs(2),
         );
@@ -59,8 +59,8 @@ mod tests {
         assert_eq!(
             plain_text(&lines),
             "✗ review:due-dates · GPT 5.6 Luna on Codex · 2s\n  ⎿  Codex refused the answer \
-             format Argonauts asked for · r shows the raw error"
+             format Argonauts Code asked for · r shows the raw error"
         );
-        assert_eq!(lines[0].spans[0].style.fg, theme.style(Role::Error).fg);
+        assert_eq!(lines[0].spans[0].style.fg, theme.style(Role::Danger).fg);
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-registry"
-description = "Argonauts settings resolution, presets, workflow files, harness profiles, the model registry, and discovery."
+description = "Argonauts Code settings resolution, workflows and their files, CLI profiles, the model registry, and discovery."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -138,23 +138,23 @@ pub fn setting_line(
 pub fn cells_line(cells: &Cells, widths: &Widths, pointed: bool, theme: &Theme) -> Line<'static> {
     let dim = theme.style(Role::Dim);
     let pointer = if pointed {
-        Span::styled(format!("{} ", theme.glyphs.prompt), theme.style(Role::Card))
+        Span::styled(
+            format!("{} ", theme.glyphs.prompt),
+            theme.style(Role::Question),
+        )
     } else {
         Span::raw("  ")
     };
     let mut spans = vec![pointer];
     if widths.prefix > POINTER {
         spans.push(if cells.safety {
-            Span::styled(
-                "! ",
-                theme.style(Role::Warning).add_modifier(Modifier::BOLD),
-            )
+            Span::styled("! ", theme.style(Role::Warn).add_modifier(Modifier::BOLD))
         } else {
             Span::raw("  ")
         });
     }
     let label_style = if pointed {
-        theme.style(Role::Card)
+        theme.style(Role::Question)
     } else {
         theme.style(Role::Text)
     };
@@ -181,7 +181,7 @@ pub fn cells_line(cells: &Cells, widths: &Widths, pointed: bool, theme: &Theme) 
     Line::from(spans)
 }
 
-/// A group's name over its rows, with a dim note at the right such as a shadow record.
+/// A group's name over its rows, with a dim note at the right such as an auto preview record.
 pub fn heading_line(name: &str, note: &str, width: usize, theme: &Theme) -> Line<'static> {
     let style = theme.style(Role::Label).add_modifier(Modifier::BOLD);
     let name = cut(sanitize_line(name).trim(), width);

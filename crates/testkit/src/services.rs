@@ -8,37 +8,37 @@ use std::time::Duration;
 
 use argonauts_core::clock::Clock;
 use argonauts_core::engine::{EngineCommand, EngineContext, EventSink, RepoContext, Services};
-use argonauts_core::events::card::{CardSpec, GateKind, GateOutcome};
-use argonauts_core::events::run::ParkReason;
+use argonauts_core::events::agent_status::FallbackPlan;
+use argonauts_core::events::run::WaitReason;
 use argonauts_core::events::session::EndReason;
-use argonauts_core::events::vendor::HandoffPlan;
-use argonauts_core::events::{RunEvent, RunEventKind, VendorEvent};
+use argonauts_core::events::task::{CheckKind, CheckOutcome, TaskSpec};
+use argonauts_core::events::{AgentStatusEvent, RunEvent, RunEventKind};
 use argonauts_core::future::BoxFuture;
 use argonauts_core::journal::JournalError;
 use argonauts_core::limits::{
-    Candidate, CandidateQuery, CostEstimate, GateRequest, GateRunner, HandoffPacket,
-    HandoffPlanner, HealthBoard, HealthSignal, HealthState, LimitsService, QuotaBoard,
-    QuotaReading, QuotaWindows, RecoveryAction, StopContext, TrackRecord, TrackRecords,
-    VendorHealth, WorkSoFar,
+    AgentHealth, Candidate, CandidateQuery, CheckRequest, CheckRunner, CostEstimate, FallbackNote,
+    FallbackPlanner, HealthBoard, HealthSignal, HealthState, LimitsService, ModelHealth,
+    ModelState, PlanUsageBoard, PlanUsageReading, PlanWindows, RecoveryAction, StopContext,
+    TrackRecord, TrackRecords, Trouble, WorkSoFar,
 };
-use argonauts_core::names::{RoleName, SessionKey, VendorId, WorkerRef};
+use argonauts_core::names::{AgentId, ModelRef, RoleName, SessionKey};
 use argonauts_core::policy::{
     ApprovalPolicy, ApprovalsView, DecisionPoint, EvidencePacket, HardLimits, PolicyOutcome,
     UserDecision, Violation,
 };
 use argonauts_core::registry::{CostUnit, ModelEntry, ModelRegistry};
+use argonauts_core::session_runner::{SessionLimits, SessionSpec};
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::budget::OnHit;
-use argonauts_core::settings::roles::HandoffMode;
+use argonauts_core::settings::limit::OnHit;
+use argonauts_core::settings::roles::FallbackMode;
 use argonauts_core::steps::SchemaStepRunner;
-use argonauts_core::worker::{SessionLimits, SessionSpec};
-use argonauts_core::{CardId, DiffStat, ErrorCategory, RepoId, RunId};
+use argonauts_core::{DiffStat, ErrorCategory, RepoId, RunId, TaskId};
 use time::OffsetDateTime;
 use time::macros::datetime;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::worker::FakeDirectory;
+use crate::runner::FakeDirectory;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -51,10 +51,10 @@ pub struct FakeServices {
     pub steps: Arc<SchemaStepRunner>,
     pub policy: Arc<AskingPolicy>,
     pub limits: Arc<TableLimits>,
-    pub handoff: Arc<FakeHandoff>,
-    pub quota: Arc<MemoryQuotaBoard>,
+    pub fallback: Arc<FakeFallback>,
+    pub plan_usage: Arc<MemoryPlanUsageBoard>,
     pub health: Arc<MemoryHealthBoard>,
-    pub gates: Arc<ScriptedGates>,
+    pub checks: Arc<ScriptedChecks>,
     pub registry: Arc<StaticRegistry>,
     pub track_records: Arc<StaticTrackRecords>,
     pub clock: Arc<FakeClock>,
@@ -73,10 +73,10 @@ impl FakeServices {
             steps: Arc::new(SchemaStepRunner),
             policy: Arc::new(AskingPolicy::default()),
             limits: Arc::new(TableLimits::default()),
-            handoff: Arc::new(FakeHandoff::default()),
-            quota: Arc::new(MemoryQuotaBoard::default()),
+            fallback: Arc::new(FakeFallback::default()),
+            plan_usage: Arc::new(MemoryPlanUsageBoard::default()),
             health: Arc::new(MemoryHealthBoard::default()),
-            gates: Arc::new(ScriptedGates::default()),
+            checks: Arc::new(ScriptedChecks::default()),
             registry: Arc::new(StaticRegistry::default()),
             track_records: Arc::new(StaticTrackRecords::default()),
             clock: Arc::new(FakeClock::default()),
@@ -89,10 +89,10 @@ impl FakeServices {
             steps: self.steps.clone(),
             policy: self.policy.clone(),
             limits: self.limits.clone(),
-            handoff: self.handoff.clone(),
-            quota: self.quota.clone(),
+            fallback: self.fallback.clone(),
+            plan_usage: self.plan_usage.clone(),
             health: self.health.clone(),
-            gates: self.gates.clone(),
+            checks: self.checks.clone(),
             registry: self.registry.clone(),
             track_records: self.track_records.clone(),
             clock: self.clock.clone(),
@@ -173,7 +173,7 @@ pub fn engine_context_in(
         history,
         sink: sink.clone(),
         inbox,
-        vendor_events: services.health.subscribe(),
+        agent_events: services.health.subscribe(),
         services: services.services(),
         shutdown: CancellationToken::new(),
         reopen: false,
@@ -211,7 +211,7 @@ impl MemorySink {
 impl EventSink for MemorySink {
     fn record(
         &self,
-        card: Option<&CardId>,
+        task: Option<&TaskId>,
         session: Option<&SessionKey>,
         source: &str,
         kind: RunEventKind,
@@ -221,7 +221,7 @@ impl EventSink for MemorySink {
             seq: events.last().map_or(0, |last| last.seq + 1),
             ts: OffsetDateTime::now_utc(),
             run_id: self.run.clone(),
-            card_id: card.cloned(),
+            task_id: task.cloned(),
             session: session.cloned(),
             source: source.to_owned(),
             kind,
@@ -249,7 +249,7 @@ impl AskingPolicy {
         self.decide_next_after(outcome, Duration::ZERO);
     }
 
-    /// The same, answering only after `delay`, like a slow approver model.
+    /// The same, answering only after `delay`, like a slow judge.
     pub fn decide_next_after(&self, outcome: PolicyOutcome, delay: Duration) {
         lock(&self.next).push_back((outcome, delay));
     }
@@ -258,7 +258,7 @@ impl AskingPolicy {
         *lock(&self.limits.point) = violations;
     }
 
-    /// Makes `check_card_diff` report these.
+    /// Makes `check_task_diff` report these.
     pub fn set_diff_violations(&self, violations: Vec<Violation>) {
         *lock(&self.limits.diff) = violations;
     }
@@ -305,7 +305,7 @@ impl ApprovalPolicy for AskingPolicy {
                 }
                 _ => PolicyOutcome::AskUser {
                     violations,
-                    shadow: None,
+                    auto_preview: None,
                 },
             }
         })
@@ -346,7 +346,7 @@ impl HardLimits for ScriptedHardLimits {
         lock(&self.point).clone()
     }
 
-    fn check_card_diff(&self, _card: &CardSpec, _unified_diff: &str) -> Vec<Violation> {
+    fn check_task_diff(&self, _task: &TaskSpec, _unified_diff: &str) -> Vec<Violation> {
         lock(&self.diff).clone()
     }
 
@@ -355,14 +355,14 @@ impl HardLimits for ScriptedHardLimits {
     }
 }
 
-/// A simple recovery table: vendor trouble asks you, a full context rotates, a stuck or crashed
-/// session goes to another agent once and then escalates, and a reached limit applies
+/// A simple recovery table: agent trouble asks you, a full context rotates, a stuck or crashed
+/// session goes to another agent once and then needs you, and a reached limit applies
 /// `when_reached = fallback`. `set_next` overrides the next answer.
 #[derive(Default)]
 pub struct TableLimits {
     overrides: Mutex<VecDeque<RecoveryAction>>,
-    all_out: Mutex<Option<ParkReason>>,
-    fallback: Mutex<Option<WorkerRef>>,
+    all_out: Mutex<Option<WaitReason>>,
+    fallback: Mutex<Option<ModelRef>>,
     stops: Mutex<Vec<StopContext>>,
 }
 
@@ -373,12 +373,12 @@ impl TableLimits {
     }
 
     /// What `all_out` answers.
-    pub fn set_all_out(&self, reason: Option<ParkReason>) {
+    pub fn set_all_out(&self, reason: Option<WaitReason>) {
         *lock(&self.all_out) = reason;
     }
 
-    /// The worker a stuck or crashed card moves to on its first failure.
-    pub fn set_fallback(&self, worker: WorkerRef) {
+    /// The worker a stuck or crashed task moves to on its first failure.
+    pub fn set_fallback(&self, worker: ModelRef) {
         *lock(&self.fallback) = Some(worker);
     }
 
@@ -387,18 +387,18 @@ impl TableLimits {
     }
 
     fn table(&self, context: &StopContext) -> RecoveryAction {
-        let packet = || Box::new(simple_packet(&context.card));
+        let note = || Box::new(simple_note(&context.task));
         let ask = || {
-            RecoveryAction::Ask(Box::new(HandoffPlan {
-                card: context.card.id.clone(),
-                title: context.card.title.clone(),
+            RecoveryAction::Ask(Box::new(FallbackPlan {
+                task: context.task.id.clone(),
+                title: context.task.title.clone(),
                 stopped: context.worker.clone(),
                 reason: format!("{:?}", context.end.reason),
                 resets_at: None,
                 work: DiffStat::default(),
-                gates_ran: false,
+                checks_ran: false,
                 candidates: Vec::new(),
-                mode: HandoffMode::Ask,
+                mode: FallbackMode::Ask,
                 strategy: Default::default(),
                 race_count: 1,
                 also_moving: Vec::new(),
@@ -408,23 +408,24 @@ impl TableLimits {
             EndReason::Completed | EndReason::Paused | EndReason::Stopped => {
                 RecoveryAction::Proceed
             }
-            EndReason::ContextFull => RecoveryAction::Rotate { packet: packet() },
-            EndReason::BudgetHit { .. } => RecoveryAction::BudgetHit(OnHit::Fallback),
+            EndReason::ContextFull => RecoveryAction::Rotate { note: note() },
+            EndReason::LimitHit { .. } => RecoveryAction::LimitHit(OnHit::Fallback),
             EndReason::Stuck { .. } | EndReason::Crashed { .. } | EndReason::StartFailed { .. } => {
                 match lock(&self.fallback).clone() {
-                    Some(to) if !context.reassigned_once => RecoveryAction::HandOff {
+                    Some(to) if !context.reassigned_once => RecoveryAction::Fallback {
                         to,
-                        packet: packet(),
+                        note: note(),
                         checkpoint: None,
                     },
-                    _ => RecoveryAction::Escalate {
+                    _ => RecoveryAction::AskYou {
                         reason: format!("{:?}", context.end.reason),
                     },
                 }
             }
-            EndReason::VendorError { .. } => RecoveryAction::Wait {
-                vendor: context.worker.vendor(),
+            EndReason::CliError { .. } => RecoveryAction::Wait {
+                agent_id: context.worker.agent_id(),
                 until: None,
+                kept_off: None,
             },
             EndReason::UsageLimit { .. }
             | EndReason::RateLimited
@@ -438,14 +439,14 @@ impl TableLimits {
 }
 
 impl LimitsService for TableLimits {
-    fn session_limits(&self, card: Option<&CardSpec>, _role: RoleName) -> SessionLimits {
-        let budget = card.and_then(|card| card.budget.clone().limit);
+    fn session_limits(&self, task: Option<&TaskSpec>, _role: RoleName) -> SessionLimits {
+        let limit = task.and_then(|task| task.limit.clone().limit);
         SessionLimits {
-            budget,
+            limit,
             soft_stop: 0.85,
-            max_minutes: card.and_then(|card| card.budget.max_minutes),
-            max_tool_calls: card.and_then(|card| card.budget.max_tool_calls),
-            inactivity_min: card.and_then(|card| card.budget.inactivity_min),
+            max_minutes: task.and_then(|task| task.limit.max_minutes),
+            max_tool_calls: task.and_then(|task| task.limit.max_tool_calls),
+            inactivity_min: task.and_then(|task| task.limit.inactivity_min),
             repeat_limit: Some(3),
             native_cap_usd: None,
         }
@@ -459,41 +460,41 @@ impl LimitsService for TableLimits {
         Box::pin(async move { action })
     }
 
-    fn all_out(&self, _workers: &[WorkerRef]) -> Option<ParkReason> {
+    fn all_out(&self, _workers: &[ModelRef]) -> Option<WaitReason> {
         lock(&self.all_out).clone()
     }
 }
 
-fn simple_packet(card: &CardSpec) -> HandoffPacket {
-    HandoffPacket {
-        card: card.clone(),
+fn simple_note(task: &TaskSpec) -> FallbackNote {
+    FallbackNote {
+        task: task.clone(),
         goal_sha256: None,
         notes: Vec::new(),
         work: WorkSoFar {
-            branch: format!("argonauts/{TEST_RUN}/{}", card.id),
+            branch: format!("argonauts/{TEST_RUN}/{}", task.id),
             commit: None,
             stat: DiffStat::default(),
         },
         happened: Vec::new(),
         last_todo: Vec::new(),
-        gates: Vec::new(),
+        checks: Vec::new(),
         why_stopped: String::new(),
         last_words: None,
         last_message: None,
-        budget_left: None,
+        limit_left: None,
         transcript: None,
         summary: None,
     }
 }
 
-/// Offers the candidates a test sets, and builds a bare packet from the card.
+/// Offers the candidates a test sets, and builds a bare note from the task.
 #[derive(Default)]
-pub struct FakeHandoff {
+pub struct FakeFallback {
     candidates: Mutex<Vec<Candidate>>,
     queries: Mutex<Vec<CandidateQuery>>,
 }
 
-impl FakeHandoff {
+impl FakeFallback {
     /// What `candidates` returns.
     pub fn set_candidates(&self, candidates: Vec<Candidate>) {
         *lock(&self.candidates) = candidates;
@@ -504,98 +505,100 @@ impl FakeHandoff {
     }
 }
 
-impl HandoffPlanner for FakeHandoff {
+impl FallbackPlanner for FakeFallback {
     fn candidates(&self, query: &CandidateQuery) -> Vec<Candidate> {
         lock(&self.queries).push(query.clone());
         lock(&self.candidates).clone()
     }
 
-    fn packet(&self, card: &CardSpec, _events: &[RunEvent]) -> HandoffPacket {
-        simple_packet(card)
+    fn note(&self, task: &TaskSpec, _events: &[RunEvent]) -> FallbackNote {
+        simple_note(task)
     }
 }
 
-/// The last reading of each vendor's window wins, whatever its age, so a test sets what it
+/// The last reading of each agent's window wins, whatever its age, so a test sets what it
 /// wants.
 #[derive(Default)]
-pub struct MemoryQuotaBoard {
-    readings: Mutex<BTreeMap<VendorId, QuotaWindows>>,
-    plans: Mutex<BTreeMap<VendorId, String>>,
-    live: Mutex<BTreeMap<VendorId, argonauts_core::plan_usage::LiveUsage>>,
-    doubted: Mutex<BTreeMap<VendorId, time::OffsetDateTime>>,
-    probed: Mutex<Vec<VendorId>>,
+pub struct MemoryPlanUsageBoard {
+    readings: Mutex<BTreeMap<AgentId, PlanWindows>>,
+    plans: Mutex<BTreeMap<AgentId, String>>,
+    live: Mutex<BTreeMap<AgentId, argonauts_core::plan_usage::LiveUsage>>,
+    doubted: Mutex<BTreeMap<AgentId, time::OffsetDateTime>>,
+    probed: Mutex<Vec<AgentId>>,
 }
 
-impl MemoryQuotaBoard {
+impl MemoryPlanUsageBoard {
     /// The CLIs probed so far, in order.
-    pub fn probed(&self) -> Vec<VendorId> {
+    pub fn probed(&self) -> Vec<AgentId> {
         lock(&self.probed).clone()
     }
 }
 
-impl QuotaBoard for MemoryQuotaBoard {
-    fn observe(&self, reading: QuotaReading) {
+impl PlanUsageBoard for MemoryPlanUsageBoard {
+    fn observe(&self, reading: PlanUsageReading) {
         lock(&self.readings)
-            .entry(reading.vendor.clone())
+            .entry(reading.agent_id.clone())
             .or_default()
             .put(reading);
     }
 
-    fn get(&self, vendor: &VendorId) -> Option<QuotaReading> {
-        lock(&self.readings).get(vendor)?.binding().cloned()
+    fn get(&self, agent_id: &AgentId) -> Option<PlanUsageReading> {
+        lock(&self.readings).get(agent_id)?.binding().cloned()
     }
 
-    fn all(&self) -> Vec<QuotaReading> {
+    fn all(&self) -> Vec<PlanUsageReading> {
         lock(&self.readings)
             .values()
             .filter_map(|windows| windows.binding().cloned())
             .collect()
     }
 
-    fn windows(&self, vendor: &VendorId) -> Vec<QuotaReading> {
+    fn windows(&self, agent_id: &AgentId) -> Vec<PlanUsageReading> {
         lock(&self.readings)
-            .get(vendor)
+            .get(agent_id)
             .map(|windows| windows.readings().to_vec())
             .unwrap_or_default()
     }
 
-    fn plan(&self, vendor: &VendorId) -> Option<String> {
-        lock(&self.plans).get(vendor).cloned()
+    fn plan(&self, agent_id: &AgentId) -> Option<String> {
+        lock(&self.plans).get(agent_id).cloned()
     }
 
-    fn observe_plan(&self, vendor: &VendorId, plan: String) {
-        lock(&self.plans).insert(vendor.clone(), plan);
+    fn observe_plan(&self, agent_id: &AgentId, plan: String) {
+        lock(&self.plans).insert(agent_id.clone(), plan);
     }
 
     fn observe_live(&self, reading: argonauts_core::plan_usage::LiveUsage) {
-        lock(&self.live).insert(reading.vendor.clone(), reading);
+        lock(&self.live).insert(reading.agent_id.clone(), reading);
     }
 
-    fn live(&self, vendor: &VendorId) -> Option<argonauts_core::plan_usage::LiveUsage> {
-        lock(&self.live).get(vendor).cloned()
+    fn live(&self, agent_id: &AgentId) -> Option<argonauts_core::plan_usage::LiveUsage> {
+        lock(&self.live).get(agent_id).cloned()
     }
 
-    fn doubted_at(&self, vendor: &VendorId) -> Option<time::OffsetDateTime> {
-        lock(&self.doubted).get(vendor).copied()
+    fn doubted_at(&self, agent_id: &AgentId) -> Option<time::OffsetDateTime> {
+        lock(&self.doubted).get(agent_id).copied()
     }
 
-    fn doubt(&self, vendor: &VendorId) {
-        lock(&self.doubted).insert(vendor.clone(), time::OffsetDateTime::now_utc());
+    fn doubt(&self, agent_id: &AgentId) {
+        lock(&self.doubted).insert(agent_id.clone(), time::OffsetDateTime::now_utc());
     }
 
-    fn probe(&self, vendor: &VendorId) -> BoxFuture<'_, Option<QuotaReading>> {
-        lock(&self.probed).push(vendor.clone());
-        let reading = self.get(vendor);
+    fn probe(&self, agent_id: &AgentId) -> BoxFuture<'_, Option<PlanUsageReading>> {
+        lock(&self.probed).push(agent_id.clone());
+        let reading = self.get(agent_id);
         Box::pin(async move { reading })
     }
 }
 
-/// Health in memory, with a breaker simple enough to predict: three overload, server, or
-/// network errors in a row put a vendor down, and a success or a passing test card brings it
-/// back. Every change is broadcast.
+/// Health in memory, with a breaker simple enough to predict. Two overload or server errors in
+/// a row take the model they came from out, and two models out take their agent down. Three
+/// network errors in a row put an agent down as well. A success or a passing test task brings
+/// either back. Every change is broadcast.
 pub struct MemoryHealthBoard {
-    states: Mutex<BTreeMap<VendorId, (VendorHealth, u32)>>,
-    events: broadcast::Sender<VendorEvent>,
+    states: Mutex<BTreeMap<AgentId, (AgentHealth, u32)>>,
+    models: Mutex<BTreeMap<ModelRef, (ModelHealth, u32)>>,
+    events: broadcast::Sender<AgentStatusEvent>,
 }
 
 impl Default for MemoryHealthBoard {
@@ -603,31 +606,47 @@ impl Default for MemoryHealthBoard {
         let (events, _) = broadcast::channel(64);
         Self {
             states: Mutex::new(BTreeMap::new()),
+            models: Mutex::new(BTreeMap::new()),
             events,
         }
     }
 }
 
 const ERRORS_TO_DOWN: u32 = 3;
+const ERRORS_TO_OUT: u32 = 2;
+const MODELS_OUT_TO_DOWN: usize = 2;
 
 impl MemoryHealthBoard {
-    /// Sets a vendor's state directly and broadcasts it.
-    pub fn set(&self, vendor: &VendorId, state: HealthState, reason: Option<&str>) {
-        let health = VendorHealth {
-            vendor: vendor.clone(),
+    /// Sets an agent's state directly and broadcasts it.
+    pub fn set(&self, agent_id: &AgentId, state: HealthState, reason: Option<&str>) {
+        let health = AgentHealth {
+            agent_id: agent_id.clone(),
             state,
             since: OffsetDateTime::now_utc(),
             reason: reason.map(str::to_owned),
             next_test_at: None,
             disabled: None,
         };
-        lock(&self.states).insert(vendor.clone(), (health.clone(), 0));
-        let _ = self.events.send(VendorEvent::Health(health));
+        lock(&self.states).insert(agent_id.clone(), (health.clone(), 0));
+        let _ = self.events.send(AgentStatusEvent::Health(health));
     }
 
-    fn healthy(vendor: &VendorId) -> VendorHealth {
-        VendorHealth {
-            vendor: vendor.clone(),
+    /// Sets one model's state directly and broadcasts it. `trouble` is what took it out.
+    pub fn set_model(&self, model: &ModelRef, state: ModelState, trouble: Option<Trouble>) {
+        let health = ModelHealth {
+            state,
+            since: OffsetDateTime::now_utc(),
+            reason: trouble.map(|trouble| trouble.words().to_owned()),
+            trouble,
+            ..ModelHealth::healthy(model)
+        };
+        lock(&self.models).insert(model.clone(), (health.clone(), 0));
+        let _ = self.events.send(AgentStatusEvent::Model(health));
+    }
+
+    fn healthy(agent_id: &AgentId) -> AgentHealth {
+        AgentHealth {
+            agent_id: agent_id.clone(),
             state: HealthState::Healthy,
             since: OffsetDateTime::UNIX_EPOCH,
             reason: None,
@@ -635,89 +654,178 @@ impl MemoryHealthBoard {
             disabled: None,
         }
     }
+
+    /// Counts an overload or server error against `model`. Two in a row take it out, and a
+    /// second model out takes the agent down.
+    fn model_failed(&self, model: &ModelRef, trouble: Trouble) {
+        let errors = {
+            let mut models = lock(&self.models);
+            let entry = models
+                .entry(model.clone())
+                .or_insert_with(|| (ModelHealth::healthy(model), 0));
+            entry.1 += 1;
+            (entry.0.state != ModelState::Out).then_some(entry.1)
+        };
+        if errors.is_none_or(|errors| errors < ERRORS_TO_OUT) {
+            return;
+        }
+        self.set_model(model, ModelState::Out, Some(trouble));
+        let agent_id = model.agent_id();
+        let out = self
+            .models(&agent_id)
+            .iter()
+            .filter(|health| health.state == ModelState::Out)
+            .count();
+        if out >= MODELS_OUT_TO_DOWN && self.state(&agent_id).state != HealthState::Down {
+            self.set(
+                &agent_id,
+                HealthState::Down,
+                Some("two of its models are out"),
+            );
+        }
+    }
+
+    fn model_worked(&self, model: &ModelRef) {
+        let was = lock(&self.models)
+            .get(model)
+            .map(|(health, _)| health.state);
+        match was {
+            Some(ModelState::Healthy) => {
+                lock(&self.models).remove(model);
+            }
+            Some(_) => self.set_model(model, ModelState::Healthy, None),
+            None => {}
+        }
+    }
 }
 
 impl HealthBoard for MemoryHealthBoard {
     fn observe(&self, signal: HealthSignal) {
-        let (vendor, change) = match signal {
+        let (agent_id, change) = match signal {
             HealthSignal::Error {
-                vendor,
-                category: ErrorCategory::Overloaded | ErrorCategory::Server | ErrorCategory::Network,
+                agent_id,
+                model,
+                category,
                 ..
-            } => (vendor, Some(true)),
-            HealthSignal::Success { vendor, .. } => (vendor, Some(false)),
-            HealthSignal::AdapterBroken { vendor, detail } => {
-                let mut health = self.state(&vendor);
-                health.disabled = Some(detail);
-                lock(&self.states).insert(vendor.clone(), (health.clone(), 0));
-                let _ = self.events.send(VendorEvent::Health(health));
+            } if Trouble::of(category).is_some() => {
+                let model = ModelRef::new(agent_id.0, model);
+                if let Some(trouble) = Trouble::of(category) {
+                    self.model_failed(&model, trouble);
+                }
                 return;
             }
-            HealthSignal::Retry { vendor, .. } | HealthSignal::Error { vendor, .. } => {
-                (vendor, None)
+            HealthSignal::Error {
+                agent_id,
+                category: ErrorCategory::Network,
+                ..
+            } => (agent_id, Some(true)),
+            HealthSignal::Success {
+                agent_id, model, ..
+            } => {
+                self.model_worked(&ModelRef::new(agent_id.0.clone(), model));
+                (agent_id, Some(false))
+            }
+            HealthSignal::AdapterBroken { agent_id, detail } => {
+                let mut health = self.state(&agent_id);
+                health.disabled = Some(detail);
+                lock(&self.states).insert(agent_id.clone(), (health.clone(), 0));
+                let _ = self.events.send(AgentStatusEvent::Health(health));
+                return;
+            }
+            HealthSignal::Retry { agent_id, .. } | HealthSignal::Error { agent_id, .. } => {
+                (agent_id, None)
             }
         };
         let Some(failed) = change else { return };
         let (state, errors) = {
             let mut states = lock(&self.states);
             let entry = states
-                .entry(vendor.clone())
-                .or_insert_with(|| (Self::healthy(&vendor), 0));
+                .entry(agent_id.clone())
+                .or_insert_with(|| (Self::healthy(&agent_id), 0));
             entry.1 = if failed { entry.1 + 1 } else { 0 };
             (entry.0.state, entry.1)
         };
         if failed && errors >= ERRORS_TO_DOWN && state != HealthState::Down {
-            self.set(&vendor, HealthState::Down, Some("repeated errors"));
+            self.set(&agent_id, HealthState::Down, Some("repeated errors"));
         } else if !failed && state != HealthState::Healthy {
-            self.set(&vendor, HealthState::Healthy, None);
+            self.set(&agent_id, HealthState::Healthy, None);
         }
     }
 
-    fn state(&self, vendor: &VendorId) -> VendorHealth {
+    fn state(&self, agent_id: &AgentId) -> AgentHealth {
         lock(&self.states)
-            .get(vendor)
+            .get(agent_id)
             .map(|(health, _)| health.clone())
-            .unwrap_or_else(|| Self::healthy(vendor))
+            .unwrap_or_else(|| Self::healthy(agent_id))
     }
 
-    fn all(&self) -> Vec<VendorHealth> {
+    fn all(&self) -> Vec<AgentHealth> {
         lock(&self.states)
             .values()
             .map(|(health, _)| health.clone())
             .collect()
     }
 
-    fn subscribe(&self) -> broadcast::Receiver<VendorEvent> {
+    fn subscribe(&self) -> broadcast::Receiver<AgentStatusEvent> {
         self.events.subscribe()
     }
 
-    fn test_result(&self, vendor: &VendorId, ok: bool) {
+    fn test_result(&self, agent_id: &AgentId, ok: bool) {
         let state = if ok {
             HealthState::Healthy
         } else {
             HealthState::Down
         };
-        self.set(vendor, state, (!ok).then_some("the test task failed"));
+        self.set(agent_id, state, (!ok).then_some("the test task failed"));
+    }
+
+    fn model(&self, model: &ModelRef) -> ModelHealth {
+        lock(&self.models)
+            .get(model)
+            .map(|(health, _)| health.clone())
+            .unwrap_or_else(|| ModelHealth::healthy(model))
+    }
+
+    fn models(&self, agent_id: &AgentId) -> Vec<ModelHealth> {
+        lock(&self.models)
+            .values()
+            .map(|(health, _)| health.clone())
+            .filter(|health| &health.model.agent_id() == agent_id)
+            .collect()
     }
 }
 
-/// Gates that pass unless a test queues an outcome. Every request is recorded.
+/// Checks that pass unless a test queues an outcome. Every request is recorded. The checks a
+/// run makes on its starting code are apart: they pass, take nothing from the queue and aren't
+/// among the requests, unless a test queues what the starting code does.
 #[derive(Default)]
-pub struct ScriptedGates {
-    outcomes: Mutex<VecDeque<GateOutcome>>,
-    requests: Mutex<Vec<GateRequest>>,
+pub struct ScriptedChecks {
+    outcomes: Mutex<VecDeque<CheckOutcome>>,
+    requests: Mutex<Vec<CheckRequest>>,
+    at_start: Mutex<VecDeque<CheckOutcome>>,
+    start_requests: Mutex<Vec<CheckRequest>>,
 }
 
-impl ScriptedGates {
-    /// The next gate returns this.
-    pub fn push(&self, outcome: GateOutcome) {
+impl ScriptedChecks {
+    /// The next check returns this.
+    pub fn push(&self, outcome: CheckOutcome) {
         lock(&self.outcomes).push_back(outcome);
     }
 
+    /// The next check of the starting code returns this.
+    pub fn push_at_start(&self, outcome: CheckOutcome) {
+        lock(&self.at_start).push_back(outcome);
+    }
+
+    /// The checks asked of the starting code.
+    pub fn start_requests(&self) -> Vec<CheckRequest> {
+        lock(&self.start_requests).clone()
+    }
+
     pub fn fail_next(&self, summary: &str) {
-        self.push(GateOutcome {
+        self.push(CheckOutcome {
             name: "tests".to_owned(),
-            kind: GateKind::Command,
+            kind: CheckKind::Command,
             passed: false,
             command: None,
             exit_code: Some(1),
@@ -730,17 +838,22 @@ impl ScriptedGates {
         });
     }
 
-    pub fn requests(&self) -> Vec<GateRequest> {
+    pub fn requests(&self) -> Vec<CheckRequest> {
         lock(&self.requests).clone()
     }
 }
 
-impl GateRunner for ScriptedGates {
-    fn run(&self, request: GateRequest) -> BoxFuture<'_, GateOutcome> {
-        let scripted = lock(&self.outcomes).pop_front();
-        let outcome = scripted.unwrap_or_else(|| GateOutcome {
+impl CheckRunner for ScriptedChecks {
+    fn run(&self, request: CheckRequest) -> BoxFuture<'_, CheckOutcome> {
+        let at_start = request.task.as_str() == argonauts_core::limits::START_CHECKS;
+        let scripted = if at_start {
+            lock(&self.at_start).pop_front()
+        } else {
+            lock(&self.outcomes).pop_front()
+        };
+        let outcome = scripted.unwrap_or_else(|| CheckOutcome {
             name: request.name.clone(),
-            kind: GateKind::Command,
+            kind: CheckKind::Command,
             passed: true,
             command: Some(request.command.clone()),
             exit_code: Some(0),
@@ -751,23 +864,32 @@ impl GateRunner for ScriptedGates {
             sandboxed: true,
             skipped: false,
         });
-        lock(&self.requests).push(request);
+        if at_start {
+            lock(&self.start_requests).push(request);
+        } else {
+            lock(&self.requests).push(request);
+        }
         Box::pin(async move { outcome })
     }
 }
 
-/// The model id prefixes that name a family.
-const MODEL_FAMILIES: &[&str] = &["claude", "gpt", "gemini", "qwen"];
-
-/// The family of a built-in harness's default model, as the real registry knows it.
-const HARNESS_FAMILIES: &[(&str, &str)] = &[
-    ("claude-code", "claude"),
-    ("codex", "gpt"),
-    ("antigravity-cli", "gemini"),
+/// Model id prefixes and the provider each names.
+const MODEL_PROVIDERS: &[(&str, &str)] = &[
+    ("claude", "anthropic"),
+    ("gpt", "openai"),
+    ("gemini", "google"),
+    ("qwen", "alibaba"),
 ];
 
-/// A registry of fixed entries. Families come from the entry, else from the model id's
-/// prefix (`claude`, `gpt`, `gemini`, `qwen`), else from the harness's default family as the real
+/// The provider of a built-in CLI's default model, as the real registry knows it.
+const CLI_PROVIDERS: &[(&str, &str)] = &[
+    ("claude-code", "anthropic"),
+    ("codex", "openai"),
+    ("antigravity-cli", "google"),
+];
+
+/// A registry of fixed entries. Providers come from the entry, else from the model id's
+/// prefix (`claude`, `gpt`, `gemini`, `qwen`), else from the CLI's default provider as the real
 /// registry falls back, else `unknown`.
 #[derive(Default)]
 pub struct StaticRegistry {
@@ -781,12 +903,12 @@ impl StaticRegistry {
 }
 
 impl ModelRegistry for StaticRegistry {
-    fn get(&self, worker: &WorkerRef) -> Option<ModelEntry> {
+    fn get(&self, worker: &ModelRef) -> Option<ModelEntry> {
         lock(&self.entries)
             .iter()
             .find(|entry| {
                 &entry.id == worker
-                    || (entry.id.worker == worker.worker
+                    || (entry.id.agent == worker.agent
                         && worker
                             .model
                             .as_ref()
@@ -795,35 +917,35 @@ impl ModelRegistry for StaticRegistry {
             .cloned()
     }
 
-    fn family(&self, worker: &WorkerRef) -> String {
+    fn provider(&self, worker: &ModelRef) -> String {
         if let Some(entry) = self.get(worker) {
-            return entry.family;
+            return entry.provider;
         }
         let model = worker.model.as_deref().unwrap_or_default();
-        let by_model = MODEL_FAMILIES
+        let by_model = MODEL_PROVIDERS
             .iter()
-            .find(|family| model.starts_with(*family))
-            .copied();
-        let by_harness = || {
-            HARNESS_FAMILIES
+            .find(|(prefix, _)| model.starts_with(prefix))
+            .map(|&(_, provider)| provider);
+        let by_cli = || {
+            CLI_PROVIDERS
                 .iter()
-                .find(|(harness, _)| *harness == worker.worker)
-                .map(|&(_, family)| family)
+                .find(|(cli, _)| *cli == worker.agent)
+                .map(|&(_, provider)| provider)
         };
-        by_model.or_else(by_harness).unwrap_or("unknown").to_owned()
+        by_model.or_else(by_cli).unwrap_or("unknown").to_owned()
     }
 
     fn list(&self) -> Vec<ModelEntry> {
         lock(&self.entries).clone()
     }
 
-    fn estimate(&self, worker: &WorkerRef, input_tokens: u64, output_tokens: u64) -> CostEstimate {
+    fn estimate(&self, worker: &ModelRef, input_tokens: u64, output_tokens: u64) -> CostEstimate {
         let Some(entry) = self.get(worker) else {
             return CostEstimate::Unknown;
         };
         match entry.cost.unit {
             CostUnit::None => CostEstimate::Free,
-            CostUnit::Quota => CostEstimate::Unknown,
+            CostUnit::PlanUsage => CostEstimate::Unknown,
             CostUnit::Usd => {
                 let price = |per_mtok: Option<f64>, tokens: u64| {
                     per_mtok.unwrap_or(0.0) * tokens as f64 / 1_000_000.0
@@ -843,17 +965,17 @@ impl ModelRegistry for StaticRegistry {
 
 #[derive(Default)]
 pub struct StaticTrackRecords {
-    records: Mutex<BTreeMap<(WorkerRef, String), TrackRecord>>,
+    records: Mutex<BTreeMap<(ModelRef, String), TrackRecord>>,
 }
 
 impl StaticTrackRecords {
-    pub fn set(&self, worker: WorkerRef, task_type: &str, record: TrackRecord) {
+    pub fn set(&self, worker: ModelRef, task_type: &str, record: TrackRecord) {
         lock(&self.records).insert((worker, task_type.to_owned()), record);
     }
 }
 
 impl TrackRecords for StaticTrackRecords {
-    fn get(&self, worker: &WorkerRef, task_type: &str) -> Option<TrackRecord> {
+    fn get(&self, worker: &ModelRef, task_type: &str) -> Option<TrackRecord> {
         lock(&self.records)
             .get(&(worker.clone(), task_type.to_owned()))
             .copied()

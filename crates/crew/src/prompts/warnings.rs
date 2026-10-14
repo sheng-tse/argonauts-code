@@ -7,10 +7,11 @@ use std::sync::{Mutex, PoisonError};
 
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::prompt_files::{self, PromptDirs, ROLES_DIR, RoleFile};
-use argonauts_core::prompt_parts::{CrewRole, Readers};
+use argonauts_core::prompt_parts::Readers;
 use argonauts_core::settings::Settings;
+use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::{Note, NoteLevel};
 
 use crate::engine::host::Host;
@@ -39,7 +40,7 @@ pub fn about_role_files(dirs: &PromptDirs, settings: &Settings) -> Vec<String> {
         .collect()
 }
 
-const THE_FIVE: &str = "The crew's roles are main, orchestrator, workers, reviewers and judge";
+const THE_FIVE: &str = "The crew's roles are main, orchestrator, worker, reviewer and judge";
 
 /// A `[prompts.<role>]` table is found by the role's name, so one named after no role sets
 /// nothing, and a typo in a settings file would otherwise never show. One line each.
@@ -64,9 +65,9 @@ pub(super) fn say_once(host: &Host, dirs: &PromptDirs, role: RoleName) {
     };
     // Whoever builds in this run made the work, whether or not the settings list them.
     let building = host.read(|state| {
-        let tasks = state.cards.by_id.values();
+        let tasks = state.tasks.by_id.values();
         tasks
-            .filter_map(|task| task.owner.clone().or_else(|| task.spec.owner.clone()))
+            .filter_map(|task| task.worker.clone().or_else(|| task.spec.worker.clone()))
             .collect()
     });
     let names = agent_names(host.settings(), building);
@@ -94,7 +95,7 @@ fn about(file: Result<RoleFile, String>, role: CrewRole, names: &[String]) -> Op
         Err(why) => return Some(format!("{why}, so it isn't used")),
     };
     let who = match role {
-        CrewRole::Reviewers => "the reviewers",
+        CrewRole::Reviewer => "the reviewers",
         CrewRole::Judge => "the judge",
         _ => return None,
     };
@@ -106,23 +107,23 @@ fn about(file: Result<RoleFile, String>, role: CrewRole, names: &[String]) -> Op
 }
 
 /// Every CLI and model on the crew, and each of `others`, by id and as the screen names it.
-fn agent_names(settings: &Settings, others: Vec<WorkerRef>) -> Vec<String> {
+fn agent_names(settings: &Settings, others: Vec<ModelRef>) -> Vec<String> {
     let display = DisplayNames::default();
-    let of_roles = settings.roles.values().flat_map(|role| &role.workers);
+    let of_roles = settings.roles.values().flat_map(|role| &role.models);
     let mut names = Vec::new();
     for worker in settings
         .crew
         .members()
         .iter()
-        .chain([&settings.main_agent])
+        .chain([&settings.crew.main])
         .chain(of_roles)
         .chain(&others)
     {
-        names.push(worker.worker.clone());
-        names.push(display.harness(&worker.worker));
+        names.push(worker.agent.clone());
+        names.push(display.cli(&worker.agent));
         if let Some(model) = &worker.model {
             names.push(model.clone());
-            names.extend(display.model(&worker.worker, Some(model)));
+            names.extend(display.model(&worker.agent, Some(model)));
         }
     }
     names.sort();
@@ -141,16 +142,16 @@ mod tests {
     }
 
     #[test]
-    fn a_reviewers_file_that_names_a_cli_gets_a_warning() {
+    fn a_reviewer_file_that_names_a_cli_gets_a_warning() {
         let repo = tempfile::tempdir().unwrap();
-        write(&repo, "roles/reviewers.md", "Go easy on Codex's code.\n");
+        write(&repo, "roles/reviewer.md", "Go easy on Codex's code.\n");
         // The workers know who they are, so their file may name anyone.
-        write(&repo, "roles/workers.md", "Ask Codex when stuck.\n");
+        write(&repo, "roles/worker.md", "Ask Codex when stuck.\n");
         let dirs = PromptDirs::new(Some(repo.path()), None);
         let warnings = about_role_files(&dirs, &Settings::default());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(
-            warnings[0].starts_with("roles/reviewers.md names Codex, which tells the reviewers"),
+            warnings[0].starts_with("roles/reviewer.md names Codex, which tells the reviewers"),
             "{warnings:?}"
         );
     }
@@ -160,13 +161,13 @@ mod tests {
         let repo = tempfile::tempdir().unwrap();
         write(
             &repo,
-            "roles/workers.md",
+            "roles/worker.md",
             "---\nmode: replce\n---\nKeep functions short.\n",
         );
         let dirs = PromptDirs::new(Some(repo.path()), None);
         assert_eq!(
             about_role_files(&dirs, &Settings::default()),
-            ["roles/workers.md: mode is `add` or `replace`, not `replce`, so it isn't used"]
+            ["roles/worker.md: mode is `add` or `replace`, not `replce`, so it isn't used"]
         );
     }
 
@@ -192,7 +193,7 @@ mod tests {
         assert_eq!(
             warnings[1],
             "roles/reviwers.md isn't named after a role, so no agent reads it. The crew's \
-             roles are main, orchestrator, workers, reviewers and judge"
+             roles are main, orchestrator, worker, reviewer and judge"
         );
     }
 
@@ -213,7 +214,7 @@ mod tests {
             about_role_tables(&settings),
             [
                 "[prompts.reviwers] in your settings isn't named after a role, so it sets \
-                 nothing. The crew's roles are main, orchestrator, workers, reviewers and judge"
+                 nothing. The crew's roles are main, orchestrator, worker, reviewer and judge"
             ]
         );
     }
@@ -223,7 +224,7 @@ mod tests {
         let repo = tempfile::tempdir().unwrap();
         write(
             &repo,
-            "roles/reviewers.md",
+            "roles/reviewer.md",
             "Treat a missing test as a required change.\n",
         );
         let dirs = PromptDirs::new(Some(repo.path()), None);

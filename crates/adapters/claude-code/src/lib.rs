@@ -1,10 +1,11 @@
-//! Claude Code adapter for Argonauts.
+//! Claude Code adapter for Argonauts Code.
 
 mod adapter;
 mod background;
 mod command;
 mod commands;
 mod context;
+mod context_usage;
 mod control;
 mod errors;
 mod instructions;
@@ -12,11 +13,11 @@ mod isolation;
 mod json;
 mod keywords;
 mod models;
-mod mods;
 mod parser;
 mod patch;
+mod plan_limits;
 mod plan_usage;
-mod quota;
+mod plugin_output;
 mod script_meta;
 mod sessions;
 mod settings;

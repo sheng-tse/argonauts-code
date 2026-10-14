@@ -87,14 +87,14 @@ fn fill(table: &mut Table, step: &RequiredStep) {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::prompt_parts::CrewRole;
+    use argonauts_core::settings::crew::CrewRole;
 
     use super::*;
 
     fn step(name: &str, when: Option<&str>) -> RequiredStep {
         RequiredStep {
             name: name.to_owned(),
-            role: CrewRole::Workers,
+            role: CrewRole::Worker,
             does: Some(format!("Run {name}.")),
             when: when.map(str::to_owned),
         }

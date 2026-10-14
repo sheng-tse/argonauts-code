@@ -7,7 +7,7 @@ use std::fmt;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
-use crate::names::WorkerRef;
+use crate::names::ModelRef;
 
 /// What Esc on a question or an approval does. Esc means "carry on without me", so nothing
 /// waits either way.
@@ -27,7 +27,7 @@ pub enum WhenDeclined {
 pub const DEFAULT_ASK_LIMIT: u32 = 2;
 
 /// Who settles what your rules can't decide. Written as `judge`, or a model such as
-/// `antigravity-cli/gemini-3.6-flash`.
+/// `antigravity-cli/gemini-3.8-flash-low`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum Decides {
@@ -35,7 +35,7 @@ pub enum Decides {
     #[default]
     Judge,
     /// A model you named, which approves in the judge's place.
-    Model(WorkerRef),
+    Model(ModelRef),
 }
 
 impl Decides {
@@ -43,7 +43,7 @@ impl Decides {
     pub const JUDGE: &'static str = "judge";
 
     /// The model you named, when you named one.
-    pub fn model(&self) -> Option<&WorkerRef> {
+    pub fn model(&self) -> Option<&ModelRef> {
         match self {
             Decides::Judge => None,
             Decides::Model(model) => Some(model),
@@ -74,8 +74,8 @@ impl TryFrom<String> for Decides {
     }
 }
 
-impl From<WorkerRef> for Decides {
-    fn from(model: WorkerRef) -> Self {
+impl From<ModelRef> for Decides {
+    fn from(model: ModelRef) -> Self {
         Decides::Model(model)
     }
 }
@@ -104,7 +104,7 @@ mod tests {
         let read = |word: &str| Decides::try_from(word.to_owned());
         assert_eq!(read("judge"), Ok(Decides::Judge));
         assert_eq!(read(" Judge "), Ok(Decides::Judge));
-        let model: WorkerRef = "codex/gpt-5.6".parse().unwrap();
+        let model: ModelRef = "codex/gpt-5.6".parse().unwrap();
         assert_eq!(read("codex/gpt-5.6"), Ok(Decides::Model(model.clone())));
         assert_eq!(String::from(Decides::Model(model)), "codex/gpt-5.6");
         assert_eq!(String::from(Decides::Judge), "judge");

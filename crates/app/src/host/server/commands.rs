@@ -99,21 +99,26 @@ pub(crate) fn command(request: ControlRequest) -> Result<(EngineCommand, EngineR
             };
             (command, EngineReply::Message(wait))
         }
-        ControlRequest::Guidance { text, front_end: _ } => {
+        ControlRequest::Guidance {
+            text,
+            outside_agent: _,
+        } => {
             let (reply, wait) = oneshot::channel();
             (
                 EngineCommand::Guidance { text, reply },
                 EngineReply::Message(wait),
             )
         }
-        ControlRequest::Pause { now, front_end: _ } => {
-            (EngineCommand::Pause { now }, EngineReply::Queued)
-        }
+        ControlRequest::Pause {
+            now,
+            outside_agent: _,
+        } => (EngineCommand::Pause { now }, EngineReply::Queued),
         ControlRequest::CancelPause => (EngineCommand::CancelPause, EngineReply::Queued),
         ControlRequest::Stop => (EngineCommand::Stop, EngineReply::Queued),
-        ControlRequest::StopSession { session } => {
-            (EngineCommand::StopSession { session }, EngineReply::Queued)
-        }
+        ControlRequest::StopSession { session, again } => (
+            EngineCommand::StopSession { session, again },
+            EngineReply::Queued,
+        ),
         ControlRequest::TakeBack { messages } => {
             let (reply, wait) = oneshot::channel();
             (
@@ -125,29 +130,29 @@ pub(crate) fn command(request: ControlRequest) -> Result<(EngineCommand, EngineR
             (EngineCommand::ApprovalMode { mode }, EngineReply::Queued)
         }
         ControlRequest::Reassign {
-            card,
+            task,
             to,
             rule_override,
             token: _,
         } => {
             let (reply, wait) = oneshot::channel();
             let command = EngineCommand::Reassign {
-                card,
+                task,
                 to,
                 rule_override,
                 reply,
             };
             (command, EngineReply::Unit(wait))
         }
-        ControlRequest::TakeOver { card, token: _ } => {
+        ControlRequest::TakeOver { task, token: _ } => {
             let (reply, wait) = oneshot::channel();
             (
-                EngineCommand::TakeOver { card, reply },
+                EngineCommand::TakeOver { task, reply },
                 EngineReply::TakeOver(wait),
             )
         }
-        ControlRequest::TakeOverEnded { card, token: _ } => {
-            (EngineCommand::TakeOverEnded { card }, EngineReply::Queued)
+        ControlRequest::TakeOverEnded { task, token: _ } => {
+            (EngineCommand::TakeOverEnded { task }, EngineReply::Queued)
         }
         ControlRequest::Answer { answer, token: _ } => {
             let (reply, wait) = oneshot::channel();
@@ -160,10 +165,10 @@ pub(crate) fn command(request: ControlRequest) -> Result<(EngineCommand, EngineR
             let (reply, wait) = oneshot::channel();
             (EngineCommand::Status { reply }, EngineReply::Status(wait))
         }
-        ControlRequest::Diff { card, scope } => {
+        ControlRequest::Diff { task, scope } => {
             let (reply, wait) = oneshot::channel();
             (
-                EngineCommand::Diff { card, scope, reply },
+                EngineCommand::Diff { task, scope, reply },
                 EngineReply::Diff(wait),
             )
         }
@@ -174,10 +179,10 @@ pub(crate) fn command(request: ControlRequest) -> Result<(EngineCommand, EngineR
                 EngineReply::Raw(wait),
             )
         }
-        ControlRequest::Revert { card, checkpoint } => {
+        ControlRequest::Rewind { task, checkpoint } => {
             let (reply, wait) = oneshot::channel();
-            let command = EngineCommand::Revert {
-                card,
+            let command = EngineCommand::Rewind {
+                task,
                 checkpoint,
                 reply,
             };

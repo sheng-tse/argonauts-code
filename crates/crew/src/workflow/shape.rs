@@ -1,23 +1,23 @@
 //! What code makes sure of in a crew run's workflow, whoever wrote it:
-//! it opens with Understand when `understand.when = "crew"`, nothing drafts or builds before a
-//! goal checkpoint (the one card before writing), a checkpoint gates the phase it comes
+//! it opens with Understand when `understand.when = "crew"`, nothing drafts or builds before an
+//! Understand approval (the one question before writing), an approval holds back the phase it comes
 //! before and is never a phase of its own, a Check phase judges the done-when list before Merge
-//! when `workflows.final_check` is on, and a goal run is Understand, its attempts, then Merge.
-//! Nothing here nests a workflow or adds a Goal or a Plan phase.
+//! when `workflows.final_check` is on, and a goal run is Understand, its tries, then Merge.
+//! Nothing here nests a workflow or adds an Understand or a Plan phase.
 //!
 //! Shaping twice changes nothing, so a phase end's design compares like for like.
 
-use argonauts_core::events::checkpoint::CheckpointKind;
+use argonauts_core::events::approval::ApprovalKind;
 use argonauts_core::events::run::RunMode;
 use argonauts_core::settings::protocol::UnderstandWhen;
 use argonauts_core::settings::workflows::RunStyle;
 use argonauts_core::workflow::{Phase, StandardPhase, Step, StepKind, Workflow};
 
-use crate::card;
 use crate::engine::host::Host;
+use crate::task;
 use crate::workflow::{builtin, naming, runner};
 
-/// The Check phase's title. A goal's attempts end with their own check instead.
+/// The Check phase's name. A goal's tries end with their own check instead.
 pub const CHECK_PHASE: &str = "Check";
 
 /// What shapes a run's workflow, from the settings and the run's style.
@@ -47,20 +47,20 @@ pub fn run_style(host: &Host) -> RunStyle {
         .unwrap_or_else(|| naming::style(host))
 }
 
-/// The lead's workflow as a crew run follows it. A solo run's is left as it is: solo skips
-/// Understand, and its gates are its check.
-pub fn for_run(host: &Host, workflow: Workflow, first_attempt: Option<Phase>) -> Workflow {
-    if host.read(runner::run_mode) == Some(RunMode::Solo) {
+/// The main agent's workflow as a crew run follows it. A Captain run's is left as it is: Captain
+/// skips Understand, and its checks are its check.
+pub fn for_run(host: &Host, workflow: Workflow, first_try: Option<Phase>) -> Workflow {
+    if host.read(runner::run_mode) == Some(RunMode::Captain) {
         return workflow;
     }
-    shape(workflow, Rules::of(host), first_attempt)
+    shape(workflow, Rules::of(host), first_try)
 }
 
-/// A template or your own file, run as written, or the lead's change at a phase end: its
+/// A template or your own file, run as written, or the main agent's change at a phase end: its
 /// phases stay as written, so Understand is only there if it says so. It still gets the final
-/// check, and a goal run its attempts.
+/// check, and a goal run its tries.
 pub fn as_written(host: &Host, workflow: Workflow) -> Workflow {
-    if host.read(runner::run_mode) == Some(RunMode::Solo) {
+    if host.read(runner::run_mode) == Some(RunMode::Captain) {
         return workflow;
     }
     let rules = Rules::of(host);
@@ -75,7 +75,7 @@ pub fn as_written(host: &Host, workflow: Workflow) -> Workflow {
     shape(workflow, rules, None)
 }
 
-pub fn shape(mut workflow: Workflow, rules: Rules, first_attempt: Option<Phase>) -> Workflow {
+pub fn shape(mut workflow: Workflow, rules: Rules, first_try: Option<Phase>) -> Workflow {
     match rules.understand {
         UnderstandWhen::Crew => crew_understands(&mut workflow),
         UnderstandWhen::Main => one_reading_goes(&mut workflow),
@@ -84,43 +84,44 @@ pub fn shape(mut workflow: Workflow, rules: Rules, first_attempt: Option<Phase>)
     }
     match rules.style {
         RunStyle::Goal => {
-            let mut workflow = as_goal(workflow, first_attempt);
+            let mut workflow = as_goal(workflow, first_try);
             goal_before_work(&mut workflow, rules.understand);
             workflow
         }
         RunStyle::Workflow => {
             goal_before_work(&mut workflow, rules.understand);
-            gate_builds(&mut workflow);
+            check_builds(&mut workflow);
             final_check(&mut workflow, rules.final_check);
             workflow
         }
     }
 }
 
-/// Whether a goal checkpoint will run: an unconditional one, outside Understand when
+/// Whether an Understand approval will run: an unconditional one, outside Understand when
 /// `understand.when` is off, since Understand's steps skip then.
-pub fn goal_checkpoint_runs(workflow: &Workflow, understand: UnderstandWhen) -> bool {
+pub fn understand_approval_runs(workflow: &Workflow, understand: UnderstandWhen) -> bool {
     workflow.phases.iter().any(|phase| {
         !(understand == UnderstandWhen::Off && phase.standard == StandardPhase::Understand)
-            && unconditional_checkpoint(&phase.steps, CheckpointKind::Goal)
+            && unconditional_approval(&phase.steps, ApprovalKind::Understand)
     })
 }
 
-/// Whether a plan checkpoint will run. When nothing read the request, its card is the
-/// go-ahead, so the goal checkpoint before the drafting needn't ask.
-pub fn plan_checkpoint_runs(workflow: &Workflow) -> bool {
+/// Whether a plan approval will run. When nothing read the request, its question is the
+/// go-ahead, so the Understand approval before the drafting needn't ask.
+pub fn plan_approval_runs(workflow: &Workflow) -> bool {
     workflow
         .phases
         .iter()
-        .any(|phase| unconditional_checkpoint(&phase.steps, CheckpointKind::Plan))
+        .any(|phase| unconditional_approval(&phase.steps, ApprovalKind::Plan))
 }
 
-/// Nothing drafts, builds, or spikes before the goal checkpoint, which holds the go-ahead. When
-/// none will run, as when the lead leaves Understand out or `understand.when` is off, one gates
-/// the first phase that works from the goal. With nothing read it takes your prompt as the
-/// goal, or the lead's own questions, then asks "Run this workflow?" or "Pursue this goal?".
+/// Nothing drafts, builds, or experiments before the Understand approval, which holds the go-ahead.
+/// When none will run, as when the main agent leaves Understand out or `understand.when` is off,
+/// one checks the first phase that works from the goal. With nothing read it takes your prompt as
+/// the goal, or the main agent's own questions, then asks "Run this workflow?" or "Pursue this
+/// goal?".
 fn goal_before_work(workflow: &mut Workflow, understand: UnderstandWhen) {
-    if goal_checkpoint_runs(workflow, understand) {
+    if understand_approval_runs(workflow, understand) {
         return;
     }
     let first = workflow
@@ -138,7 +139,7 @@ fn goal_before_work(workflow: &mut Workflow, understand: UnderstandWhen) {
     if let Some((phase, at)) = first {
         workflow.phases[phase]
             .steps
-            .insert(at, checkpoint(CheckpointKind::Goal));
+            .insert(at, approval(ApprovalKind::Understand));
     }
 }
 
@@ -150,34 +151,34 @@ fn works_from_goal(step: &Step) -> bool {
         || step.steps.iter().any(works_from_goal)
 }
 
-/// A crew run whose Understand is the lead's to add: an opening phase that only aligns the
-/// goal some other way, such as a solo example's one reading, goes, so the goal checkpoint
-/// before building takes your prompt, or the lead's own questions.
+/// A crew run whose Understand is the main agent's to add: an opening phase that only aligns the
+/// goal some other way, such as a Captain example's one reading, goes, so the Understand approval
+/// before building takes your prompt, or the main agent's own questions.
 fn one_reading_goes(workflow: &mut Workflow) {
-    let solo_reading = workflow.phases.first().is_some_and(|phase| {
+    let captain_reading = workflow.phases.first().is_some_and(|phase| {
         phase.standard == StandardPhase::Understand
             && !crew_reads(phase)
             && phase.steps.iter().all(goal_only)
     });
-    if solo_reading {
+    if captain_reading {
         workflow.phases.remove(0);
     }
 }
 
-/// Whether the first phase is the crew's Understand: readings, comparisons, and the card.
+/// Whether the first phase is the crew's Understand: readings, comparisons, and the question.
 pub fn opens_with_understand(workflow: &Workflow) -> bool {
     workflow.phases.first().is_some_and(crew_reads)
 }
 
 fn crew_reads(phase: &Phase) -> bool {
     phase.standard == StandardPhase::Understand
-        && has_kind(&phase.steps, StepKind::Restate)
-        && has_kind(&phase.steps, StepKind::Differ)
-        && unconditional_checkpoint(&phase.steps, CheckpointKind::Goal)
+        && has_kind(&phase.steps, StepKind::Read)
+        && has_kind(&phase.steps, StepKind::Compare)
+        && unconditional_approval(&phase.steps, ApprovalKind::Understand)
 }
 
 /// The run opens with the crew's Understand, and reading the request belongs to it alone: an
-/// opening phase that only aligns the goal some other way, such as a solo example's single
+/// opening phase that only aligns the goal some other way, such as a Captain example's single
 /// reading, gives way to it, and later phases lose their own readings.
 fn crew_understands(workflow: &mut Workflow) {
     let Some(understand) = understand_phase() else {
@@ -205,28 +206,28 @@ fn crew_understands(workflow: &mut Workflow) {
     }
 }
 
-/// A step that only aligns the goal: a reading, a comparison, the goal checkpoint, or a loop
+/// A step that only aligns the goal: a reading, a comparison, the Understand approval, or a loop
 /// of those.
 fn goal_only(step: &Step) -> bool {
     match step.kind {
-        StepKind::Restate | StepKind::Differ => true,
-        StepKind::Checkpoint => step.checkpoint == Some(CheckpointKind::Goal),
+        StepKind::Read | StepKind::Compare => true,
+        StepKind::Approval => step.approval == Some(ApprovalKind::Understand),
         StepKind::LoopUntil => !step.steps.is_empty() && step.steps.iter().all(goal_only),
         _ => false,
     }
 }
 
-/// A checkpoint of `kind` that runs whatever the conditions say: neither it nor a step around
+/// An approval of `kind` that runs whatever the conditions say: neither it nor a step around
 /// it has a `when`.
-fn unconditional_checkpoint(steps: &[Step], kind: CheckpointKind) -> bool {
+fn unconditional_approval(steps: &[Step], kind: ApprovalKind) -> bool {
     steps.iter().filter(|step| step.when.is_none()).any(|step| {
-        (step.kind == StepKind::Checkpoint && step.checkpoint == Some(kind))
-            || unconditional_checkpoint(&step.steps, kind)
+        (step.kind == StepKind::Approval && step.approval == Some(kind))
+            || unconditional_approval(&step.steps, kind)
     })
 }
 
-/// Understand as the examples write it: readings from several companies, comparisons, and the
-/// one card, in a loop that a send back runs again.
+/// Understand as the examples write it: readings from several providers, comparisons, and the
+/// one question, in a loop that a send back runs again.
 fn understand_phase() -> Option<Phase> {
     let example = builtin::load("council").ok()?;
     example
@@ -236,10 +237,10 @@ fn understand_phase() -> Option<Phase> {
         .filter(|phase| phase.standard == StandardPhase::Understand)
 }
 
-/// A goal run: Understand, the attempts so far (the first one only, at the start), then Merge.
-/// Whatever planning and building the workflow had becomes the lead's first attempt, so the
+/// A goal run: Understand, the tries so far (the first one only, at the start), then Merge.
+/// Whatever planning and building the workflow had becomes the main agent's first try, so the
 /// goal is never both.
-fn as_goal(workflow: Workflow, first_attempt: Option<Phase>) -> Workflow {
+fn as_goal(workflow: Workflow, first_try: Option<Phase>) -> Workflow {
     let Workflow {
         name,
         description,
@@ -248,22 +249,22 @@ fn as_goal(workflow: Workflow, first_attempt: Option<Phase>) -> Workflow {
         phases,
     } = workflow;
     let mut understand = Vec::new();
-    let mut attempts = Vec::new();
+    let mut tries = Vec::new();
     let mut merge = None;
     for phase in phases {
-        if is_attempt(&phase) {
-            attempts.push(phase);
+        if is_try(&phase) {
+            tries.push(phase);
         } else if has_top(&phase.steps, StepKind::Merge) {
             merge = Some(only_merge(phase));
-        } else if attempts.is_empty() && phase.standard == StandardPhase::Understand {
+        } else if tries.is_empty() && phase.standard == StandardPhase::Understand {
             understand.push(phase);
         }
     }
-    if attempts.is_empty() {
-        attempts.push(first_attempt.map_or_else(|| attempt_phase(1, None), with_check));
+    if tries.is_empty() {
+        tries.push(first_try.map_or_else(|| try_phase(1, None), with_check));
     }
     let mut phases = understand;
-    phases.extend(attempts);
+    phases.extend(tries);
     phases.push(merge.unwrap_or_else(merge_phase));
     Workflow {
         name,
@@ -274,39 +275,39 @@ fn as_goal(workflow: Workflow, first_attempt: Option<Phase>) -> Workflow {
     }
 }
 
-/// An attempt is a phase that ends with its own check.
-pub fn is_attempt(phase: &Phase) -> bool {
+/// A try is a phase that ends with its own check.
+pub fn is_try(phase: &Phase) -> bool {
     phase
         .steps
         .last()
-        .is_some_and(|step| step.kind == StepKind::Check)
+        .is_some_and(|step| step.kind == StepKind::GoalCheck)
         && !has_top(&phase.steps, StepKind::Merge)
 }
 
-/// The attempt the lead didn't plan: the default agent works toward every unmet criterion in
-/// its own worktree, its gates run, another company reviews it, and the check judges it.
-pub fn attempt_phase(n: u32, title: Option<&str>) -> Phase {
+/// The try the main agent didn't plan: the main agent works toward every unmet criterion in
+/// its own worktree, its checks run, another provider reviews it, and the check judges it.
+pub fn try_phase(n: u32, name: Option<&str>) -> Phase {
     let mut build = bare(StepKind::Build);
-    build.input = Some(card::GOAL.to_owned());
+    build.input = Some(task::GOAL.to_owned());
     build.label = Some("build:{item}".to_owned());
-    build.different_family_from = Some(card::AUTHOR.to_owned());
+    build.different_provider_from = Some(task::AUTHOR.to_owned());
     Phase {
-        name: title.map_or_else(|| format!("Attempt {n}"), str::to_owned),
+        name: name.map_or_else(|| format!("Try {n}"), str::to_owned),
         detail: "one worker works toward what's unmet, then a review and the check from another \
                  provider"
             .to_owned(),
         standard: StandardPhase::Do,
-        steps: vec![build, check_step("check:{attempt}")],
+        steps: vec![build, check_step("check:{try}")],
     }
 }
 
-/// An attempt the lead planned, ending with its check whether or not the lead wrote one, and
+/// A try the main agent planned, ending with its check whether or not the main agent wrote one, and
 /// never merging: Merge waits at the end of the goal.
 pub fn with_check(mut phase: Phase) -> Phase {
     phase
         .steps
-        .retain(|step| !matches!(step.kind, StepKind::Merge | StepKind::Check));
-    phase.steps.push(check_step("check:{attempt}"));
+        .retain(|step| !matches!(step.kind, StepKind::Merge | StepKind::GoalCheck));
+    phase.steps.push(check_step("check:{try}"));
     phase
 }
 
@@ -327,15 +328,15 @@ fn merge_phase() -> Phase {
 }
 
 fn check_step(label: &str) -> Step {
-    let mut check = bare(StepKind::Check);
+    let mut check = bare(StepKind::GoalCheck);
     check.label = Some(label.to_owned());
     check
 }
 
-/// Building from a plan waits for the plan. Where the workflow has no plan checkpoint, one
-/// gates the phase it comes before: the end of the last drafting phase, or the start of the
-/// first building one, after its goal checkpoint.
-fn gate_builds(workflow: &mut Workflow) {
+/// Building from a plan waits for the plan. Where the workflow has no plan approval, one
+/// holds back the phase it comes before: the end of the last drafting phase, or the start of the
+/// first building one, after its Understand approval.
+fn check_builds(workflow: &mut Workflow) {
     let Some(first_build) = workflow
         .phases
         .iter()
@@ -347,33 +348,33 @@ fn gate_builds(workflow: &mut Workflow) {
         .phases
         .iter()
         .any(|phase| phase.steps.iter().any(crew_build));
-    if !from_plan || has_checkpoint(&workflow.phases, CheckpointKind::Plan) {
+    if !from_plan || has_approval(&workflow.phases, ApprovalKind::Plan) {
         return;
     }
-    let gate = checkpoint(CheckpointKind::Plan);
+    let check = approval(ApprovalKind::Plan);
     let last_draft = workflow.phases[..=first_build]
         .iter()
         .rposition(|phase| has_kind(&phase.steps, StepKind::Draft));
     match last_draft {
-        Some(index) if index < first_build => workflow.phases[index].steps.push(gate),
+        Some(index) if index < first_build => workflow.phases[index].steps.push(check),
         _ => {
             let at = workflow.phases[first_build]
                 .steps
                 .iter()
                 .position(any_build)
                 .unwrap_or(0);
-            workflow.phases[first_build].steps.insert(at, gate);
+            workflow.phases[first_build].steps.insert(at, check);
         }
     }
 }
 
 fn any_build(step: &Step) -> bool {
-    step.kind == StepKind::Build && step.input.as_deref() != Some(card::SPIKES)
+    step.kind == StepKind::Build && step.input.as_deref() != Some(task::EXPERIMENTS)
 }
 
 fn crew_build(step: &Step) -> bool {
     step.kind == StepKind::Build
-        && !matches!(step.input.as_deref(), Some(card::GOAL | card::SPIKES))
+        && !matches!(step.input.as_deref(), Some(task::GOAL | task::EXPERIMENTS))
 }
 
 /// The done-when list's check, as its own phase right before the one that merges. Any check the
@@ -382,10 +383,14 @@ fn final_check(workflow: &mut Workflow, on: bool) {
     // A phase that held only checks goes with them; one with no steps of its own stays, since
     // it shows an earlier build's reviews.
     workflow.phases.retain(|phase| {
-        phase.steps.is_empty() || phase.steps.iter().any(|step| step.kind != StepKind::Check)
+        phase.steps.is_empty()
+            || phase
+                .steps
+                .iter()
+                .any(|step| step.kind != StepKind::GoalCheck)
     });
     for phase in &mut workflow.phases {
-        phase.steps.retain(|step| step.kind != StepKind::Check);
+        phase.steps.retain(|step| step.kind != StepKind::GoalCheck);
     }
     if !on {
         return;
@@ -421,19 +426,19 @@ pub fn has_kind(steps: &[Step], kind: StepKind) -> bool {
         .any(|step| step.kind == kind || has_kind(&step.steps, kind))
 }
 
-fn has_checkpoint(phases: &[Phase], kind: CheckpointKind) -> bool {
-    fn any(steps: &[Step], kind: CheckpointKind) -> bool {
+fn has_approval(phases: &[Phase], kind: ApprovalKind) -> bool {
+    fn any(steps: &[Step], kind: ApprovalKind) -> bool {
         steps.iter().any(|step| {
-            (step.kind == StepKind::Checkpoint && step.checkpoint == Some(kind))
+            (step.kind == StepKind::Approval && step.approval == Some(kind))
                 || any(&step.steps, kind)
         })
     }
     phases.iter().any(|phase| any(&phase.steps, kind))
 }
 
-fn checkpoint(kind: CheckpointKind) -> Step {
-    let mut step = bare(StepKind::Checkpoint);
-    step.checkpoint = Some(kind);
+fn approval(kind: ApprovalKind) -> Step {
+    let mut step = bare(StepKind::Approval);
+    step.approval = Some(kind);
     step
 }
 
@@ -446,17 +451,17 @@ pub fn bare(kind: StepKind) -> Step {
         review_in: None,
         role: None,
         roles: Vec::new(),
-        workers: Default::default(),
+        models: Default::default(),
         count: None,
         blind: false,
-        different_family_from: None,
+        different_provider_from: None,
         when: None,
         task: None,
         input: None,
         steps: Vec::new(),
         until: None,
         max: None,
-        checkpoint: None,
+        approval: None,
         workflow: None,
         params: Default::default(),
     }
@@ -487,10 +492,10 @@ mod tests {
         }
     }
 
-    const FIX_THEN_REVIEW: &str = "name: fix\ndescription: fix it\nphases:\n  - title: Fix\n    \
+    const FIX_THEN_REVIEW: &str = "name: fix\ndescription: fix it\nphases:\n  - name: Fix\n    \
         detail: a worker per task\n    standard: do\n    steps:\n      - { kind: build, input: \
-        plan, label: \"fix:{item}\" }\n  - title: Merge\n    detail: the merge\n    standard: \
-        decide\n    steps:\n      - { kind: check, label: \"check:final\" }\n      - { kind: \
+        plan, label: \"fix:{item}\" }\n  - name: Merge\n    detail: the merge\n    standard: \
+        decide\n    steps:\n      - { kind: goal_check, label: \"check:final\" }\n      - { kind: \
         merge, label: \"merge:{branch}\" }\n";
 
     #[test]
@@ -501,11 +506,11 @@ mod tests {
             None,
         );
         assert_eq!(names(&shaped), ["Understand", "Fix", "Check", "Merge"]);
-        // The checkpoints gate the phase they come before, never a phase of their own.
+        // The approvals hold back the phase they come before, never a phase of their own.
         let fix = &shaped.phases[1];
-        assert_eq!(fix.steps[0].checkpoint, Some(CheckpointKind::Plan));
+        assert_eq!(fix.steps[0].approval, Some(ApprovalKind::Plan));
         assert_eq!(fix.steps[1].kind, StepKind::Build);
-        assert_eq!(shaped.phases[2].steps[0].kind, StepKind::Check);
+        assert_eq!(shaped.phases[2].steps[0].kind, StepKind::GoalCheck);
         assert_eq!(
             shaped.phases[3]
                 .steps
@@ -540,7 +545,7 @@ mod tests {
     #[test]
     fn a_phase_that_shows_reviews_stays() {
         let text = FIX_THEN_REVIEW.replace(
-            "    steps:\n      - { kind: check, label: \"check:final\" }\n      - { kind: \
+            "    steps:\n      - { kind: goal_check, label: \"check:final\" }\n      - { kind: \
              merge",
             "    steps:\n      - { kind: merge",
         );
@@ -579,20 +584,20 @@ mod tests {
                 None,
             );
             assert_eq!(opens_with_understand(&shaped), opens, "{when:?}");
-            // Without Understand the goal checkpoint still comes before building, and takes
+            // Without Understand the Understand approval still comes before building, and takes
             // your prompt as the goal.
             let fix = shaped
                 .phases
                 .iter()
                 .find(|phase| phase.name == "Fix")
                 .unwrap();
-            assert!(has_checkpoint(std::slice::from_ref(fix), CheckpointKind::Goal) || opens);
+            assert!(has_approval(std::slice::from_ref(fix), ApprovalKind::Understand) || opens);
         }
     }
 
-    /// No Goal phase, no phase holding only a checkpoint, no nested goal.
+    /// No phase for the goal itself, no phase holding only an approval, no nested goal.
     #[test]
-    fn no_goal_phase_no_lone_checkpoint_and_no_nested_goal() {
+    fn no_goal_phase_no_lone_approval_and_no_nested_goal() {
         for name in ["council", "orchestrator", "draft-and-vote"] {
             for style in [RunStyle::Workflow, RunStyle::Goal] {
                 let shaped = shape(builtin(name), rules(style), None);
@@ -602,7 +607,7 @@ mod tests {
                         phase
                             .steps
                             .iter()
-                            .any(|step| step.kind != StepKind::Checkpoint),
+                            .any(|step| step.kind != StepKind::Approval),
                         "{name} {style:?}: {} holds only approvals",
                         phase.name
                     );
@@ -610,7 +615,7 @@ mod tests {
                 }
             }
         }
-        let review = "name: review\ndescription: a review\nphases:\n  - title: Review\n    \
+        let review = "name: review\ndescription: a review\nphases:\n  - name: Review\n    \
             detail: two reviewers\n    standard: check\n    steps:\n      - { kind: review, \
             input: diff }\n";
         let shaped = shape(
@@ -622,27 +627,27 @@ mod tests {
     }
 
     #[test]
-    fn a_goal_is_understand_its_attempts_then_merge() {
+    fn a_goal_is_understand_its_tries_then_merge() {
         let shaped = shape(builtin("council"), rules(RunStyle::Goal), None);
-        assert_eq!(names(&shaped), ["Understand", "Attempt 1", "Merge"]);
-        let attempt = &shaped.phases[1];
-        assert!(is_attempt(attempt));
-        assert_eq!(attempt.steps[0].input.as_deref(), Some(card::GOAL));
+        assert_eq!(names(&shaped), ["Understand", "Try 1", "Merge"]);
+        let first = &shaped.phases[1];
+        assert!(is_try(first));
+        assert_eq!(first.steps[0].input.as_deref(), Some(task::GOAL));
         assert_eq!(
-            attempt.steps.last().unwrap().label.as_deref(),
-            Some("check:{attempt}")
+            first.steps.last().unwrap().label.as_deref(),
+            Some("check:{try}")
         );
         assert_eq!(shape(shaped.clone(), rules(RunStyle::Goal), None), shaped);
 
-        // The lead's first attempt keeps its title and gains its check.
+        // The main agent's first try keeps its name and gains its check.
         let planned = Phase {
             name: "Both Fixes".to_owned(),
             detail: "a worker per function".to_owned(),
             standard: StandardPhase::Do,
-            steps: attempt_phase(1, None).steps[..1].to_vec(),
+            steps: try_phase(1, None).steps[..1].to_vec(),
         };
         let shaped = shape(builtin("council"), rules(RunStyle::Goal), Some(planned));
         assert_eq!(names(&shaped), ["Understand", "Both Fixes", "Merge"]);
-        assert!(is_attempt(&shaped.phases[1]));
+        assert!(is_try(&shaped.phases[1]));
     }
 }

@@ -4,19 +4,19 @@
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::run::{PhaseChange, RunPhase};
 use argonauts_core::events::session::{InputPart, InputPartKind};
-use argonauts_core::names::{PlanLabel, RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, PlanLabel, RoleName};
 use argonauts_core::settings::Settings;
 use argonauts_core::sha256_hex;
 use argonauts_core::steps::plan::GoalBrief;
-use argonauts_core::workflow::{Count, Step, StepWorkers};
-use argonauts_core::{CardId, Note, NoteLevel, PhaseStatus};
+use argonauts_core::workflow::{Count, Step, StepModels};
+use argonauts_core::{Note, NoteLevel, PhaseStatus, TaskId};
 
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
-use crate::lead;
 use crate::roles;
 use crate::state::RunState;
 use crate::status::Viewer;
+use crate::tie_breaker;
 use crate::workflow::StepCall;
 
 /// Notes longer than this are cut, so memory can't crowd out the task.
@@ -80,7 +80,7 @@ pub fn goal_brief(state: &RunState) -> GoalBrief {
     }
 }
 
-/// The goal in a few lines, for review and adjudication.
+/// The goal in a few lines, for reviewers and the judge who settles them.
 pub fn goal_text(state: &RunState) -> String {
     let brief = goal_brief(state);
     let mut text = brief.summary;
@@ -101,8 +101,8 @@ pub fn decision_lines(state: &RunState) -> Vec<String> {
         .collect()
 }
 
-/// Who may fill `role`: `roles.<role>.workers` when set, else the crew.
-pub fn crew_for(settings: &Settings, role: RoleName) -> Vec<WorkerRef> {
+/// Who may fill `role`: `roles.<role>.models` when set, else the crew.
+pub fn crew_for(settings: &Settings, role: RoleName) -> Vec<ModelRef> {
     let candidates = roles::candidates(settings, role);
     if candidates.is_empty() {
         settings.crew.members()
@@ -112,9 +112,9 @@ pub fn crew_for(settings: &Settings, role: RoleName) -> Vec<WorkerRef> {
 }
 
 /// The step's named workers, else the role's crew, each once.
-pub fn candidates_for(call: &StepCall, settings: &Settings, role: RoleName) -> Vec<WorkerRef> {
-    let named = match &call.step.workers {
-        StepWorkers::Named(workers) if !workers.is_empty() => Some(workers.clone()),
+pub fn candidates_for(call: &StepCall, settings: &Settings, role: RoleName) -> Vec<ModelRef> {
+    let named = match &call.step.models {
+        StepModels::Named(workers) if !workers.is_empty() => Some(workers.clone()),
         _ => None,
     };
     let mut workers = named.unwrap_or_else(|| crew_for(settings, role));
@@ -127,8 +127,8 @@ pub fn candidates_for(call: &StepCall, settings: &Settings, role: RoleName) -> V
     workers
 }
 
-/// How many seats the step fills: its count, else the role's seat count, else `fallback`.
-pub fn seats(
+/// How many agents the step starts: its count, else the role's count, else `fallback`.
+pub fn agent_count(
     call: &StepCall,
     settings: &Settings,
     role: RoleName,
@@ -144,15 +144,15 @@ pub fn seats(
     }
 }
 
-/// The step's candidates cut to its seats.
+/// The step's candidates cut to its count.
 pub fn workers_for(
     call: &StepCall,
     settings: &Settings,
     role: RoleName,
     fallback_count: Option<u32>,
-) -> Vec<WorkerRef> {
+) -> Vec<ModelRef> {
     let mut workers = candidates_for(call, settings, role);
-    if let Some(count) = seats(call, settings, role, fallback_count) {
+    if let Some(count) = agent_count(call, settings, role, fallback_count) {
         workers.truncate(count as usize);
     }
     workers
@@ -162,17 +162,18 @@ pub fn workers_for(
 pub fn status_part(host: &Host, role: RoleName, label: Option<PlanLabel>) -> InputPart {
     let viewer = Viewer::Session {
         role,
-        card: None,
+        task: None,
         label,
     };
     part(InputPartKind::Status, "status", host.status_text(&viewer))
 }
 
-/// The crew's kept notes and the ones in `.argonauts/notes/` in the run's base, cut to size:
-/// the crew's sourced notes as a quoted block of reference data, a file you wrote as it is.
-/// Drafters get them; judges never do, so no judge reads what the drafter it judges wrote down.
+/// The crew's kept notes and the ones in `.argonauts/notes/` in the run's base, cut to size: the
+/// crew's sourced notes as a quoted block of reference data, a file you wrote as it is. Drafting
+/// agents get them; judges never do, so no judge reads what the drafting agent it judges wrote
+/// down.
 pub fn notes(host: &Host) -> Vec<String> {
-    crate::retro::notes::read_all(
+    crate::run_review::notes::read_all(
         &host.repo().base_worktree,
         &crate::divide::repo_state_dir(host),
     )
@@ -196,44 +197,44 @@ pub fn notes(host: &Host) -> Vec<String> {
     .collect()
 }
 
-/// Records the planning phase starting, once, naming its lead.
+/// Records the planning phase starting, once, naming the main agent.
 pub fn phase_started(host: &Host) -> EngineResult<()> {
     let started = host.read(|state| state.run.phase == Some(RunPhase::Planning));
     if started {
         return Ok(());
     }
-    let lead = host.settings().main_agent.clone();
+    let main_agent = host.settings().crew.main.clone();
     host.record(
         None,
         None,
         RunEventKind::Phase(PhaseChange {
             phase: RunPhase::Planning,
             status: PhaseStatus::Started,
-            summary: Some(format!("Planning, led by {lead}")),
+            summary: Some(format!("Planning, with {main_agent} as the main agent")),
         }),
     )?;
     Ok(())
 }
 
-/// Records the planning phase's end with its one-line summary and lead.
+/// Records the planning phase's end with its one-line summary and the main agent.
 pub fn phase_finished(host: &Host, summary: &str) -> EngineResult<()> {
-    let lead = host
-        .read(|state| lead::phase_lead(state, host.settings()))
-        .unwrap_or_else(|| host.settings().main_agent.clone());
+    let main_agent = host
+        .read(|state| tie_breaker::tie_breaker(state, host.settings()))
+        .unwrap_or_else(|| host.settings().crew.main.clone());
     host.record(
         None,
         None,
         RunEventKind::Phase(PhaseChange {
             phase: RunPhase::Planning,
             status: PhaseStatus::Finished,
-            summary: Some(format!("{summary}. Led by {lead}")),
+            summary: Some(format!("{summary}. The main agent was {main_agent}")),
         }),
     )?;
     Ok(())
 }
 
 /// What a step outside planning works on: its task, its `for_each` item, and its `input`,
-/// which is `goal`, `plan` (the chosen plan's text), `diff` (the integration branch against
+/// which is `goal`, `plan` (the chosen plan's text), `diff` (the run branch against
 /// the run's base), or an earlier step's name (that step's summaries).
 pub async fn step_input(host: &Host, call: &StepCall) -> EngineResult<String> {
     let mut parts: Vec<String> = Vec::new();
@@ -264,7 +265,7 @@ pub async fn step_input(host: &Host, call: &StepCall) -> EngineResult<String> {
                     .map(|started| started.base_commit.clone())
             });
             if let Some(base) = base {
-                let tree = crate::integrate::branch::ensure_integration(host).await?;
+                let tree = crate::merge::branch::ensure_run_branch(host).await?;
                 parts.push(host.git().diff(&tree, &base, "HEAD").await?);
             }
         }
@@ -311,9 +312,9 @@ fn find_step(steps: &[Step], name: &str, prefix: &mut Vec<u32>) -> Option<Vec<u3
 }
 
 /// Records a warning the run's log and views show, such as a skipped critic.
-pub fn warn(host: &Host, card: Option<&CardId>, text: String) -> EngineResult<()> {
+pub fn warn(host: &Host, task: Option<&TaskId>, text: String) -> EngineResult<()> {
     host.record(
-        card,
+        task,
         None,
         RunEventKind::Note(Note {
             level: NoteLevel::Warn,
@@ -323,19 +324,19 @@ pub fn warn(host: &Host, card: Option<&CardId>, text: String) -> EngineResult<()
     Ok(())
 }
 
-/// Families of workers, from the registry.
-/// Who may own and who may review the cards, as a planner reads it, after the line that says
+/// Providers of workers, from the registry.
+/// Who may own and who may review the tasks, as a planner reads it, after the line that says
 /// which rule gave way when the rules couldn't all hold.
-pub fn card_roles_lines(host: &Host) -> EngineResult<Vec<String>> {
-    let card_roles = roles::cards::for_run(host);
-    card_roles.announce(host)?;
-    let mut lines = card_roles.lines(&families(host));
-    lines.push(card_roles.review_line());
+pub fn task_roles_lines(host: &Host) -> EngineResult<Vec<String>> {
+    let task_roles = roles::tasks::for_run(host);
+    task_roles.announce(host)?;
+    let mut lines = task_roles.lines(&providers(host));
+    lines.push(task_roles.review_line());
     Ok(lines)
 }
 
-pub fn families(host: &Host) -> impl Fn(&WorkerRef) -> String + '_ {
-    move |worker| roles::family(host, worker)
+pub fn providers(host: &Host) -> impl Fn(&ModelRef) -> String + '_ {
+    move |worker| roles::provider(host, worker)
 }
 
 #[cfg(test)]
@@ -348,9 +349,9 @@ mod tests {
     use crate::workflow::StepAt;
 
     fn call(workers: &[&str], count: Option<u32>) -> StepCall {
-        let mut step = serde_json::json!({ "kind": "draft", "role": "drafter" });
+        let mut step = serde_json::json!({ "kind": "draft", "role": "draft" });
         if !workers.is_empty() {
-            step["workers"] = serde_json::json!(workers);
+            step["models"] = serde_json::json!(workers);
         }
         if let Some(count) = count {
             step["count"] = serde_json::json!(count);
@@ -383,7 +384,7 @@ mod tests {
         }
     }
 
-    fn names(workers: Vec<WorkerRef>) -> Vec<String> {
+    fn names(workers: Vec<ModelRef>) -> Vec<String> {
         workers.iter().map(ToString::to_string).collect()
     }
 
@@ -394,7 +395,7 @@ mod tests {
             names(workers_for(
                 &call(&["codex", "codex"], None),
                 &settings,
-                RoleName::Drafter,
+                RoleName::Draft,
                 None
             )),
             ["codex"]
@@ -403,7 +404,7 @@ mod tests {
             names(workers_for(
                 &call(&[], Some(2)),
                 &settings,
-                RoleName::Drafter,
+                RoleName::Draft,
                 None
             ))
             .len(),
@@ -413,7 +414,7 @@ mod tests {
             names(workers_for(
                 &call(&[], None),
                 &settings,
-                RoleName::Drafter,
+                RoleName::Draft,
                 Some(1)
             ))
             .len(),
@@ -440,7 +441,7 @@ mod tests {
                 by: None,
             }],
             answers: vec!["Redis is available".to_owned()],
-            source: GoalSource::Restatements,
+            source: GoalSource::Readings,
             path: "goal.md".into(),
             sha256: "abc".to_owned(),
         };

@@ -63,7 +63,7 @@ impl ArtifactsView {
         let marks = Marks::for_theme(theme);
         let dim = theme.style(Role::Dim);
         // The selection mark, then the artifact mark, each with its space.
-        let lead = 4;
+        let margin = 4;
         let cells = |f: &dyn Fn(&Row) -> String| rows.iter().map(f).collect::<Vec<_>>();
         let columns = fit_columns(
             vec![
@@ -72,7 +72,7 @@ impl ArtifactsView {
                 Column::new("link", cells(&|row| row.url.clone())).flex(),
                 Column::new("by", cells(&|row| row.by.clone())).keep(1),
             ],
-            width.saturating_sub(lead),
+            width.saturating_sub(margin),
             GAP,
         );
         rows.iter()
@@ -81,7 +81,7 @@ impl ArtifactsView {
                 let selected = i == self.list.selected;
                 let mut spans = vec![
                     if selected {
-                        Span::styled(format!("{} ", marks.selected), theme.style(Role::Card))
+                        Span::styled(format!("{} ", marks.selected), theme.style(Role::Question))
                     } else {
                         Span::raw("  ")
                     },
@@ -92,7 +92,7 @@ impl ArtifactsView {
                         spans.push(Span::raw(" ".repeat(GAP)));
                     }
                     let style = match column.heading {
-                        "name" if selected => theme.style(Role::Card),
+                        "name" if selected => theme.style(Role::Question),
                         "name" => theme.style(Role::Text),
                         _ => dim,
                     };
@@ -195,7 +195,7 @@ mod tests {
     use std::time::Instant;
 
     use argonauts_core::AgentEvent;
-    use argonauts_core::app::{AppEvent, ChatEvent};
+    use argonauts_core::app::{AppEvent, ConversationEvent};
     use argonauts_core::names::TurnId;
     use serde_json::json;
 
@@ -209,8 +209,8 @@ mod tests {
     fn published(files: &[(&str, &str)]) -> AppState {
         let turn = TurnId::numbered(1);
         let mut state = AppState::default();
-        state.apply(&AppEvent::Chat {
-            event: ChatEvent::TurnStarted {
+        state.apply(&AppEvent::Conversation {
+            event: ConversationEvent::TurnStarted {
                 turn: turn.clone(),
                 text: "write it up".into(),
                 worker: "claude-code/opus".parse().unwrap(),
@@ -237,8 +237,8 @@ mod tests {
                     parent: None,
                 },
             ] {
-                state.apply(&AppEvent::Chat {
-                    event: ChatEvent::Agent {
+                state.apply(&AppEvent::Conversation {
+                    event: ConversationEvent::Agent {
                         turn: turn.clone(),
                         event,
                     },

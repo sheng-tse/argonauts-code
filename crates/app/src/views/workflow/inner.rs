@@ -2,31 +2,31 @@
 //! of that agent's step. It sits under the agent's row, never beside the run as a second one,
 //! and opening it shows its own phases.
 
-use argonauts_core::events::session::{SubagentStatus, VendorAgentState, VendorWorkflow};
-use argonauts_core::names::{SessionKey, WorkerRef};
-use argonauts_core::views::{NestedWorkflowRow, RowStatus, WorkflowRow, vendor_workflow_id};
+use argonauts_core::events::session::{CliAgentState, CliWorkflowRun, SubagentStatus};
+use argonauts_core::names::{ModelRef, SessionKey};
+use argonauts_core::views::{NestedWorkflowRow, RowStatus, WorkflowRow, cli_workflow_run_id};
 
 /// The row of each workflow `parent`'s CLI ran, oldest first.
 pub(super) fn rows(
     parent: &SessionKey,
-    worker: &WorkerRef,
-    vendors: &[(SessionKey, VendorWorkflow)],
+    worker: &ModelRef,
+    agent_ids: &[(SessionKey, CliWorkflowRun)],
     now_ms: Option<u64>,
 ) -> Vec<WorkflowRow> {
-    vendors
+    agent_ids
         .iter()
         .filter(|(host, _)| host == parent)
         .map(|(_, workflow)| {
             let done = workflow
                 .agents
                 .iter()
-                .filter(|agent| agent.state == VendorAgentState::Done)
+                .filter(|agent| agent.state == CliAgentState::Done)
                 .count();
             let name = Some(workflow.name.trim())
                 .filter(|name| !name.is_empty())
                 .unwrap_or("workflow");
             WorkflowRow::Workflow(NestedWorkflowRow {
-                id: vendor_workflow_id(&workflow.id),
+                id: cli_workflow_run_id(&workflow.id),
                 name: name.to_owned(),
                 status: status(workflow),
                 agents_done: u32::try_from(done).unwrap_or(u32::MAX),
@@ -34,13 +34,13 @@ pub(super) fn rows(
                 workers: vec![worker.clone()],
                 elapsed_ms: workflow.elapsed_ms(now_ms),
                 parent: Some(parent.clone()),
-                owner: Some(worker.worker.clone()),
+                worker: Some(worker.agent.clone()),
             })
         })
         .collect()
 }
 
-fn status(workflow: &VendorWorkflow) -> RowStatus {
+fn status(workflow: &CliWorkflowRun) -> RowStatus {
     match workflow.status {
         SubagentStatus::Done => RowStatus::Done,
         SubagentStatus::Failed => RowStatus::Failed,
@@ -58,10 +58,10 @@ fn status(workflow: &VendorWorkflow) -> RowStatus {
 /// included, so it reads as part of the agent's step.
 pub(super) fn under_agents(
     rows: Vec<WorkflowRow>,
-    vendors: &[(SessionKey, VendorWorkflow)],
+    agent_ids: &[(SessionKey, CliWorkflowRun)],
     now_ms: Option<u64>,
 ) -> Vec<WorkflowRow> {
-    if vendors.is_empty() {
+    if agent_ids.is_empty() {
         return rows;
     }
     let mut placed = Vec::with_capacity(rows.len());
@@ -72,9 +72,9 @@ pub(super) fn under_agents(
         };
         let mut inner = Vec::new();
         for tried in &agent.tries {
-            inner.extend(self::rows(&tried.session, &tried.worker, vendors, now_ms));
+            inner.extend(self::rows(&tried.session, &tried.worker, agent_ids, now_ms));
         }
-        inner.extend(self::rows(&agent.session, &agent.worker, vendors, now_ms));
+        inner.extend(self::rows(&agent.session, &agent.worker, agent_ids, now_ms));
         placed.push(row);
         placed.extend(inner);
     }
@@ -99,13 +99,15 @@ mod tests {
             elapsed_ms: 0,
             subagents: 0,
             context: None,
-            standing_in_for: None,
-            answered: None,
+            fallback_for: None,
+            answered: false,
             tries: Vec::new(),
+            note: None,
+            inner: None,
         })
     }
 
-    fn claude_codes_own(id: &str, name: &str) -> VendorWorkflow {
+    fn claude_codes_own(id: &str, name: &str) -> CliWorkflowRun {
         serde_json::from_value(serde_json::json!({
             "id": id,
             "name": name,
@@ -123,11 +125,11 @@ mod tests {
     #[test]
     fn a_workflow_an_agents_cli_runs_sits_under_that_agent() {
         let rows = vec![agent("s-001"), agent("s-002")];
-        let vendors = vec![(
+        let agent_ids = vec![(
             SessionKey::parse("s-001").unwrap(),
             claude_codes_own("wf_1", "add-due-dates"),
         )];
-        let rows = under_agents(rows, &vendors, None);
+        let rows = under_agents(rows, &agent_ids, None);
         let shape: Vec<String> = rows
             .iter()
             .map(|row| match row {
@@ -136,7 +138,7 @@ mod tests {
                     "{} under {} · {}",
                     nested.name,
                     nested.parent.as_ref().unwrap(),
-                    nested.owner.as_deref().unwrap()
+                    nested.worker.as_deref().unwrap()
                 ),
                 WorkflowRow::Command(_) => String::new(),
             })

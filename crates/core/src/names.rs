@@ -1,4 +1,4 @@
-//! Worker, vendor, and role names, and the short ids for sessions, checkpoints, and chats.
+//! Model, agent, and role names, and the short ids for sessions, approvals, and conversations.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -7,136 +7,134 @@ use std::str::FromStr;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
-/// `worker` or `worker/model`, such as `codex` or `openrouter/z-ai/glm-5`. The first `/` splits
+/// `agent` or `agent/model`, such as `codex` or `openrouter/z-ai/glm-5`. The first `/` splits
 /// them, because endpoint model ids often contain `/` themselves.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct WorkerRef {
-    pub worker: String,
-    /// `None` uses the worker's default.
+pub struct ModelRef {
+    pub agent: String,
+    /// `None` uses the agent's default.
     pub model: Option<String>,
 }
 
-impl WorkerRef {
-    pub fn new(worker: impl Into<String>, model: Option<String>) -> Self {
+impl ModelRef {
+    pub fn new(agent: impl Into<String>, model: Option<String>) -> Self {
         Self {
-            worker: worker.into(),
+            agent: agent.into(),
             model,
         }
     }
 
-    pub fn vendor(&self) -> VendorId {
-        VendorId(self.worker.clone())
+    pub fn agent_id(&self) -> AgentId {
+        AgentId(self.agent.clone())
     }
 }
 
-impl fmt::Display for WorkerRef {
+impl fmt::Display for ModelRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.model {
-            Some(model) => write!(f, "{}/{}", self.worker, model),
-            None => f.write_str(&self.worker),
+            Some(model) => write!(f, "{}/{}", self.agent, model),
+            None => f.write_str(&self.agent),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("invalid worker {0:?}: expected `worker` or `worker/model`")]
-pub struct WorkerRefError(pub String);
+#[error("invalid model {0:?}: expected `agent` or `agent/model`")]
+pub struct ModelRefError(pub String);
 
-impl FromStr for WorkerRef {
-    type Err = WorkerRefError;
+impl FromStr for ModelRef {
+    type Err = ModelRefError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (worker, model) = match s.split_once('/') {
-            Some((worker, model)) => (worker, Some(model)),
+        let (agent, model) = match s.split_once('/') {
+            Some((agent, model)) => (agent, Some(model)),
             None => (s, None),
         };
-        let worker_ok = !worker.is_empty()
-            && worker
+        let agent_ok = !agent.is_empty()
+            && agent
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
         let model_ok = model.is_none_or(|m| !m.is_empty() && !m.starts_with('-'));
-        if worker_ok && model_ok {
-            Ok(Self::new(worker, model.map(str::to_owned)))
+        if agent_ok && model_ok {
+            Ok(Self::new(agent, model.map(str::to_owned)))
         } else {
-            Err(WorkerRefError(s.to_owned()))
+            Err(ModelRefError(s.to_owned()))
         }
     }
 }
 
-impl TryFrom<String> for WorkerRef {
-    type Error = WorkerRefError;
+impl TryFrom<String> for ModelRef {
+    type Error = ModelRefError;
     fn try_from(value: String) -> Result<Self, Self::Error> {
         value.parse()
     }
 }
 
-impl From<WorkerRef> for String {
-    fn from(value: WorkerRef) -> String {
+impl From<ModelRef> for String {
+    fn from(value: ModelRef) -> String {
         value.to_string()
     }
 }
 
-impl JsonSchema for WorkerRef {
+impl JsonSchema for ModelRef {
     fn schema_name() -> Cow<'static, str> {
-        "WorkerRef".into()
+        "ModelRef".into()
     }
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         String::json_schema(generator)
     }
 }
 
-/// A vendor whose quota and health are tracked together: an adapter id or an endpoint id.
+/// An agent whose plan usage and health are tracked together: an adapter id or an endpoint id.
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
 #[serde(transparent)]
-pub struct VendorId(pub String);
+pub struct AgentId(pub String);
 
-impl fmt::Display for VendorId {
+impl fmt::Display for AgentId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
 }
 
-/// A slot in the protocol that config fills with a worker.
+/// A slot in the protocol that config fills with a model.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum RoleName {
-    /// The agent you talk to: chat answers, the triage estimate, solo work, and the last
+    /// The agent you talk to: conversation answers, the estimate, Captain work, and the last
     /// fallback.
     Main,
     /// Plans and delegates. The main agent unless you name another.
     Orchestrator,
     /// Rotating hat that synthesizes and breaks ties within a phase.
-    PhaseLead,
-    /// Restates the goal read-only. Every crew member by default.
-    Restater,
-    /// Compares goal restatements.
-    Differ,
+    TieBreaker,
+    /// Reads the request back, read-only. Every crew member by default.
+    Reader,
+    /// Compares the readings.
+    Comparer,
     /// Writes a blind plan.
-    Drafter,
+    Draft,
     /// Maps where drafts disagree, quoting them.
-    Mapper,
+    Map,
     /// Argues against the leading plan.
     Critic,
     /// Builds a sandboxed experiment to settle a dispute.
-    Spike,
-    /// Scores the other plans.
+    Experiment,
+    /// Scores the other plans, settles reviewers who disagree, and decides an approval in your
+    /// place.
     Judge,
     /// Builds one task in its own worktree.
     Worker,
     /// On-demand advice; owns nothing.
     Consultant,
-    /// Reviews another owner's card and writes its acceptance tests.
+    /// Reviews another worker's task and writes its acceptance tests.
     Reviewer,
-    /// Fresh session that settles reviewer disagreements.
-    Adjudicator,
     /// Reviews the finished run and proposes at most one process change.
-    Retro,
-    Approver,
+    RunReview,
     Narrator,
 }
 
@@ -145,41 +143,38 @@ impl RoleName {
         match self {
             Self::Main => "main",
             Self::Orchestrator => "orchestrator",
-            Self::PhaseLead => "phase-lead",
-            Self::Restater => "restater",
-            Self::Differ => "differ",
-            Self::Drafter => "drafter",
-            Self::Mapper => "mapper",
+            Self::TieBreaker => "tie-breaker",
+            Self::Reader => "reader",
+            Self::Comparer => "comparer",
+            Self::Draft => "draft",
+            Self::Map => "map",
             Self::Critic => "critic",
-            Self::Spike => "spike",
+            Self::Experiment => "experiment",
             Self::Judge => "judge",
             Self::Worker => "worker",
             Self::Consultant => "consultant",
             Self::Reviewer => "reviewer",
-            Self::Adjudicator => "adjudicator",
-            Self::Retro => "retro",
-            Self::Approver => "approver",
+            Self::RunReview => "run-review",
+
             Self::Narrator => "narrator",
         }
     }
 
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 15] = [
         Self::Main,
         Self::Orchestrator,
-        Self::PhaseLead,
-        Self::Restater,
-        Self::Differ,
-        Self::Drafter,
-        Self::Mapper,
+        Self::TieBreaker,
+        Self::Reader,
+        Self::Comparer,
+        Self::Draft,
+        Self::Map,
         Self::Critic,
-        Self::Spike,
+        Self::Experiment,
         Self::Judge,
         Self::Worker,
         Self::Consultant,
         Self::Reviewer,
-        Self::Adjudicator,
-        Self::Retro,
-        Self::Approver,
+        Self::RunReview,
         Self::Narrator,
     ];
 
@@ -222,18 +217,18 @@ macro_rules! short_id {
 }
 
 short_id!(
-    /// Argonauts' own session key, not the vendor's session id.
+    /// Argonauts Code's own session key, not the agent's session id.
     SessionKey,
     "s"
 );
-short_id!(CheckpointId, "cp");
+short_id!(ApprovalId, "approval");
 short_id!(
-    /// An app-level choice card that isn't part of a run.
+    /// An app-level choice question that isn't part of a run.
     ChoiceId,
     "ch"
 );
 short_id!(TurnId, "t");
-short_id!(ChatId, "chat");
+short_id!(ConversationId, "conversation");
 short_id!(MessageId, "m");
 short_id!(DecisionId, "D");
 short_id!(DraftId, "dr");

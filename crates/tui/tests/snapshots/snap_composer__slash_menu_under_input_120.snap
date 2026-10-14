@@ -6,7 +6,7 @@ expression: text(&view.lines)
 ❯ /
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Session
-  /clear                        Start a fresh chat with the main agent. Runs keep going
+  /clear                        Start a fresh conversation with the main agent. Runs keep going
   /resume                       Pick an earlier conversation or a run to carry on
   /artifacts                    The pages this conversation published: open one or copy its link
   /exit                         Close the screen. Runs keep going

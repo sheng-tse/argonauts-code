@@ -8,15 +8,15 @@ use argonauts_core::NoteLevel;
 use argonauts_core::api::{Approvals, ConductorApi, StartRun};
 use argonauts_core::app::{AppEvent, AppMode, UiCommand};
 use argonauts_core::clock::Clock;
-use argonauts_core::limits::{HealthBoard, QuotaBoard};
+use argonauts_core::limits::{HealthBoard, PlanUsageBoard};
 use argonauts_core::names::ChoiceId;
 use argonauts_core::registry::ModelRegistry;
+use argonauts_core::session_runner::RunnerDirectory;
 use argonauts_core::settings::{SettingScope, Settings};
 use argonauts_core::steps::StepRunner;
-use argonauts_core::worker::WorkerDirectory;
 use tokio::sync::mpsc;
 
-use super::chat::TurnUpdate;
+use super::conversation::TurnUpdate;
 use super::runs::RunUpdate;
 use crate::app_settings::AppSettings;
 use crate::env::AppEnv;
@@ -27,11 +27,11 @@ pub(crate) struct AppServices {
     pub conductor: Arc<dyn ConductorApi>,
     /// `None` without a terminal or inside an agent, so nothing can be approved from here.
     pub approvals: Option<Arc<dyn Approvals>>,
-    /// For the app's own sessions: chat, triage, and the narrator.
-    pub workers: Arc<dyn WorkerDirectory>,
+    /// For the app's own sessions: conversation, the estimate, and the narrator.
+    pub workers: Arc<dyn RunnerDirectory>,
     pub steps: Arc<dyn StepRunner>,
     pub registry: Arc<dyn ModelRegistry>,
-    pub quota: Arc<dyn QuotaBoard>,
+    pub plan_usage: Arc<dyn PlanUsageBoard>,
     pub health: Arc<dyn HealthBoard>,
     pub clock: Arc<dyn Clock>,
 }
@@ -59,10 +59,10 @@ impl Outbox {
     }
 }
 
-/// Messages from the tasks the handlers start: chat turns, run streams, setup probes, and model
-/// list refreshes.
+/// Messages from the tasks the handlers start: conversation turns, run streams, setup probes, and
+/// model list refreshes.
 pub(crate) enum Internal {
-    Chat(TurnUpdate),
+    Conversation(TurnUpdate),
     Run(RunUpdate),
     Setup(SetupUpdate),
     /// A mod file changed, or a mod's command printed something new.
@@ -76,22 +76,26 @@ pub(crate) enum Internal {
         name: String,
     },
     /// The check of the goal the main agent works toward alone came back.
-    Goal(super::chat::GoalChecked),
+    Goal(super::conversation::GoalChecked),
     /// A CLI's plan usage was read live, so the bottom line shows the new reading.
     PlanUsageRead,
+    /// The update of a CLI a run waits on has ended.
+    CliUpdated(Box<super::needed_update::Updated>),
 }
 
 /// What one part of the controller asks of another. The loop applies them in order.
 #[derive(Debug)]
 pub(crate) enum Effect {
-    /// Start this run and attach to it. The detected gates are offered first, once.
+    /// Start this run and attach to it. A CLI it would use that must be updated is asked about
+    /// first, then the detected checks are offered, once.
     StartRun(Box<StartRun>),
     /// The main agent changed: its session carries on, or another CLI starts from what carries
     /// over.
-    FreshChat,
+    FreshConversation,
     /// A workflow of yours was written or removed, so the `/` menu lists the commands again.
     CommandsChanged,
-    /// Settings in effect changed: the narrator hears of it and a new status line goes out.
+    /// Settings in effect changed: the narrator hears of it, and a new header and bottom line
+    /// go out.
     SettingsApplied { keys: Vec<String> },
     /// Ask where to save a setting, as an argument like `/effort high` does.
     AskScope(Box<ScopeRequest>),
@@ -101,13 +105,13 @@ pub(crate) enum Effect {
         pairs: Vec<(String, String)>,
         scope: SettingScope,
     },
-    /// Save these settings where you picked on a setup's card. The pick confirmed them, so a
+    /// Save these settings where you picked on a setup's question. The pick confirmed them, so a
     /// safety key among them asks nothing more.
     SaveConfirmedSettings {
         pairs: Vec<(String, String)>,
         scope: SettingScope,
     },
-    /// Send a new status line.
+    /// Send a new header and bottom line.
     Status,
     /// Open the guided setup again (`/setup`).
     OpenSetup,
@@ -115,8 +119,8 @@ pub(crate) enum Effect {
     SetupDone,
     /// Input to handle as if you had just sent it.
     Input(Box<UiCommand>),
-    /// Input typed while a chat turn ran, handled now as if you had just sent it. It hears of
-    /// the `!` commands up to `typed_after`, the last that had ended when you typed it.
+    /// Input typed while a conversation turn ran, handled now as if you had just sent it. It hears
+    /// of the `!` commands up to `typed_after`, the last that had ended when you typed it.
     Queued {
         command: Box<UiCommand>,
         typed_after: u32,
@@ -130,7 +134,7 @@ pub(crate) struct ScopeRequest {
     pub key: String,
     /// TOML text.
     pub value: String,
-    /// The settings command whose default scope applies, such as `handoff`.
+    /// The settings command whose default scope applies, such as `fallback`.
     pub command: String,
 }
 
@@ -147,7 +151,7 @@ pub(crate) struct Ctx {
     /// What the screen was last told to call each CLI and model.
     pub names: super::names::NamesSent,
     /// The runs' agents' sessions as their journals were last read, for `/resume`.
-    pub agent_sessions: Arc<super::chat::SessionCache>,
+    pub agent_sessions: Arc<super::conversation::SessionCache>,
     /// Holds the computer's sleep off while anything works, and for `/awake`.
     pub awake: crate::keep_awake::KeepAwake,
     /// What the Status tab knows of the CLIs: Doctor's check, and who each is signed in as.
@@ -228,8 +232,8 @@ impl Ctx {
                 mode,
                 AppMode::Answering { .. } | AppMode::Working { .. } | AppMode::Pausing { .. }
             );
-            let while_working = self.settings().awake.while_working;
-            self.awake.working(working, while_working);
+            let settings = self.settings().awake.clone();
+            self.awake.working(working, &settings);
             self.mode = mode.clone();
             self.send(AppEvent::Mode { mode });
         }

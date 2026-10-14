@@ -1,14 +1,14 @@
-//! The consultant: a `Question` addressed to it (from an owner's report, `@consultant`, or the
-//! coordinator) starts its session read-only with its configured lifetime, the question, and
+//! The consultant: a `Question` addressed to it (from a worker's report, `@consultant`, or the
+//! orchestrator) starts its session read-only with its configured lifetime, the question, and
 //! the status summary. The answer is posted as `Answer` and delivered at the asker's next turn.
-//! It owns no card and never writes.
+//! It owns no task and never writes.
 
 use argonauts_core::events::run::Party;
 use argonauts_core::events::session::{InputPart, InputPartKind, SessionEnd};
 use argonauts_core::events::shared::{BlackboardKind, BlackboardMessage};
-use argonauts_core::names::{MessageId, RoleName, SessionKey, WorkerRef};
+use argonauts_core::names::{MessageId, ModelRef, RoleName, SessionKey};
+use argonauts_core::session_runner::Access;
 use argonauts_core::settings::Settings;
-use argonauts_core::worker::Access;
 
 use crate::blackboard::{Post, delivery, post_once, records, reply_to};
 use crate::engine::host::{Host, SessionPlan};
@@ -46,19 +46,19 @@ pub async fn answer(host: &Host, question: &MessageId) -> EngineResult<MessageId
         refs: records::record_refs(&asked, &text),
         text,
         in_reply_to: Some(question.clone()),
-        from_card: None,
+        from_task: None,
     });
     let id = post_once(host, reply)?;
     delivery::to_running(host, &id)?;
     Ok(id)
 }
 
-/// One read-only session in which `worker`, as `role`, answers the question: the session and
-/// what it said. The consultant answers as itself; in full auto the lead answers in your place.
+/// One read-only session in which `worker`, as `role`, answers the question: the session and what
+/// it said. The consultant answers as itself; in autopilot the main agent answers in your place.
 pub(crate) async fn session_answer(
     host: &Host,
     asked: &BlackboardMessage,
-    worker: &WorkerRef,
+    worker: &ModelRef,
     role: RoleName,
 ) -> EngineResult<(SessionKey, String)> {
     let prompt = match role {
@@ -70,7 +70,7 @@ pub(crate) async fn session_answer(
             at: None,
             role,
             worker: worker.clone(),
-            card: None,
+            task: None,
             access: Access::ReadOnly,
             step: None,
             workdir: host.repo().base_worktree.clone(),
@@ -88,19 +88,19 @@ pub(crate) async fn session_answer(
     Ok((session, answer_text(&end)))
 }
 
-/// `roles.consultant.workers`, else the default agent.
-pub fn consultant(settings: &Settings) -> WorkerRef {
+/// `roles.consultant.models`, else the main agent.
+pub fn consultant(settings: &Settings) -> ModelRef {
     settings
         .roles
         .get(&RoleName::Consultant)
-        .and_then(|role| role.workers.first().cloned())
-        .unwrap_or_else(|| settings.main_agent.clone())
+        .and_then(|role| role.models.first().cloned())
+        .unwrap_or_else(|| settings.crew.main.clone())
 }
 
 fn parts(host: &Host, asked: &BlackboardMessage, role: RoleName, prompt: &str) -> Vec<InputPart> {
     let viewer = Viewer::Session {
         role,
-        card: None,
+        task: None,
         label: None,
     };
     let mut question = format!(

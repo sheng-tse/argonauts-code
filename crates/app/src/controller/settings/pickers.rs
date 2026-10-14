@@ -6,15 +6,11 @@ use std::sync::Arc;
 
 use argonauts_core::app::{MissingCli, SettingRow, ViewData};
 use argonauts_core::input::{ROLE_SANDBOX_KEYS, SlashCommand};
-use argonauts_core::layout::{project_files, user_files};
 use argonauts_core::model_picker::{EffortSlider, EffortStop};
 use argonauts_core::names::RoleName;
 use argonauts_core::settings::SettingScope;
 use argonauts_core::views::LearningArea;
-use argonauts_crew::workflow::builtin::BUILTIN as BUILTIN_WORKFLOWS;
 use argonauts_policy::{SettingsReloader, approval_policy};
-use argonauts_registry::workflows::WorkflowDirs;
-use argonauts_registry::workflows_in;
 
 use super::rows::{self, role_named};
 use super::{args, labels, models};
@@ -46,8 +42,7 @@ pub(crate) fn picker(ctx: &Ctx, command: &SlashCommand) -> Vec<ViewData> {
                 section,
             )]
         }
-        SlashCommand::Workflow { .. } => vec![view(preset_rows(ctx), "workflow", None)],
-        SlashCommand::Workflows => vec![view(workflow_rows(ctx), "phases", None)],
+        SlashCommand::Workflow { .. } => vec![view(workflow_rows(ctx), "workflow", None)],
         SlashCommand::Agents { .. } => {
             vec![ViewData::Settings {
                 rows: rows::rows(settings, Some("agents"), None),
@@ -67,7 +62,7 @@ pub(crate) fn picker(ctx: &Ctx, command: &SlashCommand) -> Vec<ViewData> {
                 ),
             ]
         }
-        SlashCommand::Budget { key, .. } => {
+        SlashCommand::Limits { key, .. } => {
             let section = key.as_deref().map(|key| args::under("limits", key));
             let found = rows::rows(settings, Some("limits"), section.as_deref());
             vec![view(found, "limits", section)]
@@ -132,7 +127,9 @@ pub(crate) fn picker(ctx: &Ctx, command: &SlashCommand) -> Vec<ViewData> {
             vec![view(found, "config", key.clone())]
         }
         SlashCommand::Records { agent } => learning(ctx, LearningArea::Records, agent.clone()),
-        SlashCommand::Recipes { name } => learning(ctx, LearningArea::Recipes, name.clone()),
+        SlashCommand::LearnedWorkflows { name } => {
+            learning(ctx, LearningArea::LearnedWorkflows, name.clone())
+        }
         SlashCommand::Skills => learning(ctx, LearningArea::Skills, None),
         SlashCommand::Memory => learning(ctx, LearningArea::Memory, None),
         _ => Vec::new(),
@@ -167,7 +164,7 @@ fn learning(ctx: &Ctx, area: LearningArea, name: Option<String>) -> Vec<ViewData
     }
 }
 
-/// The approval policy's view: modes, deciders, shadow records, and spot checks.
+/// The approval policy's view: modes, deciders, auto preview records, and spot checks.
 pub(crate) fn approvals(ctx: &Ctx) -> ViewData {
     let shared = ctx.settings.shared();
     let reload: SettingsReloader = Arc::new(move || Some((*shared).clone()));
@@ -179,7 +176,7 @@ pub(crate) fn approvals(ctx: &Ctx) -> ViewData {
         Arc::clone(&ctx.services.steps),
     );
     let mut view = policy.view();
-    // The settings check's warnings about approvals, such as a picked answerer the approver
+    // The settings check's warnings about approvals, such as a picked answerer the judge
     // can't check, show where you'd change them.
     view.warnings = ctx
         .settings
@@ -222,7 +219,7 @@ fn not_installed(ctx: &Ctx) -> Vec<MissingCli> {
 /// `/effort`'s slider over the levels the role's model takes, starting on the level set now,
 /// else the model's default, which for a CLI's default is that of the model it runs. `None`
 /// while the router picks the worker, so there's no one model, and for a role whose model takes
-/// no effort setting. The default agent's view always opens, since it holds All hands.
+/// no effort setting. The main agent's view always opens, since it holds Ultracode.
 fn effort_slider(ctx: &Ctx, role: Option<RoleName>) -> Option<EffortSlider> {
     let role = role.filter(|role| *role != RoleName::Main);
     let (worker, levels) = models::efforts(ctx, role);
@@ -246,7 +243,7 @@ fn effort_slider(ctx: &Ctx, role: Option<RoleName>) -> Option<EffortSlider> {
             level,
         })
         .collect();
-    let current = labels::effort_set(ctx.settings(), role, &worker.worker);
+    let current = labels::effort_set(ctx.settings(), role, &worker.agent);
     let slider = EffortSlider::new(
         role,
         worker.clone(),
@@ -280,101 +277,43 @@ fn effort_rows(ctx: &Ctx, section: Option<&str>) -> Vec<SettingRow> {
     found
 }
 
-/// One row per preset you can pick, each `preset = "<name>"` with what it does. The row of the
-/// preset in effect carries its layer; the others are `built-in`, since nothing sets them.
-fn preset_rows(ctx: &Ctx) -> Vec<SettingRow> {
+/// One row per workflow you can pick, each `workflow = "<name>"` with what it does. The row of the
+/// workflow in effect carries its layer; the others are `built-in`, since nothing sets them.
+fn workflow_rows(ctx: &Ctx) -> Vec<SettingRow> {
     let current = ctx.settings().workflow.clone();
     let layer = ctx.settings.layer("workflow");
-    let presets = args::preset_list(ctx);
-    let allowed: Vec<String> = presets
+    let workflows = args::workflow_list(ctx);
+    let allowed: Vec<String> = workflows
         .iter()
-        .map(|preset| args::quoted(&preset.name))
+        .map(|chosen| args::quoted(&chosen.name))
         .collect();
-    presets
+    workflows
         .into_iter()
-        .map(|preset| {
-            let description = match (preset.description.is_empty(), preset.source.as_str()) {
-                (_, "built-in") => preset.description,
+        .map(|chosen| {
+            let description = match (chosen.description.is_empty(), chosen.source.as_str()) {
+                (_, "built-in") => chosen.description,
                 (true, source) => format!("From {}", ctx.env.shown(Path::new(source))),
                 (false, source) => format!(
                     "{} (from {})",
-                    preset.description,
+                    chosen.description,
                     ctx.env.shown(Path::new(source))
                 ),
             };
             SettingRow {
                 key: "workflow".to_owned(),
-                value: args::quoted(&preset.name),
-                layer: if preset.name == current {
+                value: args::quoted(&chosen.name),
+                layer: if chosen.name == current {
                     layer.clone()
                 } else {
                     "built-in".to_owned()
                 },
-                // A preset never picks another, so this key is never the preset's.
-                preset_from: None,
+                // A workflow never picks another, so this key is never the workflow's.
+                workflow_from: None,
                 default_scope: SettingScope::Project,
                 safety: false,
                 allowed: allowed.clone(),
                 description,
             }
-        })
-        .collect()
-}
-
-/// One row per workflow: the crew engine's built-ins, then your files and the project's, a file
-/// shadowing a workflow of the same name, each with its description and where it came from.
-fn workflow_rows(ctx: &Ctx) -> Vec<SettingRow> {
-    let current = ctx.settings().phases.as_str().to_owned();
-    let layer = ctx.settings.layer("phases");
-    let global = ctx.env.paths.home().join(user_files::WORKFLOWS);
-    let project = ctx
-        .env
-        .project_config()
-        .with_file_name(project_files::WORKFLOWS);
-    let found = workflows_in(&WorkflowDirs {
-        global: &global,
-        project: Some(&project),
-        builtins: BUILTIN_WORKFLOWS,
-    });
-    let mut names: Vec<(String, String)> = found
-        .into_iter()
-        .map(|info| {
-            let from = if info.source == "built-in" {
-                "Built in".to_owned()
-            } else {
-                format!("From {}", ctx.env.shown(Path::new(&info.source)))
-            };
-            let description = if info.description.is_empty() {
-                from
-            } else {
-                format!("{from}: {}", info.description)
-            };
-            (info.name, description)
-        })
-        .collect();
-    if !names.iter().any(|(name, _)| *name == current) {
-        names.insert(0, (current.clone(), String::new()));
-    }
-    let allowed: Vec<String> = names.iter().map(|(name, _)| args::quoted(name)).collect();
-    names
-        .into_iter()
-        .map(|(name, description)| SettingRow {
-            key: "phases".to_owned(),
-            value: args::quoted(&name),
-            layer: if name == current {
-                layer.clone()
-            } else {
-                "built-in".to_owned()
-            },
-            preset_from: if name == current {
-                ctx.settings.preset_from(&layer)
-            } else {
-                None
-            },
-            default_scope: SettingScope::Project,
-            safety: false,
-            allowed: allowed.clone(),
-            description,
         })
         .collect()
 }

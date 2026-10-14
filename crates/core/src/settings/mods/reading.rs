@@ -119,9 +119,7 @@ pub fn plain_number(value: f64) -> String {
 pub enum ModLevel {
     #[default]
     Ok,
-    #[serde(alias = "warning")]
     Warn,
-    #[serde(alias = "error")]
     Danger,
 }
 
@@ -131,7 +129,6 @@ pub enum ModLevel {
 #[serde(rename_all = "snake_case")]
 pub enum ModColor {
     Green,
-    #[serde(alias = "yellow")]
     Amber,
     Red,
     Blue,
@@ -140,7 +137,6 @@ pub enum ModColor {
     Orange,
     Pink,
     Gold,
-    #[serde(alias = "gray")]
     Grey,
 }
 
@@ -174,11 +170,7 @@ impl ModColor {
     }
 
     pub fn from_word(word: &str) -> Option<Self> {
-        match word {
-            "yellow" => Some(ModColor::Amber),
-            "gray" => Some(ModColor::Grey),
-            _ => Self::ALL.into_iter().find(|color| color.word() == word),
-        }
+        Self::ALL.into_iter().find(|color| color.word() == word)
     }
 
     /// The level a part of this color stands for: red is danger, amber a warning.

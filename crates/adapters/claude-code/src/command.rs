@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use anyhow::{bail, ensure};
-use argonauts_core::worker::SessionShell;
+use argonauts_core::session_runner::SessionShell;
 use argonauts_core::{
     Asks, AuthMode, CommandSpec, SessionRequest, SessionRole, SpecFile, env_remove_except,
 };
@@ -21,7 +21,7 @@ const READ_ONLY_TOOLS: &[&str] = &["Read", "Glob", "Grep"];
 const BASH_TOOL: &str = "Bash";
 const BUILD_TOOLS: &[&str] = &["Read", "Glob", "Grep", "Edit", "Write", "Bash"];
 /// Newer models only get these with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`, and `--tools` must name
-/// them too. They are how an owner's to-do list reaches the agent panel.
+/// them too. They are how a worker's to-do list reaches the agent panel.
 const TODO_TOOLS: &[&str] = &["TaskCreate", "TaskGet", "TaskUpdate", "TaskList"];
 
 /// Claude Code's own workflows, and everything it would run in the background: a subagent or
@@ -31,10 +31,10 @@ const BACKGROUND_SWITCHES: &[&str] = &[
     "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS",
 ];
 
-/// The tool on Argonauts' session server that Claude Code sends each permission prompt to.
+/// The tool on Argonauts Code's session server that Claude Code sends each permission prompt to.
 pub const APPROVE_TOOL: &str = "approve";
 
-/// How long Claude Code waits on one MCP call, in milliseconds. A card waits as long as you
+/// How long Claude Code waits on one MCP call, in milliseconds. A question waits as long as you
 /// take, so a question gets a day.
 const ASKING_TIMEOUT_MS: &str = "86400000";
 
@@ -99,7 +99,7 @@ pub fn build_command(program: &str, req: &SessionRequest) -> anyhow::Result<Comm
     }
     // Otherwise Claude Code loads its own agents, skills, plugins, and MCP servers, as it does
     // when you run it. An isolated session gets none: --tools doesn't cover MCP tools, so every
-    // server but Argonauts' own is left out.
+    // server but Argonauts Code's own is left out.
     if req.isolated {
         spec = spec
             .arg("--strict-mcp-config")
@@ -222,7 +222,7 @@ fn own_workflow(req: &SessionRequest, role: SessionRole, fanout: Fanout) -> OwnW
     }
 }
 
-/// An isolated session gets none of your plugins, mods, hooks, or synced extras. Your hooks
+/// An isolated session gets none of your plugins, hooks, or synced extras. Your hooks
 /// alone go when `sandbox.user_hooks` says so.
 fn left_out(req: &SessionRequest) -> LeftOut {
     LeftOut {
@@ -235,7 +235,7 @@ fn left_out(req: &SessionRequest) -> LeftOut {
 }
 
 /// A build session needs the approved goal. Without one it gets the read-only flags, so nothing
-/// is written before you approve the goal, even if the conductor's own check were missed.
+/// is written before you approve the goal, even if Argonauts Code's own check were missed.
 pub fn effective_role(req: &SessionRequest) -> SessionRole {
     let approved = req
         .goal_hash
@@ -396,7 +396,7 @@ fn tool_list(role: SessionRole, fanout: Fanout, req: &SessionRequest) -> String 
 /// Your conversation's own session keeps `SendMessage` while it may start subagents: it's how
 /// the main agent passes your message on to one of them, and resumes one that finished
 /// (checked live on 2.1.292). It still can't list other sessions to write to,
-/// and every session Argonauts starts refuses messages from outside.
+/// and every session Argonauts Code starts refuses messages from outside.
 fn disallowed_tools(fanout: Fanout, main_session: bool, background_off: bool) -> Vec<&'static str> {
     let mut tools = CROSS_SESSION_TOOLS.to_vec();
     if background_off {
@@ -411,11 +411,25 @@ fn disallowed_tools(fanout: Fanout, main_session: bool, background_off: bool) ->
 }
 
 fn with_session_flag(spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<CommandSpec> {
+    ensure!(
+        !req.fork_session || req.resume_session.is_some(),
+        "a fork needs the session to copy"
+    );
     match (&req.resume_session, &req.session_id) {
+        (Some(resume), chosen) if req.fork_session => {
+            let resume = flag_value("session id", resume)?;
+            // The copy takes the id chosen for it, or one Claude Code makes and names in its
+            // first event. The session itself is only read.
+            let spec = match chosen.as_ref().filter(|chosen| *chosen != resume) {
+                Some(chosen) => with_new_id(spec, chosen)?,
+                None => spec,
+            };
+            Ok(spec.args(["--resume", resume, "--fork-session"]))
+        }
         (Some(resume), chosen) => {
             let resume = flag_value("session id", resume)?;
             if let Some(chosen) = chosen {
-                // A different id would fork the session, which the adapter doesn't do.
+                // Only a fork gives the session a new id.
                 ensure!(
                     chosen == resume,
                     "can't resume session {resume} under a new id {chosen}"
@@ -424,15 +438,17 @@ fn with_session_flag(spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<
             // Never --continue, which picks the latest session in the folder.
             Ok(spec.args(["--resume", resume]))
         }
-        (None, Some(chosen)) => {
-            ensure!(
-                is_uuid(chosen),
-                "Claude Code session ids are UUIDs, not {chosen:?}"
-            );
-            Ok(spec.args(["--session-id", chosen.as_str()]))
-        }
+        (None, Some(chosen)) => with_new_id(spec, chosen),
         (None, None) => Ok(spec),
     }
+}
+
+fn with_new_id(spec: CommandSpec, chosen: &str) -> anyhow::Result<CommandSpec> {
+    ensure!(
+        is_uuid(chosen),
+        "Claude Code session ids are UUIDs, not {chosen:?}"
+    );
+    Ok(spec.args(["--session-id", chosen]))
 }
 
 fn with_model_flags(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<CommandSpec> {
@@ -447,29 +463,32 @@ fn with_model_flags(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Resu
         ensure!(schema.is_object(), "the JSON schema must be an object");
         spec = spec.args(["--json-schema".to_owned(), schema.to_string()]);
     }
-    if let Some(budget) = req.max_budget_usd {
-        spec = spec.args(native_cap_args(budget)?);
+    if let Some(limit) = req.spend_cap_usd {
+        spec = spec.args(native_cap_args(limit)?);
     }
     Ok(spec)
 }
 
-/// `--max-budget-usd` is a backstop for the conductor's own meter. Subagent spend counts toward
+/// `--max-budget-usd` is a backstop for Argonauts Code's own meter. Subagent spend counts toward
 /// it, and totals restored by `--resume` don't, so the caller passes what is left.
-pub fn native_cap_args(budget_usd: f64) -> anyhow::Result<[String; 2]> {
+pub fn native_cap_args(limit_usd: f64) -> anyhow::Result<[String; 2]> {
     ensure!(
-        budget_usd.is_finite() && budget_usd > 0.0,
-        "Claude Code's spend limit must be a positive number of dollars, not {budget_usd}"
+        limit_usd.is_finite() && limit_usd > 0.0,
+        "Claude Code's spend limit must be a positive number of dollars, not {limit_usd}"
     );
-    Ok(["--max-budget-usd".to_owned(), budget_usd.to_string()])
+    Ok(["--max-budget-usd".to_owned(), limit_usd.to_string()])
 }
+
+/// Keeps Claude Code from updating itself, so a session never switches versions halfway.
+pub(crate) const AUTO_UPDATER_ENV: &str = "DISABLE_AUTOUPDATER";
 
 fn env_vars(
     req: &SessionRequest,
     role: SessionRole,
     fanout: Fanout,
 ) -> anyhow::Result<Vec<(String, String)>> {
-    let mut vars = Vec::new();
-    // Auto memory is shared by every worktree of a repository, so it would leak between cards.
+    let mut vars = vec![(AUTO_UPDATER_ENV.to_owned(), "1".to_owned())];
+    // Auto memory is shared by every worktree of a repository, so it would leak between tasks.
     // A direct turn is Claude Code in your checkout, memory and all.
     if role != SessionRole::Direct {
         vars.push(("CLAUDE_CODE_DISABLE_AUTO_MEMORY".to_owned(), "1".to_owned()));
@@ -483,10 +502,10 @@ fn env_vars(
         vars.push(("CLAUDE_CODE_ENABLE_TODO_TOOLS".to_owned(), "1".to_owned()));
     }
     if role == SessionRole::Direct && req.asks != Asks::Never && req.mcp_config.is_some() {
-        // Yours would cut a card short.
+        // Yours would cut a question short.
         vars.push(("MCP_TOOL_TIMEOUT".to_owned(), ASKING_TIMEOUT_MS.to_owned()));
-        // Since 2.1.281 a flagged rm is denied after two minutes in auto or bypass mode, which
-        // your own default mode may be. Its card waits as long as you take, as every card does.
+        // Since 2.1.281 a flagged rm is denied after two minutes in auto or bypass mode, which your
+        // own default mode may be. Its question waits as long as you take, as every question does.
         vars.push((
             "CLAUDE_CODE_DISABLE_DANGEROUS_RM_TIMEOUT".to_owned(),
             "1".to_owned(),
@@ -582,7 +601,7 @@ fn path_arg(path: &Path) -> anyhow::Result<String> {
     }
 }
 
-fn flag_value<'a>(what: &str, value: &'a str) -> anyhow::Result<&'a str> {
+pub(crate) fn flag_value<'a>(what: &str, value: &'a str) -> anyhow::Result<&'a str> {
     ensure!(!value.trim().is_empty(), "the {what} is empty");
     ensure!(
         !value.starts_with('-'),

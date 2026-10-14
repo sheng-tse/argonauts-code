@@ -1,30 +1,30 @@
-//! Built-in entries. No model id is invented: Claude Code's aliases, each harness's default
-//! model, and the endpoint presets are the only concrete names.
+//! Built-in entries. No model id is invented: Claude Code's aliases, each CLI's default
+//! model, and the known endpoints are the only concrete names.
 
 use argonauts_core::AuthMode;
 use argonauts_core::input::EFFORT_LEVELS;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::registry::{CostModel, CostUnit, ModelAccess, ModelEntry, RegistryKind};
 use argonauts_core::settings::Settings;
 pub use argonauts_core::settings::endpoints::{builtin_endpoint, endpoint_settings};
 
-/// `claude --help` names these as aliases for the latest model of each family.
+/// `claude --help` names these as aliases for the latest model of each line.
 pub const CLAUDE_CODE_ALIASES: &[&str] = &["opus", "sonnet", "fable", "haiku"];
 
-/// The harnesses whose default model has a known family, as (adapter id, family). OpenCode
-/// isn't here because it runs many providers, so its family always comes from the model.
-const HARNESS_FAMILIES: &[(&str, &str)] = &[
-    ("claude-code", "claude"),
-    ("codex", "gpt"),
-    ("antigravity-cli", "gemini"),
+/// The CLIs whose default model has a known provider, as (adapter id, provider). OpenCode
+/// isn't here because it runs many providers, so its provider always comes from the model.
+const CLI_PROVIDERS: &[(&str, &str)] = &[
+    ("claude-code", "anthropic"),
+    ("codex", "openai"),
+    ("antigravity-cli", "google"),
 ];
 
-/// The family of a built-in harness's models when neither the model id nor an entry says.
-pub(crate) fn harness_default_family(adapter: &str) -> Option<&'static str> {
-    HARNESS_FAMILIES
+/// The provider of a built-in CLI's models when neither the model id nor an entry says.
+pub(crate) fn cli_default_provider(adapter: &str) -> Option<&'static str> {
+    CLI_PROVIDERS
         .iter()
         .find(|(id, _)| *id == adapter)
-        .map(|&(_, family)| family)
+        .map(|&(_, provider)| provider)
 }
 
 /// Claude Code's aliases `opus`, `sonnet`, `fable`, and `haiku`, then the full Claude Code
@@ -35,13 +35,13 @@ pub(crate) fn harness_default_family(adapter: &str) -> Option<&'static str> {
 pub fn builtin_models(settings: &Settings) -> Vec<ModelEntry> {
     let aliases = CLAUDE_CODE_ALIASES
         .iter()
-        .map(|alias| harness_entry(settings, "claude-code", Some(alias)));
+        .map(|alias| cli_entry(settings, "claude-code", Some(alias)));
     let yours = claude_code_ids(settings)
         .into_iter()
-        .map(|id| harness_entry(settings, "claude-code", Some(&id)));
-    let defaults = HARNESS_FAMILIES
+        .map(|id| cli_entry(settings, "claude-code", Some(&id)));
+    let defaults = CLI_PROVIDERS
         .iter()
-        .map(|(adapter, _)| harness_entry(settings, adapter, None));
+        .map(|(adapter, _)| cli_entry(settings, adapter, None));
     aliases.chain(yours).chain(defaults).collect()
 }
 
@@ -54,12 +54,12 @@ fn claude_code_ids(settings: &Settings) -> Vec<String> {
         .get("claude-code")
         .and_then(|agent| agent.model.clone());
     let members = settings.crew.members();
-    let workers = std::iter::once(&settings.main_agent)
+    let workers = std::iter::once(&settings.crew.main)
         .chain(&members)
-        .chain(settings.roles.values().flat_map(|role| &role.workers))
+        .chain(settings.roles.values().flat_map(|role| &role.models))
         .chain(&settings.narrator.model)
-        .chain(settings.approvals.approver_model())
-        .filter(|worker| worker.worker == "claude-code")
+        .chain(settings.approvals.judge_model())
+        .filter(|worker| worker.agent == "claude-code")
         .filter_map(|worker| worker.model.clone());
     let mut ids: Vec<String> = Vec::new();
     for id in named.into_iter().chain(workers) {
@@ -70,29 +70,29 @@ fn claude_code_ids(settings: &Settings) -> Vec<String> {
     ids
 }
 
-/// The effort levels a harness usually takes, for a model whose own levels aren't known:
+/// The effort levels a CLI usually takes, for a model whose own levels aren't known:
 /// `claude --effort`, Codex's common `model_reasoning_effort` values, and `agy --effort` as
-/// their help lists them. Any other harness or an endpoint gets every level.
-pub fn usual_efforts(harness: &str) -> &'static [&'static str] {
-    match harness {
+/// their help lists them. Any other CLI or an endpoint gets every level.
+pub fn usual_efforts(cli: &str) -> &'static [&'static str] {
+    match cli {
         "claude-code" | "codex" => &["low", "medium", "high", "xhigh", "max"],
         "antigravity-cli" => &["low", "medium", "high", "max"],
         _ => EFFORT_LEVELS,
     }
 }
 
-/// A harness model reached through `adapter`: your plan's quota, or dollars when
+/// A CLI model reached through `adapter`: your plan's usage, or dollars when
 /// `agents.<adapter>.auth = "api-key"`, priced by `agents.<adapter>.price` when you set one.
-pub(crate) fn harness_entry(settings: &Settings, adapter: &str, model: Option<&str>) -> ModelEntry {
-    let family = model
-        .and_then(super::family_from_model_id)
-        .or_else(|| harness_default_family(adapter))
-        .unwrap_or(super::family::UNKNOWN_FAMILY);
-    let (access, cost) = harness_access(settings, adapter);
+pub(crate) fn cli_entry(settings: &Settings, adapter: &str, model: Option<&str>) -> ModelEntry {
+    let provider = model
+        .and_then(super::provider_from_model_id)
+        .or_else(|| cli_default_provider(adapter))
+        .unwrap_or(argonauts_core::registry::provider::UNKNOWN_PROVIDER);
+    let (access, cost) = cli_access(settings, adapter);
     ModelEntry {
-        id: WorkerRef::new(adapter, model.map(str::to_owned)),
-        family: family.to_owned(),
-        kind: RegistryKind::Harness,
+        id: ModelRef::new(adapter, model.map(str::to_owned)),
+        provider: provider.to_owned(),
+        kind: RegistryKind::Cli,
         access,
         tools: true,
         cost,
@@ -113,10 +113,10 @@ pub(crate) fn harness_entry(settings: &Settings, adapter: &str, model: Option<&s
     }
 }
 
-pub(crate) fn harness_access(settings: &Settings, adapter: &str) -> (ModelAccess, CostModel) {
+pub(crate) fn cli_access(settings: &Settings, adapter: &str) -> (ModelAccess, CostModel) {
     let agent = settings.agents.get(adapter);
     match agent.map(|a| a.auth).unwrap_or_default() {
-        AuthMode::Subscription => (ModelAccess::Subscription, cost(CostUnit::Quota)),
+        AuthMode::Subscription => (ModelAccess::Subscription, cost(CostUnit::PlanUsage)),
         AuthMode::ApiKey => {
             let price = agent.and_then(|a| a.price.as_ref());
             let cost = CostModel {
@@ -162,15 +162,21 @@ mod tests {
                 "antigravity-cli"
             ]
         );
-        let families: Vec<&str> = entries.iter().map(|e| e.family.as_str()).collect();
+        let providers: Vec<&str> = entries.iter().map(|e| e.provider.as_str()).collect();
         assert_eq!(
-            families,
+            providers,
             [
-                "claude", "claude", "claude", "claude", "claude", "gpt", "gemini"
+                "anthropic",
+                "anthropic",
+                "anthropic",
+                "anthropic",
+                "anthropic",
+                "openai",
+                "google"
             ]
         );
         assert!(entries.iter().all(|e| e.access == ModelAccess::Subscription
-            && e.cost.unit == CostUnit::Quota
+            && e.cost.unit == CostUnit::PlanUsage
             && e.efforts.is_empty()
             && !e.discovered));
 
@@ -225,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn each_harness_has_its_usual_effort_levels() {
+    fn each_cli_has_its_usual_effort_levels() {
         assert_eq!(
             usual_efforts("claude-code"),
             ["low", "medium", "high", "xhigh", "max"]
@@ -235,12 +241,8 @@ mod tests {
             ["low", "medium", "high", "max"]
         );
         assert_eq!(usual_efforts("ollama"), EFFORT_LEVELS);
-        for harness in ["claude-code", "codex", "antigravity-cli"] {
-            assert!(
-                usual_efforts(harness)
-                    .iter()
-                    .all(|l| EFFORT_LEVELS.contains(l))
-            );
+        for cli in ["claude-code", "codex", "antigravity-cli"] {
+            assert!(usual_efforts(cli).iter().all(|l| EFFORT_LEVELS.contains(l)));
         }
     }
 }

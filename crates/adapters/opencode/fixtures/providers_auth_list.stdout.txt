@@ -1,0 +1,7 @@
+
+┌  Credentials ~/.local/share/opencode/auth.json
+│
+●  OpenRouter api
+│
+└  1 credentials
+

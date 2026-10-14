@@ -10,7 +10,7 @@ use argonauts_core::events::run::RunOutcome;
 use argonauts_core::settings::Settings;
 
 use super::{Thresholds, Tripwire, Verdict};
-use crate::types::{RecipeRef, ReplayResult, RunRecord};
+use crate::types::{LearnedWorkflowRef, ReplayResult, RunRecord};
 
 /// Bootstrap resamples. Two thousand keep the tenth percentile steady to a fraction of a point.
 pub const BOOTSTRAP_RESAMPLES: usize = 2000;
@@ -33,16 +33,16 @@ struct Pair {
 
 fn pairs(
     results: &[ReplayResult],
-    parent: &RecipeRef,
-    child: &RecipeRef,
+    parent: &LearnedWorkflowRef,
+    child: &LearnedWorkflowRef,
     holdout: bool,
 ) -> Vec<Pair> {
     let mut by_task: BTreeMap<&str, (Vec<&ReplayResult>, Vec<&ReplayResult>)> = BTreeMap::new();
     for result in results.iter().filter(|result| result.holdout == holdout) {
         let entry = by_task.entry(result.task.as_str()).or_default();
-        if result.recipe == *parent {
+        if result.learned_workflow == *parent {
             entry.0.push(result);
-        } else if result.recipe == *child {
+        } else if result.learned_workflow == *child {
             entry.1.push(result);
         }
     }
@@ -68,8 +68,8 @@ fn pairs(
 /// Compares the candidate with its parent on the tuning set.
 pub fn compare(
     results: &[ReplayResult],
-    parent: &RecipeRef,
-    child: &RecipeRef,
+    parent: &LearnedWorkflowRef,
+    child: &LearnedWorkflowRef,
     thresholds: &Thresholds,
     rng: &mut StdRng,
 ) -> Verdict {
@@ -147,7 +147,11 @@ pub fn compare(
 
 /// No regression on the holdout, which reports only pass or fail. A candidate with no holdout
 /// result was never checked for overfitting, so it isn't ok.
-pub fn holdout_ok(results: &[ReplayResult], parent: &RecipeRef, child: &RecipeRef) -> bool {
+pub fn holdout_ok(
+    results: &[ReplayResult],
+    parent: &LearnedWorkflowRef,
+    child: &LearnedWorkflowRef,
+) -> bool {
     if holdout_tasks(results, parent, child) == 0 {
         return false;
     }
@@ -156,15 +160,19 @@ pub fn holdout_ok(results: &[ReplayResult], parent: &RecipeRef, child: &RecipeRe
 }
 
 /// Holdout tasks both versions ran.
-pub fn holdout_tasks(results: &[ReplayResult], parent: &RecipeRef, child: &RecipeRef) -> usize {
+pub fn holdout_tasks(
+    results: &[ReplayResult],
+    parent: &LearnedWorkflowRef,
+    child: &LearnedWorkflowRef,
+) -> usize {
     pairs(results, parent, child, true).len()
 }
 
 /// Pass rates summed over the holdout tasks both versions ran, parent's first.
 pub fn holdout_passes(
     results: &[ReplayResult],
-    parent: &RecipeRef,
-    child: &RecipeRef,
+    parent: &LearnedWorkflowRef,
+    child: &LearnedWorkflowRef,
 ) -> (f64, f64) {
     let pairs = pairs(results, parent, child, true);
     (
@@ -198,13 +206,13 @@ pub fn tripwires(
     let n = canary.len() as f64;
     let m = baseline.len() as f64;
 
-    // Half a pseudo-count keeps a clean baseline from making one escalation impossible, which
-    // would trip on any escalation at all.
-    let base_escalations: u64 = baseline.iter().map(|run| u64::from(run.escalations)).sum();
-    let rate = (base_escalations as f64 + 0.5) / (m + 1.0);
-    let escalations: u64 = canary.iter().map(|run| u64::from(run.escalations)).sum();
-    if escalations > 0 && poisson_at_least(escalations, rate * n) < p {
-        trips.push(Tripwire::Escalations);
+    // Half a pseudo-count keeps a clean baseline from making one stuck task impossible, which
+    // would trip on any stuck task at all.
+    let base_stuck_tasks: u64 = baseline.iter().map(|run| u64::from(run.stuck_tasks)).sum();
+    let rate = (base_stuck_tasks as f64 + 0.5) / (m + 1.0);
+    let stuck_tasks: u64 = canary.iter().map(|run| u64::from(run.stuck_tasks)).sum();
+    if stuck_tasks > 0 && poisson_at_least(stuck_tasks, rate * n) < p {
+        trips.push(Tripwire::StuckTasks);
     }
 
     let base_failures = baseline
@@ -263,7 +271,8 @@ fn normal_upper_tail(z: f64) -> f64 {
     0.5 * erfc(z / std::f64::consts::SQRT_2)
 }
 
-/// The complementary error function, to about seven digits (Numerical Recipes' `erfcc`).
+/// The complementary error function, to about seven digits (the `erfcc` approximation of Press et
+/// al.).
 fn erfc(x: f64) -> f64 {
     let z = x.abs();
     let t = 1.0 / (1.0 + 0.5 * z);

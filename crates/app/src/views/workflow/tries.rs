@@ -1,6 +1,6 @@
 //! A step tried more than once is one row. Every try at a step runs under the step's label, so
 //! the newest try stands for the step, and the ones before it, each failed try, the agent it
-//! took over from and each earlier round of a review, fold beneath it. A review asked again
+//! is the fallback for and each earlier round of a review, fold beneath it. A review asked again
 //! after its round sent the work back reads `review:per-key · round 2`. Agents that run side by
 //! side in a step stay rows of their own. The row keeps the place of the step's first try, so
 //! the steps stay in the order they started.
@@ -103,7 +103,12 @@ pub(super) fn fold(rows: Vec<WorkflowRow>, sessions: &RunFacts) -> (Vec<Workflow
 /// Whether `before` was a try `after` came after: one that failed, or the agent `after` took
 /// over from. Two agents a step runs side by side share its label too, and stay two rows.
 fn tried_before(before: &AgentRow, after: &AgentRow) -> bool {
-    before.status == RowStatus::Failed || after.standing_in_for.as_ref() == Some(&before.worker)
+    // A session held or stopped, then gone on with, is an earlier try of the step too.
+    let ended_early = matches!(
+        before.status,
+        RowStatus::Failed | RowStatus::Paused | RowStatus::Skipped
+    );
+    ended_early || after.fallback_for.as_ref() == Some(&before.worker)
 }
 
 /// Whether `after` is the same reviewer asked again once `before`, its round, finished. Two
@@ -160,7 +165,7 @@ fn try_of(row: &AgentRow, nth: usize, sessions: &RunFacts) -> StepTry {
 #[cfg(test)]
 mod tests {
     use argonauts_core::Spend;
-    use argonauts_core::names::{SessionKey, WorkerRef};
+    use argonauts_core::names::{ModelRef, SessionKey};
 
     use super::*;
 
@@ -175,9 +180,11 @@ mod tests {
             elapsed_ms: 2_000,
             subagents: 0,
             context: None,
-            standing_in_for: None,
-            answered: None,
+            fallback_for: None,
+            answered: false,
             tries: Vec::new(),
+            note: None,
+            inner: None,
         })
     }
 
@@ -217,12 +224,12 @@ mod tests {
             panic!("the review step is an agent row");
         };
         assert_eq!(review.session, SessionKey::parse("s-004").unwrap());
-        let tried: Vec<(String, WorkerRef)> = review
+        let tried: Vec<(String, ModelRef)> = review
             .tries
             .iter()
             .map(|tried| (tried.session.to_string(), tried.worker.clone()))
             .collect();
-        let codex: WorkerRef = codex.parse().unwrap();
+        let codex: ModelRef = codex.parse().unwrap();
         assert_eq!(
             tried,
             [("s-002".into(), codex.clone()), ("s-003".into(), codex)]
@@ -243,8 +250,8 @@ mod tests {
     #[test]
     fn agents_side_by_side_and_a_finished_round_stay_their_own_rows() {
         let rows = vec![
-            agent("s-001", "restate", "claude-code", RowStatus::Done),
-            agent("s-002", "restate", "codex", RowStatus::Running),
+            agent("s-001", "read", "claude-code", RowStatus::Done),
+            agent("s-002", "read", "codex", RowStatus::Running),
         ];
         let (rows, folded) = fold(rows, &RunFacts::of(&[]));
         assert_eq!(rows.len(), 2);
@@ -252,10 +259,10 @@ mod tests {
     }
 
     #[test]
-    fn a_takeover_folds_the_agent_it_stands_in_for() {
+    fn a_fallback_folds_the_agent_it_falls_back_for() {
         let mut after = agent("s-002", "review:x", "claude-code", RowStatus::Running);
         if let WorkflowRow::Agent(after) = &mut after {
-            after.standing_in_for = Some("codex".parse().unwrap());
+            after.fallback_for = Some("codex".parse().unwrap());
         }
         let rows = vec![
             agent("s-001", "review:x", "codex", RowStatus::Waiting),
@@ -267,7 +274,7 @@ mod tests {
     }
 
     /// The facts of sessions that each start once in `role`.
-    fn seated(sessions: &[(&str, RoleName)]) -> RunFacts {
+    fn facts_of(sessions: &[(&str, RoleName)]) -> RunFacts {
         let events: Vec<_> = sessions
             .iter()
             .zip(1..)
@@ -290,7 +297,7 @@ mod tests {
     fn a_review_asked_again_folds_under_its_step_as_its_round() {
         let claude = "claude-code/haiku";
         let codex = "codex/gpt-5.6-luna";
-        let sessions = seated(&[
+        let sessions = facts_of(&[
             ("s-001", RoleName::Worker),
             ("s-002", RoleName::Reviewer),
             ("s-003", RoleName::Reviewer),
@@ -329,21 +336,21 @@ mod tests {
     fn a_round_made_unique_and_a_failed_try_inside_it_count_as_they_happened() {
         let claude = "claude-code/haiku";
         let codex = "codex/gpt-5.6-luna";
-        let sessions = seated(&[
+        let sessions = facts_of(&[
             ("s-001", RoleName::Judge),
             ("s-002", RoleName::Judge),
             ("s-003", RoleName::Judge),
             ("s-004", RoleName::Judge),
         ]);
-        let mut takeover = agent("s-004", "sign-off:per-key-2", claude, RowStatus::Done);
-        if let WorkflowRow::Agent(takeover) = &mut takeover {
-            takeover.standing_in_for = Some(codex.parse().unwrap());
+        let mut fallback = agent("s-004", "sign-off:per-key-2", claude, RowStatus::Done);
+        if let WorkflowRow::Agent(fallback) = &mut fallback {
+            fallback.fallback_for = Some(codex.parse().unwrap());
         }
         let rows = vec![
             agent("s-001", "sign-off:per-key", codex, RowStatus::Done),
             agent("s-002", "sign-off:per-key-2", codex, RowStatus::Failed),
             agent("s-003", "sign-off:per-key-2", codex, RowStatus::Failed),
-            takeover,
+            fallback,
         ];
         let (rows, _) = fold(rows, &sessions);
         assert_eq!(labels(&rows), [("sign-off:per-key · round 2", 3)]);
@@ -352,7 +359,7 @@ mod tests {
 
     #[test]
     fn only_reviews_and_sign_offs_are_asked_again_in_rounds() {
-        let sessions = seated(&[("s-001", RoleName::Worker), ("s-002", RoleName::Worker)]);
+        let sessions = facts_of(&[("s-001", RoleName::Worker), ("s-002", RoleName::Worker)]);
         let rows = vec![
             agent("s-001", "build:per-key", "codex", RowStatus::Done),
             agent("s-002", "build:per-key", "codex", RowStatus::Done),
@@ -365,7 +372,7 @@ mod tests {
     #[test]
     fn a_round_named_for_its_number_folds_under_its_step_too() {
         let claude = "claude-code/haiku";
-        let sessions = seated(&[
+        let sessions = facts_of(&[
             ("s-001", RoleName::Reviewer),
             ("s-002", RoleName::Reviewer),
             ("s-003", RoleName::Reviewer),

@@ -3,14 +3,14 @@
 //! reports its own workflow in. The run's row at the bottom reads the phase going on and the
 //! agents still to come from here, since the run's own phases say only that the steps run.
 
-use argonauts_core::events::session::{VendorAgentState, VendorWorkflow};
+use argonauts_core::events::session::{CliAgentState, CliWorkflowRun};
 use argonauts_core::names::WorkflowId;
 use argonauts_core::workflow::{Step, StepKind, StepRef, Workflow};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StepWorkflows {
     /// Each with the step that runs it, in the order they were first reported.
-    known: Vec<(StepRef, VendorWorkflow)>,
+    known: Vec<(StepRef, CliWorkflowRun)>,
     /// The workflows with a step that runs another's steps, which that one reports as it goes.
     hand_over: Vec<WorkflowId>,
 }
@@ -39,7 +39,7 @@ impl StepWorkflows {
     }
 
     /// Takes in a report, which is the whole state of its workflow and replaces the last one.
-    pub fn report(&mut self, step: &StepRef, workflow: &VendorWorkflow) {
+    pub fn report(&mut self, step: &StepRef, workflow: &CliWorkflowRun) {
         let report = (step.clone(), workflow.clone());
         match self
             .known
@@ -52,7 +52,7 @@ impl StepWorkflows {
     }
 
     /// The workflow a step in phase `phase` of `workflow` runs.
-    pub fn in_phase(&self, workflow: &WorkflowId, phase: u32) -> Option<&VendorWorkflow> {
+    pub fn in_phase(&self, workflow: &WorkflowId, phase: u32) -> Option<&CliWorkflowRun> {
         self.known
             .iter()
             .find(|(step, _)| step.workflow == *workflow && step.phase == phase)
@@ -75,7 +75,7 @@ impl StepWorkflows {
     pub fn agents(&self) -> (usize, usize) {
         let agents = || self.known.iter().flat_map(|(_, workflow)| &workflow.agents);
         let done = agents()
-            .filter(|agent| agent.state == VendorAgentState::Done)
+            .filter(|agent| agent.state == CliAgentState::Done)
             .count();
         (done, agents().count())
     }
@@ -83,16 +83,11 @@ impl StepWorkflows {
 
 /// The phase a reported workflow is in: its newest agent at work says, else the last one
 /// that has started. `None` before any has, or when its agents are in no phase it declares.
-pub fn current_phase(workflow: &VendorWorkflow) -> Option<&str> {
-    let started = |state: VendorAgentState| state != VendorAgentState::Queued;
+pub fn current_phase(workflow: &CliWorkflowRun) -> Option<&str> {
+    let started = |state: CliAgentState| state != CliAgentState::Queued;
     let agents = || workflow.agents.iter().rev();
     let agent = agents()
-        .find(|agent| {
-            matches!(
-                agent.state,
-                VendorAgentState::Running | VendorAgentState::Other
-            )
-        })
+        .find(|agent| matches!(agent.state, CliAgentState::Running | CliAgentState::Other))
         .or_else(|| agents().find(|agent| started(agent.state)))?;
     let index = agent.phase?;
     workflow

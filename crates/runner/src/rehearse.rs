@@ -1,10 +1,10 @@
-//! Rehearses a script before it runs for real. Every `agent()` answers at once with a stand-in
+//! Rehearses a script before it runs for real. Every `agent()` answers at once with a placeholder
 //! its schema allows, no CLI starts, and nothing is saved or reported. A script that throws on
 //! the way, such as one that names a role the workflow doesn't have or reads a field of an
 //! answer that is missing, is caught here, where it can still be written again, and not after
 //! its agents did half the work.
 //!
-//! Stand-in answers can't follow every path a real run takes, so a rehearsal only ever says
+//! Placeholder answers can't follow every path a real run takes, so a rehearsal only ever says
 //! "this threw". One that is still asking for agents when its allowance runs out says nothing.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -24,7 +24,7 @@ use crate::script::Script;
 /// The most agents a rehearsal answers. Past it the script is taken to work.
 const AGENTS: u32 = 200;
 
-/// How deep a schema is followed before a stand-in stops at null.
+/// How deep a schema is followed before a placeholder stops at null.
 const DEPTH: usize = 16;
 
 /// How a rehearsal went, when the script didn't throw.
@@ -35,14 +35,14 @@ pub struct Rehearsal {
     /// The script reached its end. `false` when it was still asking when the allowance ran out.
     pub finished: bool,
     /// The tasks its agents worked on, each once, in the order the script first named them:
-    /// what it plans when its agents answer as stand-ins, such as a task list you fixed.
+    /// what it plans when its agents answer with placeholders, such as a task list you fixed.
     pub tasks: Vec<String>,
     /// Each phase that started an agent, with the role it went to: whether a phase a step
     /// requires does that step's work, not only carries its name.
     pub ran: BTreeSet<(String, CrewRole)>,
 }
 
-/// Runs `script` against stand-in answers. `workflows` loads another workflow a script runs as
+/// Runs `script` against placeholder answers. `workflows` loads another workflow a script runs as
 /// a step. The error is what the script threw, in words its author can act on.
 pub async fn rehearse(
     script: &Script,
@@ -58,7 +58,7 @@ pub async fn rehearse(
     };
     let input = RunInput {
         replay: Vec::new(),
-        token_budget: None,
+        token_limit: None,
         limits: Limits {
             // One more than the stage answers, so the stage sees the script go past its
             // allowance before the runner's own cap throws in the script.
@@ -94,7 +94,7 @@ pub async fn rehearse(
             ran,
         }),
         Err(ScriptEnd::Threw(why)) => Err(format!(
-            "rehearsed with stand-in answers, it threw: {}",
+            "rehearsed with placeholder answers, it threw: {}",
             first_line(&why)
         )),
         Err(why @ (ScriptEnd::TimedOut | ScriptEnd::Stuck)) => Err(why.to_string()),
@@ -115,7 +115,7 @@ fn first_line(text: &str) -> &str {
 struct Stage<'a> {
     workflows: &'a (dyn Fn(&str) -> Result<Script, String> + Sync),
     asked: AtomicU32,
-    /// How many agents each role has answered in each phase, which decides a stand-in's yes
+    /// How many agents each role has answered in each phase, which decides a placeholder's yes
     /// or no.
     seen: Mutex<BTreeMap<String, u32>>,
     tasks: Mutex<Vec<String>>,
@@ -148,8 +148,8 @@ impl Host for Stage<'_> {
                 *earlier - 1
             };
             AgentEnd::answered(match &call.schema {
-                Some(schema) => stand_in(schema, schema, earlier, 0),
-                None => json!("A stand-in answer."),
+                Some(schema) => placeholder(schema, schema, earlier, 0),
+                None => json!("A placeholder answer."),
             })
         })
     }
@@ -176,11 +176,11 @@ impl Host for Stage<'_> {
 /// A value the schema allows, made to keep a script moving: every property filled, one item
 /// in each list, and a yes-or-no that says no the first time its role answers in a phase and
 /// yes after, so a loop that waits for a yes goes round once and then ends.
-fn stand_in(root: &Value, schema: &Value, earlier: u32, depth: usize) -> Value {
+fn placeholder(root: &Value, schema: &Value, earlier: u32, depth: usize) -> Value {
     if depth > DEPTH {
         return Value::Null;
     }
-    let next = |schema: &Value| stand_in(root, schema, earlier, depth + 1);
+    let next = |schema: &Value| placeholder(root, schema, earlier, depth + 1);
     if let Some(target) = schema.get("$ref").and_then(Value::as_str) {
         return resolve(root, target).map_or(Value::Null, next);
     }
@@ -222,7 +222,7 @@ fn stand_in(root: &Value, schema: &Value, earlier: u32, depth: usize) -> Value {
         }
         Some("boolean") => json!(earlier > 0),
         Some("integer" | "number") => schema.get("minimum").cloned().unwrap_or_else(|| json!(1)),
-        Some("string") => json!("stand-in"),
+        Some("string") => json!("placeholder"),
         _ => Value::Null,
     }
 }
@@ -253,7 +253,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_stand_in_fills_every_property_and_one_item_of_each_list() {
+    fn a_placeholder_fills_every_property_and_one_item_of_each_list() {
         let schema = json!({
             "type": "object",
             "properties": {
@@ -268,13 +268,13 @@ mod tests {
             "$defs": {"task": {"type": "object", "properties": {"title": {"type": "string"}}}},
         });
         assert_eq!(
-            stand_in(&schema, &schema, 0, 0),
+            placeholder(&schema, &schema, 0, 0),
             json!({
-                "summary": "stand-in",
-                "tasks": [{"title": "stand-in"}],
+                "summary": "placeholder",
+                "tasks": [{"title": "placeholder"}],
                 "risk": "low",
                 "rounds": 2,
-                "note": "stand-in",
+                "note": "placeholder",
                 "extra": 1,
             })
         );
@@ -283,8 +283,11 @@ mod tests {
     #[test]
     fn a_yes_or_no_says_no_first_and_yes_after() {
         let schema = json!({"type": "object", "properties": {"accept": {"type": "boolean"}}});
-        assert_eq!(stand_in(&schema, &schema, 0, 0), json!({"accept": false}));
-        assert_eq!(stand_in(&schema, &schema, 1, 0), json!({"accept": true}));
+        assert_eq!(
+            placeholder(&schema, &schema, 0, 0),
+            json!({"accept": false})
+        );
+        assert_eq!(placeholder(&schema, &schema, 1, 0), json!({"accept": true}));
     }
 
     #[test]
@@ -294,7 +297,7 @@ mod tests {
             "properties": {"child": {"$ref": "#"}},
         });
         // It stops at the depth cap instead of going down forever.
-        let made = stand_in(&schema, &schema, 0, 0);
+        let made = placeholder(&schema, &schema, 0, 0);
         assert!(made.get("child").is_some());
     }
 }

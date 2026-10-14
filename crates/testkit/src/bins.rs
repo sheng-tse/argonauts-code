@@ -1,4 +1,4 @@
-//! Finds the `argonauts` and fake vendor binaries. Each comes from an environment variable, or
+//! Finds the `argonauts` and fake agent binaries. Each comes from an environment variable, or
 //! is built once into the target directory the test runs from, so tests use the code under test.
 
 use std::path::{Path, PathBuf};
@@ -9,22 +9,22 @@ use anyhow::{Context as _, anyhow, bail};
 
 pub const ARGONAUTS_BIN_ENV: &str = "ARGONAUTS_BIN";
 
-pub const FAKE_VENDOR_BIN_ENV: &str = "ARGONAUTS_FAKE_VENDOR_BIN";
+pub const FAKE_CLI_BIN_ENV: &str = "ARGONAUTS_FAKE_CLI_BIN";
 
-/// The `argonauts` binary: `$ARGONAUTS_BIN`, or `argonauts-cli` built once.
+/// The `argonauts` binary: `$ARGONAUTS_BIN`, or `argonauts-code` built once.
 pub fn argonauts_bin() -> anyhow::Result<PathBuf> {
     static BUILT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
-    from_env_or_build(ARGONAUTS_BIN_ENV, &BUILT, "argonauts-cli", "argonauts")
+    from_env_or_build(ARGONAUTS_BIN_ENV, &BUILT, "argonauts-code", "argonauts")
 }
 
-/// The fake vendor: `$ARGONAUTS_FAKE_VENDOR_BIN`, or built once from this crate.
-pub fn fake_vendor_bin() -> anyhow::Result<PathBuf> {
+/// The fake agent: `$ARGONAUTS_FAKE_CLI_BIN`, or built once from this crate.
+pub fn fake_cli_bin() -> anyhow::Result<PathBuf> {
     static BUILT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
     from_env_or_build(
-        FAKE_VENDOR_BIN_ENV,
+        FAKE_CLI_BIN_ENV,
         &BUILT,
         "argonauts-testkit",
-        "argonauts-fake-vendor",
+        "argonauts-fake-cli",
     )
 }
 

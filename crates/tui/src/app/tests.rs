@@ -6,8 +6,8 @@ use ratatui::layout::{Position, Size};
 use super::input::QUIT_WINDOW;
 use super::*;
 use crate::bottom::{
-    AgentRow, AgentState, ApprovalMode, CARD_GUARD, CardOption, CardPrompt, HistorySearch, Picker,
-    PickerEvent, PickerRow, VimMode, WorkingLine,
+    AgentRow, AgentState, ApprovalMode, HistorySearch, Picker, PickerEvent, PickerRow,
+    QUESTION_GUARD, QuestionOption, QuestionPrompt, VimMode, WorkingLine,
 };
 use crate::prompt_history::PromptEntry;
 use crate::theme::Glyphs;
@@ -29,7 +29,10 @@ fn ui_at(columns: u16) -> (Ui<vt100::Parser>, Instant) {
     let mut theme = Theme::dark();
     theme.glyphs = Glyphs::UNICODE;
     let t0 = Instant::now();
-    (Ui::new(terminal, theme, ViewModel::new("chat"), t0), t0)
+    (
+        Ui::new(terminal, theme, ViewModel::new("conversation"), t0),
+        t0,
+    )
 }
 
 fn press<W: Write>(ui: &mut Ui<W>, code: KeyCode, now: Instant) -> Vec<UiAction> {
@@ -49,18 +52,18 @@ fn type_text(ui: &mut Ui<vt100::Parser>, text: &str, now: Instant) {
     }
 }
 
-fn card(id: u64) -> CardPrompt {
-    let mut card = CardPrompt::new(
+fn question(id: u64) -> QuestionPrompt {
+    let mut question = QuestionPrompt::new(
         id,
         "Merge task-002 into main?",
         "Merge task-002?",
         vec![
-            CardOption::irreversible("Merge"),
-            CardOption::new("Keep the branch"),
+            QuestionOption::irreversible("Merge"),
+            QuestionOption::new("Keep the branch"),
         ],
     );
-    card.allow_note = true;
-    card
+    question.allow_note = true;
+    question
 }
 
 fn screen(ui: &Ui<vt100::Parser>) -> Vec<String> {
@@ -81,6 +84,8 @@ fn live(ui: &Ui<vt100::Parser>) -> Vec<String> {
         .skip_while(String::is_empty)
         .collect()
 }
+
+mod over_question;
 
 #[test]
 fn ctrl_c_clears_then_asks_twice_to_exit() {
@@ -142,18 +147,18 @@ fn esc_means_what_the_context_says() {
     ui.model_mut().bottom.working = Some(WorkingLine::new("Rowing", t0));
     assert_eq!(press(&mut ui, KeyCode::Esc, t0), [UiAction::Interrupt]);
 
-    ui.model_mut().bottom.card = Some(card(4));
+    ui.model_mut().bottom.question = Some(question(4));
     press(&mut ui, KeyCode::Tab, t0);
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
     press(&mut ui, KeyCode::Tab, t0);
-    assert!(ui.model().bottom.card.as_ref().unwrap().has_open_note());
+    assert!(ui.model().bottom.question.as_ref().unwrap().has_open_note());
     assert!(press(&mut ui, KeyCode::Esc, t0).is_empty());
-    assert!(!ui.model().bottom.card.as_ref().unwrap().has_open_note());
+    assert!(!ui.model().bottom.question.as_ref().unwrap().has_open_note());
     assert_eq!(
         press(&mut ui, KeyCode::Esc, t0),
-        [UiAction::Dismiss { card: 4 }]
+        [UiAction::Dismiss { question: 4 }]
     );
-    assert!(ui.model().bottom.card.as_ref().unwrap().dismissed);
+    assert!(ui.model().bottom.question.as_ref().unwrap().dismissed);
     assert_eq!(press(&mut ui, KeyCode::Esc, t0), [UiAction::Interrupt]);
 
     ui.model_mut().bottom.agents.rows = vec![AgentRow::new("codex", "task-3", AgentState::Working)];
@@ -199,8 +204,8 @@ fn vim_slash_searches_history_and_enter_only_fills_the_input() {
         "{rows:#?}"
     );
     assert!(
-        !rows.iter().any(|row| row.contains("-- NORMAL --")),
-        "the search stands in for the input and the mode line: {rows:#?}"
+        !rows.iter().any(|row| row.contains("supervised mode on")),
+        "the search stands in for the input and the bottom line: {rows:#?}"
     );
 
     assert!(
@@ -388,7 +393,7 @@ fn esc_and_i_together_leave_the_search_for_insert() {
 
 #[test]
 fn with_vim_keys_esc_leaves_insert_before_it_interrupts() {
-    // Wide enough that the mode line keeps its hints.
+    // Wide enough that the bottom line keeps its hints.
     let (mut ui, t0) = ui_at(100);
     ui.model_mut().bottom.mode.vim = Some(VimMode::Insert);
     ui.model_mut().bottom.working = Some(WorkingLine::new("Rowing", t0));
@@ -398,9 +403,9 @@ fn with_vim_keys_esc_leaves_insert_before_it_interrupts() {
     ui.frame(t0).unwrap();
     let rows = screen(&ui);
     assert!(
-        rows.iter().any(|row| row.starts_with(
-            "  -- NORMAL -- ǁ supervised mode on (shift+tab to cycle) · esc to interrupt"
-        )),
+        rows.iter()
+            .any(|row| row
+                .starts_with("  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt")),
         "{rows:#?}"
     );
     press(&mut ui, KeyCode::Char('x'), t0);
@@ -427,23 +432,23 @@ fn with_vim_keys_esc_leaves_insert_before_it_interrupts() {
     );
 }
 
-/// A card that shows while you type takes the keys at once. The draft goes aside,
-/// the rest of the line lands on the card as stray typing, so neither the number in it nor the
+/// A question that shows while you type takes the keys at once. The draft goes aside,
+/// the rest of the line lands on the question as stray typing, so neither the number in it nor the
 /// Enter that ends it answers, and Esc brings the draft back as it was.
 #[test]
-fn a_card_that_shows_while_you_type_sets_the_draft_aside() {
+fn a_question_that_shows_while_you_type_sets_the_draft_aside() {
     let (mut ui, t0) = ui();
     let at = |ms| t0 + Duration::from_millis(ms);
     ui.model_mut().bottom.working = Some(WorkingLine::new("Rowing", t0));
     type_text(&mut ui, "keep the CSV pa", t0);
-    ui.model_mut().bottom.card = Some(needs_you(9));
+    ui.model_mut().bottom.question = Some(needs_you(9));
     let mut actions = Vec::new();
     for c in "th, or 2".chars() {
         actions.extend(press(&mut ui, KeyCode::Char(c), at(10)));
     }
     actions.extend(press(&mut ui, KeyCode::Enter, at(20)));
     assert!(actions.is_empty(), "{actions:?}");
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
     assert!(
         ui.model().bottom.composer.is_empty(),
         "the draft went aside"
@@ -469,7 +474,7 @@ fn a_card_that_shows_while_you_type_sets_the_draft_aside() {
 
     assert_eq!(
         press(&mut ui, KeyCode::Esc, at(700)),
-        [UiAction::Dismiss { card: 9 }]
+        [UiAction::Dismiss { question: 9 }]
     );
     assert_eq!(ui.model().bottom.composer.text(), "keep the CSV pa");
     type_text(&mut ui, "th", at(800));
@@ -480,62 +485,62 @@ fn a_card_that_shows_while_you_type_sets_the_draft_aside() {
     assert!(
         ui.model()
             .bottom
-            .card
+            .question
             .as_ref()
-            .is_some_and(|card| card.dismissed)
+            .is_some_and(|question| question.dismissed)
     );
 }
 
 #[test]
-fn a_card_you_set_off_keeps_typing_and_slash_out_of_the_input() {
+fn a_question_you_set_off_keeps_typing_and_slash_out_of_the_input() {
     let (mut ui, t0) = ui();
-    let mut scope = CardPrompt::new(
+    let mut scope = QuestionPrompt::new(
         12,
         "Where should this be saved?",
         "Save where?",
         vec![
-            CardOption::new("Just this session"),
-            CardOption::new("This project, just me"),
-            CardOption::new("This project, shared"),
-            CardOption::new("Everywhere"),
+            QuestionOption::new("Just this session"),
+            QuestionOption::new("This project, just me"),
+            QuestionOption::new("This project, shared"),
+            QuestionOption::new("Everywhere"),
         ],
     )
     .yours();
     scope.esc_answers = true;
-    ui.model_mut().bottom.card = Some(scope);
+    ui.model_mut().bottom.question = Some(scope);
     ui.frame(t0).unwrap();
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
     for c in ['s', '/', 'm'] {
         assert!(press(&mut ui, KeyCode::Char(c), t0).is_empty());
     }
     assert!(ui.model().bottom.composer.is_empty());
     assert!(!menu_open(&ui));
-    // ↓ past the last option stays on the card.
+    // ↓ past the last option stays on the question.
     for _ in 0..5 {
         press(&mut ui, KeyCode::Down, t0);
     }
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
     assert!(press(&mut ui, KeyCode::Char('x'), t0).is_empty());
     assert!(ui.model().bottom.composer.is_empty());
     assert_eq!(
         press(&mut ui, KeyCode::Esc, t0),
-        [UiAction::Dismiss { card: 12 }]
+        [UiAction::Dismiss { question: 12 }]
     );
     assert!(ui.model().bottom.composer_has_focus());
 }
 
 #[test]
-fn a_card_that_needs_you_keeps_typing_out_until_handed_on() {
+fn a_question_that_needs_you_keeps_typing_out_until_passed_on() {
     let (mut ui, t0) = ui_at(100);
     ui.model_mut().bottom.working = Some(WorkingLine::new("Rowing", t0));
-    let mut merge = card(9);
+    let mut merge = question(9);
     merge.needs_you = true;
-    ui.model_mut().bottom.card = Some(merge);
-    // Any event hands it the keys, as a card arriving does.
+    ui.model_mut().bottom.question = Some(merge);
+    // Any event hands it the keys, as a question arriving does.
     ui.handle_event(Event::FocusGained, t0);
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
     ui.frame(t0).unwrap();
-    // The card stands in for the input: only its rule shows, its own key line, then the mode.
+    // The question stands in for the input: only its rule shows, its own key line, then the mode.
     let rules = |rows: &[String]| {
         rows.iter()
             .filter(|row| !row.is_empty() && row.chars().all(|c| c == '─'))
@@ -559,7 +564,7 @@ fn a_card_that_needs_you_keeps_typing_out_until_handed_on() {
         "{rows:#?}"
     );
 
-    // Letters, a paste, and the Enter after them reach neither the input nor the card.
+    // Letters, a paste, and the Enter after them reach neither the input nor the question.
     for c in "keep it".chars() {
         assert!(press(&mut ui, KeyCode::Char(c), t0).is_empty());
     }
@@ -572,13 +577,13 @@ fn a_card_that_needs_you_keeps_typing_out_until_handed_on() {
         "{:#?}",
         screen(&ui)
     );
-    assert!(press(&mut ui, KeyCode::Enter, t0 + CARD_GUARD).is_empty());
-    assert!(ui.model().bottom.card.is_some());
+    assert!(press(&mut ui, KeyCode::Enter, t0 + QUESTION_GUARD).is_empty());
+    assert!(ui.model().bottom.question.is_some());
 
-    // Handed on, it's off the screen for good, and the input takes typing and ↑ again.
+    // Passed on, it's off the screen for good, and the input takes typing and ↑ again.
     assert_eq!(
-        press(&mut ui, KeyCode::Esc, t0 + CARD_GUARD),
-        [UiAction::Dismiss { card: 9 }]
+        press(&mut ui, KeyCode::Esc, t0 + QUESTION_GUARD),
+        [UiAction::Dismiss { question: 9 }]
     );
     assert!(ui.model().bottom.composer_has_focus());
     ui.frame(t0 + Duration::from_millis(40)).unwrap();
@@ -591,25 +596,25 @@ fn a_card_that_needs_you_keeps_typing_out_until_handed_on() {
     );
     press(&mut ui, KeyCode::Up, t0);
     assert!(
-        ui.model().bottom.focused_card().is_none(),
-        "↑ never brings back what you handed on"
+        ui.model().bottom.focused_question().is_none(),
+        "↑ never brings back what you passed on"
     );
 }
 
-/// The draft comes back whole once the card is answered: a `!` command waiting in shell mode
+/// The draft comes back whole once the question is answered: a `!` command waiting in shell mode
 /// returns in shell mode.
 #[test]
-fn a_draft_comes_back_whole_once_the_card_is_answered() {
+fn a_draft_comes_back_whole_once_the_question_is_answered() {
     let (mut ui, t0) = ui();
     type_text(&mut ui, "!ls", t0);
     assert!(ui.model().bottom.composer.is_shell());
-    ui.model_mut().bottom.card = Some(needs_you(9));
+    ui.model_mut().bottom.question = Some(needs_you(9));
     ui.frame(t0).unwrap();
     let bottom = &ui.model().bottom;
-    assert!(bottom.focused_card().is_some());
+    assert!(bottom.focused_question().is_some());
     assert!(bottom.composer.is_empty() && !bottom.composer.is_shell());
     assert_eq!(
-        press(&mut ui, KeyCode::Char('2'), t0 + CARD_GUARD),
+        press(&mut ui, KeyCode::Char('2'), t0 + QUESTION_GUARD),
         answer(9, 1)
     );
     let bottom = &ui.model().bottom;
@@ -618,69 +623,69 @@ fn a_draft_comes_back_whole_once_the_card_is_answered() {
     assert!(bottom.composer_has_focus());
 }
 
-/// A card takes the keys from the agent panel the moment it shows, and the Enter meant for the
-/// panel's row neither opens the agent nor answers the card.
+/// A question takes the keys from the agent panel the moment it shows, and the Enter meant for the
+/// panel's row neither opens the agent nor answers the question.
 #[test]
-fn a_card_takes_the_keys_from_the_agent_panel() {
+fn a_question_takes_the_keys_from_the_agent_panel() {
     let (mut ui, t0) = ui();
     let at = |ms| t0 + Duration::from_millis(ms);
     ui.model_mut().bottom.agents.rows = vec![
-        AgentRow::new("codex", "card-3", AgentState::Working),
-        AgentRow::new("agy", "card-4", AgentState::Working),
+        AgentRow::new("codex", "task-3", AgentState::Working),
+        AgentRow::new("agy", "task-4", AgentState::Working),
     ];
     press(&mut ui, KeyCode::Down, t0);
     assert!(ui.model().bottom.agents.has_focus());
-    ui.model_mut().bottom.card = Some(needs_you(9));
+    ui.model_mut().bottom.question = Some(needs_you(9));
     ui.frame(at(10)).unwrap();
     let bottom = &ui.model().bottom;
-    assert!(bottom.focused_card().is_some());
+    assert!(bottom.focused_question().is_some());
     assert!(!bottom.agents.has_focus());
     assert!(
         !screen(&ui)
             .iter()
-            .any(|row| row.contains("to answer the card"))
+            .any(|row| row.contains("to answer the question"))
     );
     assert!(press(&mut ui, KeyCode::Enter, at(50)).is_empty());
     assert!(press(&mut ui, KeyCode::Down, at(60)).is_empty());
     assert_eq!(
-        press(&mut ui, KeyCode::Enter, at(10) + CARD_GUARD),
+        press(&mut ui, KeyCode::Enter, at(10) + QUESTION_GUARD),
         answer(9, 1)
     );
     assert!(ui.model().bottom.composer_has_focus());
 }
 
-/// For a moment after a card takes the keys, only the arrows work on it: Enter, Esc, and a
+/// For a moment after a question takes the keys, only the arrows work on it: Enter, Esc, and a
 /// number meant for what had the keys do nothing, and the number counts as stray typing.
 #[test]
-fn keys_pressed_as_a_card_shows_never_answer_it() {
+fn keys_pressed_as_a_question_shows_never_answer_it() {
     let (mut ui, t0) = ui();
     let at = |ms| t0 + Duration::from_millis(ms);
-    ui.model_mut().bottom.card = Some(needs_you(9));
+    ui.model_mut().bottom.question = Some(needs_you(9));
     ui.frame(t0).unwrap();
-    let selected = |ui: &Ui<vt100::Parser>| ui.model().bottom.card.as_ref().unwrap().selected;
+    let selected = |ui: &Ui<vt100::Parser>| ui.model().bottom.question.as_ref().unwrap().selected;
     assert!(press(&mut ui, KeyCode::Enter, at(50)).is_empty());
     assert!(press(&mut ui, KeyCode::Esc, at(100)).is_empty());
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
     assert!(press(&mut ui, KeyCode::Down, at(150)).is_empty());
     assert_eq!(selected(&ui), 1, "the arrows still move");
     assert!(press(&mut ui, KeyCode::Char('1'), at(200)).is_empty());
-    assert!(press(&mut ui, KeyCode::Enter, t0 + CARD_GUARD).is_empty());
-    assert!(ui.model().bottom.card.as_ref().unwrap().stray_typing);
-    let past = t0 + CARD_GUARD + Duration::from_millis(100);
+    assert!(press(&mut ui, KeyCode::Enter, t0 + QUESTION_GUARD).is_empty());
+    assert!(ui.model().bottom.question.as_ref().unwrap().stray_typing);
+    let past = t0 + QUESTION_GUARD + Duration::from_millis(100);
     assert!(press(&mut ui, KeyCode::Up, past).is_empty());
     assert_eq!(press(&mut ui, KeyCode::Enter, past), answer(9, 0));
 }
 
-/// With vim keys, `j` and `k` move the card as the arrows do even as it shows, and `l` typed
+/// With vim keys, `j` and `k` move the question as the arrows do even as it shows, and `l` typed
 /// mid-line is a letter, never Enter. Set aside, the INSERT draft comes back.
 #[test]
-fn a_card_that_shows_mid_line_with_vim_keys_moves_but_never_answers() {
+fn a_question_that_shows_mid_line_with_vim_keys_moves_but_never_answers() {
     let (mut ui, t0) = ui();
     let at = |ms| t0 + Duration::from_millis(ms);
     ui.model_mut().bottom.mode.vim = Some(VimMode::Insert);
     type_text(&mut ui, "ok ", t0);
-    ui.model_mut().bottom.card = Some(needs_you(9));
-    let selected = |ui: &Ui<vt100::Parser>| ui.model().bottom.card.as_ref().unwrap().selected;
+    ui.model_mut().bottom.question = Some(needs_you(9));
+    let selected = |ui: &Ui<vt100::Parser>| ui.model().bottom.question.as_ref().unwrap().selected;
     assert!(press(&mut ui, KeyCode::Char('j'), at(10)).is_empty());
     assert_eq!(selected(&ui), 1);
     assert!(press(&mut ui, KeyCode::Char('k'), at(20)).is_empty());
@@ -690,29 +695,29 @@ fn a_card_that_shows_mid_line_with_vim_keys_moves_but_never_answers() {
     }
     assert!(press(&mut ui, KeyCode::Enter, at(600)).is_empty());
     assert!(press(&mut ui, KeyCode::Char('l'), at(600)).is_empty());
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
     assert_eq!(
         press(&mut ui, KeyCode::Esc, at(700)),
-        [UiAction::Dismiss { card: 9 }]
+        [UiAction::Dismiss { question: 9 }]
     );
     assert_eq!(ui.model().bottom.composer.text(), "ok ");
     assert_eq!(ui.model().bottom.mode.vim, Some(VimMode::Insert));
 }
 
-/// The paste-then-Enter and vim probes from the review, on a card that took the keys as it
+/// The paste-then-Enter and vim probes from the review, on a question that took the keys as it
 /// showed: nothing typed answers it, Merge least of all.
 #[test]
-fn typing_meant_for_the_input_never_answers_a_card_that_took_the_keys() {
+fn typing_meant_for_the_input_never_answers_a_question_that_took_the_keys() {
     let take = |vim: bool| {
         let (mut ui, t0) = ui();
         if vim {
             ui.model_mut().bottom.mode.vim = Some(VimMode::Insert);
         }
-        let mut merge = card(9);
+        let mut merge = question(9);
         merge.needs_you = true;
-        ui.model_mut().bottom.card = Some(merge);
+        ui.model_mut().bottom.question = Some(merge);
         ui.frame(t0).unwrap();
-        assert!(ui.model().bottom.focused_card().is_some());
+        assert!(ui.model().bottom.focused_question().is_some());
         (ui, t0)
     };
     let (mut ui, t0) = take(false);
@@ -721,7 +726,7 @@ fn typing_meant_for_the_input_never_answers_a_card_that_took_the_keys() {
             .is_empty()
     );
     assert!(press(&mut ui, KeyCode::Enter, t0).is_empty());
-    assert!(ui.model().bottom.card.is_some());
+    assert!(ui.model().bottom.question.is_some());
 
     for line in ["let me check", "we will see"] {
         let (mut ui, t0) = take(true);
@@ -730,7 +735,7 @@ fn typing_meant_for_the_input_never_answers_a_card_that_took_the_keys() {
             assert!(typed.is_empty(), "{line:?}: {c:?} did {typed:?}");
         }
         assert!(press(&mut ui, KeyCode::Enter, t0).is_empty(), "{line:?}");
-        assert!(ui.model().bottom.focused_card().is_some(), "{line:?}");
+        assert!(ui.model().bottom.focused_question().is_some(), "{line:?}");
     }
 
     let (mut ui, t0) = take(false);
@@ -738,31 +743,31 @@ fn typing_meant_for_the_input_never_answers_a_card_that_took_the_keys() {
         assert!(press(&mut ui, KeyCode::Char(c), t0).is_empty(), "{c:?}");
     }
     assert!(press(&mut ui, KeyCode::Enter, t0).is_empty());
-    assert!(ui.model().bottom.card.is_some());
+    assert!(ui.model().bottom.question.is_some());
 }
 
-/// While a card that needs you has the keys, Ctrl+R and vim's `/` don't open the prompt
+/// While a question that needs you has the keys, Ctrl+R and vim's `/` don't open the prompt
 /// search and `!` doesn't start shell mode. Set aside, each works as before.
 #[test]
-fn a_card_with_the_keys_holds_off_the_search_and_shell_mode() {
+fn a_question_with_the_keys_holds_off_the_search_and_shell_mode() {
     let (mut ui, t0) = ui();
     ui.model_mut().bottom.mode.vim = Some(VimMode::Normal);
-    ui.model_mut().bottom.card = Some(needs_you(9));
+    ui.model_mut().bottom.question = Some(needs_you(9));
     ui.frame(t0).unwrap();
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
 
     assert!(chord(&mut ui, 'r', t0).is_empty());
     assert!(press(&mut ui, KeyCode::Char('/'), t0).is_empty());
     assert!(press(&mut ui, KeyCode::Char('!'), t0).is_empty());
     let bottom = &ui.model().bottom;
     assert!(bottom.history_search.is_none());
-    assert!(bottom.focused_card().is_some());
+    assert!(bottom.focused_question().is_some());
     assert!(!bottom.composer.is_shell());
     assert!(bottom.composer.is_empty());
 
     assert_eq!(
-        press(&mut ui, KeyCode::Esc, t0 + CARD_GUARD),
-        [UiAction::Dismiss { card: 9 }]
+        press(&mut ui, KeyCode::Esc, t0 + QUESTION_GUARD),
+        [UiAction::Dismiss { question: 9 }]
     );
     assert_eq!(
         press(&mut ui, KeyCode::Char('/'), t0),
@@ -778,30 +783,30 @@ fn a_card_with_the_keys_holds_off_the_search_and_shell_mode() {
     assert!(
         ui.model()
             .bottom
-            .card
+            .question
             .as_ref()
-            .is_some_and(|card| card.dismissed)
+            .is_some_and(|question| question.dismissed)
     );
 }
 
-fn needs_you(id: u64) -> CardPrompt {
-    let mut card = card(id);
-    card.needs_you = true;
-    card
+fn needs_you(id: u64) -> QuestionPrompt {
+    let mut question = question(id);
+    question.needs_you = true;
+    question
 }
 
-/// A card takes the keys from an open prompt search, which waits under it with its filter and
-/// comes back once the card is set aside.
+/// A question takes the keys from an open prompt search, which waits under it with its filter and
+/// comes back once the question is set aside.
 #[test]
-fn a_card_takes_the_keys_from_the_prompt_search() {
+fn a_question_takes_the_keys_from_the_prompt_search() {
     let (mut ui, t0) = ui();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
     assert_eq!(chord(&mut ui, 'r', t0), [UiAction::SearchHistory]);
     open_search(&mut ui);
     type_text(&mut ui, "exp", t0);
-    ui.model_mut().bottom.card = Some(needs_you(9));
+    ui.model_mut().bottom.question = Some(needs_you(9));
     ui.frame(at(10)).unwrap();
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
     let rows = screen(&ui);
     assert!(
         rows.iter().any(|row| row.ends_with("1. Merge")),
@@ -809,7 +814,7 @@ fn a_card_takes_the_keys_from_the_prompt_search() {
     );
     assert!(
         !rows.iter().any(|row| row.contains("fix the export test")),
-        "the search waits under the card: {rows:#?}"
+        "the search waits under the question: {rows:#?}"
     );
     assert!(press(&mut ui, KeyCode::Char('o'), at(20)).is_empty());
     let search = |ui: &Ui<vt100::Parser>| {
@@ -822,7 +827,7 @@ fn a_card_takes_the_keys_from_the_prompt_search() {
     assert_eq!(search(&ui).as_deref(), Some("exp"));
     assert_eq!(
         press(&mut ui, KeyCode::Esc, at(500)),
-        [UiAction::Dismiss { card: 9 }]
+        [UiAction::Dismiss { question: 9 }]
     );
     ui.frame(at(510)).unwrap();
     assert!(
@@ -837,11 +842,11 @@ fn a_card_takes_the_keys_from_the_prompt_search() {
 }
 
 #[test]
-fn a_focused_card_takes_keys_and_answers() {
+fn a_focused_question_takes_keys_and_answers() {
     let (mut ui, t0) = ui();
-    ui.model_mut().bottom.card = Some(card(9));
+    ui.model_mut().bottom.question = Some(question(9));
     assert!(press(&mut ui, KeyCode::Up, t0).is_empty());
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
     assert!(press(&mut ui, KeyCode::Char('z'), t0).is_empty());
     press(&mut ui, KeyCode::Backspace, t0);
     assert!(ui.model().bottom.composer.is_empty());
@@ -854,29 +859,29 @@ fn a_focused_card_takes_keys_and_answers() {
     assert_eq!(
         press(&mut ui, KeyCode::Enter, t0),
         [UiAction::Answer {
-            card: 9,
+            question: 9,
             option: 1,
             note: Some("later please".into()),
             checked: Vec::new(),
         }]
     );
-    assert!(ui.model().bottom.card.is_none());
+    assert!(ui.model().bottom.question.is_none());
 
-    ui.model_mut().bottom.card = Some(card(10));
+    ui.model_mut().bottom.question = Some(question(10));
     press(&mut ui, KeyCode::Tab, t0);
     press(&mut ui, KeyCode::Down, t0);
     assert!(press(&mut ui, KeyCode::Char('y'), t0).is_empty());
-    assert_eq!(ui.model().bottom.card.as_ref().unwrap().armed, None);
-    // After a letter a number waits for a key meant for the card.
+    assert_eq!(ui.model().bottom.question.as_ref().unwrap().armed, None);
+    // After a letter a number waits for a key meant for the question.
     assert!(press(&mut ui, KeyCode::Char('1'), t0).is_empty());
-    assert_eq!(ui.model().bottom.card.as_ref().unwrap().armed, None);
+    assert_eq!(ui.model().bottom.question.as_ref().unwrap().armed, None);
     press(&mut ui, KeyCode::Up, t0);
     assert!(press(&mut ui, KeyCode::Char('1'), t0).is_empty());
-    assert_eq!(ui.model().bottom.card.as_ref().unwrap().armed, Some(0));
+    assert_eq!(ui.model().bottom.question.as_ref().unwrap().armed, Some(0));
     assert_eq!(
         press(&mut ui, KeyCode::Enter, t0),
         [UiAction::Answer {
-            card: 10,
+            question: 10,
             option: 0,
             note: None,
             checked: Vec::new(),
@@ -887,15 +892,15 @@ fn a_focused_card_takes_keys_and_answers() {
 #[test]
 fn down_past_the_last_option_goes_back_to_the_input() {
     let (mut ui, t0) = ui();
-    ui.model_mut().bottom.card = Some(card(9));
+    ui.model_mut().bottom.question = Some(question(9));
     press(&mut ui, KeyCode::Up, t0);
     press(&mut ui, KeyCode::Down, t0);
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
     assert!(press(&mut ui, KeyCode::Down, t0).is_empty());
     let waiting = ui
         .model()
         .bottom
-        .card
+        .question
         .as_ref()
         .expect("the task still waits");
     assert!(!waiting.focused && !waiting.dismissed);
@@ -911,11 +916,11 @@ fn down_past_the_last_option_goes_back_to_the_input() {
 
     // ↑ comes back to the option it left.
     press(&mut ui, KeyCode::Up, t0);
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
     assert_eq!(
         press(&mut ui, KeyCode::Enter, t0),
         [UiAction::Answer {
-            card: 9,
+            question: 9,
             option: 1,
             note: None,
             checked: Vec::new(),
@@ -924,7 +929,7 @@ fn down_past_the_last_option_goes_back_to_the_input() {
 }
 
 #[test]
-fn up_takes_back_the_queue_or_reopens_a_pinned_card() {
+fn up_takes_back_the_queue_or_reopens_a_pinned_question() {
     let (mut ui, t0) = ui();
     ui.model_mut().bottom.composer.remember("older");
     ui.model_mut().bottom.queued = vec!["first".into(), "second".into()];
@@ -936,19 +941,19 @@ fn up_takes_back_the_queue_or_reopens_a_pinned_card() {
     assert!(ui.model().bottom.composer.is_empty());
 
     ui.model_mut().bottom.queued.clear();
-    ui.model_mut().bottom.card = Some(card(3));
+    ui.model_mut().bottom.question = Some(question(3));
     assert!(press(&mut ui, KeyCode::Up, t0).is_empty());
-    let opened = ui.model().bottom.card.as_ref().unwrap();
+    let opened = ui.model().bottom.question.as_ref().unwrap();
     assert!(!opened.dismissed && opened.focused);
 
-    ui.model_mut().bottom.card = None;
+    ui.model_mut().bottom.question = None;
     press(&mut ui, KeyCode::Up, t0);
     assert_eq!(ui.model().bottom.composer.text(), "older");
 }
 
-fn answer(card: u64, option: usize) -> Vec<UiAction> {
+fn answer(question: u64, option: usize) -> Vec<UiAction> {
     vec![UiAction::Answer {
-        card,
+        question,
         option,
         note: None,
         checked: Vec::new(),
@@ -956,10 +961,10 @@ fn answer(card: u64, option: usize) -> Vec<UiAction> {
 }
 
 #[test]
-fn a_card_moves_with_vim_keys_and_answers_by_number() {
-    // Without vim keys `k` is a letter, so a number waits for a key meant for the card.
+fn a_question_moves_with_vim_keys_and_answers_by_number() {
+    // Without vim keys `k` is a letter, so a number waits for a key meant for the question.
     let (mut ui, t0) = ui();
-    ui.model_mut().bottom.card = Some(card(20));
+    ui.model_mut().bottom.question = Some(question(20));
     press(&mut ui, KeyCode::Up, t0);
     assert!(press(&mut ui, KeyCode::Char('k'), t0).is_empty());
     assert!(press(&mut ui, KeyCode::Char('2'), t0).is_empty());
@@ -968,9 +973,9 @@ fn a_card_moves_with_vim_keys_and_answers_by_number() {
 
     let (mut ui, t0) = ui_at(80);
     ui.model_mut().bottom.mode.vim = Some(VimMode::Insert);
-    ui.model_mut().bottom.card = Some(card(21));
+    ui.model_mut().bottom.question = Some(question(21));
     press(&mut ui, KeyCode::Up, t0);
-    let selected = |ui: &Ui<vt100::Parser>| ui.model().bottom.card.as_ref().unwrap().selected;
+    let selected = |ui: &Ui<vt100::Parser>| ui.model().bottom.question.as_ref().unwrap().selected;
     press(&mut ui, KeyCode::Char('j'), t0);
     assert_eq!(selected(&ui), 1);
     assert!(press(&mut ui, KeyCode::Char('k'), t0).is_empty());
@@ -996,7 +1001,7 @@ fn a_card_moves_with_vim_keys_and_answers_by_number() {
     assert_eq!(
         ui.model()
             .bottom
-            .card
+            .question
             .as_ref()
             .unwrap()
             .note
@@ -1008,14 +1013,14 @@ fn a_card_moves_with_vim_keys_and_answers_by_number() {
     press(&mut ui, KeyCode::Esc, t0);
     assert_eq!(press(&mut ui, KeyCode::Char('l'), t0), answer(21, 1));
 
-    // `h` sets a card aside, as Esc does.
-    ui.model_mut().bottom.card = Some(card(22));
+    // `h` sets a question aside, as Esc does.
+    ui.model_mut().bottom.question = Some(question(22));
     press(&mut ui, KeyCode::Up, t0);
     assert_eq!(
         press(&mut ui, KeyCode::Char('h'), t0),
-        [UiAction::Dismiss { card: 22 }]
+        [UiAction::Dismiss { question: 22 }]
     );
-    assert!(ui.model().bottom.card.as_ref().unwrap().dismissed);
+    assert!(ui.model().bottom.question.as_ref().unwrap().dismissed);
 }
 
 #[test]
@@ -1093,13 +1098,13 @@ fn down_on_an_empty_prompt_focuses_the_agents() {
         press(&mut ui, KeyCode::Enter, t0),
         [UiAction::OpenAgent(codex.clone())]
     );
-    // The first `x` asks on the mode line, like Ctrl+C, and the second stops.
+    // The first `x` asks on the bottom line, like Ctrl+C, and the second stops.
     assert!(press(&mut ui, KeyCode::Char('x'), t0).is_empty());
     assert_eq!(
         ui.model().bottom.active_hint(t0),
         Some("x again to stop codex · esc to keep")
     );
-    assert!(ui.model().bottom.card.is_none());
+    assert!(ui.model().bottom.question.is_none());
     assert_eq!(
         press(&mut ui, KeyCode::Char('x'), t0),
         [UiAction::StopAgent(codex)]
@@ -1198,7 +1203,10 @@ fn global_keys_ask_the_host() {
     assert_eq!(ui.model().bottom.mode.approval, ApprovalMode::Auto);
     assert_eq!(chord(&mut ui, 't', t0), [UiAction::OpenTree]);
     assert_eq!(chord(&mut ui, 'g', t0), [UiAction::EditDraft]);
-    assert_eq!(press(&mut ui, KeyCode::Left, t0), [UiAction::OpenCrewView]);
+    assert_eq!(
+        press(&mut ui, KeyCode::Left, t0),
+        [UiAction::OpenAgentPanel]
+    );
     type_text(&mut ui, "ab", t0);
     assert!(press(&mut ui, KeyCode::Left, t0).is_empty());
     assert_eq!(
@@ -1225,10 +1233,10 @@ fn key_releases_are_ignored() {
 #[test]
 fn frames_print_nothing_when_nothing_changed() {
     let (mut ui, t0) = ui();
-    ui.model_mut().bottom.composer.label = Some("solo".into());
+    ui.model_mut().bottom.composer.label = Some("captain".into());
     assert!(ui.frame(t0).unwrap());
     let rows = live(&ui);
-    assert!(rows[0].ends_with(" solo ─"), "{rows:?}");
+    assert!(rows[0].ends_with(" captain ─"), "{rows:?}");
     assert_eq!(rows[1], "❯ Try \"review the last commit\"");
     assert_eq!(
         rows.len(),
@@ -1251,7 +1259,7 @@ fn an_idle_frame_writes_zero_bytes() {
     crossterm::style::force_color_output(true);
     let terminal = InlineTerminal::new(Vec::new(), Size::new(COLUMNS, ROWS), Position::new(0, 2));
     let t0 = Instant::now();
-    let mut ui = Ui::new(terminal, Theme::dark(), ViewModel::new("chat"), t0);
+    let mut ui = Ui::new(terminal, Theme::dark(), ViewModel::new("conversation"), t0);
     assert!(ui.frame(t0).unwrap());
     let written = ui.terminal().writer().len();
     assert!(!ui.frame(t0 + Duration::from_secs(1)).unwrap());
@@ -1320,25 +1328,25 @@ fn a_hint_redraws_when_it_expires() {
 fn the_title_shows_status() {
     let (mut ui, t0) = ui();
     ui.frame(t0).unwrap();
-    assert_eq!(ui.terminal().title(), Some("✳ chat"));
+    assert_eq!(ui.terminal().title(), Some("✳ conversation"));
     ui.model_mut().bottom.agents.rows = vec![AgentRow::new("codex", "c", AgentState::Working)];
     ui.frame(t0 + Duration::from_millis(260)).unwrap();
-    assert_eq!(ui.terminal().title(), Some("◐ chat"));
+    assert_eq!(ui.terminal().title(), Some("◐ conversation"));
     ui.frame(t0 + Duration::from_millis(1_000)).unwrap();
-    assert_eq!(ui.terminal().title(), Some("◑ chat"));
-    ui.model_mut().bottom.card = Some(card(1));
+    assert_eq!(ui.terminal().title(), Some("◑ conversation"));
+    ui.model_mut().bottom.question = Some(question(1));
     ui.frame(t0 + Duration::from_millis(1_100)).unwrap();
-    assert_eq!(ui.terminal().title(), Some("◆ needs you · chat"));
+    assert_eq!(ui.terminal().title(), Some("◆ needs you · conversation"));
 }
 
 #[test]
-fn typed_keys_kept_when_card_appears() {
+fn typed_keys_kept_when_question_appears() {
     let (mut ui, t0) = ui();
     ui.model_mut().bottom.working = Some(WorkingLine::new("Rowing", t0));
     type_text(&mut ui, "yes ", t0);
     ui.frame(t0).unwrap();
-    // The card shows between two keys; what follows still goes to the prompt.
-    ui.model_mut().bottom.card = Some(card(12));
+    // The question shows between two keys; what follows still goes to the prompt.
+    ui.model_mut().bottom.question = Some(question(12));
     ui.frame(t0 + Duration::from_millis(20)).unwrap();
     let mut actions = Vec::new();
     for c in "keep it".chars() {
@@ -1346,31 +1354,31 @@ fn typed_keys_kept_when_card_appears() {
     }
     assert!(actions.is_empty(), "{actions:?}");
     assert_eq!(ui.model().bottom.composer.text(), "yes keep it");
-    let waiting = ui.model().bottom.waiting_card().unwrap();
+    let waiting = ui.model().bottom.waiting_question().unwrap();
     assert!(!waiting.dismissed && waiting.armed.is_none());
 }
 
 #[test]
-fn esc_in_the_input_never_answers_a_card() {
+fn esc_in_the_input_never_answers_a_question() {
     let (mut ui, t0) = ui();
-    let mut setup = card(8);
+    let mut setup = question(8);
     setup.esc_answers = true;
-    ui.model_mut().bottom.card = Some(setup);
+    ui.model_mut().bottom.question = Some(setup);
 
     assert!(press(&mut ui, KeyCode::Esc, t0).is_empty());
-    let waiting = ui.model().bottom.card.as_ref().unwrap();
+    let waiting = ui.model().bottom.question.as_ref().unwrap();
     assert!(!waiting.dismissed && !waiting.focused);
 
     ui.model_mut().bottom.working = Some(WorkingLine::new("Rowing", t0));
     assert_eq!(press(&mut ui, KeyCode::Esc, t0), [UiAction::Interrupt]);
-    assert!(!ui.model().bottom.card.as_ref().unwrap().dismissed);
+    assert!(!ui.model().bottom.question.as_ref().unwrap().dismissed);
 
-    // With the card focused, Esc answers it as its hint says.
+    // With the question focused, Esc answers it as its hint says.
     press(&mut ui, KeyCode::Tab, t0);
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
     assert_eq!(
         press(&mut ui, KeyCode::Esc, t0),
-        [UiAction::Dismiss { card: 8 }]
+        [UiAction::Dismiss { question: 8 }]
     );
 }
 
@@ -1482,37 +1490,37 @@ fn with_vim_keys_only_the_esc_that_hides_the_menu_starts_a_clear() {
 }
 
 #[test]
-fn esc_sets_card_aside_then_interrupts() {
+fn esc_sets_question_aside_then_interrupts() {
     let (mut ui, t0) = ui();
     ui.model_mut().bottom.working = Some(WorkingLine::new("Rowing", t0));
-    ui.model_mut().bottom.card = Some(card(5));
-    assert!(ui.model().bottom.focused_card().is_none());
+    ui.model_mut().bottom.question = Some(question(5));
+    assert!(ui.model().bottom.focused_question().is_none());
     assert_eq!(
         press(&mut ui, KeyCode::Esc, t0),
-        [UiAction::Dismiss { card: 5 }]
+        [UiAction::Dismiss { question: 5 }]
     );
-    assert!(ui.model().bottom.card.as_ref().unwrap().dismissed);
+    assert!(ui.model().bottom.question.as_ref().unwrap().dismissed);
     assert_eq!(press(&mut ui, KeyCode::Esc, t0), [UiAction::Interrupt]);
     assert_eq!(press(&mut ui, KeyCode::Esc, t0), [UiAction::Interrupt]);
 
-    // Idle, a waiting card still takes the first Esc, and the next does nothing.
+    // Idle, a waiting question still takes the first Esc, and the next does nothing.
     ui.model_mut().bottom.working = None;
-    ui.model_mut().bottom.card = Some(card(6));
+    ui.model_mut().bottom.question = Some(question(6));
     assert_eq!(
         press(&mut ui, KeyCode::Esc, t0),
-        [UiAction::Dismiss { card: 6 }]
+        [UiAction::Dismiss { question: 6 }]
     );
     assert!(press(&mut ui, KeyCode::Esc, t0).is_empty());
 
     // In vim INSERT the first Esc only leaves INSERT.
     ui.model_mut().bottom.working = Some(WorkingLine::new("Rowing", t0));
     ui.model_mut().bottom.mode.vim = Some(VimMode::Insert);
-    ui.model_mut().bottom.card = Some(card(7));
+    ui.model_mut().bottom.question = Some(question(7));
     assert!(press(&mut ui, KeyCode::Esc, t0).is_empty());
     assert_eq!(ui.model().bottom.mode.vim, Some(VimMode::Normal));
     assert_eq!(
         press(&mut ui, KeyCode::Esc, t0),
-        [UiAction::Dismiss { card: 7 }]
+        [UiAction::Dismiss { question: 7 }]
     );
     assert_eq!(press(&mut ui, KeyCode::Esc, t0), [UiAction::Interrupt]);
 }
@@ -1568,7 +1576,7 @@ fn ctrl_c_clears_then_exits() {
 fn rebound_keys_reach_the_ui() {
     let (mut ui, t0) = ui();
     let overrides = [
-        ("crew_view".to_owned(), "ctrl+left".to_owned()),
+        ("agent_panel_view".to_owned(), "ctrl+left".to_owned()),
         ("submit".to_owned(), "ctrl+s".to_owned()),
         ("newline".to_owned(), "enter".to_owned()),
     ]
@@ -1580,7 +1588,7 @@ fn rebound_keys_reach_the_ui() {
             Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL)),
             t0
         ),
-        [UiAction::OpenCrewView]
+        [UiAction::OpenAgentPanel]
     );
     type_text(&mut ui, "a", t0);
     assert!(press(&mut ui, KeyCode::Enter, t0).is_empty());
@@ -1669,16 +1677,16 @@ impl crate::views::View for DockedProbe {
     }
 }
 
-/// A docked view draws where a card would, so a card that asks closes it as it takes the keys,
-/// and the keys go to the card.
+/// A docked view draws where a question would, so a question that asks closes it as it takes the
+/// keys, and the keys go to the question.
 #[test]
-fn a_card_takes_the_keys_from_a_docked_view() {
+fn a_question_takes_the_keys_from_a_docked_view() {
     let (mut ui, t0) = ui();
     let state = crate::state::AppState::default();
     ui.push_view(Box::new(DockedProbe));
     ui.frame_in(t0, &state).unwrap();
     assert!(screen(&ui).iter().any(|row| row == "docked probe"));
-    ui.model_mut().bottom.card = Some(needs_you(9));
+    ui.model_mut().bottom.question = Some(needs_you(9));
     let shown = t0 + Duration::from_millis(10);
     ui.frame_in(shown, &state).unwrap();
     assert_eq!(ui.views_open(), 0);
@@ -1690,7 +1698,7 @@ fn a_card_takes_the_keys_from_a_docked_view() {
     );
     let two = Event::Key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
     assert_eq!(
-        ui.handle_event_in(two, shown + CARD_GUARD, &state),
+        ui.handle_event_in(two, shown + QUESTION_GUARD, &state),
         answer(9, 1)
     );
 }
@@ -1698,7 +1706,7 @@ fn a_card_takes_the_keys_from_a_docked_view() {
 /// A view on its own screen would keep the keys, so it closes as the question takes them. A
 /// view the question opens itself, such as its diff, stays over it.
 #[test]
-fn a_card_takes_the_keys_from_a_full_screen_view() {
+fn a_question_takes_the_keys_from_a_full_screen_view() {
     let (mut ui, t0) = ui();
     let state = crate::state::AppState::default();
     let probe = || Probe {
@@ -1708,7 +1716,7 @@ fn a_card_takes_the_keys_from_a_full_screen_view() {
     ui.push_view(Box::new(probe()));
     ui.frame_in(t0, &state).unwrap();
     assert!(ui.terminal().writer().screen().alternate_screen());
-    ui.model_mut().bottom.card = Some(needs_you(9));
+    ui.model_mut().bottom.question = Some(needs_you(9));
     let shown = t0 + Duration::from_millis(10);
     ui.frame_in(shown, &state).unwrap();
     assert_eq!(ui.views_open(), 0);
@@ -1725,20 +1733,20 @@ fn a_card_takes_the_keys_from_a_full_screen_view() {
     assert_eq!(ui.views_open(), 1, "its own view stays open over it");
 }
 
-/// A card that asks closes the Ctrl+O transcript too, and its number keys answer it.
+/// A question that asks closes the Ctrl+O transcript too, and its number keys answer it.
 #[test]
-fn a_card_takes_the_keys_from_the_transcript() {
+fn a_question_takes_the_keys_from_the_transcript() {
     let (mut ui, t0) = ui();
     chord(&mut ui, 'o', t0);
     assert!(ui.overlay.is_some());
-    ui.model_mut().bottom.card = Some(needs_you(9));
+    ui.model_mut().bottom.question = Some(needs_you(9));
     ui.frame(t0 + Duration::from_millis(10)).unwrap();
     assert!(ui.overlay.is_none());
     assert_eq!(
         press(
             &mut ui,
             KeyCode::Char('2'),
-            t0 + Duration::from_millis(10) + CARD_GUARD
+            t0 + Duration::from_millis(10) + QUESTION_GUARD
         ),
         answer(9, 1)
     );
@@ -1751,30 +1759,30 @@ fn esc_on_a_question_opened_mid_answer_leaves_the_answer_running() {
     let (mut ui, t0) = ui();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
     ui.model_mut().bottom.working = Some(WorkingLine::new("Rowing", t0));
-    let mut question = card(9);
+    let mut question = question(9);
     question.focused = true;
-    ui.model_mut().bottom.card = Some(question);
+    ui.model_mut().bottom.question = Some(question);
     ui.frame(at(10)).unwrap();
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
     assert_eq!(
         press(&mut ui, KeyCode::Esc, at(500)),
-        [UiAction::Dismiss { card: 9 }]
+        [UiAction::Dismiss { question: 9 }]
     );
     assert!(ui.model().bottom.working.is_some());
 }
 
 /// The mods pinned above the input sit between the working line and the input's rule. Ctrl+X
-/// Tab gives them the keys, the mode line lists what the keys do, and each change goes to the
+/// Tab gives them the keys, the bottom line lists what the keys do, and each change goes to the
 /// controller as one setting.
 #[test]
 fn the_mods_above_the_input_take_the_keys_with_ctrl_x_tab() {
-    use argonauts_core::input::{SlashCommand, WidgetChange, WidgetsAction};
-    use argonauts_core::settings::ui::WidgetName;
+    use argonauts_core::input::{ModPlaceChange, ModsAction, SlashCommand};
+    use argonauts_core::settings::ui::ModName;
 
     let (mut ui, t0) = ui();
     ui.model_mut().bottom.working = Some(WorkingLine::new("Rowing", t0));
     let band = &mut ui.model_mut().bottom.band;
-    band.mods = vec![WidgetName::Quota, WidgetName::Spend];
+    band.mods = vec![ModName::PlanUsage, ModName::Spend];
     band.usage = Some(std::sync::Arc::new(crate::overview::sample::usage()));
     band.wall = crate::overview::sample::now();
     ui.frame(t0).unwrap();
@@ -1797,21 +1805,21 @@ fn the_mods_above_the_input_take_the_keys_with_ctrl_x_tab() {
             .any(|row| row.contains("tab next · - fold · enter open · p unpin")),
         "{rows:#?}"
     );
-    let changed = |widget, change| {
+    let changed = |the_mod, change| {
         [UiAction::Command(argonauts_core::app::UiCommand::Slash {
-            command: SlashCommand::Widgets {
-                action: WidgetsAction::Change { widget, change },
+            command: SlashCommand::Mods {
+                action: ModsAction::Change { the_mod, change },
                 scope: None,
             },
         })]
     };
     assert_eq!(
         press(&mut ui, KeyCode::Char('-'), t0),
-        changed(WidgetName::Quota, WidgetChange::Fold)
+        changed(ModName::PlanUsage, ModPlaceChange::Fold)
     );
     assert_eq!(
         press(&mut ui, KeyCode::Enter, t0),
-        [UiAction::OpenTab(WidgetName::Quota)]
+        [UiAction::OpenTab(ModName::PlanUsage)]
     );
     assert!(ui.model().bottom.composer.is_empty(), "nothing was typed");
     assert!(press(&mut ui, KeyCode::Esc, t0).is_empty());
@@ -1923,7 +1931,7 @@ fn a_paste_goes_to_the_view_on_top() {
         key: key.to_owned(),
         value: String::new(),
         layer: "built-in".to_owned(),
-        preset_from: None,
+        workflow_from: None,
         default_scope: SettingScope::Global,
         safety: false,
         allowed: Vec::new(),
@@ -1944,12 +1952,12 @@ fn a_paste_goes_to_the_view_on_top() {
 }
 
 #[test]
-fn view_stack_esc_returns_to_chat() {
+fn view_stack_esc_returns_to_conversation() {
     let (mut ui, t0) = ui();
     let state = crate::state::AppState::default();
     type_text(&mut ui, "kept", t0);
     ui.frame(t0).unwrap();
-    let chat = screen(&ui);
+    let conversation = screen(&ui);
 
     ui.push_view(Box::new(Probe {
         name: "outer",
@@ -1991,7 +1999,7 @@ fn view_stack_esc_returns_to_chat() {
     draw(&mut ui);
     assert!(!ui.terminal().writer().screen().alternate_screen());
     assert_eq!(ui.model().bottom.composer.text(), "kept");
-    assert_eq!(screen(&ui), chat);
+    assert_eq!(screen(&ui), conversation);
 }
 
 #[test]
@@ -2058,7 +2066,7 @@ fn tiny_screens_and_resizes_never_panic() {
             let bottom = &mut ui.model_mut().bottom;
             bottom.working = Some(WorkingLine::new("Rowing", t0));
             bottom.agents.rows = vec![AgentRow::new("codex", "task-3", AgentState::Working)];
-            bottom.card = Some(card(1));
+            bottom.question = Some(question(1));
             bottom.queued = vec!["later".into()];
         }
         ui.terminal_mut()
@@ -2136,21 +2144,29 @@ fn a_child_program_gets_the_main_screen_even_from_the_overlay() {
 }
 
 #[test]
-fn a_view_option_opens_full_screen_and_esc_returns_to_the_card() {
+fn a_view_option_opens_full_screen_and_esc_returns_to_the_question() {
     let (mut ui, t0) = ui();
-    let mut with_view = card(3);
-    with_view.options.push(CardOption::view("Show the diff"));
-    ui.model_mut().bottom.card = Some(with_view);
+    let mut with_view = question(3);
+    with_view
+        .options
+        .push(QuestionOption::view("Show the diff"));
+    ui.model_mut().bottom.question = Some(with_view);
     ui.frame(t0).unwrap();
     press(&mut ui, KeyCode::Up, t0);
     let actions = press(&mut ui, KeyCode::Char('3'), t0);
-    assert_eq!(actions, [UiAction::OpenView { card: 3, option: 2 }]);
+    assert_eq!(
+        actions,
+        [UiAction::OpenView {
+            question: 3,
+            option: 2
+        }]
+    );
     assert!(
         ui.model()
             .bottom
-            .card
+            .question
             .as_ref()
-            .is_some_and(|card| !card.dismissed)
+            .is_some_and(|question| !question.dismissed)
     );
 
     let diff = crate::cell::DiffView::between("a\n", "b\n", 0);
@@ -2221,10 +2237,7 @@ fn slash_opens_the_menu_under_the_input_and_question_mark_the_shortcuts() {
     let t1 = t0 + Duration::from_millis(20);
     ui.frame(t1).unwrap();
     let rows = screen(&ui);
-    let rule = rows
-        .iter()
-        .rposition(|row| row.starts_with('─') && !row.contains("peer"))
-        .unwrap();
+    let rule = rows.iter().rposition(|row| row.starts_with('─')).unwrap();
     assert!(rows[rule + 1].starts_with("  /model"), "{rows:?}");
     assert!(!rows.iter().any(|row| row.contains("mode on")), "{rows:?}");
 
@@ -2260,7 +2273,7 @@ fn an_open_picker_takes_keys_before_the_composer() {
 }
 
 #[test]
-fn visual_shows_on_the_mode_line_and_esc_leaves_it_before_interrupting() {
+fn visual_shows_on_the_bottom_row_and_esc_leaves_it_before_interrupting() {
     let (mut ui, t0) = ui_at(100);
     ui.model_mut().bottom.mode.vim = Some(VimMode::Insert);
     ui.model_mut().bottom.working = Some(WorkingLine::new("Rowing", t0));
@@ -2282,9 +2295,9 @@ fn visual_shows_on_the_mode_line_and_esc_leaves_it_before_interrupting() {
     ui.frame(t0 + Duration::from_millis(50)).unwrap();
     let rows = screen(&ui);
     assert!(
-        rows.iter().any(|row| row.starts_with(
-            "  -- NORMAL -- ǁ supervised mode on (shift+tab to cycle) · esc to interrupt"
-        )),
+        rows.iter()
+            .any(|row| row
+                .starts_with("  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt")),
         "{rows:#?}"
     );
 
@@ -2295,14 +2308,14 @@ fn visual_shows_on_the_mode_line_and_esc_leaves_it_before_interrupting() {
     assert_eq!(ui.model().bottom.composer.text(), "fix it");
     assert_eq!(press(&mut ui, KeyCode::Esc, t0), [UiAction::Interrupt]);
 
-    // A waiting card stays open while Esc leaves VISUAL LINE.
-    ui.model_mut().bottom.card = Some(card(3));
+    // A waiting question stays open while Esc leaves VISUAL LINE.
+    ui.model_mut().bottom.question = Some(question(3));
     press(&mut ui, KeyCode::Char('V'), t0);
     assert_eq!(ui.model().bottom.mode.vim, Some(VimMode::Visual));
     assert!(press(&mut ui, KeyCode::Esc, t0).is_empty());
-    assert!(!ui.model().bottom.card.as_ref().unwrap().dismissed);
+    assert!(!ui.model().bottom.question.as_ref().unwrap().dismissed);
 
-    // A visual delete ends VISUAL, and the mode line follows.
+    // A visual delete ends VISUAL, and the bottom line follows.
     press(&mut ui, KeyCode::Char('0'), t0);
     press(&mut ui, KeyCode::Char('v'), t0);
     press(&mut ui, KeyCode::Char('e'), t0);
@@ -2318,10 +2331,10 @@ fn shift_tab<W: Write>(ui: &mut Ui<W>, now: Instant) -> Vec<UiAction> {
     )
 }
 
-/// A card that asks takes the keys from an open picker, which waits under it, hidden, and has
-/// them again once the card is set aside.
+/// A question that asks takes the keys from an open picker, which waits under it, hidden, and has
+/// them again once the question is set aside.
 #[test]
-fn a_card_takes_the_keys_from_an_open_picker() {
+fn a_question_takes_the_keys_from_an_open_picker() {
     let (mut ui, t0) = ui();
     let mut picker = Picker::new("Theme", "Sets ui.theme");
     picker.rows = ["auto", "dark", "light"]
@@ -2329,19 +2342,19 @@ fn a_card_takes_the_keys_from_an_open_picker() {
         .map(|label| PickerRow::new(label, ""))
         .collect();
     ui.model_mut().bottom.picker = Some(picker);
-    ui.model_mut().bottom.card = Some(needs_you(9));
+    ui.model_mut().bottom.question = Some(needs_you(9));
     ui.frame(t0).unwrap();
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
     assert!(!screen(&ui).iter().any(|row| row.contains("light")));
     assert!(press(&mut ui, KeyCode::Char('3'), t0).is_empty());
     assert_eq!(
-        press(&mut ui, KeyCode::Esc, t0 + CARD_GUARD),
-        [UiAction::Dismiss { card: 9 }]
+        press(&mut ui, KeyCode::Esc, t0 + QUESTION_GUARD),
+        [UiAction::Dismiss { question: 9 }]
     );
-    ui.frame(t0 + CARD_GUARD).unwrap();
+    ui.frame(t0 + QUESTION_GUARD).unwrap();
     assert!(screen(&ui).iter().any(|row| row.contains("light")));
     assert_eq!(
-        press(&mut ui, KeyCode::Char('3'), t0 + CARD_GUARD),
+        press(&mut ui, KeyCode::Char('3'), t0 + QUESTION_GUARD),
         [UiAction::Picker(PickerEvent::Picked(2))]
     );
 }
@@ -2384,7 +2397,7 @@ fn a_typed_picker_line_takes_pastes_and_keeps_the_keys_it_has_no_use_for() {
 }
 
 #[test]
-fn a_picker_list_filters_on_a_paste_and_never_opens_the_crew_view() {
+fn a_picker_list_filters_on_a_paste_and_never_opens_the_agent_panel_view() {
     let (mut ui, t0) = ui();
     let mut picker = Picker::new("Model", "Sets the model");
     picker.rows = ["haiku", "opus", "sonnet"]
@@ -2404,12 +2417,12 @@ fn a_picker_list_filters_on_a_paste_and_never_opens_the_crew_view() {
 }
 
 #[test]
-fn a_focused_card_holds_every_key_but_shift_tab_and_the_quit_keys() {
+fn a_focused_question_holds_every_key_but_shift_tab_and_the_quit_keys() {
     let (mut ui, t0) = ui();
-    ui.model_mut().bottom.card = Some(card(5));
+    ui.model_mut().bottom.question = Some(question(5));
     press(&mut ui, KeyCode::Up, t0);
-    assert!(ui.model().bottom.focused_card().is_some());
-    // Shift+Tab still cycles the mode, as at Claude Code's prompts: full auto settles the card,
+    assert!(ui.model().bottom.focused_question().is_some());
+    // Shift+Tab still cycles the mode, as at Claude Code's prompts: autopilot settles the question,
     // which keeps the keys until then.
     assert_eq!(
         shift_tab(&mut ui, t0),
@@ -2420,10 +2433,10 @@ fn a_focused_card_holds_every_key_but_shift_tab_and_the_quit_keys() {
         [UiAction::ModeChanged(ApprovalMode::Autopilot)]
     );
     assert_eq!(ui.model().bottom.mode.approval, ApprovalMode::Autopilot);
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
     assert!(press(&mut ui, KeyCode::Left, t0).is_empty());
     assert!(chord(&mut ui, 'o', t0).is_empty());
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
     assert!(chord(&mut ui, 'd', t0).is_empty());
     assert_eq!(
         chord(&mut ui, 'd', t0 + Duration::from_millis(100)),
@@ -2433,9 +2446,9 @@ fn a_focused_card_holds_every_key_but_shift_tab_and_the_quit_keys() {
 
 fn answered_pick() -> (crate::bottom::AnsweredPick, argonauts_core::app::UiCommand) {
     let run = argonauts_core::RunId::new("run-20261002-101500-3fa2").unwrap();
-    let id = argonauts_core::names::CheckpointId::numbered(4);
+    let id = argonauts_core::names::ApprovalId::numbered(4);
     let pick =
-        crate::bottom::AnsweredPick::new(run.clone(), id.clone(), "task-003 handed to Codex");
+        crate::bottom::AnsweredPick::new(run.clone(), id.clone(), "task-003 fell back to Codex");
     (
         pick,
         argonauts_core::app::UiCommand::RememberPick { run, id },
@@ -2443,7 +2456,7 @@ fn answered_pick() -> (crate::bottom::AnsweredPick, argonauts_core::app::UiComma
 }
 
 #[test]
-fn up_picks_the_answered_handoff_pick_and_m_remembers_it() {
+fn up_picks_the_answered_fallback_pick_and_m_remembers_it() {
     let (mut ui, t0) = ui_at(80);
     ui.model_mut().bottom.composer.remember("older");
     let (pick, remember) = answered_pick();
@@ -2452,7 +2465,7 @@ fn up_picks_the_answered_handoff_pick_and_m_remembers_it() {
     let rows = live(&ui);
     assert!(
         rows.iter()
-            .any(|row| row == "◆ task-003 handed to Codex · ↑ to remember this pick"),
+            .any(|row| row == "◆ task-003 fell back to Codex · ↑ to remember this pick"),
         "{rows:#?}"
     );
 
@@ -2464,7 +2477,7 @@ fn up_picks_the_answered_handoff_pick_and_m_remembers_it() {
     );
     ui.frame(t0 + Duration::from_secs(1)).unwrap();
     let rows = live(&ui);
-    let selected = "❯ task-003 handed to Codex · m to save it as a rule · esc to dismiss";
+    let selected = "❯ task-003 fell back to Codex · m to save it as a rule · esc to dismiss";
     assert!(rows.iter().any(|row| row == selected), "{rows:#?}");
 
     assert_eq!(
@@ -2510,13 +2523,13 @@ fn the_answered_pick_steps_aside_for_history_typing_and_esc() {
 }
 
 #[test]
-fn a_waiting_card_comes_before_the_answered_pick() {
+fn a_waiting_question_comes_before_the_answered_pick() {
     let (mut ui, t0) = ui();
     let (pick, _) = answered_pick();
     ui.model_mut().bottom.answered_pick = Some(pick);
-    ui.model_mut().bottom.card = Some(card(9));
+    ui.model_mut().bottom.question = Some(question(9));
     press(&mut ui, KeyCode::Up, t0);
-    assert!(ui.model().bottom.focused_card().is_some());
+    assert!(ui.model().bottom.focused_question().is_some());
     assert!(!ui.model().bottom.pick_selected());
 }
 
@@ -2531,7 +2544,7 @@ fn a_bang_switches_to_shell_mode_and_esc_leaves_it_before_interrupting() {
     assert!(rows.iter().any(|row| row == "! git status"), "{rows:#?}");
     assert!(
         rows.iter().any(|row| row == "  ! for shell mode"),
-        "the mode line says only that: {rows:#?}"
+        "the bottom line says only that: {rows:#?}"
     );
 
     assert!(press(&mut ui, KeyCode::Esc, t0).is_empty());
@@ -2619,7 +2632,7 @@ fn in_shell_mode_slash_question_mark_and_at_are_the_commands_own() {
     );
 }
 
-/// A view hides the mode line, so why one of its keys can't act shows over its footer while
+/// A view hides the bottom line, so why one of its keys can't act shows over its footer while
 /// the notice lasts, wrapped when it needs two rows, and the footer comes back after.
 #[test]
 fn a_views_notice_shows_over_its_footer_while_it_lasts() {
@@ -2712,14 +2725,14 @@ fn a_mod_s_own_chord_hides_it_or_shows_it_again() {
     assert!(ui.model().bottom.composer.is_empty());
 }
 
-fn heads_up() -> crate::bottom::HeadsUp {
+fn notice() -> crate::bottom::Notice {
     use argonauts_core::screen::{Drawn, DrawnButton, DrawnLook, DrawnRow, DrawnSpan};
     let button = |label: &str, handle| DrawnButton {
         label: label.to_owned(),
         plugin: "cc-plugin-you-should-know".to_owned(),
         handle,
     };
-    crate::bottom::HeadsUp::new(Drawn {
+    crate::bottom::Notice::new(Drawn {
         rows: vec![DrawnRow {
             spans: vec![DrawnSpan {
                 text: "✦ Heads up · Dana is away until Monday.".to_owned(),
@@ -2736,7 +2749,7 @@ fn heads_up() -> crate::bottom::HeadsUp {
 }
 
 #[test]
-fn ctrl_x_chords_send_now_and_reach_the_heads_up() {
+fn ctrl_x_chords_send_now_and_reach_the_notice() {
     let (mut ui, t0) = ui();
     ui.model_mut().bottom.send_now = true;
     ui.model_mut().bottom.queued = vec!["also check the changelog".into()];
@@ -2759,14 +2772,14 @@ fn ctrl_x_chords_send_now_and_reach_the_heads_up() {
     press(&mut ui, KeyCode::Char('a'), late);
     assert_eq!(ui.model().bottom.composer.text(), "a");
 
-    // Ctrl+X Tab gives the heads-up the keys; a number presses its button.
-    ui.model_mut().bottom.heads_up = heads_up();
+    // Ctrl+X Tab gives the notice the keys; a number presses its button.
+    ui.model_mut().bottom.notice = notice();
     chord(&mut ui, 'x', t0);
     press(&mut ui, KeyCode::Tab, t0);
-    assert!(ui.model().bottom.heads_up.has_focus());
+    assert!(ui.model().bottom.notice.has_focus());
     assert_eq!(
         press(&mut ui, KeyCode::Char('0'), t0),
-        [UiAction::Command(Command::PressHeadsUp {
+        [UiAction::Command(Command::PressNotice {
             plugin: "cc-plugin-you-should-know".into(),
             handle: 13,
         })]
@@ -2774,7 +2787,7 @@ fn ctrl_x_chords_send_now_and_reach_the_heads_up() {
     press(&mut ui, KeyCode::Right, t0);
     assert_eq!(
         press(&mut ui, KeyCode::Enter, t0),
-        [UiAction::Command(Command::PressHeadsUp {
+        [UiAction::Command(Command::PressNotice {
             plugin: "cc-plugin-you-should-know".into(),
             handle: 12,
         })]
@@ -2783,28 +2796,28 @@ fn ctrl_x_chords_send_now_and_reach_the_heads_up() {
     press(&mut ui, KeyCode::Char('b'), t0);
     assert_eq!(ui.model().bottom.composer.text(), "a");
     press(&mut ui, KeyCode::Esc, t0);
-    assert!(!ui.model().bottom.heads_up.has_focus());
+    assert!(!ui.model().bottom.notice.has_focus());
     // Ctrl+X Ctrl+A hides it and shows it again.
     chord(&mut ui, 'x', t0);
     chord(&mut ui, 'a', t0);
-    assert!(!ui.model().bottom.heads_up.shows());
+    assert!(!ui.model().bottom.notice.shows());
     chord(&mut ui, 'x', t0);
     chord(&mut ui, 'a', t0);
-    assert!(ui.model().bottom.heads_up.shows());
+    assert!(ui.model().bottom.notice.shows());
 }
 
 #[test]
-fn ctrl_x_c_pins_or_unpins_the_context_widget() {
-    use argonauts_core::input::{SlashCommand, WidgetChange, WidgetsAction};
-    use argonauts_core::settings::ui::{Place, WidgetName};
+fn ctrl_x_c_pins_or_unpins_the_context_mod() {
+    use argonauts_core::input::{ModPlaceChange, ModsAction, SlashCommand};
+    use argonauts_core::settings::ui::{ModName, Place};
 
     let (mut ui, t0) = ui();
-    let toggle = |widget| {
+    let toggle = |the_mod| {
         UiAction::Command(Command::Slash {
-            command: SlashCommand::Widgets {
-                action: WidgetsAction::Change {
-                    widget,
-                    change: WidgetChange::Toggle {
+            command: SlashCommand::Mods {
+                action: ModsAction::Change {
+                    the_mod,
+                    change: ModPlaceChange::Toggle {
                         place: Place::AboveInput,
                     },
                 },
@@ -2815,12 +2828,12 @@ fn ctrl_x_c_pins_or_unpins_the_context_widget() {
     assert!(chord(&mut ui, 'x', t0).is_empty());
     assert_eq!(
         press(&mut ui, KeyCode::Char('c'), t0),
-        [toggle(WidgetName::Context)]
+        [toggle(ModName::Context)]
     );
     chord(&mut ui, 'x', t0);
     assert_eq!(
         press(&mut ui, KeyCode::Char('q'), t0),
-        [toggle(WidgetName::Quota)]
+        [toggle(ModName::PlanUsage)]
     );
     // The second key never reaches the input.
     assert_eq!(ui.model().bottom.composer.text(), "");

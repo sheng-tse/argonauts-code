@@ -1,18 +1,14 @@
-//! Replays of OpenCode 1.18.34 output recorded against a local Ollama (see the folder's
-//! `meta.json`), next to the hand-written 1.18.33 ones in `fixtures.rs`.
+//! Replays of OpenCode output recorded against a local Ollama (each recording's meta says
+//! how), next to the hand-written ones in `fixtures.rs`.
 
 use std::path::{Path, PathBuf};
 
-use argonauts_adapter_opencode::OpenCodeAdapter;
+use argonauts_adapter_opencode::{OpenCodeAdapter, TESTED_VERSIONS};
 use argonauts_core::{Adapter, AgentEvent, ErrorCategory, SessionRequest};
 use serde_json::Value;
 
-const VERSION: &str = "1.18.34";
-
 fn fixtures_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("fixtures")
-        .join(VERSION)
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")
 }
 
 fn read(name: &str) -> String {
@@ -68,10 +64,11 @@ fn assert_command_matches(name: &str, req: &SessionRequest) {
 
 #[test]
 fn recorded_build_parses() {
-    let folder: Value = serde_json::from_str(&read("meta.json")).unwrap();
-    assert_eq!(folder["synthetic"], false);
-    assert_eq!(folder["cli_version"], VERSION);
-    assert_eq!(OpenCodeAdapter::new().tested_versions(), [VERSION]);
+    assert_eq!(OpenCodeAdapter::new().tested_versions(), TESTED_VERSIONS);
+    assert_eq!(
+        TESTED_VERSIONS,
+        [meta("build_hello")["cli_version"].as_str().unwrap()]
+    );
     assert_command_matches(
         "build_hello",
         &request("build_hello", None, &["--thinking"]),

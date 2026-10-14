@@ -1,4 +1,4 @@
-//! Where Argonauts keeps state, worktrees, and config: under `ARGONAUTS_HOME` (default
+//! Where Argonauts Code keeps state, worktrees, and config: under `ARGONAUTS_HOME` (default
 //! `~/.argonauts`), and in a repo's own `.argonauts/`.
 
 use std::ffi::OsString;
@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use crate::ids::{CardId, RepoId, RunId};
+use crate::ids::{RepoId, RunId, TaskId};
 
 pub const HOME_ENV: &str = "ARGONAUTS_HOME";
 
@@ -18,7 +18,7 @@ pub const EVENT_LOG_FILE: &str = "events.jsonl";
 pub const TESTING_ENV: &str = "ARGONAUTS_TESTING";
 
 /// The home tests share when they don't set `ARGONAUTS_HOME`, in the temp folder. Shared, so a
-/// test and the supervisor it starts find the same runs.
+/// test and the run host it starts find the same runs.
 const SCRATCH_HOME: &str = "argonauts-test-home";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -81,7 +81,7 @@ impl Paths {
         self.home.join(crate::layout::user_files::MODELS_CACHE)
     }
 
-    pub fn global_presets(&self) -> PathBuf {
+    pub fn global_workflows(&self) -> PathBuf {
         self.home.join("workflows")
     }
 
@@ -106,12 +106,12 @@ impl Paths {
         self.run_dir(repo, run).join(EVENT_LOG_FILE)
     }
 
-    /// Private scratch space for one card, kept outside its worktree.
-    pub fn card_dir(&self, repo: &RepoId, run: &RunId, card: &CardId) -> PathBuf {
-        self.run_dir(repo, run).join("cards").join(card.as_str())
+    /// Private scratch space for one task, kept outside its worktree.
+    pub fn task_dir(&self, repo: &RepoId, run: &RunId, task: &TaskId) -> PathBuf {
+        self.run_dir(repo, run).join("tasks").join(task.as_str())
     }
 
-    /// Creates the root and its `state` and `worktrees` folders readable only by the owner, and
+    /// Creates the root and its `state` and `worktrees` folders readable only by your user, and
     /// tightens them if they already exist. Logs hold prompts, transcripts, and diffs.
     pub fn prepare(&self) -> io::Result<()> {
         for dir in [
@@ -126,12 +126,12 @@ impl Paths {
         Ok(())
     }
 
-    pub fn worktree_dir(&self, repo: &RepoId, run: &RunId, card: &CardId) -> PathBuf {
+    pub fn worktree_dir(&self, repo: &RepoId, run: &RunId, task: &TaskId) -> PathBuf {
         self.home
             .join("worktrees")
             .join(repo.as_str())
             .join(run.as_str())
-            .join(card.as_str())
+            .join(task.as_str())
     }
 }
 
@@ -196,8 +196,8 @@ pub fn run_dir(repo: &RepoId, run: &RunId) -> Result<PathBuf, NoHomeDir> {
     Ok(Paths::from_env()?.run_dir(repo, run))
 }
 
-pub fn worktree_dir(repo: &RepoId, run: &RunId, card: &CardId) -> Result<PathBuf, NoHomeDir> {
-    Ok(Paths::from_env()?.worktree_dir(repo, run, card))
+pub fn worktree_dir(repo: &RepoId, run: &RunId, task: &TaskId) -> Result<PathBuf, NoHomeDir> {
+    Ok(Paths::from_env()?.worktree_dir(repo, run, task))
 }
 
 pub fn global_config_path() -> Result<PathBuf, NoHomeDir> {
@@ -296,18 +296,18 @@ fn shared_git_dir(repo_root: &Path) -> io::Result<Option<PathBuf>> {
 mod tests {
     use super::*;
 
-    fn ids() -> (RepoId, RunId, CardId) {
+    fn ids() -> (RepoId, RunId, TaskId) {
         (
             RepoId::new("api-3f9a1c2b4d5e").unwrap(),
             RunId::new("run-01").unwrap(),
-            CardId::new("task-001").unwrap(),
+            TaskId::new("task-001").unwrap(),
         )
     }
 
     #[test]
     fn layout_under_home() {
         let paths = Paths::new("/h");
-        let (repo, run, card) = ids();
+        let (repo, run, task) = ids();
         assert_eq!(
             paths.state_dir(&repo),
             Path::new("/h/state/api-3f9a1c2b4d5e")
@@ -321,11 +321,11 @@ mod tests {
             Path::new("/h/state/api-3f9a1c2b4d5e/runs/run-01/events.jsonl")
         );
         assert_eq!(
-            paths.card_dir(&repo, &run, &card),
-            Path::new("/h/state/api-3f9a1c2b4d5e/runs/run-01/cards/task-001")
+            paths.task_dir(&repo, &run, &task),
+            Path::new("/h/state/api-3f9a1c2b4d5e/runs/run-01/tasks/task-001")
         );
         assert_eq!(
-            paths.worktree_dir(&repo, &run, &card),
+            paths.worktree_dir(&repo, &run, &task),
             Path::new("/h/worktrees/api-3f9a1c2b4d5e/run-01/task-001")
         );
     }
@@ -403,7 +403,10 @@ mod tests {
             paths.global_config(),
             Path::new("/u/.argonauts/config.toml")
         );
-        assert_eq!(paths.global_presets(), Path::new("/u/.argonauts/workflows"));
+        assert_eq!(
+            paths.global_workflows(),
+            Path::new("/u/.argonauts/workflows")
+        );
         let moved = Paths::resolve(Some("/x".into()), Some("/u".into())).unwrap();
         assert_eq!(moved.global_config(), Path::new("/x/config.toml"));
         assert_eq!(

@@ -9,16 +9,17 @@ use anyhow::{Context as _, anyhow, bail};
 use argonauts_conductor::DoctorDetails;
 use argonauts_core::api::{RunState, RunSummary};
 use argonauts_core::layout::user_files;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
 use argonauts_core::policy::{ApprovalPolicy, ApprovalsView};
 use argonauts_core::registry::ModelEntry;
 use argonauts_core::sanitize::sanitize_for_terminal;
+use argonauts_core::session_runner::{RunnerDirectory, RunnerError, SessionRunner};
+use argonauts_core::settings::layer;
 use argonauts_core::settings::{SettingScope, Settings};
 use argonauts_core::steps::SchemaStepRunner;
-use argonauts_core::worker::{Worker, WorkerDirectory, WorkerError};
-use argonauts_core::{Adapter, CardId, Paths, RunId};
-use argonauts_registry::harnesses::agents_turned_on;
+use argonauts_core::{Adapter, Paths, RunId, TaskId};
+use argonauts_registry::clis::agents_turned_on;
 use argonauts_registry::{
     ResolvedSettings, SettingsSources, resolve, safety_keys_in, setting_meta, write_setting,
 };
@@ -28,25 +29,25 @@ use time::OffsetDateTime;
 use crate::adapters::builtin_adapters;
 use crate::app_settings::AppSettings;
 use crate::env::{AppEnv, SESSION_ENV};
-use crate::host::harnesses::{self, HarnessAdapters, RepoModels};
-use crate::live_registry::{LiveSupervisor, live_supervisors};
+use crate::host::clis::{self, CliAdapters, RepoModels};
+use crate::live_registry::{LiveRunHost, live_run_hosts};
 use crate::trust::TrustStore;
 
-/// `! run-03 has been parked for 9 days, at the plan checkpoint. Parked runs never expire.`
+/// `! run-03 has been waiting for 9 days, at the plan approval. Waiting runs never expire.`
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParkedReminder {
+pub struct WaitingReminder {
     pub run: RunId,
     pub days: u64,
-    /// Such as "the plan checkpoint".
+    /// Such as "the plan approval".
     pub stopped_at: String,
     pub worktrees: usize,
     pub worktree_bytes: u64,
 }
 
-/// What `argonauts doctor` adds to the conductor's report.
+/// What `argonauts doctor` adds to Argonauts Code's report.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DoctorExtras {
-    pub parked: Vec<ParkedReminder>,
+    pub waiting: Vec<WaitingReminder>,
 }
 
 /// Outside a git repository, with no repo named, there are no runs to remind you of.
@@ -56,14 +57,14 @@ pub async fn doctor_extras(repo: Option<&Path>) -> anyhow::Result<DoctorExtras> 
     };
     let settings = AppSettings::load(&env, Vec::new(), false)?;
     let runs = crate::conductor(&env.repo_root)?.list().await?;
-    let threshold = settings.settings().runs.remind_parked_days;
-    let parked = parked_reminders(&runs, threshold, OffsetDateTime::now_utc(), |run| {
+    let threshold = settings.settings().runs.remind_waiting_days;
+    let waiting = waiting_reminders(&runs, threshold, OffsetDateTime::now_utc(), |run| {
         worktree_usage(&run_worktrees(&env, run))
     });
-    Ok(DoctorExtras { parked })
+    Ok(DoctorExtras { waiting })
 }
 
-/// Every adapter doctor checks: the built-in four, then each `[[harness]]` entry that counts
+/// Every adapter doctor checks: the built-in four, then each `[[cli]]` entry that counts
 /// here, a built-in profile that's off by default only once a settings layer turns it on.
 pub fn doctor_adapters(
     repo: Option<&Path>,
@@ -73,8 +74,43 @@ pub fn doctor_adapters(
     adapters_here(env.as_ref(), &resolved)
 }
 
+/// How each installed CLI's version stands and what there is to update to, by id, as the app's
+/// Doctor and Status tab say it: from `report`, and from what sessions and the install
+/// sources have shown, kept under `home`.
+pub fn version_checks(
+    home: &Paths,
+    adapters: &[Arc<dyn Adapter>],
+    report: &argonauts_conductor::DoctorReport,
+) -> std::collections::BTreeMap<String, argonauts_core::status_tab::CliVersionCheck> {
+    use argonauts_conductor::cli_versions::{CliVersions, Installed, version_check};
+
+    let seen = CliVersions::load(&home.cli_versions());
+    report
+        .agents
+        .iter()
+        .filter(|check| check.status != argonauts_conductor::AgentStatus::NotInstalled)
+        .filter_map(|check| {
+            let adapter = adapters.iter().find(|adapter| adapter.id() == check.id)?;
+            let found = version_check(adapter.as_ref(), Installed::of(check), &seen);
+            Some((check.id.clone(), found))
+        })
+        .collect()
+}
+
+/// [`version_checks`] for the shell's `argonauts doctor`, with your home found from the
+/// environment. Nothing is said of versions when it can't be found.
+pub fn doctor_version_checks(
+    adapters: &[Arc<dyn Adapter>],
+    report: &argonauts_conductor::DoctorReport,
+) -> std::collections::BTreeMap<String, argonauts_core::status_tab::CliVersionCheck> {
+    match home() {
+        Ok(home) => version_checks(&home, adapters, report),
+        Err(_) => Default::default(),
+    }
+}
+
 /// What doctor reports beyond versions for each adapter here: login, flags, roles, hooks, the
-/// status tool and the quota probe, then the sandbox self-test and any always-on agents. It
+/// status tool and the plan usage probe, then the sandbox self-test and any always-on agents. It
 /// never makes a model call.
 pub async fn doctor_details(
     repo: Option<&Path>,
@@ -106,33 +142,33 @@ pub(crate) fn adapters_turning_on(
     let repo = env.map(|env| RepoModels::new(&env.repo_root, &env.state_dir));
     let mut turned_on = agents_turned_on(resolved);
     turned_on.extend(also_on.iter().cloned());
-    let manifests = harnesses::manifests(&resolved.settings, &paths, repo.as_ref(), &turned_on);
+    let manifests = clis::manifests(&resolved.settings, &paths, repo.as_ref(), &turned_on);
     let builtins = builtin_adapters();
     let mut adapters = builtins.clone();
-    adapters.extend(HarnessAdapters::default().adapters(manifests, &builtins, &paths));
+    adapters.extend(CliAdapters::default().adapters(manifests, &builtins, &paths));
     Ok(adapters)
 }
 
-/// Parked runs you were reminded of, or parked longer than `threshold_days`, oldest first.
-fn parked_reminders(
+/// Waiting runs you were reminded of, or waiting longer than `threshold_days`, oldest first.
+fn waiting_reminders(
     runs: &[RunSummary],
     threshold_days: u32,
     now: OffsetDateTime,
     usage: impl Fn(&RunId) -> (usize, u64),
-) -> Vec<ParkedReminder> {
+) -> Vec<WaitingReminder> {
     let threshold = time::Duration::days(i64::from(threshold_days));
-    let mut reminders: Vec<ParkedReminder> = runs
+    let mut reminders: Vec<WaitingReminder> = runs
         .iter()
-        .filter(|run| run.state == RunState::Parked)
+        .filter(|run| run.state == RunState::Waiting)
         .filter_map(|run| {
-            let parked_for = now - run.updated;
-            if !run.remind && parked_for <= threshold {
+            let waiting_for = now - run.updated;
+            if !run.remind && waiting_for <= threshold {
                 return None;
             }
             let (worktrees, worktree_bytes) = usage(&run.run);
-            Some(ParkedReminder {
+            Some(WaitingReminder {
                 run: run.run.clone(),
-                days: u64::try_from(parked_for.whole_days()).unwrap_or(0),
+                days: u64::try_from(waiting_for.whole_days()).unwrap_or(0),
                 stopped_at: run.stopped_at.clone(),
                 worktrees,
                 worktree_bytes,
@@ -143,11 +179,11 @@ fn parked_reminders(
     reminders
 }
 
-/// `~/.argonauts/worktrees/<repo>/<run>/`, which holds one worktree per card.
+/// `~/.argonauts/worktrees/<repo>/<run>/`, which holds one worktree per task.
 fn run_worktrees(env: &AppEnv, run: &RunId) -> PathBuf {
-    let any_card = CardId::new("card").ok();
-    any_card
-        .map(|card| env.paths.worktree_dir(&env.repo_id, run, &card))
+    let any_task = TaskId::new("task").ok();
+    any_task
+        .map(|task| env.paths.worktree_dir(&env.repo_id, run, &task))
         .and_then(|dir| dir.parent().map(Path::to_owned))
         .unwrap_or_default()
 }
@@ -180,7 +216,7 @@ fn size_of(path: &Path) -> u64 {
 }
 
 /// Runs in this repo that wait for you, newest first.
-pub async fn inbox(repo: Option<&Path>) -> anyhow::Result<Vec<RunSummary>> {
+pub async fn waiting_runs(repo: Option<&Path>) -> anyhow::Result<Vec<RunSummary>> {
     let Some(env) = here(repo)? else {
         return Ok(Vec::new());
     };
@@ -197,17 +233,17 @@ fn waiting_for_you(runs: Vec<RunSummary>) -> Vec<RunSummary> {
     waiting
 }
 
-/// `argonauts status`: every live supervisor across your repos, and this repo's runs that
+/// `argonauts status`: every live run host across your repos, and this repo's runs that
 /// haven't ended.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct StatusReport {
-    pub live: Vec<LiveSupervisor>,
+    pub live: Vec<LiveRunHost>,
     pub runs: Vec<RunSummary>,
 }
 
 pub async fn status(repo: Option<&Path>) -> anyhow::Result<StatusReport> {
     let paths = home()?;
-    let live = live_supervisors(&paths);
+    let live = live_run_hosts(&paths);
     let runs = match here(repo)? {
         Some(env) => crate::conductor(&env.repo_root)?.list().await?,
         None => Vec::new(),
@@ -217,7 +253,7 @@ pub async fn status(repo: Option<&Path>) -> anyhow::Result<StatusReport> {
         .filter(|run| {
             matches!(
                 run.state,
-                RunState::Running | RunState::Pausing | RunState::Parked | RunState::Crashed
+                RunState::Running | RunState::Pausing | RunState::Waiting | RunState::Crashed
             )
         })
         .collect();
@@ -227,7 +263,7 @@ pub async fn status(repo: Option<&Path>) -> anyhow::Result<StatusReport> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalsReport {
     pub view: ApprovalsView,
-    /// Such as "CI failures wait for a CI integration."
+    /// Such as "CI failures wait for a CI run."
     pub notes: Vec<String>,
 }
 
@@ -235,7 +271,7 @@ pub async fn approvals_report(repo: Option<&Path>) -> anyhow::Result<ApprovalsRe
     let env = required(repo)?;
     let settings = AppSettings::load(&env, Vec::new(), false)?;
     let view = policy_for(&env, settings.shared()).view();
-    let mut notes = vec!["CI failures wait for a CI integration.".to_owned()];
+    let mut notes = vec!["CI failures wait for a CI run.".to_owned()];
     if env.paths.home().join(user_files::AUTO_OFF).exists() {
         notes.push(
             "Auto is off everywhere since `argonauts auto off`: every approval waits for you."
@@ -245,7 +281,7 @@ pub async fn approvals_report(repo: Option<&Path>) -> anyhow::Result<ApprovalsRe
     Ok(ApprovalsReport { view, notes })
 }
 
-/// `argonauts auto off`: every checkpoint is supervised until you turn it back on.
+/// `argonauts auto off`: every approval is supervised until you turn it back on.
 pub fn auto_off() -> anyhow::Result<()> {
     let paths = home()?;
     // Turning autonomy off must work even where the settings don't resolve.
@@ -279,20 +315,20 @@ pub(crate) fn policy_for_state(
         settings,
         Arc::new(|| None),
         state_dir,
-        Arc::new(NoWorkers),
+        Arc::new(NoRunners),
         Arc::new(SchemaStepRunner),
     )
 }
 
 /// The policy's view and `auto_off` start no session, so they get no workers.
-pub(crate) struct NoWorkers;
+pub(crate) struct NoRunners;
 
-impl WorkerDirectory for NoWorkers {
-    fn get(&self, worker: &WorkerRef) -> Result<Arc<dyn Worker>, WorkerError> {
-        Err(WorkerError::Unknown(worker.clone()))
+impl RunnerDirectory for NoRunners {
+    fn get(&self, worker: &ModelRef) -> Result<Arc<dyn SessionRunner>, RunnerError> {
+        Err(RunnerError::Unknown(worker.clone()))
     }
 
-    fn available(&self) -> Vec<WorkerRef> {
+    fn available(&self) -> Vec<ModelRef> {
         Vec::new()
     }
 }
@@ -305,8 +341,7 @@ pub async fn models(repo: Option<&Path>, discover: bool) -> anyhow::Result<Vec<M
         .as_ref()
         .map(|env| RepoModels::new(&env.repo_root, &env.state_dir));
     let cache = home()?.models_cache();
-    let registry =
-        crate::host::harnesses::registry(&resolved.settings, repo.as_ref(), Some(&cache));
+    let registry = crate::host::clis::registry(&resolved.settings, repo.as_ref(), Some(&cache));
     Ok(if discover {
         registry.discover().await
     } else {
@@ -390,7 +425,7 @@ fn write_project_file(env: &AppEnv, file: &Path, key: &str, value: &str) -> anyh
     if !carry {
         let note = format!(
             "{} stays untrusted, so its safety settings stay ignored until you trust it with \
-             `argonauts init`.",
+             `argonauts setup`.",
             env.shown(file)
         );
         return Ok(Saved {
@@ -513,7 +548,7 @@ fn show(
     let changed: Vec<_> = resolved
         .entries
         .iter()
-        .filter(|entry| entry.layer != "built-in")
+        .filter(|entry| entry.layer != layer::BUILT_IN)
         .collect();
     if !changed.is_empty() {
         writeln!(out, "#")?;
@@ -566,7 +601,7 @@ fn home() -> anyhow::Result<Paths> {
 }
 
 /// This project's environment. `None` when no folder was named and the current one is neither
-/// a git repository nor a folder Argonauts has worked in: nothing of a project's is there to
+/// a git repository nor a folder Argonauts Code has worked in: nothing of a project's is there to
 /// read, and a command that only looks must not start keeping state for it.
 fn here(repo: Option<&Path>) -> anyhow::Result<Option<AppEnv>> {
     let env = AppEnv::discover(repo)?;
@@ -607,7 +642,7 @@ fn resolve_here(
 mod tests {
     use argonauts_core::Spend;
     use argonauts_core::events::run::RunMode;
-    use argonauts_core::names::CheckpointId;
+    use argonauts_core::names::ApprovalId;
     use argonauts_testkit::TempRepo;
 
     use super::*;
@@ -676,11 +711,11 @@ mod tests {
             "[sandbox]\nnetwork = true\n",
         )
         .unwrap();
-        let saved = set(&env, "main_agent", "codex", None).unwrap();
+        let saved = set(&env, "crew.main", "codex", None).unwrap();
         assert_eq!(saved.file, local);
         let note = saved.note.unwrap();
         assert!(note.contains("stays untrusted"), "{note}");
-        assert!(note.contains("argonauts init"), "{note}");
+        assert!(note.contains("argonauts setup"), "{note}");
         assert!(!trusted().is_trusted(&local));
 
         // A new file, or one that sets no safety key, holds only what you wrote.
@@ -691,8 +726,8 @@ mod tests {
         repo.write(".argonauts/config.local.toml", "[ui]\nbell = true\n")
             .unwrap();
         for (key, value, file) in [
-            ("solo_or_crew.solo_max_files", "5", &project),
-            ("main_agent", "codex", &local),
+            ("captain_or_crew.captain_max_files", "5", &project),
+            ("crew.main", "codex", &local),
         ] {
             let saved = set(&env, key, value, None).unwrap();
             assert_eq!((&saved.file, saved.note), (file, None), "{key}");
@@ -712,9 +747,15 @@ mod tests {
                 .contains("bell = false")
         );
         for scope in [None, Some(SettingScope::Project)] {
-            let err = config_set_in(None, &paths, "solo_or_crew.solo_max_files", "5", scope)
-                .unwrap_err()
-                .to_string();
+            let err = config_set_in(
+                None,
+                &paths,
+                "captain_or_crew.captain_max_files",
+                "5",
+                scope,
+            )
+            .unwrap_err()
+            .to_string();
             assert!(err.contains("the project's folder"), "{err}");
         }
     }
@@ -725,7 +766,7 @@ mod tests {
         let env = env_for(&repo, false);
         for (key, value, file, scope) in [
             (
-                "main_agent",
+                "crew.main",
                 "codex",
                 env.project_local_config(),
                 SettingScope::ProjectLocal,
@@ -737,7 +778,7 @@ mod tests {
                 SettingScope::Global,
             ),
             (
-                "solo_or_crew.solo_max_files",
+                "captain_or_crew.captain_max_files",
                 "5",
                 env.project_config(),
                 SettingScope::Project,
@@ -812,18 +853,18 @@ mod tests {
         assert!(err.contains("--local"), "{err}");
     }
 
-    fn parked(run: &str, days_ago: i64, remind: bool) -> RunSummary {
+    fn waiting(run: &str, days_ago: i64, remind: bool) -> RunSummary {
         RunSummary {
             run: RunId::new(run).unwrap(),
             title: run.to_owned(),
             mode: RunMode::Crew,
             workflow: "council".to_owned(),
-            state: RunState::Parked,
+            state: RunState::Waiting,
             stopped_at: "the plan approval".to_owned(),
             updated: OffsetDateTime::now_utc() - time::Duration::days(days_ago),
             spent: Spend::default(),
             sessions_to_resume: 0,
-            waiting: vec![CheckpointId::numbered(1)],
+            waiting: vec![ApprovalId::numbered(1)],
             live: false,
             remind,
             name: None,
@@ -831,16 +872,16 @@ mod tests {
     }
 
     #[test]
-    fn doctor_reminds_of_runs_parked_too_long() {
-        let mut merged = parked("run-01", 30, false);
+    fn doctor_reminds_of_runs_waiting_too_long() {
+        let mut merged = waiting("run-01", 30, false);
         merged.state = RunState::Merged;
         let runs = vec![
             merged,
-            parked("run-02", 2, false),
-            parked("run-03", 9, false),
-            parked("run-04", 1, true),
+            waiting("run-02", 2, false),
+            waiting("run-03", 9, false),
+            waiting("run-04", 1, true),
         ];
-        let reminders = parked_reminders(&runs, 7, OffsetDateTime::now_utc(), |_| (2, 4096));
+        let reminders = waiting_reminders(&runs, 7, OffsetDateTime::now_utc(), |_| (2, 4096));
         let names: Vec<&str> = reminders.iter().map(|r| r.run.as_str()).collect();
         assert_eq!(names, vec!["run-03", "run-04"]);
         assert_eq!(reminders[0].days, 9);
@@ -852,12 +893,12 @@ mod tests {
     }
 
     #[test]
-    fn worktree_usage_counts_each_card_and_its_bytes() {
+    fn worktree_usage_counts_each_task_and_its_bytes() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(worktree_usage(&dir.path().join("none")), (0, 0));
-        for card in ["task-1", "task-2"] {
-            std::fs::create_dir_all(dir.path().join(card).join("src")).unwrap();
-            std::fs::write(dir.path().join(card).join("src").join("a.rs"), "12345").unwrap();
+        for task in ["task-1", "task-2"] {
+            std::fs::create_dir_all(dir.path().join(task).join("src")).unwrap();
+            std::fs::write(dir.path().join(task).join("src").join("a.rs"), "12345").unwrap();
         }
         std::os::unix::fs::symlink("/", dir.path().join("task-1").join("root")).unwrap();
         let (count, bytes) = worktree_usage(dir.path());
@@ -866,10 +907,14 @@ mod tests {
     }
 
     #[test]
-    fn the_inbox_holds_runs_that_wait_for_you() {
-        let mut done = parked("run-01", 1, false);
+    fn waiting_runs_are_the_runs_that_wait_for_you() {
+        let mut done = waiting("run-01", 1, false);
         done.waiting.clear();
-        let runs = vec![done, parked("run-02", 3, false), parked("run-03", 1, false)];
+        let runs = vec![
+            done,
+            waiting("run-02", 3, false),
+            waiting("run-03", 1, false),
+        ];
         let names: Vec<String> = waiting_for_you(runs)
             .into_iter()
             .map(|run| run.run.to_string())
@@ -882,7 +927,7 @@ mod tests {
         let repo = TempRepo::new().unwrap();
         repo.write(
             ".argonauts/config.toml",
-            "[solo_or_crew]\nsolo_max_files = 5\n",
+            "[captain_or_crew]\ncaptain_max_files = 5\n",
         )
         .unwrap();
         let env = env_for(&repo, false);
@@ -898,7 +943,7 @@ mod tests {
         assert!(text.contains("# --set ui.bell=false"), "{text}");
         let reparsed: Settings = toml::from_str(&text).unwrap();
         assert_eq!(&reparsed, settings.settings());
-        assert_eq!(reparsed.triage.solo_max_files, 5);
+        assert_eq!(reparsed.captain_or_crew.captain_max_files, 5);
         assert!(!reparsed.ui.bell);
     }
 
@@ -906,7 +951,7 @@ mod tests {
     fn the_schema_describes_the_settings() {
         let schema = config_schema();
         let properties = schema["properties"].as_object().unwrap();
-        for key in ["workflow", "main_agent", "crew", "approvals"] {
+        for key in ["workflow", "crew", "approvals"] {
             assert!(properties.contains_key(key), "{key}");
         }
     }

@@ -42,7 +42,7 @@ use crate::wire::{read_frame, write_frame};
 
 /// Replies and events waiting to go out on one connection.
 const OUTGOING: usize = 256;
-/// How long an exiting supervisor lets its connections send what they still hold, so a client
+/// How long an exiting run host lets its connections send what they still hold, so a client
 /// that stopped reading can't keep it running.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -72,7 +72,7 @@ pub(crate) enum Origin {
     /// A connection; its peer process is checked for agent ancestry.
     Peer { pid: Option<u32> },
     /// `pending-answers.jsonl`, written by a client that ran the same check on itself. No peer
-    /// is left to check, so the token, kept in the owner's private run folder, is the guard.
+    /// is left to check, so the token, kept in the run's private folder, is the guard.
     Pending,
 }
 
@@ -137,7 +137,7 @@ pub(crate) async fn serve(
     })
     .await;
     if flushed.is_err() {
-        tracing::warn!("a control connection was still sending as the supervisor exited");
+        tracing::warn!("a control connection was still sending as the run host exited");
     }
     Ok(())
 }
@@ -250,7 +250,7 @@ pub(crate) async fn apply(
     }
 }
 
-/// Everything `apply` does short of waiting. While the run is parked within its grace, a request
+/// Everything `apply` does short of waiting. While the run is waiting within its grace, a request
 /// that needs the engine wakes the host, which starts a new one, and the rest are answered here.
 pub(crate) async fn submit(
     state: &ServerState,
@@ -264,12 +264,12 @@ pub(crate) async fn submit(
         return Err(error("hello and subscribe belong to a connection"));
     }
     admit(state, &request, origin).await.map_err(error)?;
-    let wakes = while_parked(&request).is_none();
+    let wakes = while_waiting(&request).is_none();
     let (entry, receipt) = Entry::new(request);
     match state.door.submit(entry, wakes) {
         Ok(()) => Ok(receipt),
-        Err(Turned::Parked(entry)) => Err(parked_reply(state, &entry.request).await),
-        Err(Turned::Closed) => Err(error(SUPERVISOR_EXITING)),
+        Err(Turned::Waiting(entry)) => Err(waiting_reply(state, &entry.request).await),
+        Err(Turned::Closed) => Err(error(RUN_HOST_EXITING)),
     }
 }
 
@@ -283,12 +283,12 @@ pub(crate) async fn admit_pending(
     Ok(Entry::new(request))
 }
 
-/// The reply to a request that met a supervisor on its way out, before any engine took it.
-/// Clients match it to hand the request to the next supervisor instead.
-pub(crate) const SUPERVISOR_EXITING: &str = "the run's supervisor is exiting; send it again";
+/// The reply to a request that met a run host on its way out, before any engine took it.
+/// Clients match it to hand the request to the next run host instead.
+pub(crate) const RUN_HOST_EXITING: &str = "the run's run host is exiting; send it again";
 
-/// Why a request doesn't wake a parked run, or `None` when it does.
-pub(super) fn while_parked(request: &ControlRequest) -> Option<&'static str> {
+/// Why a request doesn't wake a waiting run, or `None` when it does.
+pub(super) fn while_waiting(request: &ControlRequest) -> Option<&'static str> {
     match request {
         // Only an engine can diff the last turn's worktree.
         ControlRequest::Diff {
@@ -306,9 +306,9 @@ pub(super) fn while_parked(request: &ControlRequest) -> Option<&'static str> {
     }
 }
 
-/// The reply to a request that doesn't wake a parked run. The views come from the run's files,
+/// The reply to a request that doesn't wake a waiting run. The views come from the run's files,
 /// which are complete while no engine runs.
-pub(crate) async fn parked_reply(state: &ServerState, request: &ControlRequest) -> ControlReply {
+pub(crate) async fn waiting_reply(state: &ServerState, request: &ControlRequest) -> ControlReply {
     let run_dir = state.run_dir.clone();
     let run = state.run.clone();
     let view = match request.clone() {
@@ -317,8 +317,8 @@ pub(crate) async fn parked_reply(state: &ServerState, request: &ControlRequest) 
                 summary: Box::new(summary),
             })
         }),
-        ControlRequest::Diff { card, scope } => tokio::task::spawn_blocking(move || {
-            log_views::diff(&run_dir, &card, scope, |path| path.display().to_string()).map(|diff| {
+        ControlRequest::Diff { task, scope } => tokio::task::spawn_blocking(move || {
+            log_views::diff(&run_dir, &task, scope, |path| path.display().to_string()).map(|diff| {
                 ControlReply::Diff {
                     diff: Box::new(diff),
                 }
@@ -329,7 +329,7 @@ pub(crate) async fn parked_reply(state: &ServerState, request: &ControlRequest) 
                 .map(|raw| ControlReply::Raw { raw: Box::new(raw) })
         }),
         other => {
-            return error(while_parked(&other).unwrap_or("the run is waiting"));
+            return error(while_waiting(&other).unwrap_or("the run is waiting"));
         }
     };
     match view.await {

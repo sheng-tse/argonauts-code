@@ -1,4 +1,4 @@
-//! Runs agent processes. Each one leads its own session and process group, its output is read
+//! Runs agent processes. Each one heads its own session and process group, its output is read
 //! line by line, and signals go to the whole group so nothing it started is left behind.
 
 use std::ffi::OsStr;
@@ -65,13 +65,13 @@ pub enum SpawnError {
     Spawn { program: String, source: io::Error },
 }
 
-/// A running process that leads its own session and process group. With no controlling terminal,
+/// A running process that heads its own session and process group. With no controlling terminal,
 /// nothing it starts can read from or type into the user's terminal, or be suspended by it.
 /// Dropping it before it exits kills the whole group.
 #[derive(Debug)]
 pub struct AgentProcess {
     group: u32,
-    /// The leader's start time, once [`AgentProcess::record`] read it.
+    /// The head's start time, once [`AgentProcess::record`] read it.
     start_time: OnceLock<u64>,
     launch: String,
     input: Option<mpsc::UnboundedSender<String>>,
@@ -195,7 +195,7 @@ impl AgentProcess {
         self.input = None;
     }
 
-    /// Signals the group, unless its id may belong to another group now: the leader was
+    /// Signals the group, unless its id may belong to another group now: the head was
     /// reaped and its pid went to another process.
     pub fn signal(&self, signal: StopSignal) -> io::Result<()> {
         if self.group_id_reused() {
@@ -253,12 +253,12 @@ pub fn exit_parts(status: &ExitStatus) -> (Option<i32>, Option<i32>) {
     (status.code(), status.signal())
 }
 
-/// Makes the child lead a new session, and with it a process group whose id is its pid. On Linux
-/// the child also gets SIGKILL when the supervisor dies. Its children don't inherit that, so only
-/// an exit guard (`reaper::guard_group`) takes down the rest of its tree.
+/// Makes the child the head of a new session, and with it of a process group whose id is its pid.
+/// On Linux the child also gets SIGKILL when the run host dies. Its children don't inherit that, so
+/// only an exit guard (`reaper::guard_group`) takes down the rest of its tree.
 pub(crate) fn new_session(command: &mut Command) {
     #[cfg(target_os = "linux")]
-    let supervisor = nix::unistd::getpid();
+    let run_host = nix::unistd::getpid();
     // SAFETY: the closure runs in the child between fork and exec. It only makes syscalls
     // (setsid, and prctl and getppid on Linux), allocates nothing, and touches no memory shared
     // with the parent.
@@ -266,20 +266,20 @@ pub(crate) fn new_session(command: &mut Command) {
         command.pre_exec(move || {
             nix::unistd::setsid().map_err(io::Error::from)?;
             #[cfg(target_os = "linux")]
-            die_with_supervisor(supervisor)?;
+            die_with_run_host(run_host)?;
             Ok(())
         });
     }
 }
 
 /// `PR_SET_PDEATHSIG` fires when the thread that forked exits, not the whole process. Agents are
-/// spawned from runtime worker threads, which live as long as the supervisor's runtime.
+/// spawned from runtime worker threads, which live as long as the run host's runtime.
 #[cfg(target_os = "linux")]
-fn die_with_supervisor(supervisor: Pid) -> io::Result<()> {
+fn die_with_run_host(run_host: Pid) -> io::Result<()> {
     nix::sys::prctl::set_pdeathsig(Signal::SIGKILL).map_err(io::Error::from)?;
-    // The supervisor may have died before the signal was armed. A raw OS error, since
+    // The run host may have died before the signal was armed. A raw OS error, since
     // allocating is unsafe here.
-    if nix::unistd::getppid() != supervisor {
+    if nix::unistd::getppid() != run_host {
         return Err(io::Error::from_raw_os_error(nix::libc::ESRCH));
     }
     Ok(())
@@ -360,7 +360,7 @@ fn session_command(program: &Path, spec: &CommandSpec, launch: &str) -> Command 
     }
     command.envs(spec.env_set.iter().map(|(k, v)| (k, v)));
     // OpenCode 1.18.34 works in `$PWD` rather than its real directory, so the PWD inherited from
-    // your shell sent a card's session into your own checkout.
+    // your shell sent a task's session into your own checkout.
     command.env("PWD", &spec.cwd);
     // Set last, so no spec can forge another launch's marker.
     command.env(crate::reaper::LAUNCH_MARKER, launch);
@@ -679,7 +679,7 @@ mod tests {
         let logged = std::fs::read(raw.stdout_path()).unwrap();
         assert!(
             logged == expected,
-            "the raw stdout differs from what was printed"
+            "the raw stdout is different from what was printed"
         );
         let logged = std::fs::read(raw.stderr_path()).unwrap();
         assert_eq!(logged, b"warn\r\n\xfe\n");

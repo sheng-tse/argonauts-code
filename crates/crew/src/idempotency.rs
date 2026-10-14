@@ -1,11 +1,11 @@
 //! Proof that a side effect already happened, checked before doing it: a commit with the
-//! session's key in its message, a merge commit naming the card, a `Delivered` event for a
+//! session's key in its message, a merge commit naming the task, a `Delivered` event for a
 //! message, a `SessionStarted` whose `Ended` is missing (resume it, don't restart). Replaying a
 //! log never merges twice or sends a message twice.
 
 use std::path::Path;
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::names::{MessageId, SessionKey};
 use argonauts_core::steps::StepName;
 
@@ -17,8 +17,8 @@ use crate::state::RunState;
 pub const SESSION_TRAILER: &str = "Argonauts-Session";
 /// The trailer counting a resumed session's starts, left out on its first start.
 pub const START_TRAILER: &str = "Argonauts-Start";
-/// The trailer naming the card a merge commit brings in.
-pub const CARD_TRAILER: &str = "Argonauts-Task";
+/// The trailer naming the task a merge commit brings in.
+pub const TASK_TRAILER: &str = "Argonauts-Task";
 
 pub fn session_line(session: &SessionKey) -> String {
     format!("{SESSION_TRAILER}: {session}")
@@ -42,8 +42,8 @@ fn start_of(message: &str) -> u32 {
         .unwrap_or(1)
 }
 
-pub fn card_line(card: &CardId) -> String {
-    format!("{CARD_TRAILER}: {card}")
+pub fn task_line(task: &TaskId) -> String {
+    format!("{TASK_TRAILER}: {task}")
 }
 
 fn has_line(message: &str, line: &str) -> bool {
@@ -55,7 +55,7 @@ pub fn holds_start(message: &str, session: &SessionKey, start: u32) -> bool {
     has_line(message, &session_line(session)) && start_of(message) == start
 }
 
-/// The commit on the card's branch that holds this start of the session, found by its
+/// The commit on the task's branch that holds this start of the session, found by its
 /// trailers. A resumed session's next start commits again.
 pub async fn commit_for_session(
     git: &Git,
@@ -71,14 +71,14 @@ pub async fn commit_for_session(
         .map(|(sha, _)| sha))
 }
 
-/// The merge commit on the integration branch that names this card.
-pub async fn merge_for_card(
+/// The merge commit on the run branch that names this task.
+pub async fn merge_for_task(
     git: &Git,
     dir: &Path,
     range: &str,
-    card: &CardId,
+    task: &TaskId,
 ) -> EngineResult<Option<String>> {
-    let line = card_line(card);
+    let line = task_line(task);
     for (sha, message) in git.log_messages(dir, range).await? {
         if has_line(&message, &line) && git.parents(dir, &sha).await?.len() > 1 {
             return Ok(Some(sha));
@@ -87,22 +87,22 @@ pub async fn merge_for_card(
     Ok(None)
 }
 
-/// The merge commit that brought in exactly `card_head`, so a card sent back and changed merges
+/// The merge commit that brought in exactly `task_head`, so a task sent back and changed merges
 /// again while a replay of the same merge doesn't.
 pub async fn merge_of_head(
     git: &Git,
     dir: &Path,
     range: &str,
-    card: &CardId,
-    card_head: &str,
+    task: &TaskId,
+    task_head: &str,
 ) -> EngineResult<Option<String>> {
-    let line = card_line(card);
+    let line = task_line(task);
     for (sha, message) in git.log_messages(dir, range).await? {
         if !has_line(&message, &line) {
             continue;
         }
         let parents = git.parents(dir, &sha).await?;
-        if parents.iter().skip(1).any(|parent| parent == card_head) {
+        if parents.iter().skip(1).any(|parent| parent == task_head) {
             return Ok(Some(sha));
         }
     }
@@ -117,14 +117,14 @@ pub fn delivered(state: &RunState, message: &MessageId, session: &SessionKey) ->
         .any(|(m, s)| m == message && s == session)
 }
 
-/// The card's newest session of `step` that started and never ended: resume it, don't start
+/// The task's newest session of `step` that started and never ended: resume it, don't start
 /// another.
-pub fn unfinished_session(state: &RunState, card: &CardId, step: StepName) -> Option<SessionKey> {
+pub fn unfinished_session(state: &RunState, task: &TaskId, step: StepName) -> Option<SessionKey> {
     state
         .sessions
         .by_key
         .values()
-        .filter(|s| s.card.as_ref() == Some(card) && s.started.step == Some(step))
+        .filter(|s| s.task.as_ref() == Some(task) && s.started.step == Some(step))
         .filter(|s| s.end.is_none())
         .max_by_key(|s| s.since)
         .map(|s| s.key.clone())
@@ -189,20 +189,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_merge_naming_the_card_is_found_and_plain_commits_are_not() {
+    async fn a_merge_naming_the_task_is_found_and_plain_commits_are_not() {
         let repo = TestRepo::new();
         let git = git();
         let base = git.head_commit(&repo.root).await.unwrap().unwrap();
-        let card = CardId::new("task-001").unwrap();
+        let task = TaskId::new("task-001").unwrap();
         let range = format!("{base}..HEAD");
 
-        // A plain commit that mentions the card is not a merge.
+        // A plain commit that mentions the task is not a merge.
         repo.write("x.txt", "x");
-        git.commit_all(&repo.root, &format!("Note\n\n{}", card_line(&card)))
+        git.commit_all(&repo.root, &format!("Note\n\n{}", task_line(&task)))
             .await
             .unwrap();
         assert_eq!(
-            merge_for_card(&git, &repo.root, &range, &card)
+            merge_for_task(&git, &repo.root, &range, &task)
                 .await
                 .unwrap(),
             None
@@ -214,7 +214,7 @@ mod tests {
             .unwrap();
         std::fs::write(tree.join("a.txt"), "a").unwrap();
         let head = git.commit_all(&tree, "work").await.unwrap().unwrap();
-        let message = format!("Merge task-001\n\n{}", card_line(&card));
+        let message = format!("Merge task-001\n\n{}", task_line(&task));
         let MergeOutcome::Merged(merge) = git
             .merge_no_ff(&repo.root, "argonauts/r/task-001", &message)
             .await
@@ -223,23 +223,23 @@ mod tests {
             panic!("expected a merge");
         };
         assert_eq!(
-            merge_for_card(&git, &repo.root, &range, &card)
+            merge_for_task(&git, &repo.root, &range, &task)
                 .await
                 .unwrap(),
             Some(merge.clone())
         );
         assert_eq!(
-            merge_of_head(&git, &repo.root, &range, &card, &head)
+            merge_of_head(&git, &repo.root, &range, &task, &head)
                 .await
                 .unwrap(),
             Some(merge)
         );
 
-        // New work on the card is not merged yet.
+        // New work on the task is not merged yet.
         std::fs::write(tree.join("b.txt"), "b").unwrap();
         let newer = git.commit_all(&tree, "more").await.unwrap().unwrap();
         assert_eq!(
-            merge_of_head(&git, &repo.root, &range, &card, &newer)
+            merge_of_head(&git, &repo.root, &range, &task, &newer)
                 .await
                 .unwrap(),
             None

@@ -189,7 +189,7 @@ mod tests {
 
     use super::*;
 
-    /// A stand-in proxy that answers each line with `<name>: <line>`.
+    /// A fake proxy that answers each line with `<name>: <line>`.
     fn echo(name: &'static str) -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();

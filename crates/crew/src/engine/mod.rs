@@ -1,5 +1,5 @@
 //! The engine: rebuild the state from the log, recover, then loop over commands, sessions,
-//! policy outcomes, vendor events, and shutdown while the run's workflow runs beside it.
+//! policy outcomes, agent events, and shutdown while the run's workflow runs beside it.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -11,12 +11,12 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Instant, MissedTickBehavior};
 
 use argonauts_core::engine::{EngineCommand, EngineContext, EngineExit, RunEngine};
-use argonauts_core::events::run::{ParkReason, RunLifecycle, RunMode, RunOutcome};
-use argonauts_core::events::{RunEventKind, VendorEvent};
+use argonauts_core::events::run::{RunLifecycle, RunMode, RunOutcome, WaitReason};
+use argonauts_core::events::{AgentStatusEvent, RunEventKind};
 use argonauts_core::future::BoxFuture;
-use argonauts_core::limits::QuotaStatus;
+use argonauts_core::limits::{ModelState, PlanUsageStatus};
 use argonauts_core::log::{Note, NoteLevel};
-use argonauts_core::names::{VendorId, WorkerRef, WorkflowId};
+use argonauts_core::names::{AgentId, ModelRef, WorkflowId};
 use argonauts_core::paths::create_private_dir_all;
 use argonauts_core::settings::Settings;
 
@@ -29,28 +29,29 @@ use crate::goal::pursue;
 use crate::state::RunState;
 use crate::state::ids;
 use crate::workflow::{Flow, change, naming, runner, shape};
-use crate::{checkpoints, closing, handoff, retro};
+use crate::{approvals, closing, fallback, run_review};
 
 pub mod commands;
 pub mod host;
+pub(crate) mod job_fallback;
 pub mod journal;
 pub mod live;
-pub mod park;
 pub mod recover;
 pub mod run_meter;
 pub mod shared;
 pub mod snapshot;
-pub(crate) mod stand_in;
 pub mod tasks;
+pub mod wait;
 
 /// How often held text and reasoning deltas are checked for being due.
 const DELTA_TICK: Duration = Duration::from_millis(100);
 
-/// How long sessions and policy evaluations still running when the run parks or finishes get
+/// How long sessions and policy evaluations still running when the run waits or finishes get
 /// to end and record it.
 const WIND_DOWN_GRACE: Duration = Duration::from_secs(10);
 
-/// One engine for every workflow: solo, the crews, and the baselines differ only in settings.
+/// One engine for every workflow: Captain, the crews, and the baselines are different only in
+/// settings.
 pub struct CrewEngine {
     mode: RunMode,
 }
@@ -81,7 +82,7 @@ impl RunEngine for CrewEngine {
                 outcome: RunOutcome::Failed,
                 detail: Some(format!("{ENGINE_NOT_BUILT} ({not_built})")),
             });
-            match sink.record(None, None, "conductor", finished) {
+            match sink.record(None, None, "argonauts-code", finished) {
                 Ok(_) => EngineExit::Finished(RunOutcome::Failed),
                 Err(err) => EngineExit::Crashed(err.to_string()),
             }
@@ -90,7 +91,7 @@ impl RunEngine for CrewEngine {
 }
 
 /// Rebuild the state from `history`, recover, start or re-enter the run's workflow, then loop
-/// until the run finishes or parks. A finished run ends at once, unless it was stopped and you
+/// until the run finishes or waits. A finished run ends at once, unless it was stopped and you
 /// reopened it.
 async fn drive(engine: CrewEngine, mut context: EngineContext) -> EngineResult<EngineExit> {
     let state = RunState::rebuild(&context.history)?;
@@ -103,8 +104,8 @@ async fn drive(engine: CrewEngine, mut context: EngineContext) -> EngineResult<E
         return Ok(EngineExit::Finished(outcome));
     }
     let inbox = std::mem::replace(&mut context.inbox, mpsc::channel(1).1);
-    let fresh = context.vendor_events.resubscribe();
-    let vendor_events = std::mem::replace(&mut context.vendor_events, fresh);
+    let fresh = context.agent_events.resubscribe();
+    let agent_events = std::mem::replace(&mut context.agent_events, fresh);
     let mode = state.run.mode.unwrap_or(engine.mode);
     let mut shared = Shared::new(&context, state)?;
     shared.mode = mode;
@@ -121,18 +122,27 @@ async fn drive(engine: CrewEngine, mut context: EngineContext) -> EngineResult<E
     pursue::on_resume(&host)?;
 
     // A reset that passed before this process started was acted on then, or by recovery.
-    let returned = host.read(|state| state.run.quota_reset_passed(host.now()));
+    let returned = host.read(|state| state.run.plan_usage_reset_passed(host.now()));
     let mut driver = Loop {
         workflow: Some(tokio::spawn(root_workflow(host.clone()))),
         host,
         commands: JoinSet::new(),
-        park_at: None,
+        wait_at: None,
         reenter: false,
         returned: returned.into_iter().collect(),
     };
-    let exit = driver.run(inbox, vendor_events, policy).await;
-    driver.quiesce().await;
+    let exit = driver.run(inbox, agent_events, policy).await;
+    driver.quiesce(Cut::ForGood).await;
     exit
+}
+
+/// How long the sessions a winding-down run stops are stopped for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Cut {
+    /// The run is over, or its loop is.
+    ForGood,
+    /// The run waits and goes on later.
+    UntilTheRunWakes,
 }
 
 /// The run's read-only sessions work in a detached worktree at its base commit.
@@ -160,10 +170,10 @@ async fn ensure_base_worktree(host: &Host) -> EngineResult<()> {
     Ok(())
 }
 
-/// Runs the run's own workflow from where the log stopped, follows switches to another
-/// workflow, then runs the retro and writes the closing answer unless you stopped the run. A
-/// new run's workflow is the lead's design when `workflows.lead_designs` is on, else the
-/// preset's. A failed retro leaves the outcome as it is.
+/// Runs the run's own workflow from where the log stopped, follows switches to another workflow,
+/// then runs the run review and writes the closing answer unless you stopped the run. A new run's
+/// workflow is the main agent's design when `workflows.orchestrator_designs` is on, else the
+/// chosen workflow as it is. A failed run review leaves the outcome as it is.
 async fn root_workflow(host: Host) -> EngineResult<RunOutcome> {
     let first = match host.read(newest_top_level) {
         Some(id) => Ok(id),
@@ -188,15 +198,15 @@ async fn root_workflow(host: Host) -> EngineResult<RunOutcome> {
     };
     // A stopped run's answer comes from code alone, when it finishes.
     if outcome != RunOutcome::Stopped {
-        retro::run_or_note(&host).await?;
+        run_review::run_or_note(&host).await?;
         closing::record(&host, outcome, None).await?;
     }
     Ok(outcome)
 }
 
-/// Starts the lead's workflow, or the preset's, as code shapes it for the run: Understand first
-/// when it runs, the checks, and a goal's attempts (`shape`). `Err` holds how the run ends
-/// before any workflow starts.
+/// Starts the main agent's design, or the chosen workflow, as code shapes it for the run:
+/// Understand first when it runs, the checks, and a goal's tries (`shape`). `Err` holds how the
+/// run ends before any workflow starts.
 async fn first_workflow(host: &Host) -> EngineResult<Result<WorkflowId, Flow>> {
     naming::name_from_intake(host)?;
     // A workflow with steps of its own is run by the runner, as one step before the merge.
@@ -266,42 +276,42 @@ fn newest_top_level(state: &RunState) -> Option<WorkflowId> {
 
 struct Loop {
     host: Host,
-    /// `None` after a pause cut the workflow short, until the run parks.
+    /// `None` after a pause cut the workflow short, until the run waits.
     workflow: Option<JoinHandle<EngineResult<RunOutcome>>>,
     /// Long commands, run beside the loop.
     commands: JoinSet<()>,
-    /// When the run parks if nothing changes, after `supervisor.park_grace`.
-    park_at: Option<Instant>,
+    /// When the run waits if nothing changes, after `run_host.wait_grace`.
+    wait_at: Option<Instant>,
     /// A pause or a stop cut the workflow short; it's entered again once admission reopens.
     reenter: bool,
-    /// Vendors whose return was acted on, until they go out again, so a quota reset passing and
+    /// Agents whose return was acted on, until they go out again, so a plan usage reset passing and
     /// the health board's later word don't both announce it.
-    returned: BTreeSet<VendorId>,
+    returned: BTreeSet<AgentId>,
 }
 
 impl Loop {
     async fn run(
         &mut self,
         mut inbox: mpsc::Receiver<EngineCommand>,
-        mut vendor_events: broadcast::Receiver<VendorEvent>,
+        mut agent_events: broadcast::Receiver<AgentStatusEvent>,
         mut policy: mpsc::UnboundedReceiver<PolicyResult>,
     ) -> EngineResult<EngineExit> {
         let host = self.host.clone();
         let shared = host.shared();
         let shutdown = shared.shutdown.clone();
         let mut inbox_open = true;
-        let mut vendors_open = true;
+        let mut agents_open = true;
         let mut deltas = tokio::time::interval(DELTA_TICK);
         deltas.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        let mut park_due = false;
+        let mut wait_due = false;
         loop {
-            if let Some(exit) = self.settle(park_due).await? {
+            if let Some(exit) = self.settle(wait_due).await? {
                 return Ok(exit);
             }
             self.reenter_if_open();
-            park_due = false;
-            let park_at = self.park_at;
-            let quota_reset = self.watch_quota_resets();
+            wait_due = false;
+            let wait_at = self.wait_at;
+            let plan_usage_reset = self.watch_plan_usage_resets();
             tokio::select! {
                 biased;
                 () = shutdown.cancelled() => return self.shut_down().await,
@@ -317,13 +327,13 @@ impl Loop {
                 },
                 outcome = policy.recv() => {
                     if let Some((id, outcome)) = outcome {
-                        checkpoints::policy_outcome(&self.host, &id, outcome)?;
+                        approvals::policy_outcome(&self.host, &id, outcome)?;
                     }
                 }
-                event = vendor_events.recv(), if vendors_open => match event {
-                    Ok(event) => self.vendor_event(event)?,
-                    Err(broadcast::error::RecvError::Lagged(_)) => self.reread_vendors()?,
-                    Err(broadcast::error::RecvError::Closed) => vendors_open = false,
+                event = agent_events.recv(), if agents_open => match event {
+                    Ok(event) => self.agent_event(event)?,
+                    Err(broadcast::error::RecvError::Lagged(_)) => self.reread_agents()?,
+                    Err(broadcast::error::RecvError::Closed) => agents_open = false,
                 },
                 Some(done) = self.commands.join_next(), if !self.commands.is_empty() => {
                     if let Err(err) = done
@@ -334,24 +344,24 @@ impl Loop {
                 }
                 () = shared.changed.notified() => {}
                 _ = deltas.tick() => self.host.flush_due_deltas()?,
-                () = sleep_until(park_at), if park_at.is_some() => park_due = true,
+                () = sleep_until(wait_at), if wait_at.is_some() => wait_due = true,
                 // Only wakes the loop: the next turn sees the reset passed.
-                () = sleep_until(quota_reset), if quota_reset.is_some() => {}
+                () = sleep_until(plan_usage_reset), if plan_usage_reset.is_some() => {}
             }
         }
     }
 
-    /// Finishes a stopped run, parks a paused one, or arms or fires the park timer.
-    async fn settle(&mut self, park_due: bool) -> EngineResult<Option<EngineExit>> {
+    /// Finishes a stopped run, has a paused one wait, or arms or fires the wait timer.
+    async fn settle(&mut self, wait_due: bool) -> EngineResult<Option<EngineExit>> {
         let host = &self.host;
         let shared = host.shared();
         let all_out = shared.services.limits.all_out(&crew(host.settings()));
-        // A goal's check you asked for holds the park the way a session at work does.
+        // A goal's check you asked for holds the wait the way a session at work does.
         let at_work = shared.live.len() + lock(&shared.checking_goals).len();
         let (stopping, reason) = host.read(|state| {
             (
                 state.run.stop_requested,
-                park::reason(state, at_work, all_out),
+                wait::reason(state, at_work, all_out),
             )
         });
         if stopping {
@@ -361,29 +371,29 @@ impl Loop {
             return Ok(None);
         }
         match reason {
-            // The pause parks as soon as its own task has committed and recorded `Paused`, and
-            // every session has ended.
-            Some(ParkReason::Paused) if self.commands.is_empty() && shared.live.is_empty() => {
-                self.park(ParkReason::Paused).await.map(Some)
+            // A paused run waits as soon as the pause's own task has committed and recorded
+            // `Paused`, and every session has ended.
+            Some(WaitReason::Paused) if self.commands.is_empty() && shared.live.is_empty() => {
+                self.wait(WaitReason::Paused).await.map(Some)
             }
-            Some(ParkReason::Paused) => Ok(None),
-            Some(reason) if park_due => self.park(reason).await.map(Some),
+            Some(WaitReason::Paused) => Ok(None),
+            Some(reason) if wait_due => self.wait(reason).await.map(Some),
             Some(_) => {
-                if self.park_at.is_none() {
+                if self.wait_at.is_none() {
                     let grace = host
                         .settings()
-                        .supervisor
-                        .park_grace
+                        .run_host
+                        .wait_grace
                         .parse()
                         .ok()
                         .flatten()
                         .unwrap_or_default();
-                    self.park_at = Some(Instant::now() + grace);
+                    self.wait_at = Some(Instant::now() + grace);
                 }
                 Ok(None)
             }
             None => {
-                self.park_at = None;
+                self.wait_at = None;
                 Ok(None)
             }
         }
@@ -411,17 +421,22 @@ impl Loop {
                 err @ (EngineError::NotBuilt(_) | EngineError::Journal(_) | EngineError::Io(_)),
             ) => Err(err),
             Err(EngineError::Git(GitError::NotBuilt(what))) => Err(EngineError::NotBuilt(what)),
-            // A vendor error never ends a run: it parks until an agent can take the seat, tries
+            // A CLI error never ends a run: it waits until an agent can take the job, tries
             // again on its own after a wait that grows with each try, and its note says why.
             Err(EngineError::Stalled(stall)) => {
-                let tries = self.host.read(|state| state.run.stand_in_waits);
-                let retry = stand_in::retry_after(self.host.settings(), tries);
+                let tries = self.host.read(|state| state.run.fallback_waits);
+                let retry = job_fallback::retry_after(self.host.settings(), tries);
                 let until = stall
                     .resets_at
                     .or_else(|| retry.map(|retry| self.host.now() + retry));
-                self.note(NoteLevel::Error, &stand_in::park_line(&stall, retry));
+                self.note(NoteLevel::Error, &job_fallback::wait_line(&stall, retry));
+                // Where a setting of yours is all that keeps the job on its CLI, the question
+                // about the CLI offers to move it. The run waits and tries again all the same.
+                if let Some(kept) = &stall.kept {
+                    crate::fallback::down::job_waits(&self.host, kept)?;
+                }
                 let detail = stall.detail.clone();
-                self.park(ParkReason::NoStandIn { detail, until })
+                self.wait(WaitReason::NoFallback { detail, until })
                     .await
                     .map(Some)
             }
@@ -449,8 +464,9 @@ impl Loop {
         outcome: RunOutcome,
         detail: Option<String>,
     ) -> EngineResult<EngineExit> {
-        self.quiesce().await;
+        self.quiesce(Cut::ForGood).await;
         closing::record_unasked(&self.host, outcome, detail.as_deref()).await?;
+        crate::merge::copies::remove_at_end(&self.host, outcome).await;
         self.host.record(
             None,
             None,
@@ -460,28 +476,28 @@ impl Loop {
     }
 
     /// Nothing can happen until something outside changes. The workflow task is dropped; the
-    /// next supervisor re-enters it from the log.
-    async fn park(&mut self, reason: ParkReason) -> EngineResult<EngineExit> {
-        self.quiesce().await;
-        pursue::on_park(&self.host, &reason)?;
-        let waiting_on = self.host.read(park::waiting_on);
+    /// next run host re-enters it from the log.
+    async fn wait(&mut self, reason: WaitReason) -> EngineResult<EngineExit> {
+        self.quiesce(Cut::UntilTheRunWakes).await;
+        pursue::on_wait(&self.host, &reason)?;
+        let waiting_on = self.host.read(wait::waiting_on);
         self.host.record(
             None,
             None,
-            RunEventKind::Run(RunLifecycle::Parked {
+            RunEventKind::Run(RunLifecycle::Waiting {
                 reason: reason.clone(),
                 waiting_on,
             }),
         )?;
-        Ok(EngineExit::Parked(reason))
+        Ok(EngineExit::Waiting(reason))
     }
 
-    /// Shutdown is a pause that lets each session finish its tool call, then a park.
+    /// Shutdown is a pause that lets each session finish its tool call, then a wait.
     async fn shut_down(&mut self) -> EngineResult<EngineExit> {
         self.commands.abort_all();
         while self.commands.join_next().await.is_some() {}
         commands::pause(&self.host, false).await?;
-        self.park(ParkReason::Paused).await
+        self.wait(WaitReason::Paused).await
     }
 
     async fn stop_workflow(&mut self) {
@@ -491,15 +507,22 @@ impl Loop {
         }
     }
 
-    /// Stops everything beside the loop, so nothing records after the run parks or finishes,
+    /// Stops everything beside the loop, so nothing records after the run waits or finishes,
     /// or after the loop returns.
     /// The workflow and the commands stop first. Sessions are told to stop, and they and the
     /// policy evaluations get a grace to end and record it; whatever is left then is halted.
-    async fn quiesce(&mut self) {
+    ///
+    /// A session still at work when the run begins to wait, as one is beside a job nobody can
+    /// take, is cut short by the wait and by nothing of its own. It ends `Paused`, so its step
+    /// has it go on when the run wakes instead of reading the stop as its answer.
+    async fn quiesce(&mut self, cut: Cut) {
         self.stop_workflow().await;
         self.commands.abort_all();
         while self.commands.join_next().await.is_some() {}
         let shared = self.host.shared();
+        if cut == Cut::UntilTheRunWakes {
+            lock(&shared.pausing).extend(shared.live.keys());
+        }
         shared.live.stop_all();
         let deadline = Instant::now() + WIND_DOWN_GRACE;
         let ended = tokio::time::timeout_at(deadline, async {
@@ -557,70 +580,97 @@ impl Loop {
         }
     }
 
-    /// Records a vendor's change of health or quota, and hands its cards back when it's back.
-    fn vendor_event(&mut self, event: VendorEvent) -> EngineResult<()> {
-        let vendor = match &event {
-            VendorEvent::Quota(reading) => reading.vendor.clone(),
-            VendorEvent::Health(health) => health.vendor.clone(),
-            VendorEvent::Disabled { vendor, .. } => vendor.clone(),
+    /// Records an agent's change of health or plan usage, and gives its tasks back when it's back.
+    fn agent_event(&mut self, event: AgentStatusEvent) -> EngineResult<()> {
+        let agent_id = match &event {
+            AgentStatusEvent::PlanUsage(reading) => reading.agent_id.clone(),
+            AgentStatusEvent::Health(health) => health.agent_id.clone(),
+            AgentStatusEvent::Disabled { agent_id, .. } => agent_id.clone(),
+            AgentStatusEvent::Model(health) => health.model.agent_id(),
         };
         let now = self.host.now();
         let (was_out, news) = self.host.read(|state| {
             let run = &state.run;
             let news = match &event {
-                VendorEvent::Quota(reading) => {
+                AgentStatusEvent::PlanUsage(reading) => {
                     let reset = reading
                         .resets_at
-                        .filter(|_| reading.status == QuotaStatus::Rejected)
+                        .filter(|_| reading.status == PlanUsageStatus::Rejected)
                         .map(|at| at.unix_timestamp());
-                    run.quota.get(&vendor) != Some(&reading.status)
-                        || run.quota_resets.get(&vendor).copied() != reset
+                    run.plan_usage.get(&agent_id) != Some(&reading.status)
+                        || run.plan_usage_resets.get(&agent_id).copied() != reset
                 }
-                VendorEvent::Health(health) => {
-                    run.health.get(&vendor) != Some(&health.state)
-                        || run.disabled.get(&vendor) != health.disabled.as_ref()
+                AgentStatusEvent::Health(health) => {
+                    run.health.get(&agent_id) != Some(&health.state)
+                        || run.disabled.get(&agent_id) != health.disabled.as_ref()
                 }
-                VendorEvent::Disabled { reason, .. } => run.disabled.get(&vendor) != Some(reason),
+                AgentStatusEvent::Disabled { reason, .. } => {
+                    run.disabled.get(&agent_id) != Some(reason)
+                }
+                AgentStatusEvent::Model(health) => {
+                    let known = run.model_health.get(&health.model).copied();
+                    known.unwrap_or(ModelState::Healthy) != health.state
+                }
             };
-            (run.vendor_out_at(&vendor, now), news)
+            (run.agent_out_at(&agent_id, now), news)
         });
         // Readings repeat often; only a change goes in the log.
         if !news {
             return Ok(());
         }
-        self.host.record(None, None, RunEventKind::Vendor(event))?;
+        // A model back from being out, on a CLI that went on working: its tasks are offered
+        // back as a CLI's are. Where the CLI was out too, its own return covers its models.
+        let model_back = match &event {
+            AgentStatusEvent::Model(health) if health.state == ModelState::Healthy => {
+                let known = self
+                    .host
+                    .read(|state| state.run.model_health.get(&health.model).copied());
+                matches!(known, Some(ModelState::Out | ModelState::Testing))
+                    .then(|| health.model.clone())
+            }
+            _ => None,
+        };
+        self.host
+            .record(None, None, RunEventKind::AgentStatus(event))?;
+        if let Some(model) = model_back.filter(|_| !was_out) {
+            self.model_back(model);
+        }
         if self
             .host
-            .read(|state| state.run.vendor_out_at(&vendor, now))
+            .read(|state| state.run.agent_out_at(&agent_id, now))
         {
-            self.returned.remove(&vendor);
+            self.returned.remove(&agent_id);
         } else if was_out {
-            self.vendor_back(vendor);
+            self.agent_back(agent_id);
         }
         Ok(())
     }
 
-    /// Acts on each quota that ran out and has reset since, with no word from its vendor: it
-    /// can work again, as the handoff planner already counts it, so its cards' original is
-    /// back. A vendor out again is forgotten as returned. Returns when the soonest reset still
+    /// Acts on each agent whose plan usage ran out and has reset since, with no word from it: it
+    /// can work again, as the fallback planner already counts it, so its tasks' original is
+    /// back. An agent out again is forgotten as returned. Returns when the soonest reset still
     /// to come passes, to wake the loop then.
-    fn watch_quota_resets(&mut self) -> Option<Instant> {
+    fn watch_plan_usage_resets(&mut self) -> Option<Instant> {
         let now = self.host.now();
         let (passed, next, out) = self.host.read(|state| {
             let run = &state.run;
-            let out: Vec<VendorId> = self
+            let out: Vec<AgentId> = self
                 .returned
                 .iter()
-                .filter(|vendor| run.vendor_out_at(vendor, now))
+                .filter(|agent_id| run.agent_out_at(agent_id, now))
                 .cloned()
                 .collect();
-            (run.quota_reset_passed(now), run.next_quota_reset(now), out)
+            (
+                run.plan_usage_reset_passed(now),
+                run.next_plan_usage_reset(now),
+                out,
+            )
         });
-        for vendor in out {
-            self.returned.remove(&vendor);
+        for agent_id in out {
+            self.returned.remove(&agent_id);
         }
-        for vendor in passed {
-            self.vendor_back(vendor);
+        for agent_id in passed {
+            self.agent_back(agent_id);
         }
         let at = OffsetDateTime::from_unix_timestamp(next?).ok()?;
         let wait = Duration::try_from(at - now).unwrap_or_default();
@@ -628,24 +678,33 @@ impl Loop {
     }
 
     /// Events were missed, so the boards are read again before anything routes.
-    fn reread_vendors(&mut self) -> EngineResult<()> {
+    fn reread_agents(&mut self) -> EngineResult<()> {
         let services = self.host.services().clone();
         for health in services.health.all() {
-            self.vendor_event(VendorEvent::Health(health))?;
+            self.agent_event(AgentStatusEvent::Health(health))?;
         }
-        for reading in services.quota.all() {
-            self.vendor_event(VendorEvent::Quota(reading))?;
+        for reading in services.plan_usage.all() {
+            self.agent_event(AgentStatusEvent::PlanUsage(reading))?;
         }
         Ok(())
     }
 
-    fn vendor_back(&mut self, vendor: VendorId) {
-        if !self.returned.insert(vendor.clone()) {
+    fn agent_back(&mut self, agent_id: AgentId) {
+        if !self.returned.insert(agent_id.clone()) {
             return;
         }
         let host = self.host.clone();
         self.commands.spawn(async move {
-            if let Err(err) = handoff::on_return::vendor_back(&host, &vendor).await {
+            if let Err(err) = fallback::on_return::agent_back(&host, &agent_id).await {
+                report(&host, &err);
+            }
+        });
+    }
+
+    fn model_back(&mut self, model: ModelRef) {
+        let host = self.host.clone();
+        self.commands.spawn(async move {
+            if let Err(err) = fallback::on_return::model_back(&host, &model).await {
                 report(&host, &err);
             }
         });
@@ -656,11 +715,11 @@ impl Loop {
     }
 }
 
-/// Every worker the run may use: the crew and the default agent.
-fn crew(settings: &Settings) -> Vec<WorkerRef> {
+/// Every worker the run may use: the crew and the main agent.
+fn crew(settings: &Settings) -> Vec<ModelRef> {
     let mut workers = settings.crew.members();
-    if !workers.contains(&settings.main_agent) {
-        workers.push(settings.main_agent.clone());
+    if !workers.contains(&settings.crew.main) {
+        workers.push(settings.crew.main.clone());
     }
     workers
 }
@@ -703,12 +762,11 @@ mod tests {
     #[test]
     fn the_crew_includes_the_main_agent_once() {
         let mut settings = Settings {
-            crew: vec![WorkerRef::new("codex", None)].into(),
-            main_agent: WorkerRef::new("claude-code", None),
+            crew: vec![ModelRef::new("codex", None)].into(),
             ..Settings::default()
         };
         assert_eq!(crew(&settings).len(), 2);
-        settings.crew.add(WorkerRef::new("claude-code", None));
+        settings.crew.add(ModelRef::new("claude-code", None));
         assert_eq!(crew(&settings).len(), 2);
     }
 }

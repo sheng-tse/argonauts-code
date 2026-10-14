@@ -1,10 +1,10 @@
-//! Run events, numbered in order: agents and their tool calls, cards, checkpoints, and a whole
+//! Run events, numbered in order: agents and their tool calls, tasks, approvals, and a whole
 //! crew run to start from.
 
 use argonauts_core::app::AppEvent;
 use serde_json::{Value, json};
 
-use super::chat::{app, mode_working, option, spend, status_with};
+use super::conversation::{app, mode_working, option, spend, status_with};
 
 pub const RUN: &str = "run-01";
 
@@ -19,7 +19,7 @@ pub const EVIDENCE: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d
 #[derive(Debug, Clone)]
 pub struct Agent {
     pub session: String,
-    pub card: String,
+    pub task: String,
     pub title: String,
     pub worker: String,
     pub role: String,
@@ -44,16 +44,16 @@ const TITLES: [&str; 7] = [
 impl Agent {
     /// How the screen names it, such as `Opus on Claude Code`.
     pub fn name(&self) -> String {
-        let worker = self.worker.parse().expect("a worker");
+        let worker = self.worker.parse().expect("a model");
         argonauts_core::display_names::DisplayNames::default().worker(&worker)
     }
 
-    /// The `n`th agent, from 1: `s-00n` on `card-00(n+1)`, with workers taking turns.
+    /// The `n`th agent, from 1: `s-00n` on `task-00(n+1)`, with workers taking turns.
     pub fn numbered(n: usize) -> Self {
         let index = n.saturating_sub(1);
         Self {
             session: format!("s-{n:03}"),
-            card: format!("task-{:03}", n + 1),
+            task: format!("task-{:03}", n + 1),
             title: TITLES[index % TITLES.len()].to_owned(),
             worker: WORKERS[index % WORKERS.len()].to_owned(),
             role: "worker".to_owned(),
@@ -67,12 +67,12 @@ impl Agent {
         }
     }
 
-    fn vendor(&self) -> &str {
+    fn agent_id(&self) -> &str {
         self.worker.split('/').next().unwrap_or(&self.worker)
     }
 
     fn is_endpoint(&self) -> bool {
-        self.vendor() == "ollama"
+        self.agent_id() == "ollama"
     }
 }
 
@@ -102,17 +102,17 @@ impl RunScript {
     }
 
     /// Any run event, from its `kind` JSON.
-    pub fn event(&mut self, card: Option<&str>, session: Option<&str>, kind: Value) -> AppEvent {
+    pub fn event(&mut self, task: Option<&str>, session: Option<&str>, kind: Value) -> AppEvent {
         let seq = self.seq;
         self.seq += 1;
         let source = if session.is_some() {
             "agent"
         } else {
-            "conductor"
+            "argonauts-code"
         };
         app(
             json!({"type": "run", "event": {"seq": seq, "ts": "2026-09-30T12:00:00Z",
-            "run_id": self.run, "card_id": card, "session": session, "source": source,
+            "run_id": self.run, "task_id": task, "session": session, "source": source,
             "kind": kind}}),
         )
     }
@@ -128,12 +128,12 @@ impl RunScript {
             "estimate": {"task_type": "cli-feature", "summary": "a flag and a writer",
                          "files_likely": ["src/export.rs"], "file_count": 3,
                          "risk_labels": [], "tests_exist": true, "unknowns": []},
-            "triage": {"mode": mode, "escalate_to_crew": false, "rule": "crew_labels",
+            "captain_or_crew": {"mode": mode, "move_to_crew": false, "rule": "crew_labels",
                        "reason": "touches the CLI and the writer"},
-            "chat_turn": null, "continues": null, "repo_root": "/repo", "base_branch": "main",
+            "conversation_turn": null, "continues": null, "repo_root": "/repo", "base_branch": "main",
             "base_commit": "8b41d07", "uncommitted": [], "uncommitted_included": false,
             "settings_sha256": "5e7f", "settings": {"workflow": "council"}, "overrides": [],
-            "harness_versions": {}, "version": "0.1.0"}),
+            "cli_versions": {}, "version": "0.1.0"}),
         )
     }
 
@@ -147,26 +147,26 @@ impl RunScript {
         )
     }
 
-    pub fn card_created(&mut self, agent: &Agent) -> AppEvent {
+    pub fn task_created(&mut self, agent: &Agent) -> AppEvent {
         self.event(
-            Some(&agent.card),
+            Some(&agent.task),
             None,
-            json!({"type": "card", "data": {"event": "created", "id": agent.card,
+            json!({"type": "task", "data": {"event": "created", "id": agent.task,
                 "title": agent.title, "task": agent.title, "kind": {"kind": "build"},
                 "owned_paths": ["src/export.rs"], "read_only_paths": [], "forbidden_paths": [],
-                "hidden_paths": [], "depends_on": [], "criteria": [], "owner": agent.worker,
+                "hidden_paths": [], "depends_on": [], "criteria": [], "worker": agent.worker,
                 "reviewers": [],
-                "budget": {"limit": null, "max_minutes": null, "max_tool_calls": null,
+                "limit": {"limit": null, "max_minutes": null, "max_tool_calls": null,
                            "inactivity_min": null},
                 "predictions": null}}),
         )
     }
 
-    pub fn card_state(&mut self, agent: &Agent, from: Option<&str>, to: &str) -> AppEvent {
+    pub fn task_state(&mut self, agent: &Agent, from: Option<&str>, to: &str) -> AppEvent {
         self.event(
-            Some(&agent.card),
+            Some(&agent.task),
             None,
-            json!({"type": "card", "data": {"event": "state", "from": from, "to": to,
+            json!({"type": "task", "data": {"event": "state", "from": from, "to": to,
                                             "reason": "scripted"}}),
         )
     }
@@ -176,13 +176,13 @@ impl RunScript {
         let kind = if agent.is_endpoint() {
             "endpoint"
         } else {
-            "harness"
+            "cli"
         };
         self.event(
-            Some(&agent.card),
+            Some(&agent.task),
             Some(&agent.session),
             json!({"type": "session", "data": {"event": "started", "worker": agent.worker,
-                "vendor": agent.vendor(), "family": "any", "kind": kind, "role": agent.role,
+                "agent_id": agent.agent_id(), "provider": "any", "kind": kind, "role": agent.role,
                 "step": "build", "access": "build", "lifetime": "task", "resumed_from": null,
                 "follow_key": follow_key,
                 // The run's workflow started it, so it's one of the run's agents.
@@ -190,7 +190,7 @@ impl RunScript {
         )
     }
 
-    /// What Argonauts sent the agent: the launch and the prompt's parts.
+    /// What Argonauts Code sent the agent: the launch and the prompt's parts.
     pub fn session_input(&mut self, agent: &Agent, parts: &[(&str, &str)]) -> AppEvent {
         let parts: Vec<Value> = parts
             .iter()
@@ -200,11 +200,11 @@ impl RunScript {
             })
             .collect();
         self.event(
-            Some(&agent.card),
+            Some(&agent.task),
             Some(&agent.session),
             json!({"type": "session", "data": {"event": "input",
-                "launch": {"program": agent.vendor(), "args": ["exec", "--json", "<prompt>"],
-                    "cwd": format!("/wt/{}", agent.card), "env_set": ["ARGONAUTS_SESSION"],
+                "launch": {"program": agent.agent_id(), "args": ["exec", "--json", "<prompt>"],
+                    "cwd": format!("/wt/{}", agent.task), "env_set": ["ARGONAUTS_SESSION"],
                     "env_removed": [], "prompt_via": "stdin", "sandbox": "worktree"},
                 "parts": parts, "queued": []}}),
         )
@@ -212,7 +212,7 @@ impl RunScript {
 
     pub fn agent(&mut self, agent: &Agent, event: Value) -> AppEvent {
         self.event(
-            Some(&agent.card),
+            Some(&agent.task),
             Some(&agent.session),
             json!({"type": "agent", "data": event}),
         )
@@ -258,7 +258,7 @@ impl RunScript {
 
     pub fn file_diff(&mut self, agent: &Agent, path: &str, hunk: &str) -> AppEvent {
         self.event(
-            Some(&agent.card),
+            Some(&agent.task),
             Some(&agent.session),
             json!({"type": "session", "data": {"event": "file_diff", "path": path,
                 "added": 2, "removed": 1, "hunk": hunk, "truncated": false}}),
@@ -267,19 +267,19 @@ impl RunScript {
 
     pub fn queued(&mut self, agent: &Agent, id: &str, text: &str) -> AppEvent {
         self.event(
-            Some(&agent.card),
+            Some(&agent.task),
             Some(&agent.session),
             json!({"type": "session", "data": {"event": "queued", "id": id,
-                "from": {"party": "user"}, "to": {"target": "card", "value": agent.card},
+                "from": {"party": "user"}, "to": {"target": "task", "value": agent.task},
                 "text": text, "queued_at": "2026-09-30T12:00:00Z", "delivery": "next_turn"}}),
         )
     }
 
     pub fn session_ended(&mut self, agent: &Agent, tool_calls: u32) -> AppEvent {
         self.event(
-            Some(&agent.card),
+            Some(&agent.task),
             Some(&agent.session),
-            json!({"type": "session", "data": {"event": "ended", "vendor_session": null,
+            json!({"type": "session", "data": {"event": "ended", "cli_session": null,
                 "exit_code": 0, "signal": null, "duration_ms": 252_000,
                 "reason": {"why": "completed"}, "spend": spend(18_100, 0.12),
                 "tool_calls": tool_calls, "result_text": "Done.", "structured": null,
@@ -305,39 +305,39 @@ impl RunScript {
         ]
     }
 
-    pub fn checkpoint_opened(
+    pub fn approval_opened(
         &mut self,
         id: &str,
         kind: &str,
-        card: Option<&str>,
+        task: Option<&str>,
         packet: Value,
         options: Vec<Value>,
         free_text: &str,
     ) -> AppEvent {
         self.event(
-            card,
+            task,
             None,
-            json!({"type": "checkpoint", "data": {"event": "opened", "id": id, "kind": kind,
-                "title": checkpoint_title(kind, &self.run), "card": card, "packet": packet,
+            json!({"type": "approval", "data": {"event": "opened", "id": id, "kind": kind,
+                "title": approval_title(kind, &self.run), "task": task, "packet": packet,
                 "evidence_sha256": EVIDENCE, "mode": "supervised", "decide_with": "rules",
                 "options": options, "free_text": free_text, "needs_you": true}}),
         )
     }
 
-    /// The merge card, over two cards.
-    pub fn merge_checkpoint(&mut self, id: &str) -> AppEvent {
+    /// The merge question, over two tasks.
+    pub fn merge_approval(&mut self, id: &str) -> AppEvent {
         let stat = json!({"files_changed": 4, "insertions": 60, "deletions": 9});
         let rows: Vec<Value> = [Agent::numbered(1), Agent::numbered(2)]
             .iter()
             .map(|agent| {
-                json!({"card": agent.card, "title": agent.title, "kind": {"kind": "build"},
-                       "stat": stat, "owner": agent.worker, "gates_passed": true,
+                json!({"task": agent.task, "title": agent.title, "kind": {"kind": "build"},
+                       "stat": stat, "worker": agent.worker, "checks_passed": true,
                        "review": "approve"})
             })
             .collect();
         let packet = json!({"kind": "merge", "target": "main",
-            "branch": format!("argonauts/{}/integration", self.run), "rows": rows,
-            "suite_passed_on_latest_main": true, "gates": [],
+            "branch": format!("argonauts/{}/merged", self.run), "rows": rows,
+            "suite_passed_on_latest_main": true, "checks": [],
             "combined": {"files_changed": 7, "insertions": 120, "deletions": 18},
             "diff_path": "/state/combined.diff", "tree_sha": "t1", "spent": spend(9000, 0.46),
             "limit": {"unit": "usd", "amount": 3.0}, "partial": false});
@@ -364,12 +364,12 @@ impl RunScript {
             option('x', "Abandon the run", json!({"action": "abandon"}), false),
             option('d', "Show the diff", json!({"action": "show_diff"}), false),
         ];
-        self.checkpoint_opened(id, "merge", None, packet, options, "guidance")
+        self.approval_opened(id, "merge", None, packet, options, "guidance")
     }
 
     /// A question from an agent, with two answers and your own.
-    pub fn question_checkpoint(&mut self, id: &str, agent: &Agent) -> AppEvent {
-        let packet = json!({"kind": "question", "from": agent.worker, "card": agent.card,
+    pub fn question_approval(&mut self, id: &str, agent: &Agent) -> AppEvent {
+        let packet = json!({"kind": "question", "from": agent.worker, "task": agent.task,
             "text": "Keep a CSV fallback?", "options": ["Yes, keep it", "No, JSON only"]});
         let options = vec![
             option(
@@ -391,15 +391,15 @@ impl RunScript {
                 false,
             ),
         ];
-        self.checkpoint_opened(id, "question", Some(&agent.card), packet, options, "answer")
+        self.approval_opened(id, "question", Some(&agent.task), packet, options, "answer")
     }
 
-    pub fn plan_checkpoint(&mut self, id: &str) -> AppEvent {
+    pub fn plan_approval(&mut self, id: &str) -> AppEvent {
         let packet = json!({"kind": "plan", "summary": "A JSON writer beside the CSV one",
             "judging": null, "near_tie": false, "decisions": [],
-            "graph": {"cards": [], "critical_path": []},
+            "graph": {"tasks": [], "critical_path": []},
             "acceptance_tests": ["--json prints valid JSON"],
-            "budget": {"lines": [], "total": {"unit": "usd", "amount": 3.0},
+            "limit": {"lines": [], "total": {"unit": "usd", "amount": 3.0},
                        "estimate_low": 0.4, "estimate_high": 0.9},
             "new_dependencies": [], "flags": []});
         let options = vec![
@@ -413,20 +413,20 @@ impl RunScript {
             option('b', "Send back", json!({"action": "send_back"}), false),
             option(
                 's',
-                "Run it solo",
-                json!({"action": "switch_to_solo"}),
+                "Run it as Captain",
+                json!({"action": "switch_to_captain"}),
                 false,
             ),
             option('x', "Abandon", json!({"action": "stop"}), false),
             option('d', "Show the plan", json!({"action": "show_diff"}), false),
         ];
-        self.checkpoint_opened(id, "plan", None, packet, options, "edits")
+        self.approval_opened(id, "plan", None, packet, options, "edits")
     }
 
     /// What the app asks after you took an agent's session over and gave it back.
     pub fn take_over_return(&mut self, id: &str, agent: &Agent) -> AppEvent {
-        let packet = json!({"kind": "take_over_return", "card": agent.card,
-            "owner": agent.worker,
+        let packet = json!({"kind": "take_over_return", "task": agent.task,
+            "worker": agent.worker,
             "changed": {"files_changed": 1, "insertions": 3, "deletions": 0},
             "commit": "f00d"});
         let options = vec![option(
@@ -435,10 +435,10 @@ impl RunScript {
             json!({"action": "let_continue"}),
             true,
         )];
-        self.checkpoint_opened(
+        self.approval_opened(
             id,
             "take_over_return",
-            Some(&agent.card),
+            Some(&agent.task),
             packet,
             options,
             "none",
@@ -450,9 +450,9 @@ impl RunScript {
         self.event(
             None,
             None,
-            json!({"type": "checkpoint", "data": {"event": "decided", "id": id,
+            json!({"type": "approval", "data": {"event": "decided", "id": id,
                 "action": action, "text": null, "by": by, "evidence_sha256": EVIDENCE,
-                "shadow": null, "cards": []}}),
+                "auto_preview": null, "tasks": []}}),
         )
     }
 
@@ -460,12 +460,12 @@ impl RunScript {
         self.event(
             None,
             None,
-            json!({"type": "checkpoint", "data": {"event": "spot_check_queued", "id": id}}),
+            json!({"type": "approval", "data": {"event": "spot_check_queued", "id": id}}),
         )
     }
 
-    pub fn parked(&mut self, why: &str) -> AppEvent {
-        self.run_kind(json!({"event": "parked", "reason": {"why": why}, "waiting_on": []}))
+    pub fn waiting(&mut self, why: &str) -> AppEvent {
+        self.run_kind(json!({"event": "waiting", "reason": {"why": why}, "waiting_on": []}))
     }
 
     pub fn paused(&mut self, sessions_stopped: u32) -> AppEvent {
@@ -487,7 +487,7 @@ impl RunScript {
     }
 }
 
-/// A crew run with `agents` agents at work, each with a card, a session, a read, and an edit
+/// A crew run with `agents` agents at work, each with a task, a session, a read, and an edit
 /// under way, and the screen in working mode.
 pub fn crew_run(agents: usize) -> (RunScript, Vec<Agent>, Vec<AppEvent>) {
     let mut run = RunScript::default();
@@ -499,8 +499,8 @@ pub fn crew_run(agents: usize) -> (RunScript, Vec<Agent>, Vec<AppEvent>) {
         run.phase("build", "started", None),
     ];
     for (i, agent) in crew.iter().enumerate() {
-        events.push(run.card_created(agent));
-        events.push(run.card_state(agent, None, "running"));
+        events.push(run.task_created(agent));
+        events.push(run.task_state(agent, None, "running"));
         let key = u8::try_from(i + 1).unwrap_or(u8::MAX);
         events.push(run.session_started(agent, key));
     }
@@ -510,8 +510,8 @@ pub fn crew_run(agents: usize) -> (RunScript, Vec<Agent>, Vec<AppEvent>) {
     (run, crew, events)
 }
 
-/// The title the engine sends with a checkpoint, such as `Merge checkpoint · run-01`.
-fn checkpoint_title(kind: &str, run: &str) -> String {
+/// The title the engine sends with an approval, such as `Merge approval · run-01`.
+fn approval_title(kind: &str, run: &str) -> String {
     let kind = kind.replace('_', " ");
     let mut chars = kind.chars();
     let first: String = chars
@@ -522,10 +522,10 @@ fn checkpoint_title(kind: &str, run: &str) -> String {
     format!("{first}{} approval · {run}", chars.as_str())
 }
 
-/// A part's kind by its label, as the engine sends them: the task goes as a card.
+/// A part's kind by its label, as the engine sends them: the task goes as a task.
 fn part_kind(label: &str) -> &str {
     match label {
         "goal" | "notes" | "rules" | "status" => label,
-        _ => "card",
+        _ => "task",
     }
 }

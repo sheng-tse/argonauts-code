@@ -8,37 +8,38 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+use crate::agent_panel::AgentPanelRows;
 use crate::agent_sessions::AgentSession;
 use crate::api::{DiffScope, DiffView, RawView, RunSummary, StatusSummary, TakeOverTicket};
-use crate::crew_panel::CrewPanel;
+use crate::cli_commands::CliCommandSet;
+use crate::cli_sessions::CliSession;
 use crate::display_names::DisplayNames;
 use crate::events::RunEvent;
-use crate::events::checkpoint::{AnswerAction, AnswerOption, FreeText};
+use crate::events::approval::{AnswerAction, AnswerOption, FreeText};
 use crate::events::context::ContextDetail;
-use crate::events::run::{CheckedInstruction, ParkReason, Party, RunMode, TriageDecision};
+use crate::events::run::{CaptainOrCrewDecision, CheckedInstruction, Party, RunMode, WaitReason};
 use crate::input::{MentionTarget, SlashCommand, WorkflowAction};
 use crate::limits::CostEstimate;
-use crate::limits::{HealthState, QuotaReading};
+use crate::limits::{HealthState, PlanUsageReading};
 use crate::model_catalog::display_name_from_id;
 use crate::model_picker::EffortSlider;
 use crate::names::{
-    ChatId, CheckpointId, ChoiceId, MessageId, RoleName, SessionKey, TurnId, WorkerRef, WorkflowId,
+    ApprovalId, ChoiceId, ConversationId, MessageId, ModelRef, RoleName, SessionKey, TurnId,
+    WorkflowId,
 };
 use crate::policy::{ApprovalsView, NarratorLine, NarratorStatus};
 use crate::registry::ModelAccess;
 use crate::settings::SettingScope;
 use crate::settings::approvals::ApprovalMode;
 use crate::settings::bottom_line::BottomLineSettings;
-use crate::settings::budget::BudgetAmount;
-use crate::settings::ui::{NarratorMode, TakeoverWhere, UiSettings};
+use crate::settings::limit::LimitAmount;
+use crate::settings::ui::{NarratorMode, TakeOverWhere, UiSettings};
 use crate::steps::intake::ChangeEstimate;
-use crate::vendor_commands::VendorCommandSet;
-use crate::vendor_sessions::VendorSession;
 use crate::views::{
     AgentView, CheckpointRow, ContextView, LearningArea, LearningCommand, LearningView,
     WorkflowFile, WorkflowView,
 };
-use crate::{AgentEvent, CardId, NoteLevel, RunId, Spend, Verbosity};
+use crate::{AgentEvent, NoteLevel, RunId, Spend, TaskId, Verbosity};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -68,15 +69,15 @@ pub enum UiCommand {
         /// The note added with Tab on the picked option, or the Type my own answer line. Text
         /// typed at the prompt never gets here.
         text: Option<String>,
-        /// From the card's `CheckpointOpened`, passed on unchanged so an answer is bound to what
+        /// From the question's `ApprovalOpened`, passed on unchanged so an answer is bound to what
         /// you saw. `None` for app choices.
         #[serde(default)]
         evidence_sha256: Option<String>,
-        /// For "request changes on some cards", the cards you picked. Empty means every card.
+        /// For "request changes on some tasks", the tasks you picked. Empty means every task.
         #[serde(default)]
-        cards: Vec<CardId>,
-        /// A handoff card's remember key was on, so the picked candidate is also saved as a
-        /// replacement rule for the card's role and the stopped vendor. The app asks where.
+        tasks: Vec<TaskId>,
+        /// A fallback question's remember key was on, so the picked candidate is also saved as a
+        /// fallback rule for the task's role and the stopped agent. The app asks where.
         #[serde(default, skip_serializing_if = "is_false")]
         remember: bool,
     },
@@ -98,12 +99,12 @@ pub enum UiCommand {
     /// Sent once the take-over is confirmed.
     TakeOver {
         run: RunId,
-        card: CardId,
+        task: TaskId,
     },
-    /// The vendor's UI exited and the TUI took the terminal back.
+    /// The agent's UI exited and the TUI took the terminal back.
     TakeOverEnded {
         run: RunId,
-        card: CardId,
+        task: TaskId,
         exit_code: Option<i32>,
     },
     /// The TUI took the terminal back from a command [`AppEvent::RunInTerminal`] ran, such
@@ -114,11 +115,11 @@ pub enum UiCommand {
     /// From a picker; the slash form arrives as `Slash`.
     Reassign {
         run: RunId,
-        card: CardId,
-        to: WorkerRef,
+        task: TaskId,
+        to: ModelRef,
     },
     /// Pauses at the next safe point, or with `now` stops the agents at once and commits their
-    /// work. Either way the run parks.
+    /// work. Either way the run waits.
     Pause {
         now: bool,
     },
@@ -133,22 +134,28 @@ pub enum UiCommand {
         run: RunId,
         session: SessionKey,
     },
+    /// Stops an agent that has no task of its own and starts it over with the prompt it had,
+    /// as a script's own step runs one. A task's worker starts over through `Reassign`.
+    RestartAgent {
+        run: RunId,
+        session: SessionKey,
+    },
     /// Stops one subagent your conversation's own session started, by the id its `Subagent`
     /// updates carry. The session and its other subagents go on.
     StopSubagent {
         id: String,
     },
     /// Your message for a subagent of your conversation's own session, named as its row is.
-    /// It has no line of its own, so the main agent passes it on, and the chat shows only
+    /// It has no line of its own, so the main agent passes it on, and the conversation shows only
     /// `@name` and your words.
     MessageSubagent {
         name: String,
         text: String,
     },
-    /// Goes back to `card`'s checkpoint `handoff-<checkpoint>` in the run on screen, after a
-    /// confirm card. The `/rewind` picker sends it.
+    /// Goes back to `task`'s checkpoint `fallback-<checkpoint>` in the run on screen, after a
+    /// confirm question. The `/rewind` picker sends it.
     Rewind {
-        card: CardId,
+        task: TaskId,
         checkpoint: u32,
     },
     /// The narrator's summary of the run on screen: `s` in the status view.
@@ -205,7 +212,7 @@ pub enum UiCommand {
     /// You marked an auto-approval in `/approvals` right or wrong.
     SpotCheck {
         run: RunId,
-        id: CheckpointId,
+        id: ApprovalId,
         correct: bool,
     },
     /// The goal view's keys and `/goal`'s: clear the goal, turn the run into one, or change an
@@ -237,7 +244,7 @@ pub enum UiCommand {
         change: crate::settings::mods::view::ModChange,
     },
     /// A `!` command, run as you in the repo folder. Its output shows in the transcript and goes
-    /// to the lead with your next message, never by itself.
+    /// to the main agent with your next message, never by itself.
     Shell {
         command: String,
     },
@@ -246,35 +253,35 @@ pub enum UiCommand {
     /// Ctrl+Enter or Ctrl+X Ctrl+S: what you sent the main session while it works goes to the
     /// model now.
     SendNow,
-    /// ↑ on your chat messages still waiting: back into the input, the ones the model hasn't
+    /// ↑ on your messages still waiting: back into the input, the ones the model hasn't
     /// read too.
-    TakeBackChat,
+    TakeBackConversation,
     /// A button of what Claude Code draws above the input, by what its press sends back.
-    PressHeadsUp {
+    PressNotice {
         plugin: String,
         handle: u64,
     },
     /// Something on screen started showing the conversation's context by category, such as
-    /// the context widget above the input or the Context tab, or stopped (`None`). Its session
+    /// the context mod above the input or the Context tab, or stopped (`None`). Its session
     /// is then asked after each fill, at most every 10 seconds.
     WatchContext {
         detail: Option<ContextDetail>,
     },
     /// Closes the screen. Runs keep going.
     Exit,
-    /// Saves the pick recorded for an answered handoff card as a replacement rule for the
-    /// card's role and the stopped vendor, as `Answer.remember` does at answer time. The app
+    /// Saves the pick recorded for an answered fallback question as a fallback rule for the
+    /// question's role and the stopped agent, as `Answer.remember` does at answer time. The app
     /// asks where to save it.
     RememberPick {
         run: RunId,
-        id: CheckpointId,
+        id: ApprovalId,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "target", rename_all = "snake_case")]
 pub enum AnswerTarget {
-    Checkpoint { run: RunId, id: CheckpointId },
+    Approval { run: RunId, id: ApprovalId },
     Choice { id: ChoiceId },
 }
 
@@ -282,16 +289,18 @@ pub enum AnswerTarget {
 #[serde(tag = "view", rename_all = "snake_case")]
 pub enum ViewRequest {
     Runs,
+    /// The resume list again, with the CLIs' sessions of every folder, not this one's alone.
+    SessionsEverywhere,
     Status,
-    /// The Overview's Status tab: what runs here and how it is set up. Answered with
-    /// `StatusTab`, which only the tab draws, so asking never writes into the chat.
+    /// The usage panel's Status tab: what runs here and how it is set up. Answered with
+    /// `StatusTab`, which only the tab draws, so asking never writes into the conversation.
     StatusTab,
     /// Every resolved key and its layer, as a plain list. `/config` itself draws `Settings`.
     Config,
     Approvals,
     Diff {
         run: RunId,
-        card: CardId,
+        task: TaskId,
         scope: DiffScope,
     },
     Raw {
@@ -301,7 +310,7 @@ pub enum ViewRequest {
     /// A settings command with no argument gets its picker's rows unasked; this fetches more,
     /// such as a section of `/config`.
     Settings {
-        /// A dotted key prefix, such as `budget` or `roles.reviewer.handoff`; every key when
+        /// A dotted key prefix, such as `limits` or `fallback.reviewer`; every key when
         /// `None`.
         section: Option<String>,
     },
@@ -315,7 +324,7 @@ pub enum ViewRequest {
         refresh: bool,
     },
     Models {
-        /// The default agent when `None`.
+        /// The main agent when `None`.
         role: Option<RoleName>,
     },
     Workflow {
@@ -327,7 +336,14 @@ pub enum ViewRequest {
         run: RunId,
         session: SessionKey,
     },
-    /// A goal-style run's goal: its criteria, attempts, last check, and assumptions.
+    /// One agent of a workflow the CLI of `session` runs itself. Answered with `Agent`, whose
+    /// row names the same agent.
+    InnerAgent {
+        run: RunId,
+        session: SessionKey,
+        agent: crate::views::InnerAgent,
+    },
+    /// A goal run's goal: its criteria, tries, last check, and assumptions.
     Goal {
         run: RunId,
     },
@@ -339,7 +355,7 @@ pub enum ViewRequest {
         period: crate::api::UsagePeriod,
     },
     /// Reads every CLI's plan usage live again, as `r` on the Usage tab asks. The next
-    /// `Usage` answer carries the readings as they land.
+    /// `Usage` answer carries the readings as they arrive.
     ReadPlanUsage,
     /// The Overview tab's numbers for a period, from the usage ledger and the imported
     /// history. `import` answers the tab's question: yes starts the import, no remembers it.
@@ -349,10 +365,10 @@ pub enum ViewRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         import: Option<bool>,
     },
-    /// The crew view's "All repos" tab: runs in every repo with a live supervisor, read from
+    /// The agent panel's "All repos" tab: runs in every repo with a live run host, read from
     /// `~/.argonauts/registry.json` and each repo's journal ends.
     AllRepos,
-    /// The crew panel's rows the screen can't build itself: conversations, the CLIs' own
+    /// The agent panel's rows the screen can't build itself: conversations, the CLIs' own
     /// sessions, and runs in other repos.
     Crew,
     /// The Library tab of the workflow view: every workflow file and built-in.
@@ -370,6 +386,22 @@ pub enum ViewRequest {
     },
 }
 
+impl ViewRequest {
+    /// The request for the agent `row` shows in `run`: its session's view, or its own when
+    /// it is one of a workflow its CLI runs itself.
+    pub fn agent(run: &RunId, row: &crate::views::AgentRow) -> Self {
+        let (run, session) = (run.clone(), row.session.clone());
+        match row.inner.clone() {
+            Some(agent) => Self::InnerAgent {
+                run,
+                session,
+                agent,
+            },
+            None => Self::Agent { run, session },
+        }
+    }
+}
+
 /// The outcome of a choice closed with nothing changed. The transcript marks it as neutral
 /// rather than answered.
 pub const NOT_CHANGED: &str = "Not changed.";
@@ -378,7 +410,7 @@ pub const NOT_CHANGED: &str = "Not changed.";
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AppEvent {
     /// The startup header, the first history cell. It comes again when the setup saves, so
-    /// the header shows the new agent and preset.
+    /// the header shows the new agent and workflow.
     Welcome {
         version: String,
         /// With `~` for home.
@@ -388,18 +420,18 @@ pub enum AppEvent {
         /// Runs going in this repo that don't wait on you.
         runs_going: u32,
         /// Runs in this repo that wait on you. The app opens a new conversation all the same,
-        /// and each one's card waits until you open its run.
+        /// and each one's task waits until you open its run.
         #[serde(default)]
         runs_need_you: u32,
         /// The input's placeholder until your first prompt, made from recent commit subjects,
         /// never by a model.
         #[serde(default)]
         example_prompt: Option<String>,
-        /// The chat's agent, for the header's `<CLI> · <model> with <effort> effort` line. Its
-        /// model is the one set, else the CLI's own default when the CLI's model list marks
+        /// The conversation's agent, for the header's `<CLI> · <model> with <effort> effort` line.
+        /// Its model is the one set, else the CLI's own default when the CLI's model list marks
         /// one, else none.
         #[serde(default)]
-        main_agent: Option<WorkerRef>,
+        main_agent: Option<ModelRef>,
         /// Its effort level: the one set, else the one the CLI starts that model at, when known.
         #[serde(default)]
         effort: Option<String>,
@@ -426,13 +458,13 @@ pub enum AppEvent {
     Run {
         event: Box<RunEvent>,
     },
-    Chat {
-        event: ChatEvent,
+    Conversation {
+        event: ConversationEvent,
     },
     Choice {
         choice: AppChoice,
     },
-    /// An app-level card was answered or withdrawn.
+    /// An app-level question was answered or withdrawn.
     ChoiceClosed {
         id: ChoiceId,
         /// One line for the transcript, such as "No run started.", or [`NOT_CHANGED`].
@@ -448,7 +480,7 @@ pub enum AppEvent {
         mode: AppMode,
     },
     Status {
-        status: StatusLine,
+        status: HeaderAndBottomLine,
     },
     Notice {
         level: NoteLevel,
@@ -466,7 +498,7 @@ pub enum AppEvent {
     /// Suspend the screen and run this in the terminal, then send `TakeOverEnded`.
     TakeOver {
         ticket: TakeOverTicket,
-        place: TakeoverWhere,
+        place: TakeOverWhere,
         run: RunId,
     },
     /// Suspend the screen while an agent CLI's own command runs in the terminal, such as its
@@ -488,7 +520,7 @@ pub enum AppEvent {
     Recap {
         text: String,
         /// Set when a model wrote it.
-        model: Option<WorkerRef>,
+        model: Option<ModelRef>,
     },
     /// Put these texts back into the input box.
     TakenBack {
@@ -497,15 +529,15 @@ pub enum AppEvent {
     },
     /// `/clear` started a new conversation, so what the last one's session drew above the
     /// input goes with it.
-    ChatCleared,
+    ConversationCleared,
     /// The main agent's own commands, for the `/` menu, `/help`, and the parser. Sent at start
     /// and whenever the main agent changes.
-    VendorCommands {
-        set: VendorCommandSet,
+    CliCommands {
+        set: CliCommandSet,
     },
     /// The files for the `@` list: those git tracks and those it would (untracked and not
     /// ignored) where the conversation works, relative to that folder with `/` between
-    /// folders. That's the repo, or the run's copy of an agent's session the conversation
+    /// folders. That's the repo, or the worktree of a run's session the conversation
     /// carries on. Sent at start, when that folder changes, and in answer to
     /// `Request { RepoFiles }`.
     RepoFiles {
@@ -529,17 +561,17 @@ pub enum AppEvent {
     },
     /// What a resumed run prints in place of its history, sent after the replayed events and
     /// just before `ReplayDone`, and only when there was history. The controller builds it
-    /// from the events at no token cost, unless the lead phrases the recap from the digest.
+    /// from the events at no token cost, unless the main agent phrases the recap from the digest.
     CondensedReplay {
         run: RunId,
-        /// The last chat turns word for word, oldest first.
+        /// The last conversation turns word for word, oldest first.
         turns: Vec<ReplayTurn>,
-        /// One line per milestone, oldest first, such as "Plan approved · 5 cards".
+        /// One line per milestone, oldest first, such as "Plan approved · 5 tasks".
         milestones: Vec<String>,
         /// The `※ recap` line.
         recap: String,
-        /// Set when the lead phrased the recap.
-        recap_model: Option<WorkerRef>,
+        /// Set when the main agent phrased the recap.
+        recap_model: Option<ModelRef>,
     },
     /// Every event of an attached run up to `seq` was history. Only later ones ring the bell or
     /// notify.
@@ -549,11 +581,11 @@ pub enum AppEvent {
     },
     /// An earlier conversation picked up again, with `/resume` or `argonauts -c`. Its turns are
     /// read from its journal at no token cost.
-    ChatResumed {
-        chat: ChatId,
+    ConversationResumed {
+        conversation: ConversationId,
         title: String,
         /// The agent of its last turn.
-        worker: Option<WorkerRef>,
+        worker: Option<ModelRef>,
         /// Older turns, folded: they join the Ctrl+O history without printing.
         earlier: Vec<ReplayTurn>,
         /// The last turns word for word, oldest first.
@@ -562,6 +594,19 @@ pub enum AppEvent {
         /// journal, so `/artifacts` and the key that opens the latest have them again.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         artifacts: Vec<crate::artifacts::Artifact>,
+    },
+    /// `/templates`: the workflows and the prompts, marked.
+    Templates {
+        list: crate::template_list::TemplateList,
+    },
+    /// A switch you flipped and what it now does, such as `/awake`: what's on, how to undo it,
+    /// and what it can't do. It prints at every verbosity, since you asked for it.
+    Switched {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        undo: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caveat: Option<String>,
     },
     /// What a command found, such as `/doctor`'s checks. It prints at every verbosity, since you
     /// asked for it.
@@ -619,9 +664,24 @@ pub enum ShellEvent {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReplayTurn {
-    /// You, a front end, or an agent.
+    /// You, an outside agent, or an agent.
     pub from: Party,
     pub text: String,
+    /// An agent's turn of a CLI session carried on, as its transcript has it: what it wrote,
+    /// thought and ran, in order. With none, `text` is all there is to print.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<crate::cli_sessions::CliStep>,
+}
+
+impl ReplayTurn {
+    /// Words alone, as a conversation's journal keeps a turn.
+    pub fn said(from: Party, text: impl Into<String>) -> Self {
+        Self {
+            from,
+            text: text.into(),
+            steps: Vec::new(),
+        }
+    }
 }
 
 /// What plain text and Esc mean now.
@@ -642,33 +702,33 @@ pub enum AppMode {
         run: RunId,
     },
     /// Enter or `/resume` resumes.
-    Parked {
+    Waiting {
         run: RunId,
-        reason: ParkReason,
+        reason: WaitReason,
     },
 }
 
-/// The header and status line.
+/// The header and bottom line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StatusLine {
-    /// The terminal title's text: the chat's title, or the run's.
+pub struct HeaderAndBottomLine {
+    /// The terminal title's text: the conversation's title, or the run's.
     pub title: String,
     /// With `~` for home.
     pub repo: String,
     pub workflow: String,
-    /// `ultracode`, which the input rule's label shows beside the preset.
+    /// `ultracode`, which the input rule's label shows beside the workflow.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ultracode: bool,
     pub run: Option<RunId>,
-    pub main_agent: WorkerRef,
-    /// One chip per vendor, in `crew` order.
-    pub quotas: Vec<QuotaChip>,
+    pub main_agent: ModelRef,
+    /// One chip per agent, in `crew` order.
+    pub plan_chips: Vec<PlanUsageChip>,
     /// What the bottom line draws beyond the chips, and how it's set up. Boxed, since every
     /// event is as large as the status it may carry.
     #[serde(default, skip_serializing_if = "LineFacts::is_plain")]
     pub line: Box<LineFacts>,
     pub spent: Option<Spend>,
-    pub limit: Option<BudgetAmount>,
+    pub limit: Option<LimitAmount>,
     pub narrator: NarratorMode,
     pub approval_mode: ApprovalMode,
     /// A hold on the computer's sleep that you asked for with `/awake`, which the bottom
@@ -699,16 +759,16 @@ pub struct AgentReady {
     pub note: Option<String>,
 }
 
-/// A vendor's chip, such as "Codex 38%" or "Claude down".
+/// An agent's chip, such as "Codex 38%" or "Claude down".
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct QuotaChip {
+pub struct PlanUsageChip {
     /// Short name, such as `Claude`, `Codex`, `agy`.
     pub label: String,
-    pub reading: Option<QuotaReading>,
+    pub reading: Option<PlanUsageReading>,
     pub health: HealthState,
     /// Every plan window the CLI reported, one reading each, so the CLI in use can show both.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub windows: Vec<QuotaReading>,
+    pub windows: Vec<PlanUsageReading>,
 }
 
 /// The bottom line's own facts: its settings, and the numbers of the parts you can add to it.
@@ -720,6 +780,10 @@ pub struct LineFacts {
     /// The branch checked out in the repository, for the `branch` part.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// The effort the main session's model runs at, which the working line names while the
+    /// model thinks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_effort: Option<String>,
     /// What each of the last seven days cost in dollars, oldest first and today last, for the
     /// `spend` part's sparkline. Empty when nothing was spent in them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -750,12 +814,12 @@ pub struct PublishedArtifact {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "chat", rename_all = "snake_case")]
-pub enum ChatEvent {
+#[serde(tag = "conversation", rename_all = "snake_case")]
+pub enum ConversationEvent {
     TurnStarted {
         turn: TurnId,
         text: String,
-        worker: WorkerRef,
+        worker: ModelRef,
         /// False only for a direct turn, which may change your files.
         read_only: bool,
         commit: String,
@@ -787,10 +851,10 @@ pub enum ChatEvent {
         turn: TurnId,
     },
     /// A direct turn's agent ran out, and `to` carries on the same request in the same folder.
-    HandedOff {
+    FellBack {
         turn: TurnId,
-        from: WorkerRef,
-        to: WorkerRef,
+        from: ModelRef,
+        to: ModelRef,
         /// Such as "hit its usage limit".
         why: String,
         /// What `to` was told, such as "your request, the transcript so far, and that
@@ -810,26 +874,26 @@ pub enum ChatEvent {
     },
 }
 
-/// What a chat turn turned out to be.
+/// What a conversation turn turned out to be.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "reply", rename_all = "snake_case")]
 pub enum TurnReply {
     Answer {
         markdown: String,
     },
-    /// Triage picked a mode and the run starts, or for direct solo the session goes ahead in
-    /// your checkout.
+    /// The Captain-or-crew rules picked a mode and the run starts, or for direct Captain the
+    /// session goes ahead in your checkout.
     Change {
         /// The agent's short plan of attack.
         markdown: String,
         estimate: ChangeEstimate,
-        triage: TriageDecision,
-        /// What the request said about how to run it, checked, for the Triage line of a solo
-        /// that works in your checkout. A run's own Triage line has them from its start.
+        captain_or_crew: CaptainOrCrewDecision,
+        /// What the request said about how to run it, checked, for the start line of a Captain
+        /// that works in your checkout. A run's own start line has them from its start.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         instructions: Vec<CheckedInstruction>,
     },
-    /// Could be either; a choice card follows.
+    /// Could be either; a choice question follows.
     Unclear {
         markdown: String,
         estimate: Option<ChangeEstimate>,
@@ -837,7 +901,7 @@ pub enum TurnReply {
     },
 }
 
-/// An app-level ◆ card.
+/// An app-level ◆ question.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppChoice {
     pub id: ChoiceId,
@@ -852,7 +916,7 @@ pub struct AppChoice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChoiceKind {
-    /// Solo `s`, Crew run `c`, No, just asking `n`. Esc sets it aside.
+    /// Captain `s`, Crew run `c`, No, just asking `n`. Esc sets it aside.
     StartWork,
     /// Take over `t`. Built by the TUI; Esc cancels.
     ConfirmTakeOver,
@@ -868,16 +932,16 @@ pub enum ChoiceKind {
     /// Where to save a setting given as a command's argument, such as `/effort high`. Options
     /// are the [`SettingScope`] names with the command's default recommended. Esc cancels.
     SettingScope,
-    /// Gate commands found in the repo, offered once: Use these `y`, Edit them `e`, or Skip
+    /// Check commands found in the repo, offered once: Use these `y`, Edit them `e`, or Skip
     /// `n`. Esc leaves it for the next run.
-    DetectedGates,
+    DetectedChecks,
     /// Whether to trust the project settings files, which set safety keys: Trust them `y`, Not
     /// now `n`, or Show the file `d`. Asked again when a file's hash changes. Esc means not now.
     TrustProject,
-    /// `/rewind`: Revert `y`, which resets the card's branch and keeps the replaced work on a
+    /// `/rewind`: Rewind `y`, which resets the task's branch and keeps the replaced work on a
     /// side branch, or Show the diff `d`. Esc cancels.
-    ConfirmRevert,
-    /// `/connect`: Write it `y`, which keeps a backup of the front end's config first, or Not
+    ConfirmRewind,
+    /// `/connect`: Write it `y`, which keeps a backup of the outside agent's config first, or Not
     /// now `n`. The body shows the file and the entry. Esc means not now.
     ConfirmConnect,
     /// A request said "from now on": This project, just me `m`, This project, shared `p`,
@@ -894,12 +958,12 @@ pub enum ChoiceKind {
     /// `/rewind` in a direct conversation: one option per message whose turn changed files,
     /// newest first. Esc cancels.
     RewindTurn,
-    /// Plan first in direct solo: Yes, go ahead `y` resumes the session that planned as a turn
+    /// Plan first in direct Captain: Yes, go ahead `y` resumes the session that planned as a turn
     /// that works in your checkout, or No `n`, and nothing changes. Esc means No.
     GoAhead,
     /// A direct turn's agent ran out: one option per agent that may carry it on in your checkout,
     /// `1` to `9`, then Stop here `s`. Esc stops.
-    HandOff,
+    Fallback,
     /// `/workflow try`: what a workflow would run for a request, in the body. Run it `y` runs
     /// that one request with it, and Edit it `e` opens its file. Esc closes, and nothing ran.
     TryWorkflow,
@@ -913,6 +977,14 @@ pub enum ChoiceKind {
     /// then, for making it a repository, whether to go ahead once the body has shown what
     /// the first commit would hold. Esc cancels, and nothing changes.
     Git,
+    /// `/templates`: one option per workflow and per role's prompts, each with its marks as
+    /// its detail, then where the picked one's copy goes: This folder `t` or Every folder
+    /// `e`. Esc copies nothing.
+    Templates,
+    /// A CLI the run about to start would use must be updated first: Update it now `u`, Leave
+    /// it out of this run `l`, offered where another CLI can take its roles, or Run with it
+    /// anyway `r`. Each option's detail is drawn beside it. Esc starts nothing.
+    NeededUpdate,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -922,14 +994,14 @@ pub enum ViewData {
     Runs {
         /// Newest first.
         runs: Vec<RunSummary>,
-        /// Earlier conversations with the lead, newest first. The picker lists them with the
+        /// Earlier conversations with the main agent, newest first. The picker lists them with the
         /// runs by when each was last used.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        chats: Vec<ChatSummary>,
-        /// The main agent CLI's own sessions for this folder, newest first, listed with the
+        conversations: Vec<ConversationSummary>,
+        /// The sessions of the main agent's CLI for this folder, newest first, listed with the
         /// rest under a Kind column.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        sessions: Vec<VendorSession>,
+        sessions: Vec<CliSession>,
         /// The sessions of the listed runs' agents, each listed under its run.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         agents: Vec<AgentSession>,
@@ -943,7 +1015,7 @@ pub enum ViewData {
         run: RunId,
         agents: Vec<AgentSession>,
     },
-    /// A goal-style run's goal.
+    /// A goal run's goal.
     Goal {
         view: Box<crate::views::GoalView>,
     },
@@ -984,9 +1056,9 @@ pub enum ViewData {
         view: Box<crate::settings::mods::ModsView>,
     },
     Models {
-        /// Workers the role's rules allow, best fit first.
+        /// Models the role's rules allow, best fit first.
         choices: Vec<ModelChoice>,
-        /// `None` is the default agent. A pick for the default agent sends `Slash { Agent }`,
+        /// `None` is the main agent. A pick for the main agent sends `Slash { Agent }`,
         /// any other `Slash { Model }`.
         #[serde(default)]
         role: Option<RoleName>,
@@ -1000,14 +1072,14 @@ pub enum ViewData {
         #[serde(default)]
         update: bool,
     },
-    /// `/effort` with no level: the slider for the default agent's or the role's model. Enter
+    /// `/effort` with no level: the slider for the main agent's or the role's model. Enter
     /// sends `Slash { Effort }` with the level.
     Effort {
         slider: EffortSlider,
     },
-    /// The crew panel's rows from the controller, which the screen adds to its own sessions'.
+    /// The agent panel's rows from the controller, which the screen adds to its own sessions'.
     Crew {
-        panel: CrewPanel,
+        panel: AgentPanelRows,
     },
     Workflow {
         view: Box<WorkflowView>,
@@ -1016,6 +1088,10 @@ pub enum ViewData {
         view: Box<AgentView>,
     },
     Context {
+        view: ContextView,
+    },
+    /// `/context print`: the same sessions, to go into the conversation as rows.
+    ContextPrint {
         view: ContextView,
     },
     /// What `/usage` shows, and what the cards pinned above the input draw from.
@@ -1030,7 +1106,7 @@ pub enum ViewData {
         /// This repo first, then the others by their newest update.
         repos: Vec<RepoRuns>,
     },
-    /// The built-ins, then your files, then the repo's, a file shadowing a workflow of the same
+    /// The built-ins, then your files, then the repo's, a file replacing a workflow of the same
     /// name.
     WorkflowLibrary {
         workflows: Vec<WorkflowFile>,
@@ -1052,26 +1128,26 @@ pub enum ViewData {
     Prompts {
         view: Box<crate::prompt_list::PromptList>,
     },
-    /// `/rewind`: the handoff checkpoints of `card`, or of every card, oldest first. Picking one
+    /// `/rewind`: the fallback checkpoints of `task`, or of every task, oldest first. Picking one
     /// sends `UiCommand::Rewind`.
     Checkpoints {
         run: RunId,
-        card: Option<CardId>,
+        task: Option<TaskId>,
         checkpoints: Vec<CheckpointRow>,
     },
 }
 
-/// One conversation with the lead, read from `chat/<chat>.jsonl`.
+/// One conversation with the main agent, read from `conversation/<conversation>.jsonl`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChatSummary {
-    pub chat: ChatId,
+pub struct ConversationSummary {
+    pub conversation: ConversationId,
     /// From its first prompt, or its first run when it has no turn.
     pub title: String,
     /// When it last had a turn or opened a run.
     #[serde(with = "time::serde::rfc3339")]
     pub updated: time::OffsetDateTime,
     /// The agent of its last turn.
-    pub worker: Option<WorkerRef>,
+    pub worker: Option<ModelRef>,
     pub turns: u32,
     /// The runs it started or opened, which carrying it on brings back to the agent panel.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -1092,14 +1168,14 @@ pub struct SettingRow {
     pub key: String,
     /// TOML text; empty when unset, such as `narrator.model` by default.
     pub value: String,
-    /// `built-in`, `global`, `project`, `project-local`, `preset`, `flag`, or `session`. The
+    /// `built-in`, `global`, `project`, `project-local`, `workflow`, `flag`, or `session`. The
     /// scope question warns when it's above the scope you pick, since saving there changes nothing.
     pub layer: String,
-    /// For a value from the preset, the settings file that picked the preset (`global`,
+    /// For a value from the workflow, the settings file that picked the workflow (`global`,
     /// `project`, or `project-local`), since saving there or later wins over it. `None` when the
-    /// preset is the default or a flag picked it, and sits above every file.
+    /// workflow is the default or a flag picked it, and sits above every file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preset_from: Option<String>,
+    pub workflow_from: Option<String>,
     /// The command's default, or in `/config` the key's catalog default.
     pub default_scope: SettingScope,
     /// Changing it asks you to confirm.
@@ -1121,16 +1197,16 @@ pub struct MissingCli {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelChoice {
-    pub worker: WorkerRef,
-    pub family: String,
+    pub worker: ModelRef,
+    pub provider: String,
     pub access: ModelAccess,
-    /// For a typical card.
+    /// For a typical task.
     pub cost: CostEstimate,
-    pub quota: Option<QuotaReading>,
+    pub plan_usage: Option<PlanUsageReading>,
     /// From the registry entry; every level when unknown.
     pub efforts: Vec<String>,
     pub strengths: Vec<String>,
-    /// The role's current worker.
+    /// The role's current model.
     #[serde(default)]
     pub current: bool,
     /// What the name alone doesn't say: an alias's model ("newest Opus"), the model a CLI's
@@ -1153,7 +1229,7 @@ pub struct ModelChoice {
     /// The level the CLI runs it at when none is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_effort: Option<String>,
-    /// The level set for it now, for the default agent or the role.
+    /// The level set for it now, for the main agent or the role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
     /// A short name the CLI resolves itself, such as `opus`. The models level lists aliases on
@@ -1183,7 +1259,7 @@ pub struct ConfigEntry {
     pub key: String,
     /// TOML text.
     pub value: String,
-    /// `built-in`, `global`, `project`, `project-local`, `preset`, or `flag`.
+    /// One of the names in [`crate::settings::layer`].
     pub layer: String,
     /// Changing it asks you to confirm.
     pub safety: bool,

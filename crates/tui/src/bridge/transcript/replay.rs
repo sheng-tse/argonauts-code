@@ -1,18 +1,24 @@
-//! A resumed run prints a condensed replay: the header, the last chat turns word for word, one
-//! line per milestone, a `※ recap`, then the live state. Every replayed item still joins the
-//! history, so Ctrl+O shows everything. A resumed conversation prints the same way: a header,
-//! its older turns folded into the history, and its last turns word for word.
+//! A resumed run prints a condensed replay: the header, the last conversation turns word for word,
+//! one line per milestone, a `※ recap`, then the live state. Every replayed item still joins the
+//! history, so Ctrl+O shows everything. A resumed conversation prints the same way: a header, its
+//! older turns folded into the history, and its last turns word for word.
 
 use argonauts_core::RunId;
 use argonauts_core::api::{RunState, RunSummary};
 use argonauts_core::app::{AppEvent, ReplayTurn};
+use argonauts_core::cli_sessions::{CliCall, CliStep};
 use argonauts_core::events::run::Party;
-use argonauts_core::names::{ChatId, WorkerRef};
+use argonauts_core::names::{ConversationId, ModelRef};
 
-use crate::cell::{AssistantMessage, Notice, Recap, Tone, UserMessage};
+use crate::bridge::tools;
+use crate::cell::{
+    AssistantMessage, Cell, CollapsedGroup, Notice, Recap, Thought, Tone, ToolCall, ToolItem,
+    UserMessage,
+};
 use crate::format;
 
-use super::Cx;
+use super::conversation::folds;
+use super::{Cx, quiet};
 
 #[derive(Debug, Default)]
 pub struct ReplayPrinter {
@@ -100,12 +106,12 @@ impl ReplayPrinter {
     }
 }
 
-/// `● chat-003 · Fix the flaky login test`, how many turns it had and with whom, then its
+/// `● conversation-003 · Fix the flaky login test`, how many turns it had and with whom, then its
 /// older turns kept for Ctrl+O and its last ones printed.
-pub(super) fn chat_resumed(
-    chat: &ChatId,
+pub(super) fn conversation_resumed(
+    conversation: &ConversationId,
     title: &str,
-    worker: Option<&WorkerRef>,
+    worker: Option<&ModelRef>,
     earlier: &[ReplayTurn],
     turns: &[ReplayTurn],
     cx: &mut Cx<'_>,
@@ -114,9 +120,9 @@ pub(super) fn chat_resumed(
     cx.out.close_views = true;
     let title = title.trim();
     let text = if title.is_empty() {
-        format!("Resumed {chat}")
+        format!("Resumed {conversation}")
     } else {
-        format!("Resumed {chat} · {title}")
+        format!("Resumed {conversation} · {title}")
     };
     let mut parts = Vec::new();
     if let Some(worker) = worker {
@@ -141,8 +147,8 @@ pub(super) fn chat_resumed(
     }
     cx.model.history.push(notice);
     for turn in earlier {
-        if let Some(cell) = turn_cell(turn) {
-            cx.model.history.keep(cell);
+        for reprint in turn_cells(turn, cx) {
+            cx.model.history.keep(reprint.cell);
         }
     }
     for turn in turns {
@@ -152,19 +158,127 @@ pub(super) fn chat_resumed(
 
 /// Your words as you typed them, and the agents' answers as they wrote them.
 fn print_turn(turn: &ReplayTurn, cx: &mut Cx<'_>) {
-    if let Some(cell) = turn_cell(turn) {
-        cx.model.history.push(cell);
+    for reprint in turn_cells(turn, cx) {
+        if reprint.prints {
+            cx.model.history.push(reprint.cell);
+        } else {
+            cx.model.history.keep(reprint.cell);
+        }
     }
 }
 
-fn turn_cell(turn: &ReplayTurn) -> Option<crate::cell::Cell> {
+/// A cell of a reprinted turn. One that doesn't print joins the Ctrl+O history alone.
+struct Reprint {
+    cell: Cell,
+    prints: bool,
+}
+
+/// A turn as it printed when it happened: the words alone, or for a CLI session's turn each
+/// thing the agent did, in order. Its calls follow the verbosity as live ones do, and what it
+/// thought is kept for Ctrl+O, as Claude Code keeps it.
+fn turn_cells(turn: &ReplayTurn, cx: &Cx<'_>) -> Vec<Reprint> {
+    if turn.steps.is_empty() {
+        let cell = turn_cell(turn);
+        return cell
+            .map(|cell| Reprint { cell, prints: true })
+            .into_iter()
+            .collect();
+    }
+    let agent_id = match &turn.from {
+        Party::Agent { worker, .. } => worker.agent.as_str(),
+        _ => "",
+    };
+    let places = tools::Places::of_conversation(cx.state);
+    let calls_print = !quiet(cx);
+    let mut cells: Vec<Reprint> = Vec::new();
+    for step in &turn.steps {
+        match step {
+            CliStep::Wrote { text } => cells.push(Reprint {
+                cell: AssistantMessage::new(text.trim_end()).into(),
+                prints: true,
+            }),
+            CliStep::Thought { text } if text.trim().is_empty() => {}
+            CliStep::Thought { text } => cells.push(Reprint {
+                cell: Cell::Custom(Box::new(Thought::new(text.as_str()))),
+                prints: false,
+            }),
+            CliStep::Ran(call) => {
+                let row = call_row(agent_id, call, &places);
+                let group = match cells.last_mut() {
+                    Some(Reprint {
+                        cell: Cell::Group(group),
+                        ..
+                    }) => Some(group),
+                    _ => None,
+                };
+                let cell = match (folds(&row, cx), group) {
+                    (true, Some(group)) => {
+                        group.push(row);
+                        continue;
+                    }
+                    (true, None) => {
+                        let mut group = CollapsedGroup::new();
+                        group.push(row);
+                        group.into()
+                    }
+                    (false, _) => row.into(),
+                };
+                cells.push(Reprint {
+                    cell,
+                    prints: calls_print,
+                });
+            }
+        }
+    }
+    cells
+}
+
+/// A call's row as it stood once the call ended: its patches in place of the preview, then its
+/// result. A call the transcript never saw end reads as stopped. What a subagent it started
+/// ran folds into its result, as on Claude Code's screen, and Ctrl+O shows each call.
+fn call_row(agent_id: &str, call: &CliCall, places: &tools::Places) -> ToolCall {
+    let whole = whole_row(agent_id, call, places);
+    let is_nested = |item: &ToolItem| matches!(item, ToolItem::Call(_) | ToolItem::Group(_));
+    if !whole.body.iter().any(is_nested) {
+        return whole;
+    }
+    let mut folded = whole.clone();
+    folded.body.retain(|item| !is_nested(item));
+    folded.full = Some(Box::new(whole));
+    folded
+}
+
+/// The row with every call of its subagent under it, at every depth.
+fn whole_row(agent_id: &str, call: &CliCall, places: &tools::Places) -> ToolCall {
+    let mut row = tools::start_call_in(agent_id, &call.name, &call.input, places);
+    row.kind = tools::kind_of(agent_id, &call.name);
+    for step in &call.steps {
+        if let CliStep::Ran(inner) = step {
+            row.push_call(whole_row(agent_id, inner, places));
+        }
+    }
+    for patch in &call.patches {
+        if patch.numbered {
+            tools::take_patch_in(&mut row, &patch.path, &patch.hunks, places);
+        } else {
+            tools::take_unnumbered_patch_in(&mut row, &patch.path, &patch.hunks, places);
+        }
+    }
+    match call.ok {
+        Some(ok) => tools::finish_call(&mut row, ok, call.output.as_deref()),
+        None => row.stop(),
+    }
+    row
+}
+
+fn turn_cell(turn: &ReplayTurn) -> Option<Cell> {
     let text = turn.text.trim_end();
     if text.trim().is_empty() {
         return None;
     }
     Some(match &turn.from {
         Party::User => UserMessage::new(text).into(),
-        Party::FrontEnd { client } => UserMessage::new(format!("{client}: {text}")).into(),
+        Party::OutsideAgent { client } => UserMessage::new(format!("{client}: {text}")).into(),
         _ => AssistantMessage::new(text).into(),
     })
 }
@@ -190,8 +304,10 @@ fn state_words(state: RunState) -> &'static str {
     match state {
         RunState::Running => "Running",
         RunState::Pausing => "Pausing",
-        RunState::Parked => "Waiting",
-        RunState::Crashed => "Stopped by a crash · /resume recovers it",
+        RunState::Waiting => "Waiting",
+        RunState::Crashed => "Stopped when its run host exited · /resume carries it on",
+        RunState::NeverStarted => "Never started",
+        RunState::FromAnotherBuild => "From an older Argonauts · /runs archive moves it away",
         RunState::Merged => "Merged",
         RunState::PullRequest => "Ready for a pull request",
         RunState::BranchLeft => "Left on its branches",

@@ -1,12 +1,12 @@
 //! `argonauts_lookup`: the main session answers questions about your own crew from
-//! Argonauts' records, never from a guess. It reads and changes nothing else, and where there
+//! Argonauts Code's records, never from a guess. It reads and changes nothing else, and where there
 //! is no record its answer says so.
 
 use serde_json::{Value, json};
 
 pub const NAME: &str = "argonauts_lookup";
 
-pub const DESCRIPTION: &str = "Looks up Argonauts' own records for this repository: each \
+pub const DESCRIPTION: &str = "Looks up Argonauts Code's own records for this repository: each \
     model's reviews with what it sent back and why, tasks, tokens, spend, fallbacks, or the \
     setup in use. Use it for any question about the user's crew, models or setup, and answer \
     from its figures, never from a guess. Where it finds no record, say so. It changes \
@@ -28,7 +28,7 @@ pub const WHAT: [(&str, &str); 6] = [
     ("spend", "spend by model"),
     (
         "fallbacks",
-        "each time a model stopped and another took over, and why",
+        "each time a model stopped and fell back to another, and why",
     ),
     ("setup", "the setup in use and what the user set"),
 ];

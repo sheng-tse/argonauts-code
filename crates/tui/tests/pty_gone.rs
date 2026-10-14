@@ -25,7 +25,7 @@ const DRAWN_WITHIN: Duration = Duration::from_secs(10);
 /// The app's own check runs every half second, and SIGTERM's backstop waits three.
 const ENDS_WITHIN: Duration = Duration::from_secs(10);
 
-/// The harness on a pty it doesn't have as its controlling terminal, as a capture tool starts
+/// The driver on a pty it doesn't have as its controlling terminal, as a capture tool starts
 /// the app: in a process group of its own, with the pty as its stdin, stdout, and stderr.
 struct Detached {
     child: Child,
@@ -55,15 +55,15 @@ impl Detached {
         // The app mustn't hold the terminal's side open itself, or closing it closes nothing.
         fcntl(&pty.master, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).expect("keeping the pty");
         let stdio = || Stdio::from(pty.slave.try_clone().expect("the pty's terminal side"));
-        let child = Command::new(env!("CARGO_BIN_EXE_argonauts-tui-harness"))
+        let child = Command::new(env!("CARGO_BIN_EXE_argonauts-tui-driver"))
             .arg(&script_file)
             .current_dir(&work)
             .env("HOME", &home)
             .env("ARGONAUTS_HOME", home.join(".argonauts"))
             .env("TERM", "xterm-256color")
             .env("LANG", "en_US.UTF-8")
-            .env("HARNESS_UI", r#"screen = "inline""#)
-            .env("HARNESS_COMMANDS", dir.path().join("commands.jsonl"))
+            .env("DRIVER_UI", r#"screen = "inline""#)
+            .env("DRIVER_COMMANDS", dir.path().join("commands.jsonl"))
             .env_remove("TMUX")
             .stdin(stdio())
             .stdout(stdio())

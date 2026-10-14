@@ -4,22 +4,22 @@
 
 use std::fmt::Write as _;
 
-use crate::names::WorkerRef;
+use crate::names::ModelRef;
 
-/// `[fallback.workers]` and `[fallback.reviewers]`. A role with no models to name is written
+/// `[fallback.worker]` and `[fallback.reviewer]`. A role with no models to name is written
 /// commented out, as an example to fill in.
-pub fn fallbacks(workers: &[WorkerRef], reviewers: &[WorkerRef]) -> String {
+pub fn fallbacks(workers: &[ModelRef], reviewers: &[ModelRef]) -> String {
     let mut text = String::from(
         "# 2. Fallbacks: a model can't be reached, its plan ran out, or a limit of yours was \
          reached.\n",
     );
     table(
         &mut text,
-        "workers",
+        "worker",
         workers,
         (
             1,
-            Some("how many take over at once. 2 or more do the same task side by side"),
+            Some("how many work at once. 2 or more do the same task side by side"),
         ),
         (
             "first_passing",
@@ -38,7 +38,7 @@ pub fn fallbacks(workers: &[WorkerRef], reviewers: &[WorkerRef]) -> String {
     };
     table(
         &mut text,
-        "reviewers",
+        "reviewer",
         reviewers,
         (together, None),
         ("merge", keeps),
@@ -49,7 +49,7 @@ pub fn fallbacks(workers: &[WorkerRef], reviewers: &[WorkerRef]) -> String {
 fn table(
     text: &mut String,
     role: &str,
-    order: &[WorkerRef],
+    order: &[ModelRef],
     (together, together_says): (usize, Option<&str>),
     (pick, pick_says): (&str, &str),
 ) {
@@ -87,10 +87,11 @@ pub fn limits() -> &'static str {
 mod tests {
     use super::*;
     use crate::settings::Settings;
-    use crate::settings::budget::OnHit;
-    use crate::settings::handoff::{CrewRole, Pick};
+    use crate::settings::crew::CrewRole;
+    use crate::settings::fallback::Pick;
+    use crate::settings::limit::OnHit;
 
-    fn models(names: &[&str]) -> Vec<WorkerRef> {
+    fn models(names: &[&str]) -> Vec<ModelRef> {
         names.iter().map(|name| name.parse().unwrap()).collect()
     }
 
@@ -102,11 +103,11 @@ mod tests {
         let settings: Settings = toml::from_str(&text).unwrap();
 
         let own = &settings.fallback.roles;
-        assert_eq!(own[&CrewRole::Workers].order.len(), 2);
-        assert_eq!(own[&CrewRole::Workers].together, Some(1));
-        assert_eq!(own[&CrewRole::Workers].pick, Some(Pick::FirstPassing));
-        assert_eq!(own[&CrewRole::Reviewers].together, Some(2));
-        assert_eq!(own[&CrewRole::Reviewers].pick, Some(Pick::Merge));
+        assert_eq!(own[&CrewRole::Worker].order.len(), 2);
+        assert_eq!(own[&CrewRole::Worker].together, Some(1));
+        assert_eq!(own[&CrewRole::Worker].pick, Some(Pick::FirstPassing));
+        assert_eq!(own[&CrewRole::Reviewer].together, Some(2));
+        assert_eq!(own[&CrewRole::Reviewer].pick, Some(Pick::Merge));
         // The limits are all commented out, so the file sets none.
         assert_eq!(settings.limits, Settings::default().limits);
         assert!(!text.contains('\u{2014}'), "no em dashes");
@@ -124,12 +125,12 @@ mod tests {
         assert_eq!(
             fallbacks(&workers, &reviewers),
             r#"# 2. Fallbacks: a model can't be reached, its plan ran out, or a limit of yours was reached.
-[fallback.workers]
+[fallback.worker]
 order    = ["claude-code/sonnet-5-5", "codex/gpt-5.6-luna", "ollama/qwen3-coder"]
-together = 1                  # how many take over at once. 2 or more do the same task side by side
+together = 1                  # how many work at once. 2 or more do the same task side by side
 pick     = "first_passing"    # first_passing · judge · merge   (matters when together is 2 or more)
 
-[fallback.reviewers]
+[fallback.reviewer]
 order    = ["codex/gpt-5.6", "claude-code/haiku-4-5"]
 together = 2
 pick     = "merge"            # keep every finding from both
@@ -153,7 +154,7 @@ when_reached  = "fallback"    # fallback: use [fallback.*] · stop
         let text = fallbacks(&[], &models(&["codex/gpt-5.6"]));
         let settings: Settings = toml::from_str(&text).unwrap();
         assert_eq!(
-            settings.fallback.roles[&CrewRole::Reviewers].together,
+            settings.fallback.roles[&CrewRole::Reviewer].together,
             Some(1)
         );
         assert!(text.contains("# keep every finding   (matters when together is 2 or more)"));
@@ -182,9 +183,9 @@ when_reached  = "fallback"    # fallback: use [fallback.*] · stop
             .map(|line| format!("{line}\n"))
             .collect();
         let settings: Settings = toml::from_str(&on).unwrap();
-        assert_eq!(settings.limits.budget.spend_per_run, Some(5.0));
+        assert_eq!(settings.limits.spend.spend_per_run, Some(5.0));
         assert_eq!(settings.limits.spend_per_day, Some(20.0));
-        assert_eq!(settings.limits.budget.plan_usage, Some(0.8));
-        assert_eq!(settings.limits.budget.when_reached, OnHit::Fallback);
+        assert_eq!(settings.limits.spend.plan_usage, Some(0.8));
+        assert_eq!(settings.limits.spend.when_reached, OnHit::Fallback);
     }
 }

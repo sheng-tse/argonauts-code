@@ -3,10 +3,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use argonauts_core::app::{AppEvent, StatusLine};
+use argonauts_core::app::{AppEvent, HeaderAndBottomLine};
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::log::NO_SECOND_TRY;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::log::{NO_SECOND_TRY, SAME_CLI_IS_ON};
+use argonauts_core::names::ModelRef;
 use argonauts_core::policy::{NarratorLine, NarratorLineKind};
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::Settings;
@@ -28,7 +28,7 @@ pub(super) struct Items {
     warnings_seen: BTreeSet<String>,
 }
 
-/// The controller sends the status line with the default agent just after the welcome, so the
+/// The controller sends the bottom line with the main agent just after the welcome, so the
 /// header waits in the live region for it.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum Header {
@@ -40,7 +40,7 @@ enum Header {
 
 impl Items {
     /// The first history cell. A later welcome comes when the setup saves, with the new agent
-    /// and preset, and changes the header printed rather than printing another.
+    /// and workflow, and changes the header printed rather than printing another.
     pub(super) fn welcome(&mut self, event: &AppEvent, cx: &mut Cx<'_>) {
         let AppEvent::Welcome {
             version,
@@ -56,7 +56,7 @@ impl Items {
         else {
             return;
         };
-        // An older app's welcome names no agent, so the status line's fills it in.
+        // An older app's welcome names no agent, so the bottom line's fills it in.
         let main_agent = main_agent
             .as_ref()
             .or_else(|| cx.state.status.as_ref().map(|status| &status.main_agent));
@@ -64,15 +64,15 @@ impl Items {
         let header = SessionHeader {
             app: "Argonauts Code".to_owned(),
             version: version.clone(),
-            main_agent: main_agent.map(|agent| names.harness(&agent.worker)),
-            model: main_agent.and_then(|agent| names.model(&agent.worker, agent.model.as_deref())),
+            main_agent: main_agent.map(|agent| names.cli(&agent.agent)),
+            model: main_agent.and_then(|agent| names.model(&agent.agent, agent.model.as_deref())),
             effort: effort.clone(),
             workflow: workflow.clone(),
             folder: repo.clone(),
             agents: agents
                 .iter()
                 .map(|agent| AgentReady {
-                    name: names.harness(&agent.id),
+                    name: names.cli(&agent.id),
                     ready: agent.ready,
                     note: if agent.ready {
                         agent.version.clone()
@@ -111,14 +111,14 @@ impl Items {
         }
     }
 
-    /// Fills in the default agent and prints the header waiting for it.
-    pub(super) fn status(&mut self, status: &StatusLine, cx: &mut Cx<'_>) {
+    /// Fills in the main agent and prints the header waiting for it.
+    pub(super) fn status(&mut self, status: &HeaderAndBottomLine, cx: &mut Cx<'_>) {
         let Header::Waiting(id) = self.header else {
             return;
         };
         let agent = &status.main_agent;
-        let cli = cx.state.names.harness(&agent.worker);
-        let model = cx.state.names.model(&agent.worker, agent.model.as_deref());
+        let cli = cx.state.names.cli(&agent.agent);
+        let model = cx.state.names.model(&agent.agent, agent.model.as_deref());
         if let Some(Cell::Header(header)) = cx.model.history.active_mut(id) {
             header.main_agent = Some(cli);
             header.model = model;
@@ -126,7 +126,7 @@ impl Items {
         self.print_header(cx);
     }
 
-    /// Prints a header still waiting for the status line, so nothing prints above it.
+    /// Prints a header still waiting for the bottom line, so nothing prints above it.
     pub(super) fn print_header(&mut self, cx: &mut Cx<'_>) {
         if let Header::Waiting(id) = self.header {
             if let Some(Cell::Header(header)) = cx.model.history.active(id) {
@@ -139,19 +139,21 @@ impl Items {
 
     /// `AppEvent::Notice`: dim, or in the warning or error color.
     pub(super) fn notice(&mut self, level: NoteLevel, text: &str, cx: &mut Cx<'_>) {
-        self.notice_with_more(level, text, None, cx);
+        self.notice_with_more(level, text, &[], None, cx);
     }
 
-    /// A run's `Note`: its first line as a notice, and the lines after it, such as a
-    /// validator's errors, kept for Ctrl+O.
+    /// A run's `Note`: its first line as a notice with its rows under it, and the lines after
+    /// them, such as a validator's errors, kept for Ctrl+O.
     pub(super) fn note(&mut self, note: &Note, cx: &mut Cx<'_>) {
-        self.notice_with_more(note.level, note.line(), note.detail(), cx);
+        let rows: Vec<&str> = note.rows().collect();
+        self.notice_with_more(note.level, note.line(), &rows, note.detail(), cx);
     }
 
     fn notice_with_more(
         &mut self,
         level: NoteLevel,
         text: &str,
+        rows: &[&str],
         more: Option<&str>,
         cx: &mut Cx<'_>,
     ) {
@@ -160,8 +162,10 @@ impl Items {
             return;
         }
         let tone = match level {
-            NoteLevel::Info | NoteLevel::Aside if quiet(cx) => return,
-            NoteLevel::Info | NoteLevel::Aside => Tone::Dim,
+            NoteLevel::Info | NoteLevel::Aside | NoteLevel::Quiet if quiet(cx) => return,
+            // Rows are there to be read, so the line over them isn't dimmed away.
+            NoteLevel::Info if !rows.is_empty() => Tone::Normal,
+            NoteLevel::Info | NoteLevel::Aside | NoteLevel::Quiet => Tone::Dim,
             NoteLevel::Warn => {
                 if !self.warnings_seen.insert(text.to_owned()) {
                     return;
@@ -170,20 +174,31 @@ impl Items {
             }
             NoteLevel::Error => Tone::Error,
         };
-        // A takeover that skips the retry: who steps in, plain, and why there's no retry, dim.
-        let takeover = text
+        // A fallback that skips the retry: who steps in, plain, and why there's no retry, dim.
+        let fallback = text
             .strip_suffix(NO_SECOND_TRY)
             .and_then(|head| head.strip_suffix(" · "))
             .filter(|_| level == NoteLevel::Warn);
-        let mut notice = match takeover {
+        let mut notice = match fallback {
             Some(head) => Notice::plain_with_after(tone, head, NO_SECOND_TRY),
             None => Notice::new(tone, text),
         };
-        if level == NoteLevel::Aside {
-            notice = notice.with_glyph(ASIDE);
+        match level {
+            NoteLevel::Aside => notice = notice.with_glyph(ASIDE),
+            NoteLevel::Quiet => notice = notice.with_glyph(NO_MARK),
+            _ => {}
+        }
+        for row in rows {
+            notice = notice.with_detail(*row);
         }
         for line in more.into_iter().flat_map(str::lines) {
-            notice = notice.with_more(line.trim_end());
+            let line = line.trim_end();
+            // Why a fallback stayed on its CLI is part of what happened, so it shows.
+            notice = if line.starts_with(SAME_CLI_IS_ON) {
+                notice.with_detail(line)
+            } else {
+                notice.with_more(line)
+            };
         }
         emit(cx, notice);
     }
@@ -196,6 +211,17 @@ pub(super) fn report(title: &str, lines: &[String], cx: &mut Cx<'_>) {
     for line in lines {
         notice = notice.with_detail(line.trim_end());
     }
+    emit(cx, notice);
+}
+
+/// A switch you flipped, such as `/awake`: what's on, how to undo it, and what it can't do.
+/// You asked for it, so it prints even at `quiet`.
+pub(super) fn switched(text: &str, undo: Option<&str>, caveat: Option<&str>, cx: &mut Cx<'_>) {
+    let notice = Notice::switched(
+        text.trim(),
+        undo.map(str::to_owned),
+        caveat.map(str::to_owned),
+    );
     emit(cx, notice);
 }
 
@@ -291,6 +317,8 @@ pub(super) fn setting_changed(
 const NEXT_REQUEST: &str = " · applies at the next request";
 /// The mark of an aside, as Claude Code draws its own. The ASCII glyph set draws the bullet.
 const ASIDE: &str = "※";
+/// A quiet line has no mark: its words start where a marked line's do.
+const NO_MARK: &str = " ";
 
 /// The keys `/model`, `/effort` and `/workflow` write: each sets how a request is run, so a
 /// change made while one runs waits for the next.
@@ -301,8 +329,8 @@ fn applies_at_next_request(key: &str) -> bool {
 }
 
 /// `⎿  Set model to Opus 5.5 · just you · was Claude Code's default`, the value by its display
-/// name in the accent color, for the keys `/model` and `/effort` write. All hands reads
-/// `⎿  Turned All hands on · just you`.
+/// name in the accent color, for the keys `/model` and `/effort` write. Ultracode reads
+/// `⎿  Turned Ultracode on · just you`.
 fn command_result(
     key: &str,
     value: &str,
@@ -379,15 +407,13 @@ fn workers_words(toml: &str, words: &Words<'_>) -> String {
             if let Some(word) = word_for_a_model(item) {
                 return word.to_owned();
             }
-            match item.parse::<WorkerRef>() {
+            match item.parse::<ModelRef>() {
                 Ok(worker) => words
                     .picked
                     .get(&worker.to_string())
                     .cloned()
-                    .or_else(|| words.names.model(&worker.worker, worker.model.as_deref()))
-                    .unwrap_or_else(|| {
-                        format!("{}'s default", words.names.harness(&worker.worker))
-                    }),
+                    .or_else(|| words.names.model(&worker.agent, worker.model.as_deref()))
+                    .unwrap_or_else(|| format!("{}'s default", words.names.cli(&worker.agent))),
                 Err(_) => item.to_owned(),
             }
         })
@@ -404,11 +430,11 @@ fn cli_moved(
     let worker = |toml: &str| {
         toml.trim()
             .trim_matches(['"', '\''])
-            .parse::<WorkerRef>()
+            .parse::<ModelRef>()
             .ok()
     };
     let (now, was) = (worker(value)?, worker(previous?)?);
-    (now.worker != was.worker).then(|| (names.harness(&now.worker), names.harness(&was.worker)))
+    (now.agent != was.agent).then(|| (names.cli(&now.agent), names.cli(&was.agent)))
 }
 
 /// `Claude Code's default (Opus 5.5)` as the model it runs, `Opus 5.5`, for a line that names

@@ -11,7 +11,7 @@ use super::{ToolCall, ToolItem};
 use crate::cell::layout::{BODY_COL, hook, indent, more_row};
 use crate::render::RenderCtx;
 
-pub(super) fn within(call: &ToolCall, ctx: &RenderCtx<'_>, budget: usize) -> Vec<Line<'static>> {
+pub(super) fn within(call: &ToolCall, ctx: &RenderCtx<'_>, limit: usize) -> Vec<Line<'static>> {
     let ctx = &ctx.with_live(true);
     let mut header = call.header(ctx);
     let output = output_role(call);
@@ -21,15 +21,15 @@ pub(super) fn within(call: &ToolCall, ctx: &RenderCtx<'_>, budget: usize) -> Vec
         .map(|item| item_rows(item, ctx, BODY_COL, output))
         .collect();
     let total = header.len() + items.iter().map(Vec::len).sum::<usize>();
-    if total <= budget {
+    if total <= limit {
         let body = items.into_iter().flatten().collect();
         return joined(header, body, ctx);
     }
-    if header.len() >= budget {
-        header.truncate(budget);
+    if header.len() >= limit {
+        header.truncate(limit);
         return header;
     }
-    let mut room = budget - header.len();
+    let mut room = limit - header.len();
 
     let todo = call
         .body

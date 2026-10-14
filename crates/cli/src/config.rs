@@ -73,7 +73,7 @@ fn models_text(models: &[ModelEntry], discovered: bool) -> String {
             format!(
                 "{} · {} · {} · {}\n",
                 model.id,
-                model.family,
+                model.provider,
                 words(&model.kind),
                 words(&model.access)
             )
@@ -108,17 +108,17 @@ mod tests {
     #[test]
     fn known_models_still_say_how_to_find_more() {
         let entry: ModelEntry = serde_json::from_value(serde_json::json!({
-            "id": "codex", "family": "gpt", "kind": "harness", "access": "subscription",
-            "cost": {"unit": "quota"},
+            "id": "codex", "provider": "openai", "kind": "cli", "access": "subscription",
+            "cost": {"unit": "plan_usage"},
         }))
         .unwrap();
         let listed = models_text(std::slice::from_ref(&entry), false);
         assert!(
-            listed.starts_with("codex · gpt · CLI · subscription\n"),
+            listed.starts_with("codex · openai · CLI · subscription\n"),
             "{listed}"
         );
         assert!(listed.contains("--discover"), "{listed}");
         let discovered = models_text(&[entry], true);
-        assert_eq!(discovered, "codex · gpt · CLI · subscription\n");
+        assert_eq!(discovered, "codex · openai · CLI · subscription\n");
     }
 }

@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 use argonauts_tui::model::{
-    AssistantMessage, CardOption, CardPrompt, ToolCall, ToolItem, UserMessage, ViewModel,
+    AssistantMessage, QuestionOption, QuestionPrompt, ToolCall, ToolItem, UserMessage, ViewModel,
     WorkingLine,
 };
 use argonauts_tui::{InlineTerminal, Ui};
@@ -136,12 +136,12 @@ fn each_frame_one_synchronized_update() {
         f.frame();
     }
 
-    // A card changes the title in the same update as the card itself.
-    f.ui.model_mut().bottom.card = Some(CardPrompt::new(
+    // A question changes the title in the same update as the question itself.
+    f.ui.model_mut().bottom.question = Some(QuestionPrompt::new(
         1,
         "Merge task-002 into main?",
         "Merge task-002?",
-        vec![CardOption::new("Merge")],
+        vec![QuestionOption::new("Merge")],
     ));
     f.frame();
     assert!(f.last().contains("◆ needs you · frames"), "{:?}", f.last());

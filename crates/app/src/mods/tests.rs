@@ -5,11 +5,11 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
 use argonauts_core::app::{AppEvent, UiCommand, ViewData, ViewRequest};
-use argonauts_core::input::{SlashCommand, WidgetsAction};
+use argonauts_core::input::{ModsAction, SlashCommand};
 use argonauts_core::settings::mods::view::{ModChange, ModRowKind, ModsView};
 use argonauts_core::settings::mods::{ModForm, ModOrigin, ModPlace};
 
-use crate::controller::test_support::{Harness, HarnessOptions};
+use crate::controller::test_support::{CliOptions, TestDriver};
 
 const CLOCK: &str =
     "body = \"text\"\nplaces = [\"above\"]\n[data]\ncommand = [\"./clock.sh\"]\nevery = \"1s\"\n";
@@ -21,18 +21,18 @@ fn script(dir: &Path, name: &str, body: &str) {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// The harness with the sandbox off, so a test's command runs as it is.
-async fn harness(prepare: impl FnOnce(&argonauts_testkit::TempRepo) + 'static) -> Harness {
-    Harness::start_with(HarnessOptions {
+/// The test driver with the sandbox off, so a test's command runs as it is.
+async fn driver(prepare: impl FnOnce(&argonauts_testkit::TempRepo) + 'static) -> TestDriver {
+    TestDriver::start_with(CliOptions {
         flags: vec!["sandbox.mode=\"none\"".to_owned()],
         prepare: Some(Box::new(prepare)),
-        ..HarnessOptions::default()
+        ..CliOptions::default()
     })
     .await
 }
 
-async fn mods_view(harness: &mut Harness, what: impl Fn(&ModsView) -> bool) -> ModsView {
-    let event = harness
+async fn mods_view(driver: &mut TestDriver, what: impl Fn(&ModsView) -> bool) -> ModsView {
+    let event = driver
         .until(|event| {
             matches!(event, AppEvent::View { data }
                 if matches!(&**data, ViewData::Mods { view } if what(view)))
@@ -47,20 +47,20 @@ async fn mods_view(harness: &mut Harness, what: impl Fn(&ModsView) -> bool) -> M
     }
 }
 
-async fn open(harness: &mut Harness) -> ModsView {
-    harness
+async fn open(driver: &mut TestDriver) -> ModsView {
+    driver
         .send(UiCommand::Slash {
-            command: SlashCommand::Widgets {
-                action: WidgetsAction::List,
+            command: SlashCommand::Mods {
+                action: ModsAction::List,
                 scope: None,
             },
         })
         .await;
-    mods_view(harness, |view| !view.refresh).await
+    mods_view(driver, |view| !view.refresh).await
 }
 
-fn notices(harness: &Harness) -> Vec<String> {
-    harness
+fn notices(driver: &TestDriver) -> Vec<String> {
+    driver
         .seen()
         .iter()
         .filter_map(|event| match event {
@@ -72,14 +72,14 @@ fn notices(harness: &Harness) -> Vec<String> {
 
 #[tokio::test]
 async fn mods_lists_the_built_in_cards_your_files_and_what_didnt_load() {
-    let mut harness = harness(|repo| {
+    let mut driver = driver(|repo| {
         let mods = repo.home().join("mods");
         std::fs::create_dir_all(&mods).unwrap();
         std::fs::write(mods.join("clock.toml"), CLOCK).unwrap();
         std::fs::write(mods.join("broken.toml"), "body = \"pie\"\n").unwrap();
     })
     .await;
-    let view = open(&mut harness).await;
+    let view = open(&mut driver).await;
     let names: Vec<&str> = view.rows.iter().map(|row| row.name.as_str()).collect();
     assert_eq!(
         names,
@@ -122,13 +122,13 @@ async fn mods_lists_the_built_in_cards_your_files_and_what_didnt_load() {
     };
     assert_eq!(reading.as_ref().unwrap().summary, "no workflows yet");
     assert_eq!(view.line.mode, "auto mode on");
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn a_name_opens_that_page_and_an_unknown_one_says_what_there_is() {
-    let mut harness = harness(|_| {}).await;
-    harness
+    let mut driver = driver(|_| {}).await;
+    driver
         .send(UiCommand::Slash {
             command: SlashCommand::ModFile {
                 name: "bottom-line".to_owned(),
@@ -136,9 +136,9 @@ async fn a_name_opens_that_page_and_an_unknown_one_says_what_there_is() {
             },
         })
         .await;
-    let view = mods_view(&mut harness, |view| view.open.is_some()).await;
+    let view = mods_view(&mut driver, |view| view.open.is_some()).await;
     assert_eq!(view.open.as_deref(), Some("bottom-line"));
-    harness
+    driver
         .send(UiCommand::Slash {
             command: SlashCommand::ModFile {
                 name: "ctx".to_owned(),
@@ -146,19 +146,19 @@ async fn a_name_opens_that_page_and_an_unknown_one_says_what_there_is() {
             },
         })
         .await;
-    harness
+    driver
         .until(|event| matches!(event, AppEvent::Notice { text, .. } if text.contains("no mod named ctx")))
         .await;
-    let said = notices(&harness).join("\n");
+    let said = notices(&driver).join("\n");
     assert!(said.contains("the mods are context, plan-usage"), "{said}");
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn a_page_s_save_writes_your_copy_and_a_reset_deletes_it() {
-    let mut harness = harness(|_| {}).await;
-    open(&mut harness).await;
-    harness
+    let mut driver = driver(|_| {}).await;
+    open(&mut driver).await;
+    driver
         .send(UiCommand::Mod {
             change: ModChange::Save {
                 name: "context".to_owned(),
@@ -167,7 +167,7 @@ async fn a_page_s_save_writes_your_copy_and_a_reset_deletes_it() {
             },
         })
         .await;
-    let view = mods_view(&mut harness, |view| {
+    let view = mods_view(&mut driver, |view| {
         view.refresh
             && view
                 .row("context")
@@ -178,12 +178,12 @@ async fn a_page_s_save_writes_your_copy_and_a_reset_deletes_it() {
         panic!("a card");
     };
     assert_eq!(file.form, ModForm::Line);
-    let path = harness.repo.home().join("mods/context.toml");
+    let path = driver.repo.home().join("mods/context.toml");
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("form   = \"line\""), "{text}");
     assert!(text.starts_with("# How full"), "{text}");
 
-    harness
+    driver
         .send(UiCommand::Mod {
             change: ModChange::Reset {
                 name: "context".to_owned(),
@@ -191,19 +191,19 @@ async fn a_page_s_save_writes_your_copy_and_a_reset_deletes_it() {
             },
         })
         .await;
-    mods_view(&mut harness, |view| {
+    mods_view(&mut driver, |view| {
         view.row("context")
             .is_some_and(|row| row.origin == ModOrigin::BuiltIn)
     })
     .await;
     assert!(!path.exists());
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn a_save_that_wouldnt_load_writes_nothing_and_says_why() {
-    let mut harness = harness(|_| {}).await;
-    harness
+    let mut driver = driver(|_| {}).await;
+    driver
         .send(UiCommand::Mod {
             change: ModChange::Save {
                 name: "context".to_owned(),
@@ -212,24 +212,24 @@ async fn a_save_that_wouldnt_load_writes_nothing_and_says_why() {
             },
         })
         .await;
-    harness
+    driver
         .until(
             |event| matches!(event, AppEvent::Notice { text, .. } if text.contains("doesn't load")),
         )
         .await;
-    assert!(!harness.repo.home().join("mods/context.toml").exists());
-    harness.exit().await;
+    assert!(!driver.repo.home().join("mods/context.toml").exists());
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn your_command_mod_runs_and_a_new_file_loads_without_a_restart() {
-    let mut harness = harness(|repo| {
+    let mut driver = driver(|repo| {
         script(&repo.home().join("mods"), "clock.sh", "echo 12:00");
     })
     .await;
     // The file arrives after the app started.
-    std::fs::write(harness.repo.home().join("mods/clock.toml"), CLOCK).unwrap();
-    let view = mods_view(&mut harness, |view| {
+    std::fs::write(driver.repo.home().join("mods/clock.toml"), CLOCK).unwrap();
+    let view = mods_view(&mut driver, |view| {
         view.row("clock").is_some_and(|row| {
             matches!(
                 &row.kind,
@@ -245,7 +245,7 @@ async fn your_command_mod_runs_and_a_new_file_loads_without_a_restart() {
         panic!("a card");
     };
     assert_eq!(reading.as_ref().unwrap().summary, "12:00");
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
@@ -253,7 +253,7 @@ async fn an_edited_program_runs_again_at_once() {
     // Its next turn is an hour off, so only the edit can bring the new words.
     let hourly = CLOCK.replace("\"1s\"", "\"1h\"");
     assert_ne!(hourly, CLOCK);
-    let mut harness = harness(move |repo| {
+    let mut driver = driver(move |repo| {
         let mods = repo.home().join("mods");
         script(&mods, "clock.sh", "echo 12:00");
         std::fs::write(mods.join("clock.toml"), hourly).unwrap();
@@ -263,19 +263,19 @@ async fn an_edited_program_runs_again_at_once() {
         matches!(&view.row("clock").unwrap().kind,
             ModRowKind::Card { reading: Some(reading), .. } if reading.summary == words)
     };
-    mods_view(&mut harness, |view| says(view, "12:00")).await;
+    mods_view(&mut driver, |view| says(view, "12:00")).await;
     script(
-        &harness.repo.home().join("mods"),
+        &driver.repo.home().join("mods"),
         "clock.sh",
         "echo half past twelve",
     );
-    mods_view(&mut harness, |view| says(view, "half past twelve")).await;
-    harness.exit().await;
+    mods_view(&mut driver, |view| says(view, "half past twelve")).await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn one_failed_run_keeps_the_numbers_it_had_and_says_why() {
-    let mut harness = harness(|repo| {
+    let mut driver = driver(|repo| {
         let mods = repo.home().join("mods");
         script(&mods, "clock.sh", "echo 12:00");
         std::fs::write(mods.join("clock.toml"), CLOCK).unwrap();
@@ -288,13 +288,13 @@ async fn one_failed_run_keeps_the_numbers_it_had_and_says_why() {
         ),
         ModRowKind::Own { .. } => panic!("a card"),
     };
-    mods_view(&mut harness, |view| card(view).0.is_some()).await;
+    mods_view(&mut driver, |view| card(view).0.is_some()).await;
     script(
-        &harness.repo.home().join("mods"),
+        &driver.repo.home().join("mods"),
         "clock.sh",
         "echo 'no clock' >&2; exit 4",
     );
-    let view = mods_view(&mut harness, |view| card(view).1.is_some()).await;
+    let view = mods_view(&mut driver, |view| card(view).1.is_some()).await;
     assert_eq!(
         card(&view),
         (
@@ -306,18 +306,18 @@ async fn one_failed_run_keeps_the_numbers_it_had_and_says_why() {
             )
         )
     );
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn the_project_s_command_waits_for_your_trust() {
-    let mut harness = harness(|repo| {
+    let mut driver = driver(|repo| {
         let mods = repo.root().join(".argonauts/mods");
         script(&mods, "clock.sh", "echo 12:00");
         std::fs::write(mods.join("clock.toml"), CLOCK).unwrap();
     })
     .await;
-    let view = open(&mut harness).await;
+    let view = open(&mut driver).await;
     let clock = view.row("clock").unwrap();
     assert_eq!(clock.origin, ModOrigin::Project);
     assert_eq!(clock.path, ".argonauts/mods/clock.toml");
@@ -331,7 +331,7 @@ async fn the_project_s_command_waits_for_your_trust() {
     ));
     // Looked at for a while, it still hasn't run.
     tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
-    harness
+    driver
         .send(UiCommand::Request {
             view: ViewRequest::Mods {
                 open: None,
@@ -339,7 +339,7 @@ async fn the_project_s_command_waits_for_your_trust() {
             },
         })
         .await;
-    let view = mods_view(&mut harness, |view| view.refresh).await;
+    let view = mods_view(&mut driver, |view| view.refresh).await;
     assert!(matches!(
         &view.row("clock").unwrap().kind,
         ModRowKind::Card {
@@ -348,14 +348,14 @@ async fn the_project_s_command_waits_for_your_trust() {
             ..
         }
     ));
-    harness
+    driver
         .send(UiCommand::Mod {
             change: ModChange::Trust {
                 name: "clock".to_owned(),
             },
         })
         .await;
-    let view = mods_view(&mut harness, |view| {
+    let view = mods_view(&mut driver, |view| {
         view.row("clock").is_some_and(|row| {
             matches!(
                 &row.kind,
@@ -376,11 +376,11 @@ async fn the_project_s_command_waits_for_your_trust() {
     ));
     // A change to its script asks again.
     script(
-        &harness.repo.root().join(".argonauts/mods"),
+        &driver.repo.root().join(".argonauts/mods"),
         "clock.sh",
         "echo 13:00",
     );
-    let view = open(&mut harness).await;
+    let view = open(&mut driver).await;
     assert!(matches!(
         &view.row("clock").unwrap().kind,
         ModRowKind::Card {
@@ -388,24 +388,24 @@ async fn the_project_s_command_waits_for_your_trust() {
             ..
         }
     ));
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn hiding_pinning_or_saving_a_project_s_mod_never_trusts_it() {
-    let mut harness = harness(|repo| {
+    let mut driver = driver(|repo| {
         let mods = repo.root().join(".argonauts/mods");
         script(&mods, "clock.sh", "echo 12:00");
         std::fs::write(mods.join("clock.toml"), CLOCK).unwrap();
     })
     .await;
-    harness
+    driver
         .until(|event| {
             matches!(event, AppEvent::Notice { text, .. }
                 if text.contains("The project's mod clock runs a command, so it waits for your trust"))
         })
         .await;
-    open(&mut harness).await;
+    open(&mut driver).await;
     let file = |words: &[&str]| UiCommand::Slash {
         command: SlashCommand::ModFile {
             name: "clock".to_owned(),
@@ -416,14 +416,14 @@ async fn hiding_pinning_or_saving_a_project_s_mod_never_trusts_it() {
         (&["toggle"][..], "clock is hidden"),
         (&["toggle"][..], "clock shows again"),
     ] {
-        harness.send(file(words)).await;
-        harness
+        driver.send(file(words)).await;
+        driver
             .until(|event| matches!(event, AppEvent::Notice { text, .. } if text.contains(said)))
             .await;
     }
-    harness.send(file(&["unpin"])).await;
-    harness.send(file(&["pin"])).await;
-    harness
+    driver.send(file(&["unpin"])).await;
+    driver.send(file(&["pin"])).await;
+    driver
         .send(UiCommand::Mod {
             change: ModChange::Save {
                 name: "clock".to_owned(),
@@ -434,7 +434,7 @@ async fn hiding_pinning_or_saving_a_project_s_mod_never_trusts_it() {
         .await;
     // Long enough for a trusted command to have run.
     tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
-    let view = open(&mut harness).await;
+    let view = open(&mut driver).await;
     assert!(
         matches!(
             &view.row("clock").unwrap().kind,
@@ -447,17 +447,17 @@ async fn hiding_pinning_or_saving_a_project_s_mod_never_trusts_it() {
         "{:?}",
         view.row("clock")
     );
-    let told = notices(&harness)
+    let told = notices(&driver)
         .iter()
         .filter(|text| text.contains("waits for your trust"))
         .count();
     assert_eq!(told, 1, "said once a session");
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn with_commands_off_a_command_mod_says_so_and_never_runs() {
-    let mut harness = Harness::start_with(HarnessOptions {
+    let mut driver = TestDriver::start_with(CliOptions {
         flags: vec![
             "sandbox.mode=\"none\"".to_owned(),
             "mods.commands=false".to_owned(),
@@ -467,11 +467,11 @@ async fn with_commands_off_a_command_mod_says_so_and_never_runs() {
             script(&mods, "clock.sh", "echo 12:00");
             std::fs::write(mods.join("clock.toml"), CLOCK).unwrap();
         })),
-        ..HarnessOptions::default()
+        ..CliOptions::default()
     })
     .await;
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-    let view = open(&mut harness).await;
+    let view = open(&mut driver).await;
     let ModRowKind::Card { reading, note, .. } = &view.row("clock").unwrap().kind else {
         panic!("a card");
     };
@@ -480,12 +480,12 @@ async fn with_commands_off_a_command_mod_says_so_and_never_runs() {
         note.as_deref(),
         Some("mods.commands is off, so its command doesn't run")
     );
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn pin_and_a_place_change_one_key_of_the_mod_s_file() {
-    let mut harness = harness(|repo| {
+    let mut driver = driver(|repo| {
         let mods = repo.home().join("mods");
         std::fs::create_dir_all(&mods).unwrap();
         std::fs::write(mods.join("clock.toml"), CLOCK.replace("[\"above\"]", "[]")).unwrap();
@@ -503,26 +503,23 @@ async fn pin_and_a_place_change_one_key_of_the_mod_s_file() {
             words: words.iter().map(|word| (*word).to_owned()).collect(),
         },
     };
-    harness.send(send("clock", &["pin"])).await;
+    driver.send(send("clock", &["pin"])).await;
     // The watcher's first look sends a view of its own, so wait for the one after the save.
-    let view = mods_view(&mut harness, |view| {
-        view.refresh && !places(view).is_empty()
-    })
-    .await;
+    let view = mods_view(&mut driver, |view| view.refresh && !places(view).is_empty()).await;
     assert_eq!(places(&view), [ModPlace::Above]);
-    harness.send(send("clock", &["usage"])).await;
-    let view = mods_view(&mut harness, |view| view.refresh && places(view).len() == 2).await;
+    driver.send(send("clock", &["usage"])).await;
+    let view = mods_view(&mut driver, |view| view.refresh && places(view).len() == 2).await;
     assert_eq!(places(&view), [ModPlace::Above, ModPlace::Usage]);
-    harness.send(send("clock", &["unpin"])).await;
-    let view = mods_view(&mut harness, |view| view.refresh && places(view).len() == 1).await;
+    driver.send(send("clock", &["unpin"])).await;
+    let view = mods_view(&mut driver, |view| view.refresh && places(view).len() == 1).await;
     assert_eq!(places(&view), [ModPlace::Usage]);
-    harness.send(send("clock", &["sideways"])).await;
-    harness
+    driver.send(send("clock", &["sideways"])).await;
+    driver
         .until(
             |event| matches!(event, AppEvent::Notice { text, .. } if text.contains("use a place")),
         )
         .await;
-    harness.exit().await;
+    driver.exit().await;
 }
 
 /// Whether the view has the mod on the bottom line, and whether its file only asks to be.
@@ -532,24 +529,24 @@ fn on_line(view: &ModsView, name: &str) -> (bool, bool) {
             file,
             asks_for_line,
             ..
-        } => (file.places.contains(&ModPlace::ModeLine), *asks_for_line),
+        } => (file.places.contains(&ModPlace::BottomLine), *asks_for_line),
         ModRowKind::Own { .. } => panic!("a card"),
     }
 }
 
 #[tokio::test]
 async fn the_bottom_line_s_own_file_says_which_mods_are_on_it() {
-    let mut harness = harness(|repo| {
+    let mut driver = driver(|repo| {
         let mods = repo.home().join("mods");
         std::fs::create_dir_all(&mods).unwrap();
         // It asks for the line in its own file, which by itself puts it nowhere.
-        let asking = CLOCK.replace("[\"above\"]", "[\"mode-line\"]");
+        let asking = CLOCK.replace("[\"above\"]", "[\"bottom-line\"]");
         std::fs::write(mods.join("clock.toml"), asking).unwrap();
     })
     .await;
-    let home = harness.repo.home().to_path_buf();
+    let home = driver.repo.home().to_path_buf();
     let line_file = home.join("mods/bottom-line.toml");
-    let view = open(&mut harness).await;
+    let view = open(&mut driver).await;
     assert_eq!(on_line(&view, "clock"), (false, true));
     // As it ships the line lists plan usage, so that mod is on it.
     assert_eq!(on_line(&view, "plan-usage"), (true, false));
@@ -561,11 +558,8 @@ async fn the_bottom_line_s_own_file_says_which_mods_are_on_it() {
             words: words.iter().map(|word| (*word).to_owned()).collect(),
         },
     };
-    harness.send(place(&["mode-line"])).await;
-    let view = mods_view(&mut harness, |view| {
-        view.refresh && on_line(view, "clock").0
-    })
-    .await;
+    driver.send(place(&["bottom-line"])).await;
+    let view = mods_view(&mut driver, |view| view.refresh && on_line(view, "clock").0).await;
     assert_eq!(on_line(&view, "clock"), (true, false));
     let line = std::fs::read_to_string(&line_file).unwrap();
     assert!(
@@ -575,18 +569,18 @@ async fn the_bottom_line_s_own_file_says_which_mods_are_on_it() {
     // The copy keeps the built-in file's comments, and the mod's own file is as you wrote it.
     assert!(line.starts_with("# The line under the input"), "{line}");
     let clock = std::fs::read_to_string(home.join("mods/clock.toml")).unwrap();
-    assert!(clock.contains("places = [\"mode-line\"]"), "{clock}");
+    assert!(clock.contains("places = [\"bottom-line\"]"), "{clock}");
     assert!(
-        notices(&harness)
+        notices(&driver)
             .iter()
             .any(|text| text.starts_with("clock now shows on the bottom line, last on the right")),
         "{:?}",
-        notices(&harness)
+        notices(&driver)
     );
 
     // Taken off, it leaves the list, and its file stops asking.
-    harness.send(place(&["mode-line"])).await;
-    let view = mods_view(&mut harness, |view| {
+    driver.send(place(&["bottom-line"])).await;
+    let view = mods_view(&mut driver, |view| {
         view.refresh && !on_line(view, "clock").0
     })
     .await;
@@ -595,7 +589,7 @@ async fn the_bottom_line_s_own_file_says_which_mods_are_on_it() {
     assert!(line.contains("right = [\"plan-usage\"]"), "{line}");
     let clock = std::fs::read_to_string(home.join("mods/clock.toml")).unwrap();
     assert!(clock.contains("places = []"), "{clock}");
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
@@ -603,7 +597,7 @@ async fn the_bottom_line_s_page_starts_from_both_files_and_saves_into_the_projec
     use argonauts_core::settings::bottom_line::LineForm;
     use argonauts_core::settings::mods::bottom_line::read;
 
-    let mut harness = harness(|repo| {
+    let mut driver = driver(|repo| {
         let yours = repo.home().join("mods");
         std::fs::create_dir_all(&yours).unwrap();
         std::fs::write(
@@ -617,29 +611,26 @@ async fn the_bottom_line_s_page_starts_from_both_files_and_saves_into_the_projec
         std::fs::write(project.join("bottom-line.toml"), "form = \"compact\"\n").unwrap();
     })
     .await;
-    let project_file = harness.repo.root().join(".argonauts/mods/bottom-line.toml");
+    let project_file = driver.repo.root().join(".argonauts/mods/bottom-line.toml");
     let line = |view: &ModsView| match &view.row("bottom-line").unwrap().kind {
         ModRowKind::Own { text, .. } => read(text).unwrap(),
         ModRowKind::Card { .. } => panic!("it draws itself"),
     };
-    let view = open(&mut harness).await;
+    let view = open(&mut driver).await;
     // The project's form over your parts, as the line itself reads the two.
     assert_eq!(view.row("bottom-line").unwrap().origin, ModOrigin::Project);
     assert_eq!(line(&view).form, LineForm::Compact);
     assert_eq!(line(&view).left, ["mode", "branch"]);
 
-    harness
+    driver
         .send(UiCommand::Slash {
             command: SlashCommand::ModFile {
                 name: "clock".to_owned(),
-                words: vec!["mode-line".to_owned()],
+                words: vec!["bottom-line".to_owned()],
             },
         })
         .await;
-    let view = mods_view(&mut harness, |view| {
-        view.refresh && on_line(view, "clock").0
-    })
-    .await;
+    let view = mods_view(&mut driver, |view| view.refresh && on_line(view, "clock").0).await;
     assert_eq!(line(&view).right, ["plan-usage", "clock"]);
     assert_eq!(line(&view).left, ["mode", "branch"]);
     let text = std::fs::read_to_string(&project_file).unwrap();
@@ -648,18 +639,18 @@ async fn the_bottom_line_s_page_starts_from_both_files_and_saves_into_the_projec
         text.contains("right = [\"plan-usage\", \"clock\"]"),
         "{text}"
     );
-    harness.exit().await;
+    driver.exit().await;
 }
 
-/// `/mods spend mode-line` puts the built-in spend card on the bottom line, in the line's own
+/// `/mods spend bottom-line` puts the built-in spend card on the bottom line, in the line's own
 /// file, which is what the line reads.
 #[tokio::test]
 async fn a_built_in_card_goes_onto_the_bottom_line_by_its_mod_s_name() {
-    let mut harness = harness(|_| {}).await;
-    open(&mut harness).await;
-    harness
+    let mut driver = driver(|_| {}).await;
+    open(&mut driver).await;
+    driver
         .send(UiCommand::Slash {
-            command: argonauts_core::input::parse_input("/mods spend mode-line")
+            command: argonauts_core::input::parse_input("/mods spend bottom-line")
                 .map(|parsed| match parsed {
                     argonauts_core::input::ParsedInput::Slash { command } => command,
                     other => panic!("{other:?}"),
@@ -667,25 +658,22 @@ async fn a_built_in_card_goes_onto_the_bottom_line_by_its_mod_s_name() {
                 .unwrap(),
         })
         .await;
-    mods_view(&mut harness, |view| {
-        view.refresh && on_line(view, "spend").0
-    })
-    .await;
-    let text = std::fs::read_to_string(harness.repo.home().join("mods/bottom-line.toml")).unwrap();
+    mods_view(&mut driver, |view| view.refresh && on_line(view, "spend").0).await;
+    let text = std::fs::read_to_string(driver.repo.home().join("mods/bottom-line.toml")).unwrap();
     assert!(text.contains("\"spend\""), "{text}");
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn a_page_s_tick_for_the_bottom_line_is_written_in_the_line_s_file() {
-    let mut harness = harness(|repo| {
+    let mut driver = driver(|repo| {
         let mods = repo.home().join("mods");
         script(&mods, "clock.sh", "echo 12:00");
         std::fs::write(mods.join("clock.toml"), CLOCK).unwrap();
     })
     .await;
-    let home = harness.repo.home().to_path_buf();
-    open(&mut harness).await;
+    let home = driver.repo.home().to_path_buf();
+    open(&mut driver).await;
     let save = |name: &str, places: &str| UiCommand::Mod {
         change: ModChange::Save {
             name: name.to_owned(),
@@ -694,13 +682,10 @@ async fn a_page_s_tick_for_the_bottom_line_is_written_in_the_line_s_file() {
         },
     };
     let before = std::fs::read_to_string(home.join("mods/clock.toml")).unwrap();
-    harness
-        .send(save("clock", "[\"above\", \"mode-line\"]"))
+    driver
+        .send(save("clock", "[\"above\", \"bottom-line\"]"))
         .await;
-    let view = mods_view(&mut harness, |view| {
-        view.refresh && on_line(view, "clock").0
-    })
-    .await;
+    let view = mods_view(&mut driver, |view| view.refresh && on_line(view, "clock").0).await;
     assert_eq!(on_line(&view, "clock"), (true, false));
     let line = std::fs::read_to_string(home.join("mods/bottom-line.toml")).unwrap();
     assert!(line.contains("\"clock\"]"), "{line}");
@@ -711,18 +696,15 @@ async fn a_page_s_tick_for_the_bottom_line_is_written_in_the_line_s_file() {
     );
 
     // A built-in card goes on the line without a copy of its file being made.
-    harness
-        .send(save("spend", "[\"usage\", \"mode-line\"]"))
+    driver
+        .send(save("spend", "[\"usage\", \"bottom-line\"]"))
         .await;
-    mods_view(&mut harness, |view| {
-        view.refresh && on_line(view, "spend").0
-    })
-    .await;
+    mods_view(&mut driver, |view| view.refresh && on_line(view, "spend").0).await;
     assert!(!home.join("mods/spend.toml").exists());
 
     // Another place and the line's tick taken off in one save: each file gets its part.
-    harness.send(save("clock", "[\"above\", \"usage\"]")).await;
-    let view = mods_view(&mut harness, |view| {
+    driver.send(save("clock", "[\"above\", \"usage\"]")).await;
+    let view = mods_view(&mut driver, |view| {
         view.refresh && !on_line(view, "clock").0
     })
     .await;
@@ -737,27 +719,27 @@ async fn a_page_s_tick_for_the_bottom_line_is_written_in_the_line_s_file() {
         line.contains("right = [\"plan-usage\", \"spend\"]"),
         "{line}"
     );
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn a_built_in_card_s_places_are_the_place_lists_in_your_settings() {
-    use argonauts_core::settings::ui::{Place, WidgetName};
+    use argonauts_core::settings::ui::{ModName, Place};
 
-    let mut harness = harness(|_| {}).await;
-    let home = harness.repo.home().to_path_buf();
+    let mut driver = driver(|_| {}).await;
+    let home = driver.repo.home().to_path_buf();
     let places = |view: &ModsView, name: &str| match &view.row(name).unwrap().kind {
         ModRowKind::Card { file, .. } => file.places.clone(),
         ModRowKind::Own { .. } => panic!("a card"),
     };
     // A place list as your settings file has it now.
     let config = home.join("config.toml");
-    let list = |place: Place| -> Vec<WidgetName> {
+    let list = |place: Place| -> Vec<ModName> {
         let text = std::fs::read_to_string(&config).unwrap();
         let settings: argonauts_core::settings::Settings = toml::from_str(&text).unwrap();
         settings.ui.place(place).to_vec()
     };
-    let view = open(&mut harness).await;
+    let view = open(&mut driver).await;
     assert!(!places(&view, "plan-usage").contains(&ModPlace::Above));
     // As it ships it is where the lists and the line put it, so its page shows no change.
     let ModRowKind::Card { file, built_in, .. } = &view.row("plan-usage").unwrap().kind else {
@@ -766,7 +748,7 @@ async fn a_built_in_card_s_places_are_the_place_lists_in_your_settings() {
     assert_eq!(built_in.as_deref(), Some(file.as_ref()));
     assert_eq!(
         file.places,
-        [ModPlace::Usage, ModPlace::ModeLine, ModPlace::Status]
+        [ModPlace::Usage, ModPlace::BottomLine, ModPlace::Status]
     );
 
     // Its page ticks it above the input and off the Usage tab.
@@ -776,7 +758,7 @@ async fn a_built_in_card_s_places_are_the_place_lists_in_your_settings() {
         .filter(|place| *place != "usage")
         .chain(["above"])
         .collect();
-    harness
+    driver
         .send(UiCommand::Mod {
             change: ModChange::Save {
                 name: "plan-usage".to_owned(),
@@ -785,19 +767,19 @@ async fn a_built_in_card_s_places_are_the_place_lists_in_your_settings() {
             },
         })
         .await;
-    let view = mods_view(&mut harness, |view| {
+    let view = mods_view(&mut driver, |view| {
         view.refresh && places(view, "plan-usage").contains(&ModPlace::Above)
     })
     .await;
     assert!(!places(&view, "plan-usage").contains(&ModPlace::Usage));
     // The lists took it, which is where the band and the tab read it. No file was written.
-    assert_eq!(list(Place::AboveInput), [WidgetName::Quota]);
-    assert!(!list(Place::Usage).contains(&WidgetName::Quota));
+    assert_eq!(list(Place::AboveInput), [ModName::PlanUsage]);
+    assert!(!list(Place::Usage).contains(&ModName::PlanUsage));
     assert!(!list(Place::Usage).is_empty());
     assert!(!home.join("mods/plan-usage.toml").exists());
 
     // Typed, the same list changes.
-    harness
+    driver
         .send(UiCommand::Slash {
             command: SlashCommand::ModFile {
                 name: "plan-usage".to_owned(),
@@ -805,18 +787,18 @@ async fn a_built_in_card_s_places_are_the_place_lists_in_your_settings() {
             },
         })
         .await;
-    mods_view(&mut harness, |view| {
+    mods_view(&mut driver, |view| {
         view.refresh && !places(view, "plan-usage").contains(&ModPlace::Above)
     })
     .await;
     assert!(list(Place::AboveInput).is_empty());
     assert!(!home.join("mods/plan-usage.toml").exists());
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn a_place_for_a_hidden_mod_is_kept_once_and_says_it_is_hidden() {
-    let mut harness = harness(|repo| {
+    let mut driver = driver(|repo| {
         let mods = repo.home().join("mods");
         std::fs::create_dir_all(&mods).unwrap();
         std::fs::write(
@@ -833,27 +815,27 @@ async fn a_place_for_a_hidden_mod_is_kept_once_and_says_it_is_hidden() {
         },
     };
     // It has the place already, hidden or not.
-    harness.send(send(&["pin"])).await;
-    harness
+    driver.send(send(&["pin"])).await;
+    driver
         .until(
             |event| matches!(event, AppEvent::Notice { text, .. } if text.contains("Already so")),
         )
         .await;
-    harness.send(send(&["usage"])).await;
-    harness
+    driver.send(send(&["usage"])).await;
+    driver
         .until(|event| {
             matches!(event, AppEvent::Notice { text, .. }
                 if text == "clock now shows on the Usage tab, once /clock shows it again")
         })
         .await;
-    let text = std::fs::read_to_string(harness.repo.home().join("mods/clock.toml")).unwrap();
+    let text = std::fs::read_to_string(driver.repo.home().join("mods/clock.toml")).unwrap();
     assert!(text.contains("places = [\"above\", \"usage\"]"), "{text}");
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn a_mod_s_own_command_hides_it_and_shows_it_again_where_it_was() {
-    let mut harness = harness(|repo| {
+    let mut driver = driver(|repo| {
         let mods = repo.home().join("mods");
         script(&mods, "clock.sh", "echo 12:00");
         std::fs::write(mods.join("clock.toml"), CLOCK).unwrap();
@@ -869,26 +851,26 @@ async fn a_mod_s_own_command_hides_it_and_shows_it_again_where_it_was() {
         ModRowKind::Card { file, .. } => (file.shown, file.places.clone()),
         ModRowKind::Own { .. } => panic!("a card"),
     };
-    harness.send(toggle()).await;
-    let view = mods_view(&mut harness, |view| view.refresh && !shown(view).0).await;
+    driver.send(toggle()).await;
+    let view = mods_view(&mut driver, |view| view.refresh && !shown(view).0).await;
     assert_eq!(shown(&view), (false, vec![ModPlace::Above]));
-    let text = std::fs::read_to_string(harness.repo.home().join("mods/clock.toml")).unwrap();
+    let text = std::fs::read_to_string(driver.repo.home().join("mods/clock.toml")).unwrap();
     assert!(text.contains("shown = false"), "{text}");
-    harness.send(toggle()).await;
-    let view = mods_view(&mut harness, |view| view.refresh && shown(view).0).await;
+    driver.send(toggle()).await;
+    let view = mods_view(&mut driver, |view| view.refresh && shown(view).0).await;
     assert_eq!(shown(&view), (true, vec![ModPlace::Above]));
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn doctor_names_a_file_that_didnt_load() {
-    let harness = harness(|repo| {
+    let driver = driver(|repo| {
         let mods = repo.home().join("mods");
         std::fs::create_dir_all(&mods).unwrap();
         std::fs::write(mods.join("broken.toml"), "body = \"pie\"\n").unwrap();
     })
     .await;
-    let lines = super::doctor_lines(&harness.env);
+    let lines = super::doctor_lines(&driver.env);
     assert_eq!(lines.len(), 3, "{lines:?}");
     assert!(lines[0].starts_with("mod "), "{lines:?}");
     assert!(lines[0].ends_with("mods/broken.toml · didn't load, and the rest work without it"));
@@ -897,22 +879,22 @@ async fn doctor_names_a_file_that_didnt_load() {
     let marked = super::marked(lines);
     assert!(marked[0].starts_with("! mod "), "{marked:?}");
     assert!(marked[1].starts_with("  body is"), "{marked:?}");
-    harness.exit().await;
+    driver.exit().await;
 }
 
 /// A mod of yours that asks for the bottom line by the name of a part the line draws itself
 /// loads, but the line never draws it. Doctor and `/mods` say so.
 #[tokio::test]
 async fn a_mod_the_bottom_line_hides_is_named_in_doctor_and_mods() {
-    let mut harness = harness(|repo| {
+    let mut driver = driver(|repo| {
         let mods = repo.home().join("mods");
         std::fs::create_dir_all(&mods).unwrap();
-        let file = "body = \"text\"\nplaces = [\"mode-line\"]\n[data]\ncommand = [\"date\"]\n";
+        let file = "body = \"text\"\nplaces = [\"bottom-line\"]\n[data]\ncommand = [\"date\"]\n";
         std::fs::write(mods.join("artifact.toml"), file).unwrap();
         std::fs::write(mods.join("clock.toml"), file).unwrap();
     })
     .await;
-    let lines = super::doctor_lines(&harness.env);
+    let lines = super::doctor_lines(&driver.env);
     assert_eq!(lines.len(), 2, "{lines:?}");
     assert!(
         lines[0].ends_with("mods/artifact.toml · never shows on the bottom line"),
@@ -920,14 +902,14 @@ async fn a_mod_the_bottom_line_hides_is_named_in_doctor_and_mods() {
     );
     assert!(lines[1].contains("its own artifact part"), "{lines:?}");
 
-    let view = open(&mut harness).await;
+    let view = open(&mut driver).await;
     let hidden = |name: &str| match &view.row(name).unwrap().kind {
         ModRowKind::Card { hidden_by_line, .. } => *hidden_by_line,
         ModRowKind::Own { .. } => false,
     };
     assert!(hidden("artifact"));
     assert!(!hidden("clock"));
-    harness.exit().await;
+    driver.exit().await;
 }
 
 /// What the bottom line's page sends when you pick a CLI's color: one key of `[ui.colors]`,
@@ -935,9 +917,9 @@ async fn a_mod_the_bottom_line_hides_is_named_in_doctor_and_mods() {
 #[tokio::test]
 async fn a_picked_color_is_saved_in_your_settings_and_reaches_the_screen() {
     use argonauts_core::settings::SettingScope;
-    let mut harness = harness(|_| {}).await;
+    let mut driver = driver(|_| {}).await;
     let key = "ui.colors.agent-orange".to_owned();
-    harness
+    driver
         .send(UiCommand::SetSetting {
             key: key.clone(),
             value: "\"agent-pink\"".to_owned(),
@@ -953,22 +935,22 @@ async fn a_picked_color_is_saved_in_your_settings_and_reaches_the_screen() {
         ),
         _ => None,
     };
-    harness
+    driver
         .until(|event| colors(event).is_some_and(|have| have == ["agent-orange=agent-pink"]))
         .await;
-    let config = harness.repo.home().join("config.toml");
+    let config = driver.repo.home().join("config.toml");
     let text = std::fs::read_to_string(&config).unwrap();
     assert!(text.contains("agent-orange = \"agent-pink\""), "{text}");
-    harness
+    driver
         .send(UiCommand::ResetSetting {
             key,
             scope: SettingScope::Global,
         })
         .await;
-    harness
+    driver
         .until(|event| colors(event).is_some_and(|have| have.is_empty()))
         .await;
     let text = std::fs::read_to_string(&config).unwrap();
     assert!(!text.contains("agent-orange"), "{text}");
-    harness.exit().await;
+    driver.exit().await;
 }

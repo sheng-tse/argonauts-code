@@ -19,7 +19,7 @@ use crate::theme::{ColorLevel, Role, Theme};
 pub(super) enum Fill {
     /// In the transcript.
     ShortOfEdge,
-    /// Inside a card.
+    /// Inside a question.
     ToEdge,
 }
 

@@ -13,8 +13,8 @@ use ratatui::text::Span;
 
 use super::{shown_windows, shows, with_mode};
 use crate::bottom::{
-    AddedPart, ApprovalMode, BottomLine, CliState, CliUse, LinePart, ModeLine, ModeState, PartBody,
-    WindowUse,
+    AddedPart, ApprovalMode, BottomLine, BottomRow, CliState, CliUse, LinePart, ModeState,
+    PartBody, WindowUse,
 };
 use crate::cell::Tone;
 use crate::render::{Clock, RenderCtx};
@@ -55,9 +55,9 @@ pub fn preview(
     width: usize,
 ) -> Vec<Span<'static>> {
     let line = sample_line(settings, sample);
-    let mode = ModeLine {
+    let mode = BottomRow {
         approval: approval(&sample.mode),
-        ..ModeLine::default()
+        ..BottomRow::default()
     };
     let width = u16::try_from(width).unwrap_or(u16::MAX);
     let ctx = RenderCtx::new(width, theme, Clock::still(Instant::now()));
@@ -100,12 +100,12 @@ fn sample_line(settings: &BottomLineSettings, sample: &Sample) -> BottomLine {
             ARTIFACT => return None,
             BRANCH => words(sample.branch.as_deref().unwrap_or("main")),
             SPEND => words(sample.spend.as_deref().unwrap_or("~$1.86")),
-            CONTEXT => PartBody::Meter {
+            CONTEXT => PartBody::Fill {
                 label: CONTEXT.to_owned(),
-                label_role: Role::Dim,
-                ratio: 0.21,
-                value: "21%".to_owned(),
-                fill: Role::BarFill,
+                who: crate::bottom::MAIN.to_owned(),
+                who_role: Role::Label,
+                percent: 21,
+                level: crate::kit::Level::Ok,
             },
             TOKENS => words("48.2k tokens"),
             // As wide as the stats mod's words, so the preview gives up what the line would.
@@ -123,7 +123,7 @@ fn sample_line(settings: &BottomLineSettings, sample: &Sample) -> BottomLine {
         left: settings.left.iter().filter_map(part).collect(),
         right: settings.right.iter().filter_map(part).collect(),
         drop_first: settings.narrow.drop.clone(),
-        as_left: set.shown_as == PlanUsageAs::Left,
+        as_left: set.r#as == PlanUsageAs::Left,
     })
 }
 
@@ -236,7 +236,7 @@ mod tests {
         let shown = text(&more, &crew(), 200);
         assert!(shown.contains(" · checks"), "{shown}");
         assert!(
-            shown.contains("context █░░░░░ 21%  48.2k tokens  ● Claude"),
+            shown.contains("context · main 21%  48.2k tokens  ● Claude"),
             "{shown}"
         );
         let stats = settings("right = [\"stats\", \"plan-usage\"]");

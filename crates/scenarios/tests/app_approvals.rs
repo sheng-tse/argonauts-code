@@ -11,7 +11,7 @@ use anyhow::Context as _;
 use app_support::*;
 use argonauts_core::app::{AppEvent, ChoiceKind, UiCommand, ViewData};
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::checkpoint::CheckpointKind;
+use argonauts_core::events::approval::ApprovalKind;
 use argonauts_core::events::run::{Party, RunLifecycle};
 use argonauts_core::layout::{run_files, user_files};
 use argonauts_core::settings::approvals::ApprovalMode;
@@ -21,14 +21,14 @@ use argonauts_testkit::{Key, Pty, PtyCommand, argonauts_bin};
 const AGENT_SESSION: &str = "s-001";
 
 /// The run is exactly as it was: nothing answered, resumed, or queued for it.
-fn assert_untouched(parked: &ParkedRun, events_before: usize) -> anyhow::Result<()> {
+fn assert_untouched(waiting: &WaitingRun, events_before: usize) -> anyhow::Result<()> {
     assert_eq!(
-        run_events(&parked.dir)?.len(),
+        run_events(&waiting.dir)?.len(),
         events_before,
         "the run changed"
     );
     assert!(
-        !parked.dir.join(run_files::PENDING_ANSWERS).exists(),
+        !waiting.dir.join(run_files::PENDING_ANSWERS).exists(),
         "an answer was queued for the run"
     );
     Ok(())
@@ -55,10 +55,10 @@ fn app_approval_mode_logged_and_applied() -> anyhow::Result<()> {
         run_config()
     ))?;
     let mut pty = start(&scenario)?;
-    let run_dir = start_solo(&scenario, &mut pty, requests::TIMED_TASK)?;
-    wait_owner_started(&scenario)?;
+    let run_dir = start_captain(&scenario, &mut pty, requests::TIMED_TASK)?;
+    wait_worker_started(&scenario)?;
 
-    check_mode_line(&pty)?;
+    check_bottom_row(&pty)?;
     pty.press(Key::ShiftTab)?;
     let mode = wait_until("the new approval mode", || {
         Ok(commands(&scenario)?
@@ -85,9 +85,9 @@ fn app_approval_mode_logged_and_applied() -> anyhow::Result<()> {
     let name = format!("{mode:?}").to_lowercase();
     pty.wait_for(&format!("{glyph} {name} mode on"), WAIT)?;
 
-    let merge_card = wait_checkpoint(&scenario, CheckpointKind::Merge)?;
+    let merge_question = wait_approval(&scenario, ApprovalKind::Merge)?;
     assert_eq!(
-        merge_card.mode, mode,
+        merge_question.mode, mode,
         "the next approval ignored the change"
     );
     scenario.shot(&pty, "app_approval_mode_logged_and_applied")?;
@@ -97,8 +97,8 @@ fn app_approval_mode_logged_and_applied() -> anyhow::Result<()> {
 #[test]
 fn app_refuses_approval_inside_agent_session() -> anyhow::Result<()> {
     let scenario = scenario()?;
-    let parked = fabricate_parked_run(&scenario, 1)?;
-    let events_before = run_events(&parked.dir)?.len();
+    let waiting = fabricate_waiting_run(&scenario, 1)?;
+    let events_before = run_events(&waiting.dir)?.len();
 
     let mut app = launch_with(
         &scenario,
@@ -118,30 +118,30 @@ fn app_refuses_approval_inside_agent_session() -> anyhow::Result<()> {
 
     let resume = run_cli_with(
         &scenario,
-        &["resume", parked.run.as_str()],
+        &["resume", waiting.run.as_str()],
         &[("ARGONAUTS_SESSION", AGENT_SESSION.into())],
     )?;
     let said = output_text(&resume);
     assert!(!resume.status.success(), "{said}");
     assert!(said.to_lowercase().contains("agent"), "{said}");
-    assert_untouched(&parked, events_before)?;
+    assert_untouched(&waiting, events_before)?;
     scenario.shot(&app, "app_refuses_approval_inside_agent_session")?;
     Ok(())
 }
 
 #[test]
-fn app_answer_refused_from_chat_agent_descendant() -> anyhow::Result<()> {
-    // The parked run waits off screen, so the chat agent answers `/ask`. The narrator is off so
+fn app_answer_refused_from_main_agent_descendant() -> anyhow::Result<()> {
+    // The waiting run waits off screen, so the main agent answers `/ask`. The narrator is off so
     // it never could, even with a run on screen.
     let scenario = scenario_with(&GLOBAL_CONFIG.replace("[ui]\n", "[ui]\nnarrator = \"off\"\n"))?;
-    let parked = fabricate_parked_run(&scenario, 1)?;
-    let events_before = run_events(&parked.dir)?.len();
+    let waiting = fabricate_waiting_run(&scenario, 1)?;
+    let events_before = run_events(&waiting.dir)?.len();
 
     // A `claude` ahead of the fake that, like an agent with a shell, drops the session marker
-    // and tries to take the parked run.
+    // and tries to take the waiting run.
     let wrap = scenario.repo.scratch().join("agent-shell");
     std::fs::create_dir_all(&wrap)?;
-    let attempt = scenario.repo.scratch().join("attempt.txt");
+    let resumed = scenario.repo.scratch().join("resumed.txt");
     let script = format!(
         "#!/bin/sh\n\
          case \" $* \" in\n\
@@ -152,9 +152,9 @@ fn app_answer_refused_from_chat_agent_descendant() -> anyhow::Result<()> {
          esac\n\
          exec '{fake}' \"$@\"\n",
         bin = argonauts_bin()?.display(),
-        run = parked.run,
-        out = attempt.display(),
-        fake = scenario.vendors.bin_dir().join("claude").display(),
+        run = waiting.run,
+        out = resumed.display(),
+        fake = scenario.clis.bin_dir().join("claude").display(),
     );
     let claude = wrap.join("claude");
     std::fs::write(&claude, script)?;
@@ -169,36 +169,36 @@ fn app_answer_refused_from_chat_agent_descendant() -> anyhow::Result<()> {
     submit(&mut pty, &format!("/ask {}", requests::ASK))?;
     wait_turns_finished(&scenario, 1)?;
 
-    let said = read(&attempt)?;
+    let said = read(&resumed)?;
     assert!(said.contains("exit ") && !said.contains("exit 0"), "{said}");
     assert!(said.to_lowercase().contains("agent"), "{said}");
-    assert_untouched(&parked, events_before)?;
-    scenario.shot(&pty, "app_answer_refused_from_chat_agent_descendant")?;
+    assert_untouched(&waiting, events_before)?;
+    scenario.shot(&pty, "app_answer_refused_from_main_agent_descendant")?;
     Ok(())
 }
 
 #[test]
-fn app_parked_answer_refused_inside_agent_session() -> anyhow::Result<()> {
+fn app_waiting_answer_refused_inside_agent_session() -> anyhow::Result<()> {
     let scenario = scenario()?;
-    let parked = fabricate_parked_run(&scenario, 1)?;
-    let events_before = run_events(&parked.dir)?.len();
+    let waiting = fabricate_waiting_run(&scenario, 1)?;
+    let events_before = run_events(&waiting.dir)?.len();
 
     // Inside the session.
     let mut inside = launch_with(
         &scenario,
-        &["resume", parked.run.as_str()],
+        &["resume", waiting.run.as_str()],
         &[("ARGONAUTS_SESSION", AGENT_SESSION.into())],
     )?;
     let code = inside.wait_for_exit(WAIT)?;
     let text = inside.screen().text();
     assert_ne!(code, 0, "{text}");
     assert!(text.to_lowercase().contains("agent"), "{text}");
-    assert_untouched(&parked, events_before)?;
+    assert_untouched(&waiting, events_before)?;
 
-    // Below the shell of an agent the harness started, which registered the shell's group.
+    // Below the shell of an agent the CLI started, which registered the shell's group.
     // The group gives it away even where the shell's environment can't be read.
     let mut pgid = None;
-    let mut below = resume_below_marked_shell(&scenario, &parked, |shell| {
+    let mut below = resume_below_marked_shell(&scenario, &waiting, |shell| {
         pgid = Some(register_agent_group(&scenario, shell)?);
         Ok(())
     })?;
@@ -210,34 +210,34 @@ fn app_parked_answer_refused_inside_agent_session() -> anyhow::Result<()> {
         said.contains(&format!("agent process group {pgid}")),
         "{said}"
     );
-    assert_untouched(&parked, events_before)?;
-    scenario.shot(&below, "app_parked_answer_refused_inside_agent_session")?;
+    assert_untouched(&waiting, events_before)?;
+    scenario.shot(&below, "app_waiting_answer_refused_inside_agent_session")?;
     Ok(())
 }
 
 /// Linux lets `resume` read its parent shell's environment; macOS 27 hides it.
 #[cfg(target_os = "linux")]
 #[test]
-fn app_parked_answer_refused_below_a_marked_shell() -> anyhow::Result<()> {
+fn app_waiting_answer_refused_below_a_marked_shell() -> anyhow::Result<()> {
     let scenario = scenario()?;
-    let parked = fabricate_parked_run(&scenario, 1)?;
-    let events_before = run_events(&parked.dir)?.len();
+    let waiting = fabricate_waiting_run(&scenario, 1)?;
+    let events_before = run_events(&waiting.dir)?.len();
 
-    let mut below = resume_below_marked_shell(&scenario, &parked, |_| Ok(()))?;
+    let mut below = resume_below_marked_shell(&scenario, &waiting, |_| Ok(()))?;
     below.wait_for_exit(WAIT)?;
     let said = String::from_utf8_lossy(&below.raw()).into_owned();
     assert!(said.contains("exit=") && !said.contains("exit=0"), "{said}");
     assert!(said.contains("has ARGONAUTS_SESSION set"), "{said}");
-    assert_untouched(&parked, events_before)?;
+    assert_untouched(&waiting, events_before)?;
     Ok(())
 }
 
-/// Runs `resume` for the parked run under a shell that has the session marker, with the
+/// Runs `resume` for the waiting run under a shell that has the session marker, with the
 /// marker removed, as an agent's shell could do. `before_resume` gets the shell's pid
 /// first. The shell stays the parent because a command follows.
 fn resume_below_marked_shell(
     scenario: &Scenario,
-    parked: &ParkedRun,
+    waiting: &WaitingRun,
     before_resume: impl FnOnce(u32) -> anyhow::Result<()>,
 ) -> anyhow::Result<Pty> {
     let pid_file = scenario.repo.scratch().join("marked-shell.pid");
@@ -249,7 +249,7 @@ fn resume_below_marked_shell(
         pid = pid_file.display(),
         go = go.display(),
         bin = argonauts_bin()?.display(),
-        run = parked.run,
+        run = waiting.run,
     );
     let shell = Pty::spawn(
         PtyCommand::new("/bin/sh")
@@ -269,14 +269,14 @@ fn resume_below_marked_shell(
     Ok(shell)
 }
 
-/// Writes `agents/<pgid>.json` for the group `leader` leads, as the harness worker does for
+/// Writes `agents/<pgid>.json` for the process group `pid` heads, as the CLI runner does for
 /// each agent it starts, and returns the pgid.
-fn register_agent_group(scenario: &Scenario, leader: u32) -> anyhow::Result<i32> {
-    let pgid: i32 = ps_field(leader, "pgid")?.parse()?;
+fn register_agent_group(scenario: &Scenario, pid: u32) -> anyhow::Result<i32> {
+    let pgid: i32 = ps_field(pid, "pgid")?.parse()?;
     let entry = serde_json::json!({
         "pgid": pgid,
-        "pid": leader,
-        "start_time": start_time(leader)?,
+        "pid": pid,
+        "start_time": start_time(pid)?,
     });
     let dir = scenario.repo.home().join(user_files::AGENTS);
     std::fs::create_dir_all(&dir)?;
@@ -348,7 +348,7 @@ fn app_safety_setting_confirms() -> anyhow::Result<()> {
         let keys: Vec<char> = confirm.options.iter().map(|o| o.key).collect();
         assert_eq!(keys, ['y', 'n'], "{confirm:?}");
         assert!(confirm.body.join("\n").contains(key), "{confirm:?}");
-        answer_card(&mut pty, number_of(&confirm.options, answer))?;
+        answer_question(&mut pty, number_of(&confirm.options, answer))?;
         wait_choice_closed(&scenario, &confirm.id)?;
         if answer == 'n' {
             assert_eq!(read(&global)?, before, "Keep it as it is changed the file");
@@ -385,7 +385,7 @@ fn app_safety_setting_confirms() -> anyhow::Result<()> {
         })
         .expect("the picker sent no SetSetting");
     assert!(confirm.body.join("\n").contains(&picked), "{confirm:?}");
-    answer_card(&mut pty, number_of(&confirm.options, 'y'))?;
+    answer_question(&mut pty, number_of(&confirm.options, 'y'))?;
     wait_choice_closed(&scenario, &confirm.id)?;
     wait_setting_changed(&scenario, &picked, 1)?;
     assert!(
@@ -407,7 +407,7 @@ fn app_safety_setting_confirms() -> anyhow::Result<()> {
             .contains("endpoints.localproxy.base_url"),
         "{confirm:?}"
     );
-    answer_card(&mut pty, number_of(&confirm.options, 'y'))?;
+    answer_question(&mut pty, number_of(&confirm.options, 'y'))?;
     wait_choice_closed(&scenario, &confirm.id)?;
     wait_setting_changed(&scenario, "endpoints.localproxy.base_url", 1)?;
     assert!(read(&global)?.contains("http://127.0.0.1:9/v1"));

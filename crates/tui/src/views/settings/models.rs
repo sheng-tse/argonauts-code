@@ -1,5 +1,5 @@
 //! `/model`'s two levels. First the CLIs and endpoints a role may use, each with what it runs
-//! and its quota, and for the default agent a last row, "Roles…", that opens the other roles.
+//! and its plan usage, and for the main agent a last row, "Roles…", that opens the other roles.
 //! Enter opens one, read like Claude Code's: Default with the model it runs, the models by name
 //! with what each is for, newest first, the aliases on one line under Default, and
 //! "Other model…" to type any name. Under the list, ←/→ set the highlighted model's effort, and
@@ -7,11 +7,12 @@
 
 use argonauts_core::app::{ModelChoice, UiCommand};
 use argonauts_core::input::SlashCommand;
-use argonauts_core::limits::{CostEstimate, QuotaStatus};
+use argonauts_core::limits::{CostEstimate, PlanUsageStatus};
 use argonauts_core::model_catalog::display_name_from_id;
 use argonauts_core::model_picker::{EffortLine, ModelsLevel};
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::registry::ModelAccess;
+use argonauts_core::registry::provider::{is_known, provider_name};
 
 use super::flow::{self, Flow, Kept, RowAction, Stage, Step};
 use super::words::{model_role, value_words, word_for_a_model};
@@ -78,7 +79,9 @@ fn cli_list(picker: &mut Picker, role: Option<RoleName>) {
         picker,
         match role {
             _ if for_setting => "Every agent's CLIs and endpoints you can run, best fit first",
-            None => "Who answers in chat, does solo work, and steps in last when others stop",
+            None => {
+                "Who answers in conversation, works as Captain, and steps in last when others stop"
+            }
             Some(_) => "The CLIs and endpoints this role's rules allow, best fit first",
         },
     );
@@ -95,7 +98,7 @@ fn cli_list(picker: &mut Picker, role: Option<RoleName>) {
         .iter()
         .map(|(cli, models)| PickerRow {
             current: models.iter().any(|choice| choice.current),
-            ..PickerRow::new(format::vendor_label(cli), cli_note(models))
+            ..PickerRow::new(format::agent_label(cli), cli_note(models))
         })
         .collect();
     let mut actions: Vec<RowAction> = groups
@@ -132,7 +135,7 @@ fn model_list(picker: &mut Picker, role: Option<RoleName>, cli: &str) {
         role,
         cli: cli.to_owned(),
     };
-    let label = format::vendor_label(cli);
+    let label = format::agent_label(cli);
     picker.title = label.clone();
     let about = if picker.flow.model_for.is_some() {
         format!("The models {label} runs")
@@ -178,7 +181,7 @@ fn model_list(picker: &mut Picker, role: Option<RoleName>, cli: &str) {
 
 /// A line for a model name the list doesn't have.
 pub fn other_model(picker: &mut Picker, role: Option<RoleName>, cli: &str) {
-    let label = format::vendor_label(cli);
+    let label = format::agent_label(cli);
     picker.title = format!("Other model on {label}");
     picker.about = format!("Type the model's name as {label} takes it, such as a full version id");
     picker.set_rows(Vec::new());
@@ -193,14 +196,14 @@ pub fn other_model(picker: &mut Picker, role: Option<RoleName>, cli: &str) {
 }
 
 /// The typed name as a worker on `cli`, or `None` with a warning when it can't name one.
-pub fn typed(picker: &mut Picker, cli: &str, text: &str) -> Option<WorkerRef> {
+pub fn typed(picker: &mut Picker, cli: &str, text: &str) -> Option<ModelRef> {
     let name = text.trim();
     if name.is_empty() {
         picker.warning = Some("Type a model name, or Esc to go back.".to_owned());
         return None;
     }
-    match format!("{cli}/{name}").parse::<WorkerRef>() {
-        Ok(worker) if worker.worker == cli && worker.model.as_deref() == Some(name) => Some(worker),
+    match format!("{cli}/{name}").parse::<ModelRef>() {
+        Ok(worker) if worker.agent == cli && worker.model.as_deref() == Some(name) => Some(worker),
         _ => {
             picker.warning = Some(format!(
                 "{name:?} can't name a model; type it without spaces."
@@ -210,11 +213,11 @@ pub fn typed(picker: &mut Picker, cli: &str, text: &str) -> Option<WorkerRef> {
     }
 }
 
-pub fn pick(role: Option<RoleName>, worker: WorkerRef) -> Step {
+pub fn pick(role: Option<RoleName>, worker: ModelRef) -> Step {
     pick_with(role, worker, None)
 }
 
-fn pick_with(role: Option<RoleName>, worker: WorkerRef, effort: Option<String>) -> Step {
+fn pick_with(role: Option<RoleName>, worker: ModelRef, effort: Option<String>) -> Step {
     Step::Done(UiCommand::Slash {
         command: SlashCommand::Model {
             role: role.filter(|role| *role != RoleName::Main),
@@ -226,7 +229,7 @@ fn pick_with(role: Option<RoleName>, worker: WorkerRef, effort: Option<String>) 
 
 /// A model from the list, with the effort its line shows when you moved it, or when the level
 /// set now is one this model doesn't take. A model fixed at one level can't have been moved.
-pub fn pick_listed(picker: &Picker, role: Option<RoleName>, worker: WorkerRef) -> Step {
+pub fn pick_listed(picker: &Picker, role: Option<RoleName>, worker: ModelRef) -> Step {
     let wanted = picker.flow.effort_wanted.as_deref();
     let effort = listed(&picker.flow, &worker).and_then(|choice| {
         let line = EffortLine::for_choice(choice, wanted);
@@ -264,7 +267,7 @@ pub fn follow_pointer(picker: &mut Picker) {
     picker.flow.effort = line;
 }
 
-fn listed<'a>(flow: &'a Flow, worker: &WorkerRef) -> Option<&'a ModelChoice> {
+fn listed<'a>(flow: &'a Flow, worker: &ModelRef) -> Option<&'a ModelChoice> {
     flow.models.iter().find(|choice| choice.worker == *worker)
 }
 
@@ -275,7 +278,7 @@ pub fn opened_from_roles(flow: &Flow) -> bool {
         && matches!(flow.stage, Stage::Models { role: Some(_) })
 }
 
-/// Whether `/model` shows its roles, which sit under the default agent's CLIs.
+/// Whether `/model` shows its roles, which sit under the main agent's CLIs.
 pub fn on_roles(flow: &Flow) -> bool {
     flow.command == "model" && flow.stage == Stage::Keys
 }
@@ -314,7 +317,7 @@ pub fn back(picker: &mut Picker) -> bool {
     }
 }
 
-/// `Kept model as Opus 5.5`, naming the role unless it's the default agent. Before the list
+/// `Kept model as Opus 5.5`, naming the role unless it's the main agent. Before the list
 /// comes, the role's settings row says what it runs.
 pub fn kept(picker: &Picker, role: Option<RoleName>) -> Kept {
     let name = match role {
@@ -355,14 +358,14 @@ pub fn worker_words(worker: &str, choices: &[ModelChoice]) -> String {
     if let Some(word) = word_for_a_model(worker) {
         return word.to_owned();
     }
-    let Ok(worker) = worker.parse::<WorkerRef>() else {
+    let Ok(worker) = worker.parse::<ModelRef>() else {
         return worker.to_owned();
     };
     match choices.iter().find(|choice| choice.worker == worker) {
         Some(choice) => format::choice_words(choice),
         None => match &worker.model {
             Some(model) => display_name_from_id(model),
-            None => format!("{}'s default", format::vendor_label(&worker.worker)),
+            None => format!("{}'s default", format::agent_label(&worker.agent)),
         },
     }
 }
@@ -371,7 +374,7 @@ fn in_model_command(picker: &Picker) -> bool {
     picker.flow.command == "model"
 }
 
-/// Whether `/model` has roles to offer under the default agent's list.
+/// Whether `/model` has roles to offer under the main agent's list.
 fn has_roles(picker: &Picker) -> bool {
     in_model_command(picker)
         && picker
@@ -399,7 +402,7 @@ fn with_freshness(picker: &Picker, about: &str) -> String {
 fn groups(choices: &[ModelChoice]) -> Vec<(String, Vec<&ModelChoice>)> {
     let mut groups: Vec<(String, Vec<&ModelChoice>)> = Vec::new();
     for choice in choices {
-        let cli = &choice.worker.worker;
+        let cli = &choice.worker.agent;
         match groups.iter_mut().find(|(id, _)| id == cli) {
             Some((_, models)) => models.push(choice),
             None => groups.push((cli.clone(), vec![choice])),
@@ -408,7 +411,7 @@ fn groups(choices: &[ModelChoice]) -> Vec<(String, Vec<&ModelChoice>)> {
     groups
 }
 
-/// What the role runs here now, else how many models there are, then access and quota.
+/// What the role runs here now, else how many models there are, then access and plan usage.
 fn cli_note(models: &[&ModelChoice]) -> String {
     let mut parts = Vec::new();
     match models.iter().find(|choice| choice.current) {
@@ -432,8 +435,8 @@ fn cli_note(models: &[&ModelChoice]) -> String {
     }
     if let Some(first) = models.first() {
         parts.push(access_words(first.access).to_owned());
-        if let Some(quota) = quota_words(first) {
-            parts.push(quota);
+        if let Some(plan_usage) = plan_usage_words(first) {
+            parts.push(plan_usage);
         }
     }
     parts.join(" · ")
@@ -477,18 +480,17 @@ pub(super) fn model_description(choice: &ModelChoice) -> String {
     parts.join(" · ")
 }
 
-/// `A Claude model on your subscription`: what Argonauts knows of a model nothing describes.
-/// Never its id, which only repeats the name beside it.
+/// `An Anthropic model on your subscription`: what Argonauts Code knows of a model nothing
+/// describes. Never its id, which only repeats the name beside it.
 fn kind_of_model(choice: &ModelChoice) -> String {
-    let family = match choice.family.trim() {
-        "" | "unknown" => None,
-        family => Some(display_name_from_id(family)),
-    };
-    let what = match &family {
-        Some(family) if family.starts_with(['A', 'E', 'I', 'O', 'U']) => {
-            format!("An {family} model")
+    let provider = Some(choice.provider.trim())
+        .filter(|p| is_known(p))
+        .map(provider_name);
+    let what = match &provider {
+        Some(provider) if provider.starts_with(['A', 'E', 'I', 'O', 'U']) => {
+            format!("An {provider} model")
         }
-        Some(family) => format!("A {family} model"),
+        Some(provider) => format!("A {provider} model"),
         None => "A model".to_owned(),
     };
     let how = match choice.access {
@@ -520,7 +522,7 @@ fn model_note(choice: &ModelChoice) -> String {
     let mut parts: Vec<String> = choice.note.iter().cloned().collect();
     match choice.cost {
         CostEstimate::Usd(usd) => parts.push(format!("~{} a task", format::usd(usd))),
-        CostEstimate::Quota(share) => {
+        CostEstimate::PlanUsage(share) => {
             parts.push(format!("~{} of plan usage a task", format::percent(share)))
         }
         CostEstimate::Free => parts.push("free".to_owned()),
@@ -540,12 +542,16 @@ fn access_words(access: ModelAccess) -> &'static str {
     }
 }
 
-fn quota_words(choice: &ModelChoice) -> Option<String> {
-    let quota = choice.quota.as_ref()?;
-    match (quota.status, quota.used) {
-        (QuotaStatus::Rejected, _) => Some("out of plan usage".to_owned()),
+fn plan_usage_words(choice: &ModelChoice) -> Option<String> {
+    let plan_usage = choice.plan_usage.as_ref()?;
+    match (plan_usage.status, plan_usage.used) {
+        (PlanUsageStatus::Rejected, _) => Some("out of plan usage".to_owned()),
         // Plan usage in the one wording every view has: `71% used`.
-        (_, Some(used)) => Some(format::quota(used, format::QuotaWords::Used, false)),
+        (_, Some(used)) => Some(format::plan_usage(
+            used,
+            format::PlanUsageWords::Used,
+            false,
+        )),
         _ => None,
     }
 }

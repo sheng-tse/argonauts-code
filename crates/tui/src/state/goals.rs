@@ -12,14 +12,14 @@ use argonauts_core::events::GoalEvent;
 use argonauts_core::events::goal::GoalStatus;
 use argonauts_core::names::SessionKey;
 use argonauts_core::views::AgentRow;
-use argonauts_core::{CardId, RunId};
+use argonauts_core::{RunId, TaskId};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GoalBoard {
     runs: BTreeMap<RunId, Vec<AgentGoal>>,
     /// Where each of a run's goals stands by its own events, under the task it is the goal of.
     /// `None` is the run's own goal, which goes round its whole workflow.
-    told: BTreeMap<RunId, BTreeMap<Option<CardId>, GoalStatus>>,
+    told: BTreeMap<RunId, BTreeMap<Option<TaskId>, GoalStatus>>,
 }
 
 impl GoalBoard {
@@ -102,7 +102,7 @@ mod tests {
             task: None,
             kept_by: GoalKeeper::Argonauts,
             kept_note: None,
-            checked_by: "Argonauts".into(),
+            checked_by: "Argonauts Code".into(),
             state,
             stopped_because: None,
             set_ms_ago: None,
@@ -148,15 +148,15 @@ mod tests {
             GoalFrom::Command,
         );
         let mut goal = GoalRun::new(&spec, GoalScope::Task, KeptBy::Argonauts);
-        goal.task = task.map(|task| CardId::new(task).unwrap());
+        goal.task = task.map(|task| TaskId::new(task).unwrap());
         GoalEvent::Set(Box::new(goal))
     }
 
     fn changed(task: Option<&str>, status: GoalStatus) -> GoalEvent {
         GoalEvent::StatusChanged {
             status,
-            by: argonauts_core::events::run::Party::Conductor,
-            task: task.map(|task| CardId::new(task).unwrap()),
+            by: argonauts_core::events::run::Party::ArgonautsCode,
+            task: task.map(|task| TaskId::new(task).unwrap()),
             why: None,
         }
     }
@@ -211,9 +211,9 @@ mod tests {
                 seq,
                 ts: OffsetDateTime::UNIX_EPOCH,
                 run_id: run.clone(),
-                card_id: None,
+                task_id: None,
                 session: None,
-                source: "conductor".into(),
+                source: "argonauts-code".into(),
                 kind,
             }),
         };
@@ -265,9 +265,11 @@ mod tests {
             elapsed_ms: 0,
             subagents: 0,
             context: None,
-            standing_in_for: None,
-            answered: None,
+            fallback_for: None,
+            answered: false,
             tries: Vec::new(),
+            note: None,
+            inner: None,
         };
         // Another agent in the same session keeps its goal.
         board.remember_agent(&run, &row(&first, "build:other"), None);

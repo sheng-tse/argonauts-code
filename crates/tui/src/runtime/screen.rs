@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use argonauts_core::KeyScheme;
 use argonauts_core::app::{AppEvent, UiCommand};
-use argonauts_core::settings::ui::{ScreenMode, TakeoverWhere};
+use argonauts_core::settings::ui::{ScreenMode, TakeOverWhere};
 use crossterm::event::Event;
 use futures::StreamExt;
 use ratatui::layout::Size;
@@ -21,7 +21,7 @@ use super::AppIo;
 use super::editor::edit_in_editor;
 use super::gone::{self, TerminalGone};
 use super::keys::KeySource;
-use super::takeover::{TakeOverPlan, TermEnv, plan_take_over, run_in_tmux, write_spec_files};
+use super::take_over::{TakeOverPlan, TermEnv, plan_take_over, run_in_tmux, write_spec_files};
 use crate::UiOptions;
 use crate::app::Ui;
 use crate::bottom::{ModeNotice, VimMode};
@@ -35,9 +35,9 @@ use crate::state::TerminalInfo;
 use crate::terminal::InlineTerminal;
 use crate::terminal::setup::TerminalModes;
 use crate::theme::ColorEnv;
-use crate::views::crew::CrewView;
+use crate::views::crew::AgentPanelView;
 
-/// How long a notice from the loop stays on the mode line.
+/// How long a notice from the loop stays on the bottom line.
 const NOTICE_FOR: Duration = Duration::from_secs(5);
 /// tmux doesn't always pass a resize on, so inside it the size is checked this often.
 const SIZE_POLL: Duration = Duration::from_secs(1);
@@ -508,7 +508,7 @@ impl<W: Write> Screen<W> {
                     format!("tmux couldn't open the session ({error}), so it runs here."),
                     Tone::Warning,
                 );
-                job.place = TakeoverWhere::Here;
+                job.place = TakeOverWhere::Here;
                 self.handovers.push_back(Handover::TakeOver(Box::new(job)));
             }
         }
@@ -517,22 +517,22 @@ impl<W: Write> Screen<W> {
     async fn take_over_ended(&mut self, job: &TakeOverJob, exit_code: Option<i32>) {
         self.send(UiCommand::TakeOverEnded {
             run: job.run.clone(),
-            card: job.ticket.card.clone(),
+            task: job.ticket.task.clone(),
             exit_code,
         })
         .await;
     }
 
-    /// Back from a take-over, anything waiting on you shows first: the card here, open, or the
-    /// crew view when cards wait elsewhere.
+    /// Back from a take-over, anything waiting on you shows first: the question here, open, or the
+    /// agent panel when questions wait elsewhere.
     fn show_what_waits(&mut self) {
         let bottom = &mut self.ui.model_mut().bottom;
-        if bottom.card.is_some() {
+        if bottom.question.is_some() {
             self.ui.close_views();
         } else if bottom.mode.needs_you > 0 {
             self.ui.close_views();
             self.ui
-                .push_view(Box::new(CrewView::new(&self.bridge.state)));
+                .push_view(Box::new(AgentPanelView::new(&self.bridge.state)));
         }
     }
 
@@ -599,7 +599,7 @@ impl<W: Write> Screen<W> {
         self.ui.model_mut().history.push(Notice::new(tone, text));
     }
 
-    /// A short line at the mode line's right end that goes away by itself.
+    /// A short line at the bottom line's right end that goes away by itself.
     fn notice(&mut self, text: String, tone: Tone) {
         self.ui.model_mut().bottom.mode.notice = Some(ModeNotice {
             text,
@@ -610,7 +610,7 @@ impl<W: Write> Screen<W> {
 }
 
 /// OSC 52 reaches the clipboard through most terminals, over ssh and tmux too. Terminals that
-/// ignore it, such as macOS Terminal, get the system's own copy command as well.
+/// ignore it, such as macOS Terminal, get the system's clipboard command as well.
 fn copy_to_clipboard<W: Write>(terminal: &mut InlineTerminal<W>, text: &str) {
     let _ = terminal.set_clipboard(text);
     let native: &[&[&str]] = if cfg!(target_os = "macos") {

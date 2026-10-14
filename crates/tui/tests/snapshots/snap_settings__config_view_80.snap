@@ -8,7 +8,9 @@ Every setting and the layer it comes from. ! marks a safety key       8 settings
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ general                                                                      │
 │ ❯   workflow               council           this project                    │
-│     main_agent             claude-code/opus  everywhere (global)             │
+│                                                                              │
+│ crew                                                                         │
+│     crew.main              claude-code/opus  everywhere (global)             │
 │                                                                              │
 │ ui                                                                           │
 │     ui.theme               dark              everywhere (global)             │
@@ -22,7 +24,5 @@ Every setting and the layer it comes from. ! marks a safety key       8 settings
 │   ! approvals.merge.mode   auto_preview      --set                           │
 │                                                                              │
 │ roles                                                                        │
-│     roles.reviewer.effort  high              workflow                        │
-│                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ select · ⏎ edit · type to search · esc back
+↑↓ select · ⏎ edit · type to search · esc back                        1-18 of 19

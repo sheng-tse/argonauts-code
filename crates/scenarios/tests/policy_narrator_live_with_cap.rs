@@ -9,7 +9,7 @@ use std::time::Duration;
 use argonauts_scenarios::WAIT;
 use argonauts_testkit::journal;
 use policy_support::{
-    RUN_WAIT, invocations_of, launch_ready, merge_opened, solo_config, start_solo,
+    RUN_WAIT, captain_config, invocations_of, launch_ready, merge_opened, start_captain,
     trusted_scenario, wait_for_events,
 };
 
@@ -21,18 +21,18 @@ fn policy_narrator_live_with_cap() -> anyhow::Result<()> {
     // Codex names no model it ran, so the narrator names one.
     let scenario = trusted_scenario(
         "narrator.toml",
-        &solo_config(
+        &captain_config(
             "[ui]\nnarrator = \"live\"\n\n\
              [narrator]\nmodel = \"codex/gpt-5.6-luna\"\ninterval = \"1s\"\nspend_cap = \"1k tokens\"\n",
         ),
     )?;
     let mut pty = launch_ready(&scenario, &[])?;
-    start_solo(&mut pty)?;
+    start_captain(&mut pty)?;
 
     pty.wait_for("※ narrator:", WAIT)?;
     pty.wait_for("(?i)narrator.*(cap|limit)", WAIT)?;
     wait_for_events(&scenario, "the merge approval", RUN_WAIT, merge_opened)?;
-    // The owner worked for 8 seconds at a 1 second interval; the cap held it to one call.
+    // The worker worked for 8 seconds at a 1 second interval; the cap held it to one call.
     std::thread::sleep(Duration::from_secs(3));
     let narrations = invocations_of(&scenario, "codex")?;
     assert_eq!(

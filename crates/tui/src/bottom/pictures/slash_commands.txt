@@ -1,0 +1,16 @@
+Proposed: a real command in bold, in the brightest text colour; its arguments hinted dimly after it
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ /workflow try spec-first <request>
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  enter runs /workflow · shows what a workflow would run, runs nothing
+
+An unknown one stays plain, with a dim note where the hint goes; enter sends nothing and keeps your draft
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ /wokflow try spec-first add a burst limit   isn't a command · did you mean /workflow? · tab fixes it
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  enter sends nothing
+
+The other choice: a quiet chip behind a real command (no new text colour)
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ /workflow try spec-first <request>
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

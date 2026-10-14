@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-endpoints"
-description = "Argonauts endpoint worker: direct OpenAI-compatible model APIs with no tools."
+description = "Argonauts Code endpoint runner: direct OpenAI-compatible model APIs with no tools."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

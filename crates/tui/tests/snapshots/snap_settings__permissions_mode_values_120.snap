@@ -7,9 +7,9 @@ expression: "picker_lines(picker, width)"
   Whose rules guard the agents: the OS sandbox, a container, each AI tool's own, or none at all. A role's own setting
   wins
 
-  ❯ 1. Argonauts' (OS sandbox) ✓   Argonauts' rules, kept by your OS's own sandbox
-    2. Argonauts' (container)      Argonauts' rules, in a container that holds only the agent's worktree
-    3. each AI tool's own          Each AI tool's own sandbox and approvals, with Argonauts' off
-    4. none                        No protection at all, neither Argonauts' nor the tool's
+  ❯ 1. Argonauts Code's (OS sandbox) ✓   Argonauts Code's rules, kept by your OS's own sandbox
+    2. Argonauts Code's (container)      Argonauts Code's rules, in a container that holds only the agent's worktree
+    3. each AI tool's own                Each AI tool's own sandbox and approvals, with Argonauts Code's off
+    4. none                              No protection at all, neither Argonauts Code's nor the tool's
 
   Enter to choose · ↑↓ to move · type to filter · Esc to close

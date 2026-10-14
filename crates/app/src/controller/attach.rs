@@ -1,5 +1,5 @@
 //! Attaching to a run: its events from the latest snapshot, the condensed replay, then
-//! `ReplayDone`, so replayed checkpoints ring no bell. Each stream runs on its own task and
+//! `ReplayDone`, so replayed approvals ring no bell. Each stream runs on its own task and
 //! reports through `RunUpdate`.
 
 use std::io;
@@ -9,10 +9,10 @@ use anyhow::Context;
 use argonauts_core::api::{EventStream, RunState, RunSummary, StatusSummary};
 use argonauts_core::app::{AppEvent, AppMode};
 use argonauts_core::events::RunEvent;
-use argonauts_core::events::run::{ParkReason, RunOutcome};
+use argonauts_core::events::run::{RunOutcome, WaitReason};
 use argonauts_core::layout::run_files;
 use argonauts_core::settings::approvals::ApprovalMode;
-use argonauts_core::settings::budget::BudgetAmount;
+use argonauts_core::settings::limit::LimitAmount;
 use argonauts_core::{NoteLevel, RunId, Spend};
 use argonauts_crew::status::Viewer;
 use tokio::sync::mpsc;
@@ -21,9 +21,9 @@ use tokio::task::JoinHandle;
 use super::journal_history;
 use super::narrator_host::NarratorHost;
 use super::recap;
-use super::runs::{RunUpdate, RunsState};
+use super::runs::{self, RunUpdate, RunsState};
 use super::{Ctx, Internal};
-use crate::chat_store::ChatRun;
+use crate::conversation_store::ConversationRun;
 use crate::{client, views};
 
 /// How a run's stream opens.
@@ -41,7 +41,7 @@ pub(super) enum Opening {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Stage {
     Going,
-    Parked,
+    Waiting,
     Finished(RunOutcome),
 }
 
@@ -56,7 +56,7 @@ pub(super) struct Attached {
     /// Events up to this `seq` are history.
     replay_until: Option<u64>,
     pub(super) replay_done: bool,
-    /// A supervisor serves the run now.
+    /// A run host serves the run now.
     pub(super) live: bool,
     /// The stream closed, so a resume needs a new one.
     pub(super) ended: bool,
@@ -66,7 +66,7 @@ pub(super) struct Attached {
     pub(super) mode: AppMode,
     pub(super) approval_mode: Option<ApprovalMode>,
     pub(super) spent: Option<Spend>,
-    pub(super) limit: Option<BudgetAmount>,
+    pub(super) limit: Option<LimitAmount>,
     /// Every event of this stream, for the replay and for views when the log can't be read.
     pub(super) events: Vec<RunEvent>,
     pub(super) narrator: NarratorHost,
@@ -74,7 +74,7 @@ pub(super) struct Attached {
 }
 
 impl Attached {
-    /// The supervisor is gone and the run neither parked nor finished.
+    /// The run host is gone and the run neither waiting nor finished.
     /// This event is the last of the history.
     pub(super) fn replay_ends_at(&self, seq: u64) -> bool {
         !self.replay_done && self.replay_until.is_some_and(|until| seq >= until)
@@ -135,7 +135,7 @@ pub(super) async fn attach(
         status: narrator.status(),
     });
     // A run this app just started is live from its first event, so the screen draws its
-    // triage and every step rather than folding them into a replay.
+    // the estimate and every step rather than folding them into a replay.
     let replay_until = match opening {
         Opening::New => None,
         Opening::Watch | Opening::Reattach => stream.replay_until,
@@ -168,7 +168,7 @@ pub(super) async fn attach(
     }
     // Started or opened here, it's this conversation's run from now on.
     runs.ours.insert(attached.run.clone());
-    runs.opened.push(ChatRun {
+    runs.opened.push(ConversationRun {
         run: attached.run.clone(),
         title,
     });
@@ -203,7 +203,7 @@ pub(super) async fn finish_replay(ctx: &mut Ctx, attached: &mut Attached) {
         let summary = status_summary(ctx, &run, &attached.events).await;
         let outcome = match attached.stage {
             Stage::Finished(outcome) => Some(outcome),
-            Stage::Going | Stage::Parked => None,
+            Stage::Going | Stage::Waiting => None,
         };
         let closing = recap::closing_in(&attached.events);
         let recap = recap::recap_from_summary(&summary, outcome, closing);
@@ -228,7 +228,7 @@ async fn whole_history(ctx: &Ctx, attached: &Attached) -> Option<Vec<RunEvent>> 
         tokio::task::spawn_blocking(move || journal_history::replay_history(&path, upto)).await;
     let err = match read {
         Ok(Ok(history)) => return (!history.is_empty()).then_some(history),
-        // A conductor that keeps no journal here has nothing more to give.
+        // Argonauts Code that keeps no journal here has nothing more to give.
         Ok(Err(err)) if err.kind() == io::ErrorKind::NotFound => return None,
         Ok(Err(err)) => err.to_string(),
         Err(err) => err.to_string(),
@@ -245,24 +245,42 @@ async fn whole_history(ctx: &Ctx, attached: &Attached) -> Option<Vec<RunEvent>> 
 pub(super) fn report_crash(ctx: &mut Ctx, attached: &mut Attached) -> bool {
     if attached.crashed
         || !attached.has_crashed()
-        || !client::supervisor_crashed(&ctx.env.run_dir(&attached.run))
+        || !client::run_host_crashed(&ctx.env.run_dir(&attached.run))
     {
         return false;
     }
     attached.crashed = true;
     attached.mode = AppMode::Idle;
-    ctx.notice(
-        NoteLevel::Warn,
-        format!(
-            "{run} crashed: its supervisor exited before parking. /resume {run} recovers it.",
-            run = attached.run
-        ),
-    );
+    let text = lost_its_run_host(ctx, &attached.run);
+    ctx.notice(NoteLevel::Warn, text);
     ctx.set_mode(AppMode::Idle);
     true
 }
 
-/// The code-built summary, from the conductor or else from the events this app holds.
+/// What is said of the run on screen once its run host is gone: how far it got and what
+/// `/resume` does, as the next start would say it, or why it never started. Said here, it
+/// isn't said again at the next start.
+fn lost_its_run_host(ctx: &Ctx, run: &RunId) -> String {
+    let run_dir = ctx.env.run_dir(run);
+    let Some(summary) = client::summarize(&run_dir, ctx.settings()) else {
+        return format!("{run} stopped when its run host exited · /resume {run} carries it on");
+    };
+    let title = summary.name.as_deref().unwrap_or(&summary.title);
+    if summary.state == RunState::Crashed {
+        return match runs::told::once(&run_dir, &summary) {
+            Some((_, line)) => line,
+            None => format!("\"{title}\" {}", summary.stopped_at),
+        };
+    }
+    // Before its first event a run has nothing to resume, and its run host's last words say
+    // what kept it from starting.
+    match client::run_host_last_words(&run_dir) {
+        Some(why) => format!("\"{title}\" didn't start: {why}"),
+        None => format!("\"{title}\" didn't start: its run host exited before the run began"),
+    }
+}
+
+/// The code-built summary, from Argonauts Code or else from the events this app holds.
 pub(super) async fn status_summary(ctx: &Ctx, run: &RunId, events: &[RunEvent]) -> StatusSummary {
     match ctx.services.conductor.status(run).await {
         Ok(summary) => summary,
@@ -276,15 +294,17 @@ fn mode_from_summary(summary: &RunSummary) -> AppMode {
     match summary.state {
         RunState::Running => AppMode::Working { run },
         RunState::Pausing => AppMode::Pausing { run },
-        RunState::Parked => {
+        RunState::Waiting => {
             let reason = if summary.waiting.is_empty() {
-                ParkReason::Paused
+                WaitReason::Paused
             } else {
-                ParkReason::Checkpoint
+                WaitReason::Approval
             };
-            AppMode::Parked { run, reason }
+            AppMode::Waiting { run, reason }
         }
         RunState::Crashed
+        | RunState::NeverStarted
+        | RunState::FromAnotherBuild
         | RunState::Merged
         | RunState::PullRequest
         | RunState::BranchLeft
@@ -306,7 +326,7 @@ pub(super) fn forward(
         let mut watching_live = true;
         loop {
             tokio::select! {
-                // Events first, so a supervisor's last events land before its exit does.
+                // Events first, so a run host's last events land before its exit does.
                 biased;
                 event = stream.events.recv() => match event {
                     Some(event) => {

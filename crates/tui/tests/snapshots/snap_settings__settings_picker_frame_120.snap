@@ -8,12 +8,12 @@ expression: "picker_lines(picker, width)"
 
     1. council          Everyone proposes and challenges, the judge decides, then they build
     2. orchestrator     The orchestrator plans and delegates, workers build
-  ❯ 3. solo ✓           The main agent does it, as its CLI would
+  ❯ 3. captain ✓        The CLI you talk to does the work itself
     4. maker-checker    A worker builds, a reviewer sends it back until it holds
     5. best-of-n        Several workers try the same task and the judge picks one
     6. draft-and-vote   Agents draft plans and vote on one
-    7. ablate-restate   Turns one part of the crew off, for research
-  ↓ 8. ablate-mapper    Turns one part of the crew off, for research
+    7. ablate-read      Turns one part of the crew off, for research
+  ↓ 8. ablate-map       Turns one part of the crew off, for research
     … +3 more
 
   Enter to choose · ↑↓ to move · type to filter · Esc to close

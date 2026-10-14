@@ -1,6 +1,6 @@
-//! The outcome log: one JSONL file per run in the repo's state folder, appended and never
-//! edited. Track records, budgets from history, recipe statistics, the canary, and the workflow
-//! examples the lead sees are all derived from it, so deleting what's derived loses nothing.
+//! The outcome log: one JSONL file per run in the repo's state folder, appended and never edited.
+//! Track records, limits from history, learned workflow statistics, the canary, and the workflow
+//! examples the main agent sees are all derived from it, so deleting what's derived loses nothing.
 //!
 //! Lines from before the learning crate have no `type` and read as outcomes.
 
@@ -12,46 +12,46 @@ use time::OffsetDateTime;
 
 use argonauts_core::events::run::RunOutcome;
 use argonauts_core::layout::project_files;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::workflow::{StandardPhase, StepKind};
-use argonauts_core::{CardId, RunId};
+use argonauts_core::{RunId, TaskId};
 
 use crate::error::Result;
 use crate::routing::Draw;
 use crate::store::Store;
-use crate::types::{Assignment, RecipeRef, RunRecord};
+use crate::types::{Assignment, LearnedWorkflowRef, RunRecord};
 
 /// One line of a run's outcome log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LogLine {
     Prediction(Prediction),
-    /// The router's draw for a card, so any assignment can be explained later.
+    /// The router's draw for a task, so any assignment can be explained later.
     Draw(Draw),
     Outcome(Outcome),
     Run(RunRecord),
     Reversal(Reversal),
 }
 
-/// Probabilities a worker wrote before its card started. Scored, never acted on.
+/// Probabilities a worker wrote before its task started. Scored, never acted on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Prediction {
     pub run: RunId,
-    pub card: CardId,
-    pub worker: WorkerRef,
+    pub task: TaskId,
+    pub worker: ModelRef,
     pub role: Predictor,
     pub task_type: String,
     #[serde(with = "time::serde::rfc3339")]
     pub at: OffsetDateTime,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub p_pass_gates_first_try: Option<f64>,
+    pub p_pass_checks_first_try: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p_within_time_cap: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub p_at_most_two_attempts: Option<f64>,
-    /// A reviewer's, for the card it reviews.
+    pub p_at_most_two_tries: Option<f64>,
+    /// A reviewer's, for the task it reviews.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub p_passes_integration: Option<f64>,
+    pub p_passes_merge: Option<f64>,
     /// An optional point estimate, scored by |ln(actual / predicted)| and never routed on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_minutes: Option<f64>,
@@ -64,18 +64,18 @@ pub enum Predictor {
     Reviewer,
 }
 
-/// What the conductor measured when a card ended. The first eight fields are the ones the
+/// What Argonauts Code measured when a task ended. The first eight fields are the ones the
 /// engine wrote before the learning crate, so old logs still read.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Outcome {
     pub run: RunId,
-    pub card: CardId,
-    pub worker: WorkerRef,
+    pub task: TaskId,
+    pub worker: ModelRef,
     pub task_type: String,
-    /// Passed every gate on the first try.
+    /// Passed every check on the first try.
     pub first_try: bool,
-    pub attempts: u32,
-    pub integrated: bool,
+    pub tries: u32,
+    pub merged: bool,
     pub spent_usd: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<StepKey>,
@@ -85,17 +85,17 @@ pub struct Outcome {
         with = "time::serde::rfc3339::option"
     )]
     pub at: Option<OffsetDateTime>,
-    /// The exact model the harness reported at session start, which catches an alias that
+    /// The exact model the CLI reported at session start, which catches an alias that
     /// moved to a new model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assigned: Option<Assignment>,
-    /// The probability the router's draw gave this owner.
+    /// The probability the router's draw gave this worker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assign_p: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reviewer: Option<WorkerRef>,
+    pub reviewer: Option<ModelRef>,
     /// Approved at its first review, without requested changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_first_review: Option<bool>,
@@ -106,17 +106,17 @@ pub struct Outcome {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub difficulty: Option<Difficulty>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recipe: Option<RecipeRef>,
+    pub learned_workflow: Option<LearnedWorkflowRef>,
 }
 
-/// The kind and standard phase of the step that built a card, so records are kept per step.
+/// The kind and standard phase of the step that built a task, so records are kept per step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct StepKey {
     pub kind: StepKind,
     pub standard: StandardPhase,
 }
 
-/// Simple signals of how hard a card was, so comparisons can account for who got the hard ones.
+/// Simple signals of how hard a task was, so comparisons can account for who got the hard ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Difficulty {
     pub files_changed: u32,
@@ -130,14 +130,14 @@ pub struct Difficulty {
 pub struct Reversal {
     pub run: RunId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub card: Option<CardId>,
+    pub task: Option<TaskId>,
     /// One line, such as "reverted the auto-merge".
     pub what: String,
     #[serde(with = "time::serde::rfc3339")]
     pub at: OffsetDateTime,
 }
 
-/// How many runs and how many passed, per workflow file, for the lead's examples.
+/// How many runs and how many passed, per workflow file, for the main agent's examples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct WorkflowStats {
     pub runs: u32,
@@ -164,7 +164,7 @@ pub fn append(store: &Store, run: &RunId, lines: &[LogLine]) -> Result<()> {
     Ok(())
 }
 
-/// One run's lines, so a retro that runs again appends only what's missing.
+/// One run's lines, so a run review that runs again appends only what's missing.
 pub fn read_run(store: &Store, run: &RunId) -> Result<Vec<LogLine>> {
     let file = run_file(store, run);
     if file.is_file() {
@@ -247,7 +247,7 @@ pub fn share(store: &Store, run: &RunId, worktree: &Path) -> Result<Option<PathB
 /// Runs and passes per workflow, keyed by the workflow's name and file SHA-256. A run passed
 /// when it merged or opened a pull request and its final checks passed.
 pub fn workflow_stats(lines: &[LogLine]) -> BTreeMap<(String, String), WorkflowStats> {
-    // A retro that runs again may repeat a run line; the newest one stands.
+    // A run review that runs again may repeat a run line; the newest one stands.
     let mut runs: BTreeMap<&RunId, &RunRecord> = BTreeMap::new();
     for line in lines {
         if let LogLine::Run(record) = line {
@@ -261,8 +261,8 @@ pub fn workflow_stats(lines: &[LogLine]) -> BTreeMap<(String, String), WorkflowS
         };
         let entry = stats.entry((name.clone(), sha.clone())).or_default();
         entry.runs += 1;
-        let landed = matches!(record.outcome, RunOutcome::Merged | RunOutcome::PullRequest);
-        if landed && record.final_checks_passed {
+        let merged = matches!(record.outcome, RunOutcome::Merged | RunOutcome::PullRequest);
+        if merged && record.final_checks_passed {
             entry.passed += 1;
         }
     }
@@ -273,15 +273,15 @@ pub fn workflow_stats(lines: &[LogLine]) -> BTreeMap<(String, String), WorkflowS
 mod tests {
     use super::*;
 
-    fn outcome(card: u32) -> Outcome {
+    fn outcome(task: u32) -> Outcome {
         Outcome {
             run: RunId::new("run-01").unwrap(),
-            card: CardId::numbered(card),
+            task: TaskId::numbered(task),
             worker: "codex".parse().unwrap(),
             task_type: "backend".to_owned(),
             first_try: true,
-            attempts: 1,
-            integrated: true,
+            tries: 1,
+            merged: true,
             spent_usd: 1.5,
             step: None,
             at: None,
@@ -293,7 +293,7 @@ mod tests {
             within_time_cap: None,
             minutes: None,
             difficulty: None,
-            recipe: None,
+            learned_workflow: None,
         }
     }
 
@@ -307,11 +307,11 @@ mod tests {
         std::fs::create_dir_all(store.outcomes_dir()).unwrap();
         std::fs::write(
             run_file(&store, &run),
-            "{\"run\":\"run-01\",\"card\":\"task-001\",\"worker\":\"claude-code\",\
-             \"task_type\":\"docs\",\"first_try\":false,\"attempts\":2,\"integrated\":true,\
+            "{\"run\":\"run-01\",\"task\":\"task-001\",\"worker\":\"claude-code\",\
+             \"task_type\":\"docs\",\"first_try\":false,\"tries\":2,\"merged\":true,\
              \"spent_usd\":0.4}\n\
-             {\"run\":\"run-01\",\"card\":\"task-003\",\"worker\":\"codex/gpt-5.6\",\
-             \"task_type\":\"backend\",\"first_try\":true,\"attempts\":1,\"integrated\":true,\
+             {\"run\":\"run-01\",\"task\":\"task-003\",\"worker\":\"codex/gpt-5.6\",\
+             \"task_type\":\"backend\",\"first_try\":true,\"tries\":1,\"merged\":true,\
              \"spent_usd\":0.9,\"step\":{\"kind\":\"build\",\"standard\":\"do\"}}\n\
              {\"cut short\n",
         )
@@ -324,9 +324,9 @@ mod tests {
             .unwrap();
         std::io::Write::write_all(
             &mut file,
-            b"{\"type\":\"prediction\",\"run\":\"run-01\",\"card\":\"task-002\",\
+            b"{\"type\":\"prediction\",\"run\":\"run-01\",\"task\":\"task-002\",\
               \"worker\":\"codex\",\"role\":\"worker\",\"task_type\":\"backend\",\
-              \"at\":\"2026-09-30T10:00:00Z\",\"p_pass_gates_first_try\":0.7}\n\
+              \"at\":\"2026-09-30T10:00:00Z\",\"p_pass_checks_first_try\":0.7}\n\
               {\"type\":\"reversal\",\"run\":\"run-01\",\"what\":\"reverted the auto-merge\",\
               \"at\":\"2026-09-30T12:00:00Z\"}\n",
         )
@@ -337,7 +337,7 @@ mod tests {
         let LogLine::Outcome(old) = &lines[0] else {
             panic!("{lines:?}");
         };
-        assert_eq!(old.attempts, 2);
+        assert_eq!(old.tries, 2);
         assert_eq!(old.model_id, None);
         assert_eq!(old.at, None);
         let LogLine::Outcome(stepped) = &lines[1] else {
@@ -356,9 +356,9 @@ mod tests {
             panic!("{lines:?}");
         };
         assert_eq!(prediction.role, Predictor::Worker);
-        assert_eq!(prediction.p_pass_gates_first_try, Some(0.7));
+        assert_eq!(prediction.p_pass_checks_first_try, Some(0.7));
         assert_eq!(prediction.p_within_time_cap, None);
-        assert!(matches!(&lines[4], LogLine::Reversal(reversal) if reversal.card.is_none()));
+        assert!(matches!(&lines[4], LogLine::Reversal(reversal) if reversal.task.is_none()));
 
         // Every run's file, oldest name first.
         let earlier = RunId::new("run-00").unwrap();

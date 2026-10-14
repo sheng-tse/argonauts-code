@@ -1,8 +1,8 @@
-//! The lead's brief as a cheap model writes it, read the one way each near-miss can mean before
-//! the schema checks it: a check written as `"diff"` or as a test's name, a
-//! criterion with no short name or a repeated id, a run named in five words, a list of one given
-//! as the item itself. Whatever can't be read this way stays as it came, so the schema or code
-//! sends it back to the lead.
+//! The main agent's brief as a cheap model writes it, read the one way each near-miss can mean
+//! before the schema checks it: a check written as `"diff"` or as a test's name, a criterion with
+//! no short name or a repeated id, a run named in five words, a list of one given as the item
+//! itself. Whatever can't be read this way stays as it came, so the schema or code sends it back to
+//! the main agent.
 
 use std::collections::BTreeSet;
 
@@ -90,7 +90,7 @@ pub fn design_brief(value: Value) -> Value {
     for list in ["params", "plan", "questions"] {
         brief.entry(list).or_insert_with(|| json!([]));
     }
-    brief.entry("first_attempt").or_insert(Value::Null);
+    brief.entry("first_try").or_insert(Value::Null);
     // One of the two says what runs, so only the other may be left out.
     let given = |key: &str| brief.get(key).is_some_and(|value| !value.is_null());
     if given("based_on") || given("workflow") {
@@ -128,8 +128,8 @@ pub fn design_brief(value: Value) -> Value {
     if let Some(workflow) = brief.get_mut("workflow") {
         as_yaml(workflow);
     }
-    if let Some(Value::Object(attempt)) = brief.get_mut("first_attempt")
-        && let Some(steps) = attempt.get_mut("steps")
+    if let Some(Value::Object(first)) = brief.get_mut("first_try")
+        && let Some(steps) = first.get_mut("steps")
     {
         as_yaml(steps);
     }
@@ -139,8 +139,8 @@ pub fn design_brief(value: Value) -> Value {
         }
         number(criteria);
     }
-    if let Some(Value::Array(cards)) = brief.get_mut("plan") {
-        cards.iter_mut().for_each(read_card);
+    if let Some(Value::Array(tasks)) = brief.get_mut("plan") {
+        tasks.iter_mut().for_each(read_task);
     }
     if let Some(Value::Array(questions)) = brief.get_mut("questions") {
         for question in questions.iter_mut() {
@@ -207,7 +207,7 @@ fn first_line(text: &str) -> String {
 }
 
 /// Lowercase words joined with `-`, less filler words when there are more than four, or the
-/// description's first words when the lead left the name out. More than four words that all
+/// description's first words when the main agent left the name out. More than four words that all
 /// matter stay, and the rule sends them back.
 fn run_name(name: &str, description: &str) -> String {
     let mut words = words(name);
@@ -240,7 +240,7 @@ fn words_of_note(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The plain form two spellings of one example's name share: `Peer Crew`, `peer_crew` and
+/// The plain form two spellings of one example's name share: `Council`, `council` and
 /// `council` are all `council`. A name with other marks stays as written.
 pub(crate) fn example_name(name: &str) -> String {
     let trimmed = name.trim();
@@ -411,15 +411,15 @@ fn number(criteria: &mut [Value]) {
     }
 }
 
-/// A plan card with no item takes its task's first words, as a card's title gives its item.
-fn read_card(card: &mut Value) {
-    let Value::Object(map) = card else {
+/// A plan task with no item takes its task's first words, as a task's title gives its item.
+fn read_task(task: &mut Value) {
+    let Value::Object(map) = task else {
         return;
     };
     let item = map.get("item").and_then(Value::as_str).map(str::trim);
     if item.is_none_or(str::is_empty) {
-        let task = map.get("task").and_then(Value::as_str).unwrap_or_default();
-        let derived = labels::item_from_title(task, "");
+        let text = map.get("task").and_then(Value::as_str).unwrap_or_default();
+        let derived = labels::item_from_title(text, "");
         if !derived.is_empty() {
             map.insert("item".to_owned(), Value::String(derived));
         }
@@ -491,7 +491,7 @@ mod tests {
         ];
         for (written, read_as) in checks {
             let brief = read(json!({
-                "name": "fix-it", "description": "Fix it", "based_on": "solo",
+                "name": "fix-it", "description": "Fix it", "based_on": "captain",
                 "done_when": [{"id": "G1", "short": "It", "text": "It works", "check": written}],
             }));
             assert_eq!(brief["done_when"][0]["check"], read_as, "{written}");
@@ -502,7 +502,7 @@ mod tests {
     #[test]
     fn prose_where_a_check_goes_stays_and_the_schema_refuses_it() {
         let brief = read(json!({
-            "name": "fix-it", "description": "Fix it", "based_on": "solo",
+            "name": "fix-it", "description": "Fix it", "based_on": "captain",
             "done_when": [{"id": "G1", "short": "It", "text": "It works",
                            "check": "make sure it works"}],
         }));
@@ -513,7 +513,7 @@ mod tests {
     #[test]
     fn a_criterion_gets_a_short_name_and_an_id_it_left_out() {
         let brief = read(json!({
-            "name": "fix-median", "description": "Fix median", "based_on": "solo",
+            "name": "fix-median", "description": "Fix median", "based_on": "captain",
             "done_when": [
                 "median([]) raises ValueError",
                 {"id": "G1", "text": "The median of an even list averages the middle pair",
@@ -559,11 +559,11 @@ mod tests {
             "description": "Look once\nthen stop",
             "based_on": "Council",
             "params": {"check": "diff", "rounds": 2},
-            "workflow": {"name": "look", "phases": [{"title": "Look", "steps": []}]},
+            "workflow": {"name": "look", "phases": [{"name": "Look", "steps": []}]},
             "done_when": {"id": "G1", "short": "Looked", "text": "It looked", "check": "review"},
             "plan": {"task": "Collapse each run of dashes"},
             "questions": [{"topic": "Dashes", "text": "Trim?", "options": "Yes"}],
-            "first_attempt": {"title": "Fix", "detail": "a worker fixes it",
+            "first_try": {"name": "Fix", "detail": "a worker fixes it",
                               "steps": [{"kind": "build", "label": "fix:it"}]},
         }));
         assert_eq!(valid(&brief), Vec::<String>::new());
@@ -581,7 +581,7 @@ mod tests {
         assert_eq!(brief.done_when.len(), 1);
         assert_eq!(brief.plan[0].item, "collapse-each");
         assert_eq!(brief.questions[0].options, ["Yes"]);
-        assert!(brief.first_attempt.unwrap().steps.contains("fix:it"));
+        assert!(brief.first_try.unwrap().steps.contains("fix:it"));
         assert_eq!(brief.why, "");
     }
 
@@ -590,7 +590,7 @@ mod tests {
     #[test]
     fn prose_in_a_check_object_names_no_test_and_no_command() {
         let brief = read(json!({
-            "name": "fix-it", "description": "Fix it", "based_on": "solo",
+            "name": "fix-it", "description": "Fix it", "based_on": "captain",
             "done_when": [{"id": "G3", "short": "Capped", "text": "Refills are capped",
                            "check": {"test": "test passes"}}],
         }));
@@ -657,7 +657,7 @@ mod tests {
         assert_eq!(read_as("Look Once"), "Look Once");
         assert_eq!(read_as("nonesuch"), "nonesuch");
 
-        // A brief read back from the log keeps the lead's spelling, which still names the
+        // A brief read back from the log keeps the main agent's spelling, which still names the
         // example it ran.
         let written: DesignOutput = serde_json::from_value(read(json!({
             "name": "fix-it", "description": "Fix it", "based_on": "Quick Fix",

@@ -1,13 +1,13 @@
-//! Sealing drafts: the plan text goes to `runs/<run>/drafts/<draft>.md` (mode 0600, outside
-//! every sandbox), is hashed, and recorded as `Plan::Sealed`. No drafter sees another's draft.
-//! The structured draft sits beside it as `<draft>.json`, for dividing the work.
+//! Sealing drafts: the plan text goes to `runs/<run>/drafts/<draft>.md` (mode 0600, outside every
+//! sandbox), is hashed, and recorded as `Plan::Sealed`. No drafting agent sees another's draft. The
+//! structured draft sits beside it as `<draft>.json`, for dividing the work.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::plan::PlanEvent;
-use argonauts_core::names::{DraftId, PlanLabel, SessionKey, WorkerRef};
+use argonauts_core::names::{DraftId, ModelRef, PlanLabel, SessionKey};
 use argonauts_core::steps::plan::{LabeledPlan, PlanDraft};
 use argonauts_core::{create_private_dir_all, sha256_hex, write_private_file};
 
@@ -19,7 +19,7 @@ use crate::state::plan::SealedDraft;
 pub fn seal(
     host: &Host,
     label: PlanLabel,
-    worker: &WorkerRef,
+    worker: &ModelRef,
     round: u8,
     draft: &PlanDraft,
     session: Option<&SessionKey>,
@@ -69,7 +69,8 @@ pub fn load(sealed: &SealedDraft) -> EngineResult<PlanDraft> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-/// The sealed plans under their anonymous labels, as the mapper, critics, and judges see them.
+/// The sealed plans under their anonymous labels, as the mapping agent, critics, and judges see
+/// them.
 pub fn labeled(drafts: &[&SealedDraft]) -> EngineResult<Vec<LabeledPlan>> {
     drafts
         .iter()
@@ -82,7 +83,7 @@ pub fn labeled(drafts: &[&SealedDraft]) -> EngineResult<Vec<LabeledPlan>> {
         .collect()
 }
 
-/// The sealed text as the mapper and judges see it. It never names the author.
+/// The sealed text as the mapping agent and judges see it. It never names the author.
 pub fn render(draft: &PlanDraft) -> String {
     let mut text = String::new();
     let _ = writeln!(text, "## Summary\n\n{}\n", draft.summary.trim());

@@ -55,7 +55,7 @@ pub(crate) struct StreamFailure {
 pub(crate) struct ReplyStream {
     api: EndpointApi,
     reply: Reply,
-    /// The model last announced, kept across attempts so a retry doesn't repeat it.
+    /// The model last announced, kept across tries so a retry doesn't repeat it.
     announced: Option<String>,
 }
 
@@ -68,8 +68,8 @@ impl ReplyStream {
         }
     }
 
-    /// A fresh stream for another attempt at the same request.
-    pub(crate) fn next_attempt(&self) -> Self {
+    /// A fresh stream for another try at the same request.
+    pub(crate) fn next_try(&self) -> Self {
         Self {
             announced: self.announced.clone(),
             ..Self::new(self.api)
@@ -547,18 +547,18 @@ mod tests {
         assert_eq!(stream.announce(), None);
         stream.push(&chunk("")).unwrap();
         assert_eq!(stream.announce(), None);
-        stream.push(&chunk("vendor/routed")).unwrap();
-        assert_eq!(stream.announce().as_deref(), Some("vendor/routed"));
-        stream.push(&chunk("vendor/routed")).unwrap();
+        stream.push(&chunk("agent/routed")).unwrap();
+        assert_eq!(stream.announce().as_deref(), Some("agent/routed"));
+        stream.push(&chunk("agent/routed")).unwrap();
         assert_eq!(stream.announce(), None);
 
-        let mut retry = stream.next_attempt();
-        retry.push(&chunk("vendor/routed")).unwrap();
+        let mut retry = stream.next_try();
+        retry.push(&chunk("agent/routed")).unwrap();
         assert_eq!(retry.announce(), None);
         assert_eq!(retry.finish().text, "x");
-        let mut rerouted = stream.next_attempt();
-        rerouted.push(&chunk("vendor/fallback")).unwrap();
-        assert_eq!(rerouted.announce().as_deref(), Some("vendor/fallback"));
+        let mut rerouted = stream.next_try();
+        rerouted.push(&chunk("agent/fallback")).unwrap();
+        assert_eq!(rerouted.announce().as_deref(), Some("agent/fallback"));
 
         let mut stream = ReplyStream::new(EndpointApi::Responses);
         let created = json!({"type": "response.created", "response": {"model": "m", "output": []}});

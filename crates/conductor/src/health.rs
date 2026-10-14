@@ -1,9 +1,11 @@
-//! The health board: a circuit breaker per vendor, in `vendors.json` beside the quota. Errors or
-//! retries within `health.window` make a vendor Degraded; `down_after` overloads or server errors
-//! across `down_sessions` sessions make it Down; after the cool-down (or its reported reset) it
-//! goes to Testing. There the first session to report takes the one test card, and its success
-//! or outage decides, within [`TEST_CARD_LIMIT`]. A broken adapter disables the vendor, and a
-//! billing cap disables its API-key models. Every change is broadcast.
+//! The health board: a circuit breaker per agent, in `agents.json` beside the plan usage, and one
+//! per model under it ([`crate::model_health`]). Errors or retries within `health.window` make an
+//! agent Degraded. An overload or a server error counts against the model it came from, and two
+//! models out at once take the whole agent Down; network errors and timeouts are nobody's model,
+//! so `down_after` of them across `down_sessions` sessions take it Down too. After the cool-down
+//! (or its reported reset) it goes to Testing. There the first session to report takes the one
+//! test task, and its success or outage decides, within [`TEST_TASK_LIMIT`]. A broken adapter
+//! disables the agent, and a billing cap disables its API-key models. Every change is broadcast.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -11,11 +13,13 @@ use std::time::Duration;
 
 use argonauts_core::Paths;
 use argonauts_core::clock::{Clock, SystemClock};
-use argonauts_core::events::VendorEvent;
+use argonauts_core::events::AgentStatusEvent;
 use argonauts_core::limits::{
-    HealthBoard, HealthSignal, HealthState, QuotaStatus, TEST_TASK_SUCCEEDED, VendorHealth,
+    AgentHealth, HealthBoard, HealthSignal, HealthState, ModelHealth, ModelState, PlanUsageStatus,
+    TEST_TASK_SUCCEEDED,
 };
-use argonauts_core::names::{SessionKey, VendorId};
+use argonauts_core::names::{AgentId, ModelRef, SessionKey};
+use argonauts_core::registry::{ModelRegistry, model_run};
 use argonauts_core::settings::Span;
 use argonauts_core::settings::sessions::HealthSettings;
 use argonauts_core::{ErrorCategory, RetryReason};
@@ -23,21 +27,25 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use tokio::sync::broadcast;
 
-use crate::quota::registered_prober;
-use crate::vendors_file::{Owner, VendorEntry, VendorsFile, VendorsStore};
+use crate::agents_file::{AgentRecord, AgentsFile, AgentsStore, Holder};
+use crate::model_health::{self, MODELS_OUT_TO_DOWN};
+use crate::plan_usage::registered_prober;
 
 /// Marks kept when `health.window` is `none`, so the file stays small.
 const MAX_MARKS: usize = 256;
 
-/// How long Testing waits for the test card's result before it counts as failed, so a test card
-/// that stopped without one can't hold the vendor in Testing for good.
-pub const TEST_CARD_LIMIT: Duration = Duration::from_secs(60 * 60);
+/// How long Testing waits for the test task's result before it counts as failed, so a test task
+/// that stopped without one can't hold the agent in Testing for good.
+pub const TEST_TASK_LIMIT: Duration = Duration::from_secs(60 * 60);
 
-/// Starts every billing disable. `VendorHealth` carries a disable as text alone, so this is how
+/// Why an agent went down when its models did.
+pub const MODELS_OUT: &str = "two of its models are out";
+
+/// Starts every billing disable. `AgentHealth` carries a disable as text alone, so this is how
 /// readers tell its scope.
 const BILLING_CAP: &str = "the billing cap was reached";
 
-/// Which of a vendor's models a disable keeps from new cards.
+/// Which of an agent's models a disable keeps from new tasks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisableScope {
     Every,
@@ -53,8 +61,8 @@ pub fn disable_scope(reason: &str) -> DisableScope {
     }
 }
 
-/// The disable a billing cap sets. It lasts until a session on the vendor succeeds, such as the
-/// retry after you top up, or until you enable the vendor.
+/// The disable a billing cap sets. It lasts until a session on the agent succeeds, such as the
+/// retry after you top up, or until you enable the agent.
 pub fn billing_disable() -> String {
     format!("{BILLING_CAP}. Tasks billed to its API key go to other agents until a retry works")
 }
@@ -66,12 +74,16 @@ pub struct HealthMark {
     pub at: OffsetDateTime,
     /// The session, prefixed by its process, since two runs each have an `s-001`.
     pub session: String,
-    /// Overload or a server error, which counts toward Down as well as Degraded.
+    /// Overload or a server error, which its model's own breaker counts toward out.
     #[serde(default)]
     pub outage: bool,
+    /// A network error or a timeout, which is no model's doing, so it counts toward the whole
+    /// agent's Down.
+    #[serde(default)]
+    pub network: bool,
 }
 
-/// One vendor's breaker as plain state, so its rules are tested without files or clocks.
+/// One agent's breaker as plain state, so its rules are tested without files or clocks.
 #[derive(Debug, Clone)]
 pub struct Breaker {
     settings: HealthSettings,
@@ -82,8 +94,8 @@ pub struct Breaker {
     reported_reset: Option<OffsetDateTime>,
     left_down_at: Option<OffsetDateTime>,
     marks: Vec<HealthMark>,
-    /// A test card is running, while Testing.
-    testing_card: bool,
+    /// A test task is running, while Testing.
+    testing_task: bool,
 }
 
 impl Breaker {
@@ -97,12 +109,12 @@ impl Breaker {
             reported_reset: None,
             left_down_at: None,
             marks: Vec::new(),
-            testing_card: false,
+            testing_task: false,
         }
     }
 
-    /// A breaker as `vendors.json` last recorded it.
-    pub fn restore(settings: &HealthSettings, entry: &VendorEntry) -> Self {
+    /// A breaker as `agents.json` last recorded it.
+    pub fn restore(settings: &HealthSettings, entry: &AgentRecord) -> Self {
         let mut breaker = Self::new(settings);
         if let Some(health) = &entry.health {
             breaker.state = health.state;
@@ -112,7 +124,7 @@ impl Breaker {
         }
         breaker.left_down_at = entry.left_down_at;
         breaker.marks = entry.marks.clone();
-        breaker.testing_card = breaker.state == HealthState::Testing && entry.test_card.is_some();
+        breaker.testing_task = breaker.state == HealthState::Testing && entry.test_task.is_some();
         breaker
     }
 
@@ -140,13 +152,13 @@ impl Breaker {
         &self.marks
     }
 
-    pub fn testing_card(&self) -> bool {
-        self.testing_card
+    pub fn testing_task(&self) -> bool {
+        self.testing_task
     }
 
-    pub fn health(&self, vendor: &VendorId, disabled: Option<String>) -> VendorHealth {
-        VendorHealth {
-            vendor: vendor.clone(),
+    pub fn health(&self, agent_id: &AgentId, disabled: Option<String>) -> AgentHealth {
+        AgentHealth {
+            agent_id: agent_id.clone(),
             state: self.state,
             since: self.since,
             reason: self.reason.clone(),
@@ -155,15 +167,15 @@ impl Breaker {
         }
     }
 
-    /// Writes the breaker into its `vendors.json` entry, keeping the entry's disable.
-    pub fn save(&self, vendor: &VendorId, entry: &mut VendorEntry) {
+    /// Writes the breaker into its `agents.json` entry, keeping the entry's disable.
+    pub fn save(&self, agent_id: &AgentId, entry: &mut AgentRecord) {
         let disabled = entry.health.as_ref().and_then(|h| h.disabled.clone());
-        entry.health = Some(self.health(vendor, disabled));
+        entry.health = Some(self.health(agent_id, disabled));
         entry.left_down_at = self.left_down_at;
         entry.marks = self.marks.clone();
     }
 
-    /// The reset the vendor reported, such as when its quota comes back. While it's down, the
+    /// The reset the agent reported, such as when its plan usage comes back. While it's down, the
     /// test waits for this instead of the cool-down.
     pub fn set_reported_reset(&mut self, reset: Option<OffsetDateTime>) {
         self.reported_reset = reset;
@@ -185,18 +197,20 @@ impl Breaker {
         scope: &str,
         now: OffsetDateTime,
     ) -> Option<HealthState> {
-        let (session, outage) = match signal {
+        let (session, outage, network) = match signal {
             HealthSignal::Retry {
                 session, reason, ..
             } => (
                 session,
                 matches!(reason, RetryReason::Overloaded | RetryReason::ServerError),
+                *reason == RetryReason::Network,
             ),
             HealthSignal::Error {
                 session, category, ..
-            } if is_vendor_trouble(*category) => (
+            } if is_agent_trouble(*category) => (
                 session,
                 matches!(category, ErrorCategory::Overloaded | ErrorCategory::Server),
+                matches!(category, ErrorCategory::Network | ErrorCategory::Timeout),
             ),
             HealthSignal::Success { .. } => {
                 return if self.state == HealthState::Degraded {
@@ -207,7 +221,7 @@ impl Breaker {
             }
             HealthSignal::Error { .. } | HealthSignal::AdapterBroken { .. } => return None,
         };
-        // Down and Testing wait for the test card, so what their paused cards say is not counted.
+        // Down and Testing wait for the test task, so what their paused tasks say is not counted.
         if matches!(self.state, HealthState::Down | HealthState::Testing) {
             return None;
         }
@@ -219,19 +233,20 @@ impl Breaker {
                 format!("{scope}/{session}")
             },
             outage,
+            network,
         });
         self.prune(now);
 
-        let outages: Vec<&HealthMark> = self.marks.iter().filter(|m| m.outage).collect();
-        let sessions: BTreeSet<&str> = outages.iter().map(|m| m.session.as_str()).collect();
-        if outages.len() >= at_least_one(self.settings.down_after)
+        let unreachable: Vec<&HealthMark> = self.marks.iter().filter(|m| m.network).collect();
+        let sessions: BTreeSet<&str> = unreachable.iter().map(|m| m.session.as_str()).collect();
+        if unreachable.len() >= at_least_one(self.settings.down_after)
             && sessions.len() >= at_least_one(self.settings.down_sessions)
         {
-            let reason = format!(
-                "overload or server errors on {} sessions in {}",
-                sessions.len(),
-                self.settings.window.0
-            );
+            let on = match sessions.len() {
+                1 => "1 session".to_owned(),
+                many => format!("{many} sessions"),
+            };
+            let reason = format!("network errors on {on} in {}", self.settings.window.0);
             return self.go_down(now, reason);
         }
         if self.state == HealthState::Healthy
@@ -248,7 +263,7 @@ impl Breaker {
     }
 
     /// Moves Down to Testing once the cool-down or the reported reset has passed, and Testing
-    /// back to Down when no test card finished within [`TEST_CARD_LIMIT`].
+    /// back to Down when no test task finished within [`TEST_TASK_LIMIT`].
     pub fn tick(&mut self, now: OffsetDateTime) -> Option<HealthState> {
         match self.state {
             HealthState::Down => {
@@ -266,8 +281,8 @@ impl Breaker {
                 self.next_test_at = None;
                 self.set(HealthState::Testing, now, Some(reason.to_owned()))
             }
-            HealthState::Testing if self.since + TEST_CARD_LIMIT <= now => {
-                let minutes = TEST_CARD_LIMIT.as_secs() / 60;
+            HealthState::Testing if self.since + TEST_TASK_LIMIT <= now => {
+                let minutes = TEST_TASK_LIMIT.as_secs() / 60;
                 self.go_down(
                     now,
                     format!("no test task finished within {minutes} minutes"),
@@ -278,19 +293,19 @@ impl Breaker {
         }
     }
 
-    /// Starts the one test card a vendor in Testing takes, and its time limit with it. `false`
-    /// when it isn't testing or a test card already runs.
+    /// Starts the one test task an agent in Testing takes, and its time limit with it. `false`
+    /// when it isn't testing or a test task already runs.
     pub fn start_test(&mut self, now: OffsetDateTime) -> bool {
-        if self.state != HealthState::Testing || self.testing_card {
+        if self.state != HealthState::Testing || self.testing_task {
             return false;
         }
-        self.testing_card = true;
+        self.testing_task = true;
         self.since = now;
         self.reason = Some("a test task is running".to_owned());
         true
     }
 
-    /// The test card's result: Healthy, or Down again.
+    /// The test task's result: Healthy, or Down again.
     pub fn test_result(&mut self, ok: bool, now: OffsetDateTime) -> HealthState {
         if self.state != HealthState::Testing {
             return self.state;
@@ -308,13 +323,21 @@ impl Breaker {
         self.state
     }
 
+    /// Two of its models are out at once, so the agent is down as a whole.
+    pub fn models_out(&mut self, now: OffsetDateTime) -> Option<HealthState> {
+        if matches!(self.state, HealthState::Down | HealthState::Testing) {
+            return None;
+        }
+        self.go_down(now, MODELS_OUT.to_owned())
+    }
+
     fn go_down(&mut self, now: OffsetDateTime, reason: String) -> Option<HealthState> {
         self.marks.clear();
         self.next_test_at = self.test_time(now);
         self.set(HealthState::Down, now, Some(reason))
     }
 
-    /// When a vendor that went down at `down_at` gets its test card: the reported reset if it
+    /// When an agent that went down at `down_at` gets its test task: the reported reset if it
     /// came after, else the cool-down. A cool-down of `none` tests at once.
     fn test_time(&self, down_at: OffsetDateTime) -> Option<OffsetDateTime> {
         match self.reported_reset {
@@ -359,15 +382,15 @@ impl Breaker {
             self.next_test_at = None;
         }
         if state != HealthState::Testing {
-            self.testing_card = false;
+            self.testing_task = false;
         }
         changed.then_some(state)
     }
 }
 
-/// Errors that say something about the vendor's service. Account problems (login, usage limit,
-/// billing) go to the handoff rules, and request or local problems say nothing about health.
-pub(crate) fn is_vendor_trouble(category: ErrorCategory) -> bool {
+/// Errors that say something about the agent's service. Account problems (login, usage limit,
+/// billing) go to the fallback rules, and request or local problems say nothing about health.
+pub(crate) fn is_agent_trouble(category: ErrorCategory) -> bool {
     matches!(
         category,
         ErrorCategory::Overloaded
@@ -380,13 +403,17 @@ pub(crate) fn is_vendor_trouble(category: ErrorCategory) -> bool {
     )
 }
 
-/// What a signal says about the vendor under test: a success passes it and an overload or
-/// server error fails it. `None` when it says neither.
+/// What a signal says about the agent under test: a success passes it, and an error of the
+/// kinds that take an agent or its models out fails it. `None` when it says neither.
 fn test_verdict(signal: &HealthSignal) -> Option<bool> {
     match signal {
         HealthSignal::Success { .. } => Some(true),
         HealthSignal::Error {
-            category: ErrorCategory::Overloaded | ErrorCategory::Server,
+            category:
+                ErrorCategory::Overloaded
+                | ErrorCategory::Server
+                | ErrorCategory::Network
+                | ErrorCategory::Timeout,
             ..
         } => Some(false),
         HealthSignal::Retry { .. }
@@ -395,8 +422,8 @@ fn test_verdict(signal: &HealthSignal) -> Option<bool> {
     }
 }
 
-/// The session a signal about the vendor's service came from. Account and request errors come
-/// from sessions that won't finish, so they don't take the test card.
+/// The session a signal about the agent's service came from. Account and request errors come
+/// from sessions that won't finish, so they don't take the test task.
 fn reporting_session(signal: &HealthSignal) -> Option<&SessionKey> {
     match signal {
         HealthSignal::Retry { session, .. } | HealthSignal::Success { session, .. } => {
@@ -404,14 +431,19 @@ fn reporting_session(signal: &HealthSignal) -> Option<&SessionKey> {
         }
         HealthSignal::Error {
             session, category, ..
-        } if is_vendor_trouble(*category) => Some(session),
+        } if is_agent_trouble(*category) => Some(session),
         HealthSignal::Error { .. } | HealthSignal::AdapterBroken { .. } => None,
     }
 }
 
-/// How long a down vendor rests before its test card. `none` rests not at all.
+/// How long a down agent rests before its test task. `none` rests not at all.
 pub(crate) fn cooldown(settings: &HealthSettings) -> Duration {
     span(&settings.cooldown, "health.cooldown").unwrap_or_default()
+}
+
+/// The span the counts look back over. `None` for `none`, which forgets nothing.
+pub(crate) fn window(settings: &HealthSettings) -> Option<Duration> {
+    span(&settings.window, "health.window")
 }
 
 /// A threshold of 0 would trip on nothing at all, so it reads as 1.
@@ -437,30 +469,37 @@ fn span(value: &Span, key: &str) -> Option<Duration> {
 }
 
 pub struct FileHealthBoard {
-    store: VendorsStore,
+    store: AgentsStore,
     settings: HealthSettings,
-    events: broadcast::Sender<VendorEvent>,
+    events: broadcast::Sender<AgentStatusEvent>,
     clock: Arc<dyn Clock>,
     /// What this board last told subscribers, so changes made by other processes are
     /// broadcast too once it reads them.
-    seen: Mutex<BTreeMap<String, VendorHealth>>,
+    seen: Mutex<BTreeMap<String, AgentHealth>>,
+    /// The same for each model.
+    seen_models: Mutex<BTreeMap<ModelRef, ModelHealth>>,
     /// Prefixes session keys with this process, like `<pid>.<start time>`.
     scope: String,
+    /// Says which model a session runs, so a model named by an alias, by its full id, or not
+    /// at all is kept once.
+    models: Option<Arc<dyn ModelRegistry>>,
+    /// The spelling found for each name asked about so far, since every read asks again.
+    spelled: Mutex<BTreeMap<(String, Option<String>), String>>,
 }
 
 impl FileHealthBoard {
     pub fn new(paths: &Paths, settings: &HealthSettings) -> Self {
         let (events, _) = broadcast::channel(64);
-        let store = VendorsStore::new(paths);
-        let seen = store
-            .read()
-            .map(|file| {
-                file.vendors
-                    .iter()
-                    .filter_map(|(id, entry)| Some((id.clone(), entry.health.clone()?)))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let store = AgentsStore::new(paths);
+        let file = store.read().unwrap_or_default();
+        let seen = file
+            .agent_ids
+            .iter()
+            .filter_map(|(id, entry)| Some((id.clone(), entry.health.clone()?)))
+            .collect();
+        let seen_models = model_healths(&file)
+            .map(|health| (health.model.clone(), health))
+            .collect();
         let scope = crate::liveness::this_process()
             .map(|(pid, start)| format!("{pid}.{start}"))
             .unwrap_or_else(|| std::process::id().to_string());
@@ -470,8 +509,41 @@ impl FileHealthBoard {
             events,
             clock: Arc::new(SystemClock),
             seen: Mutex::new(seen),
+            seen_models: Mutex::new(seen_models),
             scope,
+            models: None,
+            spelled: Mutex::default(),
         }
+    }
+
+    /// Keeps each model under the one name `registry` gives it, and counts what a session
+    /// that names no model says against the model its CLI runs by default.
+    pub fn naming_models_with(mut self, registry: Arc<dyn ModelRegistry>) -> Self {
+        self.models = Some(registry);
+        self
+    }
+
+    /// The name `model` of `agent` is kept under: empty for a default nothing can name.
+    fn kept_as(&self, agent: &str, model: Option<&str>) -> String {
+        let asked = (agent.to_owned(), model.map(str::to_owned));
+        if let Ok(spelled) = self.spelled.lock()
+            && let Some(known) = spelled.get(&asked)
+        {
+            return known.clone();
+        }
+        let worker = ModelRef::new(agent, asked.1.clone());
+        let name = match &self.models {
+            Some(registry) => model_run(registry.as_ref(), &worker),
+            None => asked.1.clone(),
+        }
+        .unwrap_or_default();
+        // A default nothing names yet gets its name once its CLI's list is read.
+        if !name.is_empty()
+            && let Ok(mut spelled) = self.spelled.lock()
+        {
+            spelled.insert(asked, name.clone());
+        }
+        name
     }
 
     /// Uses `clock` instead of the system time, as tests do.
@@ -480,49 +552,49 @@ impl FileHealthBoard {
         self
     }
 
-    pub fn store(&self) -> &VendorsStore {
+    pub fn store(&self) -> &AgentsStore {
         &self.store
     }
 
-    /// Moves every vendor whose time has come (a finished cool-down, errors that stopped) and
+    /// Moves every agent whose time has come (a finished cool-down, errors that stopped) and
     /// broadcasts what changed, here or in another process. The app calls this on a timer.
     pub fn refresh(&self) {
         let file = match self.store.read() {
             Ok(file) => file,
             Err(err) => {
-                tracing::warn!("the health board could not read vendors.json: {err}");
+                tracing::warn!("the health board could not read agents.json: {err}");
                 return;
             }
         };
         let now = self.clock.now();
-        let due: Vec<VendorId> = file
-            .vendors
+        let due: Vec<AgentId> = file
+            .agent_ids
             .iter()
             .filter(|(_, entry)| self.is_due(entry, now))
-            .map(|(id, _)| VendorId(id.clone()))
+            .map(|(id, _)| AgentId(id.clone()))
             .collect();
         if due.is_empty() {
             self.publish(&file);
         }
-        for vendor in due {
-            self.change(&vendor, |_, _, _| ());
+        for agent_id in due {
+            self.change(&agent_id, |_, _, _| ());
         }
     }
 
-    /// Claims the one test card a vendor in Testing takes. `false` when it isn't testing or
-    /// another live session has the card.
-    pub fn claim_test_card(&self, vendor: &VendorId, session: &str) -> bool {
-        let owner = match Owner::this_process(Some(session.to_owned())) {
-            Ok(owner) => owner,
+    /// Claims the one test task an agent in Testing takes. `false` when it isn't testing or
+    /// another live session has the task.
+    pub fn claim_test_task(&self, agent_id: &AgentId, session: &str) -> bool {
+        let holder = match Holder::this_process(Some(session.to_owned())) {
+            Ok(holder) => holder,
             Err(err) => {
-                tracing::warn!("could not claim {vendor}'s test task: {err}");
+                tracing::warn!("could not claim {agent_id}'s test task: {err}");
                 return false;
             }
         };
-        self.change(vendor, |breaker, entry, now| {
+        self.change(agent_id, |breaker, entry, now| {
             let claimed = breaker.start_test(now);
             if claimed {
-                entry.test_card = Some(owner);
+                entry.test_task = Some(holder);
             }
             claimed
         })
@@ -530,8 +602,8 @@ impl FileHealthBoard {
     }
 
     /// Lifts a disable, such as after the CLI was fixed.
-    pub fn enable(&self, vendor: &VendorId) {
-        self.change(vendor, |_, entry, _| {
+    pub fn enable(&self, agent_id: &AgentId) {
+        self.change(agent_id, |_, entry, _| {
             entry.disabled_by = None;
             if let Some(health) = &mut entry.health {
                 health.disabled = None;
@@ -539,23 +611,23 @@ impl FileHealthBoard {
         });
     }
 
-    fn disable_adapter(&self, vendor: &VendorId, detail: &str) {
+    fn disable_adapter(&self, agent_id: &AgentId, detail: &str) {
         let reason = format!(
             "{}. {}",
             detail.trim_end_matches('.'),
-            pin_suggestion(vendor)
+            pin_suggestion(agent_id)
         );
-        self.disable(vendor, reason);
+        self.disable(agent_id, reason);
     }
 
     /// Records a disable owned by this process, so it lapses with it. A billing cap never
     /// narrows a disable that covers every model.
-    fn disable(&self, vendor: &VendorId, reason: String) {
-        let owner = Owner::this_process(None);
-        self.change(vendor, |breaker, entry, _| {
+    fn disable(&self, agent_id: &AgentId, reason: String) {
+        let holder = Holder::this_process(None);
+        self.change(agent_id, |breaker, entry, _| {
             let health = entry
                 .health
-                .get_or_insert_with(|| breaker.health(vendor, None));
+                .get_or_insert_with(|| breaker.health(agent_id, None));
             let narrower = disable_scope(&reason) == DisableScope::ApiKey
                 && health
                     .disabled
@@ -565,30 +637,30 @@ impl FileHealthBoard {
                 return;
             }
             health.disabled = Some(reason);
-            entry.disabled_by = owner.ok();
+            entry.disabled_by = holder.ok();
         });
     }
 
-    /// While Testing, the first session to report takes the test card, and only what that
+    /// While Testing, the first session to report takes the test task, and only what that
     /// session says decides the test.
     fn observe_test(
         breaker: &mut Breaker,
-        entry: &mut VendorEntry,
+        entry: &mut AgentRecord,
         signal: &HealthSignal,
         now: OffsetDateTime,
     ) {
         let Some(session) = reporting_session(signal) else {
             return;
         };
-        let owner = Owner::this_process(Some(session.to_string()))
+        let holder = Holder::this_process(Some(session.to_string()))
             .map_err(|err| tracing::warn!("could not claim a test task: {err}"))
             .ok();
-        let holds = match (&entry.test_card, &owner) {
-            (Some(card), Some(owner)) => card == owner,
+        let holds = match (&entry.test_task, &holder) {
+            (Some(task), Some(holder)) => task == holder,
             (Some(_), None) => false,
             (None, _) => {
                 breaker.start_test(now);
-                entry.test_card = owner;
+                entry.test_task = holder;
                 true
             }
         };
@@ -597,38 +669,45 @@ impl FileHealthBoard {
         }
     }
 
-    fn is_due(&self, entry: &VendorEntry, now: OffsetDateTime) -> bool {
+    fn is_due(&self, entry: &AgentRecord, now: OffsetDateTime) -> bool {
         let mut breaker = self.breaker(entry);
         breaker.tick(now).is_some()
+            || entry
+                .models
+                .values()
+                .any(|model| model.clone().tick(&self.settings, now))
     }
 
-    fn breaker(&self, entry: &VendorEntry) -> Breaker {
+    fn breaker(&self, entry: &AgentRecord) -> Breaker {
         let mut breaker = Breaker::restore(&self.settings, entry);
         let reset = entry
-            .quota
+            .plan_usage
             .as_ref()
-            .filter(|quota| quota.status == QuotaStatus::Rejected)
-            .and_then(|quota| quota.resets_at);
+            .filter(|plan_usage| plan_usage.status == PlanUsageStatus::Rejected)
+            .and_then(|plan_usage| plan_usage.resets_at);
         breaker.set_reported_reset(reset);
         breaker
     }
 
-    /// Changes one vendor's entry under the file lock, after moving it along if its time came,
+    /// Changes one agent's entry under the file lock, after moving it along if its time came,
     /// then broadcasts what changed.
     fn change<T>(
         &self,
-        vendor: &VendorId,
-        apply: impl FnOnce(&mut Breaker, &mut VendorEntry, OffsetDateTime) -> T,
+        agent_id: &AgentId,
+        apply: impl FnOnce(&mut Breaker, &mut AgentRecord, OffsetDateTime) -> T,
     ) -> Option<T> {
         let now = self.clock.now();
         let updated = self.store.update(|file| {
-            let entry = file.vendors.entry(vendor.0.clone()).or_default();
+            let entry = file.agent_ids.entry(agent_id.0.clone()).or_default();
             let mut breaker = self.breaker(entry);
             breaker.tick(now);
+            for model in entry.models.values_mut() {
+                model.tick(&self.settings, now);
+            }
             let result = apply(&mut breaker, entry, now);
-            breaker.save(vendor, entry);
-            if !breaker.testing_card() {
-                entry.test_card = None;
+            breaker.save(agent_id, entry);
+            if !breaker.testing_task() {
+                entry.test_task = None;
             }
             (result, file.clone())
         });
@@ -638,32 +717,57 @@ impl FileHealthBoard {
                 Some(result)
             }
             Err(err) => {
-                tracing::warn!("the health board could not write vendors.json: {err}");
+                tracing::warn!("the health board could not write agents.json: {err}");
                 None
             }
         }
     }
 
-    fn publish(&self, file: &VendorsFile) {
+    /// Says what changed. A model's change goes out before its agent's, so whoever hears that
+    /// an agent went down already knows which of its models are out, and why.
+    fn publish(&self, file: &AgentsFile) {
+        self.publish_models(file);
+        self.publish_agents(file);
+    }
+
+    fn publish_models(&self, file: &AgentsFile) {
+        let Ok(mut seen) = self.seen_models.lock() else {
+            tracing::warn!("the health board's memory is poisoned");
+            return;
+        };
+        for current in model_healths(file) {
+            let before = seen.get(&current.model);
+            let moved = before.map_or(current.state != ModelState::Healthy, |before| {
+                (before.state, before.since, &before.reason)
+                    != (current.state, current.since, &current.reason)
+            });
+            if moved {
+                let _ = self.events.send(AgentStatusEvent::Model(current.clone()));
+            }
+            seen.insert(current.model.clone(), current);
+        }
+    }
+
+    fn publish_agents(&self, file: &AgentsFile) {
         let Ok(mut seen) = self.seen.lock() else {
             tracing::warn!("the health board's memory is poisoned");
             return;
         };
-        for (id, entry) in &file.vendors {
-            let vendor = VendorId(id.clone());
-            let current = health_of(&vendor, Some(entry));
+        for (id, entry) in &file.agent_ids {
+            let agent_id = AgentId(id.clone());
+            let current = health_of(&agent_id, Some(entry));
             let before = seen
                 .get(id)
                 .cloned()
-                .unwrap_or_else(|| health_of(&vendor, None));
+                .unwrap_or_else(|| health_of(&agent_id, None));
             if current == before {
                 continue;
             }
             if let Some(reason) = &current.disabled
                 && before.disabled.as_ref() != Some(reason)
             {
-                let _ = self.events.send(VendorEvent::Disabled {
-                    vendor: vendor.clone(),
+                let _ = self.events.send(AgentStatusEvent::Disabled {
+                    agent_id: agent_id.clone(),
                     reason: reason.clone(),
                 });
             }
@@ -679,15 +783,62 @@ impl FileHealthBoard {
                 before.next_test_at,
             );
             if moved || (current.disabled.is_none() && before.disabled.is_some()) {
-                let _ = self.events.send(VendorEvent::Health(current.clone()));
+                let _ = self.events.send(AgentStatusEvent::Health(current.clone()));
             }
             seen.insert(id.clone(), current);
         }
     }
+
+    /// Counts what a session said against its own model, and takes the agent down once two of
+    /// its models are out at once.
+    fn observe_model(
+        &self,
+        breaker: &mut Breaker,
+        entry: &mut AgentRecord,
+        signal: &HealthSignal,
+        name: Option<&str>,
+        now: OffsetDateTime,
+    ) {
+        let (Some(said), Some(name)) = (model_health::seen(signal), name) else {
+            return;
+        };
+        // Nothing is kept for a model nobody ever said a thing against.
+        if said.is_ok() && !entry.models.contains_key(name) {
+            return;
+        }
+        let model = entry.models.entry(name.to_owned()).or_default();
+        let went_out = model.observe(said, &self.settings, now) && model.is_out();
+        let out = entry.models.values().filter(|model| model.is_out()).count();
+        if went_out && out >= MODELS_OUT_TO_DOWN {
+            breaker.models_out(now);
+        }
+    }
 }
 
-/// A session on the vendor worked, so its billing is fine again.
-fn lift_billing_disable(entry: &mut VendorEntry) {
+/// The model a signal's session named, when the signal is about a model at all: `Some(None)`
+/// for a session that named none.
+fn model_of(signal: &HealthSignal) -> Option<Option<&str>> {
+    match signal {
+        HealthSignal::Retry { model, .. }
+        | HealthSignal::Error { model, .. }
+        | HealthSignal::Success { model, .. } => Some(model.as_deref()),
+        HealthSignal::AdapterBroken { .. } => None,
+    }
+}
+
+/// Every model the file holds anything against.
+fn model_healths(file: &AgentsFile) -> impl Iterator<Item = ModelHealth> + '_ {
+    file.agent_ids.iter().flat_map(|(id, entry)| {
+        let agent_id = AgentId(id.clone());
+        entry
+            .models
+            .iter()
+            .map(move |(name, model)| model.health(&agent_id, name))
+    })
+}
+
+/// A session on the agent worked, so its billing is fine again.
+fn lift_billing_disable(entry: &mut AgentRecord) {
     if let Some(health) = &mut entry.health
         && health
             .disabled
@@ -699,127 +850,171 @@ fn lift_billing_disable(entry: &mut VendorEntry) {
     }
 }
 
-fn health_of(vendor: &VendorId, entry: Option<&VendorEntry>) -> VendorHealth {
+fn health_of(agent_id: &AgentId, entry: Option<&AgentRecord>) -> AgentHealth {
     entry
         .and_then(|entry| entry.health.clone())
-        .unwrap_or_else(|| Breaker::new(&HealthSettings::default()).health(vendor, None))
+        .unwrap_or_else(|| Breaker::new(&HealthSettings::default()).health(agent_id, None))
 }
 
 /// How to get back to a CLI version the adapter was tested with.
-fn pin_suggestion(vendor: &VendorId) -> String {
-    let tested = registered_prober(vendor)
+fn pin_suggestion(agent_id: &AgentId) -> String {
+    let tested = registered_prober(agent_id)
         .and_then(|prober| prober.adapter.tested_versions().last().copied());
     match tested {
         Some(version) => format!(
             "New tasks go to other agents. To pin a tested version, install {version} and set \
-             agents.{vendor}.version_pin = \"{version}\""
+             agents.{agent_id}.version_pin = \"{version}\""
         ),
         None => format!(
             "New tasks go to other agents. To pin a tested version, install one and set \
-             agents.{vendor}.version_pin"
+             agents.{agent_id}.version_pin"
         ),
     }
 }
 
 impl HealthBoard for FileHealthBoard {
     fn observe(&self, signal: HealthSignal) {
-        let (HealthSignal::Retry { vendor, .. }
-        | HealthSignal::Error { vendor, .. }
-        | HealthSignal::Success { vendor, .. }
-        | HealthSignal::AdapterBroken { vendor, .. }) = &signal;
+        let (HealthSignal::Retry { agent_id, .. }
+        | HealthSignal::Error { agent_id, .. }
+        | HealthSignal::Success { agent_id, .. }
+        | HealthSignal::AdapterBroken { agent_id, .. }) = &signal;
         match &signal {
             HealthSignal::AdapterBroken { detail, .. } => {
-                self.disable_adapter(vendor, detail);
+                self.disable_adapter(agent_id, detail);
                 return;
             }
             HealthSignal::Error {
                 category: ErrorCategory::Billing,
                 ..
             } => {
-                self.disable(vendor, billing_disable());
+                self.disable(agent_id, billing_disable());
                 return;
             }
             HealthSignal::Retry { .. }
             | HealthSignal::Error { .. }
             | HealthSignal::Success { .. } => {}
         }
-        self.change(vendor, |breaker, entry, now| {
+        let name = model_of(&signal).map(|model| self.kept_as(&agent_id.0, model));
+        let name = name.as_deref();
+        self.change(agent_id, |breaker, entry, now| {
             if matches!(signal, HealthSignal::Success { .. }) {
                 lift_billing_disable(entry);
             }
-            if breaker.state() == HealthState::Testing {
-                Self::observe_test(breaker, entry, &signal, now);
-            } else {
-                breaker.observe_from(&signal, &self.scope, now);
+            match breaker.state() {
+                HealthState::Testing => {
+                    Self::observe_test(breaker, entry, &signal, now);
+                    // The session that passed the agent's test passed its own model's too.
+                    let passed = breaker.state() == HealthState::Healthy;
+                    if let (true, Some(name)) = (passed, name)
+                        && let Some(model) = entry.models.get_mut(name)
+                    {
+                        model.pass(now);
+                    }
+                }
+                // Down waits for its test, so what its paused tasks say is not counted.
+                HealthState::Down => {}
+                HealthState::Healthy | HealthState::Degraded => {
+                    breaker.observe_from(&signal, &self.scope, now);
+                    self.observe_model(breaker, entry, &signal, name, now);
+                }
             }
         });
     }
 
-    /// Fails closed: when `vendors.json` can't be read, the vendor reads as disabled, since
+    /// Fails closed: when `agents.json` can't be read, the agent reads as disabled, since
     /// whether you or its adapter disabled it is unknown.
-    fn state(&self, vendor: &VendorId) -> VendorHealth {
+    fn state(&self, agent_id: &AgentId) -> AgentHealth {
         let file = match self.store.read() {
             Ok(file) => file,
             Err(err) => {
-                tracing::warn!("the health board could not read vendors.json: {err}");
-                return VendorHealth {
+                tracing::warn!("the health board could not read agents.json: {err}");
+                return AgentHealth {
                     disabled: Some(format!(
-                        "could not read {}, so whether {vendor} is disabled is unknown: {err}. \
+                        "could not read {}, so whether {agent_id} is disabled is unknown: {err}. \
                          Fix or remove the file to start new work on it",
                         self.store.path().display()
                     )),
-                    ..health_of(vendor, None)
+                    ..health_of(agent_id, None)
                 };
             }
         };
-        match file.entry(vendor) {
+        match file.entry(agent_id) {
             Some(entry) if self.is_due(entry, self.clock.now()) => self
-                .change(vendor, |breaker, entry, _| {
+                .change(agent_id, |breaker, entry, _| {
                     let disabled = entry.health.as_ref().and_then(|h| h.disabled.clone());
-                    breaker.health(vendor, disabled)
+                    breaker.health(agent_id, disabled)
                 })
-                .unwrap_or_else(|| health_of(vendor, Some(entry))),
+                .unwrap_or_else(|| health_of(agent_id, Some(entry))),
             entry => {
                 self.publish(&file);
-                health_of(vendor, entry)
+                health_of(agent_id, entry)
             }
         }
     }
 
-    fn all(&self) -> Vec<VendorHealth> {
+    fn all(&self) -> Vec<AgentHealth> {
         self.refresh();
         match self.store.read() {
             Ok(file) => file
-                .vendors
+                .agent_ids
                 .iter()
-                .map(|(id, entry)| health_of(&VendorId(id.clone()), Some(entry)))
+                .map(|(id, entry)| health_of(&AgentId(id.clone()), Some(entry)))
                 .collect(),
             Err(err) => {
-                tracing::warn!("the health board could not read vendors.json: {err}");
+                tracing::warn!("the health board could not read agents.json: {err}");
                 Vec::new()
             }
         }
     }
 
-    fn subscribe(&self) -> broadcast::Receiver<VendorEvent> {
+    fn subscribe(&self) -> broadcast::Receiver<AgentStatusEvent> {
         self.events.subscribe()
     }
 
-    fn test_result(&self, vendor: &VendorId, ok: bool) {
-        self.change(vendor, |breaker, _, now| {
+    fn test_result(&self, agent_id: &AgentId, ok: bool) {
+        self.change(agent_id, |breaker, _, now| {
             if breaker.state() == HealthState::Testing {
                 breaker.test_result(ok, now);
             } else {
-                tracing::debug!("a test result for {vendor} came while it wasn't testing");
+                tracing::debug!("a test result for {agent_id} came while it wasn't testing");
             }
         });
+    }
+
+    fn model(&self, model: &ModelRef) -> ModelHealth {
+        let name = self.kept_as(&model.agent, model.model.as_deref());
+        self.models(&model.agent_id())
+            .into_iter()
+            .find(|health| health.model.model.as_deref().unwrap_or_default() == name)
+            .unwrap_or_else(|| ModelHealth::healthy(model))
+    }
+
+    fn models(&self, agent_id: &AgentId) -> Vec<ModelHealth> {
+        // Reading the agent first moves along whatever is due, its models with it.
+        let _ = self.state(agent_id);
+        match self.store.read() {
+            Ok(file) => file
+                .entry(agent_id)
+                .map(|entry| {
+                    entry
+                        .models
+                        .iter()
+                        .map(|(name, model)| model.health(agent_id, name))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Err(err) => {
+                tracing::warn!("the health board could not read agents.json: {err}");
+                Vec::new()
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::limits::{QuotaReading, QuotaSource};
+    use argonauts_core::limits::{PlanUsageReading, PlanUsageSource, Trouble, takes_fallbacks};
     use argonauts_core::names::SessionKey;
     use time::Duration as Delta;
 
@@ -833,13 +1028,14 @@ mod tests {
         }
     }
 
-    fn codex() -> VendorId {
-        VendorId("codex".into())
+    fn codex() -> AgentId {
+        AgentId("codex".into())
     }
 
     fn retry(session: u32, reason: RetryReason) -> HealthSignal {
         HealthSignal::Retry {
-            vendor: codex(),
+            agent_id: codex(),
+            model: None,
             session: SessionKey::numbered(session),
             reason,
         }
@@ -847,7 +1043,8 @@ mod tests {
 
     fn error(session: u32, category: ErrorCategory) -> HealthSignal {
         HealthSignal::Error {
-            vendor: codex(),
+            agent_id: codex(),
+            model: None,
             session: SessionKey::numbered(session),
             category,
         }
@@ -855,7 +1052,8 @@ mod tests {
 
     fn success(session: u32) -> HealthSignal {
         HealthSignal::Success {
-            vendor: codex(),
+            agent_id: codex(),
+            model: None,
             session: SessionKey::numbered(session),
         }
     }
@@ -909,23 +1107,27 @@ mod tests {
             Some(HealthState::Healthy)
         );
 
-        // Overloads on one session don't take it down, however many.
+        // Overloads are their model's own business: on however many sessions, the agent is
+        // only degraded.
+        for session in 1..=4 {
+            breaker.observe(&error(session, ErrorCategory::Overloaded), later);
+        }
+        assert_eq!(breaker.state(), HealthState::Degraded);
+        // Network errors are no model's doing. On one session they don't take it down, however
+        // many.
         for _ in 0..4 {
-            breaker.observe(&error(1, ErrorCategory::Overloaded), later);
+            breaker.observe(&error(1, ErrorCategory::Network), later);
         }
         assert_eq!(breaker.state(), HealthState::Degraded);
         // A second session makes it an outage.
         assert_eq!(
-            breaker.observe(&retry(2, RetryReason::ServerError), later),
+            breaker.observe(&retry(2, RetryReason::Network), later),
             Some(HealthState::Down)
         );
-        assert_eq!(
-            breaker.reason(),
-            Some("overload or server errors on 2 sessions in 2m")
-        );
+        assert_eq!(breaker.reason(), Some("network errors on 2 sessions in 2m"));
         let test_at = later + Delta::minutes(5);
         assert_eq!(breaker.next_test_at(), Some(test_at));
-        // Paused cards' errors don't count while it's down.
+        // Paused tasks' errors don't count while it's down.
         assert_eq!(
             breaker.observe(&error(3, ErrorCategory::Server), later),
             None
@@ -938,9 +1140,9 @@ mod tests {
         assert_eq!(breaker.test_result(true, test_at), HealthState::Healthy);
         assert!(breaker.marks().is_empty());
 
-        // Down again, and this time the test card fails.
+        // Down again, and this time the test task fails.
         for session in 1..=3 {
-            breaker.observe(&error(session, ErrorCategory::Overloaded), test_at);
+            breaker.observe(&error(session, ErrorCategory::Timeout), test_at);
         }
         assert_eq!(breaker.state(), HealthState::Down);
         let test_at = test_at + Delta::minutes(5);
@@ -972,8 +1174,13 @@ mod tests {
         });
         let now = t0();
         assert_eq!(
-            breaker.observe(&error(1, ErrorCategory::Server), now),
+            breaker.observe(&error(1, ErrorCategory::Network), now),
             Some(HealthState::Down)
+        );
+        // One session is counted as one.
+        assert_eq!(
+            breaker.reason(),
+            Some("network errors on 1 session in none")
         );
         // An unreadable cool-down uses the default one.
         assert_eq!(breaker.next_test_at(), Some(now + Delta::minutes(5)));
@@ -984,7 +1191,7 @@ mod tests {
             ..settings()
         });
         for session in 1..=3 {
-            breaker.observe(&error(session, ErrorCategory::Overloaded), now);
+            breaker.observe(&error(session, ErrorCategory::Network), now);
         }
         assert_eq!(breaker.tick(now), Some(HealthState::Testing));
     }
@@ -993,15 +1200,15 @@ mod tests {
         FileHealthBoard::new(&Paths::new(home), &settings()).with_clock(clock.clone())
     }
 
-    fn drain(events: &mut broadcast::Receiver<VendorEvent>) -> Vec<VendorEvent> {
+    fn drain(events: &mut broadcast::Receiver<AgentStatusEvent>) -> Vec<AgentStatusEvent> {
         std::iter::from_fn(|| events.try_recv().ok()).collect()
     }
 
-    fn states(events: &[VendorEvent]) -> Vec<HealthState> {
+    fn states(events: &[AgentStatusEvent]) -> Vec<HealthState> {
         events
             .iter()
             .filter_map(|event| match event {
-                VendorEvent::Health(health) => Some(health.state),
+                AgentStatusEvent::Health(health) => Some(health.state),
                 _ => None,
             })
             .collect()
@@ -1012,19 +1219,19 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(t0());
         let app = board(home.path(), &clock);
-        let supervisor = board(home.path(), &clock);
+        let run_host = board(home.path(), &clock);
         let mut events = app.subscribe();
 
         assert_eq!(app.state(&codex()).state, HealthState::Healthy);
         assert!(app.all().is_empty());
-        app.observe(retry(1, RetryReason::Overloaded));
+        app.observe(retry(1, RetryReason::Network));
         assert!(drain(&mut events).is_empty());
-        app.observe(retry(1, RetryReason::Overloaded));
+        app.observe(retry(1, RetryReason::Network));
         assert_eq!(states(&drain(&mut events)), vec![HealthState::Degraded]);
 
         // Another process's signals count with ours, and its change reaches our subscribers.
-        supervisor.observe(error(2, ErrorCategory::Server));
-        assert_eq!(supervisor.state(&codex()).state, HealthState::Down);
+        run_host.observe(error(2, ErrorCategory::Network));
+        assert_eq!(run_host.state(&codex()).state, HealthState::Down);
         assert!(drain(&mut events).is_empty());
         app.refresh();
         assert_eq!(states(&drain(&mut events)), vec![HealthState::Down]);
@@ -1032,8 +1239,8 @@ mod tests {
         clock.advance(Delta::minutes(5));
         assert_eq!(app.state(&codex()).state, HealthState::Testing);
         assert_eq!(states(&drain(&mut events)), vec![HealthState::Testing]);
-        assert!(app.claim_test_card(&codex(), "s-004"));
-        assert!(!supervisor.claim_test_card(&codex(), "s-005"));
+        assert!(app.claim_test_task(&codex(), "s-004"));
+        assert!(!run_host.claim_test_task(&codex(), "s-005"));
         assert_eq!(
             app.state(&codex()).reason.as_deref(),
             Some("a test task is running")
@@ -1043,19 +1250,22 @@ mod tests {
             states(&drain(&mut events)),
             vec![HealthState::Testing, HealthState::Healthy]
         );
-        assert_eq!(app.store().read().unwrap().vendors["codex"].test_card, None);
+        assert_eq!(
+            app.store().read().unwrap().agent_ids["codex"].test_task,
+            None
+        );
 
-        // A broken adapter disables the vendor for new cards, with a pin suggestion.
-        supervisor.observe(HealthSignal::AdapterBroken {
-            vendor: codex(),
+        // A broken adapter disables the agent for new tasks, with a pin suggestion.
+        run_host.observe(HealthSignal::AdapterBroken {
+            agent_id: codex(),
             detail: "unknown events piled up".into(),
         });
         app.refresh();
         let events = drain(&mut events);
-        let Some(VendorEvent::Disabled { vendor, reason }) = events.first() else {
+        let Some(AgentStatusEvent::Disabled { agent_id, reason }) = events.first() else {
             panic!("expected a disable, got {events:?}");
         };
-        assert_eq!(vendor, &codex());
+        assert_eq!(agent_id, &codex());
         assert!(reason.starts_with("unknown events piled up. New tasks go to other agents."));
         assert!(reason.contains("agents.codex.version_pin"));
         let health = app.state(&codex());
@@ -1072,34 +1282,34 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(t0());
         let board = board(home.path(), &clock);
-        let parked_at = t0();
+        let waiting_at = t0();
         for session in 1..=3 {
-            board.observe(error(session, ErrorCategory::Overloaded));
+            board.observe(error(session, ErrorCategory::Network));
         }
         let store = board.store();
         let file = store.read().unwrap();
-        let entry = &file.vendors["codex"];
+        let entry = &file.agent_ids["codex"];
         let health = entry.health.as_ref().unwrap();
         assert_eq!(health.state, HealthState::Down);
         let test_at = t0() + Delta::minutes(5);
         assert_eq!(health.next_test_at, Some(test_at));
         assert_eq!(entry.left_down_at, None);
         assert_eq!(file.earliest_reset(), Some(test_at));
-        // With no supervisor running, the app still sees the vendor is due back.
-        assert!(!file.vendor_back(&codex(), parked_at, t0()));
-        assert!(file.vendor_back(&codex(), parked_at, test_at));
+        // With no run host running, the app still sees the agent is due back.
+        assert!(!file.agent_back(&codex(), waiting_at, t0()));
+        assert!(file.agent_back(&codex(), waiting_at, test_at));
 
-        // A reported quota reset later than the cool-down moves the test.
+        // A reported plan usage reset later than the cool-down moves the test.
         let reset = t0() + Delta::hours(1);
         store
             .update(|file| {
-                file.vendors.get_mut("codex").unwrap().quota = Some(QuotaReading {
-                    vendor: codex(),
-                    status: QuotaStatus::Rejected,
+                file.agent_ids.get_mut("codex").unwrap().plan_usage = Some(PlanUsageReading {
+                    agent_id: codex(),
+                    status: PlanUsageStatus::Rejected,
                     used: Some(1.0),
                     resets_at: Some(reset),
                     window: Some("five_hour".into()),
-                    source: QuotaSource::AppServer,
+                    source: PlanUsageSource::AppServer,
                     observed_at: t0(),
                     detail: None,
                     wrap_up: false,
@@ -1113,12 +1323,12 @@ mod tests {
 
         let raw: serde_json::Value =
             serde_json::from_slice(&std::fs::read(store.path()).unwrap()).unwrap();
-        let codex_raw = &raw["vendors"]["codex"];
+        let codex_raw = &raw["agent_ids"]["codex"];
         assert_eq!(codex_raw["health"]["state"], "testing");
         assert_eq!(codex_raw["left_down_at"], "2027-01-15T09:00:00Z");
-        assert_eq!(codex_raw["quota"]["resets_at"], "2027-01-15T09:00:00Z");
+        assert_eq!(codex_raw["plan_usage"]["resets_at"], "2027-01-15T09:00:00Z");
         let file = store.read().unwrap();
-        assert!(file.vendor_back(&codex(), parked_at, parked_at));
+        assert!(file.agent_back(&codex(), waiting_at, waiting_at));
         assert_eq!(file.earliest_reset(), Some(reset));
     }
 
@@ -1130,23 +1340,23 @@ mod tests {
         assert!(board.state(&codex()).disabled.is_none());
         std::fs::write(board.store().path(), "{ not json").unwrap();
         let health = board.state(&codex());
-        assert!(health.disabled.unwrap().contains("vendors.json"));
+        assert!(health.disabled.unwrap().contains("agents.json"));
     }
 
     fn take_down(board: &FileHealthBoard) {
         for session in 1..=3 {
-            board.observe(error(session, ErrorCategory::Overloaded));
+            board.observe(error(session, ErrorCategory::Network));
         }
         assert_eq!(board.state(&codex()).state, HealthState::Down);
     }
 
-    fn test_card(board: &FileHealthBoard) -> Option<String> {
+    fn test_task(board: &FileHealthBoard) -> Option<String> {
         let file = board.store().read().unwrap();
-        file.vendors["codex"].test_card.clone()?.session
+        file.agent_ids["codex"].test_task.clone()?.session
     }
 
     #[test]
-    fn one_test_card_decides() {
+    fn one_test_task_decides() {
         let home = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(t0());
         let board = board(home.path(), &clock);
@@ -1154,36 +1364,299 @@ mod tests {
         clock.advance(Delta::minutes(5));
         assert_eq!(board.state(&codex()).state, HealthState::Testing);
 
-        // The first session to report takes the test card, and no one else can.
+        // The first session to report takes the test task, and no one else can.
         board.observe(retry(4, RetryReason::Overloaded));
-        assert_eq!(test_card(&board).as_deref(), Some("s-004"));
+        assert_eq!(test_task(&board).as_deref(), Some("s-004"));
         assert_eq!(
             board.state(&codex()).reason.as_deref(),
             Some("a test task is running")
         );
-        assert!(!board.claim_test_card(&codex(), "s-005"));
+        assert!(!board.claim_test_task(&codex(), "s-005"));
         board.observe(error(5, ErrorCategory::Server));
         board.observe(success(5));
         assert_eq!(board.state(&codex()).state, HealthState::Testing);
         board.observe(success(4));
         assert_eq!(board.state(&codex()).state, HealthState::Healthy);
-        assert_eq!(test_card(&board), None);
+        assert_eq!(test_task(&board), None);
 
-        // Under test again, a new outage takes the card and fails it.
+        // Under test again, a new outage takes the task and fails it.
         take_down(&board);
         clock.advance(Delta::minutes(5));
         board.observe(error(6, ErrorCategory::Overloaded));
         let health = board.state(&codex());
         assert_eq!(health.state, HealthState::Down);
         assert_eq!(health.reason.as_deref(), Some("the test task failed"));
-        assert_eq!(test_card(&board), None);
+        assert_eq!(test_task(&board), None);
+    }
+
+    fn of(model: &str, session: u32, category: ErrorCategory) -> HealthSignal {
+        HealthSignal::Error {
+            agent_id: codex(),
+            model: Some(model.to_owned()),
+            session: SessionKey::numbered(session),
+            category,
+        }
+    }
+
+    fn worked(model: &str, session: u32) -> HealthSignal {
+        HealthSignal::Success {
+            agent_id: codex(),
+            model: Some(model.to_owned()),
+            session: SessionKey::numbered(session),
+        }
+    }
+
+    fn model(name: &str) -> ModelRef {
+        ModelRef::new("codex", Some(name.to_owned()))
+    }
+
+    fn model_events(events: &[AgentStatusEvent]) -> Vec<(String, ModelState)> {
+        let models = events.iter().filter_map(|event| match event {
+            AgentStatusEvent::Model(health) => Some((health.model.to_string(), health.state)),
+            _ => None,
+        });
+        models.collect()
+    }
+
+    #[test]
+    fn an_overload_takes_its_model_out_and_leaves_the_others_usable() {
+        let home = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(t0());
+        let board = board(home.path(), &clock);
+        let mut events = board.subscribe();
+
+        // The failure and its retry, on one session.
+        board.observe(of("big", 1, ErrorCategory::Overloaded));
+        assert_eq!(board.model(&model("big")).state, ModelState::Healthy);
+        board.observe(of("big", 1, ErrorCategory::Overloaded));
+        let big = board.model(&model("big"));
+        assert_eq!(big.state, ModelState::Out);
+        assert_eq!(big.trouble, Some(Trouble::Overload));
+        assert_eq!(big.reason.as_deref(), Some("2 overload errors in a row"));
+        assert_eq!(big.next_test_at, Some(t0() + Delta::minutes(5)));
+        assert_eq!(
+            model_events(&drain(&mut events)),
+            [("codex/big".to_owned(), ModelState::Out)]
+        );
+
+        // Only that model is out: the agent takes work, and so do its other models.
+        assert_ne!(board.state(&codex()).state, HealthState::Down);
+        assert_eq!(board.model(&model("small")).state, ModelState::Healthy);
+        assert!(takes_fallbacks(&board, &model("small")));
+        assert!(!takes_fallbacks(&board, &model("big")));
+        assert_eq!(board.models(&codex()).len(), 1);
+
+        // After its rest the model is under test, and the next session on it decides.
+        clock.advance(Delta::minutes(5));
+        assert_eq!(board.model(&model("big")).state, ModelState::Testing);
+        assert!(
+            !takes_fallbacks(&board, &model("big")),
+            "only work asked of it"
+        );
+        board.observe(worked("big", 2));
+        assert_eq!(board.model(&model("big")).state, ModelState::Healthy);
+        let seen = model_events(&drain(&mut events));
+        assert_eq!(
+            seen.last(),
+            Some(&("codex/big".to_owned(), ModelState::Healthy))
+        );
+    }
+
+    /// A registry that knows Claude Code as its catalog ships it: named alone it runs Opus,
+    /// which `opus` names too, beside Sonnet.
+    struct ClaudeModels(argonauts_testkit::services::StaticRegistry);
+
+    impl ModelRegistry for ClaudeModels {
+        fn get(&self, worker: &ModelRef) -> Option<argonauts_core::registry::ModelEntry> {
+            self.0.get(worker)
+        }
+        fn provider(&self, worker: &ModelRef) -> String {
+            self.0.provider(worker)
+        }
+        fn list(&self) -> Vec<argonauts_core::registry::ModelEntry> {
+            self.0.list()
+        }
+        fn estimate(
+            &self,
+            worker: &ModelRef,
+            input: u64,
+            output: u64,
+        ) -> argonauts_core::limits::CostEstimate {
+            self.0.estimate(worker, input, output)
+        }
+        fn discover(
+            &self,
+        ) -> argonauts_core::future::BoxFuture<'_, Vec<argonauts_core::registry::ModelEntry>>
+        {
+            self.0.discover()
+        }
+        fn catalog(&self) -> argonauts_core::model_catalog::ModelCatalog {
+            use argonauts_core::model_catalog::{CATALOG_VERSION, CatalogEntry, ModelCatalog};
+            let mut default = CatalogEntry::new("claude-code".parse().unwrap());
+            default.runs = Some("claude-opus-5-5".to_owned());
+            let model = |id: &str, alias: &str| {
+                let mut entry = CatalogEntry::new(id.parse().unwrap());
+                entry.aliases = Some(vec![alias.to_owned()]);
+                entry
+            };
+            ModelCatalog {
+                version: CATALOG_VERSION,
+                models: vec![
+                    default,
+                    model("claude-code/claude-opus-5-5", "opus"),
+                    model("claude-code/claude-sonnet-5-5", "sonnet"),
+                ],
+                ..ModelCatalog::default()
+            }
+        }
+    }
+
+    /// One model overloaded is one model out, however its sessions named it: none at all, as
+    /// the main session does, by its alias, by its full id, or with a variant in brackets.
+    /// Its CLI stays up, and its other models still take what the overloaded one can't.
+    #[test]
+    fn one_model_named_three_ways_is_one_model_out() {
+        let home = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(t0());
+        let board = board(home.path(), &clock)
+            .naming_models_with(Arc::new(ClaudeModels(Default::default())));
+        let claude = AgentId("claude-code".into());
+        let overloaded = |model: Option<&str>, session: u32| HealthSignal::Error {
+            agent_id: claude.clone(),
+            model: model.map(str::to_owned),
+            session: SessionKey::numbered(session),
+            category: ErrorCategory::Overloaded,
+        };
+        let spellings = [
+            None,
+            Some("opus"),
+            Some("claude-opus-5-5"),
+            Some("claude-opus-5-5[1m]"),
+        ];
+        for (session, model) in (1..).zip(spellings) {
+            for _ in 0..2 {
+                board.observe(overloaded(model, session));
+            }
+        }
+
+        let kept = board.models(&claude);
+        assert_eq!(kept.len(), 1, "{kept:#?}");
+        assert_eq!(
+            kept[0].model,
+            "claude-code/claude-opus-5-5".parse().unwrap()
+        );
+        assert_eq!(kept[0].state, ModelState::Out);
+        assert_ne!(board.state(&claude).state, HealthState::Down);
+        for spelled in [
+            "claude-code",
+            "claude-code/opus",
+            "claude-code/claude-opus-5-5",
+        ] {
+            let asked: ModelRef = spelled.parse().unwrap();
+            assert_eq!(board.model(&asked).state, ModelState::Out, "{spelled}");
+            assert!(!takes_fallbacks(&board, &asked), "{spelled}");
+        }
+        for spelled in ["claude-code/sonnet", "claude-code/claude-sonnet-5-5"] {
+            assert!(
+                takes_fallbacks(&board, &spelled.parse().unwrap()),
+                "{spelled}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_models_out_take_the_agent_down_and_each_comes_back_on_its_own() {
+        let home = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(t0());
+        let board = board(home.path(), &clock);
+        for _ in 0..2 {
+            board.observe(of("big", 1, ErrorCategory::Overloaded));
+        }
+        clock.advance(Delta::seconds(90));
+        board.observe(of("small", 2, ErrorCategory::Server));
+        assert_ne!(board.state(&codex()).state, HealthState::Down);
+        let mut events = board.subscribe();
+        board.observe(of("small", 2, ErrorCategory::Server));
+
+        // The second model's own trouble is said before its agent's, which it explains.
+        let said = drain(&mut events);
+        let small_out = said.iter().position(|event| {
+            matches!(event, AgentStatusEvent::Model(health) if health.state == ModelState::Out)
+        });
+        let agent_down = said.iter().position(|event| {
+            matches!(event, AgentStatusEvent::Health(health) if health.state == HealthState::Down)
+        });
+        assert!(small_out.is_some() && small_out < agent_down, "{said:?}");
+
+        let down = board.state(&codex());
+        assert_eq!(down.state, HealthState::Down);
+        assert_eq!(down.reason.as_deref(), Some(MODELS_OUT));
+        let small = board.model(&model("small"));
+        assert_eq!(small.trouble, Some(Trouble::ServerErrors));
+        assert_eq!(small.reason.as_deref(), Some("2 server errors in a row"));
+        // A model nothing was said against is no fallback either, its agent being down.
+        assert!(!takes_fallbacks(&board, &model("tiny")));
+
+        // The agent's test passes on one model: that model is back with it, the other waits
+        // for a test of its own.
+        clock.advance(Delta::minutes(5));
+        assert_eq!(board.state(&codex()).state, HealthState::Testing);
+        board.observe(worked("small", 3));
+        assert_eq!(board.state(&codex()).state, HealthState::Healthy);
+        assert_eq!(board.model(&model("small")).state, ModelState::Healthy);
+        assert_eq!(board.model(&model("big")).state, ModelState::Testing);
+        board.observe(of("big", 4, ErrorCategory::Overloaded));
+        let big = board.model(&model("big"));
+        assert_eq!(big.state, ModelState::Out);
+        assert_eq!(big.reason.as_deref(), Some("the test task failed"));
+        // One model out again is no outage of the agent.
+        assert_eq!(board.state(&codex()).state, HealthState::Healthy);
+    }
+
+    #[test]
+    fn network_errors_count_against_the_agent_and_take_no_model_out() {
+        let home = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(t0());
+        let board = board(home.path(), &clock);
+        board.observe(of("big", 1, ErrorCategory::Network));
+        board.observe(of("big", 1, ErrorCategory::Timeout));
+        assert_eq!(board.state(&codex()).state, HealthState::Degraded);
+        let big = board.model(&model("big"));
+        assert_eq!(big.state, ModelState::Degraded);
+        assert_eq!(
+            big.reason.as_deref(),
+            Some("reconnected twice in 2 minutes")
+        );
+        assert_eq!(big.next_test_at, Some(t0() + Delta::minutes(2)));
+        // Repeated on a second session, they take the whole agent down.
+        board.observe(of("small", 2, ErrorCategory::Network));
+        assert_eq!(board.state(&codex()).state, HealthState::Down);
+        assert_eq!(board.model(&model("big")).state, ModelState::Degraded);
+        assert_eq!(board.model(&model("small")).state, ModelState::Healthy);
+    }
+
+    #[test]
+    fn a_sign_in_or_billing_error_is_held_against_no_model() {
+        let home = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(t0());
+        let board = board(home.path(), &clock);
+        for category in [
+            ErrorCategory::Auth,
+            ErrorCategory::UsageLimit,
+            ErrorCategory::Billing,
+        ] {
+            board.observe(of("big", 1, category));
+            board.observe(of("big", 1, category));
+        }
+        assert!(board.models(&codex()).is_empty());
+        assert_eq!(board.model(&model("big")).state, ModelState::Healthy);
     }
 
     #[test]
     fn testing_without_a_result_falls_back_to_down() {
         let mut breaker = Breaker::new(&settings());
         for session in 1..=3 {
-            breaker.observe(&error(session, ErrorCategory::Overloaded), t0());
+            breaker.observe(&error(session, ErrorCategory::Network), t0());
         }
         let test_at = t0() + Delta::minutes(5);
         assert_eq!(breaker.tick(test_at), Some(HealthState::Testing));
@@ -1191,7 +1664,7 @@ mod tests {
         assert!(breaker.start_test(claimed_at));
         assert!(!breaker.start_test(claimed_at), "one test task at a time");
         // The limit runs from the claim.
-        let limit = claimed_at + TEST_CARD_LIMIT;
+        let limit = claimed_at + TEST_TASK_LIMIT;
         assert_eq!(breaker.tick(limit - Delta::seconds(1)), None);
         assert_eq!(breaker.tick(limit), Some(HealthState::Down));
         assert_eq!(
@@ -1199,20 +1672,20 @@ mod tests {
             Some("no test task finished within 60 minutes")
         );
         assert_eq!(breaker.next_test_at(), Some(limit + Delta::minutes(5)));
-        assert!(!breaker.testing_card());
+        assert!(!breaker.testing_task());
         assert!(!breaker.start_test(limit), "only Testing takes a test task");
 
-        // On the board, a test card that never reports lets go of the vendor too.
+        // On the board, a test task that never reports lets go of the agent too.
         let home = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(t0());
         let board = board(home.path(), &clock);
         take_down(&board);
         clock.advance(Delta::minutes(5));
-        assert!(board.claim_test_card(&codex(), "s-004"));
-        clock.advance(Delta::try_from(TEST_CARD_LIMIT).unwrap());
+        assert!(board.claim_test_task(&codex(), "s-004"));
+        clock.advance(Delta::try_from(TEST_TASK_LIMIT).unwrap());
         board.refresh();
         assert_eq!(board.state(&codex()).state, HealthState::Down);
-        assert_eq!(test_card(&board), None);
+        assert_eq!(test_task(&board), None);
         clock.advance(Delta::minutes(5));
         board.observe(error(7, ErrorCategory::Server));
         assert_eq!(board.state(&codex()).state, HealthState::Down);
@@ -1233,11 +1706,11 @@ mod tests {
         assert_eq!(disable_scope(&reason), DisableScope::ApiKey);
         assert!(matches!(
             drain(&mut events).first(),
-            Some(VendorEvent::Disabled { .. })
+            Some(AgentStatusEvent::Disabled { .. })
         ));
         let file = board.store().read().unwrap();
         assert!(
-            file.vendors["codex"].disabled_by.is_some(),
+            file.agent_ids["codex"].disabled_by.is_some(),
             "owned by this process"
         );
 
@@ -1245,7 +1718,7 @@ mod tests {
         board.observe(success(1));
         assert_eq!(board.state(&codex()).disabled, None);
         assert_eq!(
-            board.store().read().unwrap().vendors["codex"].disabled_by,
+            board.store().read().unwrap().agent_ids["codex"].disabled_by,
             None
         );
 
@@ -1256,7 +1729,7 @@ mod tests {
 
         // A billing cap never narrows a broken adapter's disable, and a success keeps it.
         board.observe(HealthSignal::AdapterBroken {
-            vendor: codex(),
+            agent_id: codex(),
             detail: "the startup check failed".into(),
         });
         board.observe(billing());

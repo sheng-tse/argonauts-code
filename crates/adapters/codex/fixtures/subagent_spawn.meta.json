@@ -1,0 +1,40 @@
+{
+  "adapter": "codex",
+  "args": [
+    "exec",
+    "--json",
+    "--color",
+    "never",
+    "--cd",
+    "<workdir>",
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "--model",
+    "gpt-5.6-luna",
+    "--config",
+    "model_reasoning_effort=\"low\"",
+    "-c",
+    "agents.max_concurrent_threads_per_session=1",
+    "-"
+  ],
+  "cli_version": "0.158.0",
+  "also_matches": [],
+  "compaction": null,
+  "duration_ms": 20799,
+  "effort": "low",
+  "exit_code": 0,
+  "interrupted": false,
+  "model": "gpt-5.6-luna",
+  "native_fanout": {
+    "max": 1
+  },
+  "output_schema": false,
+  "program": "codex",
+  "prompt": "Spawn exactly one explorer subagent and ask it to count the files in this repository and reply with just the number. Wait for it to finish, then close it, then reply with its number.",
+  "recorded_at": "2026-09-30T04:26:21Z",
+  "resumed_from": null,
+  "role": "read-only",
+  "stdin": "<prompt>",
+  "user_hooks_off": false
+}

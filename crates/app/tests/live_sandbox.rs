@@ -1,6 +1,6 @@
-//! Live: one real session per vendor CLI inside the OS sandbox, with network only through the
-//! proxy, on each CLI's cheapest model. They spend a little quota, so they are ignored. Run one
-//! by hand with `ARGONAUTS_HOME` at a scratch folder and `ARGONAUTS_LIVE_DIR` where the
+//! Live: one real session per CLI inside the OS sandbox, with network only through the
+//! proxy, on each CLI's cheapest model. They spend a little plan usage, so they are ignored. Run
+//! one by hand with `ARGONAUTS_HOME` at a scratch folder and `ARGONAUTS_LIVE_DIR` where the
 //! throwaway repositories go. Your `HOME` stays, so each CLI finds its own login:
 //!
 //! ```sh
@@ -22,17 +22,17 @@ use std::time::Duration;
 use argonauts_adapter_antigravity_cli::AntigravityCli;
 use argonauts_adapter_claude_code::ClaudeCodeAdapter;
 use argonauts_adapter_codex::CodexAdapter;
-use argonauts_conductor::harness_worker::HarnessWorker;
+use argonauts_conductor::cli_runner::CliRunner;
 use argonauts_conductor::sandbox::proxy::Proxy;
 use argonauts_core::events::session::{InputPart, InputPartKind};
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
+use argonauts_core::session_runner::RunnerEvent;
+use argonauts_core::session_runner::{Access, SessionRunner};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxChoice;
-use argonauts_core::worker::WorkerEvent;
-use argonauts_core::worker::{Access, Worker};
-use argonauts_core::{Adapter, AgentEvent, CardId, Paths, create_private_dir_all};
-use argonauts_testkit::services::{MemoryHealthBoard, MemoryQuotaBoard};
-use argonauts_testkit::worker::{drain, session_spec};
+use argonauts_core::{Adapter, AgentEvent, Paths, TaskId, create_private_dir_all};
+use argonauts_testkit::runner::{drain, session_spec};
+use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
 
 const PROMPT: &str = "Run `ls` and `echo ok > out.txt`, then reply done.";
 
@@ -49,41 +49,41 @@ async fn claude_code() {
 #[tokio::test]
 #[ignore = "live agent call; see the module docs"]
 async fn codex() {
-    live(Arc::new(CodexAdapter::new()), "gpt-5.6-luna").await;
+    live(Arc::new(CodexAdapter::new()), "gpt-6-luna").await;
 }
 
 #[tokio::test]
 #[ignore = "live agent call; see the module docs"]
 async fn antigravity_cli() {
-    live(Arc::new(AntigravityCli::new()), "gemini-3.6-flash-low").await;
+    live(Arc::new(AntigravityCli::new()), "gemini-3.8-flash-low").await;
 }
 
 async fn live(adapter: Arc<dyn Adapter>, model: &str) {
     let proxy_log = capture_proxy_log();
-    let vendor = adapter.id().to_owned();
+    let agent_id = adapter.id().to_owned();
     let home = Paths::new(required_dir("ARGONAUTS_HOME"));
     let repo =
-        throwaway_repo(&required_dir("ARGONAUTS_LIVE_DIR").join(format!("sandbox-{vendor}")));
+        throwaway_repo(&required_dir("ARGONAUTS_LIVE_DIR").join(format!("sandbox-{agent_id}")));
     let proxy = Proxy::start().unwrap();
     let mut settings = Settings::default();
     settings.sandbox.mode = SandboxChoice::Os;
-    let worker = HarnessWorker::new(
+    let worker = CliRunner::new(
         adapter,
-        WorkerRef::new(&vendor, Some(model.to_owned())),
-        vendor.clone(),
+        ModelRef::new(&agent_id, Some(model.to_owned())),
+        agent_id.clone(),
         Arc::new(settings),
-        Arc::new(MemoryQuotaBoard::default()),
+        Arc::new(MemoryPlanUsageBoard::default()),
         Arc::new(MemoryHealthBoard::default()),
     )
     .with_home(home.clone())
     .with_proxy(proxy.clone());
 
-    let mut spec = session_spec(&vendor, Access::Build, &repo);
-    spec.worker = WorkerRef::new(&vendor, Some(model.to_owned()));
+    let mut spec = session_spec(&agent_id, Access::Build, &repo);
+    spec.model = ModelRef::new(&agent_id, Some(model.to_owned()));
     spec.effort = Some("low".to_owned());
-    spec.card = Some(CardId::new("live").unwrap());
+    spec.task = Some(TaskId::new("live").unwrap());
     spec.goal_sha256 = Some("0".repeat(64));
-    spec.session_dir = home.home().join(format!("state/live/{vendor}/s-1"));
+    spec.session_dir = home.home().join(format!("state/live/{agent_id}/s-1"));
     let _ = std::fs::remove_dir_all(&spec.session_dir);
     create_private_dir_all(&spec.session_dir).unwrap();
     spec.prompt = vec![InputPart {
@@ -107,7 +107,7 @@ async fn live(adapter: Arc<dyn Adapter>, model: &str) {
         .iter()
         .map(|refusal| format!("{}:{} ({:?})", refusal.host, refusal.port, refusal.why))
         .collect();
-    println!("vendor: {vendor} ({model}, low effort)");
+    println!("agent: {agent_id} ({model}, low effort)");
     println!("ended: {:?}, exit {:?}", end.reason, end.exit_code);
     println!("out.txt: {out:?}");
     println!("reply: {:?}", end.result_text.or(end.last_message));
@@ -135,17 +135,17 @@ async fn live(adapter: Arc<dyn Adapter>, model: &str) {
 }
 
 /// Each shell command the agent started, with whether it finished without an error.
-fn shell_commands(events: &[WorkerEvent]) -> Vec<(String, bool)> {
+fn shell_commands(events: &[RunnerEvent]) -> Vec<(String, bool)> {
     let mut started = Vec::new();
     let mut finished = Vec::new();
     for event in events {
         match event {
-            WorkerEvent::Agent(AgentEvent::ToolStarted {
+            RunnerEvent::Agent(AgentEvent::ToolStarted {
                 id, name, input, ..
             }) if SHELL_TOOLS.contains(&name.as_str()) => {
                 started.push((id.clone(), input.to_string()));
             }
-            WorkerEvent::Agent(AgentEvent::ToolFinished { id, ok, .. }) => {
+            RunnerEvent::Agent(AgentEvent::ToolFinished { id, ok, .. }) => {
                 finished.push((id.clone(), *ok));
             }
             _ => {}

@@ -36,7 +36,7 @@ pub(crate) fn goal_view(events: &[RunEvent], run: &RunId) -> Option<GoalView> {
                             missing: String::new(),
                         })
                         .collect(),
-                    attempts: set.attempts.clone(),
+                    tries: set.tries.clone(),
                     max_rounds: set.max_rounds,
                     last_reason: None,
                     assumptions: assumptions.clone(),
@@ -60,17 +60,17 @@ pub(crate) fn goal_view(events: &[RunEvent], run: &RunId) -> Option<GoalView> {
 
 fn apply(view: &mut GoalView, event: &GoalEvent) {
     match event {
-        GoalEvent::AttemptStarted {
+        GoalEvent::TryStarted {
             n,
             title,
             phase,
             task: None,
-        } => match view.attempts.iter_mut().find(|attempt| attempt.n == *n) {
-            Some(attempt) => {
-                attempt.title.clone_from(title);
-                attempt.phase = *phase;
+        } => match view.tries.iter_mut().find(|a_try| a_try.n == *n) {
+            Some(a_try) => {
+                a_try.title.clone_from(title);
+                a_try.phase = *phase;
             }
-            None => view.attempts.push(argonauts_core::events::goal::Attempt {
+            None => view.tries.push(argonauts_core::events::goal::Try {
                 n: *n,
                 title: title.clone(),
                 phase: *phase,
@@ -78,12 +78,12 @@ fn apply(view: &mut GoalView, event: &GoalEvent) {
             }),
         },
         GoalEvent::Checked(checked) if checked.task.is_none() => {
-            if let Some(attempt) = view
-                .attempts
+            if let Some(a_try) = view
+                .tries
                 .iter_mut()
-                .find(|attempt| attempt.n == checked.attempt)
+                .find(|a_try| a_try.n == checked.try_number)
             {
-                attempt.verdict = Some(checked.overall);
+                a_try.verdict = Some(checked.overall);
             }
             for verdict in &checked.verdicts {
                 if let Some(row) = view
@@ -126,7 +126,7 @@ mod tests {
     }
 
     #[test]
-    fn the_goal_view_follows_its_attempts_and_checks() {
+    fn the_goal_view_follows_its_tries_and_checks() {
         assert!(goal_view(&[], &run_id()).is_none());
         let lines = vec![
             Criterion::new("G1", "slugify(\"Hello, World!\") returns \"hello-world\""),
@@ -141,12 +141,12 @@ mod tests {
         let set = GoalRun::new(&spec, GoalScope::Workflow, KeptBy::Argonauts);
         // A task's own goal, set and checked beside the run's, stays out of the run's view.
         let mut of_a_task = set.clone();
-        of_a_task.task = Some(argonauts_core::CardId::new("task-001").unwrap());
+        of_a_task.task = Some(argonauts_core::TaskId::new("task-001").unwrap());
         let events = vec![
             goal(0, GoalEvent::Set(Box::new(set))),
             goal(
                 1,
-                GoalEvent::AttemptStarted {
+                GoalEvent::TryStarted {
                     n: 1,
                     title: "Both fixes".to_owned(),
                     phase: 1,
@@ -157,7 +157,7 @@ mod tests {
             goal(
                 2,
                 GoalEvent::Checked(Box::new(GoalChecked {
-                    attempt: 1,
+                    try_number: 1,
                     verdicts: vec![
                         CriterionVerdict {
                             id: "G1".to_owned(),
@@ -180,7 +180,7 @@ mod tests {
             ),
             goal(
                 3,
-                GoalEvent::AttemptStarted {
+                GoalEvent::TryStarted {
                     n: 2,
                     title: "Empty list".to_owned(),
                     phase: 2,
@@ -190,8 +190,8 @@ mod tests {
         ];
         let view = goal_view(&events, &run_id()).unwrap();
         assert_eq!(view.status, GoalStatus::Pursuing);
-        assert_eq!(view.attempts.len(), 2);
-        assert_eq!(view.attempts[0].verdict, Some(GoalVerdict::NotYet));
+        assert_eq!(view.tries.len(), 2);
+        assert_eq!(view.tries[0].verdict, Some(GoalVerdict::NotYet));
         assert_eq!(view.criteria[0].state, Some(CriterionState::Met));
         assert_eq!(view.criteria[1].missing, "returns None");
         assert_eq!(view.last_reason.as_deref(), Some("median([]) returns None"));

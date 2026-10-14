@@ -1,9 +1,9 @@
 //! Id counters, raised past every id the log holds, so a recovered run never reuses a session
-//! key (and overwrites its raw logs), a checkpoint, a message, a draft, or a decision number.
+//! key (and overwrites its raw logs), an approval, a message, a draft, or a decision number.
 
 use serde::{Deserialize, Serialize};
 
-use argonauts_core::events::checkpoint::CheckpointEvent;
+use argonauts_core::events::approval::ApprovalEvent;
 use argonauts_core::events::goal::GoalEvent;
 use argonauts_core::events::plan::PlanEvent;
 use argonauts_core::events::run::RunLifecycle;
@@ -15,7 +15,7 @@ use argonauts_core::events::{RunEvent, RunEventKind};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IdKind {
     Session,
-    Checkpoint,
+    Approval,
     Message,
     Draft,
     Decision,
@@ -26,7 +26,7 @@ pub enum IdKind {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Counters {
     pub sessions: u32,
-    pub checkpoints: u32,
+    pub approvals: u32,
     pub messages: u32,
     pub drafts: u32,
     pub decisions: u32,
@@ -40,15 +40,16 @@ impl Counters {
             self.see(IdKind::Session, session.as_str());
         }
         match &event.kind {
-            RunEventKind::Checkpoint(checkpoint) => {
-                let id = match checkpoint {
-                    CheckpointEvent::Opened(opened) => &opened.id,
-                    CheckpointEvent::Checked(check) => &check.id,
-                    CheckpointEvent::Decided(decided) => &decided.id,
-                    CheckpointEvent::Withdrawn { id, .. }
-                    | CheckpointEvent::SpotCheckQueued { id } => id,
+            RunEventKind::Approval(approval) => {
+                let id = match approval {
+                    ApprovalEvent::Opened(opened) => &opened.id,
+                    ApprovalEvent::Checked(check) => &check.id,
+                    ApprovalEvent::Decided(decided) => &decided.id,
+                    ApprovalEvent::Withdrawn { id, .. } | ApprovalEvent::SpotCheckQueued { id } => {
+                        id
+                    }
                 };
-                self.see(IdKind::Checkpoint, id.as_str());
+                self.see(IdKind::Approval, id.as_str());
             }
             RunEventKind::Blackboard(BlackboardEvent::Posted(message)) => {
                 self.see(IdKind::Message, message.id.as_str());
@@ -77,21 +78,21 @@ impl Counters {
             }
             RunEventKind::Workflow(WorkflowEvent::Changed(changed)) => {
                 self.see(IdKind::Workflow, changed.id.as_str());
-                if let Some(checkpoint) = &changed.checkpoint {
-                    self.see(IdKind::Checkpoint, checkpoint.as_str());
+                if let Some(approval) = &changed.approval {
+                    self.see(IdKind::Approval, approval.as_str());
                 }
             }
-            RunEventKind::Run(RunLifecycle::Parked { waiting_on, .. }) => {
+            RunEventKind::Run(RunLifecycle::Waiting { waiting_on, .. }) => {
                 for id in waiting_on {
-                    self.see(IdKind::Checkpoint, id.as_str());
+                    self.see(IdKind::Approval, id.as_str());
                 }
             }
             RunEventKind::Run(RunLifecycle::Snapshot(snapshot)) => {
                 for session in &snapshot.running {
                     self.see(IdKind::Session, session.as_str());
                 }
-                for opened in &snapshot.open_checkpoints {
-                    self.see(IdKind::Checkpoint, opened.id.as_str());
+                for opened in &snapshot.open_approvals {
+                    self.see(IdKind::Approval, opened.id.as_str());
                 }
             }
             RunEventKind::Run(RunLifecycle::Resumed(resumed)) => {
@@ -106,7 +107,7 @@ impl Counters {
     pub fn last(&self, kind: IdKind) -> u32 {
         match kind {
             IdKind::Session => self.sessions,
-            IdKind::Checkpoint => self.checkpoints,
+            IdKind::Approval => self.approvals,
             IdKind::Message => self.messages,
             IdKind::Draft => self.drafts,
             IdKind::Decision => self.decisions,
@@ -118,7 +119,7 @@ impl Counters {
     pub fn raise(&mut self, kind: IdKind, n: u32) {
         let counter = match kind {
             IdKind::Session => &mut self.sessions,
-            IdKind::Checkpoint => &mut self.checkpoints,
+            IdKind::Approval => &mut self.approvals,
             IdKind::Message => &mut self.messages,
             IdKind::Draft => &mut self.drafts,
             IdKind::Decision => &mut self.decisions,
@@ -146,9 +147,9 @@ mod tests {
     use super::*;
 
     use argonauts_core::RunId;
-    use argonauts_core::events::checkpoint::CheckpointEvent;
+    use argonauts_core::events::approval::ApprovalEvent;
     use argonauts_core::events::shared::BlackboardEvent;
-    use argonauts_core::names::{CheckpointId, MessageId, SessionKey};
+    use argonauts_core::names::{ApprovalId, MessageId, SessionKey};
     use time::OffsetDateTime;
 
     fn event(session: Option<SessionKey>, kind: RunEventKind) -> RunEvent {
@@ -156,9 +157,9 @@ mod tests {
             seq: 0,
             ts: OffsetDateTime::UNIX_EPOCH,
             run_id: RunId::new("run-01").unwrap(),
-            card_id: None,
+            task_id: None,
             session,
-            source: "conductor".to_owned(),
+            source: "argonauts-code".to_owned(),
             kind,
         }
     }
@@ -168,8 +169,8 @@ mod tests {
         let mut counters = Counters::default();
         counters.observe(&event(
             Some(SessionKey::numbered(7)),
-            RunEventKind::Checkpoint(CheckpointEvent::Withdrawn {
-                id: CheckpointId::numbered(3),
+            RunEventKind::Approval(ApprovalEvent::Withdrawn {
+                id: ApprovalId::numbered(3),
                 reason: "moved".to_owned(),
             }),
         ));
@@ -181,7 +182,7 @@ mod tests {
             }),
         ));
         assert_eq!(counters.last(IdKind::Session), 9);
-        assert_eq!(counters.last(IdKind::Checkpoint), 3);
+        assert_eq!(counters.last(IdKind::Approval), 3);
         assert_eq!(counters.last(IdKind::Message), 11);
         assert_eq!(counters.last(IdKind::Draft), 0);
     }

@@ -1,5 +1,6 @@
-//! Review: reviewers, the adjudicator, and endpoint reviewers writing acceptance tests. Fixed core: no setting changes them.
+//! Review: reviewers, the judge settling them, and endpoint reviewers writing acceptance tests.
+//! Fixed core: no setting changes them.
 
-pub const REVIEW: &str = include_str!("review/review.md");
-pub const ADJUDICATE: &str = include_str!("review/adjudicate.md");
-pub const ACCEPTANCE_TESTS: &str = include_str!("review/acceptance_tests.md");
+pub const REVIEW: &str = argonauts_core::template!("prompts/review/review.md");
+pub const SETTLE: &str = argonauts_core::template!("prompts/review/settle.md");
+pub const ACCEPTANCE_TESTS: &str = argonauts_core::template!("prompts/review/acceptance-tests.md");

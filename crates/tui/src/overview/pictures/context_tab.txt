@@ -1,0 +1,85 @@
+● Started Add due dates on the crew: Sonnet 5.5 adds the --due flag while GPT 5.6 writes its tests.
+
+✶ Pondering… (2m 41s · ↓ 8.2k tokens · thinking with xhigh effort)
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Overview    Status    Usage    Context    Limits    Stats 
+ What fills each session's context                                                     3 sessions · 799.6k in context
+
+     Context Usage  counted 6s ago             Opus 5.5  claude-opus-5-5                         750k/1m tokens (75%)
+
+                                               Estimated usage by category
+     ⛁ ⛁ ⛁ ⛁ ⛀ ⛀ ⛀ ⛁ ⛀ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   ⛁ System prompt               6.9k    0.7%   ╮ Claude Code's own   22k
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   ⛁ System tools               15.1k    1.5%   ╯ 
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   ⛁ MCP tools                   2.5k    0.3%   ╮ your setup           8k
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   ⛁ MCP server instructions      412   <0.1%   │ 
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   ⛁ Custom agents                648    0.1%   │ 
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   ⛁ Memory files                3.7k    0.4%   │ 
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   ⛁ Skills                       710    0.1%   ╯ 
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Messages                    720k   72.0%   ─ conversation       720k
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free space                  217k   21.7%   ╮ not used yet       250k
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛝ Autocompact buffer           33k    3.3%   ╯ 
+
+     Auto-compact window:  1m tokens           compacts at 967k · 217k from now · about 23 turns at 9.4k a turn
+     Loaded on demand:     27.1k               system tools 25.2k · MCP tools 1.9k · out of the window until used
+     Last request:         750k in             741.6k from cache (99%) · 8.4k written to cache · 1.2k out
+
+     MCP tools · /mcp (loaded on-demand)                                5 tools · 2.5k loaded · 1.9k on demand
+     Loaded
+     ├ argonauts_start_workflow      argonauts           1.3k
+     └ argonauts_lookup              argonauts           1.2k
+     Available · not in the window until called
+     ├ list_commits                  github               520
+     ├ create_issue                  linear               780
+     └ search_issues                 linear               610
+
+     Custom agents · .claude/agents/            2 agents  648     Skills · /skills               5 skills  710
+     Project   └ reviewer                                 412     Project   ├ deploy-checklist            ~180
+     User      └ researcher                               236               └ release-notes               ~130
+                                                                  User      └ commit-style                ~100
+     Memory files · /memory                     3 files  3.7k     Built-in  ├ code-review                 ~250
+     User      ├ ~/.claude/CLAUDE.md                     1.1k               └ simplify                     ~50
+     Project   ├ CLAUDE.md                               2.3k
+     Local     └ CLAUDE.local.md                          286
+
+     Messages · by kind                          720k   72.0%     Tool results · by tool      10 tools  528.6k
+     Tool results          ━━━━━━━━━━━━━━━━━━  528.6k   52.9%     ├ Bash  ⚠ save ~90.1k   ━━━━━━━━━━━━  180.2k
+     Assistant messages    ━━━━━━━━━━━━━━━━━━  104.3k   10.4%     ├ Read  ℹ save ~48.1k   ━━━━━━━━━━━━  160.4k
+     Attachments           ━━━━━━━━━━━━━━━━━━   44.1k    4.4%     ├ Grep                  ━━━━━━━━━━━━   74.3k
+     Tool calls            ━━━━━━━━━━━━━━━━━━     29k    2.9%     ├ WebFetch              ━━━━━━━━━━━━     52k
+     Your messages         ━━━━━━━━━━━━━━━━━━    9.8k    1.0%     ├ argonauts_lookup      ━━━━━━━━━━━━   38.5k
+     Unattributed          ━━━━━━━━━━━━━━━━━━    4.2k    0.4%     ├ Edit                  ━━━━━━━━━━━━    9.8k
+                                                                  ├ Glob                  ━━━━━━━━━━━━    5.1k
+                                                                  ├ Agent                 ━━━━━━━━━━━━    3.9k
+                                                                  ├ TodoWrite             ━━━━━━━━━━━━    2.6k
+                                                                  └ Write                 ━━━━━━━━━━━━    1.8k
+
+     Suggestions                                                                   together: save ~138.2k · 75% → 61%
+
+     ⚠ Bash results using 180.2k tokens (18%)                                                 save ~90.1k   75% → 66%
+       Pipe output through head, tail, or grep to reduce result size. Avoid cat on large files — use Read with
+       offset/limit instead.
+
+     ℹ Read results using 160.4k tokens (16%)                                                 save ~48.1k   75% → 70%
+       Use offset and limit parameters to read only the sections you need. Avoid re-reading entire files when you
+       only need a few lines.
+
+     Crew agents · Add due dates · each in its own window, outside this one                    2 agents  49.6k
+
+       agent               model                      window                       used        calls     spend
+     ◐ build:due-flag      Sonnet 5.5 on Claude Code  ━━━━━━━━━━━━━━━━━━┃━   36.2k/200k   18%     14     $0.14
+       ⎿  ┃ starts afresh at 180k                     ⛁ system 15k   ⛁ memory files 3.7k   ⛁ messages 17.5k
+
+     ◐ build:due-tests     GPT 5.6 on Codex           ━━━━━━━━━━━━━━━━━━┃━  ~13.4k/272k    5%      6    ~$0.03
+       ⎿  ┃ starts afresh at 244.8k                   Codex says how full, not with what
+
+ tab · ←→ tabs · ↓ into the cards · esc closes this · the answer keeps running
+
+After esc, back at the prompt:
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt · ← 2 agents · ↓ to manage     context · build:due-flag 20%
+
+  ◯ Add due dates         ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  0/4 · 1m13s · ↓ 61k tokens

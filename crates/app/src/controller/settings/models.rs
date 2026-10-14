@@ -1,5 +1,5 @@
-//! `Models { choices, role }`: the workers a role's rules allow, with family, access, cost,
-//! quota, efforts, and strengths, the current one marked, and what the model catalog says of
+//! `Models { choices, role }`: the workers a role's rules allow, with provider, access, cost,
+//! plan usage, efforts, and strengths, the current one marked, and what the model catalog says of
 //! each (`labels`). Only agent CLIs that are installed show; `/agents` lists the rest with how
 //! to add them. Each CLI's or endpoint's models come together, its default first, then its
 //! aliases, its models newest first, and its older ones.
@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 
 use argonauts_core::app::ModelChoice;
 use argonauts_core::limits::CostEstimate;
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::registry::{ModelAccess, ModelEntry, RegistryKind};
 use argonauts_core::session::AuthMode;
 use argonauts_core::settings::Settings;
@@ -18,15 +18,15 @@ use super::labels::Labels;
 use crate::controller::Ctx;
 
 /// Roles whose steps edit files or run tools, so an endpoint, which only answers, can't fill
-/// them. The default agent works solo.
-const NEEDS_HARNESS: &[RoleName] = &[RoleName::Main, RoleName::Worker, RoleName::Spike];
+/// them. The main agent works as Captain.
+const NEEDS_CLI: &[RoleName] = &[RoleName::Main, RoleName::Worker, RoleName::Experiment];
 
-/// The token counts a typical card spends, for the cost column.
-const CARD_INPUT_TOKENS: u64 = 150_000;
-const CARD_OUTPUT_TOKENS: u64 = 15_000;
+/// The token counts a typical task spends, for the cost column.
+const TASK_INPUT_TOKENS: u64 = 150_000;
+const TASK_OUTPUT_TOKENS: u64 = 15_000;
 
-/// `None` is the default agent. Never an endpoint for a role whose step needs a harness, and
-/// never a reviewer from the owner's family.
+/// `None` is the main agent. Never an endpoint for a role whose step needs a CLI, and
+/// never a reviewer from the worker's provider.
 pub(crate) fn choices(ctx: &Ctx, role: Option<RoleName>) -> Vec<ModelChoice> {
     let settings = ctx.settings();
     let current = current(settings, role);
@@ -37,21 +37,17 @@ pub(crate) fn choices(ctx: &Ctx, role: Option<RoleName>) -> Vec<ModelChoice> {
     let labels = Labels::new(settings, registry.catalog(), &listed, &defaults);
     let mut entries: Vec<ModelEntry> = listed
         .iter()
-        .filter(|entry| {
-            entry.kind == RegistryKind::Endpoint || installed.contains(&entry.id.worker)
-        })
+        .filter(|entry| entry.kind == RegistryKind::Endpoint || installed.contains(&entry.id.agent))
         .cloned()
         .collect();
-    let with_models: BTreeSet<String> = entries
-        .iter()
-        .map(|entry| entry.id.worker.clone())
-        .collect();
-    // Harnesses the registry has no models for yet still run on their CLI's default model.
-    let bare: Vec<WorkerRef> = settings
+    let with_models: BTreeSet<String> =
+        entries.iter().map(|entry| entry.id.agent.clone()).collect();
+    // CLIs the registry has no models for yet still run on their CLI's default model.
+    let bare: Vec<ModelRef> = settings
         .crew
         .members()
         .iter()
-        .map(|worker| worker.worker.clone())
+        .map(|worker| worker.agent.clone())
         .chain(
             settings
                 .agents
@@ -63,19 +59,19 @@ pub(crate) fn choices(ctx: &Ctx, role: Option<RoleName>) -> Vec<ModelChoice> {
         .filter(|id| installed.contains(id))
         .collect::<BTreeSet<_>>()
         .into_iter()
-        .map(|id| WorkerRef::new(id, None))
+        .map(|id| ModelRef::new(id, None))
         .collect();
     let wanted = role.unwrap_or(RoleName::Main);
-    // Best fit first, then each harness's or endpoint's models together, in the order the
+    // Best fit first, then each CLI's or endpoint's models together, in the order the
     // registry first names them.
     let mut order: Vec<String> = Vec::new();
     for entry in &entries {
-        if !order.contains(&entry.id.worker) {
-            order.push(entry.id.worker.clone());
+        if !order.contains(&entry.id.agent) {
+            order.push(entry.id.agent.clone());
         }
     }
     let group = |worker: &str| order.iter().position(|id| id == worker);
-    entries.sort_by_key(|entry| (!entry.good_for.contains(&wanted), group(&entry.id.worker)));
+    entries.sort_by_key(|entry| (!entry.good_for.contains(&wanted), group(&entry.id.agent)));
 
     let mut choices: Vec<ModelChoice> = entries
         .into_iter()
@@ -88,11 +84,11 @@ pub(crate) fn choices(ctx: &Ctx, role: Option<RoleName>) -> Vec<ModelChoice> {
     }
     let mut groups: Vec<String> = Vec::new();
     for choice in &choices {
-        if !groups.contains(&choice.worker.worker) {
-            groups.push(choice.worker.worker.clone());
+        if !groups.contains(&choice.worker.agent) {
+            groups.push(choice.worker.agent.clone());
         }
     }
-    let group = |choice: &ModelChoice| groups.iter().position(|id| *id == choice.worker.worker);
+    let group = |choice: &ModelChoice| groups.iter().position(|id| *id == choice.worker.agent);
     choices.sort_by(|a, b| group(a).cmp(&group(b)).then_with(|| labels.order(a, b)));
     for choice in &mut choices {
         choice.current = current
@@ -101,7 +97,7 @@ pub(crate) fn choices(ctx: &Ctx, role: Option<RoleName>) -> Vec<ModelChoice> {
         if choice.worker.model.is_none() {
             choice.note = defaults
                 .iter()
-                .find(|(worker, _)| *worker == choice.worker.worker)
+                .find(|(worker, _)| *worker == choice.worker.agent)
                 .map(|(_, model)| format!("runs {model}"));
         }
     }
@@ -127,31 +123,31 @@ fn cli_defaults(settings: &Settings, listed: &[ModelEntry]) -> Vec<(String, Stri
         .filter(|entry| {
             settings
                 .agents
-                .get(&entry.id.worker)
+                .get(&entry.id.agent)
                 .is_none_or(|a| a.model.is_none())
         })
-        .filter_map(|entry| Some((entry.id.worker.clone(), entry.id.model.clone()?)));
+        .filter_map(|entry| Some((entry.id.agent.clone(), entry.id.model.clone()?)));
     named.chain(marked).collect()
 }
 
 /// What an alias or a retired model stands for, in a few words.
 fn entry_note(entry: &ModelEntry) -> Option<String> {
     let model = entry.id.model.as_deref()?;
-    if alias_at(&entry.id.worker, model).is_some() {
+    if alias_at(&entry.id.agent, model).is_some() {
         let mut letters = model.chars();
-        let family: String = letters
+        let line: String = letters
             .next()
             .map(|first| first.to_uppercase().chain(letters).collect())
             .unwrap_or_default();
-        return Some(format!("newest {family}"));
+        return Some(format!("newest {line}"));
     }
     entry.retired.then(|| "retired".to_owned())
 }
 
 /// Why `worker` can't fill `role`, when it can't.
-pub(crate) fn refusal(ctx: &Ctx, role: Option<RoleName>, worker: &WorkerRef) -> Option<String> {
+pub(crate) fn refusal(ctx: &Ctx, role: Option<RoleName>, worker: &ModelRef) -> Option<String> {
     let role = role.unwrap_or(RoleName::Main);
-    if NEEDS_HARNESS.contains(&role) && is_endpoint(ctx, worker) {
+    if NEEDS_CLI.contains(&role) && is_endpoint(ctx, worker) {
         let what = match role {
             RoleName::Main => "the main agent".to_owned(),
             role => format!("the {} role", role.as_str()),
@@ -161,11 +157,11 @@ pub(crate) fn refusal(ctx: &Ctx, role: Option<RoleName>, worker: &WorkerRef) -> 
         ));
     }
     if role == RoleName::Reviewer {
-        let family = ctx.services.registry.family(worker);
-        if owner_families(ctx).contains(&family) {
+        let provider = ctx.services.registry.provider(worker);
+        if worker_providers(ctx).contains(&provider) {
             return Some(format!(
-                "{worker} is from the {family} provider, like the worker, and a reviewer comes from \
-                 another provider"
+                "{worker} is from the {provider} provider, like the worker, and a reviewer comes \
+                 from another provider"
             ));
         }
     }
@@ -173,78 +169,78 @@ pub(crate) fn refusal(ctx: &Ctx, role: Option<RoleName>, worker: &WorkerRef) -> 
 }
 
 /// The worker that fills `role` now, `None` when the router picks.
-pub(crate) fn current(settings: &Settings, role: Option<RoleName>) -> Option<WorkerRef> {
+pub(crate) fn current(settings: &Settings, role: Option<RoleName>) -> Option<ModelRef> {
     match role.unwrap_or(RoleName::Main) {
-        RoleName::Main => Some(settings.main_agent.clone()),
+        RoleName::Main => Some(settings.crew.main.clone()),
         RoleName::Narrator => settings.narrator.model.clone(),
-        RoleName::Approver => settings.approvals.approver_model().cloned(),
+
         role => settings
             .roles
             .get(&role)
-            .and_then(|role| role.workers.first().cloned()),
+            .and_then(|role| role.models.first().cloned()),
     }
 }
 
 /// The effort levels the model filling `role` takes, as the catalog or its CLI says, else its
-/// harness's usual levels, and every level when the router picks the worker. None for a model
+/// CLI's usual levels, and every level when the router picks the worker. None for a model
 /// that takes no effort setting.
-pub(crate) fn efforts(ctx: &Ctx, role: Option<RoleName>) -> (Option<WorkerRef>, Vec<String>) {
+pub(crate) fn efforts(ctx: &Ctx, role: Option<RoleName>) -> (Option<ModelRef>, Vec<String>) {
     let worker = current(ctx.settings(), role).map(|worker| with_model(ctx.settings(), worker));
     let levels = levels_of(ctx, worker.as_ref());
     (worker, levels)
 }
 
 /// The effort levels `worker` takes, worked out as the models level shows them.
-pub(crate) fn levels_of(ctx: &Ctx, worker: Option<&WorkerRef>) -> Vec<String> {
+pub(crate) fn levels_of(ctx: &Ctx, worker: Option<&ModelRef>) -> Vec<String> {
     levels_and_default(ctx, worker).0
 }
 
 /// The level `worker` starts at when no effort is set, as the models level shows it: a CLI's
 /// default starts where the model it runs does, such as xhigh for Opus 5.5.
-pub(crate) fn default_effort(ctx: &Ctx, worker: &WorkerRef) -> Option<String> {
+pub(crate) fn default_effort(ctx: &Ctx, worker: &ModelRef) -> Option<String> {
     levels_and_default(ctx, Some(worker)).1
 }
 
-fn levels_and_default(ctx: &Ctx, worker: Option<&WorkerRef>) -> (Vec<String>, Option<String>) {
+fn levels_and_default(ctx: &Ctx, worker: Option<&ModelRef>) -> (Vec<String>, Option<String>) {
     let settings = ctx.settings();
     let registry = &ctx.services.registry;
     let listed = registry.list();
     let defaults = cli_defaults(settings, &listed);
     let labels = Labels::new(settings, registry.catalog(), &listed, &defaults);
     let target = worker.and_then(|worker| labels.target(worker));
-    let harness = worker.map_or("", |worker| worker.worker.as_str());
-    labels.levels(worker, target.as_ref(), harness)
+    let cli = worker.map_or("", |worker| worker.agent.as_str());
+    labels.levels(worker, target.as_ref(), cli)
 }
 
-/// The harnesses that are on and whose CLI is installed, as the worker directory finds them,
+/// The CLIs that are on and whose CLI is installed, as the worker directory finds them,
 /// with the endpoints it offers.
 fn installed(ctx: &Ctx) -> BTreeSet<String> {
     ctx.services
         .workers
         .available()
         .into_iter()
-        .map(|worker| worker.worker)
+        .map(|worker| worker.agent)
         .collect()
 }
 
-/// A bare harness runs the model its `agents.<id>.model` names, when one does.
-fn with_model(settings: &Settings, worker: WorkerRef) -> WorkerRef {
+/// A bare CLI runs the model its `agents.<id>.model` names, when one does.
+fn with_model(settings: &Settings, worker: ModelRef) -> ModelRef {
     if worker.model.is_some() {
         return worker;
     }
     let model = settings
         .agents
-        .get(&worker.worker)
+        .get(&worker.agent)
         .and_then(|agent| agent.model.clone());
-    WorkerRef::new(worker.worker, model)
+    ModelRef::new(worker.agent, model)
 }
 
-fn same_worker(ctx: &Ctx, current: &WorkerRef, choice: &WorkerRef) -> bool {
+fn same_worker(ctx: &Ctx, current: &ModelRef, choice: &ModelRef) -> bool {
     current == choice || with_model(ctx.settings(), current.clone()) == *choice
 }
 
-fn is_endpoint(ctx: &Ctx, worker: &WorkerRef) -> bool {
-    ctx.settings().endpoints.contains_key(&worker.worker)
+fn is_endpoint(ctx: &Ctx, worker: &ModelRef) -> bool {
+    ctx.settings().endpoints.contains_key(&worker.agent)
         || ctx
             .services
             .registry
@@ -252,15 +248,15 @@ fn is_endpoint(ctx: &Ctx, worker: &WorkerRef) -> bool {
             .is_some_and(|entry| entry.kind == RegistryKind::Endpoint)
 }
 
-fn owner_families(ctx: &Ctx) -> BTreeSet<String> {
+fn worker_providers(ctx: &Ctx) -> BTreeSet<String> {
     ctx.settings()
         .roles
         .get(&RoleName::Worker)
-        .map(|owner| {
-            owner
-                .workers
+        .map(|worker| {
+            worker
+                .models
                 .iter()
-                .map(|worker| ctx.services.registry.family(worker))
+                .map(|model| ctx.services.registry.provider(model))
                 .collect()
         })
         .unwrap_or_default()
@@ -276,10 +272,10 @@ fn from_entry(ctx: &Ctx, entry: ModelEntry) -> ModelChoice {
         cost: ctx
             .services
             .registry
-            .estimate(&entry.id, CARD_INPUT_TOKENS, CARD_OUTPUT_TOKENS),
-        quota: ctx.services.quota.get(&entry.id.vendor()),
+            .estimate(&entry.id, TASK_INPUT_TOKENS, TASK_OUTPUT_TOKENS),
+        plan_usage: ctx.services.plan_usage.get(&entry.id.agent_id()),
         worker: entry.id,
-        family: entry.family,
+        provider: entry.provider,
         access: entry.access,
         efforts: Vec::new(),
         strengths: entry.strengths,
@@ -295,16 +291,16 @@ fn from_entry(ctx: &Ctx, entry: ModelEntry) -> ModelChoice {
     }
 }
 
-fn bare_choice(ctx: &Ctx, worker: WorkerRef) -> ModelChoice {
-    let access = match ctx.settings().agents.get(&worker.worker) {
+fn bare_choice(ctx: &Ctx, worker: ModelRef) -> ModelChoice {
+    let access = match ctx.settings().agents.get(&worker.agent) {
         Some(agent) if agent.auth == AuthMode::ApiKey => ModelAccess::ApiKey,
         _ => ModelAccess::Subscription,
     };
     ModelChoice {
-        family: ctx.services.registry.family(&worker),
+        provider: ctx.services.registry.provider(&worker),
         access,
         cost: CostEstimate::Unknown,
-        quota: ctx.services.quota.get(&worker.vendor()),
+        plan_usage: ctx.services.plan_usage.get(&worker.agent_id()),
         efforts: Vec::new(),
         strengths: Vec::new(),
         current: false,

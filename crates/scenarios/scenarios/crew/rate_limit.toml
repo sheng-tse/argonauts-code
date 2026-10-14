@@ -1,10 +1,10 @@
 # WORKFLOW 12's example: "add per-key rate limiting to the public API" with the default
-# council workflow and a crew of Claude Code, Codex, and agy. Triage picks crew; two of three
-# restatements read the limit per API key, so the differs turn scope into the one goal question;
-# three blind drafts disagree on where counters live, a critique round and an experiment settle it for
-# Redis, cross-judging picks plan 2, and five tasks build, review, and merge.
+# council workflow and a crew of Claude Code, Codex, and agy. The rules pick crew; two of three
+# readings read the limit per API key, so the comparers turn scope into the one goal question;
+# three blind drafts disagree on where counters live, a critique round and an experiment settle
+# it for Redis, cross-judging picks plan 2, and five tasks build, review, and merge.
 #
-# Every vendor answers every step kind, so routing may give any task to any of them. Claude Code
+# Every agent answers every step kind, so routing may give any task to any of them. Claude Code
 # and agy steps are told apart by the output schema on their command line, and Codex steps by
 # their prompt's opening instruction, since Codex reads its schema from a file. Build rules match
 # the task and write its file; review rules approve. Each acceptance test names the file
@@ -48,31 +48,31 @@ prompt_contains = '"done_when"'
 [[rule.step]]
 emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-design\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-design\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"name\":\"rate-limit-the-api\",\"description\":\"Add per-key rate limiting to the API\",\"based_on\":\"council\",\"why\":\"A security-labeled API feature: council's blind drafts and cross-judging fit it.\",\"params\":[],\"workflow\":null,\"done_when\":[{\"id\":\"G1\",\"text\":\"Requests over the limit get 429 with Retry-After\",\"short\":\"Over the limit\",\"check\":\"review\"}],\"plan\":[],\"questions\":[],\"first_attempt\":null}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-design\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"name\":\"rate-limit-the-api\",\"description\":\"Add per-key rate limiting to the API\",\"based_on\":\"council\",\"why\":\"A security-labeled API feature: council's blind drafts and cross-judging fit it.\",\"params\":[],\"workflow\":null,\"done_when\":[{\"id\":\"G1\",\"text\":\"Requests over the limit get 429 with Retry-After\",\"short\":\"Over the limit\",\"check\":\"review\"}],\"plan\":[],\"questions\":[],\"first_try\":null}}"
 [[rule.step]]
 exit = 0
 
 
-# triage
+# estimate
 [[rule]]
 argv0 = "claude"
 prompt_contains = '"risk_labels"'
 [[rule.step]]
-emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-triage\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-estimate\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-triage\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"kind\":\"change\",\"answer_markdown\":\"A change: per-key rate limiting touches the API middleware, a counter store, and tests.\",\"estimate\":{\"task_type\":\"api-feature\",\"summary\":\"Per-key rate limiting on the public API\",\"files_likely\":[\"src/api/rate-limit.ts\",\"src/limiter/index.ts\",\"src/limiter/store.ts\",\"tests/load/rate-limit.test.ts\",\"docs/rate-limits.md\"],\"file_count\":9,\"risk_labels\":[\"security\"],\"tests_exist\":true,\"unknowns\":[]}}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-estimate\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"kind\":\"change\",\"answer_markdown\":\"A change: per-key rate limiting touches the API middleware, a counter store, and tests.\",\"estimate\":{\"task_type\":\"api-feature\",\"summary\":\"Per-key rate limiting on the public API\",\"files_likely\":[\"src/api/rate-limit.ts\",\"src/limiter/index.ts\",\"src/limiter/store.ts\",\"tests/load/rate-limit.test.ts\",\"docs/rate-limits.md\"],\"file_count\":9,\"risk_labels\":[\"security\"],\"tests_exist\":true,\"unknowns\":[]}}}"
 [[rule.step]]
 exit = 0
 
 
-# adjudicate
+# settle
 [[rule]]
 argv0 = "claude"
 prompt_contains = '"required_changes"'
 [[rule.step]]
-emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-adjudicate\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-settle\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-adjudicate\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"verdict\":\"approve\",\"reasons\":[\"Both reviews hold\"],\"required_changes\":[]}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-settle\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"verdict\":\"approve\",\"reasons\":[\"Both reviews hold\"],\"required_changes\":[]}}"
 [[rule.step]]
 exit = 0
 
@@ -104,11 +104,11 @@ exit = 0
 # predict
 [[rule]]
 argv0 = "claude"
-prompt_contains = '"p_pass_gates_first_try"'
+prompt_contains = '"p_pass_checks_first_try"'
 [[rule.step]]
 emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-predict\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-predict\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"p_pass_gates_first_try\":0.8,\"p_within_time_cap\":0.9,\"p_at_most_two_attempts\":0.95}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-predict\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"p_pass_checks_first_try\":0.8,\"p_within_time_cap\":0.9,\"p_at_most_two_tries\":0.95}}"
 [[rule.step]]
 exit = 0
 
@@ -118,9 +118,9 @@ exit = 0
 argv0 = "claude"
 prompt_contains = '"setting"'
 [[rule.step]]
-emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-retro\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-run-review\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-retro\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"change\":null}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-run-review\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"change\":null}}"
 [[rule.step]]
 exit = 0
 
@@ -142,9 +142,9 @@ exit = 0
 argv0 = "claude"
 prompt_contains = '"owned_paths"'
 [[rule.step]]
-emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-plan-to-cards\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-plan-to-tasks\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-plan-to-cards\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"cards\":[{\"key\":\"interface\",\"title\":\"The limiter interface with stubs\",\"task\":\"Write the RateLimiter interface in src/limiter/index.ts, with stubs that fail not implemented.\",\"kind\":\"interface\",\"owned_paths\":[\"src/limiter/index.ts\"],\"read_only_paths\":[],\"depends_on\":[],\"criteria\":[\"G1\"]},{\"key\":\"store\",\"title\":\"The Redis store\",\"task\":\"Implement the RateLimiter store on Redis in src/limiter/store.ts.\",\"kind\":\"build\",\"owned_paths\":[\"src/limiter/store.ts\"],\"read_only_paths\":[\"src/limiter/index.ts\"],\"depends_on\":[\"interface\"],\"criteria\":[\"G2\",\"G3\"]},{\"key\":\"middleware\",\"title\":\"The middleware\",\"task\":\"Add the rate-limit middleware after auth in src/api/rate-limit.ts.\",\"kind\":\"build\",\"owned_paths\":[\"src/api/rate-limit.ts\"],\"read_only_paths\":[\"src/limiter/index.ts\"],\"depends_on\":[\"interface\"],\"criteria\":[\"G1\"]},{\"key\":\"load\",\"title\":\"The load test\",\"task\":\"Write a load test of the limit in tests/load/.\",\"kind\":\"build\",\"owned_paths\":[\"tests/load/**\"],\"read_only_paths\":[],\"depends_on\":[\"store\",\"middleware\"],\"criteria\":[\"G3\"]},{\"key\":\"docs\",\"title\":\"The docs\",\"task\":\"Document the limits in docs/rate-limits.md.\",\"kind\":\"docs\",\"owned_paths\":[\"docs/rate-limits.md\"],\"read_only_paths\":[],\"depends_on\":[\"middleware\"],\"criteria\":[]}]}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-plan-to-tasks\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"tasks\":[{\"key\":\"interface\",\"title\":\"The limiter interface with stubs\",\"task\":\"Write the RateLimiter interface in src/limiter/index.ts, with stubs that fail not implemented.\",\"kind\":\"interface\",\"owned_paths\":[\"src/limiter/index.ts\"],\"read_only_paths\":[],\"depends_on\":[],\"criteria\":[\"G1\"]},{\"key\":\"store\",\"title\":\"The Redis store\",\"task\":\"Implement the RateLimiter store on Redis in src/limiter/store.ts.\",\"kind\":\"build\",\"owned_paths\":[\"src/limiter/store.ts\"],\"read_only_paths\":[\"src/limiter/index.ts\"],\"depends_on\":[\"interface\"],\"criteria\":[\"G2\",\"G3\"]},{\"key\":\"middleware\",\"title\":\"The middleware\",\"task\":\"Add the rate-limit middleware after auth in src/api/rate-limit.ts.\",\"kind\":\"build\",\"owned_paths\":[\"src/api/rate-limit.ts\"],\"read_only_paths\":[\"src/limiter/index.ts\"],\"depends_on\":[\"interface\"],\"criteria\":[\"G1\"]},{\"key\":\"load\",\"title\":\"The load test\",\"task\":\"Write a load test of the limit in tests/load/.\",\"kind\":\"build\",\"owned_paths\":[\"tests/load/**\"],\"read_only_paths\":[],\"depends_on\":[\"store\",\"middleware\"],\"criteria\":[\"G3\"]},{\"key\":\"docs\",\"title\":\"The docs\",\"task\":\"Document the limits in docs/rate-limits.md.\",\"kind\":\"docs\",\"owned_paths\":[\"docs/rate-limits.md\"],\"read_only_paths\":[],\"depends_on\":[\"middleware\"],\"criteria\":[]}]}}"
 [[rule.step]]
 exit = 0
 
@@ -154,9 +154,9 @@ exit = 0
 argv0 = "claude"
 prompt_contains = '"measurements"'
 [[rule.step]]
-emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-spike-report\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-experiment-report\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-spike-report\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"topic\":\"Where counters live\",\"option\":\"In memory\",\"measurements\":[{\"metric\":\"counters_after_restart\",\"value\":0,\"unit\":\"count\"}],\"finding\":\"In memory loses every counter on restart.\",\"works\":false}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-experiment-report\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"topic\":\"Where counters live\",\"option\":\"In memory\",\"measurements\":[{\"metric\":\"counters_after_restart\",\"value\":0,\"unit\":\"count\"}],\"finding\":\"In memory loses every counter on restart.\",\"works\":false}}"
 [[rule.step]]
 exit = 0
 
@@ -166,9 +166,9 @@ exit = 0
 argv0 = "claude"
 prompt_contains = '"decides_by"'
 [[rule.step]]
-emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-propose-spike\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-propose-experiment\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-propose-spike\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"proposals\":[{\"topic\":\"Where counters live\",\"question\":\"Redis or in memory?\",\"options\":[{\"label\":\"Redis\",\"build\":\"A RedisStore behind the RateLimiter interface\"},{\"label\":\"In memory\",\"build\":\"A Map-backed store behind the RateLimiter interface\"}],\"measure\":\"p50 overhead, and counters after a restart\",\"decides_by\":\"Redis, unless it adds more than 5 ms p50\",\"est_minutes\":10,\"est_cost_usd\":0.5}]}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-propose-experiment\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"proposals\":[{\"topic\":\"Where counters live\",\"question\":\"Redis or in memory?\",\"options\":[{\"label\":\"Redis\",\"build\":\"A RedisStore behind the RateLimiter interface\"},{\"label\":\"In memory\",\"build\":\"A Map-backed store behind the RateLimiter interface\"}],\"measure\":\"p50 overhead, and counters after a restart\",\"decides_by\":\"Redis, unless it adds more than 5 ms p50\",\"est_minutes\":10,\"est_cost_usd\":0.5}]}}"
 [[rule.step]]
 exit = 0
 
@@ -211,14 +211,14 @@ emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result
 exit = 0
 
 
-# differ
+# compare
 [[rule]]
 argv0 = "claude"
 prompt_contains = '"differences"'
 [[rule.step]]
-emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-differ\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-compare\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-differ\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"agreements\":[\"429 with Retry-After\",\"limits survive restarts\",\"under 5 ms p50 overhead\"],\"differences\":[{\"topic\":\"What a limit counts\",\"readings\":[{\"label\":\"A\",\"reading\":\"per API key\"},{\"label\":\"B\",\"reading\":\"per API key\"},{\"label\":\"C\",\"reading\":\"per user\"}],\"tag\":\"scope\",\"question\":{\"text\":\"Limit per user, or per API key?\",\"options\":[\"Per API key\",\"Per user\"],\"recommended\":0,\"basis\":\"2 of 3 restatements read it this way\"}},{\"topic\":\"Retry-After format\",\"readings\":[{\"label\":\"A\",\"reading\":\"seconds\"},{\"label\":\"B\",\"reading\":\"seconds\"},{\"label\":\"C\",\"reading\":\"an HTTP date\"}],\"tag\":\"detail\",\"question\":null}]}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-compare\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"agreements\":[\"429 with Retry-After\",\"limits survive restarts\",\"under 5 ms p50 overhead\"],\"differences\":[{\"topic\":\"What a limit counts\",\"readings\":[{\"label\":\"A\",\"reading\":\"per API key\"},{\"label\":\"B\",\"reading\":\"per API key\"},{\"label\":\"C\",\"reading\":\"per user\"}],\"tag\":\"scope\",\"question\":{\"text\":\"Limit per user, or per API key?\",\"options\":[\"Per API key\",\"Per user\"],\"recommended\":0,\"basis\":\"2 of 3 readings read it this way\"}},{\"topic\":\"Retry-After format\",\"readings\":[{\"label\":\"A\",\"reading\":\"seconds\"},{\"label\":\"B\",\"reading\":\"seconds\"},{\"label\":\"C\",\"reading\":\"an HTTP date\"}],\"tag\":\"detail\",\"question\":null}]}}"
 [[rule.step]]
 exit = 0
 
@@ -235,19 +235,19 @@ emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result
 exit = 0
 
 
-# restate
+# read
 [[rule]]
 argv0 = "claude"
 prompt_contains = '"success_criteria"'
 [[rule.step]]
-emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-restate\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-read\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-restate\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"summary\":\"Limit requests per API key on the public API, answering 429 with a Retry-After header in seconds.\",\"success_criteria\":[\"A key past its limit gets 429 with Retry-After\",\"Limits survive a restart\",\"Under 5 ms p50 overhead\"],\"in_scope\":[\"the public API middleware\",\"a shared counter store\"],\"out_of_scope\":[\"the admin API\"],\"assumptions\":[\"Retry-After is in seconds\"],\"open_questions\":[]}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-read\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"summary\":\"Limit requests per API key on the public API, answering 429 with a Retry-After header in seconds.\",\"success_criteria\":[\"A key past its limit gets 429 with Retry-After\",\"Limits survive a restart\",\"Under 5 ms p50 overhead\"],\"in_scope\":[\"the public API middleware\",\"a shared counter store\"],\"out_of_scope\":[\"the admin API\"],\"assumptions\":[\"Retry-After is in seconds\"],\"open_questions\":[]}}"
 [[rule.step]]
 exit = 0
 
 
-# sent back from the merge checkpoint: these scenarios send back only the Redis store
+# sent back from the merge approval: these scenarios send back only the Redis store
 [[rule]]
 argv0 = "claude"
 prompt_contains = "The merge approval sent this task back for changes"
@@ -386,7 +386,7 @@ exit = 0
 [[rule]]
 argv0 = "claude"
 [[rule.step]]
-emit_file = "../../../adapters/claude-code/fixtures/2.1.284/read-only.stdout.jsonl"
+emit_file = "../../../adapters/claude-code/fixtures/read-only-untitled.stdout.jsonl"
 [[rule.step]]
 exit = 0
 
@@ -401,20 +401,20 @@ emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-design\"}"
 [[rule.step]]
 emit = "{\"type\":\"turn.started\"}"
 [[rule.step]]
-emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"name\\\":\\\"rate-limit-the-api\\\",\\\"description\\\":\\\"Add per-key rate limiting to the API\\\",\\\"based_on\\\":\\\"council\\\",\\\"why\\\":\\\"A security-labeled API feature: council's blind drafts and cross-judging fit it.\\\",\\\"params\\\":[],\\\"workflow\\\":null,\\\"done_when\\\":[{\\\"id\\\":\\\"G1\\\",\\\"text\\\":\\\"Requests over the limit get 429 with Retry-After\\\",\\\"short\\\":\\\"Over the limit\\\",\\\"check\\\":\\\"review\\\"}],\\\"plan\\\":[],\\\"questions\\\":[],\\\"first_attempt\\\":null}\"}}"
+emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"name\\\":\\\"rate-limit-the-api\\\",\\\"description\\\":\\\"Add per-key rate limiting to the API\\\",\\\"based_on\\\":\\\"council\\\",\\\"why\\\":\\\"A security-labeled API feature: council's blind drafts and cross-judging fit it.\\\",\\\"params\\\":[],\\\"workflow\\\":null,\\\"done_when\\\":[{\\\"id\\\":\\\"G1\\\",\\\"text\\\":\\\"Requests over the limit get 429 with Retry-After\\\",\\\"short\\\":\\\"Over the limit\\\",\\\"check\\\":\\\"review\\\"}],\\\"plan\\\":[],\\\"questions\\\":[],\\\"first_try\\\":null}\"}}"
 [[rule.step]]
 emit = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":120,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":60,\"reasoning_output_tokens\":0}}"
 [[rule.step]]
 exit = 0
 
 
-# adjudicate
+# settle
 [[rule]]
 argv0 = "codex"
 prompt_contains = 'Reviewers of one change disagree.'
 stdin_prompt = "all"
 [[rule.step]]
-emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-adjudicate\"}"
+emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-settle\"}"
 [[rule.step]]
 emit = "{\"type\":\"turn.started\"}"
 [[rule.step]]
@@ -469,7 +469,7 @@ emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-predict\"}"
 [[rule.step]]
 emit = "{\"type\":\"turn.started\"}"
 [[rule.step]]
-emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"p_pass_gates_first_try\\\":0.8,\\\"p_within_time_cap\\\":0.9,\\\"p_at_most_two_attempts\\\":0.95}\"}}"
+emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"p_pass_checks_first_try\\\":0.8,\\\"p_within_time_cap\\\":0.9,\\\"p_at_most_two_tries\\\":0.95}\"}}"
 [[rule.step]]
 emit = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":120,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":60,\"reasoning_output_tokens\":0}}"
 [[rule.step]]
@@ -482,7 +482,7 @@ argv0 = "codex"
 prompt_contains = 'The run is over.'
 stdin_prompt = "all"
 [[rule.step]]
-emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-retro\"}"
+emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-run-review\"}"
 [[rule.step]]
 emit = "{\"type\":\"turn.started\"}"
 [[rule.step]]
@@ -516,11 +516,11 @@ argv0 = "codex"
 prompt_contains = 'You turn an approved plan into tasks'
 stdin_prompt = "all"
 [[rule.step]]
-emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-plan-to-cards\"}"
+emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-plan-to-tasks\"}"
 [[rule.step]]
 emit = "{\"type\":\"turn.started\"}"
 [[rule.step]]
-emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"cards\\\":[{\\\"key\\\":\\\"interface\\\",\\\"title\\\":\\\"The limiter interface with stubs\\\",\\\"task\\\":\\\"Write the RateLimiter interface in src/limiter/index.ts, with stubs that fail not implemented.\\\",\\\"kind\\\":\\\"interface\\\",\\\"owned_paths\\\":[\\\"src/limiter/index.ts\\\"],\\\"read_only_paths\\\":[],\\\"depends_on\\\":[],\\\"criteria\\\":[\\\"G1\\\"]},{\\\"key\\\":\\\"store\\\",\\\"title\\\":\\\"The Redis store\\\",\\\"task\\\":\\\"Implement the RateLimiter store on Redis in src/limiter/store.ts.\\\",\\\"kind\\\":\\\"build\\\",\\\"owned_paths\\\":[\\\"src/limiter/store.ts\\\"],\\\"read_only_paths\\\":[\\\"src/limiter/index.ts\\\"],\\\"depends_on\\\":[\\\"interface\\\"],\\\"criteria\\\":[\\\"G2\\\",\\\"G3\\\"]},{\\\"key\\\":\\\"middleware\\\",\\\"title\\\":\\\"The middleware\\\",\\\"task\\\":\\\"Add the rate-limit middleware after auth in src/api/rate-limit.ts.\\\",\\\"kind\\\":\\\"build\\\",\\\"owned_paths\\\":[\\\"src/api/rate-limit.ts\\\"],\\\"read_only_paths\\\":[\\\"src/limiter/index.ts\\\"],\\\"depends_on\\\":[\\\"interface\\\"],\\\"criteria\\\":[\\\"G1\\\"]},{\\\"key\\\":\\\"load\\\",\\\"title\\\":\\\"The load test\\\",\\\"task\\\":\\\"Write a load test of the limit in tests/load/.\\\",\\\"kind\\\":\\\"build\\\",\\\"owned_paths\\\":[\\\"tests/load/**\\\"],\\\"read_only_paths\\\":[],\\\"depends_on\\\":[\\\"store\\\",\\\"middleware\\\"],\\\"criteria\\\":[\\\"G3\\\"]},{\\\"key\\\":\\\"docs\\\",\\\"title\\\":\\\"The docs\\\",\\\"task\\\":\\\"Document the limits in docs/rate-limits.md.\\\",\\\"kind\\\":\\\"docs\\\",\\\"owned_paths\\\":[\\\"docs/rate-limits.md\\\"],\\\"read_only_paths\\\":[],\\\"depends_on\\\":[\\\"middleware\\\"],\\\"criteria\\\":[]}]}\"}}"
+emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"tasks\\\":[{\\\"key\\\":\\\"interface\\\",\\\"title\\\":\\\"The limiter interface with stubs\\\",\\\"task\\\":\\\"Write the RateLimiter interface in src/limiter/index.ts, with stubs that fail not implemented.\\\",\\\"kind\\\":\\\"interface\\\",\\\"owned_paths\\\":[\\\"src/limiter/index.ts\\\"],\\\"read_only_paths\\\":[],\\\"depends_on\\\":[],\\\"criteria\\\":[\\\"G1\\\"]},{\\\"key\\\":\\\"store\\\",\\\"title\\\":\\\"The Redis store\\\",\\\"task\\\":\\\"Implement the RateLimiter store on Redis in src/limiter/store.ts.\\\",\\\"kind\\\":\\\"build\\\",\\\"owned_paths\\\":[\\\"src/limiter/store.ts\\\"],\\\"read_only_paths\\\":[\\\"src/limiter/index.ts\\\"],\\\"depends_on\\\":[\\\"interface\\\"],\\\"criteria\\\":[\\\"G2\\\",\\\"G3\\\"]},{\\\"key\\\":\\\"middleware\\\",\\\"title\\\":\\\"The middleware\\\",\\\"task\\\":\\\"Add the rate-limit middleware after auth in src/api/rate-limit.ts.\\\",\\\"kind\\\":\\\"build\\\",\\\"owned_paths\\\":[\\\"src/api/rate-limit.ts\\\"],\\\"read_only_paths\\\":[\\\"src/limiter/index.ts\\\"],\\\"depends_on\\\":[\\\"interface\\\"],\\\"criteria\\\":[\\\"G1\\\"]},{\\\"key\\\":\\\"load\\\",\\\"title\\\":\\\"The load test\\\",\\\"task\\\":\\\"Write a load test of the limit in tests/load/.\\\",\\\"kind\\\":\\\"build\\\",\\\"owned_paths\\\":[\\\"tests/load/**\\\"],\\\"read_only_paths\\\":[],\\\"depends_on\\\":[\\\"store\\\",\\\"middleware\\\"],\\\"criteria\\\":[\\\"G3\\\"]},{\\\"key\\\":\\\"docs\\\",\\\"title\\\":\\\"The docs\\\",\\\"task\\\":\\\"Document the limits in docs/rate-limits.md.\\\",\\\"kind\\\":\\\"docs\\\",\\\"owned_paths\\\":[\\\"docs/rate-limits.md\\\"],\\\"read_only_paths\\\":[],\\\"depends_on\\\":[\\\"middleware\\\"],\\\"criteria\\\":[]}]}\"}}"
 [[rule.step]]
 emit = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":120,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":60,\"reasoning_output_tokens\":0}}"
 [[rule.step]]
@@ -533,7 +533,7 @@ argv0 = "codex"
 prompt_contains = 'Build one option of an experiment'
 stdin_prompt = "all"
 [[rule.step]]
-emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-spike-report\"}"
+emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-experiment-report\"}"
 [[rule.step]]
 emit = "{\"type\":\"turn.started\"}"
 [[rule.step]]
@@ -550,7 +550,7 @@ argv0 = "codex"
 prompt_contains = 'propose an experiment'
 stdin_prompt = "all"
 [[rule.step]]
-emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-propose-spike\"}"
+emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-propose-experiment\"}"
 [[rule.step]]
 emit = "{\"type\":\"turn.started\"}"
 [[rule.step]]
@@ -595,7 +595,7 @@ emit = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":120,\"cached_in
 exit = 0
 
 
-# sent back from the merge checkpoint: these scenarios send back only the Redis store
+# sent back from the merge approval: these scenarios send back only the Redis store
 [[rule]]
 argv0 = "codex"
 prompt_contains = "The merge approval sent this task back for changes"
@@ -783,17 +783,17 @@ emit = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":120,\"cached_in
 exit = 0
 
 
-# differ
+# compare
 [[rule]]
 argv0 = "codex"
-prompt_contains = 'You are comparing restatements of one request.'
+prompt_contains = 'You are comparing readings of one request.'
 stdin_prompt = "all"
 [[rule.step]]
-emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-differ\"}"
+emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-compare\"}"
 [[rule.step]]
 emit = "{\"type\":\"turn.started\"}"
 [[rule.step]]
-emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"agreements\\\":[\\\"429 with Retry-After\\\",\\\"limits survive restarts\\\",\\\"under 5 ms p50 overhead\\\"],\\\"differences\\\":[{\\\"topic\\\":\\\"What a limit counts\\\",\\\"readings\\\":[{\\\"label\\\":\\\"A\\\",\\\"reading\\\":\\\"per API key\\\"},{\\\"label\\\":\\\"B\\\",\\\"reading\\\":\\\"per API key\\\"},{\\\"label\\\":\\\"C\\\",\\\"reading\\\":\\\"per user\\\"}],\\\"tag\\\":\\\"scope\\\",\\\"question\\\":{\\\"text\\\":\\\"Limit per user, or per API key?\\\",\\\"options\\\":[\\\"Per API key\\\",\\\"Per user\\\"],\\\"recommended\\\":0,\\\"basis\\\":\\\"2 of 3 restatements read it this way\\\"}},{\\\"topic\\\":\\\"Retry-After format\\\",\\\"readings\\\":[{\\\"label\\\":\\\"A\\\",\\\"reading\\\":\\\"seconds\\\"},{\\\"label\\\":\\\"B\\\",\\\"reading\\\":\\\"seconds\\\"},{\\\"label\\\":\\\"C\\\",\\\"reading\\\":\\\"an HTTP date\\\"}],\\\"tag\\\":\\\"detail\\\",\\\"question\\\":null}]}\"}}"
+emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"agreements\\\":[\\\"429 with Retry-After\\\",\\\"limits survive restarts\\\",\\\"under 5 ms p50 overhead\\\"],\\\"differences\\\":[{\\\"topic\\\":\\\"What a limit counts\\\",\\\"readings\\\":[{\\\"label\\\":\\\"A\\\",\\\"reading\\\":\\\"per API key\\\"},{\\\"label\\\":\\\"B\\\",\\\"reading\\\":\\\"per API key\\\"},{\\\"label\\\":\\\"C\\\",\\\"reading\\\":\\\"per user\\\"}],\\\"tag\\\":\\\"scope\\\",\\\"question\\\":{\\\"text\\\":\\\"Limit per user, or per API key?\\\",\\\"options\\\":[\\\"Per API key\\\",\\\"Per user\\\"],\\\"recommended\\\":0,\\\"basis\\\":\\\"2 of 3 readings read it this way\\\"}},{\\\"topic\\\":\\\"Retry-After format\\\",\\\"readings\\\":[{\\\"label\\\":\\\"A\\\",\\\"reading\\\":\\\"seconds\\\"},{\\\"label\\\":\\\"B\\\",\\\"reading\\\":\\\"seconds\\\"},{\\\"label\\\":\\\"C\\\",\\\"reading\\\":\\\"an HTTP date\\\"}],\\\"tag\\\":\\\"detail\\\",\\\"question\\\":null}]}\"}}"
 [[rule.step]]
 emit = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":120,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":60,\"reasoning_output_tokens\":0}}"
 [[rule.step]]
@@ -817,13 +817,13 @@ emit = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":120,\"cached_in
 exit = 0
 
 
-# restate
+# read
 [[rule]]
 argv0 = "codex"
-prompt_contains = 'You are restating a request'
+prompt_contains = 'You are reading a request back'
 stdin_prompt = "all"
 [[rule.step]]
-emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-restate\"}"
+emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-read\"}"
 [[rule.step]]
 emit = "{\"type\":\"turn.started\"}"
 [[rule.step]]
@@ -838,7 +838,7 @@ exit = 0
 [[rule]]
 argv0 = "codex"
 [[rule.step]]
-emit_file = "../../../adapters/codex/fixtures/0.158.0/read_only_ok.stdout.jsonl"
+emit_file = "../../../adapters/codex/fixtures/read_only_ok.stdout.jsonl"
 [[rule.step]]
 exit = 0
 
@@ -850,27 +850,27 @@ prompt_contains = '"done_when"'
 [[rule.step]]
 emit = "{\"event\":\"init\",\"conversation_id\":\"agy-design\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-design\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"name\":\"rate-limit-the-api\",\"description\":\"Add per-key rate limiting to the API\",\"based_on\":\"council\",\"why\":\"A security-labeled API feature: council's blind drafts and cross-judging fit it.\",\"params\":[],\"workflow\":null,\"done_when\":[{\"id\":\"G1\",\"text\":\"Requests over the limit get 429 with Retry-After\",\"short\":\"Over the limit\",\"check\":\"review\"}],\"plan\":[],\"questions\":[],\"first_attempt\":null}}}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-design\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"name\":\"rate-limit-the-api\",\"description\":\"Add per-key rate limiting to the API\",\"based_on\":\"council\",\"why\":\"A security-labeled API feature: council's blind drafts and cross-judging fit it.\",\"params\":[],\"workflow\":null,\"done_when\":[{\"id\":\"G1\",\"text\":\"Requests over the limit get 429 with Retry-After\",\"short\":\"Over the limit\",\"check\":\"review\"}],\"plan\":[],\"questions\":[],\"first_try\":null}}}}"
 [[rule.step]]
 emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-design\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
 [[rule.step]]
-emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-design\",\"status\":\"SUCCESS\",\"response\":\"{\\\"name\\\":\\\"rate-limit-the-api\\\",\\\"description\\\":\\\"Add per-key rate limiting to the API\\\",\\\"based_on\\\":\\\"council\\\",\\\"why\\\":\\\"A security-labeled API feature: council's blind drafts and cross-judging fit it.\\\",\\\"params\\\":[],\\\"workflow\\\":null,\\\"done_when\\\":[{\\\"id\\\":\\\"G1\\\",\\\"text\\\":\\\"Requests over the limit get 429 with Retry-After\\\",\\\"short\\\":\\\"Over the limit\\\",\\\"check\\\":\\\"review\\\"}],\\\"plan\\\":[],\\\"questions\\\":[],\\\"first_attempt\\\":null}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
+emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-design\",\"status\":\"SUCCESS\",\"response\":\"{\\\"name\\\":\\\"rate-limit-the-api\\\",\\\"description\\\":\\\"Add per-key rate limiting to the API\\\",\\\"based_on\\\":\\\"council\\\",\\\"why\\\":\\\"A security-labeled API feature: council's blind drafts and cross-judging fit it.\\\",\\\"params\\\":[],\\\"workflow\\\":null,\\\"done_when\\\":[{\\\"id\\\":\\\"G1\\\",\\\"text\\\":\\\"Requests over the limit get 429 with Retry-After\\\",\\\"short\\\":\\\"Over the limit\\\",\\\"check\\\":\\\"review\\\"}],\\\"plan\\\":[],\\\"questions\\\":[],\\\"first_try\\\":null}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
 [[rule.step]]
 exit = 0
 
 
-# adjudicate
+# settle
 [[rule]]
 argv0 = "agy"
 prompt_contains = '"required_changes"'
 [[rule.step]]
-emit = "{\"event\":\"init\",\"conversation_id\":\"agy-adjudicate\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
+emit = "{\"event\":\"init\",\"conversation_id\":\"agy-settle\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-adjudicate\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"verdict\":\"approve\",\"reasons\":[\"Both reviews hold\"],\"required_changes\":[]}}}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-settle\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"verdict\":\"approve\",\"reasons\":[\"Both reviews hold\"],\"required_changes\":[]}}}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-adjudicate\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-settle\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
 [[rule.step]]
-emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-adjudicate\",\"status\":\"SUCCESS\",\"response\":\"{\\\"verdict\\\":\\\"approve\\\",\\\"reasons\\\":[\\\"Both reviews hold\\\"],\\\"required_changes\\\":[]}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
+emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-settle\",\"status\":\"SUCCESS\",\"response\":\"{\\\"verdict\\\":\\\"approve\\\",\\\"reasons\\\":[\\\"Both reviews hold\\\"],\\\"required_changes\\\":[]}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
 [[rule.step]]
 exit = 0
 
@@ -910,15 +910,15 @@ exit = 0
 # predict
 [[rule]]
 argv0 = "agy"
-prompt_contains = '"p_pass_gates_first_try"'
+prompt_contains = '"p_pass_checks_first_try"'
 [[rule.step]]
 emit = "{\"event\":\"init\",\"conversation_id\":\"agy-predict\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-predict\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"p_pass_gates_first_try\":0.8,\"p_within_time_cap\":0.9,\"p_at_most_two_attempts\":0.95}}}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-predict\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"p_pass_checks_first_try\":0.8,\"p_within_time_cap\":0.9,\"p_at_most_two_tries\":0.95}}}}"
 [[rule.step]]
 emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-predict\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
 [[rule.step]]
-emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-predict\",\"status\":\"SUCCESS\",\"response\":\"{\\\"p_pass_gates_first_try\\\":0.8,\\\"p_within_time_cap\\\":0.9,\\\"p_at_most_two_attempts\\\":0.95}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
+emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-predict\",\"status\":\"SUCCESS\",\"response\":\"{\\\"p_pass_checks_first_try\\\":0.8,\\\"p_within_time_cap\\\":0.9,\\\"p_at_most_two_tries\\\":0.95}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
 [[rule.step]]
 exit = 0
 
@@ -928,13 +928,13 @@ exit = 0
 argv0 = "agy"
 prompt_contains = '"setting"'
 [[rule.step]]
-emit = "{\"event\":\"init\",\"conversation_id\":\"agy-retro\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
+emit = "{\"event\":\"init\",\"conversation_id\":\"agy-run-review\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-retro\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"change\":null}}}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-run-review\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"change\":null}}}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-retro\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-run-review\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
 [[rule.step]]
-emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-retro\",\"status\":\"SUCCESS\",\"response\":\"{\\\"change\\\":null}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
+emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-run-review\",\"status\":\"SUCCESS\",\"response\":\"{\\\"change\\\":null}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
 [[rule.step]]
 exit = 0
 
@@ -960,13 +960,13 @@ exit = 0
 argv0 = "agy"
 prompt_contains = '"owned_paths"'
 [[rule.step]]
-emit = "{\"event\":\"init\",\"conversation_id\":\"agy-plan-to-cards\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
+emit = "{\"event\":\"init\",\"conversation_id\":\"agy-plan-to-tasks\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-plan-to-cards\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"cards\":[{\"key\":\"interface\",\"title\":\"The limiter interface with stubs\",\"task\":\"Write the RateLimiter interface in src/limiter/index.ts, with stubs that fail not implemented.\",\"kind\":\"interface\",\"owned_paths\":[\"src/limiter/index.ts\"],\"read_only_paths\":[],\"depends_on\":[],\"criteria\":[\"G1\"]},{\"key\":\"store\",\"title\":\"The Redis store\",\"task\":\"Implement the RateLimiter store on Redis in src/limiter/store.ts.\",\"kind\":\"build\",\"owned_paths\":[\"src/limiter/store.ts\"],\"read_only_paths\":[\"src/limiter/index.ts\"],\"depends_on\":[\"interface\"],\"criteria\":[\"G2\",\"G3\"]},{\"key\":\"middleware\",\"title\":\"The middleware\",\"task\":\"Add the rate-limit middleware after auth in src/api/rate-limit.ts.\",\"kind\":\"build\",\"owned_paths\":[\"src/api/rate-limit.ts\"],\"read_only_paths\":[\"src/limiter/index.ts\"],\"depends_on\":[\"interface\"],\"criteria\":[\"G1\"]},{\"key\":\"load\",\"title\":\"The load test\",\"task\":\"Write a load test of the limit in tests/load/.\",\"kind\":\"build\",\"owned_paths\":[\"tests/load/**\"],\"read_only_paths\":[],\"depends_on\":[\"store\",\"middleware\"],\"criteria\":[\"G3\"]},{\"key\":\"docs\",\"title\":\"The docs\",\"task\":\"Document the limits in docs/rate-limits.md.\",\"kind\":\"docs\",\"owned_paths\":[\"docs/rate-limits.md\"],\"read_only_paths\":[],\"depends_on\":[\"middleware\"],\"criteria\":[]}]}}}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-plan-to-tasks\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"tasks\":[{\"key\":\"interface\",\"title\":\"The limiter interface with stubs\",\"task\":\"Write the RateLimiter interface in src/limiter/index.ts, with stubs that fail not implemented.\",\"kind\":\"interface\",\"owned_paths\":[\"src/limiter/index.ts\"],\"read_only_paths\":[],\"depends_on\":[],\"criteria\":[\"G1\"]},{\"key\":\"store\",\"title\":\"The Redis store\",\"task\":\"Implement the RateLimiter store on Redis in src/limiter/store.ts.\",\"kind\":\"build\",\"owned_paths\":[\"src/limiter/store.ts\"],\"read_only_paths\":[\"src/limiter/index.ts\"],\"depends_on\":[\"interface\"],\"criteria\":[\"G2\",\"G3\"]},{\"key\":\"middleware\",\"title\":\"The middleware\",\"task\":\"Add the rate-limit middleware after auth in src/api/rate-limit.ts.\",\"kind\":\"build\",\"owned_paths\":[\"src/api/rate-limit.ts\"],\"read_only_paths\":[\"src/limiter/index.ts\"],\"depends_on\":[\"interface\"],\"criteria\":[\"G1\"]},{\"key\":\"load\",\"title\":\"The load test\",\"task\":\"Write a load test of the limit in tests/load/.\",\"kind\":\"build\",\"owned_paths\":[\"tests/load/**\"],\"read_only_paths\":[],\"depends_on\":[\"store\",\"middleware\"],\"criteria\":[\"G3\"]},{\"key\":\"docs\",\"title\":\"The docs\",\"task\":\"Document the limits in docs/rate-limits.md.\",\"kind\":\"docs\",\"owned_paths\":[\"docs/rate-limits.md\"],\"read_only_paths\":[],\"depends_on\":[\"middleware\"],\"criteria\":[]}]}}}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-plan-to-cards\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-plan-to-tasks\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
 [[rule.step]]
-emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-plan-to-cards\",\"status\":\"SUCCESS\",\"response\":\"{\\\"cards\\\":[{\\\"key\\\":\\\"interface\\\",\\\"title\\\":\\\"The limiter interface with stubs\\\",\\\"task\\\":\\\"Write the RateLimiter interface in src/limiter/index.ts, with stubs that fail not implemented.\\\",\\\"kind\\\":\\\"interface\\\",\\\"owned_paths\\\":[\\\"src/limiter/index.ts\\\"],\\\"read_only_paths\\\":[],\\\"depends_on\\\":[],\\\"criteria\\\":[\\\"G1\\\"]},{\\\"key\\\":\\\"store\\\",\\\"title\\\":\\\"The Redis store\\\",\\\"task\\\":\\\"Implement the RateLimiter store on Redis in src/limiter/store.ts.\\\",\\\"kind\\\":\\\"build\\\",\\\"owned_paths\\\":[\\\"src/limiter/store.ts\\\"],\\\"read_only_paths\\\":[\\\"src/limiter/index.ts\\\"],\\\"depends_on\\\":[\\\"interface\\\"],\\\"criteria\\\":[\\\"G2\\\",\\\"G3\\\"]},{\\\"key\\\":\\\"middleware\\\",\\\"title\\\":\\\"The middleware\\\",\\\"task\\\":\\\"Add the rate-limit middleware after auth in src/api/rate-limit.ts.\\\",\\\"kind\\\":\\\"build\\\",\\\"owned_paths\\\":[\\\"src/api/rate-limit.ts\\\"],\\\"read_only_paths\\\":[\\\"src/limiter/index.ts\\\"],\\\"depends_on\\\":[\\\"interface\\\"],\\\"criteria\\\":[\\\"G1\\\"]},{\\\"key\\\":\\\"load\\\",\\\"title\\\":\\\"The load test\\\",\\\"task\\\":\\\"Write a load test of the limit in tests/load/.\\\",\\\"kind\\\":\\\"build\\\",\\\"owned_paths\\\":[\\\"tests/load/**\\\"],\\\"read_only_paths\\\":[],\\\"depends_on\\\":[\\\"store\\\",\\\"middleware\\\"],\\\"criteria\\\":[\\\"G3\\\"]},{\\\"key\\\":\\\"docs\\\",\\\"title\\\":\\\"The docs\\\",\\\"task\\\":\\\"Document the limits in docs/rate-limits.md.\\\",\\\"kind\\\":\\\"docs\\\",\\\"owned_paths\\\":[\\\"docs/rate-limits.md\\\"],\\\"read_only_paths\\\":[],\\\"depends_on\\\":[\\\"middleware\\\"],\\\"criteria\\\":[]}]}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
+emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-plan-to-tasks\",\"status\":\"SUCCESS\",\"response\":\"{\\\"tasks\\\":[{\\\"key\\\":\\\"interface\\\",\\\"title\\\":\\\"The limiter interface with stubs\\\",\\\"task\\\":\\\"Write the RateLimiter interface in src/limiter/index.ts, with stubs that fail not implemented.\\\",\\\"kind\\\":\\\"interface\\\",\\\"owned_paths\\\":[\\\"src/limiter/index.ts\\\"],\\\"read_only_paths\\\":[],\\\"depends_on\\\":[],\\\"criteria\\\":[\\\"G1\\\"]},{\\\"key\\\":\\\"store\\\",\\\"title\\\":\\\"The Redis store\\\",\\\"task\\\":\\\"Implement the RateLimiter store on Redis in src/limiter/store.ts.\\\",\\\"kind\\\":\\\"build\\\",\\\"owned_paths\\\":[\\\"src/limiter/store.ts\\\"],\\\"read_only_paths\\\":[\\\"src/limiter/index.ts\\\"],\\\"depends_on\\\":[\\\"interface\\\"],\\\"criteria\\\":[\\\"G2\\\",\\\"G3\\\"]},{\\\"key\\\":\\\"middleware\\\",\\\"title\\\":\\\"The middleware\\\",\\\"task\\\":\\\"Add the rate-limit middleware after auth in src/api/rate-limit.ts.\\\",\\\"kind\\\":\\\"build\\\",\\\"owned_paths\\\":[\\\"src/api/rate-limit.ts\\\"],\\\"read_only_paths\\\":[\\\"src/limiter/index.ts\\\"],\\\"depends_on\\\":[\\\"interface\\\"],\\\"criteria\\\":[\\\"G1\\\"]},{\\\"key\\\":\\\"load\\\",\\\"title\\\":\\\"The load test\\\",\\\"task\\\":\\\"Write a load test of the limit in tests/load/.\\\",\\\"kind\\\":\\\"build\\\",\\\"owned_paths\\\":[\\\"tests/load/**\\\"],\\\"read_only_paths\\\":[],\\\"depends_on\\\":[\\\"store\\\",\\\"middleware\\\"],\\\"criteria\\\":[\\\"G3\\\"]},{\\\"key\\\":\\\"docs\\\",\\\"title\\\":\\\"The docs\\\",\\\"task\\\":\\\"Document the limits in docs/rate-limits.md.\\\",\\\"kind\\\":\\\"docs\\\",\\\"owned_paths\\\":[\\\"docs/rate-limits.md\\\"],\\\"read_only_paths\\\":[],\\\"depends_on\\\":[\\\"middleware\\\"],\\\"criteria\\\":[]}]}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
 [[rule.step]]
 exit = 0
 
@@ -976,13 +976,13 @@ exit = 0
 argv0 = "agy"
 prompt_contains = '"measurements"'
 [[rule.step]]
-emit = "{\"event\":\"init\",\"conversation_id\":\"agy-spike-report\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
+emit = "{\"event\":\"init\",\"conversation_id\":\"agy-experiment-report\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-spike-report\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"topic\":\"Where counters live\",\"option\":\"Redis\",\"measurements\":[{\"metric\":\"p50_ms\",\"value\":2.1,\"unit\":\"ms\"}],\"finding\":\"Redis adds 2.1 ms p50 and keeps counters across a restart.\",\"works\":true}}}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-experiment-report\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"topic\":\"Where counters live\",\"option\":\"Redis\",\"measurements\":[{\"metric\":\"p50_ms\",\"value\":2.1,\"unit\":\"ms\"}],\"finding\":\"Redis adds 2.1 ms p50 and keeps counters across a restart.\",\"works\":true}}}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-spike-report\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-experiment-report\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
 [[rule.step]]
-emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-spike-report\",\"status\":\"SUCCESS\",\"response\":\"{\\\"topic\\\":\\\"Where counters live\\\",\\\"option\\\":\\\"Redis\\\",\\\"measurements\\\":[{\\\"metric\\\":\\\"p50_ms\\\",\\\"value\\\":2.1,\\\"unit\\\":\\\"ms\\\"}],\\\"finding\\\":\\\"Redis adds 2.1 ms p50 and keeps counters across a restart.\\\",\\\"works\\\":true}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
+emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-experiment-report\",\"status\":\"SUCCESS\",\"response\":\"{\\\"topic\\\":\\\"Where counters live\\\",\\\"option\\\":\\\"Redis\\\",\\\"measurements\\\":[{\\\"metric\\\":\\\"p50_ms\\\",\\\"value\\\":2.1,\\\"unit\\\":\\\"ms\\\"}],\\\"finding\\\":\\\"Redis adds 2.1 ms p50 and keeps counters across a restart.\\\",\\\"works\\\":true}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
 [[rule.step]]
 exit = 0
 
@@ -992,13 +992,13 @@ exit = 0
 argv0 = "agy"
 prompt_contains = '"decides_by"'
 [[rule.step]]
-emit = "{\"event\":\"init\",\"conversation_id\":\"agy-propose-spike\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
+emit = "{\"event\":\"init\",\"conversation_id\":\"agy-propose-experiment\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-propose-spike\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"proposals\":[{\"topic\":\"Where counters live\",\"question\":\"Redis or in memory?\",\"options\":[{\"label\":\"Redis\",\"build\":\"A RedisStore behind the RateLimiter interface\"},{\"label\":\"In memory\",\"build\":\"A Map-backed store behind the RateLimiter interface\"}],\"measure\":\"p50 overhead, and counters after a restart\",\"decides_by\":\"Redis, unless it adds more than 5 ms p50\",\"est_minutes\":10,\"est_cost_usd\":0.5}]}}}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-propose-experiment\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"proposals\":[{\"topic\":\"Where counters live\",\"question\":\"Redis or in memory?\",\"options\":[{\"label\":\"Redis\",\"build\":\"A RedisStore behind the RateLimiter interface\"},{\"label\":\"In memory\",\"build\":\"A Map-backed store behind the RateLimiter interface\"}],\"measure\":\"p50 overhead, and counters after a restart\",\"decides_by\":\"Redis, unless it adds more than 5 ms p50\",\"est_minutes\":10,\"est_cost_usd\":0.5}]}}}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-propose-spike\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-propose-experiment\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
 [[rule.step]]
-emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-propose-spike\",\"status\":\"SUCCESS\",\"response\":\"{\\\"proposals\\\":[{\\\"topic\\\":\\\"Where counters live\\\",\\\"question\\\":\\\"Redis or in memory?\\\",\\\"options\\\":[{\\\"label\\\":\\\"Redis\\\",\\\"build\\\":\\\"A RedisStore behind the RateLimiter interface\\\"},{\\\"label\\\":\\\"In memory\\\",\\\"build\\\":\\\"A Map-backed store behind the RateLimiter interface\\\"}],\\\"measure\\\":\\\"p50 overhead, and counters after a restart\\\",\\\"decides_by\\\":\\\"Redis, unless it adds more than 5 ms p50\\\",\\\"est_minutes\\\":10,\\\"est_cost_usd\\\":0.5}]}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
+emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-propose-experiment\",\"status\":\"SUCCESS\",\"response\":\"{\\\"proposals\\\":[{\\\"topic\\\":\\\"Where counters live\\\",\\\"question\\\":\\\"Redis or in memory?\\\",\\\"options\\\":[{\\\"label\\\":\\\"Redis\\\",\\\"build\\\":\\\"A RedisStore behind the RateLimiter interface\\\"},{\\\"label\\\":\\\"In memory\\\",\\\"build\\\":\\\"A Map-backed store behind the RateLimiter interface\\\"}],\\\"measure\\\":\\\"p50 overhead, and counters after a restart\\\",\\\"decides_by\\\":\\\"Redis, unless it adds more than 5 ms p50\\\",\\\"est_minutes\\\":10,\\\"est_cost_usd\\\":0.5}]}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
 [[rule.step]]
 exit = 0
 
@@ -1052,18 +1052,18 @@ emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-draft\",\"st
 exit = 0
 
 
-# differ
+# compare
 [[rule]]
 argv0 = "agy"
 prompt_contains = '"differences"'
 [[rule.step]]
-emit = "{\"event\":\"init\",\"conversation_id\":\"agy-differ\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
+emit = "{\"event\":\"init\",\"conversation_id\":\"agy-compare\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-differ\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"agreements\":[\"429 with Retry-After\",\"limits survive restarts\",\"under 5 ms p50 overhead\"],\"differences\":[{\"topic\":\"What a limit counts\",\"readings\":[{\"label\":\"A\",\"reading\":\"per API key\"},{\"label\":\"B\",\"reading\":\"per API key\"},{\"label\":\"C\",\"reading\":\"per user\"}],\"tag\":\"scope\",\"question\":{\"text\":\"Limit per user, or per API key?\",\"options\":[\"Per API key\",\"Per user\"],\"recommended\":0,\"basis\":\"2 of 3 restatements read it this way\"}},{\"topic\":\"Retry-After format\",\"readings\":[{\"label\":\"A\",\"reading\":\"seconds\"},{\"label\":\"B\",\"reading\":\"seconds\"},{\"label\":\"C\",\"reading\":\"an HTTP date\"}],\"tag\":\"detail\",\"question\":null}]}}}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-compare\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"agreements\":[\"429 with Retry-After\",\"limits survive restarts\",\"under 5 ms p50 overhead\"],\"differences\":[{\"topic\":\"What a limit counts\",\"readings\":[{\"label\":\"A\",\"reading\":\"per API key\"},{\"label\":\"B\",\"reading\":\"per API key\"},{\"label\":\"C\",\"reading\":\"per user\"}],\"tag\":\"scope\",\"question\":{\"text\":\"Limit per user, or per API key?\",\"options\":[\"Per API key\",\"Per user\"],\"recommended\":0,\"basis\":\"2 of 3 readings read it this way\"}},{\"topic\":\"Retry-After format\",\"readings\":[{\"label\":\"A\",\"reading\":\"seconds\"},{\"label\":\"B\",\"reading\":\"seconds\"},{\"label\":\"C\",\"reading\":\"an HTTP date\"}],\"tag\":\"detail\",\"question\":null}]}}}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-differ\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-compare\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
 [[rule.step]]
-emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-differ\",\"status\":\"SUCCESS\",\"response\":\"{\\\"agreements\\\":[\\\"429 with Retry-After\\\",\\\"limits survive restarts\\\",\\\"under 5 ms p50 overhead\\\"],\\\"differences\\\":[{\\\"topic\\\":\\\"What a limit counts\\\",\\\"readings\\\":[{\\\"label\\\":\\\"A\\\",\\\"reading\\\":\\\"per API key\\\"},{\\\"label\\\":\\\"B\\\",\\\"reading\\\":\\\"per API key\\\"},{\\\"label\\\":\\\"C\\\",\\\"reading\\\":\\\"per user\\\"}],\\\"tag\\\":\\\"scope\\\",\\\"question\\\":{\\\"text\\\":\\\"Limit per user, or per API key?\\\",\\\"options\\\":[\\\"Per API key\\\",\\\"Per user\\\"],\\\"recommended\\\":0,\\\"basis\\\":\\\"2 of 3 restatements read it this way\\\"}},{\\\"topic\\\":\\\"Retry-After format\\\",\\\"readings\\\":[{\\\"label\\\":\\\"A\\\",\\\"reading\\\":\\\"seconds\\\"},{\\\"label\\\":\\\"B\\\",\\\"reading\\\":\\\"seconds\\\"},{\\\"label\\\":\\\"C\\\",\\\"reading\\\":\\\"an HTTP date\\\"}],\\\"tag\\\":\\\"detail\\\",\\\"question\\\":null}]}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
+emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-compare\",\"status\":\"SUCCESS\",\"response\":\"{\\\"agreements\\\":[\\\"429 with Retry-After\\\",\\\"limits survive restarts\\\",\\\"under 5 ms p50 overhead\\\"],\\\"differences\\\":[{\\\"topic\\\":\\\"What a limit counts\\\",\\\"readings\\\":[{\\\"label\\\":\\\"A\\\",\\\"reading\\\":\\\"per API key\\\"},{\\\"label\\\":\\\"B\\\",\\\"reading\\\":\\\"per API key\\\"},{\\\"label\\\":\\\"C\\\",\\\"reading\\\":\\\"per user\\\"}],\\\"tag\\\":\\\"scope\\\",\\\"question\\\":{\\\"text\\\":\\\"Limit per user, or per API key?\\\",\\\"options\\\":[\\\"Per API key\\\",\\\"Per user\\\"],\\\"recommended\\\":0,\\\"basis\\\":\\\"2 of 3 readings read it this way\\\"}},{\\\"topic\\\":\\\"Retry-After format\\\",\\\"readings\\\":[{\\\"label\\\":\\\"A\\\",\\\"reading\\\":\\\"seconds\\\"},{\\\"label\\\":\\\"B\\\",\\\"reading\\\":\\\"seconds\\\"},{\\\"label\\\":\\\"C\\\",\\\"reading\\\":\\\"an HTTP date\\\"}],\\\"tag\\\":\\\"detail\\\",\\\"question\\\":null}]}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
 [[rule.step]]
 exit = 0
 
@@ -1084,23 +1084,23 @@ emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-map\",\"stat
 exit = 0
 
 
-# restate
+# read
 [[rule]]
 argv0 = "agy"
 prompt_contains = '"success_criteria"'
 [[rule.step]]
-emit = "{\"event\":\"init\",\"conversation_id\":\"agy-restate\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
+emit = "{\"event\":\"init\",\"conversation_id\":\"agy-read\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-restate\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"summary\":\"Limit requests per user on the public API, answering 429 with a Retry-After date.\",\"success_criteria\":[\"A key past its limit gets 429 with Retry-After\",\"Limits survive a restart\",\"Under 5 ms p50 overhead\"],\"in_scope\":[\"the public API middleware\",\"a shared counter store\"],\"out_of_scope\":[\"the admin API\"],\"assumptions\":[\"Retry-After is an HTTP date\"],\"open_questions\":[]}}}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-read\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"summary\":\"Limit requests per user on the public API, answering 429 with a Retry-After date.\",\"success_criteria\":[\"A key past its limit gets 429 with Retry-After\",\"Limits survive a restart\",\"Under 5 ms p50 overhead\"],\"in_scope\":[\"the public API middleware\",\"a shared counter store\"],\"out_of_scope\":[\"the admin API\"],\"assumptions\":[\"Retry-After is an HTTP date\"],\"open_questions\":[]}}}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-restate\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-read\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
 [[rule.step]]
-emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-restate\",\"status\":\"SUCCESS\",\"response\":\"{\\\"summary\\\":\\\"Limit requests per user on the public API, answering 429 with a Retry-After date.\\\",\\\"success_criteria\\\":[\\\"A key past its limit gets 429 with Retry-After\\\",\\\"Limits survive a restart\\\",\\\"Under 5 ms p50 overhead\\\"],\\\"in_scope\\\":[\\\"the public API middleware\\\",\\\"a shared counter store\\\"],\\\"out_of_scope\\\":[\\\"the admin API\\\"],\\\"assumptions\\\":[\\\"Retry-After is an HTTP date\\\"],\\\"open_questions\\\":[]}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
+emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-read\",\"status\":\"SUCCESS\",\"response\":\"{\\\"summary\\\":\\\"Limit requests per user on the public API, answering 429 with a Retry-After date.\\\",\\\"success_criteria\\\":[\\\"A key past its limit gets 429 with Retry-After\\\",\\\"Limits survive a restart\\\",\\\"Under 5 ms p50 overhead\\\"],\\\"in_scope\\\":[\\\"the public API middleware\\\",\\\"a shared counter store\\\"],\\\"out_of_scope\\\":[\\\"the admin API\\\"],\\\"assumptions\\\":[\\\"Retry-After is an HTTP date\\\"],\\\"open_questions\\\":[]}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
 [[rule.step]]
 exit = 0
 
 
-# sent back from the merge checkpoint: these scenarios send back only the Redis store
+# sent back from the merge approval: these scenarios send back only the Redis store
 [[rule]]
 argv0 = "agy"
 prompt_contains = "The merge approval sent this task back for changes"
@@ -1275,6 +1275,6 @@ exit = 0
 [[rule]]
 argv0 = "agy"
 [[rule.step]]
-emit_file = "../../../adapters/antigravity-cli/fixtures/1.2.13/readonly_ok.stdout.jsonl"
+emit_file = "../../../adapters/antigravity-cli/fixtures/readonly_ok_plain.stdout.jsonl"
 [[rule.step]]
 exit = 0

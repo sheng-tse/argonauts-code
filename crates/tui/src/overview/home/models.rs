@@ -13,9 +13,10 @@ use super::look::{
     Unit, big, cli_word, dollars, model_style, model_word, share_tenths, short_date,
 };
 use super::numbers::heading;
+use crate::kit::{Drawn, Kit, fit, merge};
+use crate::overview::shades::ModelColors;
 use crate::text::truncate_spans;
 use crate::theme::Role;
-use crate::widgets::{Drawn, Kit, fit, merge};
 
 /// Models shown at once, two to a row.
 pub const PAGE: usize = 4;
@@ -34,19 +35,21 @@ const LEFT_COLUMN: usize = 46;
 pub struct Models<'a> {
     pub data: &'a OverviewData,
     pub names: &'a DisplayNames,
+    pub shades: &'a ModelColors<'a>,
 }
 
 impl Models<'_> {
     /// `Tokens per Day`, the chart, its dates and its legend, once there are two days to
-    /// draw a line between.
+    /// draw a line between. One day stretched across the chart would be a flat line that says
+    /// nothing, so Claude Code draws none, and neither does this.
     pub fn chart(&self, kit: &Kit<'_>, width: usize) -> Option<Drawn> {
+        if self.data.model_days.len() < 2 {
+            return None;
+        }
         let columns = width
             .saturating_sub(LABEL_CELLS + 1)
             .clamp(FEWEST_DAYS, MOST_DAYS);
         let days = spread_days(&self.data.model_days, columns);
-        if days.len() < 2 {
-            return None;
-        }
         let top = self.data.models.len().min(days[0].tokens.len());
         let mut drawn_models: Vec<&OverviewModel> = Vec::new();
         let mut series: Vec<Vec<u64>> = Vec::new();
@@ -65,7 +68,7 @@ impl Models<'_> {
         }
         let styles: Vec<Style> = drawn_models
             .iter()
-            .map(|model| model_style(kit, self.data, &model.agent, model.model.as_deref()))
+            .map(|model| model_style(kit, self.shades, &model.agent, model.model.as_deref()))
             .collect();
         let mut drawn = Drawn::new();
         drawn.push(vec![heading("Tokens per Day")]);
@@ -103,9 +106,9 @@ impl Models<'_> {
         let name = model_word(self.names, &first.agent, first.model.as_deref());
         let row = vec![
             Span::raw("★ Favorite: "),
-            Span::styled(name, kit.bold(Role::Card)),
+            Span::styled(name, kit.bold(Role::Question)),
             Span::raw(" · ● Total: "),
-            kit.span(big(self.data.total.total()), Role::Card),
+            kit.span(big(self.data.total.total()), Role::Question),
             Span::raw(" tokens"),
         ];
         let mut drawn = Drawn::new();
@@ -170,7 +173,7 @@ impl Models<'_> {
         });
         vec![
             vec![
-                Span::styled("● ", model_style(kit, self.data, agent, id)),
+                Span::styled("● ", model_style(kit, self.shades, agent, id)),
                 heading(model_word(self.names, agent, id)),
                 kit.dim(format!(
                     " ({})",
@@ -203,9 +206,10 @@ pub fn page_word(count: usize, first: usize) -> Option<String> {
     })
 }
 
-/// The first model a page can start at: the page that ends on the last model, a row at a time.
+/// The first model the last page starts at, which is the page that ends on the last model:
+/// `4-7 of 7`, as Claude Code stops.
 pub fn last_page(count: usize) -> usize {
-    count.saturating_sub(PAGE).next_multiple_of(PER_ROW)
+    count.saturating_sub(PAGE)
 }
 
 /// The days the chart draws in `columns` columns: the last ones when there are more, and each
@@ -273,8 +277,50 @@ mod tests {
     fn the_page_moves_a_row_at_a_time_and_stops_on_the_last() {
         assert_eq!(page_word(7, 0).as_deref(), Some("↑ ↓ 1-4 of 7 models"));
         assert_eq!(page_word(4, 0), None);
-        assert_eq!(last_page(7), 4);
+        assert_eq!(last_page(7), 3);
+        assert_eq!(
+            page_word(7, last_page(7)).as_deref(),
+            Some("↑ ↓ 4-7 of 7 models")
+        );
         assert_eq!(last_page(8), 4);
         assert_eq!(last_page(3), 0);
+    }
+
+    #[test]
+    fn one_day_draws_no_chart() {
+        use argonauts_core::overview::{OverviewData, OverviewModel, OverviewPeriod, Tokens};
+
+        let theme = crate::theme::Theme::dark();
+        let kit = Kit::new(&theme);
+        let names = DisplayNames::default();
+        let mut data = OverviewData::empty(OverviewPeriod::Week, date!(2026 - 08 - 19));
+        data.models = vec![OverviewModel {
+            agent: "claude-code".to_owned(),
+            model: Some("claude-opus-5-5".to_owned()),
+            tokens: Tokens {
+                input: 2,
+                ..Tokens::default()
+            },
+            api_value: None,
+            sessions: 1,
+        }];
+        let shades = ModelColors::new(&[], &names);
+        let mut chart = |days: Vec<ModelDay>| {
+            data.model_days = days;
+            let models = Models {
+                data: &data,
+                names: &names,
+                shades: &shades,
+            };
+            models.chart(&kit, 118)
+        };
+        assert!(chart(days(1)).is_none(), "one day");
+        let chart = chart(days(2)).expect("two days draw a line");
+        let title: String = chart.lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(title, "Tokens per Day");
     }
 }

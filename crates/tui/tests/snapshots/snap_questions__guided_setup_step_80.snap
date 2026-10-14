@@ -1,0 +1,36 @@
+---
+source: crates/tui/tests/snap_questions.rs
+expression: text(&lines)
+---
+────────────────────────────────────────────────────────────────────────────────
+◆ Welcome to Argonauts Code
+  Argonauts Code runs the coding agents you already use as one crew.
+
+  ❯ 1. Continue
+
+  Enter to choose · Esc to take the recommended answers
+
+────────────────────────────────────────────────────────────────────────────────
+◆ How should the crew work?
+  You can change it later with /workflow.
+
+  ❯ 1. council (recommended)
+    2. orchestrator
+    3. captain
+
+  Enter to choose · Esc to take the recommended answers
+
+────────────────────────────────────────────────────────────────────────────────
+◆ Approvals
+  With auto, the agents work and merge on their own under the rules. Change that
+  any time in /permissions and /approvals.
+
+  ❯ 1. Auto (recommended)
+       Rules and a reviewer from another provider decide, and you're asked when
+       a rule fails.
+    2. Supervised
+       You approve the goal, the plan, and every merge.
+    3. Auto preview
+       You approve, and Argonauts Code learns what it would have decided.
+
+  Enter to choose · Esc to take the recommended answers

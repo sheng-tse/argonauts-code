@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use argonauts_core::events::session::VendorWorkflow;
+use argonauts_core::events::session::CliWorkflowRun;
 use argonauts_core::settings::crew::CrewRole;
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -31,8 +31,8 @@ pub struct RunInput {
     /// The roles its agents may name. A script the orchestrator wrote for a workflow file keeps
     /// to the file's roles.
     pub roles: Option<BTreeSet<CrewRole>>,
-    /// A token target for the run, which `budget.total` reads. Past it, `agent()` throws.
-    pub token_budget: Option<u64>,
+    /// A token target for the run, which `limit.total` reads. Past it, `agent()` throws.
+    pub token_limit: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,7 +40,7 @@ pub struct Ended {
     /// What the script returned, or why it has no result.
     pub result: Result<Value, ScriptEnd>,
     /// The last state reported.
-    pub report: VendorWorkflow,
+    pub report: CliWorkflowRun,
     /// Agents that ran live. Calls answered from an earlier run don't count.
     pub agents_run: u32,
 }
@@ -197,7 +197,7 @@ fn drive<'a, H: Host + ?Sized>(
             script,
             input.args.clone(),
             &input.limits,
-            input.token_budget,
+            input.token_limit,
             Arc::clone(&shared.spent),
         )?;
         let mut calls: FuturesUnordered<BoxFuture<'a, Settled>> = FuturesUnordered::new();
@@ -232,9 +232,9 @@ fn drive<'a, H: Host + ?Sized>(
             };
             match event {
                 Event::Ended(ended) => return ended,
-                Event::Phase(title) => {
+                Event::Phase(name) => {
                     if group.is_none() {
-                        shared.progress().phase(&title);
+                        shared.progress().phase(&name);
                         shared.report();
                     }
                 }
@@ -323,11 +323,11 @@ fn agent_call<H: Host + ?Sized>(
             input.limits.agents
         ));
     }
-    if let Some(budget) = input.token_budget
-        && shared.spent.load(Ordering::Relaxed) >= budget
+    if let Some(limit) = input.token_limit
+        && shared.spent.load(Ordering::Relaxed) >= limit
     {
         return Err(format!(
-            "the run's {budget} tokens are spent, so no more agents start"
+            "the run's {limit} tokens are spent, so no more agents start"
         ));
     }
     let call = AgentCall::read(number, payload)?;
@@ -363,7 +363,7 @@ fn agent_call<H: Host + ?Sized>(
             );
         }
     }
-    // Your settings put a model in each seat and the file says which steps nest a workflow,
+    // Your settings give each role its models and the file says which steps nest a workflow,
     // so a script the orchestrator wrote names roles alone.
     if input.roles.is_some() {
         let chosen = [
@@ -391,7 +391,7 @@ async fn agent<H: Host + ?Sized>(
     let row = shared.progress().queue(
         &call.label,
         call.phase.as_deref(),
-        call.attempt,
+        call.try_number,
         &call.prompt,
     );
     call.row = u32::try_from(row + 1).unwrap_or(u32::MAX);
@@ -417,7 +417,7 @@ async fn agent<H: Host + ?Sized>(
             }
         }
         None => {
-            // A closed gate means the run is ending, and the agent never starts.
+            // A closed check means the run is ending, and the agent never starts.
             let Ok(_slot) = shared.slots.acquire().await else {
                 return (id, Ok(Value::Null), None);
             };
@@ -506,7 +506,7 @@ async fn check<H: Host + ?Sized>(
 }
 
 /// A workflow a script runs as a step, the `nth` it ran: its agents join this run's rows, caps
-/// and budget.
+/// and limit.
 async fn nested<'a, H: Host + ?Sized>(
     shared: &'a Shared<'a, H>,
     payload: Value,
@@ -528,7 +528,7 @@ async fn nested<'a, H: Host + ?Sized>(
         limits: input.limits.clone(),
         replay: Vec::new(),
         roles: input.roles.clone(),
-        token_budget: input.token_budget,
+        token_limit: input.token_limit,
     };
     match drive(&script, &child, shared, Nesting::step(nth)).await {
         Ok(value) => (id, Ok(value), None),

@@ -1,7 +1,7 @@
 //! A committed cell renders once, at the width of the frame that prints it, and goes into
-//! scrollback. Live cells redraw every frame until they finish, then print whole. Only the chat
-//! answer streams into scrollback line by line; agents' text stays inside their live blocks so
-//! lines from several agents never interleave.
+//! scrollback. Live cells redraw every frame until they finish, then print whole. Only the
+//! conversation answer streams into scrollback line by line; agents' text stays inside their live
+//! blocks so lines from several agents never interleave.
 
 use std::collections::VecDeque;
 use std::ops::Range;
@@ -77,8 +77,8 @@ struct OpenStream {
     blanks: Vec<Line<'static>>,
     /// Cells committed while it streams. They print after it, so scrollback keeps order.
     held: Vec<Cell>,
-    /// The finished reply, kept in place of what streamed when the two differ after rows of it
-    /// printed.
+    /// The finished reply, kept in place of what streamed when the two are different after rows of
+    /// it printed.
     reply: Option<String>,
 }
 
@@ -163,7 +163,8 @@ impl History {
         self.header_redrawn.take()
     }
 
-    /// Adds a cell to the live region, where it redraws until [`finish_active`](Self::finish_active).
+    /// Adds a cell to the live region, where it redraws until
+    /// [`finish_active`](Self::finish_active).
     pub fn push_active(&mut self, cell: impl Into<Cell>) -> CellId {
         let id = self.alloc_id();
         self.active.push((id, cell.into()));
@@ -259,8 +260,8 @@ impl History {
     }
 
     /// Ends the answer with `markdown`, the reply as the agent finished it. A reply that only
-    /// adds to what streamed prints the rest. One that differs replaces the preview when none of
-    /// it printed yet; otherwise the printed rows stay and the overlay keeps the reply.
+    /// adds to what streamed prints the rest. One that is different replaces the preview when none
+    /// of it printed yet; otherwise the printed rows stay and the overlay keeps the reply.
     pub fn finish_stream_with(&mut self, id: CellId, markdown: &str) -> bool {
         let Some(open) = self.stream.as_mut().filter(|open| open.id == id) else {
             return false;
@@ -431,7 +432,7 @@ impl History {
         let mut blocks = Vec::new();
         if let Some(open) = &self.stream {
             let mut lines = open.stream.tail(ctx);
-            // Held blank rows lead the tail, so the screen reads as it will print.
+            // Held blank rows come first in the tail, so the screen reads as it will print.
             if !lines.is_empty() {
                 lines.splice(0..0, open.blanks.iter().cloned());
             }
@@ -495,7 +496,7 @@ mod tests {
             main_agent: Some(agent.to_owned()),
             model: None,
             effort: None,
-            workflow: "solo".to_owned(),
+            workflow: "captain".to_owned(),
             folder: "~/repo".to_owned(),
             agents: Vec::new(),
             runs_going: 0,
@@ -517,7 +518,7 @@ mod tests {
         let rows = history.drain_printable(&ctx);
         let at = history.take_header_rows().expect("the header's rows");
         let shown = plain_text(&rows[at.clone()]);
-        assert!(shown.contains("Claude Code · Solo"), "{shown}");
+        assert!(shown.contains("Claude Code · Captain"), "{shown}");
         assert_eq!(at.start, 2, "after the first row and the blank one");
         assert_eq!(plain_text(&rows[at.end..]), "\n❯ bye");
         assert_eq!(history.take_header_redrawn(), None);
@@ -528,7 +529,7 @@ mod tests {
         assert_eq!(history.take_header_rows(), None);
         let redrawn = history.take_header_redrawn().expect("the new header");
         assert_eq!(redrawn.len(), at.len());
-        assert!(plain_text(&redrawn).contains("Codex · Solo"));
+        assert!(plain_text(&redrawn).contains("Codex · Captain"));
         let headers = history
             .cells()
             .iter()

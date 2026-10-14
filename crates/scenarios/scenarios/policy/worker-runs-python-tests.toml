@@ -1,0 +1,58 @@
+# The sample run's repo: Python with no .gitignore. The fake Claude Code owns a Captain task: it
+# writes hello.txt and textkit.py with its Write tool and, as running the tests would, leaves
+# bytecode and a pytest cache beside them, then plays the recorded build run, which writes
+# hello.txt. Any other Claude Code call gets the recorded read-only answer. The fake Codex,
+# where a scenario makes it the reviewer, approves the task.
+
+[version]
+claude = "2.1.284 (Claude Code)"
+codex = "codex-cli 0.158.0"
+agy = "1.2.13"
+
+[[rule]]
+argv0 = "claude"
+args_contain = ["-p"]
+stdin_prompt = "line"
+prompt_contains = "hello.txt"
+[[rule.step]]
+write = { path = "hello.txt", content = "hi\n" }
+[[rule.step]]
+write = { path = "textkit.py", content = "def slugify(text):\n    return text.lower()\n" }
+# What Claude Code prints when its Write tool makes textkit.py, which is how the file is known
+# to be the agent's own work and not something a command left behind.
+[[rule.step]]
+emit = '{"type":"assistant","message":{"id":"msg_textkit","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_textkit","name":"Write","input":{"file_path":"textkit.py","content":"def slugify(text):\n    return text.lower()\n"}}]},"parent_tool_use_id":null,"session_id":"54794f0b-6a9d-4ca1-ac64-42dac771c423"}'
+[[rule.step]]
+emit = '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_textkit","type":"tool_result","content":"File created successfully at: textkit.py"}]},"parent_tool_use_id":null,"session_id":"54794f0b-6a9d-4ca1-ac64-42dac771c423","tool_use_result":{"type":"create","filePath":"textkit.py","content":"def slugify(text):\n    return text.lower()\n","structuredPatch":[],"originalFile":null,"userModified":false}}'
+[[rule.step]]
+write = { path = "__pycache__/textkit.cpython-312.pyc", content = "bytecode the tests left" }
+[[rule.step]]
+write = { path = ".pytest_cache/v/cache/nodeids", content = "[]" }
+[[rule.step]]
+emit_file = "../../../adapters/claude-code/fixtures/write.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "claude"
+args_contain = ["-p"]
+stdin_prompt = "line"
+[[rule.step]]
+emit_file = "../../../adapters/claude-code/fixtures/read-only-untitled.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+stdin_prompt = "all"
+[[rule.step]]
+emit = '{"type":"thread.started","thread_id":"01a0ec49-6e10-7c90-868e-70bbd0cb3302"}'
+[[rule.step]]
+emit = '{"type":"turn.started"}'
+[[rule.step]]
+emit = '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"verdict\":\"approve\",\"summary\":\"hello.txt holds the word hi, as asked.\",\"comments\":[],\"tamper_suspected\":false}"}}'
+[[rule.step]]
+emit = '{"type":"turn.completed","usage":{"input_tokens":2000,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":40,"reasoning_output_tokens":0}}'
+[[rule.step]]
+exit = 0

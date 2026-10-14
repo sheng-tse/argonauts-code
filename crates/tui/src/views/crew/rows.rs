@@ -4,19 +4,19 @@
 use std::collections::BTreeSet;
 
 use argonauts_core::Spend;
-use argonauts_core::crew_panel::{
-    CrewDetails, CrewPanel, CrewRow, CrewRun, CrewState, CrewTarget, RunStands, SeatTry,
-    fold_tries, seat_of,
+use argonauts_core::agent_panel::{
+    AgentPanelRows, CrewDetails, CrewRow, CrewRun, CrewState, CrewTarget, LabelTry, RunStands,
+    first_label, fold_tries,
 };
-use argonauts_core::events::checkpoint::{CheckpointKind, CheckpointPacket};
-use argonauts_core::events::run::{ParkReason, RunOutcome};
+use argonauts_core::events::approval::{ApprovalKind, ApprovalPacket};
+use argonauts_core::events::run::{RunOutcome, WaitReason};
 use argonauts_core::events::session::{InputPart, InputPartKind};
 use argonauts_core::names::{RoleName, SessionKey};
 use argonauts_core::steps::summary_line;
 use time::OffsetDateTime;
 
 use crate::bridge::tools;
-use crate::state::{AppState, OpenCheckpoint, RunState, SessionState, SessionStatus, task_label};
+use crate::state::{AppState, OpenApproval, RunState, SessionState, SessionStatus, task_label};
 use crate::text::sanitize_line;
 use crate::theme::Glyphs;
 use crate::views::panes;
@@ -36,14 +36,14 @@ fn last_line(text: &str) -> String {
         .to_owned()
 }
 
-/// This repo as the status line or the welcome names it, else as the controller did.
+/// This repo as the bottom line or the welcome names it, else as the controller did.
 fn this_repo(state: &AppState) -> String {
     let named = state
         .status
         .as_ref()
         .map(|status| status.repo.clone())
         .or_else(|| state.welcome.as_ref().map(|welcome| welcome.repo.clone()))
-        .or_else(|| state.crew_panel.as_ref().map(|panel| panel.repo.clone()))
+        .or_else(|| state.agent_panel.as_ref().map(|panel| panel.repo.clone()))
         .unwrap_or_default();
     match clean(&named) {
         repo if repo.is_empty() => "This repo".to_owned(),
@@ -53,10 +53,10 @@ fn this_repo(state: &AppState) -> String {
 
 /// Every row the panel shows. A run the screen holds is shown by its agents, so the
 /// controller's row for the whole run gives way to them.
-pub(super) fn panel(state: &AppState, now: OffsetDateTime) -> CrewPanel {
+pub(super) fn panel(state: &AppState, now: OffsetDateTime) -> AgentPanelRows {
     let repo = this_repo(state);
     let mut rows = own_rows(state, &repo, now);
-    if let Some(fetched) = &state.crew_panel {
+    if let Some(fetched) = &state.agent_panel {
         let shown: BTreeSet<_> = rows
             .iter()
             .filter_map(|row| row.run.as_ref().map(|run| run.id.clone()))
@@ -68,8 +68,8 @@ pub(super) fn panel(state: &AppState, now: OffsetDateTime) -> CrewPanel {
                 .filter(|row| match &row.target {
                     CrewTarget::Run { run }
                     | CrewTarget::Agent { run, .. }
-                    | CrewTarget::Checkpoint { run, .. } => !shown.contains(run),
-                    CrewTarget::Conversation { .. } | CrewTarget::VendorSession { .. } => true,
+                    | CrewTarget::Approval { run, .. } => !shown.contains(run),
+                    CrewTarget::Conversation { .. } | CrewTarget::CliSession { .. } => true,
                 })
                 .map(|row| CrewRow {
                     // The controller writes this repo the way the screen does; the rest are
@@ -83,7 +83,7 @@ pub(super) fn panel(state: &AppState, now: OffsetDateTime) -> CrewPanel {
                 }),
         );
     }
-    CrewPanel { repo, rows }
+    AgentPanelRows { repo, rows }
 }
 
 /// The run on screen, or every run the screen holds when none is.
@@ -138,30 +138,30 @@ fn own_rows(state: &AppState, repo: &str, now: OffsetDateTime) -> Vec<CrewRow> {
                 updated: session.ended.unwrap_or(session.last_event),
                 details: details(run, session),
             };
-            tries.push(SeatTry {
-                seat: seat(session, &label),
+            tries.push(LabelTry {
+                key: try_key(session, &label),
                 started: session.started,
                 ended: session.ended,
                 row,
             });
         }
         rows.extend(fold_tries(tries));
-        // Cards that wait on you with no agent of their own, such as a merge.
-        for open in run.checkpoints.iter().filter(|open| open.opened.needs_you) {
+        // Questions that wait on you with no agent of their own, such as a merge.
+        for open in run.approvals.iter().filter(|open| open.opened.needs_you) {
             if asker(&sessions, open).is_some() {
                 continue;
             }
-            let card = open.opened.card.as_ref();
+            let task = open.opened.task.as_ref();
             rows.push(CrewRow {
-                target: CrewTarget::Checkpoint {
+                target: CrewTarget::Approval {
                     run: run.id.clone(),
-                    checkpoint: open.opened.id.clone(),
+                    approval: open.opened.id.clone(),
                 },
                 state: CrewState::NeedsYou,
                 // The question goes in the message column, so the title names the work.
-                title: card_title(run, card),
-                label: Some(match card {
-                    Some(card) => clean(&run.card_label(card)),
+                title: task_title(run, task),
+                label: Some(match task {
+                    Some(task) => clean(&run.task_label(task)),
                     None => approval_name(open.opened.kind).to_owned(),
                 }),
                 tries: 0,
@@ -172,7 +172,7 @@ fn own_rows(state: &AppState, repo: &str, now: OffsetDateTime) -> Vec<CrewRow> {
                 updated: run.updated.unwrap_or(now),
                 details: CrewDetails {
                     last_message: Some(question(open)),
-                    card: card.cloned(),
+                    task: task.cloned(),
                     ..CrewDetails::default()
                 },
             });
@@ -205,17 +205,17 @@ fn page_mark(state: &AppState) -> &'static str {
 
 /// Where the run stands, for its heading: how it ended and when, else what it's doing now.
 fn run_stands(run: &RunState, now: OffsetDateTime) -> RunStands {
-    let (state, word) = match (&run.finished, &run.parked) {
+    let (state, word) = match (&run.finished, &run.waiting) {
         (Some(RunOutcome::Merged), _) => (CrewState::Done, "merged"),
         (Some(RunOutcome::PullRequest), _) => (CrewState::Done, "pull request"),
         (Some(RunOutcome::BranchLeft), _) => (CrewState::Done, "branch left"),
         (Some(RunOutcome::Stopped), _) => (CrewState::Stopped, "stopped"),
         (Some(RunOutcome::Abandoned), _) => (CrewState::Stopped, "abandoned"),
         (Some(RunOutcome::Failed), _) => (CrewState::Failed, "failed"),
-        (None, _) if run.checkpoints.iter().any(|open| open.opened.needs_you) => {
+        (None, _) if run.approvals.iter().any(|open| open.opened.needs_you) => {
             (CrewState::NeedsYou, "needs you")
         }
-        (None, Some(ParkReason::Checkpoint)) => (CrewState::NeedsYou, "needs you"),
+        (None, Some(WaitReason::Approval)) => (CrewState::NeedsYou, "needs you"),
         (None, Some(_)) => (CrewState::Waiting, "waiting"),
         (None, None) if run.pausing => (CrewState::Waiting, "pausing"),
         (None, None) => (CrewState::Working, "running"),
@@ -231,12 +231,13 @@ fn run_stands(run: &RunState, now: OffsetDateTime) -> RunStands {
 
 /// What the list calls an approval that waits on you with no task of its own. The run's
 /// heading already says what the work is.
-fn approval_name(kind: CheckpointKind) -> &'static str {
+fn approval_name(kind: ApprovalKind) -> &'static str {
     match kind {
-        CheckpointKind::Goal | CheckpointKind::GoalChange => "goal approval",
-        CheckpointKind::Plan => "plan approval",
-        CheckpointKind::Merge => "merge approval",
-        CheckpointKind::Question => "question",
+        ApprovalKind::Understand => "Understand approval",
+        ApprovalKind::GoalChange => "goal change approval",
+        ApprovalKind::Plan => "plan approval",
+        ApprovalKind::Merge => "merge approval",
+        ApprovalKind::Question => "question",
         _ => "approval",
     }
 }
@@ -247,17 +248,17 @@ fn label_of(session: &SessionState) -> String {
     let label = session
         .label
         .clone()
-        .unwrap_or_else(|| task_label(session.role, session.step, session.card.as_ref()));
+        .unwrap_or_else(|| task_label(session.role, session.step, session.task.as_ref()));
     clean(&label)
 }
 
 /// What an agent's tries share. A task's sessions keep its label through every retry, so the
-/// label is the seat. An agent with no task gets `-2` on a retry to keep its label unique, so
-/// its seat is the label without that, told apart by its role.
-fn seat(session: &SessionState, label: &str) -> String {
-    match &session.card {
-        Some(card) => format!("{card}/{label}"),
-        None => format!("{}/{}", session.role.as_str(), seat_of(label)),
+/// label is enough. An agent with no task gets `-2` on a retry to keep its label unique, so
+/// its key is the label without that, told apart by its role.
+fn try_key(session: &SessionState, label: &str) -> String {
+    match &session.task {
+        Some(task) => format!("{task}/{label}"),
+        None => format!("{}/{}", session.role.as_str(), first_label(label)),
     }
 }
 
@@ -271,11 +272,11 @@ pub(super) fn state_of(status: SessionStatus) -> CrewState {
     }
 }
 
-/// What an agent works on: its card, else the run's goal, after the role it plays when that
-/// isn't the default agent's, so a run's restaters, drafters, and judges read apart.
+/// What an agent works on: its task, else the run's goal, after the role it plays when that
+/// isn't the main agent's, so a run's readers, drafting agents, and judges read apart.
 fn session_title(run: &RunState, session: &SessionState) -> String {
-    let title = card_title(run, session.card.as_ref());
-    if session.card.is_some() || session.role == RoleName::Main {
+    let title = task_title(run, session.task.as_ref());
+    if session.task.is_some() || session.role == RoleName::Main {
         return title;
     }
     let role = capitalized(&session.role.as_str().replace('_', " "));
@@ -286,47 +287,47 @@ fn session_title(run: &RunState, session: &SessionState) -> String {
     }
 }
 
-/// A card's title, else the run's goal, which is what an agent with no card works on.
-fn card_title(run: &RunState, card: Option<&argonauts_core::CardId>) -> String {
-    let title = card
-        .and_then(|card| run.cards.get(card))
+/// A task's title, else the run's goal, which is what an agent with no task works on.
+fn task_title(run: &RunState, task: Option<&argonauts_core::TaskId>) -> String {
+    let title = task
+        .and_then(|task| run.tasks.get(task))
         .map(|row| clean(&row.title))
         .filter(|title| !title.is_empty());
-    match (title, card) {
+    match (title, task) {
         (Some(title), _) => title,
-        (None, Some(card)) if run.title.trim().is_empty() => clean(card.as_str()),
+        (None, Some(task)) if run.title.trim().is_empty() => clean(task.as_str()),
         _ => clean(&run.title),
     }
 }
 
-/// The question a card asks, word for word, or its title.
-pub(super) fn question(open: &OpenCheckpoint) -> String {
+/// The question a question asks, word for word, or its title.
+pub(super) fn question(open: &OpenApproval) -> String {
     match &open.opened.packet {
-        CheckpointPacket::Question(question) => clean(&question.text),
+        ApprovalPacket::Question(question) => clean(&question.text),
         _ => clean(&open.opened.title),
     }
 }
 
-/// The card waiting on you that `session` asked, if any.
-pub(super) fn asked_by<'a>(run: &'a RunState, session: &SessionKey) -> Option<&'a OpenCheckpoint> {
+/// The question waiting on you that `session` asked, if any.
+pub(super) fn asked_by<'a>(run: &'a RunState, session: &SessionKey) -> Option<&'a OpenApproval> {
     let sessions: Vec<&SessionState> = run.sessions_in_order().collect();
-    run.checkpoints
+    run.approvals
         .iter()
         .filter(|open| open.opened.needs_you)
         .find(|open| asker(&sessions, open).is_some_and(|asker| asker.key == *session))
 }
 
-/// The session a card that waits on you belongs to: the one that asked, else a running one on
-/// the card, else its newest.
-fn asker<'a>(sessions: &[&'a SessionState], open: &OpenCheckpoint) -> Option<&'a SessionState> {
-    let card = open.opened.card.as_ref()?;
-    let on_card: Vec<&SessionState> = sessions
+/// The session a question that waits on you belongs to: the one that asked, else a running one on
+/// the task, else its newest.
+fn asker<'a>(sessions: &[&'a SessionState], open: &OpenApproval) -> Option<&'a SessionState> {
+    let task = open.opened.task.as_ref()?;
+    let on_task: Vec<&SessionState> = sessions
         .iter()
         .copied()
-        .filter(|session| session.card.as_ref() == Some(card))
+        .filter(|session| session.task.as_ref() == Some(task))
         .collect();
-    if let CheckpointPacket::Question(question) = &open.opened.packet
-        && let Some(session) = on_card
+    if let ApprovalPacket::Question(question) = &open.opened.packet
+        && let Some(session) = on_task
             .iter()
             .copied()
             .filter(|session| session.is_worker(&question.from))
@@ -334,7 +335,7 @@ fn asker<'a>(sessions: &[&'a SessionState], open: &OpenCheckpoint) -> Option<&'a
     {
         return Some(session);
     }
-    on_card
+    on_task
         .iter()
         .copied()
         .max_by_key(|session| (session.is_running(), session.started))
@@ -346,7 +347,7 @@ pub(crate) fn activity(session: &SessionState) -> String {
     let running =
         |tool: &&crate::state::ToolRecord| tool.ok.is_none() && !tools::is_tool_lookup(&tool.name);
     if let Some(tool) = session.tools.iter().rev().find(running) {
-        let call = tools::start_call(&session.vendor, &tool.name, &tool.input);
+        let call = tools::start_call(&session.agent_id, &tool.name, &tool.input);
         return clean(&call.title.plain());
     }
     if !session.streaming.trim().is_empty() {
@@ -394,20 +395,20 @@ fn details(run: &RunState, session: &SessionState) -> CrewDetails {
     });
     CrewDetails {
         last_message: last_message(session),
-        card: session.card.clone(),
+        task: session.task.clone(),
         spent,
         context: session.context,
-        // The conductor's name for a card's branch (`argonauts_crew::integrate::branch`).
+        // Argonauts Code's name for a task's branch (`argonauts_crew::merge::branch`).
         branch: session
-            .card
+            .task
             .as_ref()
-            .map(|card| format!("argonauts/{}/{card}", run.id)),
+            .map(|task| format!("argonauts/{}/{task}", run.id)),
         prompt: prompt(session),
     }
 }
 
 /// What the session was asked to do: what the orchestrator wrote for it, then the task it was
-/// handed, else the message that started it, else the run's goal. The role's standing
+/// given, else the message that started it, else the run's goal. The role's standing
 /// instructions aren't the ask.
 fn prompt(session: &SessionState) -> Option<String> {
     let first = session.inputs.first()?;
@@ -422,15 +423,15 @@ fn prompt(session: &SessionState) -> Option<String> {
             .join("\n\n")
     };
     let written = texts(&argonauts_core::prompt_parts::written_for_the_agent);
-    let handed = [
-        InputPartKind::Card,
+    let given = [
+        InputPartKind::Task,
         InputPartKind::Message,
         InputPartKind::Goal,
     ]
     .into_iter()
     .map(|kind| texts(&|part| part.kind == kind))
     .find(|text| !text.is_empty());
-    let ask: Vec<String> = [Some(written), handed]
+    let ask: Vec<String> = [Some(written), given]
         .into_iter()
         .flatten()
         .filter(|text| !text.is_empty())
@@ -455,7 +456,7 @@ mod tests {
             OffsetDateTime::UNIX_EPOCH,
         );
         session.end = Some(Box::new(SessionEnd {
-            vendor_session: None,
+            cli_session: None,
             exit_code: Some(0),
             signal: None,
             duration_ms: 1_000,
@@ -471,14 +472,14 @@ mod tests {
     }
 
     /// The orchestrator's brief is the ask, ahead of the task's facts, and the frame and
-    /// Argonauts' own template for the step are never part of it.
+    /// Argonauts Code's own template for the step are never part of it.
     #[test]
     fn the_ask_is_what_the_orchestrator_wrote_then_the_task() {
         use argonauts_core::events::session::{LaunchRecord, PromptVia, SessionInput};
         use argonauts_core::prompt_parts as parts;
 
         let task = InputPart {
-            kind: InputPartKind::Card,
+            kind: InputPartKind::Task,
             label: "task-001".to_owned(),
             text: "task-001 · Add due dates\n\nKind: building\n".to_owned(),
             approx_tokens: 8,
@@ -537,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn a_page_an_agent_published_leads_its_last_line() {
+    fn a_page_an_agent_published_comes_before_its_last_line() {
         let said = || "Wrote the test report.".to_owned();
         assert_eq!(with_artifact(None, said(), "⧉"), "Wrote the test report.");
         assert_eq!(

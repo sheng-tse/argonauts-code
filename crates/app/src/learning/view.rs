@@ -1,6 +1,6 @@
 //! What the four Learning pickers show, built from the learning crate's files: track records
-//! and prediction scores, recipes with their candidates and the replay set, skills and the
-//! branches waiting for you, and notes with the flagged ones and the conventions. A part of
+//! and prediction scores, learned workflows with their candidates and the replay set, skills and
+//! the branches waiting for you, and notes with the flagged ones and the conventions. A part of
 //! learning that isn't built yet shows as empty, never as an error.
 
 use time::OffsetDateTime;
@@ -10,11 +10,11 @@ use argonauts_core::settings::Settings;
 use argonauts_core::views::{
     LearningAction, LearningArea, LearningCommand, LearningRow, LearningTab, LearningView,
 };
-use argonauts_crew::retro::notes;
+use argonauts_crew::run_review::notes;
 use argonauts_learning::Store;
 use argonauts_learning::evolution::{self, CandidateState, Evolution};
+use argonauts_learning::learned_workflows::{self, LearnedWorkflowSet};
 use argonauts_learning::predictions::{self, Calibration};
-use argonauts_learning::recipes::{self, RecipeSet};
 use argonauts_learning::records::{Book, Record};
 use argonauts_learning::replay::ReplaySet;
 use argonauts_learning::skills;
@@ -22,8 +22,8 @@ use argonauts_learning::sync::{self, SyncMode};
 
 use super::or_empty;
 
-/// What a picker opens on: the agent `/records <agent>` names, the recipe `/learned <name>`
-/// names.
+/// What a picker opens on: the agent `/records <agent>` names, the learned workflow `/learned
+/// <name>` names.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Focus {
     pub name: Option<String>,
@@ -40,7 +40,7 @@ pub(crate) fn build(
     let now = OffsetDateTime::now_utc();
     let (tabs, summary) = match area {
         LearningArea::Records => records(store, settings, now)?,
-        LearningArea::Recipes => recipes(store, settings, now)?,
+        LearningArea::LearnedWorkflows => learned_workflows(store, settings, now)?,
         LearningArea::Skills => skill_tabs(store)?,
         LearningArea::Memory => memory(store)?,
     };
@@ -56,7 +56,7 @@ pub(crate) fn build(
     })
 }
 
-/// The first row whose id starts with the named agent or recipe.
+/// The first row whose id starts with the named agent or learned workflow.
 fn focused(tabs: &[LearningTab], focus: &Focus) -> (usize, Option<String>) {
     let Some(name) = &focus.name else {
         return (0, None);
@@ -270,12 +270,12 @@ fn calibration_row(score: &Calibration) -> LearningRow {
     }
 }
 
-fn recipes(
+fn learned_workflows(
     store: &Store,
     settings: &Settings,
     now: OffsetDateTime,
 ) -> anyhow::Result<(Vec<LearningTab>, String)> {
-    let sets = or_empty(recipes::load_all(store))?;
+    let sets = or_empty(learned_workflows::load_all(store))?;
     let evolution = Evolution::open(store)?;
     let candidates = or_empty(evolution.candidates())?;
     let replay = ReplaySet::open(store)?;
@@ -290,7 +290,7 @@ fn recipes(
         ),
         None => format!("stage {} · ${spent:.2} this month", serde_word(&stage)),
     };
-    let recipe_rows = sets.iter().map(recipe_row).collect();
+    let learned_workflow_rows = sets.iter().map(learned_workflow_row).collect();
     let candidate_rows = candidates
         .iter()
         .map(|candidate| {
@@ -368,7 +368,7 @@ fn recipes(
                 entry.id.clone(),
                 entry.task_type.clone(),
                 if entry.holdout { "holdout" } else { "tuning" }.to_owned(),
-                format!("${:.2}", entry.budget_usd),
+                format!("${:.2}", entry.limit_usd),
             ],
             detail: vec![format!("From {}", entry.run)],
             actions: Vec::new(),
@@ -400,7 +400,7 @@ fn recipes(
                 entry.id.clone(),
                 entry.task_type.clone(),
                 "waits for you".to_owned(),
-                format!("${:.2}", entry.budget_usd),
+                format!("${:.2}", entry.limit_usd),
             ],
             detail: proposal
                 .checks
@@ -425,7 +425,7 @@ fn recipes(
                 columns: ["Workflow", "Runs", "Versions", "Mode", "Matches"]
                     .map(str::to_owned)
                     .to_vec(),
-                rows: recipe_rows,
+                rows: learned_workflow_rows,
                 empty: "No learned workflows yet. A run that merges and passes first time proposes one."
                     .to_owned(),
             },
@@ -439,7 +439,7 @@ fn recipes(
             },
             LearningTab {
                 title: "Replay set".to_owned(),
-                columns: ["Task", "Kind of work", "Set", "Budget"]
+                columns: ["Task", "Kind of work", "Set", "Limit"]
                     .map(str::to_owned)
                     .to_vec(),
                 rows: replay_rows,
@@ -451,32 +451,32 @@ fn recipes(
     ))
 }
 
-fn recipe_row(set: &RecipeSet) -> LearningRow {
+fn learned_workflow_row(set: &LearnedWorkflowSet) -> LearningRow {
     let current = set.current();
     let versions: Vec<String> = set
         .versions
         .iter()
-        .map(|loaded| format!("v{}", loaded.recipe.version))
+        .map(|loaded| format!("v{}", loaded.learned_workflow.version))
         .collect();
     let (mode, matches, detail) = match current {
         Some(loaded) => {
-            let recipe = &loaded.recipe;
-            let mut matches = recipe.matches.task_types.clone();
+            let learned_workflow = &loaded.learned_workflow;
+            let mut matches = learned_workflow.matches.task_types.clone();
             matches.extend(
-                recipe
+                learned_workflow
                     .matches
                     .labels_any
                     .iter()
                     .map(|label| format!("#{label}")),
             );
             (
-                recipe
+                learned_workflow
                     .mode
                     .map(|mode| serde_word(&mode))
-                    .unwrap_or_else(|| "triage".to_owned()),
+                    .unwrap_or_else(|| "captain or crew".to_owned()),
                 matches.join(", "),
                 vec![
-                    recipe.description.clone(),
+                    learned_workflow.description.clone(),
                     format!(
                         "{} · sha256 {}",
                         loaded.path.display(),
@@ -502,14 +502,14 @@ fn recipe_row(set: &RecipeSet) -> LearningRow {
                 'r',
                 "roll back",
                 LearningCommand::Rollback {
-                    recipe: set.name.clone(),
+                    learned_workflow: set.name.clone(),
                 },
             ),
             action(
                 'e',
                 "export as a skill",
                 LearningCommand::Export {
-                    recipe: set.name.clone(),
+                    learned_workflow: set.name.clone(),
                 },
             ),
         ],
@@ -530,9 +530,14 @@ fn skill_tabs(store: &Store) -> anyhow::Result<(Vec<LearningTab>, String)> {
                 id: front.name.clone(),
                 cells: vec![
                     front.name.clone(),
-                    match (meta(skills::META_RECIPE), meta(skills::META_VERSION)) {
-                        (recipe, _) if recipe.is_empty() => "imported".to_owned(),
-                        (recipe, version) => format!("{recipe} v{version}"),
+                    match (
+                        meta(skills::META_LEARNED_WORKFLOW),
+                        meta(skills::META_VERSION),
+                    ) {
+                        (learned_workflow, _) if learned_workflow.is_empty() => {
+                            "imported".to_owned()
+                        }
+                        (learned_workflow, version) => format!("{learned_workflow} v{version}"),
                     },
                     if drift.is_some() {
                         "edited by hand".to_owned()
@@ -623,12 +628,12 @@ fn memory(store: &Store) -> anyhow::Result<(Vec<LearningTab>, String)> {
     for file in notes::read_files(&store.repo_root) {
         for (note, source) in file.notes {
             note_rows.push(LearningRow {
-                id: format!("{} {} {}", source.run, source.card, note.topic),
+                id: format!("{} {} {}", source.run, source.task, note.topic),
                 cells: vec![
                     note.topic.clone(),
                     note.text.clone(),
                     source.worker.to_string(),
-                    format!("{} {}", source.run, source.card),
+                    format!("{} {}", source.run, source.task),
                 ],
                 detail: vec![format!("In {}", file.relative)],
                 actions: Vec::new(),
@@ -646,7 +651,7 @@ fn memory(store: &Store) -> anyhow::Result<(Vec<LearningTab>, String)> {
                     flagged.note.topic.clone(),
                     flagged.note.text.clone(),
                     flagged.source.worker.to_string(),
-                    format!("{} {}", flagged.source.run, flagged.source.card),
+                    format!("{} {}", flagged.source.run, flagged.source.task),
                 ],
                 detail: flagged
                     .findings
@@ -803,8 +808,11 @@ mod tests {
             records.starts_with("0 agents · routing bandit"),
             "{records}"
         );
-        let recipes = summary(LearningArea::Recipes, &store);
-        assert!(recipes.contains(" $0.00 this month"), "{recipes}");
+        let learned_workflows = summary(LearningArea::LearnedWorkflows, &store);
+        assert!(
+            learned_workflows.contains(" $0.00 this month"),
+            "{learned_workflows}"
+        );
         let skills = summary(LearningArea::Skills, &store);
         assert!(
             skills.starts_with("0 skills · 0 branches wait for you"),
@@ -826,7 +834,7 @@ mod tests {
         let cells = |text: &str| text.chars().count();
         for area in [
             LearningArea::Records,
-            LearningArea::Recipes,
+            LearningArea::LearnedWorkflows,
             LearningArea::Skills,
             LearningArea::Memory,
         ] {

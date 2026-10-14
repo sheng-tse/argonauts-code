@@ -6,12 +6,14 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
+use argonauts_conductor::cli_versions::{CliVersions, Installed, version_check};
 use argonauts_conductor::doctor::versions::newest_tested;
 use argonauts_conductor::{AgentStatus, DoctorReport};
 use argonauts_core::Adapter;
 use argonauts_core::adapter::SetupHints;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::Settings;
+use argonauts_core::status_tab::CliVersionCheck;
 use serde::Deserialize;
 
 /// Each server probe waits at most this long.
@@ -68,10 +70,16 @@ pub(crate) struct FoundAgent {
     pub login: LoginState,
     /// The newest version its adapter was recorded with.
     pub newest_tested: Option<String>,
-    /// The kinds of events this version sent that Argonauts doesn't read yet, with counts.
+    /// The kinds of events this version sent that Argonauts Code doesn't read yet, with counts.
     pub unread: Vec<(String, u64)>,
-    /// Built-in plugins a later version loaded that Argonauts doesn't know yet.
+    /// Built-in plugins a later version loaded that Argonauts Code doesn't know yet.
     pub builtins: Vec<String>,
+    /// What Doctor's check of it found wrong, such as flags its `--help` lacks.
+    pub problem: Option<String>,
+    /// What this version's start-up message stopped reporting, each as a sentence.
+    pub lacks: Vec<String>,
+    /// How its version stands and what there is to update to.
+    pub check: CliVersionCheck,
 }
 
 impl FoundAgent {
@@ -85,8 +93,8 @@ impl FoundAgent {
         self.installed() && self.enabled && self.login != LoginState::LoggedOut
     }
 
-    pub(crate) fn worker(&self) -> WorkerRef {
-        WorkerRef::new(self.id.clone(), None)
+    pub(crate) fn worker(&self) -> ModelRef {
+        ModelRef::new(self.id.clone(), None)
     }
 
     /// What to run to make it ready, when there's one command for it.
@@ -126,6 +134,16 @@ pub(crate) fn found_agents(
                 newest_tested: newest_tested(adapter.tested_versions()).map(str::to_owned),
                 unread: Vec::new(),
                 builtins: Vec::new(),
+                problem: check.and_then(|check| check.problem.clone()),
+                lacks: Vec::new(),
+                // What sessions have shown of this version is added where Doctor reports.
+                check: check.map_or_else(CliVersionCheck::default, |check| {
+                    version_check(
+                        adapter.as_ref(),
+                        Installed::of(check),
+                        &CliVersions::default(),
+                    )
+                }),
             }
         })
         .collect()
@@ -270,6 +288,9 @@ mod tests {
             newest_tested: None,
             unread: Vec::new(),
             builtins: Vec::new(),
+            problem: None,
+            lacks: Vec::new(),
+            check: Default::default(),
         };
         let agents = vec![
             agent("codex", Some(vec!["login".to_owned(), "status".to_owned()])),

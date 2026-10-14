@@ -1,6 +1,6 @@
 //! For the run-side tests: the controller's context with the fake conductor and approvals,
 //! driving the runs part's handlers directly and applying what their stream tasks send, as the
-//! loop does. It reaches `start`, which the harness only reaches through a chat turn.
+//! loop does. It reaches `start`, which the CLI only reaches through a conversation turn.
 
 // Shared by many tests, and not every test reads every part.
 #![allow(dead_code)]
@@ -11,17 +11,17 @@ use std::sync::Arc;
 use argonauts_core::api::{Approvals, StartRun};
 use argonauts_core::app::AppEvent;
 use argonauts_core::clock::SystemClock;
-use argonauts_core::events::checkpoint::{
-    CheckpointEvent, CheckpointKind, CheckpointOpened, CheckpointPacket, FreeText, QuestionPacket,
+use argonauts_core::events::approval::{
+    ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket, FreeText, QuestionPacket,
 };
 use argonauts_core::events::run::RunMode;
-use argonauts_core::events::run::{ParkReason, ResumeCause, RunLifecycle, RunOutcome, RunResumed};
+use argonauts_core::events::run::{ResumeCause, RunLifecycle, RunOutcome, RunResumed, WaitReason};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{CheckpointId, WorkerRef};
+use argonauts_core::names::{ApprovalId, ModelRef};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::steps::SchemaStepRunner;
-use argonauts_core::{CardId, Paths, RunId};
-use argonauts_testkit::{FakeDirectory, FakeWorker, TempRepo};
+use argonauts_core::{Paths, RunId, TaskId};
+use argonauts_testkit::{FakeDirectory, FakeRunner, TempRepo};
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
@@ -38,7 +38,7 @@ pub(crate) struct Rig {
     pub runs: RunsState,
     pub conductor: Arc<FakeConductor>,
     pub approvals: Arc<FakeApprovals>,
-    pub agent: Arc<FakeWorker>,
+    pub agent: Arc<FakeRunner>,
     pub effects: Vec<Effect>,
     events: mpsc::UnboundedReceiver<AppEvent>,
     internal: mpsc::UnboundedReceiver<Internal>,
@@ -63,10 +63,10 @@ impl Rig {
         let settings =
             AppSettings::load(&env, Vec::new(), interactive).expect("settings that resolve");
         let directory = Arc::new(FakeDirectory::new());
-        let agent = directory.add(FakeWorker::harness("claude-code", "claude"));
+        let agent = directory.add(FakeRunner::cli("claude-code", "anthropic"));
         let conductor = Arc::new(FakeConductor::default());
         let approvals = Arc::new(FakeApprovals::default());
-        let (quota, health) = argonauts_conductor::boards(&paths);
+        let (plan_usage, health) = argonauts_conductor::boards(&paths);
         let registry =
             crate::controller::test_support::quiet_registry(settings.settings(), repo.root());
         let services = AppServices {
@@ -75,7 +75,7 @@ impl Rig {
             workers: directory,
             steps: Arc::new(SchemaStepRunner),
             registry,
-            quota,
+            plan_usage,
             health,
             clock: Arc::new(SystemClock),
         };
@@ -169,17 +169,17 @@ impl Rig {
 pub(crate) fn start_run(request: &str) -> StartRun {
     StartRun {
         request: request.to_owned(),
-        mode: RunMode::Solo,
+        mode: RunMode::Captain,
         forced: true,
         estimate: None,
-        triage: None,
-        chat_turn: None,
+        captain_or_crew: None,
+        conversation_turn: None,
         continues: None,
         overrides: Vec::new(),
         include_uncommitted: false,
         main_agent: None,
         approval_mode: None,
-        front_end: None,
+        outside_agent: None,
         instructions: Vec::new(),
         request_settings: Vec::new(),
         required_steps: Vec::new(),
@@ -195,9 +195,9 @@ pub(crate) fn event(run: &RunId, seq: u64, kind: RunEventKind) -> RunEvent {
         seq,
         ts: OffsetDateTime::UNIX_EPOCH,
         run_id: run.clone(),
-        card_id: None,
+        task_id: None,
         session: None,
-        source: "conductor".to_owned(),
+        source: "argonauts-code".to_owned(),
         kind,
     }
 }
@@ -206,19 +206,19 @@ pub(crate) fn resumed(run: &RunId, seq: u64) -> RunEvent {
     let resumed = RunResumed {
         cause: ResumeCause::User,
         settings_changed: false,
-        harness_versions_changed: Vec::new(),
+        cli_versions_changed: Vec::new(),
         main_moved_by: None,
         sessions: Vec::new(),
     };
     event(run, seq, RunEventKind::Run(RunLifecycle::Resumed(resumed)))
 }
 
-pub(crate) fn parked(run: &RunId, seq: u64, waiting_on: Vec<CheckpointId>) -> RunEvent {
-    let parked = RunLifecycle::Parked {
-        reason: ParkReason::Checkpoint,
+pub(crate) fn waiting(run: &RunId, seq: u64, waiting_on: Vec<ApprovalId>) -> RunEvent {
+    let waiting = RunLifecycle::Waiting {
+        reason: WaitReason::Approval,
         waiting_on,
     };
-    event(run, seq, RunEventKind::Run(parked))
+    event(run, seq, RunEventKind::Run(waiting))
 }
 
 pub(crate) fn finished(run: &RunId, seq: u64, outcome: RunOutcome) -> RunEvent {
@@ -231,15 +231,15 @@ pub(crate) fn finished(run: &RunId, seq: u64, outcome: RunOutcome) -> RunEvent {
 
 /// A question from an agent that waits for you.
 pub(crate) fn question(run: &RunId, seq: u64, id: &str) -> RunEvent {
-    let card = CardId::new("task-001").expect("a task id");
-    let opened = CheckpointOpened {
-        id: CheckpointId::parse(id).expect("an approval id"),
-        kind: CheckpointKind::Question,
+    let task = TaskId::new("task-001").expect("a task id");
+    let opened = ApprovalOpened {
+        id: ApprovalId::parse(id).expect("an approval id"),
+        kind: ApprovalKind::Question,
         title: "Question · task-001".to_owned(),
-        card: Some(card.clone()),
-        packet: CheckpointPacket::Question(QuestionPacket {
-            from: WorkerRef::new("codex", None),
-            card,
+        task: Some(task.clone()),
+        packet: ApprovalPacket::Question(QuestionPacket {
+            from: ModelRef::new("codex", None),
+            task,
             text: "Which store?".to_owned(),
             options: Vec::new(),
         }),
@@ -250,6 +250,6 @@ pub(crate) fn question(run: &RunId, seq: u64, id: &str) -> RunEvent {
         free_text: FreeText::Answer,
         needs_you: true,
     };
-    let kind = RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(opened)));
+    let kind = RunEventKind::Approval(ApprovalEvent::Opened(Box::new(opened)));
     event(run, seq, kind)
 }

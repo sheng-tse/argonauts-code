@@ -1,6 +1,6 @@
 //! The goal view: what a goal-style run is trying to achieve, and whether it's
 //! there yet, in one pane of the docked frame. The done-when list with each criterion's state,
-//! the attempts with their verdicts, the last check's reason, and the assumptions with who
+//! the tries with their verdicts, the last check's reason, and the assumptions with who
 //! decided each. Tab goes back to the workflow, and Esc back to the prompt.
 
 use argonauts_core::RunId;
@@ -24,7 +24,7 @@ use super::{View, ViewCtx, ViewOutcome};
 #[derive(Debug)]
 pub struct GoalView {
     data: GoalData,
-    /// The selected row among the criteria, the attempts, and the assumptions, top down.
+    /// The selected row among the criteria, the tries, and the assumptions, top down.
     selected: usize,
     /// Opened from the workflow view, so Tab goes back to it.
     from_workflow: bool,
@@ -35,7 +35,7 @@ pub struct GoalView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pick {
     Criterion(usize),
-    Attempt(usize),
+    Try(usize),
     Assumption(usize),
 }
 
@@ -62,7 +62,7 @@ impl GoalView {
     fn picks(&self) -> Vec<Pick> {
         (0..self.data.criteria.len())
             .map(Pick::Criterion)
-            .chain((0..self.data.attempts.len()).map(Pick::Attempt))
+            .chain((0..self.data.tries.len()).map(Pick::Try))
             .chain((0..self.data.assumptions.len()).map(Pick::Assumption))
             .collect()
     }
@@ -90,10 +90,10 @@ impl GoalView {
             GoalStatus::Paused => "paused",
             GoalStatus::Met => "met",
             GoalStatus::Stuck => "stuck",
-            GoalStatus::OverBudget => "over its limit",
+            GoalStatus::OverLimit => "over its limit",
             GoalStatus::Cleared => "cleared",
         };
-        match (self.data.attempts.len(), self.data.max_rounds) {
+        match (self.data.tries.len(), self.data.max_rounds) {
             (0, _) => format!("Goal · {status}"),
             (n, None) => format!("Goal · {status} · round {n}"),
             (n, Some(max)) => format!("Goal · {status} · round {n} of up to {max}"),
@@ -104,7 +104,7 @@ impl GoalView {
         let marks = Marks::for_theme(theme);
         let dim = theme.style(Role::Dim);
         let text = theme.style(Role::Text);
-        let accent = theme.style(Role::Card);
+        let accent = theme.style(Role::Question);
         let bold = theme.style(Role::Bright);
         let picked = self.pick();
         let cursor = |pick: Pick| {
@@ -147,8 +147,8 @@ impl GoalView {
             })
             .collect();
         let note_width = notes.iter().map(|note| str_width(note)).max().unwrap_or(0);
-        let lead = 2 + 1 + 1 + ids + 2;
-        let room = width.saturating_sub(lead);
+        let margin = 2 + 1 + 1 + ids + 2;
+        let room = width.saturating_sub(margin);
         let note_width = note_width.min(room / 2);
         let text_width = room.saturating_sub(if note_width > 0 { note_width + 2 } else { 0 });
         for (i, row) in self.data.criteria.iter().enumerate() {
@@ -179,38 +179,38 @@ impl GoalView {
             lines.push(Line::from(spans));
         }
 
-        if !self.data.attempts.is_empty() {
+        if !self.data.tries.is_empty() {
             lines.push(Line::default());
             lines.push(Line::from(vec![
                 Span::styled("Rounds", bold),
-                Span::styled(format!(" · {}", self.data.attempts.len()), dim),
+                Span::styled(format!(" · {}", self.data.tries.len()), dim),
             ]));
             let titles = self
                 .data
-                .attempts
+                .tries
                 .iter()
-                .map(|attempt| str_width(attempt.title.trim()))
+                .map(|a_try| str_width(a_try.title.trim()))
                 .max()
                 .unwrap_or(0)
                 .min(width / 3);
-            let last = self.data.attempts.len() - 1;
-            for (i, attempt) in self.data.attempts.iter().enumerate() {
-                let (glyph, role, word) = match attempt.verdict {
+            let last = self.data.tries.len() - 1;
+            for (i, a_try) in self.data.tries.iter().enumerate() {
+                let (glyph, role, word) = match a_try.verdict {
                     Some(GoalVerdict::Met) => (marks.finished, Role::Success, "met"),
                     Some(GoalVerdict::NotYet) => (marks.finished, Role::Success, "not yet met"),
-                    Some(GoalVerdict::Impossible) => (marks.failed, Role::Error, "can't be met"),
+                    Some(GoalVerdict::Impossible) => (marks.failed, Role::Danger, "can't be met"),
                     None if i == last && self.pursuing() => (marks.running, Role::Faint, "running"),
                     None => (marks.waiting, Role::Dim, "stopped"),
                 };
-                let pick = Pick::Attempt(i);
+                let pick = Pick::Try(i);
                 let style = if picked == Some(pick) { accent } else { text };
                 lines.push(Line::from(vec![
                     cursor(pick),
                     Span::styled(glyph.to_owned(), theme.style(role)),
                     Span::raw(" "),
-                    Span::styled(format!("{}  ", attempt.n), dim),
+                    Span::styled(format!("{}  ", a_try.n), dim),
                     Span::styled(
-                        left(sanitize_line(attempt.title.trim()).as_ref(), titles),
+                        left(sanitize_line(a_try.title.trim()).as_ref(), titles),
                         style,
                     ),
                     Span::styled(format!("  {word}"), dim),
@@ -303,7 +303,7 @@ impl GoalView {
 fn decided_by(assumption: &Assumption) -> String {
     match assumption.by {
         Some(Decider::You) => "you".to_owned(),
-        Some(Decider::Lead) => "the main agent".to_owned(),
+        Some(Decider::MainAgent) => "the main agent".to_owned(),
         Some(Decider::Rules) => "your rules".to_owned(),
         Some(Decider::Majority) | None => sanitize_line(assumption.basis.trim()).into_owned(),
     }
@@ -343,7 +343,8 @@ impl View for GoalView {
             })
             .unwrap_or(0);
         let skip = (at + 1).saturating_sub(height);
-        let mark = dock::position(skip, height, lines.len(), theme);
+        let last = (skip + height).min(lines.len());
+        let mark = super::workflow_rows::scroll_mark(skip, last, lines.len(), theme);
         dock::draw_box(buf, &frame, ["", &self.title()], &mark, theme);
         panes::put_lines(buf, pane, &lines[skip.min(lines.len())..]);
         dock::draw_footer(buf, &frame, self.footer(), theme);
@@ -389,11 +390,11 @@ impl View for GoalView {
         }
         match key.code {
             KeyCode::Tab => self.back_to_workflow(),
-            // An attempt opens in the workflow view, where it's a phase.
+            // A try opens in the workflow view, where it's a phase.
             KeyCode::Enter | KeyCode::Right => match self.pick() {
-                Some(Pick::Attempt(_)) => self.back_to_workflow(),
+                Some(Pick::Try(_)) => self.back_to_workflow(),
                 Some(Pick::Assumption(_)) => ViewOutcome::Notice(
-                    "Tell the main agent in the chat how to change it; the next round follows it"
+                    "Tell the main agent in the conversation how to change it; the next round follows it"
                         .to_owned(),
                 ),
                 _ => ViewOutcome::Consumed,
@@ -430,7 +431,7 @@ mod tests {
     use std::time::Instant;
 
     use argonauts_core::Spend;
-    use argonauts_core::events::goal::{Attempt, Criterion};
+    use argonauts_core::events::goal::{Criterion, Try};
     use argonauts_core::views::CriterionRow;
 
     use super::*;
@@ -463,14 +464,14 @@ mod tests {
                     "returns None",
                 ),
             ],
-            attempts: vec![
-                Attempt {
+            tries: vec![
+                Try {
                     n: 1,
                     title: "Both fixes".to_owned(),
                     phase: 1,
                     verdict: Some(GoalVerdict::NotYet),
                 },
-                Attempt {
+                Try {
                     n: 2,
                     title: "Empty list".to_owned(),
                     phase: 2,

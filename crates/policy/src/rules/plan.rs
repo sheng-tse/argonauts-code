@@ -1,14 +1,14 @@
-//! Plan: close judges from other families, a clear winner, settled disputes, no flagged plan,
-//! an estimate within budget, allowlisted dependencies, and no protected owned paths. They hold
+//! Plan: close judges from other providers, a clear winner, settled disputes, no flagged plan,
+//! an estimate within the limit, allowlisted dependencies, and no protected owned paths. They hold
 //! whoever answers the crew's questions: a plan nobody drafted or judged, such as a workflow
-//! the lead picked, carries an uncontested plan's facts instead.
+//! the main agent picked, carries an uncontested plan's facts instead.
 
 use argonauts_core::policy::EvidenceFacts;
 use argonauts_core::settings::approvals::{HardLimitSettings, PlanRules};
 
 use super::{Conditions, RuleVerdict, usd};
 
-/// `spend_per_run` is the run's budget ceiling, when it has one.
+/// `spend_per_run` is the run's spend limit, when it has one.
 pub fn check(
     facts: &EvidenceFacts,
     rules: &PlanRules,
@@ -37,9 +37,11 @@ fn judging(c: &mut Conditions, facts: &EvidenceFacts, rules: &PlanRules) {
     let min_margin = rules.min_winner_margin;
     c.measure(facts.winner_margin, "no winner margin", |margin| {
         if margin >= min_margin {
-            Ok(format!("the winner leads by {margin}"))
+            Ok(format!("the winner is ahead by {margin}"))
         } else {
-            Err(format!("the winner leads by {margin}, under {min_margin}"))
+            Err(format!(
+                "the winner is ahead by {margin}, under {min_margin}"
+            ))
         }
     });
 
@@ -70,11 +72,11 @@ fn binding(
             Err(format!("{flagged} flagged for text addressed to judges"))
         }
     };
-    let fits = |estimate: f64| fits_budget(estimate, facts.spent.cost_usd, spend_per_run);
+    let fits = |estimate: f64| fits_limit(estimate, facts.spent.cost_usd, spend_per_run);
     c.measure(facts.flagged_plans, "no count of flagged plans", flagged);
     if facts.spent.cost_partial && spend_per_run.is_some() {
         // The spend is only a lower bound, so an estimate that seems to fit may not.
-        c.escalate("the run's spend isn't fully priced, so what's left of its limit is unknown");
+        c.ask_you("the run's spend isn't fully priced, so what's left of its limit is unknown");
     }
     // Tasks have limits only when you set them, so a plan often has no estimate. It isn't
     // held back for one: the meter holds the run to its limit either way.
@@ -98,8 +100,8 @@ fn binding(
     );
 }
 
-/// The estimate has to fit what's left of the run's budget after what it already spent.
-fn fits_budget(estimate: f64, spent: f64, spend_per_run: Option<f64>) -> Result<String, String> {
+/// The estimate has to fit what's left of the run's limit after what it already spent.
+fn fits_limit(estimate: f64, spent: f64, spend_per_run: Option<f64>) -> Result<String, String> {
     let Some(ceiling) = spend_per_run else {
         return Ok(format!(
             "the estimate is {}, and the run has no limit",
@@ -181,7 +183,7 @@ mod tests {
                 },
             ),
             (
-                "family",
+                "provider",
                 EvidenceFacts {
                     judges_other_provider: Some(false),
                     ..passing()
@@ -229,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn each_missing_fact_escalates() {
+    fn each_missing_fact_asks_you() {
         let cases: Vec<(&str, EvidenceFacts)> = vec![
             (
                 "spread",
@@ -246,7 +248,7 @@ mod tests {
                 },
             ),
             (
-                "family",
+                "provider",
                 EvidenceFacts {
                     judges_other_provider: None,
                     ..passing()
@@ -268,7 +270,7 @@ mod tests {
             ),
         ];
         for (name, facts) in cases {
-            assert_eq!(verdict(&facts), Verdict::Escalate, "{name}");
+            assert_eq!(verdict(&facts), Verdict::AskYou, "{name}");
         }
     }
 
@@ -283,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn the_estimate_fits_what_is_left_of_the_budget() {
+    fn the_estimate_fits_what_is_left_of_the_limit() {
         let mut facts = passing();
         facts.spent.cost_usd = 15.0;
         assert_eq!(verdict(&facts), Verdict::Reject);
@@ -292,9 +294,9 @@ mod tests {
         assert_eq!(verdict(&facts), Verdict::Reject);
 
         facts.spent.cost_usd = 2.0;
-        assert_eq!(verdict(&facts), Verdict::Escalate);
+        assert_eq!(verdict(&facts), Verdict::AskYou);
 
-        let no_budget = check(&passing(), &PlanRules::default(), &limits(), None);
-        assert_eq!(no_budget.verdict, Verdict::Approve);
+        let no_limit = check(&passing(), &PlanRules::default(), &limits(), None);
+        assert_eq!(no_limit.verdict, Verdict::Approve);
     }
 }

@@ -1,27 +1,32 @@
 //! One day's usage, for the tests of what shows it.
 
 use argonauts_core::api::{
-    CardBrief, DaySpend, PlanUsage, RunProgress, RunState, RunSummary, StatusSummary, UsagePeriod,
+    DaySpend, PlanUsage, RunProgress, RunState, RunSummary, StatusSummary, TaskBrief, UsagePeriod,
     UsageShare, UsageSummary,
 };
 use argonauts_core::app::SettingRow;
-use argonauts_core::crew_stats::{CrewRole, CrewStats, Fallback, ModelDay, TaskRecord, WorkRow};
+use argonauts_core::crew_stats::{
+    CrewStats, Fallback, ModelDay, Outcomes, StatsRole, TaskRecord, WorkRow,
+};
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::card::CardState;
-use argonauts_core::events::context::{ContextCategory, ContextItem, ContextPart};
+use argonauts_core::events::agent_status::RunSpend;
+use argonauts_core::events::context::{
+    ContextAgent, ContextCategory, ContextKind, ContextSkill, ContextSkills, ContextUsage, McpTool,
+    MemoryFile,
+};
 use argonauts_core::events::run::RunMode;
-use argonauts_core::events::vendor::RunBudget;
-use argonauts_core::limits::{QuotaReading, QuotaSource, QuotaStatus};
-use argonauts_core::names::{SessionKey, VendorId, WorkerRef};
+use argonauts_core::events::task::TaskState;
+use argonauts_core::limits::{PlanUsageReading, PlanUsageSource, PlanUsageStatus};
+use argonauts_core::names::{AgentId, ModelRef, SessionKey};
 use argonauts_core::settings::SettingScope;
-use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
+use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::stats::StatsSettings;
 use argonauts_core::views::{ContextRow, ContextView};
-use argonauts_core::{CardId, RunId, Spend};
+use argonauts_core::{RunId, Spend, TaskId};
 use time::macros::datetime;
 use time::{Duration, OffsetDateTime};
 
-use crate::state::ContextBreakdown;
+use crate::state::ContextCount;
 
 /// Monday, early afternoon.
 pub fn now() -> OffsetDateTime {
@@ -35,7 +40,7 @@ pub fn names() -> DisplayNames {
         ("codex", "Codex"),
         ("antigravity-cli", "agy"),
     ] {
-        names.harnesses.insert(id.to_owned(), name.to_owned());
+        names.clis.insert(id.to_owned(), name.to_owned());
     }
     names
 }
@@ -46,17 +51,17 @@ fn reading(
     used: Option<f64>,
     resets: OffsetDateTime,
     read_ago: Duration,
-) -> QuotaReading {
-    QuotaReading {
-        vendor: VendorId(agent.to_owned()),
+) -> PlanUsageReading {
+    PlanUsageReading {
+        agent_id: AgentId(agent.to_owned()),
         status: match used {
-            Some(_) => QuotaStatus::Allowed,
-            None => QuotaStatus::Rejected,
+            Some(_) => PlanUsageStatus::Allowed,
+            None => PlanUsageStatus::Rejected,
         },
         used,
         resets_at: Some(resets),
         window: Some(window.to_owned()),
-        source: QuotaSource::AppServer,
+        source: PlanUsageSource::AppServer,
         observed_at: now() - read_ago,
         detail: None,
         wrap_up: false,
@@ -161,8 +166,10 @@ pub fn usage() -> UsageSummary {
     let share = |agent: &str, model: &str, cost: f64, estimated: bool| UsageShare {
         agent: agent.to_owned(),
         model: Some(model.to_owned()),
-        vendor: agent.to_owned(),
+        agent_id: agent.to_owned(),
         spent: spent(cost, estimated),
+        pays_per_token: false,
+        this_week: Vec::new(),
     };
     let day_costs = [
         1.9, 3.1, 0.0, 0.9, 1.7, 0.6, 0.0, 0.0, 2.2, 1.5, 0.5, 0.8, 1.3, 1.86,
@@ -197,7 +204,7 @@ pub fn usage() -> UsageSummary {
             run(2, "fix-flaky-export-test", RunState::Merged, 0.39),
             run(1, "streaming-writer", RunState::Stopped, 0.06),
         ],
-        quotas: Vec::new(),
+        plan_windows: Vec::new(),
         plans,
         conversation: Some(spent(0.21, true)),
         spend_limit: None,
@@ -211,6 +218,7 @@ pub fn usage() -> UsageSummary {
         limits: limits(),
         stats: None,
         argonauts: None,
+        all_time_models: Vec::new(),
     }
 }
 
@@ -220,7 +228,7 @@ pub fn limits() -> Vec<SettingRow> {
         key: format!("limits.{key}"),
         value: value.to_owned(),
         layer: "built-in".to_owned(),
-        preset_from: None,
+        workflow_from: None,
         default_scope: SettingScope::Global,
         safety: false,
         allowed: Vec::new(),
@@ -266,11 +274,11 @@ fn progress(n: u32, tasks_done: u32, tasks: u32, took: Duration) -> RunProgress 
 /// A sample run: four tasks, one merged, one running, one waiting, and
 /// one that asks you.
 pub fn status() -> StatusSummary {
-    let task = |n: u32, title: &str, state: CardState, worker: &str, note: &str| CardBrief {
-        card: CardId::numbered(n),
+    let task = |n: u32, title: &str, state: TaskState, worker: &str, note: &str| TaskBrief {
+        task: TaskId::numbered(n),
         title: title.to_owned(),
         state,
-        owner: Some(worker.parse().expect("a worker")),
+        worker: Some(worker.parse().expect("a model")),
         note: note.to_owned(),
     };
     let (opus, gpt) = ("claude-code/claude-opus-5-5", "codex/gpt-5.6");
@@ -282,32 +290,32 @@ pub fn status() -> StatusSummary {
         ],
         plan: Some("4 tasks: GPT 5.6 writes the CSV, Opus builds the endpoint".to_owned()),
         decisions: Vec::new(),
-        cards: vec![
+        tasks: vec![
             task(
                 1,
                 "CSV writer",
-                CardState::Integrated,
+                TaskState::Merged,
                 gpt,
                 "6m12s · 38k tokens",
             ),
             task(
                 2,
                 "Report endpoint",
-                CardState::Running,
+                TaskState::Running,
                 opus,
                 "14m · 402k tokens",
             ),
             task(
                 3,
                 "Docs and examples",
-                CardState::Waiting,
+                TaskState::Waiting,
                 gpt,
                 "needs task-002",
             ),
             task(
                 4,
                 "Review",
-                CardState::Blocked,
+                TaskState::Blocked,
                 opus,
                 "which date format to use",
             ),
@@ -316,7 +324,7 @@ pub fn status() -> StatusSummary {
             "task-003 moved from agy to Codex 20m ago".to_owned(),
             "task-001 merged 12m ago".to_owned(),
         ],
-        budget: Some(RunBudget {
+        spend: Some(RunSpend {
             spent: Spend {
                 input_tokens: 1_100_000,
                 output_tokens: 100_000,
@@ -326,7 +334,7 @@ pub fn status() -> StatusSummary {
             lines: Vec::new(),
             reserve_left: None,
         }),
-        quotas: Vec::new(),
+        plan_windows: Vec::new(),
         waiting: vec!["task-004 Review asks which date format the CSV uses".to_owned()],
     }
 }
@@ -334,70 +342,125 @@ pub fn status() -> StatusSummary {
 /// The same run with a three-dollar limit set.
 pub fn status_with_limit() -> StatusSummary {
     let mut status = status();
-    if let Some(budget) = &mut status.budget {
-        budget.limit = Some(BudgetAmount {
-            unit: BudgetUnit::Usd,
+    if let Some(limit) = &mut status.spend {
+        limit.limit = Some(LimitAmount {
+            unit: LimitUnit::Usd,
             amount: 3.0,
         });
     }
     status
 }
 
-/// Three live sessions: the chat with the main agent and two of the run's.
+/// Three live sessions: the conversation with the main agent and two of the run's.
 pub fn context() -> ContextView {
     let row =
         |n: u32, label: &str, worker: &str, used: u64, window: u64, calls: u32, cost| ContextRow {
             run: (n > 1).then(|| RunId::new("run-03").expect("a run id")),
             session: SessionKey::numbered(n),
             label: label.to_owned(),
-            worker: worker.parse::<WorkerRef>().expect("a worker"),
+            worker: worker.parse::<ModelRef>().expect("a model"),
             used,
             window: Some(window),
             cap: Some(window / 100 * 95),
             tool_calls: calls,
             spent: spent(cost, true),
             rotations: 0,
+            estimated: false,
+            counts: false,
+            categories: Vec::new(),
         };
     let (opus, gpt) = ("claude-code/claude-opus-5-5", "codex/gpt-5.6");
     ContextView {
         rows: vec![
-            row(1, "main · chat", opus, 212_000, 1_000_000, 41, 0.21),
+            row(1, "main · conversation", opus, 212_000, 1_000_000, 41, 0.21),
             row(2, "build:report-endpoint", opus, 48_200, 200_000, 37, 0.62),
             row(3, "build:docs", gpt, 31_000, 272_000, 12, 0.09),
         ],
     }
 }
 
-/// The main session's context as Claude Code's /context counts it.
-pub fn breakdown() -> ContextBreakdown {
-    let category = |part, tokens| ContextCategory { part, tokens };
-    let item = |name: &str, tokens| ContextItem {
+/// The main session's context as Claude Code's /context counts it, just now.
+pub fn counted() -> ContextCount {
+    let row = |name: &str, tokens: u64, color: &str, kind| ContextCategory {
         name: name.to_owned(),
         tokens,
-        source: None,
+        color: color.to_owned(),
+        kind,
     };
-    ContextBreakdown {
+    let used = ContextKind::Used;
+    let skill = |name: &str, tokens| ContextSkill {
+        name: name.to_owned(),
+        source: "projectSettings".to_owned(),
+        plugin: None,
+        tokens,
+    };
+    let tool = |name: &str, server: &str, tokens| McpTool {
+        name: name.to_owned(),
+        server: server.to_owned(),
+        tokens,
+        loaded: true,
+    };
+    let file = |path: &str, tokens| MemoryFile {
+        path: path.to_owned(),
+        scope: "Project".to_owned(),
+        tokens,
+    };
+    let usage = ContextUsage {
         categories: vec![
-            category(ContextPart::SystemPrompt, 3_400),
-            category(ContextPart::Tools, 12_000),
-            category(ContextPart::McpTools, 2_600),
-            category(ContextPart::Agents, 1_100),
-            category(ContextPart::MemoryFiles, 4_900),
-            category(ContextPart::Skills, 2_200),
-            category(ContextPart::Messages, 186_000),
-            category(ContextPart::Free, 738_000),
-            category(ContextPart::Buffer, 50_000),
+            row("System prompt", 3_400, "promptBorder", used),
+            row("System tools", 12_000, "inactive", used),
+            row("MCP tools", 2_000, "cyan_FOR_SUBAGENTS_ONLY", used),
+            row(
+                "MCP server instructions",
+                600,
+                "green_FOR_SUBAGENTS_ONLY",
+                used,
+            ),
+            row("Custom agents", 1_100, "permission", used),
+            row("Memory files", 4_900, "claude", used),
+            row("Skills", 2_200, "warning", used),
+            row("Messages", 186_000, "purple_FOR_SUBAGENTS_ONLY", used),
+            row(
+                "Autocompact buffer",
+                50_000,
+                "inactive",
+                ContextKind::Buffer,
+            ),
+            row("Free space", 738_000, "promptBorder", ContextKind::Free),
         ],
-        auto_compact_at: Some(950_000),
+        total_tokens: 212_200,
         window: 1_000_000,
-        memory_files: vec![item("CLAUDE.md", 2_100), item("AGENTS.md", 2_800)],
-        mcp_tools: vec![item("github", 1_900), item("linear", 700)],
-        agents: vec![item("reviewer", 1_100)],
-        skills: vec![
-            item("export-csv", 1_100),
-            item("review", 600),
-            item("release-notes", 500),
+        raw_window: 1_000_000,
+        percentage: 21,
+        model: Some("claude-opus-5-5".to_owned()),
+        auto_compact: true,
+        auto_compact_threshold: Some(950_000),
+        auto_compact_source: "model-default".to_owned(),
+        memory_files: vec![file("CLAUDE.md", 2_100), file("AGENTS.md", 2_800)],
+        mcp_tools: vec![
+            tool("mcp__github__create_pull_request", "github", 1_300),
+            tool("mcp__linear__search_issues", "linear", 700),
         ],
+        agents: vec![ContextAgent {
+            name: "reviewer".to_owned(),
+            source: "projectSettings".to_owned(),
+            tokens: 1_100,
+        }],
+        skills: Some(ContextSkills {
+            total: 3,
+            included: 3,
+            tokens: 2_200,
+            items: vec![
+                skill("export-csv", 1_100),
+                skill("review", 600),
+                skill("release-notes", 500),
+            ],
+        }),
+        ..ContextUsage::default()
+    };
+    ContextCount {
+        usage,
+        counted: now(),
     }
 }
 
@@ -414,7 +477,7 @@ pub fn crew_stats() -> CrewStats {
         cost_partial: false,
     };
     let row =
-        |agent: &str, model: &str, role: CrewRole, kind: Option<&str>, spent: Spend| WorkRow {
+        |agent: &str, model: &str, role: StatsRole, kind: Option<&str>, spent: Spend| WorkRow {
             agent: agent.to_owned(),
             model: Some(model.to_owned()),
             role,
@@ -423,6 +486,9 @@ pub fn crew_stats() -> CrewStats {
             done: 0,
             sent_back: 0,
             took_secs: 0,
+            sessions: 0,
+            tool_calls: 0,
+            turns: 0,
             review: Default::default(),
         };
     let did = |mut row: WorkRow, done: u32, sent_back: u32, each: u64| {
@@ -431,7 +497,7 @@ pub fn crew_stats() -> CrewStats {
         row.took_secs = each * u64::from(done);
         row
     };
-    use CrewRole::{Judge, Orchestrator, Reviewer, Worker};
+    use StatsRole::{Judge, Orchestrator, Reviewer, Worker};
     let (claude, codex, agy) = ("claude-code", "codex", "antigravity-cli");
     let opus = "claude-opus-5-5";
     let work = vec![
@@ -561,6 +627,7 @@ pub fn crew_stats() -> CrewStats {
         model: Some(model.to_owned()),
         kind: Some(kind.to_owned()),
         sent_back,
+        reasons: Vec::new(),
         merged: true,
         reviewed: true,
     };
@@ -625,6 +692,16 @@ pub fn crew_stats() -> CrewStats {
         ],
         workflows: 14,
         took_secs: 12 * 3600 + 40 * 60,
+        outcomes: Outcomes {
+            runs: 14,
+            runs_merged: 13,
+            runs_replanned: 1,
+            sided_with_worker: 1,
+            sided_with_reviewer: 1,
+            merges_clean: 11,
+            merges_settled: 3,
+            ..Outcomes::default()
+        },
         settings: StatsSettings::default(),
         sources: Default::default(),
         problems: Vec::new(),

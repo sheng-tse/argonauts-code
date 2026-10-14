@@ -2,7 +2,7 @@
 //! (`SetAside`) means for it.
 
 use argonauts_core::app::{AppChoice, ChoiceKind};
-use argonauts_core::events::checkpoint::{AnswerAction, AnswerOption, FreeText};
+use argonauts_core::events::approval::{AnswerAction, AnswerOption, FreeText};
 use argonauts_core::names::ChoiceId;
 use argonauts_core::settings::SettingScope;
 
@@ -12,7 +12,7 @@ pub(crate) const JUST_ASKING: &str = "Start work on it? · no, just asking";
 /// What Esc on an app choice does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OnSetAside {
-    /// Stays waiting, like a run's card.
+    /// Stays waiting, like a run's question.
     SetAside,
     /// Closes with "Not changed.".
     NotChanged,
@@ -30,21 +30,24 @@ pub(crate) enum OnSetAside {
     No,
     /// Closes saying nothing ran: a dry run was all it showed.
     NothingRan,
+    /// Closes, and the run that waited on the answer doesn't start.
+    NotStarted,
 }
 
 pub(crate) fn on_set_aside(kind: ChoiceKind) -> OnSetAside {
     match kind {
         ChoiceKind::StartWork | ChoiceKind::RefusedCommands => OnSetAside::SetAside,
-        ChoiceKind::Permission | ChoiceKind::GoAhead | ChoiceKind::HandOff => OnSetAside::No,
-        ChoiceKind::RewindTurn | ChoiceKind::Git => OnSetAside::NotChanged,
+        ChoiceKind::Permission | ChoiceKind::GoAhead | ChoiceKind::Fallback => OnSetAside::No,
+        ChoiceKind::RewindTurn | ChoiceKind::Git | ChoiceKind::Templates => OnSetAside::NotChanged,
         ChoiceKind::TryWorkflow => OnSetAside::NothingRan,
-        ChoiceKind::ConfirmTakeOver | ChoiceKind::ConfirmRevert => OnSetAside::Cancel,
+        ChoiceKind::ConfirmTakeOver | ChoiceKind::ConfirmRewind => OnSetAside::Cancel,
         ChoiceKind::SettingScope | ChoiceKind::ConfirmSafetySetting => OnSetAside::NotChanged,
         ChoiceKind::TrustProject | ChoiceKind::ConfirmConnect => OnSetAside::NotNow,
-        ChoiceKind::DetectedGates => OnSetAside::NextRun,
+        ChoiceKind::DetectedChecks => OnSetAside::NextRun,
         ChoiceKind::TermsNote | ChoiceKind::Init => OnSetAside::Recommended,
         ChoiceKind::KeepInstructions => OnSetAside::JustThisRequest,
         ChoiceKind::Setup => OnSetAside::NotChanged,
+        ChoiceKind::NeededUpdate => OnSetAside::NotStarted,
     }
 }
 
@@ -53,7 +56,7 @@ pub(crate) fn on_set_aside(kind: ChoiceKind) -> OnSetAside {
 pub(crate) fn options(kind: ChoiceKind) -> Vec<AnswerOption> {
     match kind {
         ChoiceKind::StartWork => vec![
-            option('s', "Solo", choose("solo"), false),
+            option('s', "Captain", choose("captain"), false),
             option('c', "Crew run", choose("crew"), false),
             option('n', "No, just asking", choose("no"), false),
         ],
@@ -68,14 +71,14 @@ pub(crate) fn options(kind: ChoiceKind) -> Vec<AnswerOption> {
             option('n', "Not now", AnswerAction::Cancel, false),
             option('d', "Show the file", AnswerAction::ShowDiff, false),
         ],
-        ChoiceKind::DetectedGates => vec![
+        ChoiceKind::DetectedChecks => vec![
             option('y', "Use these", AnswerAction::Approve, true),
             option('e', "Edit them", AnswerAction::ApproveWithEdits, false),
             option('n', "Skip", AnswerAction::Cancel, false),
         ],
         ChoiceKind::TermsNote => vec![option('c', "Continue", AnswerAction::Approve, true)],
-        ChoiceKind::ConfirmRevert => vec![
-            option('y', "Revert", AnswerAction::Approve, false),
+        ChoiceKind::ConfirmRewind => vec![
+            option('y', "Rewind", AnswerAction::Approve, false),
             option('d', "Show the diff", AnswerAction::ShowDiff, false),
         ],
         ChoiceKind::ConfirmConnect => vec![
@@ -100,9 +103,11 @@ pub(crate) fn options(kind: ChoiceKind) -> Vec<AnswerOption> {
         ChoiceKind::Init
         | ChoiceKind::Permission
         | ChoiceKind::RewindTurn
-        | ChoiceKind::HandOff
+        | ChoiceKind::Fallback
         | ChoiceKind::Setup
-        | ChoiceKind::Git => Vec::new(),
+        | ChoiceKind::Git
+        | ChoiceKind::Templates
+        | ChoiceKind::NeededUpdate => Vec::new(),
     }
 }
 
@@ -247,7 +252,7 @@ pub(crate) fn app_choice(
     options: Vec<AnswerOption>,
 ) -> AppChoice {
     let free_text = match kind {
-        ChoiceKind::DetectedGates => FreeText::Edits,
+        ChoiceKind::DetectedChecks => FreeText::Edits,
         _ => FreeText::None,
     };
     AppChoice {
@@ -310,7 +315,7 @@ mod tests {
             (
                 ChoiceKind::StartWork,
                 vec![
-                    ('s', "Solo", choose("solo")),
+                    ('s', "Captain", choose("captain")),
                     ('c', "Crew run", choose("crew")),
                     ('n', "No, just asking", choose("no")),
                 ],
@@ -349,7 +354,7 @@ mod tests {
                 OnSetAside::NotNow,
             ),
             (
-                ChoiceKind::DetectedGates,
+                ChoiceKind::DetectedChecks,
                 vec![
                     ('y', "Use these", Approve),
                     ('e', "Edit them", ApproveWithEdits),
@@ -363,8 +368,8 @@ mod tests {
                 OnSetAside::Recommended,
             ),
             (
-                ChoiceKind::ConfirmRevert,
-                vec![('y', "Revert", Approve), ('d', "Show the diff", ShowDiff)],
+                ChoiceKind::ConfirmRewind,
+                vec![('y', "Rewind", Approve), ('d', "Show the diff", ShowDiff)],
                 OnSetAside::Cancel,
             ),
             (
@@ -401,7 +406,7 @@ mod tests {
                 ],
                 OnSetAside::No,
             ),
-            (ChoiceKind::HandOff, Vec::new(), OnSetAside::No),
+            (ChoiceKind::Fallback, Vec::new(), OnSetAside::No),
             (
                 ChoiceKind::TryWorkflow,
                 vec![('y', "Yes, run it", Approve), ('n', "No", choose("no"))],
@@ -409,6 +414,8 @@ mod tests {
             ),
             (ChoiceKind::Setup, Vec::new(), OnSetAside::NotChanged),
             (ChoiceKind::Git, Vec::new(), OnSetAside::NotChanged),
+            (ChoiceKind::Templates, Vec::new(), OnSetAside::NotChanged),
+            (ChoiceKind::NeededUpdate, Vec::new(), OnSetAside::NotStarted),
         ];
         for (kind, expected, esc) in &table {
             assert_eq!(shape(&options(*kind)), *expected, "{kind:?}");
@@ -421,7 +428,7 @@ mod tests {
                 options(*kind),
             );
             let free_text = match kind {
-                ChoiceKind::DetectedGates => FreeText::Edits,
+                ChoiceKind::DetectedChecks => FreeText::Edits,
                 _ => FreeText::None,
             };
             assert_eq!(choice.free_text, free_text, "{kind:?}");
@@ -438,19 +445,21 @@ mod tests {
                 | ChoiceKind::ConfirmSafetySetting
                 | ChoiceKind::TermsNote
                 | ChoiceKind::Init
-                | ChoiceKind::DetectedGates
+                | ChoiceKind::DetectedChecks
                 | ChoiceKind::TrustProject
-                | ChoiceKind::ConfirmRevert
+                | ChoiceKind::ConfirmRewind
                 | ChoiceKind::ConfirmConnect
                 | ChoiceKind::KeepInstructions
                 | ChoiceKind::Permission
                 | ChoiceKind::RefusedCommands
                 | ChoiceKind::RewindTurn
                 | ChoiceKind::GoAhead
-                | ChoiceKind::HandOff
+                | ChoiceKind::Fallback
                 | ChoiceKind::TryWorkflow
                 | ChoiceKind::Setup
-                | ChoiceKind::Git => {}
+                | ChoiceKind::Git
+                | ChoiceKind::Templates
+                | ChoiceKind::NeededUpdate => {}
             }
         }
 

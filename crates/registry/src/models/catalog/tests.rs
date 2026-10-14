@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc;
 
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::registry::ModelRegistry;
 use argonauts_core::settings::Settings;
 use time::macros::datetime;
@@ -12,10 +12,10 @@ use crate::models::files::parse_models_text;
 use crate::models::{FileRegistry, ModelCache};
 
 const SHIPPED_HASH: &str = include_str!("../../../catalog/models.toml.sha256");
-const CODEX: &str = include_str!("../../../tests/fixtures/codex/0.158.0/debug-models.json");
-const AGY: &str = include_str!("../../../tests/fixtures/agy/1.2.13/models.json");
+const CODEX: &str = include_str!("../../../tests/fixtures/codex/debug-models.json");
+const AGY: &str = include_str!("../../../tests/fixtures/agy/models.json");
 
-fn id(text: &str) -> WorkerRef {
+fn id(text: &str) -> ModelRef {
     text.parse().unwrap()
 }
 
@@ -51,7 +51,7 @@ fn the_shipped_catalog_reads_like_claude_codes_picker() {
     let mut models: Vec<&CatalogEntry> = catalog
         .models
         .iter()
-        .filter(|entry| entry.id.worker == "claude-code" && entry.description.is_some())
+        .filter(|entry| entry.id.agent == "claude-code" && entry.description.is_some())
         .filter(|entry| entry.id.model.is_some())
         .collect();
     models.sort_by_key(|entry| entry.rank);
@@ -121,7 +121,7 @@ fn a_catalog_with_a_bad_level_or_a_control_character_is_refused() {
     for (text, why) in [
         (
             "version = 99",
-            "its format 99 is newer than this Argonauts reads",
+            "its format 99 is newer than this Argonauts Code reads",
         ),
         (
             "[[model]]\nid = \"codex/x\"\nefforts = [\"turbo\"]",
@@ -169,9 +169,9 @@ fn codex_and_agy_name_their_own_models_in_their_own_order() {
     );
     assert_eq!(entry.default_effort.as_deref(), Some("medium"));
 
-    let mut codex: Vec<WorkerRef> = discovered
+    let mut codex: Vec<ModelRef> = discovered
         .iter()
-        .filter(|entry| entry.id.worker == "codex")
+        .filter(|entry| entry.id.agent == "codex")
         .map(|entry| entry.id.clone())
         .rev()
         .collect();
@@ -225,7 +225,7 @@ fn your_models_toml_wins_over_every_other_layer() {
 
         [[model]]
         id = "ollama/qwen3-coder:30b"
-        family = "qwen"
+        provider = "alibaba"
         kind = "endpoint"
         access = "local"
         cost = { unit = "none" }
@@ -287,7 +287,7 @@ fn a_bad_description_in_your_file_says_which_entry() {
     assert!(error.contains("turbo"), "{error}");
 }
 
-/// A server on this machine standing in for GitHub, answering `routes` and counting requests.
+/// A server on this machine in place of GitHub, answering `routes` and counting requests.
 fn serve(routes: Vec<(&'static str, String)>) -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -384,7 +384,7 @@ async fn a_catalog_that_fails_its_hash_or_needs_a_newer_build_is_refused() {
     let now = datetime!(2026-10-01 09:00 UTC);
     for (path, why) in [
         ("bad", "doesn't match the hash published with it"),
-        ("newer", "newer than this Argonauts reads"),
+        ("newer", "newer than this Argonauts Code reads"),
         ("nohash", "holds no SHA-256"),
         ("missing", "answered 404"),
     ] {
@@ -473,7 +473,7 @@ async fn the_registry_fetches_the_catalog_once_a_day_and_keeps_it_in_the_cache()
     assert!(
         skipped
             .iter()
-            .any(|why| why.starts_with("Argonauts' model catalog: GET")),
+            .any(|why| why.starts_with("Argonauts Code's model catalog: GET")),
         "{skipped:?}"
     );
 }

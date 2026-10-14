@@ -4,12 +4,12 @@
 use anyhow::Context;
 use argonauts_core::api::{ApiError, RunState, StartRun};
 use argonauts_core::app::{AppEvent, AppMode};
-use argonauts_core::card::title_from_task;
 use argonauts_core::events::run::RunOutcome;
 use argonauts_core::input::MentionTarget;
 use argonauts_core::names::{MessageId, SessionKey};
+use argonauts_core::session_runner::SteerSupport;
 use argonauts_core::settings::approvals::ApprovalMode;
-use argonauts_core::worker::SteerSupport;
+use argonauts_core::task::title_from_task;
 use argonauts_core::{NoteLevel, RunId};
 
 use super::{Handled, on_screen};
@@ -68,7 +68,7 @@ fn queued(
                 .push(Queued { id, text });
             Ok(Vec::new())
         }
-        // A parked run keeps it in its pending answers for the next supervisor.
+        // A waiting run keeps it in its pending answers for the next run host.
         Err(ApiError::NotNow(_)) => {
             ctx.notice(NoteLevel::Info, format!("Queued for when {run} resumes."));
             Ok(Vec::new())
@@ -135,8 +135,10 @@ pub(crate) async fn pause(ctx: &mut Ctx, runs: &mut RunsState, now: bool) -> Han
 fn not_going(runs: &RunsState, run: &RunId) -> Option<String> {
     let attached = runs.attached.as_ref()?;
     match attached.stage {
-        _ if attached.crashed => Some(format!("{run} crashed. /resume {run} recovers it.")),
-        Stage::Parked => Some(format!("{run} is waiting. /resume {run} goes on.")),
+        _ if attached.crashed => Some(format!(
+            "{run} stopped when its run host exited. /resume {run} carries it on."
+        )),
+        Stage::Waiting => Some(format!("{run} is waiting. /resume {run} goes on.")),
         Stage::Finished(_) => Some(format!("{run} has finished.")),
         Stage::Going => None,
     }
@@ -162,7 +164,7 @@ pub(crate) async fn resume(ctx: &mut Ctx, runs: &mut RunsState, run: Option<RunI
     }
     let waiting = runs.attached.as_ref().filter(|attached| {
         attached.stage != Stage::Finished(RunOutcome::Merged)
-            && (attached.crashed || attached.stage == Stage::Parked || attached.ended)
+            && (attached.crashed || attached.stage == Stage::Waiting || attached.ended)
     });
     match waiting.map(|attached| attached.run.clone()) {
         Some(run) => {
@@ -170,7 +172,7 @@ pub(crate) async fn resume(ctx: &mut Ctx, runs: &mut RunsState, run: Option<RunI
             Ok(vec![Effect::Status])
         }
         None => {
-            runs::show_runs(ctx).await?;
+            runs::show_runs(ctx, false).await?;
             Ok(Vec::new())
         }
     }
@@ -209,6 +211,20 @@ pub(crate) async fn stop_agent(
     match ctx.services.conductor.stop_session(&run, &session).await {
         Ok(()) => Ok(Vec::new()),
         Err(err) => super::refused(ctx, err, || format!("Couldn't stop {session}")),
+    }
+}
+
+/// An agent with no task of its own starts over with the prompt it had.
+pub(crate) async fn restart_agent(
+    ctx: &mut Ctx,
+    runs: &mut RunsState,
+    run: RunId,
+    session: SessionKey,
+) -> Handled {
+    let _ = runs;
+    match ctx.services.conductor.restart_session(&run, &session).await {
+        Ok(()) => Ok(Vec::new()),
+        Err(err) => super::refused(ctx, err, || format!("Couldn't start {session} over")),
     }
 }
 
@@ -263,13 +279,14 @@ pub(crate) async fn take_back(
     Ok(Vec::new())
 }
 
-/// `/follow-up [run] <request>`: a follow-up run of a merged one.
-pub(crate) async fn continue_run(
+/// `/follow-up [run] <request>`: the follow-up run of a merged one that it asks for, or `None`
+/// once it has said why there is none.
+pub(crate) async fn follow_up(
     ctx: &mut Ctx,
-    runs: &mut RunsState,
+    runs: &RunsState,
     run: Option<RunId>,
     request: String,
-) -> Handled {
+) -> anyhow::Result<Option<StartRun>> {
     let list = ctx
         .services
         .conductor
@@ -299,39 +316,53 @@ pub(crate) async fn continue_run(
                 }
             };
             ctx.notice(NoteLevel::Info, text);
-            return Ok(Vec::new());
+            return Ok(None);
         }
     };
     let settings = ctx.settings();
-    // It goes on the way the merged run went, unless All hands sends every task to the crew.
-    let triage = argonauts_crew::triage::ultracode(settings);
-    let mode = triage.as_ref().map_or(merged.mode, |crew| crew.mode);
-    let follow_up = StartRun {
-        request: request.clone(),
+    // It goes on the way the merged run went, unless Ultracode sends every task to the crew.
+    let captain_or_crew = argonauts_crew::captain_or_crew::ultracode(settings);
+    let mode = captain_or_crew
+        .as_ref()
+        .map_or(merged.mode, |crew| crew.mode);
+    Ok(Some(StartRun {
+        request,
         mode,
         forced: false,
         estimate: None,
-        triage,
-        chat_turn: None,
+        captain_or_crew,
+        conversation_turn: None,
         continues: Some(merged.run.clone()),
         overrides: ctx.settings.run_overrides(),
         include_uncommitted: settings.intake.include_uncommitted,
-        main_agent: Some(settings.main_agent.clone()),
+        main_agent: Some(settings.crew.main.clone()),
         approval_mode: (runs.approval_mode == Some(ApprovalMode::Supervised))
             .then_some(ApprovalMode::Supervised),
-        front_end: None,
+        outside_agent: None,
         instructions: Vec::new(),
         request_settings: Vec::new(),
         required_steps: Vec::new(),
+    }))
+}
+
+/// Starts `follow_up`, a run that continues the merged run it names.
+pub(crate) async fn continue_run(
+    ctx: &mut Ctx,
+    runs: &mut RunsState,
+    follow_up: StartRun,
+) -> Handled {
+    let Some(merged) = follow_up.continues.clone() else {
+        anyhow::bail!("a follow-up names the merged run it continues");
     };
+    let (title, mode) = (title_from_task(&follow_up.request), follow_up.mode);
     let handle = match ctx
         .services
         .conductor
-        .continue_run(&merged.run, follow_up)
+        .continue_run(&merged, follow_up)
         .await
     {
         Ok(handle) => handle,
         Err(err) => return super::refused(ctx, err, || "Couldn't start the follow-up".to_owned()),
     };
-    runs::started(ctx, runs, handle.run, title_from_task(&request), mode).await
+    runs::started(ctx, runs, handle.run, title, mode).await
 }

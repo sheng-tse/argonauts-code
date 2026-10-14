@@ -1,5 +1,5 @@
-//! Things the app tells you once, or warns about: an edited preset file, the old config file,
-//! a committed local file, and the chat message when a card needs you.
+//! Things the app tells you once, or warns about: an edited workflow file, the old config file,
+//! a committed local file, and the conversation message when a task needs you.
 
 mod app_support;
 
@@ -20,7 +20,7 @@ fn restart(scenario: &Scenario, name: &str) -> anyhow::Result<Pty> {
     Ok(pty)
 }
 
-/// The line a preset file records its built-in's hash on, and the one remembering you were told
+/// The line a workflow file records its built-in's hash on, and the one remembering you were told
 /// an upgrade kept your edits.
 const HASH_LINE: &str = "# built-in sha256: ";
 const TOLD_LINE: &str = "# kept your edits over built-in sha256: ";
@@ -33,8 +33,8 @@ fn notices_about(scenario: &Scenario, needle: &str) -> anyhow::Result<Vec<String
 }
 
 #[test]
-fn app_preset_edited_file_told_once() -> anyhow::Result<()> {
-    // `preset` sits above the config's first table.
+fn app_workflow_edited_file_told_once() -> anyhow::Result<()> {
+    // `workflow` sits above the config's first table.
     let scenario = scenario_with(&format!("workflow = \"council\"\n{GLOBAL_CONFIG}"))?;
     let copy = scenario.repo.home().join("workflows").join("council.toml");
 
@@ -64,7 +64,7 @@ fn app_preset_edited_file_told_once() -> anyhow::Result<()> {
     })?;
     assert_eq!(told.len(), 1, "{told:?}");
     assert!(told[0].contains("/workflow diff council"), "{told:?}");
-    scenario.shot(&pty, "app_preset_edited_file_told_once")?;
+    scenario.shot(&pty, "app_workflow_edited_file_told_once")?;
     quit(&mut pty)?;
 
     let pty = restart(&scenario, "told")?;
@@ -92,7 +92,7 @@ fn app_old_config_file_told_once() -> anyhow::Result<()> {
         .join("argonauts")
         .join("config.toml");
     std::fs::create_dir_all(old.parent().expect("a parent"))?;
-    std::fs::write(&old, "main_agent = \"codex\"\n")?;
+    std::fs::write(&old, "crew.main = \"codex\"\n")?;
 
     let mut pty = start(&scenario)?;
     let told = wait_until("the notice about the old file", || {
@@ -166,13 +166,13 @@ fn app_committed_local_file_warned() -> anyhow::Result<()> {
 }
 
 #[test]
-fn app_needs_you_sends_chat_notification() -> anyhow::Result<()> {
+fn app_needs_you_sends_conversation_notification() -> anyhow::Result<()> {
     let scenario = scenario()?;
-    let hermes = scenario.vendors.bin_dir().join("hermes");
+    let hermes = scenario.clis.bin_dir().join("hermes");
     // Merges land on their own by default; this one waits for you.
     let config = format!(
         "{}\n[approvals.merge]\nmode = \"supervised\"\n\
-         \n[notifications.chat]\ncommand = [\"{}\", \"send\", \"--to\", \"me\", \"{{text}}\"]\n",
+         \n[notifications.conversation]\ncommand = [\"{}\", \"send\", \"--to\", \"me\", \"{{text}}\"]\n",
         run_config(),
         hermes.display()
     );
@@ -181,15 +181,15 @@ fn app_needs_you_sends_chat_notification() -> anyhow::Result<()> {
     let mut pty = start(&scenario)?;
     // Focus out, as when you switch to another window.
     pty.send("\x1b[O")?;
-    let (run_dir, _) = reach_merge_card(&scenario, &mut pty)?;
+    let (run_dir, _) = reach_merge_question(&scenario, &mut pty)?;
     let run = run_id(&run_dir)?;
 
-    let sends = wait_until("the chat message", || {
-        let sends = scenario.vendors.chat_sends()?;
+    let sends = wait_until("the conversation message", || {
+        let sends = scenario.clis.message_sends()?;
         Ok((!sends.is_empty()).then_some(sends))
     })?;
     thread::sleep(Duration::from_millis(500));
-    let sends_now = scenario.vendors.chat_sends()?;
+    let sends_now = scenario.clis.message_sends()?;
     assert_eq!(
         sends_now.len(),
         sends.len(),
@@ -212,6 +212,6 @@ fn app_needs_you_sends_chat_notification() -> anyhow::Result<()> {
             "agent text reached the message: {text}"
         );
     }
-    scenario.shot(&pty, "app_needs_you_sends_chat_notification")?;
+    scenario.shot(&pty, "app_needs_you_sends_conversation_notification")?;
     Ok(())
 }

@@ -1,18 +1,19 @@
 //! Changing a running workflow from its next phase on: proposed from outside
-//! (`EngineCommand::ProposeWorkflowChange`) or by the lead at a phase end. Both go through the
-//! validator and the `change_request` checkpoint, and an accepted one is recorded when it's
-//! decided. Also the lead's design for a task, before the run's workflow starts.
+//! (`EngineCommand::ProposeWorkflowChange`) or by the main agent at a phase end. Both go through
+//! the validator and the `change_request` approval, and an accepted one is recorded when it's
+//! decided. Also the main agent's design for a task, before the run's workflow starts.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
+use std::path::Path;
 
 use serde_json::Value;
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::checkpoint::{
-    AnswerAction, ChangeRequestPacket, CheckpointDecided, CheckpointKind, CheckpointOpened,
-    CheckpointPacket, FreeText,
+use argonauts_core::events::approval::{
+    AnswerAction, ApprovalDecided, ApprovalKind, ApprovalOpened, ApprovalPacket,
+    ChangeRequestPacket, FreeText,
 };
 use argonauts_core::events::goal::Criterion;
 use argonauts_core::events::run::{
@@ -23,9 +24,9 @@ use argonauts_core::events::workflow::{
     DeclaredPhase, RunNote, WorkflowChanged, WorkflowDeclared, WorkflowEvent,
 };
 use argonauts_core::log::{Note, NoteLevel};
-use argonauts_core::names::{CheckpointId, RoleName, SessionKey, WorkerRef, WorkflowId};
+use argonauts_core::names::{ApprovalId, ModelRef, RoleName, SessionKey, WorkflowId};
 use argonauts_core::policy::{EvidenceDocument, EvidenceFacts};
-use argonauts_core::settings::workflows::{LeadDesign, RunStyle};
+use argonauts_core::settings::workflows::{OrchestratorDesign, RunStyle};
 use argonauts_core::steps::StepError;
 use argonauts_core::steps::design::{
     DesignFix, DesignInput, DesignOutput, DesignWorkflow, FixDesign, WorkflowExample,
@@ -34,20 +35,21 @@ use argonauts_core::steps::intake::InstructionKind;
 use argonauts_core::workflow::{
     StandardPhase, StepKind, StepRef, Workflow, WorkflowParams, WorkflowRef,
 };
+use argonauts_core::workflow_files;
 
-use crate::checkpoints::{self, CheckpointRequest};
+use crate::approvals::{self, ApprovalRequest};
 use crate::engine::host::{Answered, Ask, Host};
 use crate::error::{EngineError, EngineResult};
 use crate::prompts::workflow::{DESIGN_WORKFLOW, FIX_DESIGN};
 use crate::state::RunState;
 use crate::workflow::brief::Problem;
 use crate::workflow::validate::kind_name;
-use crate::workflow::{StepAt, brief, builtin, params, preset, runner, shape, yaml};
+use crate::workflow::{StepAt, brief, builtin, params, runner, shape, sizing, yaml};
 
 /// The evidence document that holds the proposed workflow as YAML.
 const PROPOSED: &str = "Proposed workflow";
 
-/// Validates the change and opens its `change_request` checkpoint without waiting for it.
+/// Validates the change and opens its `change_request` approval without waiting for it.
 /// `Err` holds the validator's errors, one per line. Once you accept it, `on_decided` records
 /// `Workflow::Changed` and the runner takes it from the next phase on.
 pub async fn propose(
@@ -55,18 +57,18 @@ pub async fn propose(
     target: Option<WorkflowId>,
     workflow: Workflow,
     reason: String,
-) -> Result<CheckpointId, String> {
+) -> Result<ApprovalId, String> {
     let id = target
         .or_else(|| host.read(|state| state.workflows.root.clone()))
         .ok_or_else(|| "no workflow is running".to_owned())?;
     let request = change_request(host, &id, &workflow, &reason, Party::User, None)?;
-    let opening = checkpoints::open(host, request).map_err(|err| err.to_string())?;
+    let opening = approvals::open(host, request).map_err(|err| err.to_string())?;
     Ok(opening.id().clone())
 }
 
-/// The checkpoint for a change to workflow `id`, once the change is valid, differs from what
+/// The approval for a change to workflow `id`, once the change is valid, is different from what
 /// runs, and leaves alone what already ran. `Err` holds the reasons, one per line. `phase_end`
-/// is where the lead proposed it.
+/// is where the main agent proposed it.
 fn change_request(
     host: &Host,
     id: &WorkflowId,
@@ -74,19 +76,19 @@ fn change_request(
     reason: &str,
     from: Party,
     phase_end: Option<&StepAt>,
-) -> Result<CheckpointRequest, String> {
+) -> Result<ApprovalRequest, String> {
     let current = valid_change(host, id, workflow)?;
     let proposed = yaml::print(workflow)?;
     let running = yaml::print(&current)?;
-    let card = CardId::new(id.to_string()).map_err(|err| err.to_string())?;
-    Ok(CheckpointRequest {
+    let task = TaskId::new(id.to_string()).map_err(|err| err.to_string())?;
+    Ok(ApprovalRequest {
         at: phase_end.cloned(),
-        kind: CheckpointKind::ChangeRequest,
+        kind: ApprovalKind::ChangeRequest,
         title: change_title(id, phase_end.map(|at| at.step.phase)),
-        card: None,
-        packet: CheckpointPacket::ChangeRequest(ChangeRequestPacket {
+        task: None,
+        packet: ApprovalPacket::ChangeRequest(ChangeRequestPacket {
             from,
-            card,
+            task,
             text: format!(
                 "Change workflow `{}` from its next phase on: {reason}",
                 current.name
@@ -117,7 +119,7 @@ fn change_request(
     })
 }
 
-/// The workflow running now, once `workflow` is valid, differs from it, and leaves alone what
+/// The workflow running now, once `workflow` is valid, is different from it, and leaves alone what
 /// already ran. `Err` holds the reasons, one per line.
 fn valid_change(host: &Host, id: &WorkflowId, workflow: &Workflow) -> Result<Workflow, String> {
     let (current, depth, takes_effect) = host
@@ -204,7 +206,7 @@ fn apply(
     host: &Host,
     id: &WorkflowId,
     workflow: Workflow,
-    decided: &CheckpointDecided,
+    decided: &ApprovalDecided,
     reason: String,
 ) -> EngineResult<()> {
     if decided.action != AnswerAction::Approve {
@@ -235,13 +237,13 @@ fn apply(
 }
 
 /// Records a change to workflow `id` from its next phase on: the new definition, its
-/// declaration, each phase it adds, and why, so the view moves in place. `checkpoint` is the
+/// declaration, each phase it adds, and why, so the view moves in place. `approval` is the
 /// approval it went through, if it needed one.
 pub fn record(
     host: &Host,
     id: &WorkflowId,
     workflow: Workflow,
-    checkpoint: Option<CheckpointId>,
+    approval: Option<ApprovalId>,
     reason: String,
 ) -> EngineResult<()> {
     let Some(current) = host.read(|state| {
@@ -260,7 +262,7 @@ pub fn record(
     let added: Vec<DeclaredPhase> = declared
         .phases
         .iter()
-        .filter(|phase| !current.phases.iter().any(|old| old.name == phase.title))
+        .filter(|phase| !current.phases.iter().any(|old| old.name == phase.name))
         .cloned()
         .collect();
     host.record(
@@ -270,7 +272,7 @@ pub fn record(
             id: id.clone(),
             version,
             workflow,
-            checkpoint,
+            approval,
             reason: reason.clone(),
         }))),
     )?;
@@ -306,8 +308,8 @@ pub fn record(
 
 /// Called as a workflow change is decided, by you or your policy: an accepted one is recorded
 /// at once, whoever waits for it. What goes wrong becomes a note in the log.
-pub fn on_decided(host: &Host, opened: &CheckpointOpened, decided: &CheckpointDecided) {
-    if !checkpoints::is_workflow_change(opened.kind, opened.card.as_ref())
+pub fn on_decided(host: &Host, opened: &ApprovalOpened, decided: &ApprovalDecided) {
+    if !approvals::is_workflow_change(opened.kind, opened.task.as_ref())
         || decided.action != AnswerAction::Approve
     {
         return;
@@ -321,22 +323,22 @@ pub fn on_decided(host: &Host, opened: &CheckpointOpened, decided: &CheckpointDe
 
 fn apply_opened(
     host: &Host,
-    opened: &CheckpointOpened,
-    decided: &CheckpointDecided,
+    opened: &ApprovalOpened,
+    decided: &ApprovalDecided,
 ) -> EngineResult<()> {
-    let CheckpointPacket::ChangeRequest(packet) = &opened.packet else {
+    let ApprovalPacket::ChangeRequest(packet) = &opened.packet else {
         return Err(EngineError::Refused(format!(
             "approval {} isn't a workflow change",
             opened.id
         )));
     };
-    let id = WorkflowId::parse(packet.card.as_str()).ok_or_else(|| {
+    let id = WorkflowId::parse(packet.task.as_str()).ok_or_else(|| {
         EngineError::Refused(format!(
             "approval {} names no workflow: {}",
-            opened.id, packet.card
+            opened.id, packet.task
         ))
     })?;
-    let evidence = checkpoints::evidence_of(host, opened)?;
+    let evidence = approvals::evidence_of(host, opened)?;
     let proposed = evidence
         .documents
         .iter()
@@ -350,21 +352,21 @@ fn apply_opened(
 }
 
 /// When the engine starts: records each accepted workflow change that the log doesn't show as
-/// made yet, such as one you accepted while the run was parked.
+/// made yet, such as one you accepted while the run was waiting.
 pub fn apply_decided(host: &Host) -> EngineResult<()> {
-    let waiting: Vec<(CheckpointOpened, CheckpointDecided)> = host.read(|state| {
-        let made: BTreeSet<&CheckpointId> = state
+    let waiting: Vec<(ApprovalOpened, ApprovalDecided)> = host.read(|state| {
+        let made: BTreeSet<&ApprovalId> = state
             .workflows
             .by_id
             .values()
             .flat_map(|record| record.changes.iter())
             .collect();
         state
-            .checkpoints
+            .approvals
             .by_id
             .values()
             .filter(|record| {
-                checkpoints::is_workflow_change(record.opened.kind, record.opened.card.as_ref())
+                approvals::is_workflow_change(record.opened.kind, record.opened.task.as_ref())
                     && record.withdrawn.is_none()
                     && !made.contains(&record.opened.id)
             })
@@ -426,16 +428,16 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
             "no workflow {id} was started"
         )));
     };
-    // Asked once per phase end. After a crash or a park, the ask replays from the log, and a
+    // Asked once per phase end. After a crash or a wait, the ask replays from the log, and a
     // change you already decided is applied or dropped as you decided, never asked again.
     let title = change_title(id, Some(phase));
     let prior = host.read(|state| {
         state
-            .checkpoints
+            .approvals
             .by_id
             .values()
             .filter(|record| {
-                record.opened.kind == CheckpointKind::ChangeRequest
+                record.opened.kind == ApprovalKind::ChangeRequest
                     && record.opened.title == title
                     && record.withdrawn.is_none()
             })
@@ -461,20 +463,19 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
         Some(yaml::print_marked(&current, &finished).map_err(EngineError::Refused)?),
         progress,
     );
-    let lead = lead(host);
-    // Where the lead may only size your preset, it keeps it here too: it may size what's left
-    // of it, never run another workflow in its place, unless your request said
-    // how to run it.
-    let sizes_only =
-        host.settings().lead_designs() == LeadDesign::Size && input.as_you_asked.is_empty();
-    let examples = preset::part(host).unwrap_or_else(|| examples_part(host));
+    let tie_breaker = tie_breaker(host);
+    // Where the main agent may only size your workflow, it keeps it here too: it may size what's
+    // left of it, never run another workflow in its place, unless your request said how to run it.
+    let sizes_only = host.settings().orchestrator_designs() == OrchestratorDesign::Size
+        && input.as_you_asked.is_empty();
+    let examples = sizing::part(host).unwrap_or_else(|| examples_part(host));
     let names = example_names(host);
     let mut refused: Option<SessionKey> = None;
     for slot in 0..2 {
         let asked = Designing {
             slot,
             at: Some(at.clone()),
-            lead: &lead,
+            tie_breaker: &tie_breaker,
             refused: refused.as_ref(),
             input: &input,
             examples: &examples,
@@ -510,7 +511,7 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
                         .map_or(0, |record| record.change_from())
                 });
                 let proposed = shape::as_written(host, keep_what_ran(&current, proposed, from));
-                if sizes_only && let Err(error) = preset::keeps(host, &current, &proposed) {
+                if sizes_only && let Err(error) = sizing::keeps(host, &current, &proposed) {
                     send_back("went beyond sizing your workflow", vec![error])?;
                     continue;
                 }
@@ -526,7 +527,7 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
             return Ok(());
         }
         let why = answered.output.why.clone();
-        // Before the go-ahead, a change is part of the lead's design, and the start card
+        // Before the go-ahead, a change is part of the main agent's design, and the start question
         // approves it as it then stands.
         if prior.is_none() && host.read(|state| before_go_ahead(state, id)) {
             if let Err(errors) = valid_change(host, id, &proposed) {
@@ -555,21 +556,21 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
                         continue;
                     }
                 };
-                let opening = if checkpoints::keeps_yours(
+                let opening = if approvals::keeps_yours(
                     host,
-                    CheckpointKind::ChangeRequest,
-                    &[checkpoints::CHANGE_TOPIC],
+                    ApprovalKind::ChangeRequest,
+                    &[approvals::CHANGE_TOPIC],
                 ) {
-                    let because = checkpoints::yours_because("workflow changes");
-                    checkpoints::open_yours(host, request, because)?
+                    let because = approvals::yours_because("workflow changes");
+                    approvals::open_yours(host, request, because)?
                 } else {
-                    checkpoints::open(host, request)?
+                    approvals::open(host, request)?
                 };
-                let checkpoint = opening.id().clone();
+                let approval = opening.id().clone();
                 match opening.decided(host).await {
                     Ok(decided) => decided,
                     // Withdrawn, such as by a newer proposal for this phase end: no change.
-                    Err(EngineError::Refused(reason)) if withdrawn(host, &checkpoint) => {
+                    Err(EngineError::Refused(reason)) if withdrawn(host, &approval) => {
                         return note(
                             host,
                             NoteLevel::Info,
@@ -598,58 +599,57 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
 /// What a change that breaks the workflow's rules did, in plain words.
 const BROKE: &str = "wrote a workflow that breaks its rules";
 
-/// Nothing has been built yet, and the checkpoint that gives the go-ahead is still to come, so
+/// Nothing has been built yet, and the approval that gives the go-ahead is still to come, so
 /// it will show the workflow as changed.
 fn before_go_ahead(state: &RunState, id: &WorkflowId) -> bool {
-    fn checkpoint(steps: &[argonauts_core::workflow::Step], kind: CheckpointKind) -> bool {
+    fn approval(steps: &[argonauts_core::workflow::Step], kind: ApprovalKind) -> bool {
         steps.iter().any(|step| {
-            (step.kind == StepKind::Checkpoint && step.checkpoint == Some(kind))
-                || checkpoint(&step.steps, kind)
+            (step.kind == StepKind::Approval && step.approval == Some(kind))
+                || approval(&step.steps, kind)
         })
     }
     let Some(record) = state.workflows.by_id.get(id) else {
         return false;
     };
     let from = record.change_from() as usize;
-    // The plan card gives the go-ahead, or the goal checkpoint before the work when no plan
-    // card does and the goal isn't approved yet.
+    // The plan question gives the go-ahead, or the Understand approval before the work when no plan
+    // question does and the goal isn't approved yet.
     let goal_to_come = state.goal.approved.is_none();
-    state.cards.by_id.is_empty()
+    state.tasks.by_id.is_empty()
         && record.workflow.phases.iter().skip(from).any(|phase| {
-            checkpoint(&phase.steps, CheckpointKind::Plan)
-                || (goal_to_come && checkpoint(&phase.steps, CheckpointKind::Goal))
+            approval(&phase.steps, ApprovalKind::Plan)
+                || (goal_to_come && approval(&phase.steps, ApprovalKind::Understand))
         })
 }
 
-fn withdrawn(host: &Host, checkpoint: &CheckpointId) -> bool {
+fn withdrawn(host: &Host, approval: &ApprovalId) -> bool {
     host.read(|state| {
         state
-            .checkpoints
+            .approvals
             .by_id
-            .get(checkpoint)
+            .get(approval)
             .is_some_and(|record| record.withdrawn.is_some())
     })
 }
 
-/// Before the run's workflow starts, with `workflows.lead_designs` or All hands on a crew run,
-/// the lead writes the run's brief (`brief`): its name, description, phases with details,
-/// labels, and done-when list, starting from an example (built in, or one of your files) or
-/// composed when `allow_composed`. Code shapes it for the run (`shape`): Understand first when
-/// it runs, the checkpoints and the checks, and a goal's first attempt. The brief and the
-/// workflow are validated, and what code refuses goes back once to the same lead session,
-/// which fixes it with what it already read. An accepted brief names the run.
-/// `None` keeps the preset's workflow, with a note saying why when the lead's answer didn't
-/// hold.
+/// Before the run's workflow starts, with `workflows.orchestrator_designs` or Ultracode on a crew
+/// run, the main agent writes the run's brief (`brief`): its name, description, phases with
+/// details, labels, and done-when list, starting from an example (built in, or one of your files)
+/// or composed when `allow_composed`. Code shapes it for the run (`shape`): Understand first when
+/// it runs, the approvals and the checks, and a goal's first try. The brief and the workflow are
+/// validated, and what code refuses goes back once to the same main agent session, which fixes it
+/// with what it already read. An accepted brief names the run. `None` keeps the chosen workflow,
+/// with a note saying why when the main agent's answer didn't hold.
 pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<WorkflowRef>, Workflow)>> {
     let settings = host.settings();
-    let solo = host.read(runner::run_mode) == Some(RunMode::Solo);
-    if settings.lead_designs() == LeadDesign::Off || solo {
+    let captain = host.read(runner::run_mode) == Some(RunMode::Captain);
+    if settings.orchestrator_designs() == OrchestratorDesign::Off || captain {
         return Ok(None);
     }
     let mut input = design_input(host, None, Vec::new());
-    let lead = lead(host);
-    // Where the lead may only size your preset, it sees only the preset's workflow.
-    let examples = preset::part(host).unwrap_or_else(|| examples_part(host));
+    let tie_breaker = tie_breaker(host);
+    // Where the main agent may only size your workflow, it sees only the chosen workflow.
+    let examples = sizing::part(host).unwrap_or_else(|| examples_part(host));
     let names = example_names(host);
     let mut refused: Option<SessionKey> = None;
     let mut refusals = 0;
@@ -657,7 +657,7 @@ pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<Workflo
         let asked = Designing {
             slot,
             at: None,
-            lead: &lead,
+            tie_breaker: &tie_breaker,
             refused: refused.as_ref(),
             input: &input,
             examples: &examples,
@@ -686,7 +686,10 @@ pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<Workflo
                         other.to_string(),
                     ),
                 };
-                let line = format!("{what}, so {} runs as written.", settings.phases);
+                let line = format!(
+                    "{what}, so {} runs as written.",
+                    runner::phases_in_use(host)
+                );
                 note_with_detail(host, NoteLevel::Warn, &line, &detail)?;
                 return Ok(None);
             }
@@ -694,7 +697,7 @@ pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<Workflo
         let brief = &answered.output;
         let problems = match accept(host, brief, &names, &input) {
             Ok(Some((sizing, workflow))) => {
-                if let Some(line) = preset::line(&sizing.changes, &brief.why) {
+                if let Some(line) = sizing::line(&sizing.changes, &brief.why) {
                     note(host, NoteLevel::Info, line)?;
                 }
                 name_run(host, &workflow, &brief.done_when)?;
@@ -721,26 +724,26 @@ pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<Workflo
     let line = if refusals > 1 {
         format!(
             "The main agent's workflow broke the rules twice, so {} runs as written.",
-            settings.phases
+            runner::phases_in_use(host)
         )
     } else {
         format!(
             "The main agent's workflow broke the rules, so {} runs as written.",
-            settings.phases
+            runner::phases_in_use(host)
         )
     };
     note_with_detail(host, NoteLevel::Warn, &line, &input.errors.join("\n"))?;
     Ok(None)
 }
 
-/// What code makes of the lead's brief: the workflow it runs, as sized against your preset;
-/// `None` to keep the preset's; or what code refused, for the lead to fix.
+/// What code makes of the main agent's brief: the workflow it runs, as sized against your workflow;
+/// `None` to keep the chosen workflow; or what code refused, for the main agent to fix.
 fn accept(
     host: &Host,
     brief: &DesignOutput,
     names: &[String],
     input: &DesignInput,
-) -> Result<Option<(preset::Sizing, Workflow)>, Vec<Problem>> {
+) -> Result<Option<(sizing::Sizing, Workflow)>, Vec<Problem>> {
     let one = |plainly: &str, line: String| vec![Problem::new(plainly, line)];
     let (from, mut workflow) = match resolve(host, brief) {
         Ok(Some(resolved)) => resolved,
@@ -760,25 +763,25 @@ fn accept(
     if !problems.is_empty() {
         return Err(problems);
     }
-    // The run keeps your preset, sized, unless `workflows.lead_designs = "any"` or your
+    // The run keeps your workflow, sized, unless `workflows.orchestrator_designs = "any"` or your
     // request said how to run it.
     let asked = !input.as_you_asked.is_empty();
-    let sizing = preset::check(host, from.as_ref(), &workflow, asked)
+    let sizing = sizing::check(host, from.as_ref(), &workflow, asked)
         .map_err(|error| one("went beyond sizing your workflow", error))?;
     brief::apply_identity(&mut workflow, brief);
     workflow.name = crate::workflow::naming::unique_name(host, &workflow.name);
-    let first_attempt = match &brief.first_attempt {
+    let first_try = match &brief.first_try {
         Some(plan) if shape::run_style(host) == RunStyle::Goal => {
-            Some(crate::goal::pursue::first_attempt(plan).map_err(|error| {
+            Some(crate::goal::pursue::first_try(plan).map_err(|error| {
                 one(
-                    "planned a first attempt code couldn't read",
-                    format!("`first_attempt`: {error}"),
+                    "planned a first try code couldn't read",
+                    format!("`first_try`: {error}"),
                 )
             })?)
         }
         _ => None,
     };
-    let workflow = shape::for_run(host, workflow, first_attempt);
+    let workflow = shape::for_run(host, workflow, first_try);
     runner::check(host, &workflow, 0).map_err(|errors| {
         errors
             .iter()
@@ -788,17 +791,17 @@ fn accept(
     Ok(Some((sizing, workflow)))
 }
 
-/// One ask for the lead's design.
+/// One ask for the main agent's design.
 struct Designing<'a> {
     slot: u32,
     /// The phase end it adapts the workflow at, or `None` for the run's brief.
     at: Option<StepAt>,
-    lead: &'a WorkerRef,
+    tie_breaker: &'a ModelRef,
     /// The session whose design code refused, when it can carry on.
     refused: Option<&'a SessionKey>,
     input: &'a DesignInput,
     examples: &'a InputPart,
-    /// The names the lead may start from, so `based_on` is read as one of them.
+    /// The names the main agent may start from, so `based_on` is read as one of them.
     names: &'a [String],
 }
 
@@ -808,7 +811,7 @@ async fn ask_design(host: &Host, asked: Designing<'_>) -> EngineResult<Answered<
     let Designing {
         slot,
         at,
-        lead,
+        tie_breaker,
         refused,
         input,
         examples,
@@ -822,7 +825,13 @@ async fn ask_design(host: &Host, asked: Designing<'_>) -> EngineResult<Answered<
             host.ask::<FixDesign>(Ask {
                 slot,
                 resume: Some(session.clone()),
-                ..Ask::new(at, RoleName::PhaseLead, lead.clone(), FIX_DESIGN, fix)
+                ..Ask::new(
+                    at,
+                    RoleName::TieBreaker,
+                    tie_breaker.clone(),
+                    FIX_DESIGN,
+                    fix,
+                )
             })
             .await?
         }
@@ -832,8 +841,8 @@ async fn ask_design(host: &Host, asked: Designing<'_>) -> EngineResult<Answered<
                 parts: vec![examples.clone()],
                 ..Ask::new(
                     at,
-                    RoleName::PhaseLead,
-                    lead.clone(),
+                    RoleName::TieBreaker,
+                    tie_breaker.clone(),
                     DESIGN_WORKFLOW,
                     input.clone(),
                 )
@@ -845,8 +854,8 @@ async fn ask_design(host: &Host, asked: Designing<'_>) -> EngineResult<Answered<
     Ok(answered)
 }
 
-/// A `›` note on why the lead is asked again about what session `about` answered, written once
-/// however often a stopped run replays to here.
+/// A `›` note on why the main agent is asked again about what session `about` answered, written
+/// once however often a stopped run replays to here.
 fn say_once(host: &Host, about: Option<&SessionKey>, line: &str, detail: &str) -> EngineResult<()> {
     if host.read(|state| state.said_after(line, about)) {
         return Ok(());
@@ -873,13 +882,12 @@ fn resumable(host: &Host, answered: &Answered<DesignOutput>) -> Option<SessionKe
         .workers
         .get(&answered.worker)
         .is_ok_and(|worker| worker.capabilities().resume);
-    (resumes && answered.end.vendor_session.is_some()).then(|| answered.session.clone())
+    (resumes && answered.end.cli_session.is_some()).then(|| answered.session.clone())
 }
 
 /// A session that stopped on its own before it answered, which a new one may get past: its
-/// context filled up. A vendor's failure never ends up here, since the ask goes again or hands
-/// the seat on by itself, and a stop of yours ends the same way however often
-/// it's asked.
+/// context filled up. An agent's failure never ends up here, since the ask goes again or its job
+/// falls back by itself, and a stop of yours ends the same way however often it's asked.
 fn ended_early(err: &EngineError) -> bool {
     matches!(
         err,
@@ -887,9 +895,10 @@ fn ended_early(err: &EngineError) -> bool {
     )
 }
 
-pub(crate) fn lead(host: &Host) -> argonauts_core::names::WorkerRef {
-    host.read(|state| crate::lead::phase_lead(state, host.settings()))
-        .unwrap_or_else(|| host.settings().main_agent.clone())
+/// The tie-breaker of the phase the run is in, and the main agent before it has one.
+pub(crate) fn tie_breaker(host: &Host) -> argonauts_core::names::ModelRef {
+    host.read(|state| crate::tie_breaker::tie_breaker(state, host.settings()))
+        .unwrap_or_else(|| host.settings().crew.main.clone())
 }
 
 fn design_input(host: &Host, current: Option<String>, progress: Vec<String>) -> DesignInput {
@@ -928,14 +937,14 @@ fn design_input(host: &Host, current: Option<String>, progress: Vec<String>) -> 
     }
 }
 
-/// What the lead must keep from the request: each followed instruction as the Triage line
-/// said it, and words meant for the lead as the request put them.
+/// What the main agent must keep from the request: each followed instruction as the start line
+/// said it, and words meant for the main agent as the request put them.
 fn musts(instructions: &[CheckedInstruction]) -> Vec<String> {
     instructions
         .iter()
         .filter_map(|instruction| match &instruction.outcome {
             InstructionOutcome::Followed { .. }
-                if instruction.kind == InstructionKind::ForTheLead =>
+                if instruction.kind == InstructionKind::ForTheMainAgent =>
             {
                 Some(instruction.says.clone())
             }
@@ -947,7 +956,7 @@ fn musts(instructions: &[CheckedInstruction]) -> Vec<String> {
         .collect()
 }
 
-/// The examples for the lead, best first: one `### name` section each, with what it's for,
+/// The examples for the main agent, best first: one `### name` section each, with what it's for,
 /// how it did on similar tasks, and its file.
 fn examples_part(host: &Host) -> InputPart {
     let mut text = String::from("## Example workflows\n");
@@ -973,12 +982,12 @@ fn examples_part(host: &Host) -> InputPart {
     }
 }
 
-/// Every workflow the lead may pick, by the name `lookup` finds it under: your project's files,
-/// then your global ones, then the built-ins. A file that doesn't parse isn't offered;
+/// Every workflow the main agent may pick, by the name `lookup` finds it under: your project's
+/// files, then your global ones, then the built-ins. A file that doesn't parse isn't offered;
 /// naming it would fail with its error anyway. Each carries its runs and passes from the outcome
 /// log's run lines, and they arrive best first.
 pub fn examples(host: &Host) -> Vec<WorkflowExample> {
-    let stats = crate::retro::outcomes::read_all(&crate::divide::repo_state_dir(host))
+    let stats = crate::run_review::outcomes::read_all(&crate::divide::repo_state_dir(host))
         .map(|lines| argonauts_learning::outcomes::workflow_stats(&lines))
         .unwrap_or_else(|err| {
             tracing::warn!("past runs unavailable for the workflow examples: {err}");
@@ -1008,34 +1017,41 @@ pub fn examples(host: &Host) -> Vec<WorkflowExample> {
         };
         let mut files: Vec<_> = entries
             .filter_map(|entry| Some(entry.ok()?.path()))
-            .filter(|path| {
-                path.extension()
-                    .is_some_and(|extension| extension == "yaml")
-            })
             .collect();
         files.sort();
         for path in files {
             let Some(name) = path.file_stem().and_then(|stem| stem.to_str()) else {
                 continue;
             };
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            if let Ok(workflow) = yaml::parse(&text) {
+            if let Some((text, workflow)) = phases_in(&path, name) {
                 offer(name, text, workflow);
             }
         }
     }
-    for (name, text) in builtin::BUILTIN {
-        if let Ok(workflow) = builtin::load(name) {
-            offer(name, (*text).to_owned(), workflow);
+    for name in builtin::names() {
+        if let (Ok(text), Ok(workflow)) = (builtin::example(name), builtin::load(name)) {
+            offer(name, text, workflow);
         }
     }
     rank_examples(&mut examples);
     examples
 }
 
-/// The names of every workflow the lead may pick, as `lookup` finds them.
+/// A file's phases, with the YAML the main agent reads them as: a file of phases as it is
+/// written, and the phases of a workflow's own file printed.
+fn phases_in(path: &Path, name: &str) -> Option<(String, Workflow)> {
+    let text = std::fs::read_to_string(path).ok()?;
+    match path.extension()?.to_str()? {
+        "yaml" => yaml::parse(&text).ok().map(|workflow| (text, workflow)),
+        "toml" => {
+            let workflow = workflow_files::phases(&text, name).ok()??;
+            Some((yaml::print(&workflow).ok()?, workflow))
+        }
+        _ => None,
+    }
+}
+
+/// The names of every workflow the main agent may pick, as `lookup` finds them.
 fn example_names(host: &Host) -> Vec<String> {
     examples(host)
         .into_iter()
@@ -1077,10 +1093,10 @@ fn goal_lines(goal: Value) -> Vec<String> {
 }
 
 const STEP_KINDS: &[(StepKind, &str)] = &[
-    (StepKind::Restate, "each agent restates the goal"),
+    (StepKind::Read, "each agent reads the request back"),
     (
-        StepKind::Differ,
-        "compare restatements and tag the differences",
+        StepKind::Compare,
+        "compare readings and tag the differences",
     ),
     (
         StepKind::Draft,
@@ -1100,26 +1116,26 @@ const STEP_KINDS: &[(StepKind, &str)] = &[
         "review a diff or a result against criteria, by another provider",
     ),
     (StepKind::Judge, "score candidates, never the judge's own"),
-    (StepKind::Refute, "try to disprove a finding or a claim"),
+    (StepKind::Critique, "try to disprove a finding or a claim"),
     (StepKind::Synthesize, "combine results into one"),
     (
         StepKind::Build,
         "tasks: a worker in a worktree, then its checks and review",
     ),
-    (StepKind::Gate, "run the configured check commands"),
+    (StepKind::Checks, "run the configured check commands"),
     (
         StepKind::LoopUntil,
         "repeat steps until a condition holds, with a hard maximum",
     ),
     (
-        StepKind::Checkpoint,
-        "the goal or plan approval, where you or your policy decide",
+        StepKind::Approval,
+        "the Understand or plan approval, where you or your policy decide",
     ),
-    (StepKind::Merge, "integration and the merge approval"),
+    (StepKind::Merge, "merge and the merge approval"),
     (StepKind::Workflow, "run another workflow as one step"),
 ];
 
-/// The workflow the lead's brief names: its own file, or the example it started from with its
+/// The workflow the main agent's brief names: its own file, or the example it started from with its
 /// params filled, before code frames it. `None` when it named neither.
 fn resolve(
     host: &Host,
@@ -1141,7 +1157,7 @@ fn resolve(
     Ok(Some((from, filled)))
 }
 
-/// Records the run's name and description from its workflow, once the lead's brief named it,
+/// Records the run's name and description from its workflow, once the main agent's brief named it,
 /// unless the run already goes by that name.
 fn name_run(host: &Host, workflow: &Workflow, done_when: &[Criterion]) -> EngineResult<()> {
     let (named, style) = host.read(|state| {
@@ -1180,7 +1196,7 @@ mod tests {
         builtin::load(name).unwrap_or_else(|err| panic!("{err}"))
     }
 
-    /// `orchestrator` at the end of Plan takes a change from phase 3 on. Folding Goal and
+    /// `orchestrator` at the end of Plan takes a change from phase 3 on. Folding Understand and
     /// Plan together would shift Build onto a finished index, so it's refused.
     #[test]
     fn a_change_keeps_the_phases_that_started() {

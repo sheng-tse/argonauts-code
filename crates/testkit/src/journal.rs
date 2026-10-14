@@ -1,4 +1,4 @@
-//! Reading runs back from a test's private Argonauts home.
+//! Reading runs back from a test's private Argonauts Code home.
 
 use std::cmp::Ordering;
 use std::fs;
@@ -58,7 +58,7 @@ fn started_at(run_dir: &Path) -> Option<OffsetDateTime> {
         .map(|event| event.ts)
 }
 
-/// Torn lines are skipped, as the supervisor skips them.
+/// Torn lines are skipped, as the run host skips them.
 pub fn events(run_dir: &Path) -> anyhow::Result<Vec<RunEvent>> {
     Ok(read_all(&run_dir.join(run_files::EVENTS))?.events)
 }
@@ -95,7 +95,13 @@ mod tests {
                 text: run.to_owned(),
             });
             journal
-                .append(&RunId::new(run).unwrap(), None, None, "conductor", note)
+                .append(
+                    &RunId::new(run).unwrap(),
+                    None,
+                    None,
+                    "argonauts-code",
+                    note,
+                )
                 .unwrap();
         }
         assert_eq!(run_dirs(dir.path()).len(), 2);
@@ -118,7 +124,13 @@ mod tests {
                 text: run.to_owned(),
             });
             journal
-                .append(&RunId::new(run).unwrap(), None, None, "conductor", note)
+                .append(
+                    &RunId::new(run).unwrap(),
+                    None,
+                    None,
+                    "argonauts-code",
+                    note,
+                )
                 .unwrap();
             std::thread::sleep(std::time::Duration::from_millis(5));
         }

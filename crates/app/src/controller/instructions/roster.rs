@@ -1,13 +1,13 @@
-//! The agents a request may name, and their models and efforts, as Argonauts knows them now.
+//! The agents a request may name, and their models and efforts, as Argonauts Code knows them now.
 
 use argonauts_core::input::EFFORT_LEVELS;
-use argonauts_core::names::WorkerRef;
-use argonauts_core::registry::{RegistryKind, company_of, known_efforts};
+use argonauts_core::names::ModelRef;
+use argonauts_core::registry::{RegistryKind, known_efforts};
 
 use super::words::{first_word, key};
 use crate::controller::Ctx;
 
-/// The agents a request may name, as Argonauts knows them right now.
+/// The agents a request may name, as Argonauts Code knows them right now.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Roster {
     pub agents: Vec<Agent>,
@@ -19,8 +19,8 @@ pub(crate) struct Agent {
     /// `Claude Code`.
     pub name: String,
     /// What review rules compare, such as `claude` or `gpt`.
-    pub family: String,
-    /// An endpoint only answers, so it can't build or lead.
+    pub provider: String,
+    /// An endpoint only answers, so it can't build or be the main agent.
     pub endpoint: bool,
     pub state: AgentState,
     /// Its models as its live list gives them. Empty when the list isn't known.
@@ -35,7 +35,7 @@ pub(crate) enum AgentState {
     Ready,
     NotInstalled,
     TurnedOff,
-    /// Out of quota, or its vendor is down.
+    /// Out of plan usage, or its agent is down.
     Down,
 }
 
@@ -65,12 +65,12 @@ impl Roster {
             .map(|adapter| adapter.id().to_owned())
             .chain(settings.agents.keys().cloned())
             .chain(settings.endpoints.keys().cloned())
-            .chain(available.iter().map(|worker| worker.worker.clone()))
+            .chain(available.iter().map(|worker| worker.agent.clone()))
             .chain(
                 listed
                     .iter()
                     .filter(|entry| entry.kind == RegistryKind::Endpoint)
-                    .map(|entry| entry.id.worker.clone()),
+                    .map(|entry| entry.id.agent.clone()),
             );
         for id in known {
             if !ids.contains(&id) {
@@ -80,14 +80,14 @@ impl Roster {
         let agents = ids
             .into_iter()
             .map(|id| {
-                let bare = WorkerRef::new(id.clone(), None);
+                let bare = ModelRef::new(id.clone(), None);
                 let endpoint = settings.endpoints.contains_key(&id)
                     || listed
                         .iter()
-                        .any(|entry| entry.id.worker == id && entry.kind == RegistryKind::Endpoint);
+                        .any(|entry| entry.id.agent == id && entry.kind == RegistryKind::Endpoint);
                 let enabled = settings.agents.get(&id).is_none_or(|agent| agent.enabled);
-                let state = if available.iter().any(|worker| worker.worker == id) {
-                    if crate::controller::turn::vendor_out(ctx, &bare) {
+                let state = if available.iter().any(|worker| worker.agent == id) {
+                    if crate::controller::turn::agent_out(ctx, &bare) {
                         AgentState::Down
                     } else {
                         AgentState::Ready
@@ -99,7 +99,7 @@ impl Roster {
                 };
                 let models = listed
                     .iter()
-                    .filter(|entry| entry.id.worker == id)
+                    .filter(|entry| entry.id.agent == id)
                     .filter_map(|entry| {
                         let model = entry.id.model.clone()?;
                         Some(Model {
@@ -121,8 +121,8 @@ impl Roster {
                         (model.to_owned(), effort.map(str::to_owned))
                     });
                 Agent {
-                    name: ctx.names.harness(&id),
-                    family: registry.family(&bare),
+                    name: ctx.names.cli(&id),
+                    provider: registry.provider(&bare),
                     endpoint,
                     state,
                     models,
@@ -143,7 +143,7 @@ impl Roster {
             .map_or_else(|| id.to_owned(), |agent| agent.name.clone())
     }
 
-    /// The agent `who` names, by its id, its name, a short name, its family or maker, or one of
+    /// The agent `who` names, by its id, its name, a short name, its provider or maker, or one of
     /// its models, with the model when it names one. Agent CLIs come before endpoints, and ones
     /// that can work before ones that can't.
     pub(super) fn find(&self, who: &str) -> Option<(&Agent, Option<String>)> {
@@ -163,10 +163,7 @@ impl Roster {
                 || key(first_word(&agent.id)) == wanted
                 || key(first_word(&agent.name)) == wanted
         };
-        let maker = |agent: &Agent| {
-            !agent.family.is_empty()
-                && (key(&agent.family) == wanted || key(&company_of(&agent.family)) == wanted)
-        };
+        let maker = |agent: &Agent| !agent.provider.is_empty() && key(&agent.provider) == wanted;
         if let Some(agent) = best(&exact)
             .or_else(|| best(&short))
             .or_else(|| best(&maker))
@@ -180,7 +177,11 @@ impl Roster {
 }
 
 /// Short names people use that aren't an agent's id or name.
-const NICKNAMES: &[(&str, &str)] = &[("agy", "antigravity-cli"), ("gemini", "antigravity-cli")];
+const NICKNAMES: &[(&str, &str)] = &[
+    ("agy", "antigravity-cli"),
+    ("gemini", "antigravity-cli"),
+    ("gpt", "codex"),
+];
 
 /// The model of `agent` a request's word names, or why the agent stays on its default model.
 /// Without its live list nothing says the agent has the model, so the word isn't passed on:
@@ -239,7 +240,7 @@ pub(super) fn display_model(agent: &Agent, model: &str) -> String {
         .map_or_else(|| model.to_owned(), |known| known.name.clone())
 }
 
-/// `level`, or the nearest level the model takes, with a note when it differs. `None` for a
+/// `level`, or the nearest level the model takes, with a note when it is different. `None` for a
 /// model that takes no effort setting.
 pub(super) fn clamp(
     level: &str,

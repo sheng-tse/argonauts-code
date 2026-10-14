@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::json::u64_at;
 
-/// Token counts in Argonauts' convention, where `input` includes cached tokens.
+/// Token counts in Argonauts Code's convention, where `input` includes cached tokens.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Tokens {
     input: u64,
@@ -108,7 +108,8 @@ impl UsageTracker {
         Some(growth.into_event(None, false))
     }
 
-    /// Skipped when the totals are below what was already counted, as after a crash that zeroes them.
+    /// Skipped when the totals are below what was already counted, as after a crash that zeroes
+    /// them.
     pub(crate) fn result_totals(&self, result: &Value) -> Option<AgentEvent> {
         let totals = result
             .get("modelUsage")

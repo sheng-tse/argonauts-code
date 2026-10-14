@@ -1,5 +1,5 @@
 //! Where the socket hands requests while engines come and go: into the host's queue while an
-//! engine runs or starts, a wake-up for a host waiting out its park grace, or a refusal once the
+//! engine runs or starts, a wake-up for a host waiting out its wait grace, or a refusal once the
 //! host exits.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -12,16 +12,16 @@ use super::relay::{Entry, Queue};
 pub(crate) enum EngineState {
     /// An engine runs, or is about to, and requests queue for it.
     Open,
-    /// The engine returned `Parked` and the host waits out the grace.
-    Parked,
+    /// The engine returned `Waiting` and the host waits out the grace.
+    Waiting,
     /// The host is exiting.
     Closed,
 }
 
 /// Why the door didn't queue a request.
 pub(crate) enum Turned {
-    /// The run is parked and this request doesn't wake it.
-    Parked(Box<Entry>),
+    /// The run is waiting and this request doesn't wake it.
+    Waiting(Box<Entry>),
     Closed,
 }
 
@@ -58,19 +58,19 @@ impl Door {
         self.inner().state
     }
 
-    /// Queues `entry`. While parked, only a request that `wakes` gets in, and the first one
+    /// Queues `entry`. While waiting, only a request that `wakes` gets in, and the first one
     /// wakes the host, so a burst of requests restarts the engine once.
     pub(crate) fn submit(&self, entry: Entry, wakes: bool) -> Result<(), Turned> {
         let mut inner = self.inner();
         match inner.state {
             EngineState::Closed => return Err(Turned::Closed),
-            EngineState::Parked if !wakes => return Err(Turned::Parked(Box::new(entry))),
-            EngineState::Parked | EngineState::Open => {}
+            EngineState::Waiting if !wakes => return Err(Turned::Waiting(Box::new(entry))),
+            EngineState::Waiting | EngineState::Open => {}
         }
-        // The state and the send share the lock, so the host's drain after `park` or `close`
+        // The state and the send share the lock, so the host's drain after `wait` or `close`
         // sees every request that got in before it.
         inner.queue.send(entry).map_err(|_| Turned::Closed)?;
-        if inner.state == EngineState::Parked {
+        if inner.state == EngineState::Waiting {
             inner.state = EngineState::Open;
             self.wake.notify_one();
         }
@@ -81,22 +81,22 @@ impl Door {
         self.inner().state = EngineState::Open;
     }
 
-    pub(crate) fn park(&self) {
-        self.inner().state = EngineState::Parked;
+    pub(crate) fn wait(&self) {
+        self.inner().state = EngineState::Waiting;
     }
 
     pub(crate) fn close(&self) {
         self.inner().state = EngineState::Closed;
     }
 
-    /// Parked becomes Closed. False when a request woke it first, and then the host restarts.
-    pub(crate) fn close_if_parked(&self) -> bool {
+    /// Waiting becomes Closed. False when a request woke it first, and then the host restarts.
+    pub(crate) fn close_if_waiting(&self) -> bool {
         let mut inner = self.inner();
-        let parked = inner.state == EngineState::Parked;
-        if parked {
+        let waiting = inner.state == EngineState::Waiting;
+        if waiting {
             inner.state = EngineState::Closed;
         }
-        parked
+        waiting
     }
 
     pub(crate) async fn woken(&self) {
@@ -119,8 +119,8 @@ mod tests {
     #[tokio::test]
     async fn only_the_first_wake_counts() {
         let (door, mut queue) = Door::new();
-        door.park();
-        assert!(matches!(submit(&door, false), Err(Turned::Parked(_))));
+        door.wait();
+        assert!(matches!(submit(&door, false), Err(Turned::Waiting(_))));
         assert!(submit(&door, true).is_ok());
         assert!(submit(&door, true).is_ok());
         tokio::time::timeout(Duration::from_secs(1), door.woken())
@@ -133,9 +133,9 @@ mod tests {
             "a second request while starting stores no permit"
         );
         assert_eq!(queue.take_all().len(), 2);
-        assert!(!door.close_if_parked());
-        door.park();
-        assert!(door.close_if_parked());
+        assert!(!door.close_if_waiting());
+        door.wait();
+        assert!(door.close_if_waiting());
         assert_eq!(door.state(), EngineState::Closed);
         assert!(matches!(submit(&door, true), Err(Turned::Closed)));
     }

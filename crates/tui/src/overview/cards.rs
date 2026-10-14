@@ -3,28 +3,26 @@
 //! of them, compact or folded to a line.
 //!
 //! Plan usage rows sit back to back, so their meters are half meters, which never merge into
-//! a slab the way block meters would. The spend and tokens bars are half stacks, so every bar
-//! of the Usage tab is one height.
+//! a slab the way block meters would, and the tokens bar is a half stack of the same height.
+//! The spend card, one row a model under a thin bar, is drawn in `spend.rs`.
 
 use argonauts_core::api::{PlanUsage, RunState, RunSummary, UsagePeriod, UsageSummary};
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::limits::{QuotaReading, QuotaStatus};
-use argonauts_core::names::WorkerRef;
-use argonauts_core::settings::ui::WidgetName;
+use argonauts_core::limits::{PlanUsageReading, PlanUsageStatus};
+use argonauts_core::settings::ui::ModName;
 use ratatui::text::Span;
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime};
 
+use super::spend::SpendCard;
 use crate::format::{self, ClockStyle};
+use crate::kit::bars::{self, Stack};
+use crate::kit::{
+    Badge, Chart, Drawn, Entry, Form, Frame, Header, Kit, State, States, bodies, ljust, rjust,
+    spread,
+};
 use crate::text::{spans_width, str_width, truncate_spans};
 use crate::theme::Role;
-use crate::widgets::bars::{self, Stack};
-use crate::widgets::{
-    Badge, Chart, Drawn, Entry, Form, Frame, Header, Kit, Level, State, States, bodies, ljust,
-    rjust, spread,
-};
 
-/// From this share of a window on, plan usage shows amber, with its reset time.
-const NEAR_LIMIT: f64 = 0.9;
 /// The least cells a plan window's meter takes before its reset time gives way.
 const LEAST_METER: usize = 8;
 /// Days the history card charts.
@@ -50,24 +48,24 @@ impl UsageCard {
     ];
 
     /// The card a mod's name draws, for the names these cards answer to.
-    pub fn of(name: WidgetName) -> Option<Self> {
+    pub fn of(name: ModName) -> Option<Self> {
         match name {
-            WidgetName::Quota => Some(UsageCard::PlanUsage),
-            WidgetName::Spend => Some(UsageCard::Spend),
-            WidgetName::Tokens => Some(UsageCard::Tokens),
-            WidgetName::History => Some(UsageCard::History),
-            WidgetName::Runs => Some(UsageCard::Workflows),
+            ModName::PlanUsage => Some(UsageCard::PlanUsage),
+            ModName::Spend => Some(UsageCard::Spend),
+            ModName::Tokens => Some(UsageCard::Tokens),
+            ModName::History => Some(UsageCard::History),
+            ModName::Runs => Some(UsageCard::Workflows),
             _ => None,
         }
     }
 
-    pub fn name(self) -> WidgetName {
+    pub fn name(self) -> ModName {
         match self {
-            UsageCard::PlanUsage => WidgetName::Quota,
-            UsageCard::Spend => WidgetName::Spend,
-            UsageCard::Tokens => WidgetName::Tokens,
-            UsageCard::History => WidgetName::History,
-            UsageCard::Workflows => WidgetName::Runs,
+            UsageCard::PlanUsage => ModName::PlanUsage,
+            UsageCard::Spend => ModName::Spend,
+            UsageCard::Tokens => ModName::Tokens,
+            UsageCard::History => ModName::History,
+            UsageCard::Workflows => ModName::Runs,
         }
     }
 
@@ -83,8 +81,9 @@ impl UsageCard {
 
     fn glyph_role(self) -> Role {
         match self {
-            UsageCard::PlanUsage | UsageCard::Tokens | UsageCard::Workflows => Role::Card,
-            UsageCard::Spend => Role::Success,
+            UsageCard::PlanUsage | UsageCard::Spend | UsageCard::Tokens | UsageCard::Workflows => {
+                Role::Question
+            }
             UsageCard::History => Role::AgentOrange,
         }
     }
@@ -127,7 +126,7 @@ impl UsageCards<'_> {
         drawn.push(self.header(kit, card, inner));
         drawn.append(match card {
             UsageCard::PlanUsage => self.window_rows(kit, inner, full),
-            UsageCard::Spend => self.spend_body(kit, inner, full),
+            UsageCard::Spend => self.spend().body(kit, inner, full),
             UsageCard::Tokens => self.tokens_body(kit, inner, full),
             UsageCard::History => self.history_body(kit, inner),
             UsageCard::Workflows => self.workflow_rows(kit, inner, full),
@@ -177,12 +176,23 @@ impl UsageCards<'_> {
         }
     }
 
+    fn spend(&self) -> SpendCard<'_> {
+        SpendCard {
+            usage: self.usage,
+            names: self.names,
+            today: self.now.date(),
+        }
+    }
+
     fn header(&self, kit: &Kit<'_>, card: UsageCard, width: usize) -> Vec<Span<'static>> {
         let left = Header::new(card.title(), card.glyph_role()).left(kit);
+        if card == UsageCard::Spend {
+            return self.spend().header(kit, left, width);
+        }
         let usage = self.usage;
         let period = period_words(usage.period);
         // What gives way first on a narrow card, then what stays.
-        let (lead, keep): (Vec<Span<'static>>, Vec<Span<'static>>) = match card {
+        let (opening, keep): (Vec<Span<'static>>, Vec<Span<'static>>) = match card {
             UsageCard::PlanUsage => {
                 let limit = match usage.plan_limit {
                     Some(limit) => vec![
@@ -205,35 +215,8 @@ impl UsageCards<'_> {
                     None => (Vec::new(), vec![kit.dim("no reading yet")]),
                 }
             }
-            UsageCard::Spend => {
-                let spent = kit.strong(format::spend(&usage.total));
-                match usage.spend_limit {
-                    Some(limit) if limit > 0.0 => {
-                        let share = usage.total.cost_usd / limit;
-                        let level = if share >= 1.0 {
-                            Level::Danger
-                        } else if share >= NEAR_LIMIT {
-                            Level::Warn
-                        } else {
-                            Level::Ok
-                        };
-                        let mut keep = vec![
-                            spent,
-                            kit.dim(format!(" of {} {period}", format::usd(limit))),
-                            Span::raw(" "),
-                        ];
-                        keep.extend(Badge::percent(share, level).spans(kit));
-                        (Vec::new(), keep)
-                    }
-                    _ => {
-                        let mut tail = format!(" {period} · no limit set");
-                        if let Some(who) = self.spenders() {
-                            tail.push_str(&format!(" · {who}"));
-                        }
-                        (Vec::new(), vec![spent, kit.dim(tail)])
-                    }
-                }
-            }
+            // The spend card writes its own header.
+            UsageCard::Spend => (Vec::new(), Vec::new()),
             UsageCard::Tokens => (
                 Vec::new(),
                 vec![
@@ -266,23 +249,12 @@ impl UsageCards<'_> {
             }
         };
         let room = width.saturating_sub(spans_width(&left) + 2);
-        let right = if spans_width(&lead) + spans_width(&keep) <= room {
-            [lead, keep].concat()
+        let right = if spans_width(&opening) + spans_width(&keep) <= room {
+            [opening, keep].concat()
         } else {
             truncate_spans(&keep, room)
         };
         spread(left, right, width)
-    }
-
-    /// `3 runs and this chat`, when both spent in the period.
-    fn spenders(&self) -> Option<String> {
-        let runs = self.usage.runs.len();
-        let chat = self.usage.conversation.is_some();
-        match (runs, chat) {
-            (0, _) => None,
-            (runs, true) => Some(format!("{} and this chat", count(runs, "run"))),
-            (runs, false) => Some(count(runs, "run")),
-        }
     }
 
     /// A share of a window as shown: what's used, or what's left of it.
@@ -304,16 +276,16 @@ impl UsageCards<'_> {
         let out = plan
             .windows
             .iter()
-            .find(|reading| reading.status == QuotaStatus::Rejected && !reading.wrap_up);
+            .find(|reading| reading.status == PlanUsageStatus::Rejected && !reading.wrap_up);
         let mut words = if plan.pays_per_token {
             vec![kit.dim(" pays per token, so there is no plan to track")]
         } else if let Some(reading) = out {
             let until = reading
                 .resets_at
                 .map_or_else(String::new, |at| format!(" until {}", self.reset_time(at)));
-            vec![kit.span(format!("  out{until}"), Role::Error)]
+            vec![kit.span(format!("  out{until}"), Role::Danger)]
         } else if plan.down {
-            vec![kit.span("  can't be reached", Role::Error)]
+            vec![kit.span("  can't be reached", Role::Danger)]
         } else if super::plan_windows::window_rows(plan).is_empty() {
             return Some(vec![kit.dim("  no reading yet")]);
         } else {
@@ -327,40 +299,6 @@ impl UsageCards<'_> {
     fn reset_time(&self, at: OffsetDateTime) -> String {
         let at = at.to_offset(self.now.offset());
         format::reset_time(at, self.now, ClockStyle::default())
-    }
-
-    fn spend_body(&self, kit: &Kit<'_>, width: usize, full: bool) -> Drawn {
-        let shares = &self.usage.by_agent;
-        let cents = |usd: f64| (usd.max(0.0) * 10_000.0).round() as u64;
-        let total = cents(self.usage.total.cost_usd);
-        let limit = self.usage.spend_limit.map(cents).filter(|limit| *limit > 0);
-        let stack = Stack {
-            parts: shares
-                .iter()
-                .map(|share| (cents(share.spent.cost_usd), cli_role(&share.vendor)))
-                .collect(),
-            // Against a limit the bar is the limit, and what's unspent stays track.
-            total: limit.map_or(total, |limit| limit.max(total)).max(1),
-            tick: None,
-            held_from: None,
-            track: Role::BarTrack,
-        };
-        let entries: Vec<Entry> = if full {
-            shares
-                .iter()
-                .map(|share| Entry {
-                    role: cli_role(&share.vendor),
-                    name: self
-                        .names
-                        .worker(&WorkerRef::new(share.agent.clone(), share.model.clone())),
-                    amount: format::spend(&share.spent),
-                    share: share_of(share.spent.cost_usd, self.usage.total.cost_usd),
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        bodies::half_stack(kit, &stack, &entries, width, 3)
     }
 
     fn tokens_body(&self, kit: &Kit<'_>, width: usize, full: bool) -> Drawn {
@@ -421,7 +359,7 @@ impl UsageCards<'_> {
                 .map(|day| day.day.weekday().to_string()[..1].to_owned())
                 .collect(),
             role: Role::AgentOrange,
-            last_role: Role::Warning,
+            last_role: Role::Warn,
         };
         let mut body = bodies::columns(kit, &chart);
         for line in &mut body.lines {
@@ -573,7 +511,7 @@ pub fn spoken(usage: &UsageSummary, names: &DisplayNames) -> Vec<String> {
         for reading in &plan.windows {
             let used = match reading.used {
                 Some(used) => format!("{:.0}% used", used.max(0.0) * 100.0),
-                None if reading.status == QuotaStatus::Rejected => "out".to_owned(),
+                None if reading.status == PlanUsageStatus::Rejected => "out".to_owned(),
                 None => "not known".to_owned(),
             };
             lines.push(format!("{name}, {} window: {used}", window_label(reading)));
@@ -585,25 +523,28 @@ pub fn spoken(usage: &UsageSummary, names: &DisplayNames) -> Vec<String> {
         format::spend(&usage.total),
         format::tokens(usage.total.total_tokens())
     ));
-    for share in &usage.by_agent {
-        let who = names.worker(&WorkerRef::new(share.agent.clone(), share.model.clone()));
-        lines.push(format!("{who}: {}", format::spend(&share.spent)));
-    }
+    let today = usage.history.last().map_or(Date::MIN, |day| day.day);
+    let spend = SpendCard {
+        usage,
+        names,
+        today,
+    };
+    lines.extend(spend.spoken());
     lines.push(format!("workflows {period}: {}", usage.runs.len()));
     lines
 }
 
 /// A window's share used, with one that's out counted as full.
-pub(super) fn used_of(reading: &QuotaReading) -> f64 {
+pub(super) fn used_of(reading: &PlanUsageReading) -> f64 {
     match reading.used {
         Some(used) => used,
-        None if reading.status == QuotaStatus::Rejected => 1.0,
+        None if reading.status == PlanUsageStatus::Rejected => 1.0,
         None => 0.0,
     }
 }
 
 /// `5h`, `7d`, or the window's own name where it's another.
-pub(super) fn window_label(reading: &QuotaReading) -> String {
+pub(super) fn window_label(reading: &PlanUsageReading) -> String {
     let window = reading.window.as_deref().unwrap_or_default();
     if window.contains("five") || window.contains("5h") {
         "5h".to_owned()
@@ -646,10 +587,10 @@ pub fn period_words(period: UsagePeriod) -> &'static str {
 fn run_state(run: &RunSummary) -> State {
     match run.state {
         RunState::Running | RunState::Pausing => State::Working,
-        RunState::Parked if run.needs_you() => State::NeedsYou,
-        RunState::Parked => State::Waiting,
+        RunState::Waiting if run.needs_you() => State::NeedsYou,
+        RunState::Waiting => State::Waiting,
         RunState::Merged | RunState::PullRequest | RunState::BranchLeft => State::Done,
-        RunState::Crashed | RunState::Failed => State::Failed,
+        RunState::Failed => State::Failed,
         _ => State::Stopped,
     }
 }
@@ -658,9 +599,10 @@ fn run_word(run: &RunSummary) -> &'static str {
     match run.state {
         RunState::Running => "running",
         RunState::Pausing => "pausing",
-        RunState::Parked if run.needs_you() => "needs you",
-        RunState::Parked => "waiting",
-        RunState::Crashed => "crashed",
+        RunState::Waiting if run.needs_you() => "needs you",
+        RunState::Waiting => "waiting",
+        RunState::NeverStarted => "never started",
+        RunState::FromAnotherBuild => "from an older Argonauts",
         RunState::Merged => "merged",
         RunState::PullRequest => "pull request",
         RunState::BranchLeft => "branch kept",

@@ -1,0 +1,9 @@
+{
+  "adapter": "opencode",
+  "synthetic": true,
+  "program": "opencode",
+  "commands": [["auth", "list"], ["models"]],
+  "files": ["providers_none_auth_list.stdout.txt", "providers_none_models.stdout.txt"],
+  "note": "Made up by hand: nothing connected, so only OpenCode's own free models are listed",
+  "how": "Written by hand. A recording against OpenCode 2.x replaces them once a provider is picked"
+}

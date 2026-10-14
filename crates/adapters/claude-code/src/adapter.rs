@@ -1,13 +1,13 @@
 use std::path::Path;
 use std::time::Duration;
 
+use argonauts_core::cli_commands::{BuiltinCommand, CliCommand};
+use argonauts_core::cli_sessions::{CliScan, CliSession, CliTurn};
 use argonauts_core::events::context::ContextDetail;
 use argonauts_core::keywords::Keyword;
-use argonauts_core::limits::{QuotaAnswer, QuotaReading};
+use argonauts_core::limits::{PlanUsageAnswer, PlanUsageReading};
 use argonauts_core::screen::ScreenRequest;
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
-use argonauts_core::vendor_commands::{BuiltinCommand, VendorCommand};
-use argonauts_core::vendor_sessions::{VendorScan, VendorSession, VendorTurn};
 use argonauts_core::{
     Adapter, Capabilities, CommandSpec, LaunchTweak, PARENT_SESSION_ENV_VARS, SessionRequest,
     SetupHints, StopPlan, StreamParser, extract_version,
@@ -20,10 +20,9 @@ use crate::keywords::KEYWORDS;
 use crate::parser::ClaudeStreamParser;
 use crate::{command, control, instructions, isolation, plan_usage, sessions, tweaks};
 
-/// The first version is the original recordings, the second the steering and resume ones, the
-/// third a workflow Claude Code runs itself, the permission prompt tool, and a read-only session
-/// resumed with every tool. The last holds the plan usage read.
-pub const TESTED_VERSIONS: &[&str] = &["2.1.284", "2.1.285", "2.1.289", "2.1.293", "2.1.295"];
+/// The versions the recordings in `fixtures/` were made with or also match, oldest first,
+/// read from the `.meta.json` beside each recording when the crate is built.
+pub const TESTED_VERSIONS: &[&str] = include!(concat!(env!("OUT_DIR"), "/tested_versions.rs"));
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ClaudeCodeAdapter;
@@ -33,6 +32,35 @@ impl ClaudeCodeAdapter {
         Self
     }
 }
+
+/// `system/init`, with what the parser takes from it.
+const STARTUP_MESSAGE: argonauts_core::adapter::StartupMessage =
+    argonauts_core::adapter::StartupMessage {
+        marker: r#""subtype":"init""#,
+        is: &[("/type", "system"), ("/subtype", "init")],
+        fields: &[
+            argonauts_core::adapter::StartupField {
+                pointer: "/session_id",
+                what: "its session",
+                without: "its conversations can't be resumed",
+            },
+            argonauts_core::adapter::StartupField {
+                pointer: "/model",
+                what: "its model",
+                without: "/context can't size its window",
+            },
+            argonauts_core::adapter::StartupField {
+                pointer: "/tools",
+                what: "its tools",
+                without: "isolated sessions can't be checked for what they loaded",
+            },
+            argonauts_core::adapter::StartupField {
+                pointer: "/claude_code_version",
+                what: "its version",
+                without: "a new version is only noticed by Doctor",
+            },
+        ],
+    };
 
 impl Adapter for ClaudeCodeAdapter {
     fn id(&self) -> &'static str {
@@ -92,7 +120,7 @@ impl Adapter for ClaudeCodeAdapter {
 
     fn stop_plan(&self) -> StopPlan {
         // SIGINT ends the turn cleanly. SIGTERM exits with 143 and kills running Bash commands.
-        StopPlan::escalating(Duration::from_secs(5), Duration::from_secs(5))
+        StopPlan::stepped(Duration::from_secs(5), Duration::from_secs(5))
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -151,27 +179,28 @@ impl Adapter for ClaudeCodeAdapter {
         Some(control::context_usage_line(detail))
     }
 
-    fn quota_probe(&self, workdir: &Path, _model: Option<&str>) -> Option<CommandSpec> {
-        Some(plan_usage::probe_command(self.binary(), workdir))
+    fn plan_usage_probe(&self, workdir: &Path, model: Option<&str>) -> Option<CommandSpec> {
+        let model = model.unwrap_or(self.cheapest_model().0);
+        Some(plan_usage::probe_command(self.binary(), workdir, model))
     }
 
-    fn parse_quota_probe(&self, stdout: &str) -> Option<QuotaReading> {
-        self.parse_quota_probe_end(stdout)?.binding().cloned()
+    fn parse_plan_usage_probe(&self, stdout: &str) -> Option<PlanUsageReading> {
+        self.parse_plan_usage_probe_end(stdout)?.binding().cloned()
     }
 
-    fn parse_quota_probe_answer(&self, stdout: &str) -> Option<QuotaAnswer> {
+    fn parse_plan_usage_probe_answer(&self, stdout: &str) -> Option<PlanUsageAnswer> {
         plan_usage::answer(stdout, OffsetDateTime::now_utc())
     }
 
-    fn parse_quota_probe_end(&self, stdout: &str) -> Option<QuotaAnswer> {
+    fn parse_plan_usage_probe_end(&self, stdout: &str) -> Option<PlanUsageAnswer> {
         plan_usage::answer_at_end(stdout, OffsetDateTime::now_utc())
     }
 
-    fn parse_quota_probe_early(&self, stdout: &str) -> Option<QuotaAnswer> {
+    fn parse_plan_usage_probe_early(&self, stdout: &str) -> Option<PlanUsageAnswer> {
         plan_usage::windows_first(stdout, OffsetDateTime::now_utc())
     }
 
-    fn stream_reports_quota(&self) -> bool {
+    fn stream_reports_plan_usage(&self) -> bool {
         true
     }
 
@@ -201,25 +230,21 @@ impl Adapter for ClaudeCodeAdapter {
         })
     }
 
-    fn vendor_sessions(
-        &self,
-        scan: &VendorScan,
-        limit: usize,
-    ) -> anyhow::Result<Vec<VendorSession>> {
+    fn cli_sessions(&self, scan: &CliScan, limit: usize) -> anyhow::Result<Vec<CliSession>> {
         sessions::list(scan, limit)
     }
 
-    fn vendor_session_turns(
+    fn cli_session_turns(
         &self,
-        scan: &VendorScan,
+        scan: &CliScan,
         session: &str,
         count: usize,
-    ) -> anyhow::Result<Vec<VendorTurn>> {
+    ) -> anyhow::Result<Vec<CliTurn>> {
         sessions::turns(scan, session, count)
     }
 
-    fn default_family(&self) -> &'static str {
-        "claude"
+    fn default_provider(&self) -> &'static str {
+        "anthropic"
     }
 
     fn setup_hints(&self) -> SetupHints {
@@ -236,6 +261,27 @@ impl Adapter for ClaudeCodeAdapter {
         Some(&["update"])
     }
 
+    /// The names are Claude Code's own: its cask and its package, and its installer asks the
+    /// same address for the newest version (`claude update`, read from 2.1.296).
+    fn install_sources(&self) -> argonauts_core::adapter::InstallSources {
+        argonauts_core::adapter::InstallSources {
+            homebrew: Some("claude-code"),
+            npm: Some("@anthropic-ai/claude-code"),
+            own: Some(argonauts_core::adapter::OwnInstaller {
+                path_part: "/claude/versions/",
+                newest_url: Some("https://downloads.claude.ai/claude-code-releases/latest"),
+            }),
+        }
+    }
+
+    fn updater_off_env(&self) -> &'static [(&'static str, &'static str)] {
+        &[(crate::command::AUTO_UPDATER_ENV, "1")]
+    }
+
+    fn startup_message(&self) -> Option<&'static argonauts_core::adapter::StartupMessage> {
+        Some(&STARTUP_MESSAGE)
+    }
+
     fn builtin_commands(&self) -> &'static [BuiltinCommand] {
         BUILTIN_COMMANDS
     }
@@ -244,7 +290,7 @@ impl Adapter for ClaudeCodeAdapter {
         KEYWORDS
     }
 
-    fn discover_commands(&self, scan: &VendorScan) -> anyhow::Result<Vec<VendorCommand>> {
+    fn discover_commands(&self, scan: &CliScan) -> anyhow::Result<Vec<CliCommand>> {
         Ok(commands::discover(scan))
     }
 }
@@ -255,7 +301,7 @@ mod tests {
     use crate::command::{SETTINGS_FILE, native_cap_args};
     use argonauts_core::settings::sessions::FanoutSwitch;
     use argonauts_core::{
-        Asks, AuthMode, SessionRole, TweakEffect, VENDOR_KEY_ENV_VARS, report_json_schema,
+        Asks, AuthMode, PROVIDER_KEY_ENV_VARS, SessionRole, TweakEffect, report_json_schema,
         sha256_hex,
     };
     use serde_json::{Value, json};
@@ -284,7 +330,7 @@ mod tests {
             native_fanout: Some(NativeFanout::Limit { max: 2 }),
             mcp_config: Some("/tmp/state/s-001/mcp.json".into()),
             scratch_dir: Some("/tmp/state/s-001".into()),
-            max_budget_usd: Some(0.75),
+            spend_cap_usd: Some(0.75),
             json_schema: Some(report_json_schema()),
             env_set: vec![("ARGONAUTS_SESSION".into(), "s-001".into())],
             ..request(SessionRole::Build)
@@ -375,14 +421,11 @@ mod tests {
             Some("2.1.285")
         );
         assert_eq!(adapter.parse_version("no version here"), None);
-        assert_eq!(
-            adapter.tested_versions(),
-            ["2.1.284", "2.1.285", "2.1.289", "2.1.293", "2.1.295"]
-        );
+        assert_eq!(adapter.tested_versions(), TESTED_VERSIONS);
         assert_eq!(adapter.cheapest_model(), ("haiku", Some("low")));
         assert!(adapter.wrap_up_input("wrap up").is_none());
         assert_eq!(adapter.stop_plan(), StopPlan::default());
-        assert_eq!(adapter.default_family(), "claude");
+        assert_eq!(adapter.default_provider(), "anthropic");
         let caps = adapter.capabilities();
         assert!(caps.reports_cost && caps.live_usage && caps.resume_totals_include_earlier);
         assert!(caps.enforces_read_only && caps.reports_model);
@@ -603,7 +646,7 @@ mod tests {
             json!({"allow": ["mcp__argonauts_status"], "deny": ["Edit(.argonauts/**)", "Write(.argonauts/**)", "NotebookEdit(.argonauts/**)"]})
         );
         assert_eq!(env(&spec, "MCP_TOOL_TIMEOUT"), Some("86400000"));
-        // A flagged rm's card waits too, whatever default mode is yours.
+        // A flagged rm's question waits too, whatever default mode is yours.
         assert_eq!(
             env(&spec, "CLAUDE_CODE_DISABLE_DANGEROUS_RM_TIMEOUT"),
             Some("1")
@@ -708,7 +751,7 @@ mod tests {
             assert_eq!(settings["sandbox"]["enabled"], true);
             assert_eq!(settings["sandbox"]["failIfUnavailable"], true);
             assert_eq!(settings["sandbox"]["allowUnsandboxedCommands"], false);
-            // None of your hooks, plugins and their mods, or synced extras.
+            // None of your hooks, plugins, or synced extras.
             assert_eq!(settings["disableAllHooks"], true);
             assert_eq!(settings["syncClaudeAiSkills"], false);
             assert_eq!(settings["syncClaudeAiPlugins"], false);
@@ -741,7 +784,7 @@ mod tests {
                 scratch_dir: Some("/tmp/state/s-001".into()),
                 ..request(role)
             });
-            // Argonauts' status server joins yours rather than replacing them.
+            // Argonauts Code's status server joins yours rather than replacing them.
             assert_eq!(
                 value_after(&spec, "--mcp-config"),
                 Some("/tmp/state/s-001/mcp.json")
@@ -756,7 +799,7 @@ mod tests {
             ] {
                 assert!(!has(&spec, stripping), "{stripping} in {:?}", spec.args);
             }
-            // Peers still can't reach it outside the blackboard.
+            // Other agents still can't reach it outside the blackboard.
             assert_eq!(
                 values_after(&spec, "--disallowedTools"),
                 ["SendMessage", "ListAgents"]
@@ -798,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn compaction_flags_per_harness() {
+    fn compaction_flags_per_cli() {
         let adapter = ClaudeCodeAdapter;
         assert_eq!(
             adapter.compaction(Compaction::Inherit),
@@ -847,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn native_fanout_flags_per_harness() {
+    fn native_fanout_flags_per_cli() {
         let adapter = ClaudeCodeAdapter;
         let capped = adapter.native_fanout(NativeFanout::Limit { max: 2 });
         assert!(capped.args.is_empty());
@@ -935,7 +978,7 @@ mod tests {
     /// any shell gets Bash with no such rules, and one with none gets no Bash.
     #[test]
     fn a_reviewer_runs_the_checks_and_nothing_else() {
-        use argonauts_core::worker::SessionShell;
+        use argonauts_core::session_runner::SessionShell;
         let reader = |shell: SessionShell| {
             command(&SessionRequest {
                 shell,
@@ -1021,12 +1064,12 @@ mod tests {
     #[test]
     fn native_cap_backstop_args() {
         let spec = command(&SessionRequest {
-            max_budget_usd: Some(0.5),
+            spend_cap_usd: Some(0.5),
             ..request(SessionRole::Build)
         });
         assert_eq!(value_after(&spec, "--max-budget-usd"), Some("0.5"));
         let whole = command(&SessionRequest {
-            max_budget_usd: Some(3.0),
+            spend_cap_usd: Some(3.0),
             ..request(SessionRole::Build)
         });
         assert_eq!(value_after(&whole, "--max-budget-usd"), Some("3"));
@@ -1044,9 +1087,9 @@ mod tests {
     }
 
     #[test]
-    fn env_scrubbed_per_vendor() {
+    fn env_scrubbed_per_agent() {
         let spec = command(&request(SessionRole::Build));
-        for var in VENDOR_KEY_ENV_VARS {
+        for var in PROVIDER_KEY_ENV_VARS {
             assert_eq!(
                 removes(&spec, var),
                 *var != "CLAUDE_CODE_OAUTH_TOKEN",
@@ -1062,6 +1105,12 @@ mod tests {
         assert!(!removes(&spec, "CLAUDE_CODE_EFFORT_LEVEL"));
         assert_eq!(env(&spec, "CLAUDE_CODE_DISABLE_AUTO_MEMORY"), Some("1"));
         assert_eq!(env(&spec, "ENABLE_CLAUDEAI_MCP_SERVERS"), Some("false"));
+        // No session switches versions halfway: Claude Code's own updater stays off.
+        assert_eq!(env(&spec, "DISABLE_AUTOUPDATER"), Some("1"));
+        assert_eq!(
+            ClaudeCodeAdapter.updater_off_env(),
+            [("DISABLE_AUTOUPDATER", "1")]
+        );
 
         let api = command(&SessionRequest {
             auth: AuthMode::ApiKey,
@@ -1135,18 +1184,57 @@ mod tests {
         assert_eq!(resume.env_remove, launch.env_remove);
         assert_eq!(resume.files, launch.files);
 
-        // The resumed id may be named twice, but a new id would fork the session.
+        // The resumed id may be named twice, but only a fork gives the session a new id.
         let same = SessionRequest {
             resume_session: Some(SESSION_ID.into()),
             session_id: Some(SESSION_ID.into()),
             ..full_request()
         };
         assert_eq!(command(&same).args, resume.args);
-        let fork = SessionRequest {
+        let renamed = SessionRequest {
             resume_session: Some("11111111-2222-4333-8444-555555555555".into()),
             ..full_request()
         };
-        assert!(ClaudeCodeAdapter.command(&fork).is_err());
+        assert!(ClaudeCodeAdapter.command(&renamed).is_err());
+    }
+
+    /// `claude --resume <id> --fork-session` carries on a copy, which Claude Code gives an id
+    /// of its own or the one chosen for it, and leaves the session as it was.
+    #[test]
+    fn claude_fork_resumes_a_copy_of_the_session() {
+        const ORIGINAL: &str = "11111111-2222-4333-8444-555555555555";
+        let resume = command(&SessionRequest {
+            resume_session: Some(ORIGINAL.into()),
+            session_id: None,
+            ..full_request()
+        });
+        let fork = command(&SessionRequest {
+            resume_session: Some(ORIGINAL.into()),
+            session_id: None,
+            fork_session: true,
+            ..full_request()
+        });
+        assert_eq!(value_after(&fork, "--resume"), Some(ORIGINAL));
+        assert!(has(&fork, "--fork-session") && !has(&fork, "--session-id"));
+        let mut plain = fork.args.clone();
+        plain.retain(|arg| arg != "--fork-session");
+        assert_eq!(plain, resume.args, "a fork repeats every flag of a resume");
+
+        // Claude Code takes `--session-id` beside `--resume` only on a fork.
+        let chosen = command(&SessionRequest {
+            resume_session: Some(ORIGINAL.into()),
+            fork_session: true,
+            ..full_request()
+        });
+        assert_eq!(value_after(&chosen, "--session-id"), Some(SESSION_ID));
+        assert_eq!(value_after(&chosen, "--resume"), Some(ORIGINAL));
+        assert!(has(&chosen, "--fork-session"));
+
+        let nothing_to_copy = SessionRequest {
+            fork_session: true,
+            ..full_request()
+        };
+        assert!(ClaudeCodeAdapter.command(&nothing_to_copy).is_err());
     }
 
     #[test]
@@ -1295,7 +1383,7 @@ mod tests {
                 ..request(SessionRole::Build)
             },
             SessionRequest {
-                max_budget_usd: Some(0.0),
+                spend_cap_usd: Some(0.0),
                 ..request(SessionRole::Build)
             },
             SessionRequest {

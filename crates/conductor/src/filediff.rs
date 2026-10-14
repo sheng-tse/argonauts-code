@@ -1,5 +1,5 @@
 //! A file's diff against the worktree's last commit, after an agent changed it, so previews look
-//! the same for every vendor: `git diff --no-color -U3 -- <path>` with hooks off, at most 40 lines,
+//! the same for every agent: `git diff --no-color -U3 -- <path>` with hooks off, at most 40 lines,
 //! at most once a second per path. Git's output is read as it comes and only what the preview
 //! shows is kept, and git gets a few seconds before it's killed.
 
@@ -58,7 +58,7 @@ const REPOSITORY_ENV: [&str; 7] = [
 ];
 
 #[derive(Debug)]
-pub struct FileDiffer {
+pub struct FileDiffs {
     worktree: PathBuf,
     /// The worktree with symlinks resolved, for absolute paths such as `/private/tmp/...`.
     resolved: Option<PathBuf>,
@@ -71,7 +71,7 @@ pub struct FileDiffer {
     edits: EditTracker,
 }
 
-impl FileDiffer {
+impl FileDiffs {
     pub fn new(worktree: PathBuf) -> Self {
         Self {
             resolved: worktree.canonicalize().ok(),
@@ -99,13 +99,13 @@ impl FileDiffer {
     }
 
     /// The diff for `path`, relative to the worktree, unless one went out for it less than a
-    /// second ago; that path then waits for [`FileDiffer::flush`] or its next change. Paths
+    /// second ago; that path then waits for [`FileDiffs::flush`] or its next change. Paths
     /// outside the worktree, and changes that leave the diff as it was, give `None`.
     pub async fn changed(&mut self, path: &str) -> io::Result<Option<FileDiff>> {
         self.changed_at(path, Instant::now()).await
     }
 
-    /// Diffs for the paths `event` says changed, throttled like [`FileDiffer::changed`].
+    /// Diffs for the paths `event` says changed, throttled like [`FileDiffs::changed`].
     pub async fn observe(&mut self, event: &AgentEvent) -> io::Result<Vec<FileDiff>> {
         let mut diffs = Vec::new();
         for path in self.edits.observe(event) {
@@ -200,7 +200,7 @@ impl FileDiffer {
             return Ok(DiffParser::default().finish(path));
         }
         // A new file git doesn't know yet, shown as added in full. `--no-index` exits with 1
-        // when the files differ.
+        // when the files are different.
         let added = self
             .streamed_diff(
                 &[&DIFF[..], &["--no-index", "--", "/dev/null", path]].concat(),
@@ -259,7 +259,7 @@ impl FileDiffer {
         command
     }
 
-    /// `path` relative to the worktree, or `None` when it points outside it. Vendors give
+    /// `path` relative to the worktree, or `None` when it points outside it. Agents give
     /// relative paths, absolute ones, and agy's `file://` URIs.
     fn relative(&self, path: &str) -> Option<String> {
         let path = Path::new(path.strip_prefix("file://").unwrap_or(path));
@@ -300,7 +300,7 @@ async fn within_timeout<T>(work: impl Future<Output = T>) -> io::Result<T> {
     tokio::time::timeout(GIT_TIMEOUT, work).await.map_err(|_| {
         io::Error::new(
             io::ErrorKind::TimedOut,
-            format!("git took over {} seconds", GIT_TIMEOUT.as_secs()),
+            format!("git took more than {} seconds", GIT_TIMEOUT.as_secs()),
         )
     })
 }
@@ -420,7 +420,7 @@ impl EditTracker {
     }
 }
 
-/// The paths an edit tool's input names, by the vendor's tool name.
+/// The paths an edit tool's input names, by the agent's tool name.
 fn edit_paths(tool: &str, input: &Value) -> Vec<String> {
     let at = |keys: &[&str]| -> Vec<String> {
         keys.iter()
@@ -459,8 +459,8 @@ mod tests {
         (1..=count).map(|n| format!("line {n}{tag}\n")).collect()
     }
 
-    fn differ(repo: &TestRepo) -> FileDiffer {
-        FileDiffer::new(repo.root.clone()).with_env(git_test_env())
+    fn file_diffs(repo: &TestRepo) -> FileDiffs {
+        FileDiffs::new(repo.root.clone()).with_env(git_test_env())
     }
 
     #[tokio::test]
@@ -469,11 +469,15 @@ mod tests {
         repo.write("big.txt", &numbered(100, ""));
         repo.git(&["add", "big.txt"]);
         repo.git(&["commit", "--quiet", "-m", "big"]);
-        let mut differ = differ(&repo);
+        let mut file_diffs = file_diffs(&repo);
         let start = Instant::now();
 
         repo.write("big.txt", &numbered(30, " changed"));
-        let diff = differ.changed_at("big.txt", start).await.unwrap().unwrap();
+        let diff = file_diffs
+            .changed_at("big.txt", start)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(diff.path, "big.txt");
         assert_eq!((diff.added, diff.removed), (30, 100));
         assert!(diff.truncated);
@@ -484,20 +488,20 @@ mod tests {
         repo.write("big.txt", &numbered(100, ""));
         repo.write("big.txt", &format!("{}extra\n", numbered(100, "")));
         let soon = start + Duration::from_millis(300);
-        assert_eq!(differ.changed_at("big.txt", soon).await.unwrap(), None);
-        assert_eq!(differ.next_due(), Some(start + PER_PATH_EVERY));
-        assert!(differ.due_at(soon).await.unwrap().is_empty());
-        let owed = differ.flush().await.unwrap();
+        assert_eq!(file_diffs.changed_at("big.txt", soon).await.unwrap(), None);
+        assert_eq!(file_diffs.next_due(), Some(start + PER_PATH_EVERY));
+        assert!(file_diffs.due_at(soon).await.unwrap().is_empty());
+        let owed = file_diffs.flush().await.unwrap();
         assert_eq!(owed.len(), 1);
         assert_eq!((owed[0].added, owed[0].removed), (1, 0));
         assert!(!owed[0].truncated);
-        assert!(differ.flush().await.unwrap().is_empty());
+        assert!(file_diffs.flush().await.unwrap().is_empty());
 
-        // The same diff never goes out twice, and a revert clears the preview.
+        // The same diff never goes out twice, and undoing the edit clears the preview.
         let later = Instant::now() + PER_PATH_EVERY;
-        assert_eq!(differ.changed_at("big.txt", later).await.unwrap(), None);
+        assert_eq!(file_diffs.changed_at("big.txt", later).await.unwrap(), None);
         repo.write("big.txt", &numbered(100, ""));
-        let cleared = differ
+        let cleared = file_diffs
             .changed_at("big.txt", later + PER_PATH_EVERY)
             .await
             .unwrap()
@@ -509,31 +513,34 @@ mod tests {
     #[tokio::test]
     async fn owed_diffs_go_out_once_their_second_passes() {
         let repo = TestRepo::new();
-        let mut differ = differ(&repo);
+        let mut file_diffs = file_diffs(&repo);
         let start = Instant::now();
         repo.write("README.md", "# Test\nmore\n");
         assert!(
-            differ
+            file_diffs
                 .changed_at("README.md", start)
                 .await
                 .unwrap()
                 .is_some()
         );
         repo.write("README.md", "# Test\nmore\nand more\n");
-        assert_eq!(differ.changed_at("./README.md", start).await.unwrap(), None);
-        let due = differ.due_at(start + PER_PATH_EVERY).await.unwrap();
+        assert_eq!(
+            file_diffs.changed_at("./README.md", start).await.unwrap(),
+            None
+        );
+        let due = file_diffs.due_at(start + PER_PATH_EVERY).await.unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].added, 2);
-        assert_eq!(differ.next_due(), None);
+        assert_eq!(file_diffs.next_due(), None);
     }
 
     #[tokio::test]
     async fn new_files_absolute_paths_and_outside_paths() {
         let repo = TestRepo::new();
-        let mut differ = differ(&repo);
+        let mut file_diffs = file_diffs(&repo);
         repo.write("src/new.rs", "fn main() {}\n");
         let absolute = repo.root.join("src/new.rs");
-        let diff = differ
+        let diff = file_diffs
             .changed(&format!("file://{}", absolute.display()))
             .await
             .unwrap()
@@ -543,13 +550,17 @@ mod tests {
         assert!(diff.hunk.contains("+fn main() {}"));
 
         for outside in ["../escape.txt", "/etc/hosts", "", ":(glob)*"] {
-            assert_eq!(differ.changed(outside).await.unwrap(), None, "{outside}");
+            assert_eq!(
+                file_diffs.changed(outside).await.unwrap(),
+                None,
+                "{outside}"
+            );
         }
         // Unchanged and deleted files.
-        assert_eq!(differ.changed("README.md").await.unwrap(), None);
+        assert_eq!(file_diffs.changed("README.md").await.unwrap(), None);
         std::fs::remove_file(repo.root.join("README.md")).unwrap();
-        assert_eq!(differ.changed("README.md").await.unwrap(), None);
-        let deleted = differ.flush().await.unwrap();
+        assert_eq!(file_diffs.changed("README.md").await.unwrap(), None);
+        let deleted = file_diffs.flush().await.unwrap();
         assert_eq!((deleted[0].added, deleted[0].removed), (0, 1));
     }
 

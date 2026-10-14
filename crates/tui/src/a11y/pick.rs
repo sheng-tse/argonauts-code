@@ -1,12 +1,12 @@
-//! A typed line read as an answer to the card that waits: an option's number alone, with a
-//! note only after a colon (`1: the note`), and for Request changes the cards it sends back
-//! before the colon (`3 card-002 card-004: the note`). Anything else is a message, so
-//! `1 more thing` or `y` never answers a card.
+//! A typed line read as an answer to the question that waits: an option's number alone, with a
+//! note only after a colon (`1: the note`), and for Request changes the tasks it sends back
+//! before the colon (`3 task-002 task-004: the note`). Anything else is a message, so
+//! `1 more thing` or `y` never answers a question.
 
-use argonauts_core::CardId;
-use argonauts_core::events::checkpoint::AnswerAction;
+use argonauts_core::TaskId;
+use argonauts_core::events::approval::AnswerAction;
 
-use super::cards::CardList;
+use super::questions::QuestionList;
 use super::words::spoken;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -14,24 +14,24 @@ pub enum Pick {
     Option {
         index: usize,
         note: Option<String>,
-        /// For Request changes, the cards named. Empty means every card.
-        cards: Vec<CardId>,
+        /// For Request changes, the tasks named. Empty means every task.
+        tasks: Vec<TaskId>,
     },
     /// Type my own answer. `None` until the answer is typed.
     OwnAnswer { text: Option<String> },
     /// Show the diff, details, file, or evidence: read out here and never sent.
     View { index: usize },
-    /// Switches the handoff card's Remember this pick.
+    /// Switches the fallback question's Remember this pick.
     Remember,
 }
 
-/// What a typed line comes to while a card waits.
+/// What a typed line comes to while a question waits.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Typed {
     /// Not an answer, so it goes on as a message.
     Message,
     Pick(Pick),
-    /// Set apart as an answer but not one this card takes. Nothing is sent.
+    /// Set apart as an answer but not one this question takes. Nothing is sent.
     Warning(String),
 }
 
@@ -43,7 +43,7 @@ enum Item {
     OwnAnswer,
 }
 
-impl CardList {
+impl QuestionList {
     pub fn parse(&self, typed: &str) -> Typed {
         let typed = typed.trim();
         let (head, note, set_apart) = match typed.split_once(':') {
@@ -61,16 +61,16 @@ impl CardList {
         let Some(item) = self.item(first.strip_suffix(['.', ')']).unwrap_or(first)) else {
             return Typed::Message;
         };
-        let names_cards = self
+        let names_tasks = self
             .request_changes()
             .is_some_and(|at| item == Item::Option(at));
-        let cards = if names.is_empty() {
+        let tasks = if names.is_empty() {
             Vec::new()
-        } else if !names_cards {
+        } else if !names_tasks {
             return Typed::Message;
         } else {
-            match self.named_cards(&names) {
-                Ok(cards) => cards,
+            match self.named_tasks(&names) {
+                Ok(tasks) => tasks,
                 Err(warning) if set_apart => return Typed::Warning(warning),
                 Err(_) => return Typed::Message,
             }
@@ -81,11 +81,11 @@ impl CardList {
                 self.no_note(self.remember_number().unwrap_or_default().to_string())
             }
             Item::Remember => Typed::Pick(Pick::Remember),
-            Item::Option(index) => self.option(index, note, cards),
+            Item::Option(index) => self.option(index, note, tasks),
         }
     }
 
-    fn option(&self, index: usize, note: Option<String>, cards: Vec<CardId>) -> Typed {
+    fn option(&self, index: usize, note: Option<String>, tasks: Vec<TaskId>) -> Typed {
         let Some(option) = self.options.get(index) else {
             return Typed::Message;
         };
@@ -94,7 +94,7 @@ impl CardList {
             AnswerAction::ShowDiff if note.is_none() => Typed::Pick(Pick::View { index }),
             AnswerAction::ShowDiff => self.no_note((index + 1).to_string()),
             _ if note.is_some() && !self.takes_note() => self.no_note((index + 1).to_string()),
-            _ => Typed::Pick(Pick::Option { index, note, cards }),
+            _ => Typed::Pick(Pick::Option { index, note, tasks }),
         }
     }
 
@@ -117,15 +117,15 @@ impl CardList {
         }
     }
 
-    /// The merge's cards `names` picks for Request changes.
-    fn named_cards(&self, names: &[&str]) -> Result<Vec<CardId>, String> {
+    /// The merge's tasks `names` picks for Request changes.
+    fn named_tasks(&self, names: &[&str]) -> Result<Vec<TaskId>, String> {
         names
             .iter()
             .map(|name| {
                 let name = name.trim_end_matches(',');
                 self.checklist
                     .iter()
-                    .find(|card| card.to_string().eq_ignore_ascii_case(name))
+                    .find(|task| task.to_string().eq_ignore_ascii_case(name))
                     .cloned()
                     .ok_or_else(|| {
                         let known: Vec<String> =

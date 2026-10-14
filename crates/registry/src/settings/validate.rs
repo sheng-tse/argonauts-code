@@ -3,23 +3,23 @@
 use std::iter;
 use std::path::{Component, Path, PathBuf};
 
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::approvals::Otherwise;
+use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::evolution::FIXED_CORE_KEYS;
-use argonauts_core::settings::handoff::CrewRole;
 use argonauts_core::settings::sessions::NativeFanout;
 use argonauts_core::settings::{Settings, Span};
 use toml::{Table, Value};
 
 use super::autopilot;
 use super::crew;
-use super::handoff;
+use super::fallback;
 use super::plain;
-use super::roles::{self, Workers};
+use super::roles::{self, AgentIds};
 use super::set_by::SetBy;
 use crate::SettingsError;
 use crate::catalog::setting_meta;
-use crate::harnesses::enabled_agent;
+use crate::clis::enabled_agent;
 
 pub(crate) struct Context<'a> {
     /// The repo, when resolving for one. `agents.*.binary` must be outside it.
@@ -27,8 +27,8 @@ pub(crate) struct Context<'a> {
     /// Every leaf key of the resolved settings, with its value.
     pub leaves: &'a [(String, Value)],
     pub set_by: &'a SetBy,
-    /// The `[[harness]]` ids your `models.toml` files declare.
-    pub harness_ids: &'a [String],
+    /// The `[[cli]]` ids your `models.toml` files declare.
+    pub cli_ids: &'a [String],
 }
 
 /// One thing wrong, and the dotted key it's about, which finds the layer that set it.
@@ -54,11 +54,11 @@ pub(crate) fn validate(
 ) -> Result<Vec<String>, (String, SettingsError)> {
     let problems = [
         file_problems(settings),
-        budget_lines(settings),
+        limit_lines(settings),
         approvals(settings),
         allowed_values(context),
         binaries(settings, context.repo_root),
-        handoff::check(settings),
+        fallback::check(settings),
     ];
     if let Some(problem) = problems.into_iter().flatten().next() {
         let error = SettingsError::Invalid {
@@ -67,11 +67,11 @@ pub(crate) fn validate(
         };
         return Err((problem.key, error));
     }
-    let workers = Workers::new(settings).resolving(context.harness_ids, turned_on(context));
-    let mut warnings = roles::warnings(settings, &workers);
-    warnings.extend(handoff::warnings(settings, &workers));
-    warnings.extend(crew::warnings(settings, &workers));
-    warnings.extend(autopilot::warnings(settings, &workers));
+    let agents = AgentIds::new(settings).resolving(context.cli_ids, turned_on(context));
+    let mut warnings = roles::warnings(settings, &agents);
+    warnings.extend(fallback::warnings(settings, &agents));
+    warnings.extend(crew::warnings(settings, &agents));
+    warnings.extend(autopilot::warnings(settings, &agents));
     Ok(warnings)
 }
 
@@ -140,7 +140,7 @@ fn refused_entry(key: &str, written: &Table) -> Option<(String, String)> {
     entries.iter().find_map(|(name, value)| {
         let refused = refusal(&[key, name], value)?;
         let own = match value {
-            Value::Table(own) if key == "fallback" && CrewRole::named(name).is_some() => {
+            Value::Table(own) if key == "fallback" && CrewRole::parse(name).is_some() => {
                 own.iter().find_map(|(inner, value)| {
                     let refused = refusal(&[key, name, inner], value)?;
                     Some((format!("{key}.{name}.{inner}"), refused))
@@ -166,7 +166,7 @@ fn untagged_form(message: &str) -> Option<&'static str> {
     const FORMS: [(&str, &str); 3] = [
         (
             "FallbackEntry",
-            "each entry is \"worker/model\", or a table with a worker and its own rules",
+            "each entry is \"agent/model\", or a table with a model and its own rules",
         ),
         (
             "RotateAt",
@@ -183,13 +183,13 @@ fn untagged_form(message: &str) -> Option<&'static str> {
 /// The checks that need nothing from the other layers, so writing a setting can refuse a value
 /// resolving would. An endpoint stays one in every layer above, since TOML can't unset a key.
 pub(crate) fn file_problems(settings: &Settings) -> Vec<Problem> {
-    let workers = Workers::new(settings);
+    let agents = AgentIds::new(settings);
     [
         numbers(settings),
         spans(settings),
         critic(settings),
         evolvable(settings),
-        roles::endpoint_problems(settings, &workers),
+        roles::endpoint_problems(settings, &agents),
     ]
     .into_iter()
     .flatten()
@@ -197,7 +197,7 @@ pub(crate) fn file_problems(settings: &Settings) -> Vec<Problem> {
 }
 
 /// The evolution loop may only change keys outside the fixed core and the safety keys: a loop
-/// that could move its own thresholds, the gates, or what makes the evidence would learn to game
+/// that could move its own thresholds, the checks, or what makes the evidence would learn to game
 /// them.
 fn evolvable(settings: &Settings) -> Vec<Problem> {
     settings
@@ -229,7 +229,7 @@ const MIN_ROTATE_TOKENS: u64 = 1_000;
 
 fn numbers(settings: &Settings) -> Vec<Problem> {
     let mut problems = Vec::new();
-    let soft_stop = settings.limits.budget.soft_stop;
+    let soft_stop = settings.limits.spend.soft_stop;
     if soft_stop.is_nan() || soft_stop <= 0.0 || soft_stop > 1.0 {
         problems.push(Problem::new(
             "limits.soft_stop",
@@ -286,11 +286,11 @@ fn numbers(settings: &Settings) -> Vec<Problem> {
 /// A dollar amount that's NaN, infinite, or below zero never trips a cap, or makes paid work
 /// look free.
 fn dollars(settings: &Settings) -> Vec<Problem> {
-    let budget = &settings.limits.budget;
+    let limit = &settings.limits.spend;
     let limits = &settings.limits;
     let mut amounts = vec![
-        ("limits.spend_per_run".to_owned(), budget.spend_per_run),
-        ("limits.per_task_usd".to_owned(), budget.per_task_usd),
+        ("limits.spend_per_run".to_owned(), limit.spend_per_run),
+        ("limits.per_task_usd".to_owned(), limit.per_task_usd),
         ("limits.spend_per_day".to_owned(), limits.spend_per_day),
         (
             "limits.evolution_usd_per_month".to_owned(),
@@ -318,8 +318,8 @@ fn dollars(settings: &Settings) -> Vec<Problem> {
         .collect()
 }
 
-fn budget_lines(settings: &Settings) -> Vec<Problem> {
-    let Ok(serde_json::Value::Object(shares)) = serde_json::to_value(&settings.limits.budget.lines)
+fn limit_lines(settings: &Settings) -> Vec<Problem> {
+    let Ok(serde_json::Value::Object(shares)) = serde_json::to_value(&settings.limits.spend.lines)
     else {
         return Vec::new();
     };
@@ -347,16 +347,20 @@ fn budget_lines(settings: &Settings) -> Vec<Problem> {
 }
 
 fn spans(settings: &Settings) -> Vec<Problem> {
-    let fixed: [(&str, &Span); 7] = [
+    let fixed: [(&str, &Span); 8] = [
         ("checks.timeout", &settings.checks.timeout),
+        (
+            "evolution.propose_timeout",
+            &settings.evolution.propose_timeout,
+        ),
         ("mcp.run_limit", &settings.mcp.run_limit),
         ("ui.recap_after", &settings.ui.recap_after),
         ("narrator.interval", &settings.narrator.interval),
         ("health.window", &settings.health.window),
         ("health.cooldown", &settings.health.cooldown),
-        ("supervisor.wait_grace", &settings.supervisor.park_grace),
+        ("run_host.wait_grace", &settings.run_host.wait_grace),
     ];
-    // Handoff tables check their own `ask_timeout`.
+    // Fallback tables check their own `ask_timeout`.
     let endpoints = settings
         .endpoints
         .iter()
@@ -374,12 +378,12 @@ fn spans(settings: &Settings) -> Vec<Problem> {
 
 fn critic(settings: &Settings) -> Vec<Problem> {
     let critic = &settings.critique.critic;
-    if critic == "rotate" || critic.parse::<WorkerRef>().is_ok() {
+    if critic == "rotate" || critic.parse::<ModelRef>().is_ok() {
         return Vec::new();
     }
     vec![Problem::new(
         "critique.critic",
-        format!("critique.critic is {critic:?}; use \"rotate\" or a worker such as \"codex\""),
+        format!("critique.critic is {critic:?}; use \"rotate\" or a model such as \"codex\""),
     )]
 }
 
@@ -402,27 +406,27 @@ fn approvals(settings: &Settings) -> Vec<Problem> {
         }
     }
 
-    let approver = &approvals.approver;
-    let second = "approvals.approver.second_model";
-    match (approvals.approver_model(), &approver.second_model) {
+    let judge_settings = &approvals.judge;
+    let second = "approvals.judge.second_model";
+    match (approvals.judge_model(), &judge_settings.second_model) {
         (None, Some(_)) => problems.push(Problem::new(
             second,
-            format!("{second} needs approvals.decides to name a model, the first approver"),
+            format!("{second} needs approvals.decides to name a model, the first judge"),
         )),
-        (Some(first), Some(other)) if first.worker == other.worker => {
+        (Some(first), Some(other)) if first.agent == other.agent => {
             problems.push(Problem::new(
                 second,
                 format!(
                     "{second} must come from another agent than approvals.decides, and \
                      both are {}",
-                    first.worker
+                    first.agent
                 ),
             ));
         }
         _ => {}
     }
 
-    for (name, otherwise) in otherwise_by_checkpoint(settings) {
+    for (name, otherwise) in otherwise_by_approval(settings) {
         if otherwise == Otherwise::OpenPullRequest && name != "merge" {
             let key = format!("approvals.{name}.otherwise");
             problems.push(Problem::new(
@@ -434,21 +438,21 @@ fn approvals(settings: &Settings) -> Vec<Problem> {
     problems
 }
 
-fn otherwise_by_checkpoint(settings: &Settings) -> [(&'static str, Otherwise); 7] {
+fn otherwise_by_approval(settings: &Settings) -> [(&'static str, Otherwise); 7] {
     let approvals = &settings.approvals;
     [
-        ("goal", approvals.goal.otherwise),
+        ("goal", approvals.understand.otherwise),
         ("plan", approvals.plan.otherwise),
         ("merge", approvals.merge.otherwise),
         ("workflow_promotion", approvals.workflow_promotion.otherwise),
-        ("stuck", approvals.escalation.otherwise),
-        ("limit", approvals.budget.otherwise),
+        ("stuck", approvals.stuck.otherwise),
+        ("limit", approvals.limit.otherwise),
         ("change_request", approvals.change_request.otherwise),
     ]
 }
 
 /// Names that may be your own files, so no fixed list covers them.
-const OPEN_NAMES: [&str; 3] = ["workflow", "phases", "ui.theme"];
+const OPEN_NAMES: [&str; 2] = ["workflow", "ui.theme"];
 
 /// Values a key's picker doesn't offer, for the keys a layer set.
 fn allowed_values(context: &Context<'_>) -> Vec<Problem> {
@@ -571,8 +575,8 @@ mod tests {
     fn dollar_amounts_must_be_real() {
         assert!(dollars(&Settings::default()).is_empty());
         let mut settings = Settings::default();
-        settings.limits.budget.spend_per_run = Some(f64::NAN);
-        settings.limits.budget.per_task_usd = Some(-1.0);
+        settings.limits.spend.spend_per_run = Some(f64::NAN);
+        settings.limits.spend.per_task_usd = Some(-1.0);
         settings.limits.spend_per_day = Some(f64::INFINITY);
         settings.limits.evolution_usd_per_month = Some(-5.0);
         settings.agents.insert(
@@ -598,7 +602,7 @@ mod tests {
                 "agents.codex.price.cached_input_per_mtok",
             ]
         );
-        settings.limits.budget.spend_per_run = Some(0.0);
+        settings.limits.spend.spend_per_run = Some(0.0);
         assert!(
             !dollars(&settings)
                 .iter()
@@ -630,7 +634,7 @@ mod tests {
         }
         let mut settings = Settings::default();
         settings.evolution.evolvable =
-            vec!["critique.rounds".to_owned(), "drafting.drafters".to_owned()];
+            vec!["critique.rounds".to_owned(), "drafting.agents".to_owned()];
         assert!(evolvable(&settings).is_empty());
 
         // Resolving refuses it too, naming the layer that set it.

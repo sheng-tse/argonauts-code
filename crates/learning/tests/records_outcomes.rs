@@ -13,17 +13,17 @@ use records_support::{AS_OF, outcome};
 fn run_line(
     run: &str,
     workflow: Option<(&str, &str)>,
-    landed: RunOutcome,
+    run_merged: RunOutcome,
     checks: bool,
 ) -> LogLine {
     LogLine::Run(RunRecord {
         run: RunId::new(run).unwrap(),
         at: AS_OF,
         task_type: "backend".to_owned(),
-        recipe: None,
+        learned_workflow: None,
         workflow: workflow.map(|(name, sha)| (name.to_owned(), sha.to_owned())),
-        outcome: landed,
-        escalations: 0,
+        outcome: run_merged,
+        stuck_tasks: 0,
         final_checks_passed: checks,
         cost_usd: 3.0,
         minutes: 20.0,
@@ -121,7 +121,7 @@ fn workflow_stats_count_runs_and_passes() {
         ),
         run_line("run-06", None, RunOutcome::Merged, true),
         LogLine::Outcome(outcome(1, "codex", "backend", true, 0.0)),
-        // The retro ran twice for run-02; its run counts once.
+        // The run review ran twice for run-02; its run counts once.
         run_line("run-02", api, RunOutcome::PullRequest, true),
     ];
     let stats = outcomes::workflow_stats(&lines);

@@ -3,13 +3,13 @@
 use std::fmt;
 use std::path::Path;
 
-use argonauts_core::{CardId, EventLog, EventLogError, RunEvent, RunEventKind, RunId};
+use argonauts_core::{EventLog, EventLogError, RunEvent, RunEventKind, RunId, TaskId};
 
-/// Gets each event right after it is logged. It runs on the conductor's task, so it should only
+/// Gets each event right after it is logged. It runs on Argonauts Code's task, so it should only
 /// hand the event off, for example on a channel.
 pub type EventSink = Box<dyn FnMut(RunEvent) + Send>;
 
-pub const CONDUCTOR_SOURCE: &str = "conductor";
+pub const CONDUCTOR_SOURCE: &str = "argonauts-code";
 
 pub struct Recorder {
     log: EventLog,
@@ -35,11 +35,11 @@ impl Recorder {
     /// The sink only sees events that made it into the log.
     pub fn record(
         &mut self,
-        card: Option<&CardId>,
+        task: Option<&TaskId>,
         source: &str,
         kind: RunEventKind,
     ) -> Result<(), EventLogError> {
-        let event = RunEvent::now(self.run_id.clone(), card.cloned(), source, kind);
+        let event = RunEvent::now(self.run_id.clone(), task.cloned(), source, kind);
         self.log.append(&event)?;
         if let Some(sink) = self.sink.as_mut() {
             sink(event);
@@ -83,15 +83,15 @@ mod tests {
             move |event| seen.lock().unwrap().push(event)
         });
         let run = RunId::new("run-1").unwrap();
-        let card = CardId::numbered(1);
+        let task = TaskId::numbered(1);
         let mut recorder = Recorder::new(EventLog::open(&path).unwrap(), run.clone(), Some(sink));
         recorder.record(None, CONDUCTOR_SOURCE, note("a")).unwrap();
-        recorder.record(Some(&card), "fake", note("b")).unwrap();
+        recorder.record(Some(&task), "fake", note("b")).unwrap();
         recorder.flush().unwrap();
 
         let back = EventLog::read(&path).unwrap();
         assert_eq!(back.events.len(), 2);
-        assert_eq!(back.events[1].card_id.as_ref(), Some(&card));
+        assert_eq!(back.events[1].task_id.as_ref(), Some(&task));
         assert_eq!(back.events[1].source, "fake");
         assert_eq!(*seen.lock().unwrap(), back.events);
         assert_eq!(recorder.run_id(), &run);

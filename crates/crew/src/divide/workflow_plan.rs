@@ -1,34 +1,33 @@
-//! The plan checkpoint of a workflow that drafts no plan, such as a review the lead picked: the
-//! workflow itself, with the lead's reason, is what you approve. There are no cards to edit or
-//! re-plan, so it offers approve, run it solo, abandon, and show the plan. Nobody contested it,
-//! so its facts are an uncontested plan's, made against the commit the run started from, and
-//! auto can settle it like any other plan.
+//! The plan approval of a workflow that drafts no plan, such as a review the main agent picked: the
+//! workflow itself, with the main agent's reason, is what you approve. There are no tasks to edit
+//! or re-plan, so it offers approve, run it as Captain, abandon, and show the plan. Nobody
+//! contested it, so its facts are an uncontested plan's, made against the commit the run started
+//! from, and auto can settle it like any other plan.
 
-use argonauts_core::events::checkpoint::{
-    AnswerAction, AnswerOption, CheckpointKind, CheckpointPacket, FreeText, PlanPacket,
-    PlanWorkflow,
+use argonauts_core::events::approval::{
+    AnswerAction, AnswerOption, ApprovalKind, ApprovalPacket, FreeText, PlanPacket, PlanWorkflow,
 };
-use argonauts_core::events::plan::{BudgetPlan, TaskGraph};
+use argonauts_core::events::plan::{LimitPlan, TaskGraph};
 use argonauts_core::events::run::RunOutcome;
 use argonauts_core::events::workflow::StepEnd;
-use argonauts_core::names::{WorkerRef, WorkflowId};
+use argonauts_core::names::{ModelRef, WorkflowId};
 use argonauts_core::policy::{EvidenceDocument, EvidenceFacts};
-use argonauts_core::settings::budget::BudgetUnit;
+use argonauts_core::settings::limit::LimitUnit;
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::design::DesignOutput;
 use argonauts_core::workflow::{StepKind, WorkflowRef};
 
-use crate::checkpoints::{self, CheckpointRequest, options};
+use crate::approvals::{self, ApprovalRequest, options};
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
 use crate::state::RunState;
 use crate::workflow::{Flow, StepCall, StepDone, runner, shape, yaml};
 
-/// Whether there's a plan for the checkpoint to divide into cards: drafted already, or by a
+/// Whether there's a plan for the approval to divide into tasks: drafted already, or by a
 /// step of the workflow. One that isn't recorded is taken to have one, as every plan
-/// checkpoint did before workflows could skip planning.
+/// approval did before workflows could skip planning.
 pub fn drafts_plan(state: &RunState, id: &WorkflowId) -> bool {
-    let drafted = !state.plan.drafts.is_empty() || !state.plan.coordinated.is_empty();
+    let drafted = !state.plan.drafts.is_empty() || !state.plan.orchestrated.is_empty();
     drafted
         || state.workflows.by_id.get(id).is_none_or(|record| {
             record
@@ -40,13 +39,13 @@ pub fn drafts_plan(state: &RunState, id: &WorkflowId) -> bool {
 }
 
 pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
-    let decided = checkpoints::open_and_wait(host, request(host, call).await?).await?;
+    let decided = approvals::open_and_wait(host, request(host, call).await?).await?;
     match decided.action {
         AnswerAction::Approve => Ok(StepDone::done("You approved the workflow")),
-        AnswerAction::SwitchToSolo => Ok(StepDone {
+        AnswerAction::SwitchToCaptain => Ok(StepDone {
             end: StepEnd::Done,
-            summary: Some("You chose to run it solo".to_owned()),
-            flow: Flow::Switch(WorkflowRef::new(runner::solo_workflow(host.settings()))),
+            summary: Some("You chose to run it as Captain".to_owned()),
+            flow: Flow::Switch(WorkflowRef::new(runner::captain_workflow(host.settings()))),
         }),
         AnswerAction::Abandon => Ok(StepDone {
             end: StepEnd::Done,
@@ -59,7 +58,7 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     }
 }
 
-async fn request(host: &Host, call: &StepCall) -> EngineResult<CheckpointRequest> {
+async fn request(host: &Host, call: &StepCall) -> EngineResult<ApprovalRequest> {
     let workflow = host.read(plan_workflow);
     let summary = match &workflow {
         Some(shown) => shown
@@ -92,21 +91,21 @@ async fn request(host: &Host, call: &StepCall) -> EngineResult<CheckpointRequest
 pub struct Shown {
     pub workflow: Option<PlanWorkflow>,
     pub summary: String,
-    /// What an approver reads: the workflow as it would run.
+    /// What a judge reads: the workflow as it would run.
     pub documents: Vec<EvidenceDocument>,
     pub options: Vec<AnswerOption>,
     pub free_text: FreeText,
-    /// Who wrote it, so an approver comes from another provider.
-    pub authors: Vec<WorkerRef>,
+    /// Who wrote it, so a judge comes from another provider.
+    pub authors: Vec<ModelRef>,
 }
 
 /// The plan approval over `shown`, with an uncontested plan's facts.
-pub async fn request_showing(host: &Host, call: &StepCall, shown: Shown) -> CheckpointRequest {
-    let budget = super::limit_plan(host.settings());
+pub async fn request_showing(host: &Host, call: &StepCall, shown: Shown) -> ApprovalRequest {
+    let limit = super::limit_plan(host.settings());
     let review = super::plan_facts::review(host);
     let facts = EvidenceFacts {
-        subject: super::plan_checkpoint::subject(host).await,
-        estimate_usd: estimate_usd(&budget),
+        subject: super::plan_approval::subject(host).await,
+        estimate_usd: estimate_usd(&limit),
         ..review.facts()
     };
     let packet = PlanPacket {
@@ -115,21 +114,21 @@ pub async fn request_showing(host: &Host, call: &StepCall, shown: Shown) -> Chec
         near_tie: false,
         decisions: host.read(|state| state.plan.decisions.clone()),
         graph: TaskGraph {
-            cards: Vec::new(),
+            tasks: Vec::new(),
             critical_path: Vec::new(),
         },
         acceptance_tests: Vec::new(),
-        budget,
+        limit,
         new_dependencies: Vec::new(),
         flags: review.flags(),
         workflow: shown.workflow,
     };
-    CheckpointRequest {
+    ApprovalRequest {
         at: Some(call.at.clone()),
-        kind: CheckpointKind::Plan,
+        kind: ApprovalKind::Plan,
         title: "Approve this plan?".to_owned(),
-        card: None,
-        packet: CheckpointPacket::Plan(Box::new(packet)),
+        task: None,
+        packet: ApprovalPacket::Plan(Box::new(packet)),
         facts,
         agent_outputs: Vec::new(),
         documents: shown.documents,
@@ -139,14 +138,13 @@ pub async fn request_showing(host: &Host, call: &StepCall, shown: Shown) -> Chec
     }
 }
 
-/// The top of the plan's estimate, when the run's budget is in dollars.
-fn estimate_usd(budget: &BudgetPlan) -> Option<f64> {
-    (budget.total.unit == BudgetUnit::Usd && budget.estimate_high > 0.0)
-        .then_some(budget.estimate_high)
+/// The top of the plan's estimate, when the run's limit is in dollars.
+fn estimate_usd(limit: &LimitPlan) -> Option<f64> {
+    (limit.total.unit == LimitUnit::Usd && limit.estimate_high > 0.0).then_some(limit.estimate_high)
 }
 
-/// Who designed the run's workflow, so the approver comes from another company.
-fn designer(state: &RunState) -> Option<WorkerRef> {
+/// Who designed the run's workflow, so the judge comes from another provider.
+fn designer(state: &RunState) -> Option<ModelRef> {
     state
         .sessions
         .in_order()
@@ -156,9 +154,9 @@ fn designer(state: &RunState) -> Option<WorkerRef> {
         .map(|session| session.started.worker.clone())
 }
 
-/// The plan checkpoint's options less the ones that work on a drafted plan.
+/// The plan approval's options less the ones that work on a drafted plan.
 pub fn answer_options() -> Vec<AnswerOption> {
-    options::standard(CheckpointKind::Plan)
+    options::standard(ApprovalKind::Plan)
         .into_iter()
         .filter(|option| {
             !matches!(
@@ -169,7 +167,8 @@ pub fn answer_options() -> Vec<AnswerOption> {
         .collect()
 }
 
-/// The run's workflow for the plan checkpoint, with the lead's reason when the lead picked it.
+/// The run's workflow for the plan approval, with the main agent's reason when the main agent
+/// picked it.
 pub fn plan_workflow(state: &RunState) -> Option<PlanWorkflow> {
     let root = state.workflows.root.as_ref()?;
     let record = state.workflows.by_id.get(root)?;
@@ -181,7 +180,7 @@ pub fn plan_workflow(state: &RunState) -> Option<PlanWorkflow> {
 }
 
 /// The newest design for the task that named this template, or composed one when `from` is
-/// `None`: its one line for the plan checkpoint.
+/// `None`: its one line for the plan approval.
 fn design_why(state: &RunState, from: Option<&WorkflowRef>) -> Option<String> {
     state
         .sessions
@@ -214,13 +213,13 @@ mod tests {
 
     use crate::state::tests::{end, envelope, session_started};
 
-    /// The plan card carries the lead's why when the template that runs is the one its brief
-    /// named, however the lead spelled it, since the log keeps the brief as written.
+    /// The plan question carries the main agent's why when the template that runs is the one its
+    /// brief named, however the main agent spelled it, since the log keeps the brief as written.
     #[test]
-    fn the_leads_why_follows_the_template_it_spelled() {
+    fn the_main_agents_why_follows_the_template_it_spelled() {
         let mut state = RunState::default();
         let mut started =
-            session_started(&WorkerRef::new("claude-code", None), RoleName::PhaseLead);
+            session_started(&ModelRef::new("claude-code", None), RoleName::TieBreaker);
         started.step = Some(StepName::DesignWorkflow);
         let kind = RunEventKind::Session(SessionEvent::Started(Box::new(started)));
         state.apply(&envelope(1, None, Some("s-001"), kind));
@@ -235,7 +234,7 @@ mod tests {
             design_why(&state, Some(&WorkflowRef::new("council"))).as_deref(),
             Some("each bug has one clear fix")
         );
-        assert_eq!(design_why(&state, Some(&WorkflowRef::new("solo"))), None);
+        assert_eq!(design_why(&state, Some(&WorkflowRef::new("captain"))), None);
         assert_eq!(design_why(&state, None), None);
     }
 
@@ -249,7 +248,7 @@ mod tests {
             actions,
             [
                 AnswerAction::Approve,
-                AnswerAction::SwitchToSolo,
+                AnswerAction::SwitchToCaptain,
                 AnswerAction::Abandon,
                 AnswerAction::ShowDiff
             ]

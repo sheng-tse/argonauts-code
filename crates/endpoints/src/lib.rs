@@ -1,4 +1,4 @@
-//! A direct OpenAI-compatible API (OpenRouter, Ollama, LM Studio, vLLM) as a `Worker`.
+//! A direct OpenAI-compatible API (OpenRouter, Ollama, LM Studio, vLLM) as a `SessionRunner`.
 //! Endpoints have no tools, so they only take `NoTools` sessions.
 
 mod errors;
@@ -18,23 +18,23 @@ use std::time::Duration;
 
 use argonauts_core::CommandSpec;
 use argonauts_core::future::BoxFuture;
-use argonauts_core::limits::{HealthBoard, QuotaBoard};
-use argonauts_core::names::{VendorId, WorkerRef};
+use argonauts_core::limits::{HealthBoard, PlanUsageBoard};
+use argonauts_core::names::{AgentId, ModelRef};
 use argonauts_core::registry::ModelRegistry;
-use argonauts_core::settings::agents::{EndpointSettings, StructuredMode};
-use argonauts_core::worker::{
-    SessionHandle, SessionSpec, SteerSupport, SubagentVisibility, Worker, WorkerCapabilities,
-    WorkerError, WorkerKind,
+use argonauts_core::session_runner::{
+    RunnerCapabilities, RunnerError, RunnerKind, SessionHandle, SessionRunner, SessionSpec,
+    SteerSupport, SubagentVisibility,
 };
+use argonauts_core::settings::agents::{EndpointSettings, StructuredMode};
 use tokio::sync::Semaphore;
 
-pub struct EndpointWorker {
+pub struct EndpointRunner {
     id: String,
     settings: EndpointSettings,
-    worker: WorkerRef,
-    family: String,
+    worker: ModelRef,
+    provider: String,
     registry: Arc<dyn ModelRegistry>,
-    quota: Arc<dyn QuotaBoard>,
+    plan_usage: Arc<dyn PlanUsageBoard>,
     health: Arc<dyn HealthBoard>,
     /// Built on first use and shared, so sessions reuse connections.
     client: OnceLock<reqwest::Client>,
@@ -42,26 +42,26 @@ pub struct EndpointWorker {
     slots: Arc<Semaphore>,
 }
 
-impl EndpointWorker {
+impl EndpointRunner {
     /// `id` is the `[endpoints.<id>]` key and `worker` names the model. `settings` must be
-    /// `argonauts_registry::endpoint_settings(settings, id)`, your table merged over the preset,
-    /// since only that fills in a preset's `base_url` and key variable.
+    /// `argonauts_registry::endpoint_settings(settings, id)`, your table merged over the known
+    /// endpoint, since only that fills in a known endpoint's `base_url` and key variable.
     pub fn new(
         id: &str,
         settings: &EndpointSettings,
-        worker: WorkerRef,
-        family: String,
+        worker: ModelRef,
+        provider: String,
         registry: Arc<dyn ModelRegistry>,
-        quota: Arc<dyn QuotaBoard>,
+        plan_usage: Arc<dyn PlanUsageBoard>,
         health: Arc<dyn HealthBoard>,
     ) -> Self {
         Self {
             id: id.to_owned(),
             settings: settings.clone(),
             worker,
-            family,
+            provider,
             registry,
-            quota,
+            plan_usage,
             health,
             client: OnceLock::new(),
             slots: Arc::new(Semaphore::new(settings.max_concurrency.max(1) as usize)),
@@ -72,8 +72,8 @@ impl EndpointWorker {
         &self.settings
     }
 
-    fn vendor_id(&self) -> VendorId {
-        VendorId(self.id.clone())
+    fn agent_id(&self) -> AgentId {
+        AgentId(self.id.clone())
     }
 
     fn client(&self) -> Result<reqwest::Client, String> {
@@ -88,44 +88,45 @@ impl EndpointWorker {
     }
 }
 
-impl Worker for EndpointWorker {
-    fn worker_ref(&self) -> &WorkerRef {
+impl SessionRunner for EndpointRunner {
+    fn model_ref(&self) -> &ModelRef {
         &self.worker
     }
 
-    fn kind(&self) -> WorkerKind {
-        WorkerKind::Endpoint
+    fn kind(&self) -> RunnerKind {
+        RunnerKind::Endpoint
     }
 
-    fn vendor(&self) -> VendorId {
-        self.vendor_id()
+    fn agent_id(&self) -> AgentId {
+        self.agent_id()
     }
 
-    fn family(&self) -> String {
-        self.family.clone()
+    fn provider(&self) -> String {
+        self.provider.clone()
     }
 
-    fn capabilities(&self) -> WorkerCapabilities {
-        WorkerCapabilities {
+    fn capabilities(&self) -> RunnerCapabilities {
+        RunnerCapabilities {
             streams_text: true,
             steer: SteerSupport::NextTurnOnly,
             resume: false,
+            fork: false,
             structured_output: self.settings.structured_output == StructuredMode::JsonSchema,
             subagents: SubagentVisibility::None,
-            native_budget_cap: false,
-            takeover: false,
+            native_limit_cap: false,
+            take_over: false,
             can_build: false,
             status_tool: false,
         }
     }
 
-    fn start(&self, spec: SessionSpec) -> BoxFuture<'_, Result<SessionHandle, WorkerError>> {
+    fn start(&self, spec: SessionSpec) -> BoxFuture<'_, Result<SessionHandle, RunnerError>> {
         Box::pin(session::start(self, spec))
     }
 
     /// Endpoints have no interactive UI to take over.
-    fn takeover_command(&self, vendor_session: &str, workdir: &Path) -> Option<CommandSpec> {
-        let _ = (vendor_session, workdir);
+    fn take_over_command(&self, cli_session: &str, workdir: &Path) -> Option<CommandSpec> {
+        let _ = (cli_session, workdir);
         None
     }
 }

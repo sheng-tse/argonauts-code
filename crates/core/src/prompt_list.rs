@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::prompt_parts::Readers;
+
 /// The mark on a template you changed.
 pub const CHANGED: &str = "✎ changed";
 
@@ -12,7 +14,7 @@ pub const INSTRUCTIONS: &str = "instructions";
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptList {
     pub rows: Vec<PromptRow>,
-    /// Who may write a role's instructions: the orchestrator, Argonauts' own templates, then
+    /// Who may write a role's instructions: the orchestrator, Argonauts Code's own templates, then
     /// each agent on the crew.
     #[serde(default)]
     pub writers: Vec<WriterChoice>,
@@ -20,7 +22,7 @@ pub struct PromptList {
     /// that tells a reviewer who made the work, and the ones that wait for your trust.
     #[serde(default)]
     pub notes: Vec<String>,
-    /// What the last key did, such as `Wrote prompts/frames/reviewers.md`.
+    /// What the last key did, such as `Wrote prompts/frames/reviewer.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub said: Option<String>,
     /// Sent after a copy or a reset for the list already open, so nothing opens for it once
@@ -32,7 +34,7 @@ pub struct PromptList {
 /// One line of `/prompts`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptRow {
-    /// The crew role whose agents read it, such as `reviewers`.
+    /// The crew role whose agents read it, such as `reviewer`.
     pub role: String,
     /// `frame`, `instructions`, or what a step's prompt is for, such as `review a change`.
     pub part: String,
@@ -41,7 +43,7 @@ pub struct PromptRow {
     /// Your file for it, or the mark that you changed it. Empty for the built-in as it is.
     #[serde(default)]
     pub yours: String,
-    /// The template's name under `prompts/`, such as `frames/reviewers`. `None` for a role's
+    /// The template's name under `prompts/`, such as `frames/reviewer`. `None` for a role's
     /// instructions, which you add to with a file under `roles/`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -64,6 +66,12 @@ pub struct WriterChoice {
     pub shown: String,
 }
 
+/// A row's role as the screen heads it: a crew role's people, such as `reviewers` for the
+/// `reviewer` role, or a finer role's own name.
+pub fn heading(role: &str) -> &str {
+    Readers::of_file(role).map_or(role, |readers| readers.heading())
+}
+
 impl PromptList {
     /// The role named on a row: on its first line only, as the table shows it.
     pub fn role_shown(&self, index: usize) -> &str {
@@ -71,7 +79,7 @@ impl PromptList {
             return "";
         };
         let repeated = index > 0 && self.rows[index - 1].role == row.role;
-        if repeated { "" } else { &row.role }
+        if repeated { "" } else { heading(&row.role) }
     }
 
     /// The rows as plain text, columns padded to their widest cell, for a screen with no
@@ -136,20 +144,20 @@ mod tests {
     fn the_table_names_a_role_on_its_first_line() {
         let list = PromptList {
             rows: vec![
-                row("workers", "frame", "built in", "", Some("frames/workers")),
+                row("worker", "frame", "built in", "", Some("frames/worker")),
                 row(
-                    "workers",
+                    "worker",
                     INSTRUCTIONS,
                     "the orchestrator",
-                    "roles/workers.md",
+                    "roles/worker.md",
                     None,
                 ),
                 row(
-                    "reviewers",
+                    "reviewer",
                     "frame",
                     "built in",
                     CHANGED,
-                    Some("frames/reviewers"),
+                    Some("frames/reviewer"),
                 ),
             ],
             ..PromptList::default()
@@ -158,10 +166,10 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "  role       part          written by        yours             name",
-                "  workers    frame         built in                            frames/workers",
-                "             instructions  the orchestrator  roles/workers.md",
-                "  reviewers  frame         built in          ✎ changed         frames/reviewers",
+                "  role       part          written by        yours            name",
+                "  workers    frame         built in                           frames/worker",
+                "             instructions  the orchestrator  roles/worker.md",
+                "  reviewers  frame         built in          ✎ changed        frames/reviewer",
             ]
         );
         assert_eq!(list.role_shown(1), "");

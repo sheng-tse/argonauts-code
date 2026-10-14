@@ -1,48 +1,48 @@
 use std::time::Duration;
 
 use argonauts_core::Paths;
-use argonauts_core::api::{CardBrief, RunState, RunSummary, StatusSummary};
-use argonauts_core::app::{AppEvent, AppMode, ChatEvent, ReplayTurn, UiCommand};
-use argonauts_core::events::card::CardState;
-use argonauts_core::events::checkpoint::AnswerAction;
-use argonauts_core::events::run::{ParkReason, Party, RunMode, RunOutcome};
+use argonauts_core::api::{RunState, RunSummary, StatusSummary, TaskBrief};
+use argonauts_core::app::{AppEvent, AppMode, ConversationEvent, ReplayTurn, UiCommand};
+use argonauts_core::events::approval::AnswerAction;
+use argonauts_core::events::run::{Party, RunMode, RunOutcome, WaitReason};
+use argonauts_core::events::task::TaskState;
 use argonauts_core::input::{ResumeTarget, SlashCommand};
-use argonauts_core::names::{ChatId, CheckpointId, TurnId};
+use argonauts_core::names::{ApprovalId, ConversationId, TurnId};
 use argonauts_core::policy::{NarratorLine, NarratorLineKind};
 use argonauts_core::settings::approvals::ApprovalMode;
-use argonauts_core::{CardId, NoteLevel, Spend};
+use argonauts_core::{NoteLevel, Spend, TaskId};
 use argonauts_testkit::FakeSession;
 use serde_json::json;
 use time::OffsetDateTime;
 
-use super::rig::{Rig, finished, parked, question, resumed, run_id};
+use super::rig::{Rig, finished, question, resumed, run_id, waiting};
 use super::{RunNews, RunUpdate, attached, focus, on_update, open, status_parts};
 use crate::FirstView;
-use crate::chat_store::{ChatRun, ChatStore};
 use crate::client::test_support as log;
+use crate::controller::header_and_bottom_line::header_and_bottom_line;
 use crate::controller::recap::recap_from_summary;
-use crate::controller::status_line::status_line;
-use crate::controller::test_support::{ApprovalCall, Call, Harness, HarnessOptions, WAIT};
+use crate::controller::test_support::{ApprovalCall, Call, CliOptions, TestDriver, WAIT};
 use crate::controller::{Effect, Opening, run_commands};
+use crate::conversation_store::{ConversationRun, ConversationStore};
 use crate::env::AppEnv;
 
 fn is_mode(mode: AppMode) -> impl Fn(&AppEvent) -> bool {
     move |event| matches!(event, AppEvent::Mode { mode: seen } if *seen == mode)
 }
 
-async fn harness_on(run: &str) -> Harness {
-    let mut harness = Harness::start_with(HarnessOptions {
+async fn cli_on(run: &str) -> TestDriver {
+    let mut driver = TestDriver::start_with(CliOptions {
         opening: Opening {
             guided_setup: false,
             first: FirstView::Attach(run_id(run)),
         },
-        ..HarnessOptions::default()
+        ..CliOptions::default()
     })
     .await;
-    harness
+    driver
         .until(|event| matches!(event, AppEvent::ReplayDone { .. }))
         .await;
-    harness
+    driver
 }
 
 #[tokio::test]
@@ -73,10 +73,10 @@ async fn a_started_run_attaches_and_forwards_events() {
             event: Box::new(resumed(&run, 1))
         }
     );
-    assert!(rig.conductor.push(&run, parked(&run, 2, Vec::new())).await);
-    rig.until(is_mode(AppMode::Parked {
+    assert!(rig.conductor.push(&run, waiting(&run, 2, Vec::new())).await);
+    rig.until(is_mode(AppMode::Waiting {
         run: run.clone(),
-        reason: ParkReason::Checkpoint,
+        reason: WaitReason::Approval,
     }))
     .await;
     assert_eq!(status_parts(&rig.runs).run, Some(run));
@@ -155,12 +155,12 @@ async fn resume_after_a_merged_run_opens_the_picker() {
     .await;
 }
 
-/// A chat command that appends its text to `log`, so a test sees what was sent.
-fn record_chat_to(log: &std::path::Path) -> impl FnOnce(&std::path::Path) {
+/// A message command that appends its text to `log`, so a test sees what was sent.
+fn record_conversation_to(log: &std::path::Path) -> impl FnOnce(&std::path::Path) {
     let script = format!("printf '%s\\n' \"$0\" >> '{}'", log.display());
     move |config: &std::path::Path| {
         let text = format!(
-            "[notifications]\nos = false\n\n[notifications.chat]\ncommand = [\"/bin/sh\", \"-c\", \
+            "[notifications]\nos = false\n\n[notifications.conversation]\ncommand = [\"/bin/sh\", \"-c\", \
              {script:?}, \"{{text}}\"]\n"
         );
         std::fs::create_dir_all(config.parent().expect("a parent")).expect("the home dir");
@@ -182,10 +182,10 @@ async fn lines_after(log: &std::path::Path, count: usize, wait: Duration) -> Vec
 }
 
 #[tokio::test]
-async fn replayed_checkpoints_before_replay_done_do_not_notify() {
+async fn replayed_approvals_before_replay_done_do_not_notify() {
     let dir = tempfile::tempdir().expect("a temp dir");
-    let log = dir.path().join("chat.log");
-    let mut rig = Rig::with(true, record_chat_to(&log));
+    let log = dir.path().join("conversation.log");
+    let mut rig = Rig::with(true, record_conversation_to(&log));
     let run = rig.start("Fix the flaky test").await;
     rig.settle().await;
     focus(&mut rig.runs, false);
@@ -196,8 +196,10 @@ async fn replayed_checkpoints_before_replay_done_do_not_notify() {
         .replay_history_until(2);
 
     rig.conductor.push(&run, resumed(&run, 0)).await;
-    rig.conductor.push(&run, question(&run, 1, "cp-001")).await;
-    rig.conductor.push(&run, parked(&run, 2, vec![])).await;
+    rig.conductor
+        .push(&run, question(&run, 1, "approval-001"))
+        .await;
+    rig.conductor.push(&run, waiting(&run, 2, vec![])).await;
     let done = rig
         .until(|event| matches!(event, AppEvent::ReplayDone { .. }))
         .await;
@@ -208,9 +210,9 @@ async fn replayed_checkpoints_before_replay_done_do_not_notify() {
             seq: 2
         }
     );
-    rig.until(is_mode(AppMode::Parked {
+    rig.until(is_mode(AppMode::Waiting {
         run: run.clone(),
-        reason: ParkReason::Checkpoint,
+        reason: WaitReason::Approval,
     }))
     .await;
     rig.settle().await;
@@ -221,12 +223,14 @@ async fn replayed_checkpoints_before_replay_done_do_not_notify() {
     );
 
     rig.conductor.push(&run, resumed(&run, 3)).await;
-    rig.conductor.push(&run, question(&run, 4, "cp-002")).await;
+    rig.conductor
+        .push(&run, question(&run, 4, "approval-002"))
+        .await;
     rig.settle().await;
     let lines = lines_after(&log, 1, WAIT).await;
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(
-        lines[0].contains(&format!("{run} waits for you at cp-002")),
+        lines[0].contains(&format!("{run} waits for you at approval-002")),
         "{lines:?}"
     );
     assert!(
@@ -235,7 +239,9 @@ async fn replayed_checkpoints_before_replay_done_do_not_notify() {
     );
 
     focus(&mut rig.runs, true);
-    rig.conductor.push(&run, question(&run, 5, "cp-003")).await;
+    rig.conductor
+        .push(&run, question(&run, 5, "approval-003"))
+        .await;
     rig.settle().await;
     assert_eq!(
         lines_after(&log, 2, quiet).await.len(),
@@ -245,15 +251,15 @@ async fn replayed_checkpoints_before_replay_done_do_not_notify() {
 }
 
 #[tokio::test]
-async fn a_crashed_stream_shows_the_run_as_crashed() {
-    let mut harness = harness_on("run-004").await;
+async fn a_stream_that_loses_its_run_host_says_what_resume_does() {
+    let mut driver = cli_on("run-004").await;
     let run = run_id("run-004");
-    harness.conductor.push(&run, resumed(&run, 7)).await;
-    harness
+    driver.conductor.push(&run, resumed(&run, 7)).await;
+    driver
         .until(|event| matches!(event, AppEvent::Run { .. }))
         .await;
-    harness.conductor.end(&run, true);
-    let notice = harness
+    driver.conductor.end(&run, true);
+    let notice = driver
         .until(|event| {
             matches!(
                 event,
@@ -268,43 +274,45 @@ async fn a_crashed_stream_shows_the_run_as_crashed() {
         unreachable!()
     };
     assert!(
-        text.contains("run-004 crashed") && text.contains("/resume run-004"),
+        text.contains("run-004 stopped when its run host exited")
+            && text.contains("/resume run-004 carries it on"),
         "{text}"
     );
-    harness.until(is_mode(AppMode::Idle)).await;
+    driver.until(is_mode(AppMode::Idle)).await;
 
-    harness.send(UiCommand::Resume { run: None }).await;
-    harness
+    driver.send(UiCommand::Resume { run: None }).await;
+    driver
         .until(|event| matches!(event, AppEvent::Attached { .. }))
         .await;
-    let calls = harness.conductor.calls();
+    let calls = driver.conductor.calls();
     assert!(calls.contains(&Call::Resume(run.clone())), "{calls:?}");
     assert!(calls.contains(&Call::Reattach(run)), "{calls:?}");
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
-async fn a_parked_run_whose_supervisor_exits_is_not_crashed() {
-    let mut harness = harness_on("run-002").await;
+async fn a_waiting_run_whose_run_host_exits_is_not_crashed() {
+    let mut driver = cli_on("run-002").await;
     let run = run_id("run-002");
-    harness.conductor.push(&run, parked(&run, 3, vec![])).await;
-    harness
-        .until(is_mode(AppMode::Parked {
+    driver.conductor.push(&run, waiting(&run, 3, vec![])).await;
+    driver
+        .until(is_mode(AppMode::Waiting {
             run: run.clone(),
-            reason: ParkReason::Checkpoint,
+            reason: WaitReason::Approval,
         }))
         .await;
-    harness.conductor.end(&run, true);
-    let events = harness.exit().await;
+    driver.conductor.end(&run, true);
+    let events = driver.exit().await;
     let crashed = events
         .iter()
-        .any(|event| matches!(event, AppEvent::Notice { text, .. } if text.contains("crashed")));
+        .any(|event| matches!(event, AppEvent::Notice { text, .. } if text.contains("its run host exited")));
     assert!(!crashed, "{events:#?}");
 }
 
 #[tokio::test]
-async fn the_mode_line_shows_the_settings_mode_with_no_run_attached() {
-    let line = |rig: &Rig| status_line(&rig.ctx, "", status_parts(&rig.runs)).approval_mode;
+async fn the_bottom_row_shows_the_settings_mode_with_no_run_attached() {
+    let line =
+        |rig: &Rig| header_and_bottom_line(&rig.ctx, "", status_parts(&rig.runs)).approval_mode;
     assert_eq!(
         line(&Rig::new()),
         ApprovalMode::Auto,
@@ -366,13 +374,13 @@ async fn shift_tab_sets_the_mode_now_and_after_the_next_start() {
     );
 }
 
-/// Full auto is the mode after auto in the Shift+Tab cycle and a setting too: chosen either
-/// way, the mode line says so, and every run started after Shift+Tab is raised to it.
+/// Autopilot is the mode after auto in the Shift+Tab cycle and a setting too: chosen either
+/// way, the bottom line says so, and every run started after Shift+Tab is raised to it.
 #[tokio::test]
 async fn autopilot_comes_from_shift_tab_or_the_settings() {
     let set = Rig::with(true, |global| {
         let points = [
-            "goal",
+            "understand",
             "plan",
             "merge",
             "workflow_promotion",
@@ -388,7 +396,7 @@ async fn autopilot_comes_from_shift_tab_or_the_settings() {
         std::fs::write(global, file).expect("the config");
     });
     assert_eq!(
-        status_line(&set.ctx, "", status_parts(&set.runs)).approval_mode,
+        header_and_bottom_line(&set.ctx, "", status_parts(&set.runs)).approval_mode,
         ApprovalMode::Autopilot
     );
 
@@ -417,8 +425,8 @@ async fn autopilot_comes_from_shift_tab_or_the_settings() {
     );
 }
 
-/// A run you resume after Shift+Tab chose full auto runs in full auto, as one started then
-/// does, and the mode line goes by the run's own mode, not this session's pick, while it shows.
+/// A run you resume after Shift+Tab chose autopilot runs in autopilot, as one started then
+/// does, and the bottom line goes by the run's own mode, not this session's pick, while it shows.
 #[tokio::test]
 async fn a_resumed_run_takes_the_mode_shift_tab_chose() {
     let mut rig = Rig::new();
@@ -441,7 +449,7 @@ async fn a_resumed_run_takes_the_mode_shift_tab_chose() {
     assert_eq!(
         status_parts(&rig.runs).approval_mode,
         Some(ApprovalMode::Autopilot),
-        "with the run over, the mode line says what the next one gets"
+        "with the run over, the bottom line says what the next one gets"
     );
 
     super::resume_and_attach(&mut rig.ctx, &mut rig.runs, &run)
@@ -460,10 +468,10 @@ async fn a_resumed_run_takes_the_mode_shift_tab_chose() {
     );
 }
 
-/// The mode line shows the run on screen's own mode: one that never changed it shows your
+/// The bottom line shows the run on screen's own mode: one that never changed it shows your
 /// settings', whatever Shift+Tab picked for runs not yet on screen.
 #[tokio::test]
-async fn the_mode_line_goes_by_the_run_on_screen() {
+async fn the_bottom_row_goes_by_the_run_on_screen() {
     let mut rig = Rig::new();
     let run = rig.start("Add --json to export").await;
     rig.until(is_mode(AppMode::Working { run: run.clone() }))
@@ -478,40 +486,40 @@ async fn the_mode_line_goes_by_the_run_on_screen() {
 /// A failed run is said once, in its own block: no recap follows to say it again.
 #[tokio::test]
 async fn a_failed_run_sends_no_recap() {
-    let mut harness = harness_on("run-004").await;
+    let mut driver = cli_on("run-004").await;
     let run = run_id("run-004");
-    harness.conductor.push(&run, resumed(&run, 1)).await;
-    harness
+    driver.conductor.push(&run, resumed(&run, 1)).await;
+    driver
         .until(is_mode(AppMode::Working { run: run.clone() }))
         .await;
-    harness
+    driver
         .conductor
         .push(&run, finished(&run, 2, RunOutcome::Failed))
         .await;
-    harness.until(is_mode(AppMode::Idle)).await;
-    harness.until(|event| matches!(event, AppEvent::Exit)).await;
-    let recaps = harness
+    driver.until(is_mode(AppMode::Idle)).await;
+    driver.until(|event| matches!(event, AppEvent::Exit)).await;
+    let recaps = driver
         .seen()
         .iter()
         .filter(|event| matches!(event, AppEvent::Recap { .. }))
         .count();
-    assert_eq!(recaps, 0, "{:#?}", harness.seen());
+    assert_eq!(recaps, 0, "{:#?}", driver.seen());
 }
 
 /// `argonauts run` opens the app on its run, and the app closes once that run finishes.
 #[tokio::test]
 async fn a_finished_run_sends_a_recap_and_closes_the_app() {
-    let mut harness = harness_on("run-003").await;
+    let mut driver = cli_on("run-003").await;
     let run = run_id("run-003");
-    harness.conductor.push(&run, resumed(&run, 1)).await;
-    harness
+    driver.conductor.push(&run, resumed(&run, 1)).await;
+    driver
         .until(is_mode(AppMode::Working { run: run.clone() }))
         .await;
-    harness
+    driver
         .conductor
         .push(&run, finished(&run, 2, RunOutcome::Merged))
         .await;
-    let recap = harness
+    let recap = driver
         .until(|event| matches!(event, AppEvent::Recap { .. }))
         .await;
     let AppEvent::Recap { text, model } = recap else {
@@ -519,13 +527,13 @@ async fn a_finished_run_sends_a_recap_and_closes_the_app() {
     };
     assert!(!text.is_empty());
     assert_eq!(model, None, "built by code");
-    harness.until(is_mode(AppMode::Idle)).await;
-    harness.until(|event| matches!(event, AppEvent::Exit)).await;
-    let crashed = harness
+    driver.until(is_mode(AppMode::Idle)).await;
+    driver.until(|event| matches!(event, AppEvent::Exit)).await;
+    let crashed = driver
         .seen()
         .iter()
-        .any(|event| matches!(event, AppEvent::Notice { text, .. } if text.contains("crashed")));
-    assert!(!crashed, "{:#?}", harness.seen());
+        .any(|event| matches!(event, AppEvent::Notice { text, .. } if text.contains("its run host exited")));
+    assert!(!crashed, "{:#?}", driver.seen());
 }
 
 fn exits(effects: &[Effect]) -> bool {
@@ -543,7 +551,7 @@ async fn only_the_run_argonauts_run_opened_on_closes_the_app() {
     rig.until(|event| matches!(event, AppEvent::Recap { .. }))
         .await;
     rig.settle().await;
-    assert!(!exits(&rig.effects), "a run started from the chat");
+    assert!(!exits(&rig.effects), "a run started from the conversation");
 
     // This one finished before the app attached, so its history holds the end.
     let done = run_id("run-009");
@@ -584,11 +592,21 @@ fn summary(run: &str, state: RunState, live: bool) -> RunSummary {
     }
 }
 
+/// A run whose run host died, with the words the list gives it.
+fn stopped(run: &str) -> RunSummary {
+    RunSummary {
+        stopped_at: "stopped at 3m10s when its run host exited · /resume carries it on from \
+                     Review"
+            .to_owned(),
+        ..summary(run, RunState::Crashed, false)
+    }
+}
+
 fn waiting_on_you(run: &str) -> RunSummary {
     RunSummary {
-        waiting: vec![CheckpointId::numbered(1)],
+        waiting: vec![ApprovalId::numbered(1)],
         stopped_at: "question, waiting for you".to_owned(),
-        ..summary(run, RunState::Parked, false)
+        ..summary(run, RunState::Waiting, false)
     }
 }
 
@@ -623,9 +641,9 @@ async fn a_plain_start_gives_earlier_runs_no_panel_rows() {
         waiting_on_you("run-009"),
         summary("run-008", RunState::Merged, false),
         summary("run-007", RunState::Running, true),
-        summary("run-006", RunState::Crashed, false),
+        stopped("run-006"),
     ]);
-    open(&mut rig.ctx, &mut rig.runs, FirstView::Chat)
+    open(&mut rig.ctx, &mut rig.runs, FirstView::Conversation)
         .await
         .expect("the app opens");
     assert_eq!(attached(&rig.runs), None);
@@ -641,7 +659,10 @@ async fn a_plain_start_gives_earlier_runs_no_panel_rows() {
     );
     let texts = notices(&events);
     assert!(
-        texts.iter().any(|text| text.contains("run-006 crashed")),
+        texts.contains(
+            &"\"run-006 title\" stopped at 3m10s when its run host exited · /resume carries \
+              it on from Review"
+        ),
         "{texts:?}"
     );
     assert!(
@@ -667,18 +688,18 @@ async fn a_plain_start_gives_earlier_runs_no_panel_rows() {
     );
 }
 
-/// A run that isn't this conversation's, from an earlier one, another terminal, or a front end
+/// A run that isn't this conversation's, from an earlier one, another terminal, or an outside agent
 /// over MCP that started it after the app opened, notifies you while you're away when it needs
 /// you or ends, so a decision it waits on or a merge into your checkout is never missed. It
-/// still gets no panel row, so the mode line doesn't count it.
+/// still gets no panel row, so the bottom line doesn't count it.
 #[tokio::test]
 async fn a_run_from_elsewhere_notifies_you_while_you_are_away() {
     let dir = tempfile::tempdir().expect("a temp dir");
-    let log = dir.path().join("chat.log");
-    let mut rig = Rig::with(true, record_chat_to(&log));
+    let log = dir.path().join("conversation.log");
+    let mut rig = Rig::with(true, record_conversation_to(&log));
     rig.conductor
         .set_runs(vec![summary("run-007", RunState::Running, true)]);
-    open(&mut rig.ctx, &mut rig.runs, FirstView::Chat)
+    open(&mut rig.ctx, &mut rig.runs, FirstView::Conversation)
         .await
         .expect("the app opens");
     rig.settle().await;
@@ -703,24 +724,24 @@ async fn a_run_from_elsewhere_notifies_you_while_you_are_away() {
     // Each notification goes out on its own, so they may land in either order.
     for said in [
         "run-007 finished (merged)",
-        "run-012 waits for you at cp-001",
+        "run-012 waits for you at approval-001",
     ] {
         assert!(lines.iter().any(|line| line.contains(said)), "{lines:?}");
     }
 }
 
 /// A run started in another window after the app opened shows one line here and gets no panel
-/// row, so the mode line doesn't count it. It's said once: the next listing
+/// row, so the bottom line doesn't count it. It's said once: the next listing
 /// knows it, and what it does later is said as for any run off screen.
 #[tokio::test]
 async fn a_run_started_in_another_window_shows_one_line_and_gets_no_row() {
     let dir = tempfile::tempdir().expect("a temp dir");
-    let log = dir.path().join("chat.log");
+    let log = dir.path().join("conversation.log");
     // Its config turns OS notifications off, so the test raises none on this desktop.
-    let mut rig = Rig::with(true, record_chat_to(&log));
+    let mut rig = Rig::with(true, record_conversation_to(&log));
     rig.conductor
         .set_runs(vec![summary("run-007", RunState::Running, true)]);
-    open(&mut rig.ctx, &mut rig.runs, FirstView::Chat)
+    open(&mut rig.ctx, &mut rig.runs, FirstView::Conversation)
         .await
         .expect("the app opens");
     let first = rig.settle().await;
@@ -786,7 +807,7 @@ async fn continuing_brings_back_the_conversations_own_runs() {
         waiting_on_you("run-009"),
         summary("run-008", RunState::Merged, false),
         summary("run-007", RunState::Pausing, true),
-        summary("run-006", RunState::Crashed, false),
+        stopped("run-006"),
         waiting_on_you("run-005"),
     ]);
     super::adopt(&mut rig.runs, ["run-009", "run-008", "run-007"].map(run_id));
@@ -805,7 +826,10 @@ async fn continuing_brings_back_the_conversations_own_runs() {
     );
     let texts = notices(&events);
     assert!(
-        texts.iter().any(|text| text.contains("run-006 crashed")),
+        texts.contains(
+            &"\"run-006 title\" stopped at 3m10s when its run host exited · /resume carries \
+              it on from Review"
+        ),
         "{texts:?}"
     );
     assert_eq!(panel_rows(&events), Some(vec!["run-009", "run-007"]));
@@ -827,7 +851,7 @@ async fn continuing_brings_back_the_conversations_own_runs() {
 async fn a_run_started_or_opened_here_keeps_its_row_off_screen() {
     let mut rig = Rig::new();
     rig.conductor.set_runs(vec![waiting_on_you("run-009")]);
-    open(&mut rig.ctx, &mut rig.runs, FirstView::Chat)
+    open(&mut rig.ctx, &mut rig.runs, FirstView::Conversation)
         .await
         .expect("the app opens");
     rig.settle().await;
@@ -860,13 +884,13 @@ async fn a_run_started_or_opened_here_keeps_its_row_off_screen() {
 }
 
 /// The header counts this repo's runs going or waiting on you in any conversation, which
-/// /resume lists, but not a run parked with nothing for you.
+/// /resume lists, but not a run waiting with nothing for you.
 #[tokio::test]
 async fn the_header_counts_every_run_going_or_waiting_on_you() {
     let rig = Rig::new();
     rig.conductor.set_runs(vec![
         waiting_on_you("run-009"),
-        summary("run-008", RunState::Parked, false),
+        summary("run-008", RunState::Waiting, false),
         summary("run-007", RunState::Running, true),
         summary("run-006", RunState::Merged, false),
     ]);
@@ -915,21 +939,21 @@ async fn a_run_off_screen_says_when_it_needs_you_and_when_it_ends() {
     assert!(notices(&rig.settle().await).is_empty());
 }
 
-/// A run parked on a question at start waits while you chat: what you type goes to the new
-/// conversation, the run gets no panel row, and only opening it from /resume brings its card
+/// A run waiting on a question at start waits while you talk: what you type goes to the new
+/// conversation, the run gets no panel row, and only opening it from /resume brings its question
 /// back and makes it this conversation's.
 #[tokio::test]
-async fn a_question_parked_at_start_waits_while_you_chat() {
-    let mut harness = Harness::start_with(HarnessOptions {
+async fn a_question_waiting_at_start_waits_while_you_conversation() {
+    let mut driver = TestDriver::start_with(CliOptions {
         runs: vec![waiting_on_you("run-009")],
-        ..HarnessOptions::default()
+        ..CliOptions::default()
     })
     .await;
-    harness.agent.push(FakeSession::structured(
+    driver.agent.push(FakeSession::structured(
         json!({"kind": "answer", "answer_markdown": "Hi.", "estimate": null}),
     ));
-    harness.submit("hi").await;
-    let mode = harness
+    driver.submit("hi").await;
+    let mode = driver
         .until(|event| matches!(event, AppEvent::Mode { .. }))
         .await;
     assert!(
@@ -941,7 +965,7 @@ async fn a_question_parked_at_start_waits_while_you_chat() {
         ),
         "{mode:?}"
     );
-    harness
+    driver
         .until(|event| {
             matches!(
                 event,
@@ -951,60 +975,62 @@ async fn a_question_parked_at_start_waits_while_you_chat() {
             )
         })
         .await;
-    let calls = harness.conductor.calls();
+    let calls = driver.conductor.calls();
     assert!(
         calls.iter().all(|call| *call == Call::List),
         "the waiting run was touched: {calls:?}"
     );
-    assert!(harness.approvals.calls().is_empty());
+    assert!(driver.approvals.calls().is_empty());
     assert!(
-        !harness.seen().iter().any(|event| matches!(
+        !driver.seen().iter().any(|event| matches!(
             event,
             AppEvent::Attached { .. } | AppEvent::BackgroundRuns { .. }
         )),
         "{:#?}",
-        harness.seen()
+        driver.seen()
     );
 
     // Enter on it in /resume, or `/resume run-009`, opens it.
-    harness
+    driver
         .send(UiCommand::Resume {
             run: Some(run_id("run-009")),
         })
         .await;
-    harness
+    driver
         .until(|event| matches!(event, AppEvent::Attached { summary, .. } if summary.run == run_id("run-009")))
         .await;
     assert!(
-        harness
+        driver
             .conductor
             .calls()
             .contains(&Call::Resume(run_id("run-009")))
     );
     // The conversation saves it once the step that opened it is done.
-    let conversation = ChatStore::open(&harness.env.chat_dir(), &ChatId::numbered(1));
+    let conversation =
+        ConversationStore::open(&driver.env.conversation_dir(), &ConversationId::numbered(1));
     let deadline = tokio::time::Instant::now() + WAIT;
     while conversation.runs().is_empty() && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(conversation.runs(), [run_id("run-009")]);
-    harness.exit().await;
+    driver.exit().await;
 }
 
 /// `argonauts -c` brings back the runs the conversation started or opened as panel rows, and
 /// only those.
 #[tokio::test]
 async fn continuing_puts_the_conversations_runs_back_in_the_panel() {
-    let mut harness = Harness::start_with(HarnessOptions {
+    let mut driver = TestDriver::start_with(CliOptions {
         opening: Opening {
             guided_setup: false,
             first: FirstView::Continue,
         },
         prepare: Some(Box::new(|repo| {
             let env = AppEnv::for_repo(Paths::new(repo.home()), repo.root(), true).unwrap();
-            let conversation = ChatStore::open(&env.chat_dir(), &ChatId::numbered(1));
+            let conversation =
+                ConversationStore::open(&env.conversation_dir(), &ConversationId::numbered(1));
             conversation
-                .append(&ChatEvent::TurnStarted {
+                .append(&ConversationEvent::TurnStarted {
                     turn: TurnId::numbered(1),
                     text: "rename the config loader".to_owned(),
                     worker: "claude-code".parse().unwrap(),
@@ -1020,14 +1046,14 @@ async fn continuing_puts_the_conversations_runs_back_in_the_panel() {
                 .unwrap();
         })),
         runs: vec![waiting_on_you("run-009"), waiting_on_you("run-008")],
-        ..HarnessOptions::default()
+        ..CliOptions::default()
     })
     .await;
-    let rows = harness
+    let rows = driver
         .until(|event| matches!(event, AppEvent::BackgroundRuns { .. }))
         .await;
     assert_eq!(panel_rows(&[rows]), Some(vec!["run-009"]));
-    let seen = harness.exit().await;
+    let seen = driver.exit().await;
     assert!(
         !seen
             .iter()
@@ -1041,149 +1067,158 @@ async fn continuing_puts_the_conversations_runs_back_in_the_panel() {
 /// run, and brings back its runs rather than an older conversation's. `/resume` takes it by id.
 #[tokio::test]
 async fn continuing_carries_on_a_conversation_that_only_opened_runs() {
-    let mut harness = Harness::start_with(HarnessOptions {
+    let mut driver = TestDriver::start_with(CliOptions {
         opening: Opening {
             guided_setup: false,
             first: FirstView::Continue,
         },
         prepare: Some(Box::new(|repo| {
             let env = AppEnv::for_repo(Paths::new(repo.home()), repo.root(), true).unwrap();
-            let older = ChatStore::open(&env.chat_dir(), &ChatId::numbered(1));
+            let older =
+                ConversationStore::open(&env.conversation_dir(), &ConversationId::numbered(1));
             older.append(&asked("an older unrelated question")).unwrap();
             older
                 .keep_run(&kept("run-008", "rename the loader"))
                 .unwrap();
             std::thread::sleep(Duration::from_millis(20));
-            ChatStore::open(&env.chat_dir(), &ChatId::numbered(2))
+            ConversationStore::open(&env.conversation_dir(), &ConversationId::numbered(2))
                 .keep_run(&kept("run-009", "fix the median"))
                 .unwrap();
         })),
         runs: vec![waiting_on_you("run-009"), waiting_on_you("run-008")],
-        ..HarnessOptions::default()
+        ..CliOptions::default()
     })
     .await;
-    let AppEvent::ChatResumed {
-        chat, title, turns, ..
-    } = harness
-        .until(|event| matches!(event, AppEvent::ChatResumed { .. }))
+    let AppEvent::ConversationResumed {
+        conversation,
+        title,
+        turns,
+        ..
+    } = driver
+        .until(|event| matches!(event, AppEvent::ConversationResumed { .. }))
         .await
     else {
         unreachable!()
     };
-    assert_eq!(chat, ChatId::numbered(2));
+    assert_eq!(conversation, ConversationId::numbered(2));
     assert_eq!(title, "fix the median");
     assert!(turns.is_empty(), "{turns:?}");
-    let rows = harness
+    let rows = driver
         .until(|event| matches!(event, AppEvent::BackgroundRuns { .. }))
         .await;
     assert_eq!(panel_rows(&[rows]), Some(vec!["run-009"]));
 
-    for (chat, title) in [
-        ("chat-001", "an older unrelated question"),
-        ("chat-002", "fix the median"),
+    for (conversation, title) in [
+        ("conversation-001", "an older unrelated question"),
+        ("conversation-002", "fix the median"),
     ] {
-        harness
+        driver
             .send(UiCommand::Slash {
                 command: SlashCommand::Resume {
-                    target: Some(ResumeTarget::Conversation(ChatId::parse(chat).unwrap())),
+                    target: Some(ResumeTarget::Conversation(
+                        ConversationId::parse(conversation).unwrap(),
+                    )),
                 },
             })
             .await;
-        let resumed = harness
-            .until(|event| matches!(event, AppEvent::ChatResumed { .. }))
+        let resumed = driver
+            .until(|event| matches!(event, AppEvent::ConversationResumed { .. }))
             .await;
         assert!(
-            matches!(&resumed, AppEvent::ChatResumed { chat: id, title: named, .. }
-                if id.as_str() == chat && named == title),
+            matches!(&resumed, AppEvent::ConversationResumed { conversation: id, title: named, .. }
+                if id.as_str() == conversation && named == title),
             "{resumed:?}"
         );
     }
-    harness.exit().await;
+    driver.exit().await;
 }
 
 /// The panel follows the conversation on screen, the way `argonauts -c` would bring it back
-///: `/resume <chat>` shows that conversation's runs in place of the ones it left,
+///: `/resume <conversation>` shows that conversation's runs in place of the ones it left,
 /// `/branch` keeps them in the copy, and `/clear` starts with none. Each conversation keeps its
 /// own runs on disk.
 #[tokio::test]
 async fn the_panel_follows_the_conversation_on_screen() {
-    let mut harness = Harness::start_with(HarnessOptions {
+    let mut driver = TestDriver::start_with(CliOptions {
         opening: Opening {
             guided_setup: false,
             first: FirstView::Continue,
         },
         prepare: Some(Box::new(|repo| {
             let env = AppEnv::for_repo(Paths::new(repo.home()), repo.root(), true).unwrap();
-            let chats = [
+            let conversations = [
                 (1, "rename the loader", "run-008"),
                 (2, "fix the median", "run-009"),
             ];
-            for (n, request, run) in chats {
-                let conversation = ChatStore::open(&env.chat_dir(), &ChatId::numbered(n));
+            for (n, request, run) in conversations {
+                let conversation =
+                    ConversationStore::open(&env.conversation_dir(), &ConversationId::numbered(n));
                 conversation.append(&asked(request)).unwrap();
                 conversation.keep_run(&kept(run, request)).unwrap();
-                // So chat-002 is the newest, for -c.
+                // So conversation-002 is the newest, for -c.
                 std::thread::sleep(Duration::from_millis(20));
             }
         })),
         runs: vec![waiting_on_you("run-009"), waiting_on_you("run-008")],
-        ..HarnessOptions::default()
+        ..CliOptions::default()
     })
     .await;
-    let rows = harness
+    let rows = driver
         .until(|event| matches!(event, AppEvent::BackgroundRuns { .. }))
         .await;
     assert_eq!(panel_rows(&[rows]), Some(vec!["run-009"]));
 
-    harness
+    driver
         .send(UiCommand::Slash {
             command: SlashCommand::Resume {
-                target: Some(ResumeTarget::Conversation(ChatId::numbered(1))),
+                target: Some(ResumeTarget::Conversation(ConversationId::numbered(1))),
             },
         })
         .await;
-    let rows = harness
+    let rows = driver
         .until(|event| matches!(event, AppEvent::BackgroundRuns { .. }))
         .await;
     assert_eq!(panel_rows(&[rows]), Some(vec!["run-008"]));
 
-    harness
+    driver
         .send(UiCommand::Slash {
             command: SlashCommand::Branch { name: None },
         })
         .await;
-    harness
+    driver
         .until(|event| {
-            matches!(event, AppEvent::Notice { text, .. } if text.starts_with("Branched into chat-003"))
+            matches!(event, AppEvent::Notice { text, .. } if text.starts_with("Branched into conversation-003"))
         })
         .await;
-    harness
+    driver
         .send(UiCommand::Slash {
             command: SlashCommand::Clear,
         })
         .await;
-    let rows = harness
+    let rows = driver
         .until(|event| matches!(event, AppEvent::BackgroundRuns { .. }))
         .await;
     assert_eq!(panel_rows(&[rows]), Some(vec![]));
 
     // The copy kept run-008's row, so the panel changed only for /resume and /clear.
-    let sent: Vec<Vec<&str>> = harness
+    let sent: Vec<Vec<&str>> = driver
         .seen()
         .iter()
         .filter_map(|event| panel_rows(std::slice::from_ref(event)))
         .collect();
     assert_eq!(sent, [vec!["run-009"], vec!["run-008"], vec![]]);
-    let runs_of = |n| ChatStore::open(&harness.env.chat_dir(), &ChatId::numbered(n)).runs();
+    let runs_of = |n| {
+        ConversationStore::open(&driver.env.conversation_dir(), &ConversationId::numbered(n)).runs()
+    };
     assert_eq!(runs_of(1), [run_id("run-008")]);
     assert_eq!(runs_of(2), [run_id("run-009")]);
     assert_eq!(runs_of(3), [run_id("run-008")], "the branch keeps its runs");
     assert!(runs_of(4).is_empty(), "/clear starts with none");
-    harness.exit().await;
+    driver.exit().await;
 }
 
-fn asked(text: &str) -> ChatEvent {
-    ChatEvent::TurnStarted {
+fn asked(text: &str) -> ConversationEvent {
+    ConversationEvent::TurnStarted {
         turn: TurnId::numbered(1),
         text: text.to_owned(),
         worker: "claude-code".parse().unwrap(),
@@ -1195,8 +1230,8 @@ fn asked(text: &str) -> ChatEvent {
     }
 }
 
-fn kept(run: &str, title: &str) -> ChatRun {
-    ChatRun {
+fn kept(run: &str, title: &str) -> ConversationRun {
+    ConversationRun {
         run: run_id(run),
         title: title.to_owned(),
     }
@@ -1213,7 +1248,7 @@ async fn narrator_lines_reach_the_screen_and_its_journal() {
         run: Some(run.clone()),
         kind: NarratorLineKind::Update,
         text: "One worker is writing tests.".to_owned(),
-        model: argonauts_core::names::WorkerRef::new("claude-code", None),
+        model: argonauts_core::names::ModelRef::new("claude-code", None),
         spend: Spend::default(),
     };
     let update = RunUpdate::Narrator {
@@ -1245,12 +1280,46 @@ async fn narrator_lines_reach_the_screen_and_its_journal() {
     );
 }
 
-fn card(id: &str, state: CardState) -> CardBrief {
-    CardBrief {
-        card: CardId::new(id).expect("a task id"),
+/// A waiting run that wakes, or that couldn't be woken, is named as every line about a run
+/// names it: by its title, never by its number.
+#[tokio::test]
+async fn a_run_that_wakes_is_named_as_its_row_names_it() {
+    use argonauts_core::api::ApiError;
+
+    use crate::wake::WakeCause;
+
+    let mut rig = Rig::new();
+    rig.conductor
+        .set_runs(vec![summary("run-009", RunState::Waiting, false)]);
+    let woke = |started| RunUpdate::Woke {
+        run: run_id("run-009"),
+        cause: WakeCause::AgentBack,
+        started,
+    };
+    on_update(&mut rig.ctx, &mut rig.runs, woke(Ok(())))
+        .await
+        .expect("the wake applies");
+    assert_eq!(
+        notices(&rig.settle().await),
+        ["run-009 title woke up: the agent it waited for is tried again."]
+    );
+
+    let unanswered = ApiError::RunHost("it didn't answer".to_owned());
+    on_update(&mut rig.ctx, &mut rig.runs, woke(Err(unanswered)))
+        .await
+        .expect("the failed wake applies");
+    assert_eq!(
+        notices(&rig.settle().await),
+        ["Couldn't wake run-009 title: run host: it didn't answer"]
+    );
+}
+
+fn task(id: &str, state: TaskState) -> TaskBrief {
+    TaskBrief {
+        task: TaskId::new(id).expect("a task id"),
         title: format!("{id} title"),
         state,
-        owner: None,
+        worker: None,
         note: String::new(),
     }
 }
@@ -1262,13 +1331,13 @@ async fn resume_recap_code_built_from_digest() {
     let mut rig = Rig::new();
     let run = run_id("run-009");
     rig.conductor
-        .set_runs(vec![summary("run-009", RunState::Parked, true)]);
+        .set_runs(vec![summary("run-009", RunState::Waiting, true)]);
     let digest = StatusSummary {
         run: Some(run.clone()),
         goal: vec!["export now takes --json.".to_owned()],
-        cards: vec![
-            card("task-001", CardState::Integrated),
-            card("task-002", CardState::Running),
+        tasks: vec![
+            task("task-001", TaskState::Merged),
+            task("task-002", TaskState::Running),
         ],
         waiting: vec!["the merge approval".to_owned()],
         ..StatusSummary::default()
@@ -1286,8 +1355,10 @@ async fn resume_recap_code_built_from_digest() {
         .replay_history_until(2);
 
     rig.conductor.push(&run, resumed(&run, 0)).await;
-    rig.conductor.push(&run, question(&run, 1, "cp-001")).await;
-    rig.conductor.push(&run, parked(&run, 2, vec![])).await;
+    rig.conductor
+        .push(&run, question(&run, 1, "approval-001"))
+        .await;
+    rig.conductor.push(&run, waiting(&run, 2, vec![])).await;
     rig.until(|event| matches!(event, AppEvent::ReplayDone { .. }))
         .await;
     let after_history: Vec<&AppEvent> = rig
@@ -1341,7 +1412,7 @@ async fn resume_replay_condensed_from_events() {
     let mut rig = Rig::new();
     let run = log::run_id();
     rig.conductor
-        .set_runs(vec![summary(run.as_ref(), RunState::Parked, false)]);
+        .set_runs(vec![summary(run.as_ref(), RunState::Waiting, false)]);
     super::resume_and_attach(&mut rig.ctx, &mut rig.runs, &run)
         .await
         .expect("the run resumes");
@@ -1355,20 +1426,20 @@ async fn resume_replay_condensed_from_events() {
         .as_mut()
         .expect("attached")
         .replay_history_until(8);
-    let plan = CheckpointId::numbered(1);
+    let plan = ApprovalId::numbered(1);
     let mut history = vec![log::run_started(0, "Add --json to export", None)];
     for seq in 1..=5 {
         history.push(log::queued(seq, &format!("note {seq}"), Party::User));
     }
-    history.push(log::plan_checkpoint(6, &plan, 3));
-    history.push(log::checkpoint_decided(
+    history.push(log::plan_approval(6, &plan, 3));
+    history.push(log::approval_decided(
         7,
         &plan,
         AnswerAction::Approve,
         Party::User,
         Some("ship it"),
     ));
-    history.push(parked(&run, 8, Vec::new()));
+    history.push(waiting(&run, 8, Vec::new()));
     let mark = rig.seen().len();
     for event in history {
         assert!(rig.conductor.push(&run, event).await);
@@ -1397,6 +1468,7 @@ async fn resume_replay_condensed_from_events() {
         .map(|text| ReplayTurn {
             from: Party::User,
             text: (*text).to_owned(),
+            steps: Vec::new(),
         })
         .collect();
     assert_eq!(turns, &expected, "the last turns, word for word");
@@ -1415,7 +1487,7 @@ async fn resume_replay_condensed_from_events() {
         .expect("attached")
         .replay_history_until(1);
     rig.conductor.push(&run, resumed(&run, 0)).await;
-    rig.conductor.push(&run, parked(&run, 1, Vec::new())).await;
+    rig.conductor.push(&run, waiting(&run, 1, Vec::new())).await;
     rig.until(|event| matches!(event, AppEvent::ReplayDone { seq: 1, .. }))
         .await;
     assert!(
@@ -1446,13 +1518,13 @@ fn a_run_that_wont_resume_says_why_without_its_id() {
     assert!(!gone.contains(run.as_str()), "{gone}");
 }
 
-/// A run off screen that fails, or whose supervisor goes, is told to the conversation that
+/// A run off screen that fails, or whose run host goes, is told to the conversation that
 /// started it once, as a run on screen is.
 #[tokio::test]
 async fn a_run_off_screen_that_fails_is_heard_once() {
-    for supervisor_went in [false, true] {
+    for run_host_went in [false, true] {
         let mut rig = Rig::new();
-        open(&mut rig.ctx, &mut rig.runs, FirstView::Chat)
+        open(&mut rig.ctx, &mut rig.runs, FirstView::Conversation)
             .await
             .expect("the app opens");
         rig.settle().await;
@@ -1466,7 +1538,7 @@ async fn a_run_off_screen_that_fails_is_heard_once() {
         assert_eq!(attached(&rig.runs), Some(&second));
         let _ = super::take_news(&mut rig.runs);
 
-        if supervisor_went {
+        if run_host_went {
             rig.conductor.end(&first, true);
         } else {
             rig.conductor
@@ -1493,12 +1565,12 @@ async fn a_run_off_screen_that_fails_is_heard_once() {
 }
 
 /// A second workflow takes the screen while the first works: the first goes on streaming into
-/// the chat beside it, and its finish still brings its recap there, while the mode stays with
-/// the run on screen. The listing then doesn't say again how it ended.
+/// the conversation beside it, and its finish still brings its recap there, while the mode stays
+/// with the run on screen. The listing then doesn't say again how it ended.
 #[tokio::test]
-async fn two_workflows_both_stream_and_the_one_off_screen_ends_in_the_chat() {
+async fn two_workflows_both_stream_and_the_one_off_screen_ends_in_the_conversation() {
     let mut rig = Rig::new();
-    open(&mut rig.ctx, &mut rig.runs, FirstView::Chat)
+    open(&mut rig.ctx, &mut rig.runs, FirstView::Conversation)
         .await
         .expect("the app opens");
     rig.settle().await;

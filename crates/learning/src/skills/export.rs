@@ -1,7 +1,7 @@
-//! A recipe as step-by-step instructions for one agent. The body is built from the recipe's
-//! shape: what it's for, its phases and steps, its checklist, and its gates by name. It never
-//! reads a setting's value, the environment, or a gate's command, so none can leak into a skill
-//! every later session reads.
+//! A learned workflow as step-by-step instructions for one agent. The body is built from the
+//! learned workflow's shape: what it's for, its phases and steps, its checklist, and its checks by
+//! name. It never reads a setting's value, the environment, or a check's command, so none can leak
+//! into a skill every later session reads.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -13,23 +13,26 @@ use serde_json::Value;
 use argonauts_core::workflow::{Phase, Step, StepKind};
 
 use super::document::{self, MAX_DESCRIPTION};
-use super::{Frontmatter, META_RECIPE, META_SHA256, META_VERSION, Skill};
+use super::{Frontmatter, META_LEARNED_WORKFLOW, META_SHA256, META_VERSION, Skill};
 use crate::error::{LearningError, Result};
-use crate::recipes::{LoadedRecipe, Match, Recipe};
+use crate::learned_workflows::{LearnedWorkflow, LoadedLearnedWorkflow, Match};
 use crate::scan::{Finding, scan};
 
-pub fn export(loaded: &LoadedRecipe) -> Result<Skill> {
-    let recipe = &loaded.recipe;
-    let name = recipe.recipe.clone();
-    let body = document::written_body(&body(recipe));
+pub fn export(loaded: &LoadedLearnedWorkflow) -> Result<Skill> {
+    let learned_workflow = &loaded.learned_workflow;
+    let name = learned_workflow.name.clone();
+    let body = document::written_body(&body(learned_workflow));
     let mut metadata = BTreeMap::new();
-    metadata.insert(META_RECIPE.to_owned(), name.clone());
-    metadata.insert(META_VERSION.to_owned(), recipe.version.to_string());
+    metadata.insert(META_LEARNED_WORKFLOW.to_owned(), name.clone());
+    metadata.insert(
+        META_VERSION.to_owned(),
+        learned_workflow.version.to_string(),
+    );
     metadata.insert(META_SHA256.to_owned(), document::body_hash(&body));
     let skill = Skill {
         frontmatter: Frontmatter {
             name: name.clone(),
-            description: description(recipe),
+            description: description(learned_workflow),
             license: None,
             compatibility: None,
             metadata,
@@ -91,18 +94,18 @@ fn holds_home_path(text: &str) -> bool {
         .is_some_and(|home| text.contains(home.trim_end_matches('/')))
 }
 
-fn description(recipe: &Recipe) -> String {
-    let mut text = one_line(&recipe.description);
+fn description(learned_workflow: &LearnedWorkflow) -> String {
+    let mut text = one_line(&learned_workflow.description);
     if text.is_empty() {
         text = format!(
             "The {} workflow, as steps one agent can follow.",
-            recipe.recipe
+            learned_workflow.name
         );
     }
     if !text.ends_with(['.', '!', '?']) {
         text.push('.');
     }
-    if let Some(when) = when_to_use(&recipe.matches) {
+    if let Some(when) = when_to_use(&learned_workflow.matches) {
         text.push(' ');
         text.push_str(&when);
     }
@@ -141,14 +144,14 @@ fn listed(items: &[String]) -> Option<String> {
     }
 }
 
-fn body(recipe: &Recipe) -> String {
-    let name = &recipe.recipe;
+fn body(learned_workflow: &LearnedWorkflow) -> String {
+    let name = &learned_workflow.name;
     let mut text = format!("# {name}\n\n");
-    let summary = one_line(&recipe.description);
+    let summary = one_line(&learned_workflow.description);
     if !summary.is_empty() {
         let _ = writeln!(text, "{summary}\n");
     }
-    if let Some(when) = when_to_use(&recipe.matches) {
+    if let Some(when) = when_to_use(&learned_workflow.matches) {
         let _ = writeln!(text, "{when}\n");
     }
     let _ = writeln!(
@@ -156,14 +159,14 @@ fn body(recipe: &Recipe) -> String {
         "These steps are version {} of `{name}`, the learned workflow that worked best for \
          this kind of task when a crew of agents ran it in this repository, written out for one \
          agent working alone.\n",
-        recipe.version
+        learned_workflow.version
     );
 
-    let checklist = checklist(recipe);
-    let gates = gates(recipe);
+    let checklist = checklist(learned_workflow);
+    let checks = checks(learned_workflow);
     text.push_str("## Steps\n\n");
-    let phases =
-        inline_phases(recipe).unwrap_or_else(|| default_phases(recipe, &checklist, &gates));
+    let phases = inline_phases(learned_workflow)
+        .unwrap_or_else(|| default_phases(learned_workflow, &checklist, &checks));
     for (index, (title, steps)) in phases.iter().enumerate() {
         let _ = writeln!(text, "### {}. {title}\n", index + 1);
         for (number, step) in steps.iter().enumerate() {
@@ -179,10 +182,10 @@ fn body(recipe: &Recipe) -> String {
         }
         text.push('\n');
     }
-    if !gates.is_empty() {
+    if !checks.is_empty() {
         text.push_str("## Checks\n\nThe work is done only when each of these holds.\n\n");
-        for gate in &gates {
-            let _ = writeln!(text, "- {gate}");
+        for check in &checks {
+            let _ = writeln!(text, "- {check}");
         }
         text.push('\n');
     }
@@ -195,37 +198,44 @@ fn body(recipe: &Recipe) -> String {
 
 type Phases = Vec<(String, Vec<String>)>;
 
-fn section<'a>(recipe: &'a Recipe, key: &str) -> Option<&'a Value> {
-    recipe.settings.get(key).filter(|value| !value.is_null())
+fn section<'a>(learned_workflow: &'a LearnedWorkflow, key: &str) -> Option<&'a Value> {
+    learned_workflow
+        .settings
+        .get(key)
+        .filter(|value| !value.is_null())
 }
 
-fn enabled(recipe: &Recipe, key: &str) -> bool {
-    section(recipe, key)
+fn enabled(learned_workflow: &LearnedWorkflow, key: &str) -> bool {
+    section(learned_workflow, key)
         .is_some_and(|value| value.get("enabled").and_then(Value::as_bool) != Some(false))
 }
 
-/// The protocol's phases, with a step for each part the recipe turns on.
-fn default_phases(recipe: &Recipe, checklist: &[String], gates: &[String]) -> Phases {
+/// The protocol's phases, with a step for each part the learned workflow turns on.
+fn default_phases(
+    learned_workflow: &LearnedWorkflow,
+    checklist: &[String],
+    checks: &[String],
+) -> Phases {
     let mut plan = vec![
         "Draft a plan on your own first: the change, the files it touches, and how you'll test \
          it."
         .to_owned(),
     ];
-    if enabled(recipe, "experiments") {
+    if enabled(learned_workflow, "experiments") {
         plan.push(
             "Try the riskiest assumption in a small throwaway experiment, and keep only what you \
              learn."
                 .to_owned(),
         );
     }
-    if !checklist.is_empty() || enabled(recipe, "critique") {
+    if !checklist.is_empty() || enabled(learned_workflow, "critique") {
         plan.push(
             "Critique the plan as a skeptic from another team would, against the checklist \
              below, and fix what it finds."
                 .to_owned(),
         );
     }
-    if enabled(recipe, "judging") {
+    if enabled(learned_workflow, "judging") {
         plan.push(
             "If you drafted more than one option, compare them on the evidence and keep the \
              strongest."
@@ -234,7 +244,7 @@ fn default_phases(recipe: &Recipe, checklist: &[String], gates: &[String]) -> Ph
     }
 
     let mut build = Vec::new();
-    if let Some(divide) = section(recipe, "divide") {
+    if let Some(divide) = section(learned_workflow, "divide") {
         let mut step = "Split the work into small pieces with clear interfaces.".to_owned();
         if divide.get("contracts_first").and_then(Value::as_bool) == Some(true) {
             step.push_str(" Write the interfaces and their acceptance tests first.");
@@ -243,7 +253,7 @@ fn default_phases(recipe: &Recipe, checklist: &[String], gates: &[String]) -> Ph
     }
     build.push("Build in small steps, running the tests as you go.".to_owned());
 
-    let mut check = vec![if gates.is_empty() {
+    let mut check = vec![if checks.is_empty() {
         "Run the project's tests and linters, and fix what fails.".to_owned()
     } else {
         "Check each check below, and fix what fails.".to_owned()
@@ -258,8 +268,8 @@ fn default_phases(recipe: &Recipe, checklist: &[String], gates: &[String]) -> Ph
         (
             "Understand".to_owned(),
             vec![
-                "Restate the goal, the acceptance criteria, and what's out of scope, in your own \
-                 words."
+                "Read the request back: the goal, the acceptance criteria, and what's out of \
+                 scope, in your own words."
                     .to_owned(),
                 "Read the code the task touches before you change anything.".to_owned(),
             ],
@@ -278,9 +288,10 @@ fn default_phases(recipe: &Recipe, checklist: &[String], gates: &[String]) -> Ph
     ]
 }
 
-/// A recipe that writes its workflow's phases out in full.
-fn inline_phases(recipe: &Recipe) -> Option<Phases> {
-    let phases: Vec<Phase> = serde_json::from_value(section(recipe, "phases")?.clone()).ok()?;
+/// A learned workflow that writes its workflow's phases out in full.
+fn inline_phases(learned_workflow: &LearnedWorkflow) -> Option<Phases> {
+    let phases: Vec<Phase> =
+        serde_json::from_value(section(learned_workflow, "phases")?.clone()).ok()?;
     let phases: Phases = phases
         .iter()
         .map(|phase| {
@@ -301,11 +312,11 @@ fn inline_phases(recipe: &Recipe) -> Option<Phases> {
 /// an indented list.
 fn instruction(step: &Step, depth: usize) -> String {
     let text = match step.kind {
-        StepKind::Restate => {
-            "Restate the goal, the acceptance criteria, and what's out of scope, in your own words."
+        StepKind::Read => {
+            "Read the request back: the goal, the acceptance criteria, and what's out of scope, in your own words."
                 .to_owned()
         }
-        StepKind::Differ => "Write down where the options differ, quoting each.".to_owned(),
+        StepKind::Compare => "Write down where the options disagree, quoting each.".to_owned(),
         StepKind::Draft if step.blind => {
             "Draft your own answer before you look at anyone else's.".to_owned()
         }
@@ -320,15 +331,15 @@ fn instruction(step: &Step, depth: usize) -> String {
             "Score the candidates against the criteria, and keep the strongest on the evidence."
                 .to_owned()
         }
-        StepKind::Refute => {
+        StepKind::Critique => {
             "Try to disprove each finding or claim, and drop what doesn't survive.".to_owned()
         }
         StepKind::Synthesize => "Combine what survived into one answer.".to_owned(),
         StepKind::Build => {
             "Make the change in small steps, running the tests as you go.".to_owned()
         }
-        StepKind::Gate => "Check the checks below, and fix what fails.".to_owned(),
-        StepKind::Check => {
+        StepKind::Checks => "Run the checks below, and fix what fails.".to_owned(),
+        StepKind::GoalCheck => {
             "Check each done-when criterion against evidence: a passing test, or a file and line."
                 .to_owned()
         }
@@ -336,7 +347,7 @@ fn instruction(step: &Step, depth: usize) -> String {
             Some(max) => format!("Repeat these steps until they succeed, at most {max} times:"),
             None => "Repeat these steps until they succeed:".to_owned(),
         },
-        StepKind::Checkpoint => {
+        StepKind::Approval => {
             "Stop and check with the person you work for before you go on.".to_owned()
         }
         StepKind::Merge => "Hand the change over for review. Never merge it yourself.".to_owned(),
@@ -355,8 +366,9 @@ fn instruction(step: &Step, depth: usize) -> String {
 }
 
 /// What a critic checks, with a question for each item the protocol knows.
-fn checklist(recipe: &Recipe) -> Vec<String> {
-    let Some(items) = section(recipe, "critique").and_then(|critique| critique.get("checklist"))
+fn checklist(learned_workflow: &LearnedWorkflow) -> Vec<String> {
+    let Some(items) =
+        section(learned_workflow, "critique").and_then(|critique| critique.get("checklist"))
     else {
         return Vec::new();
     };
@@ -382,13 +394,13 @@ fn checklist(recipe: &Recipe) -> Vec<String> {
         .collect()
 }
 
-/// The gates by name, never their commands.
-fn gates(recipe: &Recipe) -> Vec<String> {
-    let Some(gates) = section(recipe, "checks") else {
+/// The checks by name, never their commands.
+fn checks(learned_workflow: &LearnedWorkflow) -> Vec<String> {
+    let Some(checks) = section(learned_workflow, "checks") else {
         return Vec::new();
     };
-    let names = match gates {
-        Value::Array(_) => strings(gates),
+    let names = match checks {
+        Value::Array(_) => strings(checks),
         other => other.get("run").map(strings).unwrap_or_default(),
     };
     names

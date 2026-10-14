@@ -3,7 +3,7 @@
 
 use argonauts_core::ErrorCategory;
 use argonauts_core::driver::DriverStop;
-use argonauts_core::registry::harness::ErrorPattern;
+use argonauts_core::registry::cli::ErrorPattern;
 use regex::Regex;
 
 use crate::rpc::RpcError;

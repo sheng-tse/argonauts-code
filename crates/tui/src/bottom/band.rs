@@ -14,22 +14,22 @@ use std::time::{Duration, Instant};
 use argonauts_core::api::{UsagePeriod, UsageSummary};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::context::ContextDetail;
-use argonauts_core::settings::ui::{WhenQuestion, WidgetName};
+use argonauts_core::settings::ui::{ModName, WhenQuestion};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::{Line, Span};
 use time::OffsetDateTime;
 
+use crate::kit::{ContextCard, Form, Frame, Kit, Toggle, side_by_side, spread};
 use crate::overview::{StatusCards, UsageCards, UsageWatch};
 use crate::render::RenderCtx;
 use crate::text::{spans_width, truncate_spans};
 use crate::theme::Role;
-use crate::widgets::{ContextCard, Form, Frame, Kit, Toggle, side_by_side, spread};
 
 use cards::{BandCard, Sources};
 
 pub use cards::PinnedRun;
 
-/// What the mode line says while the band has the keys.
+/// What the bottom line says while the band has the keys.
 pub const BAND_KEYS: &str =
     "tab next · - fold · enter open · p unpin · [ ] move · , settings · esc for the input";
 
@@ -39,18 +39,18 @@ pub enum BandEvent {
     Moved,
     /// Fold the mod to its line, or open it again.
     Fold {
-        name: WidgetName,
+        name: ModName,
         open: bool,
     },
-    /// Open the mod's tab of the Overview.
-    Open(WidgetName),
-    Unpin(WidgetName),
+    /// Open the mod's tab of the usage panel.
+    Open(ModName),
+    Unpin(ModName),
     /// One place toward the top, or toward the input.
     Move {
-        name: WidgetName,
+        name: ModName,
         up: bool,
     },
-    Settings(WidgetName),
+    Settings(ModName),
     /// Esc gave the keys back to the input.
     Leave,
     /// Tab went past the last mod, to whatever comes next above the input.
@@ -61,9 +61,9 @@ pub enum BandEvent {
 #[derive(Debug, Clone)]
 pub struct Band {
     /// `ui.above_input.mods`, top to bottom.
-    pub mods: Vec<WidgetName>,
+    pub mods: Vec<ModName>,
     /// The mods folded to their line, `ui.mods.<name>.open = false`.
-    pub folded: Vec<WidgetName>,
+    pub folded: Vec<ModName>,
     /// `ui.above_input.shown`.
     pub shown: bool,
     /// Ctrl+X Ctrl+A hid it, for this session.
@@ -83,11 +83,11 @@ pub struct Band {
     /// The conversation's context, or the fullest session's, for the context mod.
     pub context: Option<ContextCard>,
     /// The mods set to half the width, `ui.mods.<name>.width = "half"`.
-    pub halves: Vec<WidgetName>,
+    pub halves: Vec<ModName>,
     /// From this width two half-width neighbours share a row. 0 never.
     pub side_by_side_at: usize,
     /// Each mod's own key, as written, such as `ctrl+x q`, for its folded line.
-    pub keys: Vec<(WidgetName, String)>,
+    pub keys: Vec<(ModName, String)>,
     /// How long a change of height waits before it lands, `ui.above_input.settle`.
     pub settle: Duration,
     /// The pinned mod that has the keys, by its place among those drawn.
@@ -145,7 +145,7 @@ struct Held {
 }
 
 impl Settling {
-    /// What to draw now: `fresh`, or the rows held while their height differs from it and
+    /// What to draw now: `fresh`, or the rows held while their height is different from it and
     /// `settle` hasn't passed. Held rows that no longer fit `room` give way at once.
     fn land(
         &self,
@@ -200,7 +200,7 @@ impl Band {
 
     /// The pinned mods this band draws now, in order: those it knows by name that have
     /// something to show.
-    fn pinned(&self) -> Vec<(WidgetName, BandCard)> {
+    fn pinned(&self) -> Vec<(ModName, BandCard)> {
         let sources = self.sources();
         self.mods
             .iter()
@@ -211,7 +211,7 @@ impl Band {
 
     /// A pinned mod draws the usage numbers, so they must be asked for.
     fn wants_usage(&self) -> bool {
-        let usage = |name: &WidgetName| {
+        let usage = |name: &ModName| {
             matches!(
                 BandCard::of(*name),
                 Some(BandCard::Usage(_) | BandCard::Stats)
@@ -224,7 +224,7 @@ impl Band {
     /// `mods/stats.toml` sets, so a tab that showed another period leaves the card as it was.
     fn period(&self, usage: &UsageSummary) -> UsagePeriod {
         match &usage.stats {
-            Some(stats) if self.line_stats || self.mods.contains(&WidgetName::Stats) => {
+            Some(stats) if self.line_stats || self.mods.contains(&ModName::Stats) => {
                 stats.settings.period.usage()
             }
             _ => usage.period,
@@ -232,7 +232,7 @@ impl Band {
     }
 
     /// Whether `name` is pinned, for what keeps its numbers fresh.
-    pub fn pins(&self, name: WidgetName) -> bool {
+    pub fn pins(&self, name: ModName) -> bool {
         self.shown && self.mods.contains(&name)
     }
 
@@ -398,7 +398,7 @@ impl Band {
         &self,
         kit: &Kit<'_>,
         cards: &Sources<'_>,
-        pinned: &[(WidgetName, BandCard)],
+        pinned: &[(ModName, BandCard)],
         forms: &[Form],
         width: usize,
     ) -> Vec<Line<'static>> {
@@ -441,7 +441,7 @@ impl Band {
     /// enough for two.
     fn shares_a_row(
         &self,
-        pinned: &[(WidgetName, BandCard)],
+        pinned: &[(ModName, BandCard)],
         forms: &[Form],
         at: usize,
         width: usize,
@@ -455,7 +455,7 @@ impl Band {
         self.side_by_side_at > 0 && width >= self.side_by_side_at && half(at) && half(at + 1)
     }
 
-    fn key_of(&self, name: WidgetName) -> Option<&str> {
+    fn key_of(&self, name: ModName) -> Option<&str> {
         self.keys
             .iter()
             .find(|(mod_name, _)| *mod_name == name)
@@ -467,7 +467,7 @@ impl Band {
         &self,
         kit: &Kit<'_>,
         cards: &Sources<'_>,
-        pinned: &[(WidgetName, BandCard)],
+        pinned: &[(ModName, BandCard)],
         width: usize,
     ) -> Line<'static> {
         let count = match pinned.len() {
@@ -493,7 +493,7 @@ fn folded_line(
     active: bool,
     width: usize,
 ) -> Vec<Span<'static>> {
-    let mark = if active { Role::Card } else { Role::Dim };
+    let mark = if active { Role::Question } else { Role::Dim };
     let mut right = Vec::new();
     if let Some(key) = key {
         right.push(kit.dim(format!("{key}  ")));

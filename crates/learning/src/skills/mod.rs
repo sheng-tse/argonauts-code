@@ -1,5 +1,5 @@
-//! Skills: a proven recipe turned into step-by-step instructions one agent can follow without
-//! the crew, in `.agents/skills/<name>/SKILL.md` and linked into `.claude/skills/<name>`.
+//! Skills: a proven learned workflow turned into step-by-step instructions one agent can follow
+//! without the crew, in `.agents/skills/<name>/SKILL.md` and linked into `.claude/skills/<name>`.
 //!
 //! Skills are instructions every later session follows, so an export or an import is only ever
 //! a proposal: a branch that waits for you. The frontmatter has the Agent Skills spec's six
@@ -21,7 +21,7 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::error::{LearningError, Result};
 use crate::git::{self, Entry};
-use crate::recipes::LoadedRecipe;
+use crate::learned_workflows::LoadedLearnedWorkflow;
 use crate::scan::{Finding, scan};
 use crate::store::{CLAUDE_SKILLS_DIR, SKILLS_DIR, Store};
 
@@ -29,7 +29,7 @@ pub use document::{MAX_COMPATIBILITY, MAX_DESCRIPTION, MAX_NAME};
 pub use import::without_credentials;
 
 /// The metadata keys an export writes, all strings.
-pub const META_RECIPE: &str = "argonauts-workflow";
+pub const META_LEARNED_WORKFLOW: &str = "argonauts-workflow";
 pub const META_VERSION: &str = "argonauts-workflow-version";
 /// The SHA-256 of the exported body, which drift checks compare.
 pub const META_SHA256: &str = "argonauts-sha256";
@@ -62,10 +62,11 @@ pub struct Skill {
     pub body: String,
 }
 
-/// Turns a recipe's steps, checklists, and gates into instructions. Refuses when the result
-/// would carry a secret, hidden text, or a path under a home folder, or would break the spec.
-pub fn export(recipe: &LoadedRecipe) -> Result<Skill> {
-    export::export(recipe)
+/// Turns a learned workflow's steps, checklists, and checks into instructions. Refuses when the
+/// result would carry a secret, hidden text, or a path under a home folder, or would break the
+/// spec.
+pub fn export(learned_workflow: &LoadedLearnedWorkflow) -> Result<Skill> {
+    export::export(learned_workflow)
 }
 
 /// The `SKILL.md` text: the six fields in the spec's order, flat `metadata` with the body's
@@ -104,10 +105,14 @@ pub struct Proposal {
     pub pr_command: Vec<String>,
 }
 
-/// Exports `recipe` onto `argonauts/skills/<name>`, with the `.claude/skills` link when
+/// Exports `learned_workflow` onto `argonauts/skills/<name>`, with the `.claude/skills` link when
 /// `skills.claude_link` is on.
-pub fn propose_export(store: &Store, recipe: &LoadedRecipe, claude_link: bool) -> Result<Proposal> {
-    let skill = export(recipe)?;
+pub fn propose_export(
+    store: &Store,
+    learned_workflow: &LoadedLearnedWorkflow,
+    claude_link: bool,
+) -> Result<Proposal> {
+    let skill = export(learned_workflow)?;
     let name = skill.frontmatter.name.clone();
     let entries = skill_entries(
         &name,
@@ -115,7 +120,7 @@ pub fn propose_export(store: &Store, recipe: &LoadedRecipe, claude_link: bool) -
         claude_link,
     );
     let branch = format!("argonauts/skills/{name}");
-    let version = recipe.recipe.version;
+    let version = learned_workflow.learned_workflow.version;
     let title = format!("Export the {name} workflow as a skill");
     let commit = git::commit_on_branch(
         &store.repo_root,
@@ -140,7 +145,7 @@ pub fn propose_export(store: &Store, recipe: &LoadedRecipe, claude_link: bool) -
         ".\n\nA skill is instructions every later session follows, so it waits for you. It \
          passed the Agent Skills validator and the secret scan.\n\n",
     );
-    for note in harness_notes(None) {
+    for note in cli_notes(None) {
         let _ = writeln!(description, "- {note}");
     }
     let paths = entries.iter().map(|(path, _)| path.clone()).collect();
@@ -153,9 +158,9 @@ pub fn propose_export(store: &Store, recipe: &LoadedRecipe, claude_link: bool) -
     })
 }
 
-/// How other agents come to read an exported skill. Argonauts never edits their config, so
+/// How other agents come to read an exported skill. Argonauts Code never edits their config, so
 /// these are for you to act on. With `repo`, the Hermes line names the command to run.
-pub fn harness_notes(repo: Option<&Path>) -> Vec<String> {
+pub fn cli_notes(repo: Option<&Path>) -> Vec<String> {
     let hermes = match repo {
         Some(repo) => format!(
             "Hermes reads it once you run `hermes skills trust {}`.",
@@ -166,7 +171,7 @@ pub fn harness_notes(repo: Option<&Path>) -> Vec<String> {
     vec![
         hermes,
         "OpenClaw sees it only when this repository is its agent's workspace.".to_owned(),
-        "Argonauts never edits either tool's config.".to_owned(),
+        "Argonauts Code never edits either tool's config.".to_owned(),
     ]
 }
 
@@ -388,7 +393,8 @@ pub fn drift(store: &Store) -> Result<Vec<Drift>> {
     Ok(drifted)
 }
 
-/// Every skill in `.agents/skills`, for `/skills`: name, description, the recipe it came from.
+/// Every skill in `.agents/skills`, for `/skills`: name, description, the learned workflow it came
+/// from.
 pub fn list(store: &Store) -> Result<Vec<Skill>> {
     let mut skills: Vec<Skill> = skill_files(store)?
         .into_iter()

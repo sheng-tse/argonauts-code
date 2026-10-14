@@ -1,0 +1,5 @@
+name  = "ablate-fixed-roles"
+about = "Fixed workers, no router"
+
+[routing]
+algorithm = "fixed"

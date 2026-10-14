@@ -48,7 +48,7 @@ fn diff<'b>(a: &Buffer, b: &'b Buffer) -> Vec<Command<'b>> {
         let row = &b.content[start..start + width];
         let bg = row.last().map_or(Color::Reset, |cell| cell.bg);
 
-        // The rightmost column that still matters: a glyph, a background that differs from the
+        // The rightmost column that still matters: a glyph, a background that is different from the
         // row's trailing one, a modifier, or a forced update. Wide glyphs count their whole
         // width. Everything after it is cleared with one erase.
         let mut last_column = 0usize;

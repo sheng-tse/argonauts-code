@@ -1,7 +1,7 @@
-//! `/agents add <name>`: sets up one more agent Argonauts can use. A CLI with a profile, such
+//! `/agents add <name>`: sets up one more agent Argonauts Code can use. A CLI with a profile, such
 //! as Hermes or OpenCode, is checked (its version and login, and how to install it when it's
 //! missing) and turned on. Ollama is looked for at its address and turned on as a local
-//! endpoint. OpenClaw is pointed at `/connect`, and any other name gets the `[[harness]]` entry
+//! endpoint. OpenClaw is pointed at `/connect`, and any other name gets the `[[cli]]` entry
 //! it needs.
 
 use std::path::Path;
@@ -161,14 +161,14 @@ async fn ollama(ctx: &mut Ctx) -> Handled {
     }))])
 }
 
-/// OpenClaw's ACP bridge runs its tools outside the card's sandbox, so it drives Argonauts
+/// OpenClaw's ACP bridge runs its tools outside the task's sandbox, so it drives Argonauts Code
 /// instead of joining the crew.
 fn openclaw(ctx: &mut Ctx) -> Vec<Effect> {
     ctx.send(AppEvent::Report {
         title: "OpenClaw can't join the crew".to_owned(),
         lines: vec![
             "`openclaw acp` runs its tools in OpenClaw's Gateway, outside the task's worktree \
-             and Argonauts' sandbox, so no profile runs it."
+             and Argonauts Code's sandbox, so no profile runs it."
                 .to_owned(),
             "/connect openclaw lets OpenClaw start and watch your runs over MCP instead."
                 .to_owned(),
@@ -179,23 +179,19 @@ fn openclaw(ctx: &mut Ctx) -> Vec<Effect> {
 
 /// A CLI with no profile: where it is, and the entry that would run it.
 fn own_cli(ctx: &mut Ctx, name: &str) {
-    let found = argonauts_conductor::quota::find_unsandboxed(name, None).ok();
+    let found = argonauts_conductor::plan_usage::find_unsandboxed(name, None).ok();
     let file = ctx.env.paths.global_models();
     let mut lines = vec![match &found {
         Some(path) => format!("{name} is at {}.", path.display()),
         None => format!("{name} isn't on your PATH yet."),
     }];
     lines.push(format!(
-        "Argonauts runs a CLI with no profile through a [[harness]] entry in {}. For an ACP \
+        "Argonauts Code runs a CLI with no profile through a [[cli]] entry in {}. For an ACP \
          agent, start from this:",
         ctx.env.display(&file)
     ));
     lines.push(String::new());
-    lines.extend(
-        harness_entry(name, found.as_deref())
-            .lines()
-            .map(str::to_owned),
-    );
+    lines.extend(cli_entry(name, found.as_deref()).lines().map(str::to_owned));
     lines.push(String::new());
     lines.push(format!(
         "Then /agents add {name} checks it and turns it on."
@@ -211,33 +207,33 @@ fn own_cli(ctx: &mut Ctx, name: &str) {
 }
 
 /// The least an ACP agent's entry claims; conformance pins the rest.
-fn harness_entry(name: &str, binary: Option<&Path>) -> String {
+fn cli_entry(name: &str, binary: Option<&Path>) -> String {
     let binary = binary.map_or_else(
         || format!("/absolute/path/to/{name}"),
         |path| path.display().to_string(),
     );
     format!(
-        r#"[[harness]]
+        r#"[[cli]]
 id = "{name}"
 display_name = "{name}"
 binary = "{binary}"
 version_args = ["--version"]
 tested_versions = []
-family = "from-model"
+provider = "from-model"
 transport = "acp"
 read_only_args = ["acp"]
 build_args = ["acp"]
 interactive_resume = []
 
-[harness.acp]
-modes = {{ read_only = "default", build = "default", spike = "default" }}
+[cli.acp]
+modes = {{ read_only = "default", build = "default", experiment = "default" }}
 model = "none"
 effort = "none"
 report = "final-prompt"
 resume = "none"
 steer = "cancel-and-prompt"
 usage = ["end-turn"]
-quota = "none""#
+plan_usage = "none""#
     )
 }
 
@@ -255,8 +251,8 @@ mod tests {
     use argonauts_core::input::{AgentsAction, SlashCommand};
     use argonauts_core::registry::RegistryFile;
 
-    use super::harness_entry;
-    use crate::controller::test_support::{Harness, HarnessOptions};
+    use super::cli_entry;
+    use crate::controller::test_support::{CliOptions, TestDriver};
 
     fn add(name: &str) -> UiCommand {
         UiCommand::Slash {
@@ -268,8 +264,8 @@ mod tests {
         }
     }
 
-    async fn report(harness: &mut Harness, title: &str) -> Vec<String> {
-        let event = harness
+    async fn report(driver: &mut TestDriver, title: &str) -> Vec<String> {
+        let event = driver
             .until(|event| matches!(event, AppEvent::Report { title: t, .. } if t.contains(title)))
             .await;
         match event {
@@ -278,8 +274,8 @@ mod tests {
         }
     }
 
-    async fn scope_question(harness: &mut Harness) -> String {
-        let event = harness
+    async fn scope_question(driver: &mut TestDriver) -> String {
+        let event = driver
             .until(|event| matches!(event, AppEvent::Choice { .. }))
             .await;
         match event {
@@ -290,15 +286,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_hermes_says_how_to_install_it_and_turns_it_on() {
-        let mut harness = Harness::start_with(HarnessOptions {
+        let mut driver = TestDriver::start_with(CliOptions {
             flags: vec![r#"agents.hermes.binary="/nowhere/hermes""#.to_owned()],
-            ..HarnessOptions::default()
+            ..CliOptions::default()
         })
         .await;
-        harness.send(add("Hermes")).await;
-        let asked = scope_question(&mut harness).await;
+        driver.send(add("Hermes")).await;
+        let asked = scope_question(&mut driver).await;
         assert!(asked.contains("agents.hermes.enabled"), "{asked}");
-        let lines = report(&mut harness, "Adding Hermes").await;
+        let lines = report(&mut driver, "Adding Hermes").await;
         assert!(
             lines[0].starts_with("Hermes Agent · not installed"),
             "{lines:?}"
@@ -308,20 +304,20 @@ mod tests {
             "{lines:?}"
         );
         assert!(lines.last().unwrap().contains("Turning it on"), "{lines:?}");
-        harness.exit().await;
+        driver.exit().await;
     }
 
     #[tokio::test]
     async fn a_cli_that_is_on_already_asks_nothing() {
-        let mut harness = Harness::start_with(HarnessOptions {
+        let mut driver = TestDriver::start_with(CliOptions {
             flags: vec![r#"agents.opencode.binary="/nowhere/opencode""#.to_owned()],
-            ..HarnessOptions::default()
+            ..CliOptions::default()
         })
         .await;
-        harness.send(add("opencode")).await;
-        let lines = report(&mut harness, "Adding OpenCode").await;
+        driver.send(add("opencode")).await;
+        let lines = report(&mut driver, "Adding OpenCode").await;
         assert_eq!(lines.last().map(String::as_str), Some("It's on already."));
-        let events = harness.exit().await;
+        let events = driver.exit().await;
         assert!(
             !events
                 .iter()
@@ -332,47 +328,47 @@ mod tests {
 
     #[tokio::test]
     async fn ollama_that_isnt_running_says_how_to_start_it() {
-        let mut harness = Harness::start_with(HarnessOptions {
+        let mut driver = TestDriver::start_with(CliOptions {
             flags: vec![r#"endpoints.ollama.base_url="http://127.0.0.1:9/v1""#.to_owned()],
-            ..HarnessOptions::default()
+            ..CliOptions::default()
         })
         .await;
-        harness.send(add("ollama")).await;
-        let lines = report(&mut harness, "Adding Ollama").await;
+        driver.send(add("ollama")).await;
+        let lines = report(&mut driver, "Adding Ollama").await;
         assert_eq!(lines[0], "Ollama isn't answering at http://127.0.0.1:9/v1.");
         assert!(lines[1].contains("ollama serve"), "{lines:?}");
-        let asked = scope_question(&mut harness).await;
+        let asked = scope_question(&mut driver).await;
         assert!(asked.contains("endpoints.ollama.local"), "{asked}");
-        harness.exit().await;
+        driver.exit().await;
     }
 
     #[tokio::test]
     async fn openclaw_is_pointed_at_connect() {
-        let mut harness = Harness::start().await;
-        harness.send(add("openclaw")).await;
-        let lines = report(&mut harness, "OpenClaw").await;
+        let mut driver = TestDriver::start().await;
+        driver.send(add("openclaw")).await;
+        let lines = report(&mut driver, "OpenClaw").await;
         assert!(lines[1].contains("/connect openclaw"), "{lines:?}");
-        harness.exit().await;
+        driver.exit().await;
     }
 
     #[tokio::test]
     async fn an_unknown_cli_gets_the_entry_it_needs() {
-        let mut harness = Harness::start().await;
-        harness.send(add("no-such-cli-here")).await;
-        let lines = report(&mut harness, "No profile for no-such-cli-here").await;
+        let mut driver = TestDriver::start().await;
+        driver.send(add("no-such-cli-here")).await;
+        let lines = report(&mut driver, "No profile for no-such-cli-here").await;
         assert_eq!(lines[0], "no-such-cli-here isn't on your PATH yet.");
         assert!(
             lines.contains(&r#"id = "no-such-cli-here""#.to_owned()),
             "{lines:?}"
         );
-        harness.exit().await;
+        driver.exit().await;
     }
 
     #[test]
     fn the_suggested_entry_is_one_the_registry_accepts() {
-        let text = harness_entry("my-agent", Some(std::path::Path::new("/opt/bin/my-agent")));
+        let text = cli_entry("my-agent", Some(std::path::Path::new("/opt/bin/my-agent")));
         let file: RegistryFile = toml::from_str(&text).unwrap();
-        let check = argonauts_registry::harnesses::check_manifest(&file.harnesses[0], None);
+        let check = argonauts_registry::clis::check_manifest(&file.clis[0], None);
         assert!(check.is_ok(), "{:?}", check.errors);
     }
 }

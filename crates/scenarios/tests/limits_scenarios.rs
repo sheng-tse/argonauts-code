@@ -1,5 +1,5 @@
 //! The limits scenarios' own checks, which run now: every fake script parses, renders with its
-//! reset times, and names fixtures that exist, and the sandbox probe reports each attempt.
+//! reset times, and names fixtures that exist, and the sandbox probe reports each try.
 
 mod limits_support;
 
@@ -63,7 +63,7 @@ fn every_limits_scenario_renders_with_real_fixtures() {
 }
 
 #[test]
-fn the_sandbox_probe_reports_each_attempt() {
+fn the_sandbox_probe_reports_each_try() {
     let dir = tempfile::tempdir().unwrap();
     let readable = dir.path().join("readable.txt");
     fs::write(&readable, "x").unwrap();

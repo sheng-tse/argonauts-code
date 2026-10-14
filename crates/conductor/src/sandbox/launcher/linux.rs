@@ -2,8 +2,8 @@
 //! proxy connector outside, enter new user, mount, and (without network) network namespaces,
 //! build the view with the session's own `/dev/pts` and `/dev/shm`, bring up loopback and the
 //! relay, then start a PID namespace whose first process mounts its own `/proc`, applies
-//! Landlock (and, without network, a filter that refuses Unix sockets), and starts the harness.
-//! This process stays outside as the session's leader and ends the way the harness does.
+//! Landlock (and, without network, a filter that refuses Unix sockets), and starts the CLI.
+//! This process stays outside as the session's head and ends the way the CLI does.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -17,7 +17,7 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use argonauts_core::worker::{SandboxMode, SandboxProfile};
+use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
 use landlock::{
     ABI, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
     RulesetCreatedAttr, RulesetStatus, Scope,
@@ -86,7 +86,7 @@ pub(super) fn launch(
     build(&view, &sources)?;
     drop(sources);
     private_devices()?;
-    // The old folder handle still points below the covers, where `..` leads to what they hide.
+    // The old folder handle still points below the covers, where `..` reaches what they hide.
     std::env::set_current_dir(&cwd)
         .map_err(|err| format!("can't enter {} in the sandbox: {err}", cwd.display()))?;
     if isolate {
@@ -102,7 +102,7 @@ pub(super) fn launch(
     if isolate {
         refuse_unix_sockets()?;
     }
-    run_harness(report, &program, &args)
+    run_cli(report, &program, &args)
 }
 
 /// Whether this kernel has the Landlock the sandbox needs, or exactly why not.
@@ -423,7 +423,7 @@ fn build(view: &View, sources: &HashMap<PathBuf, File>) -> Result<(), String> {
     let result = view.steps.iter().try_for_each(|step| match step {
         Step::Create { .. } => Ok(()),
         Step::HideDir { path, pass } => {
-            // Walkable but not listable, even by its owner.
+            // Walkable but not listable, even by the user it belongs to.
             let mode = if *pass { "0111" } else { "0000" };
             mount(
                 Some("tmpfs"),
@@ -544,7 +544,8 @@ fn private_devices() -> Result<(), String> {
             Some("newinstance,ptmxmode=0666,mode=0620"),
         )
         .map_err(|err| format!("can't give the session its own /dev/pts: {err}"))?;
-        // Where `/dev/ptmx` is a link to `pts/ptmx`, as containers make it, it leads there already.
+        // Where `/dev/ptmx` is a link to `pts/ptmx`, as containers make it, it points there
+        // already.
         let ptmx = Path::new("/dev/ptmx");
         if std::fs::symlink_metadata(ptmx).is_ok_and(|meta| !meta.file_type().is_symlink()) {
             bind(&pts.join("ptmx"), ptmx, false)
@@ -576,7 +577,7 @@ fn private_devices() -> Result<(), String> {
 
 /// Starts the session's PID namespace, where its processes see and signal only each other and
 /// read no other process's environment. Returns in the namespace's first process, holding where
-/// to report how the harness ended. This process stays outside as the session's leader.
+/// to report how the CLI ended. This process stays outside as the session's head.
 fn enter_pid_namespace() -> Result<OwnedFd, String> {
     unshare(CloneFlags::CLONE_NEWPID).map_err(|errno| namespace_reason(4, errno))?;
     let (read_end, write_end) = nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC)
@@ -585,18 +586,18 @@ fn enter_pid_namespace() -> Result<OwnedFd, String> {
     match unsafe { fork() } {
         Ok(ForkResult::Child) => {
             drop(read_end);
-            // Its parent is outside the namespace, so `getppid` can't tell whether the leader
+            // Its parent is outside the namespace, so `getppid` can't tell whether the head
             // died before the signal was armed. A closed pipe can.
-            let leader_alive =
+            let head_alive =
                 nix::sys::prctl::set_pdeathsig(Signal::SIGKILL).is_ok() && !reader_gone(&write_end);
-            if !leader_alive {
+            if !head_alive {
                 std::process::exit(LAUNCH_FAILED);
             }
             Ok(write_end)
         }
         Ok(ForkResult::Parent { child }) => {
             drop(write_end);
-            lead(child, read_end)
+            main_agent(child, read_end)
         }
         Err(err) => Err(format!("can't start the session's processes: {err}")),
     }
@@ -614,11 +615,11 @@ fn reader_gone(fd: &OwnedFd) -> bool {
     ready > 0 && poll.revents & libc::POLLERR != 0
 }
 
-/// The session's leader, outside its PID namespace: waits for the namespace's first process and
-/// ends as the harness did, so the conductor sees the harness's own exit. The signals the
-/// conductor sends the session's process group reach the harness directly, so the leader only
-/// has to outlive them.
-fn lead(first: Pid, report: OwnedFd) -> ! {
+/// The session's head, outside its PID namespace: waits for the namespace's first process and
+/// ends as the CLI did, so Argonauts Code sees the CLI's own exit. The signals Argonauts
+/// Code sends the session's process group reach the CLI directly, so the head only has to
+/// outlive them.
+fn main_agent(first: Pid, report: OwnedFd) -> ! {
     for signal in [Signal::SIGINT, Signal::SIGTERM, Signal::SIGHUP] {
         // SAFETY: ignoring a signal installs no handler.
         let _ = unsafe { nix::sys::signal::signal(signal, SigHandler::SigIgn) };
@@ -644,10 +645,10 @@ fn lead(first: Pid, report: OwnedFd) -> ! {
 const EXITED: u8 = 0;
 const SIGNALED: u8 = 1;
 
-/// Ends this process by `signal`, as the harness ended, or with the shell's `128 + signal` when
+/// Ends this process by `signal`, as the CLI ended, or with the shell's `128 + signal` when
 /// the signal won't end it.
 fn die_by(signal: i32) -> ! {
-    // A core file would land in the worktree.
+    // A core file would be written into the worktree.
     let no_core = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
@@ -677,11 +678,11 @@ fn mount_proc() -> Result<(), String> {
     .map_err(|errno| namespace_reason(5, errno))
 }
 
-/// The PID namespace's first process: starts the harness, reaps whatever ends up orphaned here,
-/// and when the harness ends, reports how and exits, which ends everything left in the namespace.
-fn run_harness(report: OwnedFd, program: &Path, args: &[OsString]) -> Result<Infallible, String> {
+/// The PID namespace's first process: starts the CLI, reaps whatever ends up orphaned here,
+/// and when the CLI ends, reports how and exits, which ends everything left in the namespace.
+fn run_cli(report: OwnedFd, program: &Path, args: &[OsString]) -> Result<Infallible, String> {
     // SAFETY: this process is single-threaded, so the child may run ordinary code.
-    let harness = match unsafe { fork() } {
+    let cli = match unsafe { fork() } {
         Ok(ForkResult::Child) => {
             drop(report);
             let err = std::process::Command::new(program).args(args).exec();
@@ -696,8 +697,8 @@ fn run_harness(report: OwnedFd, program: &Path, args: &[OsString]) -> Result<Inf
     };
     let (kind, value) = loop {
         match waitpid(None::<Pid>, None) {
-            Ok(WaitStatus::Exited(pid, code)) if pid == harness => break (EXITED, code),
-            Ok(WaitStatus::Signaled(pid, signal, _)) if pid == harness => {
+            Ok(WaitStatus::Exited(pid, code)) if pid == cli => break (EXITED, code),
+            Ok(WaitStatus::Signaled(pid, signal, _)) if pid == cli => {
                 break (SIGNALED, signal as i32);
             }
             Ok(_) | Err(Errno::EINTR) => {}
@@ -781,8 +782,8 @@ fn start_relay(ctl: UnixStream, proxies: &[SocketAddr]) -> Result<(), String> {
     }
 }
 
-/// A helper dies with the harness it serves, and keeps none of its input or output open, so the
-/// conductor sees the harness's output end when the harness does.
+/// A helper dies with the CLI it serves, and keeps none of its input or output open, so
+/// Argonauts Code sees the CLI's output end when the CLI does.
 fn helper_setup(parent: Pid) {
     if nix::sys::prctl::set_pdeathsig(Signal::SIGKILL).is_err() || getppid() != parent {
         std::process::exit(0);
@@ -795,7 +796,7 @@ fn helper_setup(parent: Pid) {
     }
 }
 
-/// The namespace's capabilities stay behind. A user's harness would lose them at exec anyway,
+/// The namespace's capabilities stay behind. A user's CLI would lose them at exec anyway,
 /// but root keeps them across exec unless told not to, and with them could open the covers.
 fn drop_capabilities() -> Result<(), String> {
     const SECBIT_NOROOT: libc::c_ulong = 1 << 0;
@@ -890,10 +891,10 @@ fn restrict(writable: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
-/// Without network a session opens no Unix socket, as the vendors' own sandboxes have it. Yours
+/// Without network a session opens no Unix socket, as the agents' own sandboxes have it. Yours
 /// sit in temp and `/run/user` (tmux, D-Bus, an editor's), where a connection could run work
 /// outside the sandbox, and Landlock can't tell them from the session's own. io_uring goes too,
-/// since it could open one past this filter. Socket pairs, which harnesses use for their
+/// since it could open one past this filter. Socket pairs, which CLIs use for their
 /// children, stay.
 fn refuse_unix_sockets() -> Result<(), String> {
     #[cfg(target_arch = "x86_64")]
@@ -950,7 +951,7 @@ struct SockFprog {
 /// Refuses `socket(AF_UNIX, ..)`, `io_uring_setup`, x32 calls, and calls from any other ABI
 /// with EPERM, and allows the rest. `arch` is the kernel's `AUDIT_ARCH_*` for this one.
 fn unix_socket_filter(arch: u32, has_x32: bool) -> Vec<SockFilter> {
-    /// Where a jump leads: on to the next instruction, or to one of the two returns at the end.
+    /// Where a jump goes: on to the next instruction, or to one of the two returns at the end.
     #[derive(Clone, Copy)]
     enum To {
         Next,
@@ -1010,7 +1011,7 @@ const JGE: u16 = 0x35; // BPF_JMP | BPF_JGE | BPF_K
 const RET: u16 = 0x06; // BPF_RET | BPF_K
 const ALLOW: u32 = 0x7fff_0000; // SECCOMP_RET_ALLOW
 const DENY: u32 = 0x0005_0000 | libc::EPERM as u32; // SECCOMP_RET_ERRNO
-/// Offsets in `struct seccomp_data`. A socket's family is the low half of the first argument.
+/// Offsets in `struct seccomp_data`. A socket's domain is the low half of the first argument.
 const NR_AT: u32 = 0;
 const ARCH_AT: u32 = 4;
 const FIRST_ARG_AT: u32 = 16;
@@ -1060,7 +1061,7 @@ pub(super) fn run_bridge(
 }
 
 /// Inside a container: listens at each proxy's address, carries each connection to the bridge's
-/// socket, and becomes the harness.
+/// socket, and becomes the CLI.
 pub(super) fn run_relay(
     dir: &Path,
     proxies: &[SocketAddr],

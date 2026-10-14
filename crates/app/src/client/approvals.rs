@@ -3,12 +3,12 @@
 
 use std::sync::Arc;
 
-use argonauts_core::CardId;
 use argonauts_core::RunId;
-use argonauts_core::api::{ApiError, Approvals, CheckpointAnswer, TakeOverTicket};
+use argonauts_core::TaskId;
+use argonauts_core::api::{ApiError, ApprovalAnswer, Approvals, TakeOverTicket};
 use argonauts_core::control::ControlRequest;
 use argonauts_core::future::BoxFuture;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{ApprovalMode, Presence};
 use argonauts_registry::resolve;
@@ -98,7 +98,7 @@ pub(crate) fn approving_settings(env: &AppEnv) -> Result<Settings, String> {
 }
 
 impl Approvals for AppApprovals {
-    fn answer(&self, run: &RunId, answer: CheckpointAnswer) -> BoxFuture<'_, Result<(), ApiError>> {
+    fn answer(&self, run: &RunId, answer: ApprovalAnswer) -> BoxFuture<'_, Result<(), ApiError>> {
         let run = run.clone();
         Box::pin(async move {
             self.send(&run, |token| ControlRequest::Answer { answer, token })
@@ -123,15 +123,15 @@ impl Approvals for AppApprovals {
     fn reassign_overriding(
         &self,
         run: &RunId,
-        card: &CardId,
-        to: WorkerRef,
+        task: &TaskId,
+        to: ModelRef,
         rule: String,
     ) -> BoxFuture<'_, Result<(), ApiError>> {
         let run = run.clone();
-        let card = card.clone();
+        let task = task.clone();
         Box::pin(async move {
             self.send(&run, |token| ControlRequest::Reassign {
-                card,
+                task,
                 to,
                 rule_override: Some(rule),
                 token: Some(token),
@@ -144,22 +144,22 @@ impl Approvals for AppApprovals {
     fn take_over(
         &self,
         run: &RunId,
-        card: &CardId,
+        task: &TaskId,
     ) -> BoxFuture<'_, Result<TakeOverTicket, ApiError>> {
         let run = run.clone();
-        let card = card.clone();
+        let task = task.clone();
         Box::pin(async move {
-            self.send(&run, |token| ControlRequest::TakeOver { card, token })
+            self.send(&run, |token| ControlRequest::TakeOver { task, token })
                 .await?
                 .take_over()
         })
     }
 
-    fn take_over_ended(&self, run: &RunId, card: &CardId) -> BoxFuture<'_, Result<(), ApiError>> {
+    fn take_over_ended(&self, run: &RunId, task: &TaskId) -> BoxFuture<'_, Result<(), ApiError>> {
         let run = run.clone();
-        let card = card.clone();
+        let task = task.clone();
         Box::pin(async move {
-            self.send(&run, |token| ControlRequest::TakeOverEnded { card, token })
+            self.send(&run, |token| ControlRequest::TakeOverEnded { task, token })
                 .await?
                 .ok()
         })

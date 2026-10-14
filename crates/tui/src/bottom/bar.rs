@@ -1,59 +1,39 @@
-//! The progress bar the panel's rows share: a colored fill on a grey track, or block glyphs
-//! without color.
+//! The progress bar of a run's row, as Claude Code draws it: a cell for each share of the
+//! agents done, filled in the text color and hollow in dim.
 
-use ratatui::style::Style;
 use ratatui::text::Span;
 
-use crate::theme::{ColorLevel, Role, Theme};
+use crate::theme::{Role, Theme};
 
-/// Claude Code's workflow bar is about this wide.
-pub(super) const BAR_CELLS: usize = 22;
+/// Claude Code's workflow bar is this wide.
+pub(super) const BAR_CELLS: usize = 20;
 
 /// Below this the bar says too little to be worth its columns.
 pub(super) const MIN_BAR_CELLS: usize = 4;
 
-/// `steps` holds done and total. `fill` carries the fill color as its background.
-pub(super) fn bar(
-    steps: Option<(u32, u32)>,
-    cells: usize,
-    fill: Style,
-    theme: &Theme,
-) -> Vec<Span<'static>> {
-    let filled = match steps {
+/// `agents` holds done and total. A cell fills once its whole share is done.
+pub(super) fn bar(agents: Option<(u32, u32)>, cells: usize, theme: &Theme) -> Vec<Span<'static>> {
+    let filled = match agents {
         Some((done, total)) if total > 0 => {
             let done = u64::from(done.min(total));
             (done * cells as u64 / u64::from(total)) as usize
         }
         _ => 0,
     };
-    let track = theme.style(Role::BarTrack);
-    let colored = theme.level != ColorLevel::None && track.bg.is_some() && fill.bg.is_some();
-    let mut spans = Vec::new();
-    if colored {
-        if filled > 0 {
-            spans.push(Span::styled(" ".repeat(filled), fill));
-        }
-        if cells > filled {
-            spans.push(Span::styled(" ".repeat(cells - filled), track));
-        }
+    let (full, hollow) = if theme.glyphs.is_ascii() {
+        (theme.glyphs.bar_fill, theme.glyphs.bar_track)
     } else {
-        if filled > 0 {
-            spans.push(Span::raw(theme.glyphs.bar_fill.repeat(filled)));
-        }
-        if cells > filled {
-            spans.push(Span::styled(
-                theme.glyphs.bar_track.repeat(cells - filled),
-                theme.style(Role::Dim),
-            ));
-        }
+        ("▰", "▱")
+    };
+    let mut spans = Vec::new();
+    if filled > 0 {
+        spans.push(Span::styled(full.repeat(filled), theme.style(Role::Text)));
+    }
+    if cells > filled {
+        spans.push(Span::styled(
+            hollow.repeat(cells - filled),
+            theme.style(Role::Dim),
+        ));
     }
     spans
-}
-
-/// The run row's lavender, the card color, as a fill.
-pub(super) fn run_fill(theme: &Theme) -> Style {
-    theme
-        .style(Role::Card)
-        .fg
-        .map_or_else(Style::new, |color| Style::new().bg(color))
 }

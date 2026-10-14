@@ -1,4 +1,4 @@
-//! The git operations the conductor runs, through the git CLI with hooks, fsmonitor, and commit
+//! The git operations Argonauts Code runs, through the git CLI with hooks, fsmonitor, and commit
 //! signing turned off so nothing in the repository runs code as a side effect.
 
 use std::collections::{BTreeSet, HashMap};
@@ -13,9 +13,14 @@ use argonauts_core::build_output::{BuildOutput, FilePatterns};
 use tokio::process::Command;
 
 mod absorb;
+mod beside;
 mod claimed_ignored;
 mod first_commit;
+mod leftovers;
 mod refs;
+mod your_folder;
+
+pub use your_folder::FolderMerge;
 
 /// Paths per `git rm`, well under any command-line limit.
 const PATHS_PER_CALL: usize = 200;
@@ -49,11 +54,11 @@ const REPOSITORY_ENV: &[&str] = &[
     "GIT_EXTERNAL_DIFF",
 ];
 
-/// Identity used for conductor commits when the user has none configured.
+/// Identity used for Argonauts Code's commits when the user has none configured.
 const FALLBACK_IDENTITY: [(&str, &str); 4] = [
-    ("GIT_AUTHOR_NAME", "Argonauts"),
+    ("GIT_AUTHOR_NAME", "Argonauts Code"),
     ("GIT_AUTHOR_EMAIL", "argonauts@localhost"),
-    ("GIT_COMMITTER_NAME", "Argonauts"),
+    ("GIT_COMMITTER_NAME", "Argonauts Code"),
     ("GIT_COMMITTER_EMAIL", "argonauts@localhost"),
 ];
 
@@ -231,9 +236,9 @@ impl Claims {
 }
 
 /// Makes `dir` an empty repository of its own, with no template and so no hooks, unless it is
-/// one already. A harness that looks upward for its project's files then stops at `dir`
+/// one already. A CLI that looks upward for its project's files then stops at `dir`
 /// instead of walking into folders its sandbox closes: OpenCode over ACP refused to start a
-/// session in a no-tools scratch folder under Argonauts' home.
+/// session in a no-tools scratch folder under Argonauts Code's home.
 pub fn init_scratch_repo(dir: &Path) -> io::Result<()> {
     if dir.join(".git").exists() {
         return Ok(());
@@ -313,6 +318,13 @@ impl Git {
             build_output: self.build_output.clone(),
             max_new_file: self.max_new_file,
         }
+    }
+
+    /// The hidden history this git was bound to when the run started, for a folder that had
+    /// no git of its own then. It stays the run's history whatever the folder becomes
+    /// meanwhile, such as a repository after a `git init`.
+    pub fn hidden_history(&self) -> Option<&Path> {
+        self.hidden.as_deref().map(|bound| bound.git_dir.as_path())
     }
 
     /// Git that, for calls made in `folder` itself, uses the history at `git_dir` with the
@@ -468,7 +480,7 @@ impl Git {
         Ok(left_out)
     }
 
-    /// Takes the new files `commits` added that a commit of the conductor's could leave out
+    /// Takes the new files `commits` added that a commit of Argonauts Code's could leave out
     /// back out of the index, and leaves them in the tree, where the next commit sorts them
     /// like any file a command left behind: the ones `claims` doesn't cover, and whoever
     /// made them, the ones the leave-out settings name or that are too big. An agent's own
@@ -861,7 +873,7 @@ impl Git {
 
     /// The diff the secret scan reads. Git shows no lines for a binary file, and most build
     /// output is binary, so build output comes after the rest as text: its bytes are scanned
-    /// like any added line instead of stopping the card as unreadable.
+    /// like any added line instead of stopping the task as unreadable.
     pub async fn scan_diff(&self, dir: &Path, from: &str, to: &str) -> Result<String, GitError> {
         let mut rest = vec!["--".to_owned(), ".".to_owned()];
         rest.extend(BuildOutput::pathspecs(true));
@@ -2044,7 +2056,7 @@ mod tests {
         repo.git(&["commit", "-qm", "side"]);
         let side = git.head_commit(&repo.root).await.unwrap().unwrap();
         repo.git(&["checkout", "-q", &base]);
-        repo.git(&["checkout", "-qb", "integration"]);
+        repo.git(&["checkout", "-qb", "merge"]);
         repo.write("main.py", "y = 2\n");
         repo.git(&["add", "main.py"]);
         repo.git(&["commit", "-qm", "main"]);
@@ -2208,7 +2220,8 @@ mod tests {
     /// held the snapshot a run started from. So what's in the way is found by comparing the
     /// files themselves with that snapshot.
     #[tokio::test]
-    async fn before_a_first_commit_only_files_that_differ_from_the_snapshot_are_in_the_way() {
+    async fn before_a_first_commit_only_files_that_are_different_from_the_snapshot_are_in_the_way()
+    {
         let repo = TestRepo::new();
         let git = git();
         repo.write("store.rs", "fn get() {}\n");
@@ -2561,7 +2574,7 @@ mod tests {
             .await
             .unwrap();
         let committed = git
-            .commit_claimed(&repo.root, "the conductor's", Some(&claims))
+            .commit_claimed(&repo.root, "Argonauts Code's", Some(&claims))
             .await
             .unwrap();
         let sha = committed.sha.unwrap();
@@ -2621,7 +2634,7 @@ mod tests {
             .await
             .unwrap();
         let committed = git
-            .commit_claimed(&repo.root, "the conductor's", None)
+            .commit_claimed(&repo.root, "Argonauts Code's", None)
             .await
             .unwrap();
         let sha = committed.sha.unwrap();
@@ -2819,13 +2832,13 @@ mod tests {
         let repo = TestRepo::new();
         let git = git();
         let base = git.head_commit(&repo.root).await.unwrap().unwrap();
-        let tree = repo.dir.path().join("trees/run/card");
-        git.add_worktree(&repo.root, &tree, "argonauts/run/card", &base)
+        let tree = repo.dir.path().join("trees/run/task");
+        git.add_worktree(&repo.root, &tree, "argonauts/run/task", &base)
             .await
             .unwrap();
         assert_eq!(
             git.current_branch(&tree).await.unwrap().as_deref(),
-            Some("argonauts/run/card")
+            Some("argonauts/run/task")
         );
         assert_eq!(git.commit_all(&tree, "nothing").await.unwrap(), None);
 
@@ -2853,7 +2866,7 @@ mod tests {
 
         git.remove_worktree(&repo.root, &tree).await.unwrap();
         assert!(!tree.exists());
-        git.delete_branch(&repo.root, "argonauts/run/card")
+        git.delete_branch(&repo.root, "argonauts/run/task")
             .await
             .unwrap();
         assert!(repo.git(&["branch", "--list", "argonauts/*"]).is_empty());
@@ -2865,7 +2878,7 @@ mod tests {
         let git = git();
         let base = git.head_commit(&repo.root).await.unwrap().unwrap();
         let tree = repo.dir.path().join("tree");
-        git.add_worktree(&repo.root, &tree, "card", &base)
+        git.add_worktree(&repo.root, &tree, "task", &base)
             .await
             .unwrap();
         std::fs::write(tree.join("README.md"), "theirs\n").unwrap();
@@ -2874,7 +2887,7 @@ mod tests {
         repo.git(&["commit", "--quiet", "-am", "ours"]);
 
         let err = git
-            .merge(&repo.root, "card", "Merge task")
+            .merge(&repo.root, "task", "Merge task")
             .await
             .unwrap_err();
         assert!(matches!(err, GitError::Failed { .. }));
@@ -2912,7 +2925,7 @@ mod tests {
         let sha = git().commit_all(&repo.root, "x").await.unwrap().unwrap();
         assert_eq!(
             repo.git(&["log", "-1", "--format=%an <%ae>", &sha]),
-            "Argonauts <argonauts@localhost>"
+            "Argonauts Code <argonauts@localhost>"
         );
     }
 
@@ -2922,7 +2935,7 @@ mod tests {
         let git = git();
         let base = git.head_commit(&repo.root).await.unwrap().unwrap();
         let tree = repo.dir.path().join("tree");
-        git.add_worktree(&repo.root, &tree, "card", &base)
+        git.add_worktree(&repo.root, &tree, "task", &base)
             .await
             .unwrap();
         let git_dir = git.absolute_git_dir(&tree).await.unwrap();
@@ -2937,7 +2950,7 @@ mod tests {
         let fake = tree.join(".fake");
         std::fs::create_dir_all(fake.join("objects")).unwrap();
         std::fs::create_dir_all(fake.join("refs/heads")).unwrap();
-        std::fs::write(fake.join("HEAD"), "ref: refs/heads/card\n").unwrap();
+        std::fs::write(fake.join("HEAD"), "ref: refs/heads/task\n").unwrap();
         std::fs::write(
             fake.join("config"),
             format!(
@@ -2952,11 +2965,11 @@ mod tests {
 
         assert_eq!(
             bound.current_branch(&tree).await.unwrap().as_deref(),
-            Some("card")
+            Some("task")
         );
         let sha = bound.commit_all(&tree, "hello").await.unwrap().unwrap();
         assert!(!marker.exists(), "the fake repository's filter ran");
-        assert_eq!(git.resolve(&repo.root, "card").await.unwrap(), sha);
+        assert_eq!(git.resolve(&repo.root, "task").await.unwrap(), sha);
     }
 
     #[tokio::test]
@@ -2987,16 +3000,16 @@ mod tests {
         let git = git();
         let base = git.head_commit(&repo.root).await.unwrap().unwrap();
         assert_eq!(
-            git.branch_head(&repo.root, "argonauts/r/integration")
+            git.branch_head(&repo.root, "argonauts/r/merged")
                 .await
                 .unwrap(),
             None
         );
-        git.create_branch(&repo.root, "argonauts/r/integration", &base)
+        git.create_branch(&repo.root, "argonauts/r/merged", &base)
             .await
             .unwrap();
         assert_eq!(
-            git.branch_head(&repo.root, "argonauts/r/integration")
+            git.branch_head(&repo.root, "argonauts/r/merged")
                 .await
                 .unwrap()
                 .as_deref(),
@@ -3007,13 +3020,13 @@ mod tests {
             Some("main")
         );
 
-        let tree = repo.dir.path().join("trees/integration");
-        git.add_worktree_on(&repo.root, &tree, "argonauts/r/integration")
+        let tree = repo.dir.path().join("trees/merged");
+        git.add_worktree_on(&repo.root, &tree, "argonauts/r/merged")
             .await
             .unwrap();
         assert_eq!(
             git.current_branch(&tree).await.unwrap().as_deref(),
-            Some("argonauts/r/integration")
+            Some("argonauts/r/merged")
         );
         let admin = git
             .worktree_git_dir(&repo.root, &tree)
@@ -3130,22 +3143,22 @@ mod tests {
         let git = git();
         let base = git.head_commit(&repo.root).await.unwrap().unwrap();
         let tree = repo.dir.path().join("tree");
-        git.add_worktree(&repo.root, &tree, "card", &base)
+        git.add_worktree(&repo.root, &tree, "task", &base)
             .await
             .unwrap();
         std::fs::write(tree.join("a.txt"), "a\n").unwrap();
-        let card = git.commit_all(&tree, "task work").await.unwrap().unwrap();
+        let task = git.commit_all(&tree, "task work").await.unwrap().unwrap();
 
         let MergeOutcome::Merged(merge) = git
-            .merge_no_ff(&repo.root, "card", "Merge task-001")
+            .merge_no_ff(&repo.root, "task", "Merge task-001")
             .await
             .unwrap()
         else {
             panic!("expected a merge");
         };
-        assert_ne!(merge, card, "fast-forwarded");
+        assert_ne!(merge, task, "fast-forwarded");
         let parents = repo.git(&["log", "-1", "--format=%P", &merge]);
-        assert_eq!(parents, format!("{base} {card}"));
+        assert_eq!(parents, format!("{base} {task}"));
         assert_eq!(
             repo.git(&["log", "-1", "--format=%s", &merge]),
             "Merge task-001"
@@ -3158,7 +3171,7 @@ mod tests {
         let git = git();
         let base = git.head_commit(&repo.root).await.unwrap().unwrap();
         let tree = repo.dir.path().join("tree");
-        git.add_worktree(&repo.root, &tree, "card", &base)
+        git.add_worktree(&repo.root, &tree, "task", &base)
             .await
             .unwrap();
         std::fs::write(tree.join("README.md"), "theirs\n").unwrap();
@@ -3168,7 +3181,7 @@ mod tests {
         let head = git.head_commit(&repo.root).await.unwrap().unwrap();
 
         let outcome = git
-            .merge_no_ff(&repo.root, "card", "Merge task")
+            .merge_no_ff(&repo.root, "task", "Merge task")
             .await
             .unwrap();
         assert_eq!(
@@ -3256,13 +3269,13 @@ mod tests {
         let git = git();
         let base = git.head_commit(&repo.root).await.unwrap().unwrap();
         let tree = repo.dir.path().join("tree");
-        git.add_worktree(&repo.root, &tree, "card", &base)
+        git.add_worktree(&repo.root, &tree, "task", &base)
             .await
             .unwrap();
         std::fs::write(tree.join("a.txt"), "a\n").unwrap();
-        let card = git.commit_all(&tree, "card").await.unwrap().unwrap();
+        let task = git.commit_all(&tree, "task").await.unwrap().unwrap();
 
-        let staged = git.merge_staged(&repo.root, "card", false).await.unwrap();
+        let staged = git.merge_staged(&repo.root, "task", false).await.unwrap();
         assert_eq!(staged, StagedMerge::Staged);
         assert!(git.merge_in_progress(&repo.root).await.unwrap());
         assert_eq!(git.head_commit(&repo.root).await.unwrap().unwrap(), base);
@@ -3270,11 +3283,11 @@ mod tests {
         assert!(!git.merge_in_progress(&repo.root).await.unwrap());
         assert!(!repo.root.join("a.txt").exists());
 
-        git.merge_staged(&repo.root, "card", false).await.unwrap();
+        git.merge_staged(&repo.root, "task", false).await.unwrap();
         let merge = git.finish_merge(&repo.root, "Merge task").await.unwrap();
-        assert_eq!(git.parents(&repo.root, &merge).await.unwrap(), [base, card]);
+        assert_eq!(git.parents(&repo.root, &merge).await.unwrap(), [base, task]);
         assert_eq!(
-            git.merge_staged(&repo.root, "card", false).await.unwrap(),
+            git.merge_staged(&repo.root, "task", false).await.unwrap(),
             StagedMerge::UpToDate
         );
         git.abort_merge(&repo.root).await.unwrap();
@@ -3286,7 +3299,7 @@ mod tests {
         let git = git();
         let base = git.head_commit(&repo.root).await.unwrap().unwrap();
         let tree = repo.dir.path().join("tree");
-        git.add_worktree(&repo.root, &tree, "card", &base)
+        git.add_worktree(&repo.root, &tree, "task", &base)
             .await
             .unwrap();
         std::fs::write(tree.join("README.md"), "theirs\n").unwrap();
@@ -3294,11 +3307,11 @@ mod tests {
         repo.write("README.md", "ours\n");
         repo.git(&["commit", "--quiet", "-am", "ours"]);
 
-        let outcome = git.merge_staged(&repo.root, "card", false).await.unwrap();
+        let outcome = git.merge_staged(&repo.root, "task", false).await.unwrap();
         assert_eq!(outcome, StagedMerge::Conflict(vec!["README.md".into()]));
         assert!(!git.merge_in_progress(&repo.root).await.unwrap());
 
-        let outcome = git.merge_staged(&repo.root, "card", true).await.unwrap();
+        let outcome = git.merge_staged(&repo.root, "task", true).await.unwrap();
         assert_eq!(outcome, StagedMerge::Conflict(vec!["README.md".into()]));
         assert!(git.merge_in_progress(&repo.root).await.unwrap());
         repo.write("README.md", "both\n");

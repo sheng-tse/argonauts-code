@@ -9,7 +9,7 @@ use std::time::Duration;
 use argonauts_core::RunId;
 use argonauts_core::api::{EventStream, StartRun};
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::checkpoint::{CheckpointEvent, CheckpointOpened};
+use argonauts_core::events::approval::{ApprovalEvent, ApprovalOpened};
 use argonauts_core::events::run::RunMode;
 use argonauts_core::sanitize::sanitize_for_terminal;
 use rmcp::RoleServer;
@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use tokio::time::Instant;
 
 use super::{UserServer, caps, results};
-use crate::FrontEndOptions;
+use crate::OutsideAgentOptions;
 
 pub const START_RUN: &str = "argonauts_start_run";
 pub const LIST_RUNS: &str = "argonauts_list_runs";
@@ -46,21 +46,21 @@ pub const UNKNOWN_CLIENT: &str = "unknown";
 const HISTORY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What the server tells a client it's for, in its `initialize` answer.
-pub const INSTRUCTIONS: &str = "Start and watch Argonauts runs in this repo. Decisions are made in \
-the Argonauts app; this server can say what's waiting but never answer it.";
+pub const INSTRUCTIONS: &str = "Start and watch Argonauts Code runs in this repo. Decisions are \
+made in the Argonauts Code app; this server can say what's waiting but never answer it.";
 
 /// Why every tool is refused once the repo's trust is revoked while the server runs.
 pub const NOT_TRUSTED: &str = "this repo isn't trusted any more, so this server does nothing; run \
-`argonauts init` here and trust its settings again";
+`argonauts setup` here and trust its settings again";
 
 /// The tools `options` allow: guidance and pause only when `mcp.guidance` and `mcp.pause` say
 /// so.
-pub fn definitions(options: &FrontEndOptions) -> Vec<Tool> {
+pub fn definitions(options: &OutsideAgentOptions) -> Vec<Tool> {
     let mut tools = vec![
         tool(
             START_RUN,
-            "Starts a run in this repo from a request, solo (one agent) or crew. The run waits \
-             for your decisions in the Argonauts app. `settings` takes `key=value` \
+            "Starts a run in this repo from a request, Captain (one agent) or crew. The run waits \
+             for your decisions in the Argonauts Code app. `settings` takes `key=value` \
              overrides; safety settings are refused.",
             json!({
                 "type": "object",
@@ -73,8 +73,8 @@ pub fn definitions(options: &FrontEndOptions) -> Vec<Tool> {
                     },
                     "mode": {
                         "type": "string",
-                        "enum": ["solo", "crew"],
-                        "description": "solo gives the request to one agent; crew plans it and splits it into tasks."
+                        "enum": ["captain", "crew"],
+                        "description": "Captain gives the request to one agent; crew plans it and splits it into tasks."
                     },
                     "settings": {
                         "type": "array",
@@ -153,7 +153,7 @@ pub fn definitions(options: &FrontEndOptions) -> Vec<Tool> {
         tools.push(tool(
             PAUSE_RUN,
             "Pauses a run at its next safe point, or with `now` stops its agents at once and \
-             commits their work. It resumes from the Argonauts app.",
+             commits their work. It resumes from the Argonauts Code app.",
             json!({
                 "type": "object",
                 "properties": {
@@ -203,7 +203,7 @@ pub fn client_name(context: &RequestContext<RoleServer>) -> String {
 }
 
 /// A self-reported name as the journal records it: one line, no control sequences, cut short.
-/// A name that reads as another party, such as "you" or "your rules", gets " (front end)"
+/// A name that reads as another party, such as "you" or "your rules", gets " (outside agent)"
 /// added, so a client can't pass off its guidance as yours.
 pub fn clean_client_name(name: &str) -> String {
     let short = one_short_line(name);
@@ -213,7 +213,7 @@ pub fn clean_client_name(name: &str) -> String {
     if !names_another_party(&short) {
         return short;
     }
-    const MARK: &str = " (front end)";
+    const MARK: &str = " (outside agent)";
     let kept: String = short
         .chars()
         .take(CLIENT_NAME_MAX - MARK.chars().count())
@@ -221,7 +221,7 @@ pub fn clean_client_name(name: &str) -> String {
     format!("{}{MARK}", kept.trim_end())
 }
 
-/// Labels the run log and the narrator give parties other than a front end.
+/// Labels the run log and the narrator give parties other than an outside agent.
 const OTHER_PARTIES: &[&str] = &[
     "you",
     "user",
@@ -232,8 +232,8 @@ const OTHER_PARTIES: &[&str] = &[
     "a setting",
     "setting",
     "config",
-    "the conductor",
-    "conductor",
+    "Argonauts Code",
+    "argonauts-code",
     "argonauts",
     "the narrator",
     "narrator",
@@ -245,7 +245,7 @@ fn names_another_party(name: &str) -> bool {
         .to_lowercase();
     let bare = bare.split_whitespace().collect::<Vec<_>>().join(" ");
     OTHER_PARTIES.contains(&bare.as_str())
-        || ["the approver", "approver", "the front end", "front end"]
+        || ["the judge", "judge", "the outside agent", "outside agent"]
             .iter()
             .any(|label| bare.starts_with(label))
 }
@@ -294,7 +294,7 @@ fn parse<T: DeserializeOwned>(tool: &str, arguments: JsonObject) -> Result<T, St
     if let Some(key) = arguments.keys().find(|key| names_autonomy(key)) {
         return Err(format!(
             "{tool} takes no {} argument. Approval modes and autonomy change only in the \
-             Argonauts app.",
+             Argonauts Code app.",
             quoted(key)
         ));
     }
@@ -382,11 +382,11 @@ struct PauseArgs {
     now: bool,
 }
 
-/// The server's checks come before the daily count, and a start the conductor refuses gives
+/// The server's checks come before the daily count, and a start Argonauts Code refuses gives
 /// its run back, so a refused start doesn't use up a run.
 async fn start_run(
     server: &UserServer,
-    options: &FrontEndOptions,
+    options: &OutsideAgentOptions,
     arguments: JsonObject,
     client: &str,
 ) -> Outcome {
@@ -394,21 +394,23 @@ async fn start_run(
     caps::check_can_start(options)?;
     let request = clean_text(&args.request, "request", REQUEST_MAX)?;
     caps::check_overrides(&args.settings)?;
-    let taken = server.take_front_end_run(options.mcp.runs_per_day).await?;
+    let taken = server
+        .take_outside_agent_run(options.mcp.runs_per_day)
+        .await?;
     let today = taken.today;
     let start = StartRun {
         request,
         mode: args.mode,
         forced: true,
         estimate: None,
-        triage: None,
-        chat_turn: None,
+        captain_or_crew: None,
+        conversation_turn: None,
         continues: None,
         overrides: args.settings,
         include_uncommitted: false,
         main_agent: None,
         approval_mode: None,
-        front_end: Some(client.to_owned()),
+        outside_agent: Some(client.to_owned()),
         instructions: Vec::new(),
         request_settings: Vec::new(),
         required_steps: Vec::new(),
@@ -417,7 +419,7 @@ async fn start_run(
         Ok(handle) => handle,
         Err(err) => {
             let refused = results::api_error(&err);
-            return Err(match server.give_back_front_end_run(taken).await {
+            return Err(match server.give_back_outside_agent_run(taken).await {
                 Ok(()) => refused,
                 Err(give_back) => format!("{refused} (its run wasn't given back: {give_back})"),
             });
@@ -426,16 +428,16 @@ async fn start_run(
     Ok(CallToolResult::structured(json!({
         "run": handle.run.as_str(),
         "started": true,
-        "time_budget": options.mcp.run_limit.0,
-        "front_end_runs_today": today,
-        "front_end_runs_per_day": options.mcp.runs_per_day,
-        "next": format!("Watch it with {RUN_EVENTS}. Its decisions wait in the Argonauts app."),
+        "time_limit": options.mcp.run_limit.0,
+        "outside_agent_runs_today": today,
+        "outside_agent_runs_per_day": options.mcp.runs_per_day,
+        "next": format!("Watch it with {RUN_EVENTS}. Its decisions wait in the Argonauts Code app."),
     })))
 }
 
 async fn list_runs(
     server: &UserServer,
-    options: &FrontEndOptions,
+    options: &OutsideAgentOptions,
     arguments: JsonObject,
 ) -> Outcome {
     let NoArgs {} = parse(LIST_RUNS, arguments)?;
@@ -452,7 +454,7 @@ async fn list_runs(
 
 async fn run_status(
     server: &UserServer,
-    options: &FrontEndOptions,
+    options: &OutsideAgentOptions,
     arguments: JsonObject,
 ) -> Outcome {
     let args: RunArgs = parse(RUN_STATUS, arguments)?;
@@ -480,7 +482,7 @@ async fn run_status(
 /// up to `wait_ms`, for the next live event, and then takes whatever else is ready.
 async fn run_events(
     server: &UserServer,
-    options: &FrontEndOptions,
+    options: &OutsideAgentOptions,
     arguments: JsonObject,
 ) -> Outcome {
     let args: EventArgs = parse(RUN_EVENTS, arguments)?;
@@ -532,7 +534,7 @@ async fn run_events(
 
 async fn request_decision(
     server: &UserServer,
-    options: &FrontEndOptions,
+    options: &OutsideAgentOptions,
     arguments: JsonObject,
 ) -> Outcome {
     let args: RunArgs = parse(REQUEST_DECISION, arguments)?;
@@ -542,35 +544,35 @@ async fn request_decision(
         .subscribe(&run, 0)
         .await
         .map_err(|err| results::api_error(&err))?;
-    let waiting = open_checkpoints(stream).await?;
+    let waiting = open_approvals(stream).await?;
     let (text, fields) = results::decision(&run, &waiting, options.mcp.share);
     let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
     result.structured_content = Some(fields);
     Ok(result)
 }
 
-/// The checkpoints the run's log leaves open: opened and not yet decided or withdrawn.
-async fn open_checkpoints(mut stream: EventStream) -> Result<Vec<CheckpointOpened>, String> {
+/// The approvals the run's log leaves open: opened and not yet decided or withdrawn.
+async fn open_approvals(mut stream: EventStream) -> Result<Vec<ApprovalOpened>, String> {
     let Some(last) = stream.replay_until else {
         return Ok(Vec::new());
     };
     let deadline = Instant::now() + HISTORY_TIMEOUT;
-    let mut open: Vec<CheckpointOpened> = Vec::new();
+    let mut open: Vec<ApprovalOpened> = Vec::new();
     loop {
         let event = match tokio::time::timeout_at(deadline, stream.events.recv()).await {
             Ok(Some(event)) => event,
             Ok(None) => break,
             Err(_) => return Err("reading the run's log took too long; try again".to_owned()),
         };
-        if let RunEventKind::Checkpoint(checkpoint) = event.kind {
-            match checkpoint {
-                CheckpointEvent::Opened(opened) => {
+        if let RunEventKind::Approval(approval) = event.kind {
+            match approval {
+                ApprovalEvent::Opened(opened) => {
                     open.retain(|known| known.id != opened.id);
                     open.push(*opened);
                 }
-                CheckpointEvent::Decided(decided) => open.retain(|known| known.id != decided.id),
-                CheckpointEvent::Withdrawn { id, .. } => open.retain(|known| known.id != id),
-                CheckpointEvent::Checked(_) | CheckpointEvent::SpotCheckQueued { .. } => {}
+                ApprovalEvent::Decided(decided) => open.retain(|known| known.id != decided.id),
+                ApprovalEvent::Withdrawn { id, .. } => open.retain(|known| known.id != id),
+                ApprovalEvent::Checked(_) | ApprovalEvent::SpotCheckQueued { .. } => {}
             }
         }
         if event.seq >= last {
@@ -582,7 +584,7 @@ async fn open_checkpoints(mut stream: EventStream) -> Result<Vec<CheckpointOpene
 
 async fn send_guidance(
     server: &UserServer,
-    options: &FrontEndOptions,
+    options: &OutsideAgentOptions,
     arguments: JsonObject,
     client: &str,
 ) -> Outcome {
@@ -594,7 +596,7 @@ async fn send_guidance(
     let text = clean_text(&args.text, "guidance", GUIDANCE_MAX)?;
     let message = server
         .api()
-        .guidance_from_front_end(&run, text, client.to_owned())
+        .guidance_from_outside_agent(&run, text, client.to_owned())
         .await
         .map_err(|err| results::api_error(&err))?;
     Ok(CallToolResult::structured(json!({
@@ -606,7 +608,7 @@ async fn send_guidance(
 
 async fn pause_run(
     server: &UserServer,
-    options: &FrontEndOptions,
+    options: &OutsideAgentOptions,
     arguments: JsonObject,
     client: &str,
 ) -> Outcome {
@@ -617,14 +619,14 @@ async fn pause_run(
     let run = parse_run(&args.run)?;
     server
         .api()
-        .pause_from_front_end(&run, args.now, client.to_owned())
+        .pause_from_outside_agent(&run, args.now, client.to_owned())
         .await
         .map_err(|err| results::api_error(&err))?;
     Ok(CallToolResult::structured(json!({
         "run": run.as_str(),
         "pausing": true,
         "now": args.now,
-        "next": "It resumes from the Argonauts app.",
+        "next": "It resumes from the Argonauts Code app.",
     })))
 }
 
@@ -633,24 +635,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_client_named_like_another_party_is_marked_as_a_front_end() {
-        for name in [
-            "you",
-            "YOU",
-            " your rules ",
-            "\"You.\"",
-            "the approver claude",
-        ] {
+    fn a_client_named_like_another_party_is_marked_as_a_outside_agent() {
+        for name in ["you", "YOU", " your rules ", "\"You.\"", "the judge claude"] {
             let cleaned = clean_client_name(name);
             assert!(
-                cleaned.ends_with(" (front end)"),
+                cleaned.ends_with(" (outside agent)"),
                 "{name:?} became {cleaned:?}"
             );
         }
         assert_eq!(clean_client_name("OpenClaw"), "OpenClaw");
         assert_eq!(clean_client_name("Your Rules Bot"), "Your Rules Bot");
         assert_eq!(clean_client_name("\n "), UNKNOWN_CLIENT);
-        let long = format!("the front end {}", "x".repeat(100));
+        let long = format!("the outside agent {}", "x".repeat(100));
         assert!(clean_client_name(&long).chars().count() <= CLIENT_NAME_MAX);
     }
 }

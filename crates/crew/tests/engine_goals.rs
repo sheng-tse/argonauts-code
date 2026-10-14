@@ -13,28 +13,28 @@ use anyhow::Context;
 use serde_json::{Value, json};
 
 use argonauts_core::engine::{EngineCommand, EngineExit};
-use argonauts_core::events::card::{CardEvent, IntegrationEvent};
-use argonauts_core::events::checkpoint::{
-    AnswerAction, CheckpointEvent, CheckpointKind, CheckpointOpened, FreeText,
+use argonauts_core::events::approval::{
+    AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, FreeText,
 };
 use argonauts_core::events::goal::{
-    Decider, GoalAction, GoalEvent, GoalStatus, GoalVerdict, LET_THE_LEAD_ANSWER,
-    LET_THE_LEAD_DECIDE,
+    Decider, GoalAction, GoalEvent, GoalStatus, GoalVerdict, LET_THE_MAIN_AGENT_ANSWER,
+    LET_THE_MAIN_AGENT_DECIDE,
 };
-use argonauts_core::events::run::{ParkReason, RunLifecycle, RunMode};
+use argonauts_core::events::run::{RunLifecycle, RunMode, WaitReason};
 use argonauts_core::events::session::SessionEvent;
+use argonauts_core::events::task::{MergeEvent, TaskEvent};
 use argonauts_core::events::workflow::WorkflowEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::goal::GoalDefault;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
+use argonauts_core::session_runner::SessionSpec;
 use argonauts_core::settings::approvals::{Answerer, ApprovalMode};
-use argonauts_core::settings::protocol::{GateCommand, UnderstandWhen};
-use argonauts_core::settings::workflows::LeadDesigns;
+use argonauts_core::settings::protocol::{CheckCommand, UnderstandWhen};
+use argonauts_core::settings::workflows::OrchestratorDesigns;
 use argonauts_core::steps::StepName;
-use argonauts_core::worker::SessionSpec;
 use argonauts_crew::engine::shared::with_git_env;
 use argonauts_crew::goal::pursue::{self, DELIVER, KEEP, KEEP_GOING, STUCK, TURN_INTO_GOAL};
-use argonauts_testkit::{FakeSession, FakeWorker};
+use argonauts_testkit::{FakeRunner, FakeSession};
 use tokio::sync::oneshot;
 
 use support::{Crew, Outcome};
@@ -45,7 +45,7 @@ const FILE: &str = "verbose.txt";
 type Checks = Arc<Mutex<VecDeque<Value>>>;
 
 /// What the crew answers beyond the defaults: Understand's question, tagged `tag` (a detail
-/// when unset), and the lead's brief.
+/// when unset), and the main agent's brief.
 #[derive(Clone, Default)]
 struct Own {
     question: Option<&'static str>,
@@ -69,13 +69,13 @@ fn verdict(state: &str, evidence: &str, missing: &str) -> Value {
     })
 }
 
-/// Two companies' agents in the crew and a third company's installed, gates that pass, and
+/// Two providers' agents in the crew and a third provider's installed, checks that pass, and
 /// the check's answers from `checks`.
 fn crew(checks: Vec<Value>) -> anyhow::Result<(Crew, Checks)> {
     crew_with(checks, Own::default())
 }
 
-/// [`crew`], whose readings differ on a detail that `question` asks about.
+/// [`crew`], whose readings disagree on a detail that `question` asks about.
 fn crew_asking(
     checks: Vec<Value>,
     question: Option<&'static str>,
@@ -93,11 +93,11 @@ fn crew_with(checks: Vec<Value>, own: Own) -> anyhow::Result<(Crew, Checks)> {
     crew_of(checks, own, true)
 }
 
-/// [`crew_with`], with a third company's agent installed or not.
-fn crew_of(checks: Vec<Value>, own: Own, third_company: bool) -> anyhow::Result<(Crew, Checks)> {
+/// [`crew_with`], with a third provider's agent installed or not.
+fn crew_of(checks: Vec<Value>, own: Own, third_provider: bool) -> anyhow::Result<(Crew, Checks)> {
     let mut crew = Crew::new()?;
     crew.settings.divide.contracts_first = false;
-    let passing = |name: &str| GateCommand {
+    let passing = |name: &str| CheckCommand {
         name: name.to_owned(),
         command: vec!["true".to_owned()],
     };
@@ -108,37 +108,37 @@ fn crew_of(checks: Vec<Value>, own: Own, third_company: bool) -> anyhow::Result<
     enlist(
         &mut crew,
         "claude-code/opus",
-        "claude",
+        "anthropic",
         &checks,
         own.clone(),
     );
     let others = Own { brief: None, ..own };
-    enlist(&mut crew, "codex/gpt-x", "gpt", &checks, others);
-    if !third_company {
+    enlist(&mut crew, "codex/gpt-x", "openai", &checks, others);
+    if !third_provider {
         return Ok((crew, checks));
     }
     let shared = checks.clone();
     crew.services.workers.add(
-        FakeWorker::harness("antigravity-cli", "gemini")
-            .with_cheapest_model("gemini-3.6-flash-low")
+        FakeRunner::cli("antigravity-cli", "google")
+            .with_cheapest_model("gemini-3.8-flash-low")
             .respond_with(move |spec| respond(spec, &shared, &Own::default())),
     );
     Ok((crew, checks))
 }
 
-fn enlist(crew: &mut Crew, worker: &str, family: &str, checks: &Checks, own: Own) {
+fn enlist(crew: &mut Crew, worker: &str, provider: &str, checks: &Checks, own: Own) {
     let checks = checks.clone();
     crew.services.workers.add(
-        FakeWorker::harness(worker, family).respond_with(move |spec| respond(spec, &checks, &own)),
+        FakeRunner::cli(worker, provider).respond_with(move |spec| respond(spec, &checks, &own)),
     );
-    let reference: WorkerRef = worker.parse().expect("a worker reference");
+    let reference: ModelRef = worker.parse().expect("a worker reference");
     if crew.settings.crew.is_empty() {
-        crew.settings.main_agent = reference.clone();
+        crew.settings.crew.main = reference.clone();
     }
     crew.settings.crew.add(reference);
 }
 
-/// One card for `FILE`, written when it builds; the scripted checks; an attempt the lead names
+/// One task for `FILE`, written when it builds; the scripted checks; a try the main agent names
 /// `Parse Flag`; approvals that cite the rules; and the smallest valid answer otherwise.
 fn respond(spec: &SessionSpec, checks: &Checks, own: &Own) -> FakeSession {
     let question = own.question;
@@ -146,7 +146,7 @@ fn respond(spec: &SessionSpec, checks: &Checks, own: &Own) -> FakeSession {
         Some(StepName::DesignWorkflow) if own.brief.is_some() => {
             FakeSession::structured(own.brief.clone().unwrap_or_default())
         }
-        Some(StepName::ModelApprover) => FakeSession::structured(json!({
+        Some(StepName::ModelJudge) => FakeSession::structured(json!({
             "verdict": "approve",
             "reasons": ["the evidence meets the rules"],
             "rules_cited": ["R7"]
@@ -162,8 +162,8 @@ fn respond(spec: &SessionSpec, checks: &Checks, own: &Own) -> FakeSession {
         Some(StepName::AnswerQuestions) => FakeSession::structured(json!({
             "answers": [{"n": 1, "option": 0, "why": "the README logs at debug", "needs_user": null}]
         })),
-        Some(StepName::PlanAttempt) => FakeSession::structured(json!({
-            "title": "Parse Flag",
+        Some(StepName::PlanTry) => FakeSession::structured(json!({
+            "name": "Parse Flag",
             "detail": "one worker parses the flag, another provider reviews it",
             "steps": "",
         })),
@@ -172,8 +172,8 @@ fn respond(spec: &SessionSpec, checks: &Checks, own: &Own) -> FakeSession {
                 .expect("the build session writes its file");
             smallest(spec)
         }
-        Some(StepName::PlanToCards) => FakeSession::structured(json!({
-            "cards": [{
+        Some(StepName::PlanToTasks) => FakeSession::structured(json!({
+            "tasks": [{
                 "key": "flag",
                 "title": "Add the --verbose flag",
                 "task": "Add a --verbose flag.",
@@ -184,7 +184,7 @@ fn respond(spec: &SessionSpec, checks: &Checks, own: &Own) -> FakeSession {
                 "criteria": [],
             }]
         })),
-        Some(StepName::Differ) if question.is_some() => FakeSession::structured(json!({
+        Some(StepName::Compare) if question.is_some() => FakeSession::structured(json!({
             "agreements": [],
             "differences": [{
                 "topic": "the log level",
@@ -212,7 +212,7 @@ fn smallest(spec: &SessionSpec) -> FakeSession {
     }
 }
 
-/// Runs to where it parks or finishes with the real policy, which keeps its records in the
+/// Runs to where it waits or finishes with the real policy, which keeps its records in the
 /// repo's state folder.
 async fn run(crew: &Crew) -> anyhow::Result<Outcome> {
     let repo = crew.repo_context()?;
@@ -255,7 +255,7 @@ fn checked(events: &[RunEvent]) -> Vec<(u32, GoalVerdict)> {
     goal_events(events)
         .into_iter()
         .filter_map(|event| match event {
-            GoalEvent::Checked(checked) => Some((checked.attempt, checked.overall)),
+            GoalEvent::Checked(checked) => Some((checked.try_number, checked.overall)),
             _ => None,
         })
         .collect()
@@ -276,7 +276,7 @@ fn answered(events: &[RunEvent]) -> Vec<(String, String, Decider)> {
 }
 
 /// `(label, worker)` of every session that started.
-fn sessions(events: &[RunEvent]) -> Vec<(String, WorkerRef)> {
+fn sessions(events: &[RunEvent]) -> Vec<(String, ModelRef)> {
     events
         .iter()
         .filter_map(|event| match &event.kind {
@@ -289,7 +289,7 @@ fn sessions(events: &[RunEvent]) -> Vec<(String, WorkerRef)> {
         .collect()
 }
 
-/// The phase titles of the newest declaration.
+/// The phase names of the newest declaration.
 fn declared(events: &[RunEvent]) -> Vec<String> {
     events
         .iter()
@@ -299,7 +299,7 @@ fn declared(events: &[RunEvent]) -> Vec<String> {
                 declared
                     .phases
                     .iter()
-                    .map(|phase| phase.title.clone())
+                    .map(|phase| phase.name.clone())
                     .collect(),
             ),
             _ => None,
@@ -307,21 +307,21 @@ fn declared(events: &[RunEvent]) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn landed(events: &[RunEvent]) -> bool {
+fn merged(events: &[RunEvent]) -> bool {
     events.iter().any(|event| {
         matches!(
             event.kind,
-            RunEventKind::Integration(IntegrationEvent::Landed { .. })
+            RunEventKind::Merge(MergeEvent::RunMerged { .. })
         )
     })
 }
 
-fn cards(events: &[RunEvent]) -> Vec<(String, Option<WorkerRef>)> {
+fn tasks(events: &[RunEvent]) -> Vec<(String, Option<ModelRef>)> {
     events
         .iter()
         .filter_map(|event| match &event.kind {
-            RunEventKind::Card(CardEvent::Created(spec)) => {
-                Some((spec.id.to_string(), spec.owner.clone()))
+            RunEventKind::Task(TaskEvent::Created(spec)) => {
+                Some((spec.id.to_string(), spec.worker.clone()))
             }
             _ => None,
         })
@@ -340,18 +340,18 @@ fn finished(outcome: &Outcome) {
 #[tokio::test]
 async fn a_workflow_ends_with_its_final_check_from_another_provider() -> anyhow::Result<()> {
     let (mut crew, _) = crew(vec![met()])?;
-    // A third company reviews, so one that wrote nothing is there to check whoever builds.
+    // A third provider reviews, so one that wrote nothing is there to check whoever builds.
     crew.settings.roles.insert(
         argonauts_core::names::RoleName::Reviewer,
         argonauts_core::settings::roles::RoleSettings {
-            workers: vec!["antigravity-cli".parse()?],
+            models: vec!["antigravity-cli".parse()?],
             ..Default::default()
         },
     );
     let outcome = run(&crew).await?;
     finished(&outcome);
     let events = &outcome.events;
-    assert!(landed(events));
+    assert!(merged(events));
 
     // The Check phase comes right before Merge; nothing else was added.
     let phases = declared(events);
@@ -367,16 +367,16 @@ async fn a_workflow_ends_with_its_final_check_from_another_provider() -> anyhow:
     let checker = sessions(events)
         .into_iter()
         .find(|(label, _)| label == "check:final")
-        .map(|(_, worker)| worker)
+        .map(|(_, model)| model)
         .context("a check:final session")?;
     assert_ne!(
-        checker.worker, "claude-code",
+        checker.agent, "claude-code",
         "the main agent's provider checks only when no other provider wrote nothing"
     );
     assert!(
-        cards(events)
+        tasks(events)
             .iter()
-            .all(|(_, owner)| owner.as_ref() != Some(&checker)),
+            .all(|(_, worker)| worker.as_ref() != Some(&checker)),
         "a task's author checked it"
     );
     // Nobody was asked whether to keep going.
@@ -395,7 +395,7 @@ fn rounds(events: &[RunEvent]) -> Vec<(u32, String)> {
     goal_events(events)
         .into_iter()
         .filter_map(|event| match event {
-            GoalEvent::AttemptStarted {
+            GoalEvent::TryStarted {
                 n,
                 title,
                 task: None,
@@ -423,7 +423,7 @@ fn statuses(events: &[RunEvent]) -> Vec<(GoalStatus, Option<String>)> {
 
 /// A goal you set is a condition around the run: its workflow is round 1, the check decides,
 /// and the orchestrator plans round 2 from what failed. Nobody is asked whether to keep going,
-/// whichever CLI leads.
+/// whichever CLI is the main agent.
 #[tokio::test]
 async fn a_goal_you_set_goes_round_its_workflow_until_it_holds() -> anyhow::Result<()> {
     let (mut crew, checks) = crew(vec![not_yet(), met()])?;
@@ -433,7 +433,7 @@ async fn a_goal_you_set_goes_round_its_workflow_until_it_holds() -> anyhow::Resu
     let outcome = run(&crew).await?;
     finished(&outcome);
     let events = &outcome.events;
-    assert!(landed(events));
+    assert!(merged(events));
 
     // The workflow stays the workflow, its check comes before Merge, and round 2 after it.
     let phases = declared(events);
@@ -532,13 +532,13 @@ async fn a_stuck_goal_changes_approach_once_then_stops_and_says_why() -> anyhow:
         )]
     );
     // The round after the change goes to another provider's model than the one that got stuck.
-    let built = cards(events);
+    let built = tasks(events);
     let third = built
         .iter()
-        .find(|(id, _)| id == "attempt-3")
-        .and_then(|(_, owner)| owner.clone())
+        .find(|(id, _)| id == "try-3")
+        .and_then(|(_, worker)| worker.clone())
         .context("round 3's task")?;
-    assert_ne!(third.worker, "claude-code");
+    assert_ne!(third.agent, "claude-code");
     // It delivers what holds, and no question was opened for you.
     assert_eq!(
         answered(events)
@@ -546,12 +546,12 @@ async fn a_stuck_goal_changes_approach_once_then_stops_and_says_why() -> anyhow:
             .filter(|(question, ..)| question == STUCK)
             .map(|(_, answer, by)| (answer, by))
             .collect::<Vec<_>>(),
-        [(DELIVER.to_owned(), Decider::Lead)]
+        [(DELIVER.to_owned(), Decider::MainAgent)]
     );
     assert!(
         events
             .iter()
-            .all(|event| !matches!(&event.kind, RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) if opened.title == STUCK))
+            .all(|event| !matches!(&event.kind, RunEventKind::Approval(ApprovalEvent::Opened(opened)) if opened.title == STUCK))
     );
     Ok(())
 }
@@ -585,7 +585,7 @@ async fn from_request_makes_the_done_when_list_the_goal() -> anyhow::Result<()> 
     let outcome = run(&crew).await?;
     finished(&outcome);
     let events = &outcome.events;
-    assert!(landed(events));
+    assert!(merged(events));
     assert_eq!(
         checked(events),
         [(1, GoalVerdict::NotYet), (2, GoalVerdict::Met)]
@@ -605,16 +605,16 @@ async fn a_workflow_with_a_criterion_unmet_keeps_going_as_a_goal() -> anyhow::Re
     let outcome = run(&crew).await?;
     finished(&outcome);
     let events = &outcome.events;
-    assert!(landed(events));
+    assert!(merged(events));
     assert_eq!(
         answered(events)
             .into_iter()
             .filter(|(question, ..)| question == KEEP_GOING)
             .map(|(_, answer, by)| (answer, by))
             .collect::<Vec<_>>(),
-        [(KEEP.to_owned(), Decider::Lead)]
+        [(KEEP.to_owned(), Decider::MainAgent)]
     );
-    // The workflow is attempt 1, so the goal's first attempt of its own is attempt 2, added
+    // The workflow is try 1, so the goal's first try of its own is try 2, added
     // after the Check and before Merge.
     let phases = declared(events);
     let check = phases.iter().position(|title| title == "Check");
@@ -634,23 +634,23 @@ async fn a_workflow_with_a_criterion_unmet_keeps_going_as_a_goal() -> anyhow::Re
             _ => None,
         });
     let set = set.context("the goal was set")?;
-    assert_eq!(set.attempts.len(), 1);
+    assert_eq!(set.tries.len(), 1);
     assert_eq!(set.criteria.len(), 1);
     Ok(())
 }
 
-/// The newest open checkpoint.
-fn open(events: &[RunEvent]) -> Option<CheckpointOpened> {
+/// The newest open approval.
+fn open(events: &[RunEvent]) -> Option<ApprovalOpened> {
     let mut open = Vec::new();
     for event in events {
         match &event.kind {
-            RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) => {
+            RunEventKind::Approval(ApprovalEvent::Opened(opened)) => {
                 open.push((**opened).clone());
             }
-            RunEventKind::Checkpoint(CheckpointEvent::Decided(decided)) => {
+            RunEventKind::Approval(ApprovalEvent::Decided(decided)) => {
                 open.retain(|opened| opened.id != decided.id);
             }
-            RunEventKind::Checkpoint(CheckpointEvent::Withdrawn { id, .. }) => {
+            RunEventKind::Approval(ApprovalEvent::Withdrawn { id, .. }) => {
                 open.retain(|opened| &opened.id != id);
             }
             _ => {}
@@ -665,28 +665,29 @@ async fn in_supervised_mode_understand_asks_choose_only_and_you_can_hand_it_over
     let (mut crew, _) = crew_asking(Vec::new(), Some("Which log level?"))?;
     crew.settings.approvals.answers = Some(Answerer::You);
     let outcome = crew.start(RunMode::Crew, "add a --verbose flag").await?;
-    let card = open(&outcome.events).context("Understand's question")?;
-    assert_eq!(card.kind, CheckpointKind::Goal);
-    // Choose-only: the answers, then the lead, and nothing typed.
-    let labels: Vec<&str> = card
+    let asked = open(&outcome.events).context("Understand's question")?;
+    assert_eq!(asked.kind, ApprovalKind::Understand);
+    // Choose-only: the answers, then the main agent, and nothing typed.
+    let labels: Vec<&str> = asked
         .options
         .iter()
         .map(|option| option.label.as_str())
         .collect();
-    assert_eq!(labels, ["debug", "trace", LET_THE_LEAD_DECIDE]);
+    assert_eq!(labels, ["debug", "trace", LET_THE_MAIN_AGENT_DECIDE]);
     assert!(
-        card.options
+        asked
+            .options
             .iter()
             .all(|option| option.action != AnswerAction::Answer)
     );
-    assert_eq!(card.free_text, FreeText::None);
+    assert_eq!(asked.free_text, FreeText::None);
 
-    // Handing it to the lead: it answers, and the go-ahead comes to you.
+    // Handing it to the main agent: it answers, and the go-ahead comes to you.
     let (command, reply) = support::answer(
         &outcome.events,
-        CheckpointKind::Goal,
+        ApprovalKind::Understand,
         AnswerAction::Choose {
-            value: LET_THE_LEAD_DECIDE.to_owned(),
+            value: LET_THE_MAIN_AGENT_DECIDE.to_owned(),
         },
         None,
     )?;
@@ -701,18 +702,21 @@ async fn in_supervised_mode_understand_asks_choose_only_and_you_can_hand_it_over
             .iter()
             .all(|option| option.label != "Approve with edits")
     );
-    let from_lead: Vec<(String, Decider)> = answered(&next.events)
+    let from_main_agent: Vec<(String, Decider)> = answered(&next.events)
         .into_iter()
         .map(|(question, _, by)| (question, by))
         .collect();
-    assert_eq!(from_lead, [("Which log level?".to_owned(), Decider::Lead)]);
+    assert_eq!(
+        from_main_agent,
+        [("Which log level?".to_owned(), Decider::MainAgent)]
+    );
 
-    // "Yes, and let the lead answer" approves the goal and says so in the record.
+    // "Yes, and let the main agent answer" approves the goal and says so in the record.
     let (command, reply) = support::answer(
         &next.events,
-        CheckpointKind::Goal,
+        ApprovalKind::Understand,
         AnswerAction::Choose {
-            value: LET_THE_LEAD_ANSWER.to_owned(),
+            value: LET_THE_MAIN_AGENT_ANSWER.to_owned(),
         },
         None,
     )?;
@@ -726,13 +730,13 @@ async fn in_supervised_mode_understand_asks_choose_only_and_you_can_hand_it_over
     assert!(
         answered(&after.events)
             .iter()
-            .any(|(_, answer, by)| answer == LET_THE_LEAD_ANSWER && *by == Decider::You)
+            .any(|(_, answer, by)| answer == LET_THE_MAIN_AGENT_ANSWER && *by == Decider::You)
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn in_auto_mode_the_lead_answers_understands_question_and_it_is_recorded()
+async fn in_auto_mode_the_main_agent_answers_understands_question_and_it_is_recorded()
 -> anyhow::Result<()> {
     let (crew, _) = crew_asking(vec![met()], Some("Which log level?"))?;
     let outcome = run(&crew).await?;
@@ -743,12 +747,15 @@ async fn in_auto_mode_the_lead_answers_understands_question_and_it_is_recorded()
         .filter(|(question, ..)| question == "Which log level?")
         .map(|(question, _, by)| (question, by))
         .collect();
-    assert_eq!(questions, [("Which log level?".to_owned(), Decider::Lead)]);
-    // No question card opened: the lead answered it, and the approver checked the goal.
+    assert_eq!(
+        questions,
+        [("Which log level?".to_owned(), Decider::MainAgent)]
+    );
+    // No question opened: the main agent answered it, and the judge checked the goal.
     assert!(events.iter().all(|event| !matches!(
         &event.kind,
-        RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
-            if opened.kind == CheckpointKind::Goal && opened.title != "Run this workflow?"
+        RunEventKind::Approval(ApprovalEvent::Opened(opened))
+            if opened.kind == ApprovalKind::Understand && opened.title != "Run this workflow?"
     )));
     Ok(())
 }
@@ -758,14 +765,14 @@ async fn keep_going_asks_you_when_you_answer_the_crews_questions() -> anyhow::Re
     let (mut crew, _) = crew(vec![not_yet()])?;
     crew.settings.approvals.answers = Some(Answerer::You);
     let mut outcome = crew.start(RunMode::Crew, "add a --verbose flag").await?;
-    // Answer each card with its recommended answer until the keep-going card shows.
+    // Answer each question with its recommended answer until the keep-going question shows.
     for _ in 0..8 {
-        let card = open(&outcome.events).context("a task waits")?;
-        if card.title == KEEP_GOING {
-            assert_eq!(card.kind, CheckpointKind::Goal);
-            assert_eq!(card.options[0].label, KEEP);
-            assert!(card.options[0].recommended);
-            assert_eq!(card.free_text, FreeText::None);
+        let question = open(&outcome.events).context("a question waits")?;
+        if question.title == KEEP_GOING {
+            assert_eq!(question.kind, ApprovalKind::Understand);
+            assert_eq!(question.options[0].label, KEEP);
+            assert!(question.options[0].recommended);
+            assert_eq!(question.free_text, FreeText::None);
             return Ok(());
         }
         let (command, reply) = support::recommended(&outcome.events).context("an answer")?;
@@ -778,7 +785,7 @@ async fn keep_going_asks_you_when_you_answer_the_crews_questions() -> anyhow::Re
     )
 }
 
-/// Answers each card that waits with its recommended answer, `commands` going in with the
+/// Answers each question that waits with its recommended answer, `commands` going in with the
 /// first, until the run finishes or `rounds` run out.
 async fn drive(
     crew: &Crew,
@@ -787,7 +794,7 @@ async fn drive(
     rounds: usize,
 ) -> anyhow::Result<Outcome> {
     for _ in 0..rounds {
-        if !matches!(outcome.exit, EngineExit::Parked(_)) {
+        if !matches!(outcome.exit, EngineExit::Waiting(_)) {
             break;
         }
         let Some((command, _reply)) = support::recommended(&outcome.events) else {
@@ -812,7 +819,7 @@ async fn you_can_turn_a_workflow_into_a_goal_while_it_runs() -> anyhow::Result<(
     // No final check of its own: turning it into a goal adds one.
     crew.settings.workflows.final_check = false;
     let outcome = crew.start(RunMode::Crew, "add a --verbose flag").await?;
-    assert!(matches!(outcome.exit, EngineExit::Parked(_)));
+    assert!(matches!(outcome.exit, EngineExit::Waiting(_)));
     assert!(
         !declared(&outcome.events)
             .iter()
@@ -854,22 +861,22 @@ async fn a_run_turned_into_a_goal_while_it_waits_goes_on_where_it_was() -> anyho
     let (mut crew, _) = crew(vec![not_yet(), met()])?;
     crew.settings.workflows.final_check = false;
     let outcome = crew.start(RunMode::Crew, "add a --verbose flag").await?;
-    assert!(matches!(outcome.exit, EngineExit::Parked(_)));
+    assert!(matches!(outcome.exit, EngineExit::Waiting(_)));
 
-    // The command alone wakes the run, which parks again at the same approval.
+    // The command alone wakes the run, which waits again at the same approval.
     let (turn, replied) = goal_command(GoalAction::TurnIntoGoal);
     let waiting = crew.resume(outcome.events.clone(), vec![turn]).await?;
     assert_eq!(replied.await?, Ok(()));
-    assert!(matches!(waiting.exit, EngineExit::Parked(_)));
+    assert!(matches!(waiting.exit, EngineExit::Waiting(_)));
     assert_eq!(
-        open(&waiting.events).map(|card| card.id),
-        open(&outcome.events).map(|card| card.id)
+        open(&waiting.events).map(|asked| asked.id),
+        open(&outcome.events).map(|asked| asked.id)
     );
 
     let done = drive(&crew, waiting, Vec::new(), 8).await?;
     finished(&done);
     let events = &done.events;
-    assert!(landed(events), "{:?}", support::names(events));
+    assert!(merged(events), "{:?}", support::names(events));
     let phases = declared(events);
     let check = phases.iter().position(|title| title == "Check");
     assert_eq!(
@@ -894,7 +901,7 @@ async fn a_goal_stated_on_the_way_is_checked_before_the_merge() -> anyhow::Resul
     let (mut crew, checks) = crew(vec![not_yet(), met()])?;
     crew.settings.workflows.final_check = false;
     let outcome = crew.start(RunMode::Crew, "add a --verbose flag").await?;
-    assert!(matches!(outcome.exit, EngineExit::Parked(_)));
+    assert!(matches!(outcome.exit, EngineExit::Waiting(_)));
     assert!(
         !declared(&outcome.events)
             .iter()
@@ -954,7 +961,7 @@ async fn a_goal_stated_on_the_way_is_checked_before_the_merge() -> anyhow::Resul
 #[tokio::test]
 async fn an_assumption_you_change_is_recorded_and_told_to_the_crew() -> anyhow::Result<()> {
     let (crew, _) = crew_asking(Vec::new(), Some("Which log level?"))?;
-    // In auto the lead answers the question, which becomes assumption 1 once you approve.
+    // In auto the main agent answers the question, which becomes assumption 1 once you approve.
     let outcome = crew.start(RunMode::Crew, "add a --verbose flag").await?;
     let outcome = drive(&crew, outcome, Vec::new(), 1).await?;
     let approved = goal_events(&outcome.events)
@@ -1019,9 +1026,9 @@ async fn a_goal_pauses_with_its_run_and_goes_on_with_it() -> anyhow::Result<()> 
         ..started.clone()
     };
     let (host, sink) = crew.host_over(vec![started, set])?;
-    // Waiting on a card isn't a pause.
-    pursue::on_park(&host, &ParkReason::Checkpoint)?;
-    pursue::on_park(&host, &ParkReason::Paused)?;
+    // Waiting on a question isn't a pause.
+    pursue::on_wait(&host, &WaitReason::Approval)?;
+    pursue::on_wait(&host, &WaitReason::Paused)?;
     pursue::on_resume(&host)?;
     let statuses: Vec<GoalStatus> = goal_events(&sink.events())
         .into_iter()
@@ -1063,7 +1070,7 @@ fn host_with_a_goal(
 }
 
 /// A goal you pause yourself stays paused when its run goes on, until you resume it. A goal a
-/// parked run paused goes on with the run.
+/// waiting run paused goes on with the run.
 #[tokio::test]
 async fn a_goal_you_pause_waits_for_you_to_resume_it() -> anyhow::Result<()> {
     let (crew, _) = crew(Vec::new())?;
@@ -1114,7 +1121,7 @@ async fn a_workflow_files_goal_is_the_runs_goal() -> anyhow::Result<()> {
         .context("the goal")?;
     assert_eq!(goal.objective, "every acceptance test passes");
     assert_eq!(goal.commands, ["cargo test --test acceptance"]);
-    assert_eq!(goal.attempts.len(), 1, "the workflow is round 1");
+    assert_eq!(goal.tries.len(), 1, "the workflow is round 1");
     assert!(host.read(|state| pursue::pursuing(state, host.settings())));
     let said = sink.events().iter().any(|event| match &event.kind {
         RunEventKind::Workflow(WorkflowEvent::Note(note)) => {
@@ -1197,11 +1204,11 @@ async fn a_goals_lines_can_be_rewritten() -> anyhow::Result<()> {
 }
 
 const FIX_THEN_REVIEW: &str = "name: fix-then-review\ndescription: One fix, reviewed in a phase \
-    of its own\nphases:\n  - title: Fix\n    detail: one worker fixes it\n    standard: do\n    \
-    steps:\n      - { kind: checkpoint, checkpoint: goal }\n      - { kind: build, input: goal, \
-    different_family_from: author, label: \"fix:{item}\", review_in: Review }\n  - title: \
+    of its own\nphases:\n  - name: Fix\n    detail: one worker fixes it\n    standard: do\n    \
+    steps:\n      - { kind: approval, approval: understand }\n      - { kind: build, input: goal, \
+    different_provider_from: author, label: \"fix:{item}\", review_in: Review }\n  - name: \
     Review\n    detail: another provider reviews the fix\n    standard: check\n    steps: []\n  \
-    - title: Merge\n    detail: the merge\n    standard: decide\n    steps:\n      - { kind: \
+    - name: Merge\n    detail: the merge\n    standard: decide\n    steps:\n      - { kind: \
     merge, label: \"merge:{branch}\" }\n";
 
 /// A build that shows its reviews in a later phase runs as a pipeline: that phase starts with
@@ -1209,7 +1216,7 @@ const FIX_THEN_REVIEW: &str = "name: fix-then-review\ndescription: One fix, revi
 #[tokio::test]
 async fn a_review_phase_starts_with_its_first_review() -> anyhow::Result<()> {
     let (mut crew, _) = crew(Vec::new())?;
-    crew.settings.phases = argonauts_core::workflow::WorkflowRef::new("fix-then-review");
+    crew.settings.workflow = "fix-then-review".to_owned();
     crew.repo
         .write(".argonauts/workflows/fix-then-review.yaml", FIX_THEN_REVIEW)?;
     let outcome = crew.start(RunMode::Crew, "add a --verbose flag").await?;
@@ -1219,10 +1226,10 @@ async fn a_review_phase_starts_with_its_first_review() -> anyhow::Result<()> {
         .iter()
         .filter_map(|event| match &event.kind {
             RunEventKind::Workflow(WorkflowEvent::PhaseStarted(mark)) => {
-                Some((mark.title.clone(), "started"))
+                Some((mark.name.clone(), "started"))
             }
             RunEventKind::Workflow(WorkflowEvent::PhaseEnded { phase, .. }) => {
-                Some((phase.title.clone(), "ended"))
+                Some((phase.name.clone(), "ended"))
             }
             _ => None,
         })
@@ -1245,10 +1252,11 @@ async fn a_review_phase_starts_with_its_first_review() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// With `understand.when = "lead"`, a lead that skips Understand brings its own open questions
-/// to the card before anything writes.
+/// With `understand.when = "main"`, a main agent that skips Understand brings its own open
+/// questions to you before anything writes.
 #[tokio::test]
-async fn the_leads_own_questions_come_to_the_card_when_it_skips_understand() -> anyhow::Result<()> {
+async fn the_main_agents_own_questions_come_to_you_when_it_skips_understand() -> anyhow::Result<()>
+{
     let mut brief = support::brief(Some("maker-checker"), json!([]), None, "one small fix");
     brief["questions"] = json!([{
         "topic": "Log level",
@@ -1262,32 +1270,32 @@ async fn the_leads_own_questions_come_to_the_card_when_it_skips_understand() -> 
             ..Own::default()
         },
     )?;
-    // The lead runs another example than the preset's, which only "any" lets it do.
-    crew.settings.workflows.lead_designs = LeadDesigns::ANY;
+    // The main agent runs another example than the workflow's, which only "any" lets it do.
+    crew.settings.workflows.orchestrator_designs = OrchestratorDesigns::ANY;
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.understand.when = UnderstandWhen::Main;
     crew.settings.approvals.answers = Some(Answerer::You);
     let outcome = crew.start(RunMode::Crew, "add a --verbose flag").await?;
-    // No readings ran: the solo example's own reading went, and the lead's question waits.
+    // No readings ran: the Captain example's own reading went, and the main agent's question waits.
     assert!(
         !declared(&outcome.events)
             .iter()
             .any(|title| title == "Understand")
     );
-    let card = open(&outcome.events).context("the main agent's question")?;
-    assert_eq!(card.kind, CheckpointKind::Goal);
-    let labels: Vec<&str> = card
+    let question = open(&outcome.events).context("the main agent's question")?;
+    assert_eq!(question.kind, ApprovalKind::Understand);
+    let labels: Vec<&str> = question
         .options
         .iter()
         .map(|option| option.label.as_str())
         .collect();
-    assert_eq!(labels, ["debug", "trace", LET_THE_LEAD_DECIDE]);
-    assert!(card.options[0].recommended);
+    assert_eq!(labels, ["debug", "trace", LET_THE_MAIN_AGENT_DECIDE]);
+    assert!(question.options[0].recommended);
     Ok(())
 }
 
-/// A crew run whose lead designs it from the maker-checker example and asks nothing, with
-/// Understand the lead's to add or off, so nothing reads the request.
+/// A crew run whose main agent designs it from the maker-checker example and asks nothing, with
+/// Understand the main agent's to add or off, so nothing reads the request.
 fn unread(when: UnderstandWhen, yours: bool) -> anyhow::Result<Crew> {
     let brief = support::brief(Some("maker-checker"), json!([]), None, "one small fix");
     let (mut crew, _) = crew_with(
@@ -1297,8 +1305,8 @@ fn unread(when: UnderstandWhen, yours: bool) -> anyhow::Result<Crew> {
             ..Own::default()
         },
     )?;
-    // The lead runs another example than the preset's, which only "any" lets it do.
-    crew.settings.workflows.lead_designs = LeadDesigns::ANY;
+    // The main agent runs another example than the workflow's, which only "any" lets it do.
+    crew.settings.workflows.orchestrator_designs = OrchestratorDesigns::ANY;
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.understand.when = when;
     if yours {
@@ -1328,10 +1336,10 @@ async fn with_nothing_read_a_supervised_run_asks_the_go_ahead_before_it_builds()
     for when in UNREAD {
         let crew = unread(when, true)?;
         let outcome = crew.start(RunMode::Crew, "add a --verbose flag").await?;
-        let card =
+        let asked =
             open(&outcome.events).with_context(|| format!("{when:?}: the go-ahead waits"))?;
-        assert_eq!(card.kind, CheckpointKind::Goal, "{when:?}");
-        assert_eq!(card.title, GO_AHEAD, "{when:?}");
+        assert_eq!(asked.kind, ApprovalKind::Understand, "{when:?}");
+        assert_eq!(asked.title, GO_AHEAD, "{when:?}");
         assert!(
             first(&outcome.events, build_started).is_none(),
             "{when:?}: a build started before the go-ahead"
@@ -1339,7 +1347,7 @@ async fn with_nothing_read_a_supervised_run_asks_the_go_ahead_before_it_builds()
         // Yes runs it, through its check and the merge.
         let after = drive(&crew, outcome, Vec::new(), 8).await?;
         finished(&after);
-        assert!(landed(&after.events), "{when:?}");
+        assert!(merged(&after.events), "{when:?}");
     }
     Ok(())
 }
@@ -1352,7 +1360,7 @@ async fn with_nothing_read_an_auto_run_gets_the_go_ahead_before_it_builds() -> a
         finished(&outcome);
         let events = &outcome.events;
         let asked = first(events, |kind| {
-            matches!(kind, RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
+            matches!(kind, RunEventKind::Approval(ApprovalEvent::Opened(opened))
                 if opened.title == GO_AHEAD)
         })
         .with_context(|| format!("{when:?}: no go-ahead"))?;
@@ -1363,13 +1371,13 @@ async fn with_nothing_read_an_auto_run_gets_the_go_ahead_before_it_builds() -> a
         let built =
             first(events, build_started).with_context(|| format!("{when:?}: nothing built"))?;
         assert!(asked < approved && approved < built, "{when:?}");
-        assert!(landed(events), "{when:?}");
+        assert!(merged(events), "{when:?}");
     }
     Ok(())
 }
 
 #[tokio::test]
-async fn in_auto_mode_the_lead_answers_an_always_ask_question_too() -> anyhow::Result<()> {
+async fn in_auto_mode_the_main_agent_answers_an_always_ask_question_too() -> anyhow::Result<()> {
     let (crew, _) = crew_with(
         vec![met()],
         Own {
@@ -1396,10 +1404,10 @@ async fn in_auto_mode_the_lead_answers_an_always_ask_question_too() -> anyhow::R
         questions,
         [(
             "Which flags does the change cover?".to_owned(),
-            Decider::Lead
+            Decider::MainAgent
         )]
     );
-    assert!(landed(&outcome.events));
+    assert!(merged(&outcome.events));
     Ok(())
 }
 
@@ -1417,17 +1425,17 @@ async fn ask_you_about_keeps_a_topic_yours_in_auto_mode() -> anyhow::Result<()> 
     crew.settings.approvals.ask_you_about = vec!["Security".to_owned()];
     let outcome = run(&crew).await?;
     assert!(
-        matches!(outcome.exit, EngineExit::Parked(_)),
+        matches!(outcome.exit, EngineExit::Waiting(_)),
         "{:?}",
         outcome.exit
     );
-    let card = open(&outcome.events).context("the security question waits for you")?;
-    assert_eq!(card.kind, CheckpointKind::Goal);
+    let asked = open(&outcome.events).context("the security question waits for you")?;
+    assert_eq!(asked.kind, ApprovalKind::Understand);
     assert!(
-        card.title.starts_with("Who may turn on --verbose?")
-            || card.title.starts_with("What should the goal say?"),
+        asked.title.starts_with("Who may turn on --verbose?")
+            || asked.title.starts_with("What should the goal say?"),
         "{}",
-        card.title
+        asked.title
     );
     assert!(
         answered(&outcome.events)
@@ -1444,18 +1452,18 @@ async fn ask_you_about_the_go_ahead_brings_it_to_you_in_auto_mode() -> anyhow::R
     crew.settings.approvals.ask_you_about = vec!["go-ahead".to_owned()];
     let outcome = run(&crew).await?;
     assert!(
-        matches!(outcome.exit, EngineExit::Parked(_)),
+        matches!(outcome.exit, EngineExit::Waiting(_)),
         "{:?}",
         outcome.exit
     );
-    let card = open(&outcome.events).context("the go-ahead waits for you")?;
-    assert_eq!(card.title, "Run this workflow?");
+    let asked = open(&outcome.events).context("the go-ahead waits for you")?;
+    assert_eq!(asked.title, "Run this workflow?");
     assert!(first(&outcome.events, build_started).is_none());
     Ok(())
 }
 
-/// In full auto nothing waits for you, so the go-ahead `approvals.ask_you_about` names is
-/// weighed as full auto weighs it, never kept for you.
+/// In autopilot nothing waits for you, so the go-ahead `approvals.ask_you_about` names is
+/// weighed as autopilot weighs it, never kept for you.
 #[tokio::test]
 async fn ask_you_about_leaves_the_go_ahead_to_autopilot() -> anyhow::Result<()> {
     let mut crew = unread(UnderstandWhen::Main, false)?;
@@ -1466,7 +1474,7 @@ async fn ask_you_about_leaves_the_go_ahead_to_autopilot() -> anyhow::Result<()> 
         .events
         .iter()
         .find_map(|event| match &event.kind {
-            RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
+            RunEventKind::Approval(ApprovalEvent::Opened(opened))
                 if opened.title == "Run this workflow?" =>
             {
                 Some((**opened).clone())
@@ -1492,7 +1500,7 @@ fn step_of(events: &[RunEvent], label: &str) -> Option<argonauts_core::workflow:
 }
 
 #[tokio::test]
-async fn a_cards_agents_go_by_its_item_and_its_review_sits_with_its_build() -> anyhow::Result<()> {
+async fn a_tasks_agents_go_by_its_item_and_its_review_sits_with_its_build() -> anyhow::Result<()> {
     let (mut crew, _) = crew(vec![met()])?;
     crew.settings.divide.predictions = true;
     let outcome = run(&crew).await?;
@@ -1502,7 +1510,7 @@ async fn a_cards_agents_go_by_its_item_and_its_review_sits_with_its_build() -> a
         .into_iter()
         .map(|(label, _)| label)
         .collect();
-    // The planner keyed its card `flag`, titled "Add the --verbose flag".
+    // The planner keyed its task `flag`, titled "Add the --verbose flag".
     for expected in ["build:flag", "review:flag", "predict:flag"] {
         assert!(
             labels.iter().any(|label| label == expected),
@@ -1571,31 +1579,31 @@ async fn a_name_one_of_the_repos_recent_runs_has_takes_a_number() -> anyhow::Res
 
 #[tokio::test]
 async fn no_round_is_checked_by_a_model_that_wrote_it() -> anyhow::Result<()> {
-    // Claude Code leads and Codex is the only other provider, the common setup.
+    // Claude Code is the main agent and Codex is the only other provider, the common setup.
     let (mut crew, _) = crew_of(vec![not_yet(), not_yet(), met()], Own::default(), false)?;
     crew.settings.goal.until = Some(UNTIL.to_owned());
     crew.settings.goal.stuck_after = 2;
-    // With both providers reading the request, no approver is left to approve the goal in
+    // With both providers reading the request, no judge is left to approve the goal in
     // your place; this is about the checks.
     crew.settings.understand.when = UnderstandWhen::Off;
     let outcome = run(&crew).await?;
     let events = &outcome.events;
-    let owners = cards(events);
+    let workers = tasks(events);
     let checkers = sessions(events);
     let mut seen = 0;
     // Round 1 is the workflow, whose tasks are the plan's. Rounds 2 and 3 each build one task.
     for n in 2..=3 {
-        let Some(owner) = owners
+        let Some(worker) = workers
             .iter()
-            .find(|(id, _)| *id == format!("attempt-{n}"))
-            .and_then(|(_, owner)| owner.clone())
+            .find(|(id, _)| *id == format!("try-{n}"))
+            .and_then(|(_, worker)| worker.clone())
         else {
             continue;
         };
         let checker = checkers
             .iter()
             .find(|(label, _)| *label == format!("check:{n}"))
-            .map(|(_, worker)| worker.clone())
+            .map(|(_, model)| model.clone())
             .with_context(|| {
                 format!(
                     "check:{n}: {checkers:?} {:?} {:?} {:?}",
@@ -1604,7 +1612,7 @@ async fn no_round_is_checked_by_a_model_that_wrote_it() -> anyhow::Result<()> {
                     support::names(events)
                 )
             })?;
-        assert_ne!(checker, owner, "round {n} was checked by its own author");
+        assert_ne!(checker, worker, "round {n} was checked by its own author");
         seen += 1;
     }
     // The round after the change of approach went to Codex, and so was checked by the main
@@ -1612,7 +1620,7 @@ async fn no_round_is_checked_by_a_model_that_wrote_it() -> anyhow::Result<()> {
     assert_eq!(
         seen,
         2,
-        "{owners:?} {:?} {:?}",
+        "{workers:?} {:?} {:?}",
         outcome.exit,
         support::names(events)
             .iter()

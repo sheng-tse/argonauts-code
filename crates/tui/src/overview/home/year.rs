@@ -12,9 +12,10 @@ use ratatui::text::Span;
 use time::{Date, Duration};
 
 use super::look::{cli_style, cli_word, model_style, model_word, month_word};
+use crate::kit::{Drawn, Kit, merge};
+use crate::overview::shades::ModelColors;
 use crate::text::truncate_spans;
 use crate::theme::Role;
-use crate::widgets::{Drawn, Kit, merge};
 
 /// Weeks the year shows on a wide screen.
 pub const MOST_WEEKS: usize = 52;
@@ -33,6 +34,7 @@ pub struct Year<'a> {
     pub data: &'a OverviewData,
     pub names: &'a DisplayNames,
     pub colors: YearColors,
+    pub shades: &'a ModelColors<'a>,
 }
 
 impl Year<'_> {
@@ -104,7 +106,7 @@ impl Year<'_> {
                     .map(|model| {
                         let (agent, model) = (&model.agent, model.model.as_deref());
                         (
-                            model_style(kit, self.data, agent, model),
+                            model_style(kit, self.shades, agent, model),
                             model_word(self.names, agent, model),
                         )
                     })
@@ -130,8 +132,8 @@ impl Year<'_> {
         let glyph = SHADES[level.clamp(1, 4) - 1];
         let style = match self.colors {
             YearColors::Cli => cli_style(kit, &day.agent),
-            YearColors::Model => model_style(kit, self.data, &day.agent, day.model.as_deref()),
-            YearColors::One => kit.fg(Role::Card),
+            YearColors::Model => model_style(kit, self.shades, &day.agent, day.model.as_deref()),
+            YearColors::One => kit.fg(Role::Question),
         };
         Span::styled(glyph, style)
     }

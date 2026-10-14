@@ -1,5 +1,5 @@
-//! Hard limits no mode or model overrides: at each decision point, on each card's diff (the
-//! built-in gates, run before the command gates), and on each session's sandbox. When a check
+//! Hard limits no mode or model overrides: at each decision point, on each task's diff (the
+//! built-in checks, run before the command checks), and on each session's sandbox. When a check
 //! can't tell, it reports a violation.
 
 pub mod deps;
@@ -16,20 +16,20 @@ mod tests;
 use std::path::Path;
 use std::sync::Arc;
 
-use argonauts_core::events::card::CardSpec;
+use argonauts_core::events::task::TaskSpec;
 use argonauts_core::policy::{DecisionPoint, EvidencePacket, HardLimit, HardLimits, Violation};
-use argonauts_core::worker::{SessionSpec, WorkerDirectory};
+use argonauts_core::session_runner::{RunnerDirectory, SessionSpec};
 
 use crate::approvals::settings::SettingsSource;
 
 pub struct BuiltinLimits {
     source: SettingsSource,
-    /// Tells a harness session from an endpoint one.
-    workers: Arc<dyn WorkerDirectory>,
+    /// Tells a CLI session from an endpoint one.
+    workers: Arc<dyn RunnerDirectory>,
 }
 
 impl BuiltinLimits {
-    pub fn new(source: SettingsSource, workers: Arc<dyn WorkerDirectory>) -> Self {
+    pub fn new(source: SettingsSource, workers: Arc<dyn RunnerDirectory>) -> Self {
         Self { source, workers }
     }
 }
@@ -44,17 +44,17 @@ impl HardLimits for BuiltinLimits {
         )
     }
 
-    fn check_card_diff(&self, card: &CardSpec, unified_diff: &str) -> Vec<Violation> {
-        self.card_diff(card, unified_diff, None)
+    fn check_task_diff(&self, task: &TaskSpec, unified_diff: &str) -> Vec<Violation> {
+        self.task_diff(task, unified_diff, None)
     }
 
-    fn check_card_tree_diff(
+    fn check_task_tree_diff(
         &self,
-        card: &CardSpec,
+        task: &TaskSpec,
         unified_diff: &str,
         tree: &Path,
     ) -> Vec<Violation> {
-        self.card_diff(card, unified_diff, Some(tree))
+        self.task_diff(task, unified_diff, Some(tree))
     }
 
     fn check_session(&self, spec: &SessionSpec) -> Vec<Violation> {
@@ -63,9 +63,9 @@ impl HardLimits for BuiltinLimits {
 }
 
 impl BuiltinLimits {
-    fn card_diff(
+    fn task_diff(
         &self,
-        card: &CardSpec,
+        task: &TaskSpec,
         unified_diff: &str,
         tree: Option<&Path>,
     ) -> Vec<Violation> {
@@ -74,13 +74,13 @@ impl BuiltinLimits {
             Ok(changes) => changes,
             Err(err) => {
                 return vec![violation(
-                    HardLimit::GatesFailed,
+                    HardLimit::ChecksFailed,
                     format!("the task's diff can't be read ({err}), so no check can pass"),
                     Vec::new(),
                 )];
             }
         };
-        let mut violations = paths::check(card, &changes, &settings, tree);
+        let mut violations = paths::check(task, &changes, &settings, tree);
         violations.extend(secrets::check(&changes));
         violations.extend(tamper::check(&changes));
         violations.extend(deps::check(&changes, &settings));

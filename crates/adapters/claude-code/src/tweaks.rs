@@ -137,7 +137,7 @@ pub fn native_fanout(setting: NativeFanout) -> LaunchTweak {
     }
 }
 
-/// The session's settings say `disableAllHooks`, which also stops installed plugins' mods. No
+/// The session's settings say `disableAllHooks`, which also stops installed plugins' hooks. No
 /// flag does it: `--safe-mode` also drops CLAUDE.md, skills, and workflows, and `--bare` never
 /// reads your login.
 pub fn user_hooks_off() -> LaunchTweak {
@@ -171,7 +171,7 @@ mod tests {
             model_for("claude-haiku-4-5", listed_200k),
             "claude-haiku-4-5"
         );
-        // Other families have no such name, and a name that says its window is yours.
+        // Other model lines have no such name, and a name that says its window is yours.
         assert_eq!(model_for("haiku", unlisted), "haiku");
         assert_eq!(model_for("claude-fable-5-1", listed_1m), "claude-fable-5-1");
         assert_eq!(model_for("sonnet[1m]", listed_1m), "sonnet[1m]");

@@ -3,7 +3,7 @@
 //! replaces it. The project's folder is read first, then `~/.argonauts/`. Deleting a file goes
 //! back to the built-in.
 //!
-//! A template Argonauts wrote out is a copy until you edit it: it follows the built-in, so a
+//! A template Argonauts Code wrote out is a copy until you edit it: it follows the built-in, so a
 //! newer version's wording isn't held back by a file nobody changed.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,18 +13,19 @@ use std::sync::{PoisonError, RwLock};
 
 use crate::hash::sha256_hex;
 use crate::names::RoleName;
-use crate::prompt_parts::{CrewRole, Readers};
+use crate::prompt_parts::Readers;
+use crate::settings::crew::CrewRole;
 
 /// The project's own folder, in the repository.
 pub const PROJECT_DIR: &str = ".argonauts";
 pub const PROMPTS_DIR: &str = "prompts";
 pub const ROLES_DIR: &str = "roles";
 
-/// One built-in prompt: a role's frame, or Argonauts' own instructions for one step. Your file
-/// `prompts/<id>.md` takes its place.
+/// One built-in prompt: a role's frame, or Argonauts Code's own instructions for one step. Your
+/// file `prompts/<id>.md` takes its place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Template {
-    /// Its file under `prompts/`, without `.md`: `review/review`, `frames/reviewers`.
+    /// Its file under `prompts/`, without `.md`: `review/review`, `frames/reviewer`.
     pub id: &'static str,
     /// The crew role whose agents read it.
     pub role: CrewRole,
@@ -59,8 +60,8 @@ pub struct PromptDirs {
 pub struct YourFile {
     pub text: String,
     pub path: PathBuf,
-    /// The path the screen shows: `roles/reviewers.md` for the project's, and
-    /// `~/.argonauts/roles/reviewers.md` for yours everywhere.
+    /// The path the screen shows: `roles/reviewer.md` for the project's, and
+    /// `~/.argonauts/roles/reviewer.md` for yours everywhere.
     pub shown: String,
 }
 
@@ -116,9 +117,9 @@ impl PromptDirs {
         files
     }
 
-    /// Your template for the prompt `id`, such as `review/review` or `frames/reviewers`. A
+    /// Your template for the prompt `id`, such as `review/review` or `frames/reviewer`. A
     /// missing or blank file is no template, so the built-in is used, and neither is a copy
-    /// Argonauts wrote that you never edited.
+    /// Argonauts Code wrote that you never edited.
     pub fn template(&self, id: &str) -> Option<YourFile> {
         self.places()
             .find_map(|place| place.template(id))
@@ -133,7 +134,7 @@ impl PromptDirs {
     }
 
     /// Your file for `role`: the role's own name first (`roles/critic.md`), then the crew role
-    /// it follows (`roles/reviewers.md`). `Err` says why a file that's there can't be used.
+    /// it follows (`roles/reviewer.md`). `Err` says why a file that's there can't be used.
     pub fn role(&self, role: RoleName) -> Option<Result<RoleFile, String>> {
         let names = [role.as_str(), CrewRole::read_by(role).as_str()];
         self.places().find_map(|place| {
@@ -144,7 +145,7 @@ impl PromptDirs {
         })
     }
 
-    /// Your file under the readers' own name, such as `roles/reviewers.md` for the crew role
+    /// Your file under the readers' own name, such as `roles/reviewer.md` for the crew role
     /// as a whole or `roles/critic.md` for the critic alone.
     pub fn own_role(&self, readers: impl Into<Readers>) -> Option<Result<RoleFile, String>> {
         parse_role_file(self.own_role_file(readers)?).transpose()
@@ -163,7 +164,7 @@ impl PromptDirs {
 
     /// Every file of yours under `folder` (`roles` or `prompts`) in both places, the
     /// project's first, each by its name in the folder without `.md`, such as
-    /// `frames/reviewers`. The README, a copy of a template nobody edited and a file that
+    /// `frames/reviewer`. The README, a copy of a template nobody edited and a file that
     /// waits for your trust aren't among them.
     pub fn files_in(&self, folder: &str) -> Vec<(String, YourFile)> {
         let mut found = Vec::new();
@@ -232,7 +233,7 @@ fn markdown_files(dir: &Path, files: &mut Vec<PathBuf>) {
 }
 
 /// How this process finds your folders, for the few prompts sent from where no run or
-/// repository is at hand: the app's own, the approver's and the narrator's. A program says it
+/// repository is at hand: the app's own, the judge's and the narrator's. A program says it
 /// once when it starts; until then those prompts are the built-in ones.
 type Source = Box<dyn Fn() -> PromptDirs + Send + Sync>;
 
@@ -267,7 +268,7 @@ pub struct Written {
     pub unchanged: usize,
 }
 
-/// What became of one file Argonauts writes out.
+/// What became of one file Argonauts Code writes out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Copied {
     /// Written now, as the built-in has it.
@@ -311,7 +312,7 @@ pub fn write_template(argonauts_dir: &Path, template: &Template) -> io::Result<C
     Ok(copied)
 }
 
-/// What Argonauts wrote into one `prompts/` folder: each file's name with the SHA-256 of the
+/// What Argonauts Code wrote into one `prompts/` folder: each file's name with the SHA-256 of the
 /// text it was given, kept in the folder itself. A file that still holds that text is a copy
 /// nobody edited.
 ///
@@ -346,7 +347,7 @@ impl Copies {
         }
     }
 
-    /// Whether the file `name` still holds what Argonauts wrote.
+    /// Whether the file `name` still holds what Argonauts Code wrote.
     fn holds(&self, name: &str, text: &str) -> bool {
         self.written
             .get(name)
@@ -371,7 +372,7 @@ impl Copies {
                 return Ok(Copied::AsBuiltIn);
             }
             Ok(there) if !self.holds(name, &there) => return Ok(Copied::Yours),
-            // Text that isn't UTF-8 is nothing Argonauts wrote.
+            // Text that isn't UTF-8 is nothing Argonauts Code wrote.
             Err(err) if err.kind() == io::ErrorKind::InvalidData => return Ok(Copied::Yours),
             Ok(_) => {}
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
@@ -415,7 +416,7 @@ fn write_new(path: &Path, text: &str) -> io::Result<bool> {
 
 pub const README_FILE: &str = "README.md";
 
-const README_HEAD: &str = include_str!("prompt_files/about.md");
+const README_HEAD: &str = crate::template!("prompts/README.md");
 
 /// The README beside the templates: how an agent's prompt is put together, then every file
 /// with the role that reads it and what it is.
@@ -427,7 +428,7 @@ pub fn readme(templates: &[Template]) -> String {
         if of_role.is_empty() {
             continue;
         }
-        text.push_str(&format!("\n{}:\n", role.as_str()));
+        text.push_str(&format!("\n{}:\n", role.plural()));
         for template in of_role {
             text.push_str(&format!("- `{}.md`: {}\n", template.id, template.part));
         }
@@ -577,7 +578,7 @@ fn save(path: &Path, text: &str) -> io::Result<()> {
 pub fn role_file_starter(readers: impl Into<Readers>) -> String {
     let readers = readers.into();
     let who = readers.the_agents();
-    // A finer role's file stands in for its crew role's, which is easy to miss.
+    // A finer role's file is read in place of its crew role's, which is easy to miss.
     let alone = match readers {
         Readers::Crew(_) => String::new(),
         Readers::Finer(_) => format!(
@@ -661,24 +662,24 @@ mod tests {
         let dir = repo.path().join(".argonauts");
         let templates = [
             Template {
-                id: "frames/reviewers",
-                role: CrewRole::Reviewers,
+                id: "frames/reviewer",
+                role: CrewRole::Reviewer,
                 part: "frame",
                 text: "You review.\n",
             },
             Template {
                 id: "review/review",
-                role: CrewRole::Reviewers,
+                role: CrewRole::Reviewer,
                 part: "review a change",
                 text: "Review the change.\n",
             },
         ];
         write(dir.join("prompts/review/review.md"), "Mine.\n");
         let done = write_templates(&dir, &templates).unwrap();
-        assert_eq!(done.written, ["frames/reviewers.md"]);
+        assert_eq!(done.written, ["frames/reviewer.md"]);
         assert_eq!(done.kept, ["review/review.md"]);
         let read = |file: &str| std::fs::read_to_string(dir.join("prompts").join(file)).unwrap();
-        assert_eq!(read("frames/reviewers.md"), "You review.\n");
+        assert_eq!(read("frames/reviewer.md"), "You review.\n");
         assert_eq!(read("review/review.md"), "Mine.\n");
         let readme = read("README.md");
         assert!(readme.contains("Nothing is locked"), "{readme}");
@@ -688,9 +689,9 @@ mod tests {
         );
         // What was written is a copy, not a template of yours, and yours still is one.
         let dirs = PromptDirs::new(Some(repo.path()), None);
-        assert_eq!(dirs.template("frames/reviewers"), None);
+        assert_eq!(dirs.template("frames/reviewer"), None);
         assert_eq!(
-            dirs.template_file("frames/reviewers").unwrap().text,
+            dirs.template_file("frames/reviewer").unwrap().text,
             "You review.\n"
         );
         assert_eq!(dirs.template("review/review").unwrap().text, "Mine.\n");
@@ -698,8 +699,8 @@ mod tests {
 
     fn frame(text: &'static str) -> [Template; 1] {
         [Template {
-            id: "frames/reviewers",
-            role: CrewRole::Reviewers,
+            id: "frames/reviewer",
+            role: CrewRole::Reviewer,
             part: "frame",
             text,
         }]
@@ -711,29 +712,29 @@ mod tests {
     fn a_copy_nobody_edited_follows_the_built_in_and_an_edited_one_is_yours() {
         let repo = tempfile::tempdir().unwrap();
         let dir = repo.path().join(".argonauts");
-        let file = dir.join("prompts/frames/reviewers.md");
+        let file = dir.join("prompts/frames/reviewer.md");
         let dirs = PromptDirs::new(Some(repo.path()), None);
         let read = |path: &Path| std::fs::read_to_string(path).unwrap();
 
         let first = write_templates(&dir, &frame("You review.\n")).unwrap();
-        assert_eq!(first.written, ["frames/reviewers.md"]);
+        assert_eq!(first.written, ["frames/reviewer.md"]);
         let again = write_templates(&dir, &frame("You review.\n")).unwrap();
         assert_eq!((again.written.len(), again.unchanged), (0, 1));
 
         // The built-in changed and the copy didn't: the copy is passed over, then caught up.
-        assert_eq!(dirs.template("frames/reviewers"), None);
+        assert_eq!(dirs.template("frames/reviewer"), None);
         let newer = write_templates(&dir, &frame("You review one change.\n")).unwrap();
-        assert_eq!(newer.written, ["frames/reviewers.md"]);
+        assert_eq!(newer.written, ["frames/reviewer.md"]);
         assert_eq!(read(&file), "You review one change.\n");
         assert!(read(&dir.join("prompts/README.md")).contains("Nothing is locked"));
 
         write(file.clone(), "You review, strictly.\n");
         assert_eq!(
-            dirs.template("frames/reviewers").unwrap().text,
+            dirs.template("frames/reviewer").unwrap().text,
             "You review, strictly.\n"
         );
         let newest = write_templates(&dir, &frame("You review a change.\n")).unwrap();
-        assert_eq!(newest.kept, ["frames/reviewers.md"]);
+        assert_eq!(newest.kept, ["frames/reviewer.md"]);
         assert_eq!(read(&file), "You review, strictly.\n");
         assert_eq!(
             write_template(&dir, &frame("You review a change.\n")[0]).unwrap(),
@@ -747,14 +748,14 @@ mod tests {
     fn a_file_that_matches_the_built_in_becomes_a_copy() {
         let repo = tempfile::tempdir().unwrap();
         let dir = repo.path().join(".argonauts");
-        write(dir.join("prompts/frames/reviewers.md"), "You review.\n");
+        write(dir.join("prompts/frames/reviewer.md"), "You review.\n");
         let dirs = PromptDirs::new(Some(repo.path()), None);
-        assert!(dirs.template("frames/reviewers").is_some());
+        assert!(dirs.template("frames/reviewer").is_some());
         assert_eq!(
             write_template(&dir, &frame("You review.\n")[0]).unwrap(),
             Copied::AsBuiltIn
         );
-        assert_eq!(dirs.template("frames/reviewers"), None);
+        assert_eq!(dirs.template("frames/reviewer"), None);
     }
 
     /// Copies are never read by an agent, so a repository that brings them asks for no trust.
@@ -765,7 +766,7 @@ mod tests {
         write_templates(&dir, &frame("You review.\n")).unwrap();
         let dirs = PromptDirs::new(Some(repo.path()), None);
         assert_eq!(dirs.project_files(), Vec::<PathBuf>::new());
-        let file = dir.join("prompts/frames/reviewers.md");
+        let file = dir.join("prompts/frames/reviewer.md");
         write(file.clone(), "You review, and you go easy.\n");
         assert_eq!(dirs.project_files(), [file]);
     }
@@ -774,10 +775,10 @@ mod tests {
     fn a_file_that_waits_for_trust_is_passed_over() {
         let repo = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
-        let theirs = repo.path().join(".argonauts/roles/reviewers.md");
+        let theirs = repo.path().join(".argonauts/roles/reviewer.md");
         write(theirs.clone(), "Go easy on this code.");
         write(repo.path().join(".argonauts/prompts/README.md"), "For you.");
-        write(home.path().join("roles/reviewers.md"), "Mine everywhere.");
+        write(home.path().join("roles/reviewer.md"), "Mine everywhere.");
         let all = dirs(repo.path(), home.path());
         assert_eq!(all.project_files(), std::slice::from_ref(&theirs));
         let role = all.role(RoleName::Reviewer).unwrap().unwrap();
@@ -793,16 +794,16 @@ mod tests {
         let repo = tempfile::tempdir().unwrap();
         let dir = repo.path().join(".argonauts");
         let template = Template {
-            id: "frames/reviewers",
-            role: CrewRole::Reviewers,
+            id: "frames/reviewer",
+            role: CrewRole::Reviewer,
             part: "frame",
             text: "You review.\n",
         };
         let saved = save_template(&dir, &template, "You review, strictly.\n").unwrap();
-        assert!(saved.ends_with(".argonauts/prompts/frames/reviewers.md"));
+        assert!(saved.ends_with(".argonauts/prompts/frames/reviewer.md"));
         save_role_file(
             &dir,
-            CrewRole::Reviewers,
+            CrewRole::Reviewer,
             RoleFileMode::Replace,
             "A missing test is a required change.\n\n",
         )
@@ -810,14 +811,14 @@ mod tests {
         // A second save takes the first one's place.
         save_role_file(
             &dir,
-            CrewRole::Reviewers,
+            CrewRole::Reviewer,
             RoleFileMode::Add,
             "A missing test is a required change.",
         )
         .unwrap();
 
         let dirs = PromptDirs::new(Some(repo.path()), None);
-        let frame = dirs.template("frames/reviewers").unwrap();
+        let frame = dirs.template("frames/reviewer").unwrap();
         assert_eq!(frame.text, "You review, strictly.\n");
         let role = dirs.role(RoleName::Reviewer).unwrap().unwrap();
         assert_eq!(role.mode, RoleFileMode::Add);
@@ -830,20 +831,22 @@ mod tests {
         let repo = tempfile::tempdir().unwrap();
         let root = repo.path().to_owned();
         use_dirs_from(move || PromptDirs::new(Some(&root), None));
-        assert_eq!(in_use("chat/answer", "Built in."), "Built in.");
-        let file = repo.path().join(".argonauts/prompts/chat/answer.md");
+        assert_eq!(in_use("conversation/answer", "Built in."), "Built in.");
+        let file = repo
+            .path()
+            .join(".argonauts/prompts/conversation/answer.md");
         write(file.clone(), "Mine.");
-        assert_eq!(in_use("chat/answer", "Built in."), "Mine.");
+        assert_eq!(in_use("conversation/answer", "Built in."), "Mine.");
         std::fs::remove_file(file).unwrap();
-        assert_eq!(in_use("chat/answer", "Built in."), "Built in.");
+        assert_eq!(in_use("conversation/answer", "Built in."), "Built in.");
     }
 
     #[test]
     fn a_starter_role_file_changes_nothing_until_you_write_in_it() {
         let repo = tempfile::tempdir().unwrap();
         let dir = repo.path().join(".argonauts");
-        assert!(write_role_file(&dir, CrewRole::Reviewers).unwrap());
-        let file = dir.join("roles/reviewers.md");
+        assert!(write_role_file(&dir, CrewRole::Reviewer).unwrap());
+        let file = dir.join("roles/reviewer.md");
         let starter = std::fs::read_to_string(&file).unwrap();
         assert!(
             starter.contains("# Your own instructions for the reviewers."),
@@ -851,17 +854,17 @@ mod tests {
         );
         let dirs = PromptDirs::new(Some(repo.path()), None);
         assert_eq!(dirs.role(RoleName::Reviewer), None);
-        assert_eq!(dirs.own_role(CrewRole::Reviewers), None);
+        assert_eq!(dirs.own_role(CrewRole::Reviewer), None);
 
         // What you write under the dashes is the role's file, and a second starter keeps it.
         std::fs::write(&file, format!("{starter}Check error handling.\n")).unwrap();
-        assert!(!write_role_file(&dir, CrewRole::Reviewers).unwrap());
+        assert!(!write_role_file(&dir, CrewRole::Reviewer).unwrap());
         let role = dirs.role(RoleName::Reviewer).unwrap().unwrap();
         assert_eq!(role.mode, RoleFileMode::Add);
         assert_eq!(role.text, "Check error handling.");
     }
 
-    /// A finer role's file goes by its own name, says whose file it stands in for, and is
+    /// A finer role's file goes by its own name, says whose file it replaces, and is
     /// saved and found apart from its crew role's.
     #[test]
     fn a_finer_role_has_a_file_under_its_own_name() {
@@ -871,7 +874,7 @@ mod tests {
         assert!(write_role_file(&dir, critic).unwrap());
         let starter = std::fs::read_to_string(dir.join("roles/critic.md")).unwrap();
         assert!(
-            starter.contains("the critic role reads it in place of roles/reviewers.md."),
+            starter.contains("the critic role reads it in place of roles/reviewer.md."),
             "{starter}"
         );
         let dirs = PromptDirs::new(Some(repo.path()), None);
@@ -879,7 +882,7 @@ mod tests {
 
         save_role_file(
             &dir,
-            CrewRole::Reviewers,
+            CrewRole::Reviewer,
             RoleFileMode::Add,
             "All reviewers.",
         )
@@ -891,9 +894,9 @@ mod tests {
             (own.mode, own.text.as_str()),
             (RoleFileMode::Replace, "Critics only.")
         );
-        let crew = dirs.own_role(CrewRole::Reviewers).unwrap().unwrap();
+        let crew = dirs.own_role(CrewRole::Reviewer).unwrap().unwrap();
         assert_eq!(crew.text, "All reviewers.");
-        assert_eq!(dirs.own_role(Readers::Finer(RoleName::Adjudicator)), None);
+        assert_eq!(dirs.own_role(Readers::Finer(RoleName::Consultant)), None);
     }
 
     #[test]
@@ -927,7 +930,7 @@ mod tests {
     fn a_role_file_adds_unless_it_says_replace() {
         let repo = tempfile::tempdir().unwrap();
         let dirs = PromptDirs::new(Some(repo.path()), None);
-        let file = repo.path().join(".argonauts/roles/reviewers.md");
+        let file = repo.path().join(".argonauts/roles/reviewer.md");
         write(
             file.clone(),
             "---\nmode: add            # add (default) · replace\n---\nTreat a missing test as a required change.\n",
@@ -935,7 +938,7 @@ mod tests {
         let role = dirs.role(RoleName::Reviewer).unwrap().unwrap();
         assert_eq!(role.mode, RoleFileMode::Add);
         assert_eq!(role.text, "Treat a missing test as a required change.");
-        assert_eq!(role.shown, "roles/reviewers.md");
+        assert_eq!(role.shown, "roles/reviewer.md");
         // The critic follows the reviewers, so it reads their file too.
         assert!(dirs.role(RoleName::Critic).unwrap().is_ok());
         assert_eq!(dirs.role(RoleName::Worker), None);
@@ -955,7 +958,7 @@ mod tests {
         let repo = tempfile::tempdir().unwrap();
         let dirs = PromptDirs::new(Some(repo.path()), None);
         write(
-            repo.path().join(".argonauts/roles/reviewers.md"),
+            repo.path().join(".argonauts/roles/reviewer.md"),
             "All reviewers.",
         );
         write(
@@ -972,7 +975,7 @@ mod tests {
     fn a_role_file_with_a_wrong_key_says_which() {
         let repo = tempfile::tempdir().unwrap();
         let dirs = PromptDirs::new(Some(repo.path()), None);
-        let file = repo.path().join(".argonauts/roles/workers.md");
+        let file = repo.path().join(".argonauts/roles/worker.md");
         write(file.clone(), "---\nmodel: opus\n---\nBuild carefully.\n");
         let err = dirs.role(RoleName::Worker).unwrap().unwrap_err();
         assert!(err.contains("`model` isn't a key"), "{err}");

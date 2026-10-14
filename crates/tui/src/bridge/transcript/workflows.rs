@@ -1,11 +1,12 @@
-//! A crew run's workflow in the chat, as Claude Code prints its own: `● Workflow(<name>)` when
-//! it starts, with the description and the phases it declares, a line when the lead adds a
-//! phase, and `● Workflow(<name>) · done` when it ends, or `· failed` or
-//! `· stopped` as the run ended.
+//! A crew run's workflow in the conversation, as Claude Code prints its own Workflow call:
+//! `● Workflow(<name> · <kind> workflow)` with `Running in background · /workflows to monitor
+//! and save` under it when it starts, a line when the main agent adds a phase, and the same
+//! call with `✔ Completed in 6m 20s · 6 agents · 177k tokens · merged onto main` when it ends,
+//! or `✘ Stopped in` as the run ended.
 //!
 //! A run whose step runs another workflow's steps declares only that they run. Its start item
-//! waits for that workflow's first report, and lists the phases the report names in place of
-//! the step's own, so the chat shows the workflow that runs, as the view does.
+//! waits for that workflow's first report, so the conversation says nothing of a workflow whose
+//! script doesn't exist yet.
 
 use std::time::Duration;
 
@@ -13,12 +14,15 @@ use argonauts_core::RunId;
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::run::{RunOutcome, RunStarted};
 use argonauts_core::events::workflow::{WorkflowDeclared, WorkflowReport};
-use argonauts_core::names::WorkerRef;
+use argonauts_core::hidden_git::MergedInto;
+use argonauts_core::names::ModelRef;
 use argonauts_core::steps::intake::InstructionKind;
 use argonauts_core::text::sentence_case;
 
+use time::OffsetDateTime;
+
 use crate::bottom::WorkflowRowState;
-use crate::cell::{PhaseLine, ToolCall, ToolItem, ToolKind, ToolState};
+use crate::cell::{ToolCall, ToolItem, ToolKind, ToolState, WorkflowEnd, WorkflowResult};
 use crate::format;
 use crate::text::sanitize_line;
 
@@ -49,11 +53,6 @@ pub(super) fn declared(
         .filter(|name| !name.is_empty())
         .unwrap_or(declared.name.trim())
         .to_owned();
-    let description = named
-        .map(|named| named.description.trim())
-        .filter(|text| !text.is_empty())
-        .unwrap_or(declared.description.trim())
-        .to_owned();
     let based_on = named
         .and_then(|named| named.based_on.as_deref())
         .map(str::trim)
@@ -66,15 +65,14 @@ pub(super) fn declared(
         .filter(|in_use| !in_use.is_empty() && *in_use != name)
         .map(|in_use| sentence_case(&sanitize_line(in_use)));
     let start = Start {
-        name: name.clone(),
-        description,
+        name,
         declared: declared.clone(),
         in_use,
         based_on,
         reviewers_asked: story.reviewers_asked.clone(),
     };
     let waits = state.is_some_and(|run| run.reported.expected_from(&declared.id));
-    story.workflow = Some(name);
+    story.workflow = Some(start.title());
     if waits {
         story.workflow_start = Some(start);
     } else {
@@ -97,40 +95,37 @@ pub(super) fn reported(report: &WorkflowReport, story: &mut RunStory, cx: &mut C
     }
 }
 
-/// A run's start item that hasn't printed: what it says, and the phases its workflow declared.
+/// A run's start item that hasn't printed.
 #[derive(Debug)]
 pub(super) struct Start {
     name: String,
-    description: String,
     declared: WorkflowDeclared,
     /// The workflow your settings have in use, when the run goes by another name.
     in_use: Option<String>,
     /// The learned workflow it started from.
     based_on: Option<String>,
-    /// The reviewers your words named, by name, said beside the phases.
+    /// The reviewers your words named, by name.
     reviewers_asked: Option<String>,
 }
 
 impl Start {
-    /// `● Workflow(<name>) · <workflow in use> · ctrl+t to open`, then its phases on one line.
-    /// The description stands in for phases it hasn't named.
+    /// The run's name and what kind of workflow it is, as its view's header says them: `Add
+    /// due dates · orchestrator workflow`.
+    fn title(&self) -> String {
+        let kind = self
+            .based_on
+            .as_deref()
+            .or(self.in_use.as_deref())
+            .map(|kind| format!(" · {} workflow", kind.to_lowercase()));
+        format!("{}{}", sanitize_line(&self.name), kind.unwrap_or_default())
+    }
+
+    /// `● Workflow(<name> · <kind> workflow)`, and under it that it runs in the background and
+    /// what opens it. What your own words asked of it follows on lines of their own.
     fn item(&self, report: Option<&WorkflowReport>) -> ToolCall {
-        let mut tail = String::new();
-        for part in [&self.in_use, &self.based_on].into_iter().flatten() {
-            tail.push_str(" · ");
-            if Some(part) == self.based_on.as_ref() {
-                tail.push_str("started from ");
-            }
-            tail.push_str(part);
-        }
-        tail.push_str(" · ctrl+t to open");
-        let mut call = ToolCall::call(
-            ToolKind::Other,
-            "Workflow",
-            sanitize_line(&self.name).into_owned(),
-        )
-        .with_state(ToolState::Done)
-        .with_tail(tail);
+        let mut call =
+            ToolCall::call(ToolKind::Other, "Workflow", self.title()).with_state(ToolState::Done);
+        call.push(ToolItem::Workflow(WorkflowResult::Running));
         // The size your request asked for, which the orchestrator keeps to.
         if let Some(size) = report.and_then(|report| report.size_asked.as_deref()) {
             call.push(ToolItem::text(format!(
@@ -138,18 +133,8 @@ impl Start {
                 sanitize_line(size)
             )));
         }
-        let phases = phase_lines(&self.declared, report);
-        let beside = self
-            .reviewers_asked
-            .as_ref()
-            .map(|names| format!("reviewers: {names} (you asked)"));
-        if !phases.is_empty() {
-            call.push(match beside {
-                Some(beside) => ToolItem::PhasesBeside { phases, beside },
-                None => ToolItem::Phases(phases),
-            });
-        } else if !self.description.is_empty() {
-            call.push(ToolItem::text(sanitize_line(&self.description)));
+        if let Some(names) = &self.reviewers_asked {
+            call.push(ToolItem::text(format!("reviewers: {names} (you asked)")));
         }
         call
     }
@@ -165,41 +150,16 @@ pub(super) fn reviewers_asked(started: &RunStarted, names: &DisplayNames) -> Opt
     if !asked {
         return None;
     }
-    let reviewers: Vec<String> = started.settings["roles"]["reviewer"]["workers"]
+    let reviewers: Vec<String> = started.settings["roles"]["reviewer"]["models"]
         .as_array()?
         .iter()
-        .filter_map(|worker| worker.as_str()?.parse::<WorkerRef>().ok())
+        .filter_map(|worker| worker.as_str()?.parse::<ModelRef>().ok())
         .map(|worker| names.worker(&names.running(&worker)))
         .collect();
     (!reviewers.is_empty()).then(|| reviewers.join(", "))
 }
 
-/// The phases as the workflow declares them, in its order, each saying whether it is a step
-/// you require. The phases `report` names stand in for the phase whose step runs them.
-fn phase_lines(declared: &WorkflowDeclared, report: Option<&WorkflowReport>) -> Vec<PhaseLine> {
-    let report = report
-        .filter(|report| report.step.workflow == declared.id && !report.workflow.phases.is_empty());
-    let mut lines = Vec::new();
-    for phase in &declared.phases {
-        match report.filter(|report| report.step.phase == phase.index) {
-            Some(report) => {
-                lines.extend(report.workflow.phases.iter().map(|reported| PhaseLine {
-                    title: reported.title.clone(),
-                    detail: reported.detail.clone(),
-                    required: declared.requires_step(&reported.title),
-                }));
-            }
-            None => lines.push(PhaseLine {
-                title: phase.title.clone(),
-                detail: phase.detail.clone(),
-                required: declared.requires(phase),
-            }),
-        }
-    }
-    lines
-}
-
-/// `● The lead changed the workflow · added Fix again`, with why under it.
+/// `● The main agent changed the workflow · added Fix again`, with why under it.
 pub(super) fn phase_added(title: &str, why: &str, story: &RunStory, cx: &mut Cx<'_>) {
     if story.workflow.is_none() || quiet(cx) {
         return;
@@ -219,10 +179,11 @@ pub(super) fn phase_added(title: &str, why: &str, story: &RunStory, cx: &mut Cx<
     emit(cx, call);
 }
 
-/// `● Workflow(<name>) · done`, with its agents, time, tokens, and spend, as Claude Code's
-/// tool call returns, before the run's own end. It ends as the run's panel row does, so a
-/// stopped run's workflow reads `· stopped`, never `· done`. A failed run is one block, "The
-/// run failed", so its workflow adds no row of its own.
+/// `● Workflow(<name> · <kind> workflow)` again, with `✔ Completed in 6m 20s · 6 agents · 177k
+/// tokens` under it as Claude Code's call returns, and how the run ended after them, before
+/// the run's own end. It ends as the run's panel row does, so a stopped run's workflow reads
+/// `✘ Stopped in`, never completed. A failed run is one block, "The run failed", so its workflow
+/// adds no row of its own.
 pub(super) fn done(
     run: &RunId,
     story: &mut RunStory,
@@ -234,88 +195,97 @@ pub(super) fn done(
     if let Some(start) = story.workflow_start.take() {
         emit(cx, start.item(None));
     }
-    let Some(name) = &story.workflow else {
+    let Some(title) = &story.workflow else {
         return;
     };
     if outcome == RunOutcome::Failed {
         return;
     }
-    let mut parts = Vec::new();
+    let mut counts = Vec::new();
+    if let Some(elapsed) = elapsed {
+        counts.push(format::duration(elapsed));
+    }
     if let Some(state) = cx.state.runs.get(run) {
-        parts.push(plural(state.sessions.len(), "agent", "agents"));
-        if let Some(elapsed) = elapsed {
-            parts.push(format::duration(elapsed));
+        // The workflow's agents and tokens, as its view's header and its panel row count them.
+        let totals = crate::bridge::panel::run_totals(state, OffsetDateTime::now_utc());
+        let agents = usize::try_from(totals.agents_total).unwrap_or(usize::MAX);
+        counts.push(plural(agents, "agent", "agents"));
+        if totals.tokens > 0 {
+            counts.push(format!("{} tokens", format::tokens(totals.tokens)));
         }
-        let tokens: u64 = state
-            .sessions
-            .values()
-            .map(|session| session.tokens_out)
-            .sum();
-        if tokens > 0 {
-            parts.push(format!("{} tokens", format::tokens(tokens)));
+        // How it ended, as the run's row in the bottom list says it.
+        match (outcome, state.merged_onto.as_deref()) {
+            (RunOutcome::Merged, Some(target)) => counts.push(MergedInto::of(target).ended()),
+            (RunOutcome::Merged, None) => counts.push("merged".to_owned()),
+            (RunOutcome::PullRequest, _) => counts.push("a pull request is open".to_owned()),
+            (RunOutcome::BranchLeft, _) => counts.push("its branch was kept".to_owned()),
+            (RunOutcome::Stopped, _) => counts.push("/resume carries it on".to_owned()),
+            (RunOutcome::Abandoned | RunOutcome::Failed, _) => {}
         }
-        parts.push(format::spend(&state.spend()));
     }
-    let ended = WorkflowRowState::ended(outcome);
-    let state = match ended {
-        WorkflowRowState::Failed => ToolState::Failed,
-        WorkflowRowState::Stopped => ToolState::Stopped,
-        _ => ToolState::Done,
+    let (how, state) = match WorkflowRowState::ended(outcome) {
+        WorkflowRowState::Failed => (WorkflowEnd::Failed, ToolState::Failed),
+        WorkflowRowState::Stopped => (WorkflowEnd::Stopped, ToolState::Stopped),
+        _ => (WorkflowEnd::Completed, ToolState::Done),
     };
-    let mut call = ToolCall::described(
-        ToolKind::Other,
-        format!("Workflow({}) · {}", sanitize_line(name), ended.word()),
-    )
-    .with_state(state);
-    if !parts.is_empty() {
-        call.push(ToolItem::text(parts.join(" · ")));
-    }
+    let mut call = ToolCall::call(ToolKind::Other, "Workflow", title.clone()).with_state(state);
+    call.push(ToolItem::Workflow(WorkflowResult::Ended {
+        how,
+        counts: counts.join(" · "),
+    }));
     emit(cx, call);
 }
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::workflow::DeclaredPhase;
+    use std::time::Instant;
+
     use argonauts_core::names::WorkflowId;
-    use argonauts_core::workflow::StandardPhase;
 
     use super::*;
+    use crate::cell::HistoryCell;
+    use crate::render::{Clock, RenderCtx};
+    use crate::theme::Role;
+    use crate::views::workflow_pictures::{buffer_of, dark, picture};
 
-    /// The chat lists the phases a workflow declares, whatever they are called and however
-    /// often a name comes, and marks the ones it says you require.
+    fn start() -> Start {
+        Start {
+            name: "Add due dates".to_owned(),
+            declared: WorkflowDeclared {
+                id: WorkflowId::numbered(1),
+                name: "orchestrator".to_owned(),
+                description: String::new(),
+                phases: Vec::new(),
+                required: Vec::new(),
+            },
+            in_use: None,
+            based_on: Some("orchestrator".to_owned()),
+            reviewers_asked: None,
+        }
+    }
+
+    /// The run's two items as their picture draws them, cell for cell: Claude Code's Workflow
+    /// call with where to watch it, then the same call with how it ended.
     #[test]
-    fn the_phases_listed_are_the_workflows_own_with_your_steps_marked() {
-        let titles = ["Draft", "Critique", "Draft", "secrets scan"];
-        let declared = WorkflowDeclared {
-            id: WorkflowId::numbered(1),
-            name: "write-the-paper".into(),
-            description: String::new(),
-            phases: titles
-                .iter()
-                .zip(0..)
-                .map(|(title, index)| DeclaredPhase {
-                    index,
-                    title: (*title).into(),
-                    detail: format!("part {index}"),
-                    standard: StandardPhase::Do,
-                })
-                .collect(),
-            required: vec!["Secrets scan".into()],
-        };
-        let lines = phase_lines(&declared, None);
-        let listed: Vec<(&str, bool)> = lines
-            .iter()
-            .map(|line| (line.title.as_str(), line.required))
-            .collect();
-        assert_eq!(
-            listed,
-            [
-                ("Draft", false),
-                ("Critique", false),
-                ("Draft", false),
-                ("secrets scan", true)
-            ]
-        );
-        assert_eq!(lines[2].detail, "part 2");
+    fn the_workflows_items_read_as_their_picture() {
+        let theme = dark();
+        let ctx = RenderCtx::new(118, &theme, Clock::still(Instant::now()));
+        let mut picture = picture!("workflow_transcript");
+        // Every row of the conversation opens with the theme's bullet, in green once its call
+        // returned. The picture draws Claude Code's own glyph, plain.
+        for row in [0, 3] {
+            picture.reword(row, "⏺", "●");
+            picture.recolour(row, 0, theme.style(Role::Success).fg);
+        }
+        let started = start().item(None);
+        picture.assert_drawn(0..2, &buffer_of(&started.lines(&ctx), 118), 0);
+
+        let mut ended = ToolCall::call(ToolKind::Other, "Workflow", start().title())
+            .with_state(ToolState::Done);
+        ended.push(ToolItem::Workflow(WorkflowResult::Ended {
+            how: WorkflowEnd::Completed,
+            counts: "6m 20s · 6 agents · 177k tokens · merged onto main".to_owned(),
+        }));
+        picture.assert_drawn(3..5, &buffer_of(&ended.lines(&ctx), 118), 0);
     }
 }

@@ -1,4 +1,4 @@
-//! The app-facing conductor API: start, watch, and steer runs.
+//! The engine's API for the app: start, watch, and steer runs.
 //!
 //! Anything that decides or raises autonomy lives in [`Approvals`], which only the interactive
 //! app holds, so no agent-facing surface can approve anything.
@@ -11,46 +11,46 @@ use tokio::sync::{mpsc, watch};
 
 use crate::app::SettingRow;
 use crate::events::RunEvent;
-use crate::events::card::CardState;
-use crate::events::checkpoint::AnswerAction;
-use crate::events::run::{CheckedInstruction, RunMode, TriageDecision};
+use crate::events::agent_status::RunSpend;
+use crate::events::approval::AnswerAction;
+use crate::events::run::{CaptainOrCrewDecision, CheckedInstruction, RunMode};
 use crate::events::session::QueuedMessage;
-use crate::events::vendor::RunBudget;
+use crate::events::task::TaskState;
 use crate::future::BoxFuture;
 use crate::input::MentionTarget;
-use crate::limits::QuotaReading;
-use crate::names::{CheckpointId, DecisionId, MessageId, SessionKey, TurnId, WorkerRef};
+use crate::limits::PlanUsageReading;
+use crate::names::{ApprovalId, DecisionId, MessageId, ModelRef, SessionKey, TurnId};
 use crate::required::RequiredStep;
+use crate::session_runner::SteerSupport;
 use crate::settings::approvals::ApprovalMode;
-use crate::settings::budget::BudgetAmount;
+use crate::settings::limit::LimitAmount;
 use crate::settings::periods::WeekStart;
 use crate::steps::intake::ChangeEstimate;
-use crate::worker::SteerSupport;
-use crate::{CardId, CommandSpec, DiffStat, RunId, Spend};
+use crate::{CommandSpec, DiffStat, RunId, Spend, TaskId};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StartRun {
     pub request: String,
     pub mode: RunMode,
-    /// Forced by `/solo`, `/crew`, `--solo`, or `--crew`.
+    /// Forced by `/captain`, `/crew`, `--captain`, or `--crew`.
     pub forced: bool,
     pub estimate: Option<ChangeEstimate>,
-    pub triage: Option<TriageDecision>,
-    pub chat_turn: Option<TurnId>,
+    pub captain_or_crew: Option<CaptainOrCrewDecision>,
+    pub conversation_turn: Option<TurnId>,
     /// The merged run this continues (`/follow-up`).
     pub continues: Option<RunId>,
     /// `--set key=value` overrides for this run.
     pub overrides: Vec<String>,
     /// Include uncommitted changes in the base.
     pub include_uncommitted: bool,
-    pub main_agent: Option<WorkerRef>,
+    pub main_agent: Option<ModelRef>,
     /// `None` or `Supervised` only; `start` refuses anything more autonomous. Raising it goes
     /// through [`Approvals::set_approval_mode`], which needs the token.
     pub approval_mode: Option<ApprovalMode>,
     /// Set by the MCP server to the client's self-reported name. Such a run gets
     /// `mcp.run_limit` and counts against `mcp.runs_per_day`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub front_end: Option<String>,
+    pub outside_agent: Option<String>,
     /// What the request said about how to run it: the ones followed and the ones not, each
     /// with its reason.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -76,38 +76,38 @@ pub struct RunHandle {
 pub struct RunSummary {
     pub run: RunId,
     pub title: String,
-    /// The run's own name once the lead or intake gave it one, such as `fix-slugify-median`.
+    /// The run's own name once the main agent or intake gave it one, such as `fix-slugify-median`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub mode: RunMode,
     pub workflow: String,
     pub state: RunState,
-    /// Such as "plan checkpoint, waiting for you".
+    /// Such as "plan approval, waiting for you".
     pub stopped_at: String,
     /// Last event time.
     #[serde(with = "time::serde::rfc3339")]
     pub updated: OffsetDateTime,
     pub spent: Spend,
     pub sessions_to_resume: u32,
-    pub waiting: Vec<CheckpointId>,
-    /// Whether a supervisor is running it now.
+    pub waiting: Vec<ApprovalId>,
+    /// Whether a run host is running it now.
     pub live: bool,
-    /// Parked longer than `runs.remind_parked_days`. Parked runs never expire.
+    /// Waiting longer than `runs.remind_waiting_days`. Waiting runs never expire.
     #[serde(default)]
     pub remind: bool,
 }
 
 impl RunSummary {
-    /// Not finished, and one of its cards waits on you.
+    /// Not finished, and one of its questions waits on you.
     pub fn needs_you(&self) -> bool {
         self.is_open() && !self.waiting.is_empty()
     }
 
-    /// Going, pausing, or parked: not finished, and not crashed.
+    /// Going, pausing, or waiting: not finished, and not crashed.
     pub fn is_open(&self) -> bool {
         matches!(
             self.state,
-            RunState::Running | RunState::Pausing | RunState::Parked
+            RunState::Running | RunState::Pausing | RunState::Waiting
         )
     }
 }
@@ -117,9 +117,14 @@ impl RunSummary {
 pub enum RunState {
     Running,
     Pausing,
-    Parked,
-    /// Its supervisor died without parking. `/resume` recovers it.
+    Waiting,
+    /// Its run host died without waiting. `/resume` carries it on.
     Crashed,
+    /// It was asked for, and its run host never wrote its first event.
+    NeverStarted,
+    /// Its journal was written by another Argonauts Code, in a format this one can't read, so
+    /// it can't be opened or resumed. `/runs archive` moves it out of the way.
+    FromAnotherBuild,
     Merged,
     /// A pull request was opened or suggested.
     PullRequest,
@@ -132,7 +137,7 @@ pub enum RunState {
 
 impl RunState {
     /// It finished, one way or another, so none of its sessions runs again unless you resume
-    /// it. A parked or crashed run hasn't: resuming it starts its sessions where they were.
+    /// it. A waiting or crashed run hasn't: resuming it starts its sessions where they were.
     pub fn ended(self) -> bool {
         matches!(
             self,
@@ -153,7 +158,7 @@ pub struct EventStream {
     /// The last `seq` in the log when the stream opened. Events up to it are history, so the
     /// app sends `AppEvent::ReplayDone` after them and rings no bell for them.
     pub replay_until: Option<u64>,
-    /// Turns false when the supervisor exits; if the log's last event then isn't `Parked` or
+    /// Turns false when the run host exits; if the log's last event then isn't `Waiting` or
     /// `Finished`, the run crashed.
     pub live: watch::Receiver<bool>,
 }
@@ -167,12 +172,12 @@ pub struct SteerAck {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TakeOverTicket {
     /// Paused with its work committed.
-    pub card: CardId,
-    /// The vendor's own UI on the same session, in the card's worktree. `None` for endpoints or
-    /// a vendor out of quota; you then work in the worktree with your own tools.
+    pub task: TaskId,
+    /// The agent's own UI on the same session, in the task's worktree. `None` for endpoints or
+    /// an agent out of plan usage; you then work in the worktree with your own tools.
     pub command: Option<CommandSpec>,
     pub worktree: PathBuf,
-    pub vendor: String,
+    pub agent_id: String,
 }
 
 /// Built by code from the event log, with no model call.
@@ -183,18 +188,20 @@ pub struct StatusSummary {
     pub goal: Vec<String>,
     pub plan: Option<String>,
     pub decisions: Vec<(DecisionId, String)>,
-    pub cards: Vec<CardBrief>,
+    pub tasks: Vec<TaskBrief>,
     /// Newest last.
     pub recent: Vec<String>,
-    pub budget: Option<RunBudget>,
-    pub quotas: Vec<QuotaReading>,
+    pub spend: Option<RunSpend>,
+    pub plan_windows: Vec<PlanUsageReading>,
     pub waiting: Vec<String>,
 }
 
-/// The span the Usage, Limits and Stats tabs add up over. Quota is always now.
+/// The span the Usage, Limits and Stats tabs add up over. Plan usage is always now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UsagePeriod {
+    /// What the cards above the input ask for before any numbers came. A tab opens on
+    /// [`UsagePeriod::OPENS_ON`] instead.
     #[default]
     Today,
     /// This calendar week, from the day weeks start on.
@@ -205,6 +212,9 @@ pub enum UsagePeriod {
 }
 
 impl UsagePeriod {
+    /// The period every tab opens on, and `/usage` shows when it names none.
+    pub const OPENS_ON: UsagePeriod = UsagePeriod::All;
+
     /// The first local day the period counts, a week starting on `week_starts`. `None`
     /// counts every day.
     pub fn first_day(self, today: Date, week_starts: time::Weekday) -> Option<Date> {
@@ -225,7 +235,7 @@ impl UsagePeriod {
 // A local day as `2026-10-04`.
 time::serde::format_description!(pub day_format, Date, "[year]-[month]-[day]");
 
-/// What the Usage tab shows for a period, from the usage ledger and the quota board, with no
+/// What the Usage tab shows for a period, from the usage ledger and the plan usage board, with no
 /// model call.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UsageSummary {
@@ -233,7 +243,7 @@ pub struct UsageSummary {
     /// The day the period's weeks start on.
     #[serde(default, skip_serializing_if = "WeekStart::is_sunday")]
     pub week_starts: WeekStart,
-    /// Everything the period spent. Its tokens are the tokens card: cached input, new input
+    /// Everything the period spent. Its tokens are the tokens mod's: cached input, new input
     /// (input less cached), and output.
     pub total: Spend,
     /// Spend by agent and model, the largest first.
@@ -242,8 +252,8 @@ pub struct UsageSummary {
     pub history: Vec<DaySpend>,
     /// The period's runs, newest first.
     pub runs: Vec<RunSummary>,
-    /// Every vendor's windows now, whatever the period.
-    pub quotas: Vec<QuotaReading>,
+    /// Every agent's windows now, whatever the period.
+    pub plan_windows: Vec<PlanUsageReading>,
     /// Each CLI in the crew, the main one first: its plan, its windows now, and whether it
     /// can be reached. A window that has reset since it was read is left out.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -262,7 +272,7 @@ pub struct UsageSummary {
     pub progress: Vec<RunProgress>,
     /// The limit of a task that has none of its own, when you set one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_limit: Option<BudgetAmount>,
+    pub task_limit: Option<LimitAmount>,
     /// The limits you can set, each with its value in effect and where that came from, in
     /// the order `/limits` lists them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -270,10 +280,14 @@ pub struct UsageSummary {
     /// What the crew did over the period, per CLI, model and role, for the Stats tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stats: Option<crate::crew_stats::CrewStats>,
-    /// What ran through Argonauts itself over the period, from the work ledger, for the Stats
+    /// What ran through Argonauts Code itself over the period, from the work ledger, for the Stats
     /// tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub argonauts: Option<crate::overview::ThroughArgonauts>,
+    /// Every model that has run here with its tokens in all, as the Overview has them, so a
+    /// model draws in the same color on every tab.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub all_time_models: Vec<crate::overview::ModelTokens>,
 }
 
 /// How far a run got, for the workflows card. It sits beside [`RunSummary`], which the run
@@ -314,7 +328,7 @@ pub struct PlanUsage {
     pub pays_per_token: bool,
     /// Its windows, the shortest first. Each says when it was read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub windows: Vec<QuotaReading>,
+    pub windows: Vec<PlanUsageReading>,
     /// Who takes its work while it's out or down, by display name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moved_to: Option<String>,
@@ -339,8 +353,15 @@ pub struct UsageShare {
     pub agent: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    pub vendor: String,
+    pub agent_id: String,
     pub spent: Spend,
+    /// Its CLI bills for each token, so this was charged rather than spent inside a plan.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pays_per_token: bool,
+    /// What it spent on each day of this week that it spent anything, oldest first, whatever
+    /// the period.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub this_week: Vec<DaySpend>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -351,18 +372,18 @@ pub struct DaySpend {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CardBrief {
-    pub card: CardId,
+pub struct TaskBrief {
+    pub task: TaskId,
     pub title: String,
-    pub state: CardState,
-    pub owner: Option<WorkerRef>,
-    /// Such as "6m 12s · 38k tok" or "needs card-002 and card-003".
+    pub state: TaskState,
+    pub worker: Option<ModelRef>,
+    /// Such as "6m 12s · 38k tok" or "needs task-002 and task-003".
     pub note: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiffView {
-    pub card: CardId,
+    pub task: TaskId,
     pub stat: DiffStat,
     /// The unified diff, cut at 2 MB. The full one is at `path`.
     pub text: String,
@@ -372,22 +393,22 @@ pub struct DiffView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiffScope {
-    /// The whole card against its base.
-    Card,
+    /// The whole task against its base.
+    Task,
     /// The last session's changes.
     LastTurn,
 }
 
-/// The vendor's own transcript lines, unparsed.
+/// The agent's own transcript lines, unparsed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RawView {
     pub session: SessionKey,
     /// Oldest first, cut to the last 5,000.
     pub lines: Vec<String>,
     pub truncated: bool,
-    /// Argonauts' raw copy.
+    /// Argonauts Code's raw copy.
     pub path: PathBuf,
-    pub vendor_transcript: Option<PathBuf>,
+    pub cli_transcript: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -401,8 +422,8 @@ pub enum ApiError {
     Merged(RunId),
     #[error("refused: {0}")]
     Refused(String),
-    #[error("supervisor: {0}")]
-    Supervisor(String),
+    #[error("run host: {0}")]
+    RunHost(String),
 }
 
 /// Start, watch, and steer runs in one repository.
@@ -434,10 +455,10 @@ pub trait ConductorApi: Send + Sync {
     ) -> BoxFuture<'_, Result<MessageId, ApiError>>;
     /// Queued for every working agent's next turn.
     fn guidance(&self, run: &RunId, text: String) -> BoxFuture<'_, Result<MessageId, ApiError>>;
-    /// Guidance from an MCP client, recorded as `Party::FrontEnd { client }` so the log shows
+    /// Guidance from an MCP client, recorded as `Party::OutsideAgent { client }` so the log shows
     /// where it came from. It takes a client name rather than any `Party`, so a caller can't
-    /// claim to be your rules or the approver.
-    fn guidance_from_front_end(
+    /// claim to be your rules or the judge.
+    fn guidance_from_outside_agent(
         &self,
         run: &RunId,
         text: String,
@@ -455,8 +476,8 @@ pub trait ConductorApi: Send + Sync {
     /// Pauses at the next safe point, or with `now` stops the agents at once and commits.
     fn pause(&self, run: &RunId, now: bool) -> BoxFuture<'_, Result<(), ApiError>>;
     /// A pause from an MCP client, recorded in `PauseRequested.by` as
-    /// `Party::FrontEnd { client }`.
-    fn pause_from_front_end(
+    /// `Party::OutsideAgent { client }`.
+    fn pause_from_outside_agent(
         &self,
         run: &RunId,
         now: bool,
@@ -466,25 +487,32 @@ pub trait ConductorApi: Send + Sync {
         self.pause(run, now)
     }
     fn cancel_pause(&self, run: &RunId) -> BoxFuture<'_, Result<(), ApiError>>;
-    /// Starts a supervisor that rebuilds from the log and resumes sessions.
+    /// Starts a run host that rebuilds from the log and resumes sessions.
     fn resume(&self, run: &RunId) -> BoxFuture<'_, Result<(), ApiError>>;
     /// Agents wrap up and report, work is committed, and the run ends as stopped.
     fn stop(&self, run: &RunId) -> BoxFuture<'_, Result<(), ApiError>>;
-    /// The session's card goes to `NeedsDecision`.
+    /// The session's task goes to `NeedsDecision`.
     fn stop_session(
         &self,
         run: &RunId,
         session: &SessionKey,
     ) -> BoxFuture<'_, Result<(), ApiError>>;
-    /// Moves the card with its work saved and a handoff packet, to a worker the role's rules
+    /// Stops a session that has no task and starts it over with the prompt it had. Whoever
+    /// waits for its answer waits for the new one.
+    fn restart_session(
+        &self,
+        run: &RunId,
+        session: &SessionKey,
+    ) -> BoxFuture<'_, Result<(), ApiError>>;
+    /// Moves the task with its work saved and a fallback note, to a model the role's rules
     /// allow. Overriding a rule needs [`Approvals::reassign_overriding`].
     fn reassign(
         &self,
         run: &RunId,
-        card: &CardId,
-        to: WorkerRef,
+        task: &TaskId,
+        to: ModelRef,
     ) -> BoxFuture<'_, Result<(), ApiError>>;
-    /// Past, parked, and crashed runs in this repository, newest first.
+    /// Past, waiting, and crashed runs in this repository, newest first.
     fn list(&self) -> BoxFuture<'_, Result<Vec<RunSummary>, ApiError>>;
     /// A follow-up run that inherits the merged run's goal, decisions, and notes.
     fn continue_run(
@@ -496,37 +524,37 @@ pub trait ConductorApi: Send + Sync {
     fn diff(
         &self,
         run: &RunId,
-        card: &CardId,
+        task: &TaskId,
         scope: DiffScope,
     ) -> BoxFuture<'_, Result<DiffView, ApiError>>;
     fn raw(&self, run: &RunId, session: &SessionKey) -> BoxFuture<'_, Result<RawView, ApiError>>;
-    /// Resets a card's branch to checkpoint `handoff-<checkpoint>`, keeping the work after it on
+    /// Resets a task's branch to checkpoint `fallback-<checkpoint>`, keeping the work after it on
     /// a side branch. Merged work is refused; a new change undoes it instead.
-    fn revert(
+    fn rewind(
         &self,
         run: &RunId,
-        card: &CardId,
+        task: &TaskId,
         checkpoint: u32,
     ) -> BoxFuture<'_, Result<(), ApiError>> {
-        let _ = (run, card, checkpoint);
+        let _ = (run, task, checkpoint);
         Box::pin(async {
             Err(ApiError::NotNow(
-                "this conductor can't revert a task".to_owned(),
+                "Argonauts Code can't rewind a task".to_owned(),
             ))
         })
     }
     /// Your verdict on an auto-approval from the spot-check queue. A wrong one drops that
-    /// decision point back to shadow.
+    /// decision point back to auto preview.
     fn spot_check(
         &self,
         run: &RunId,
-        id: &CheckpointId,
+        id: &ApprovalId,
         correct: bool,
     ) -> BoxFuture<'_, Result<(), ApiError>> {
         let _ = (run, id, correct);
         Box::pin(async {
             Err(ApiError::NotNow(
-                "this conductor takes no spot checks".to_owned(),
+                "Argonauts Code takes no spot checks".to_owned(),
             ))
         })
     }
@@ -539,69 +567,69 @@ pub trait ConductorApi: Send + Sync {
         let _ = (run, action);
         Box::pin(async {
             Err(ApiError::NotNow(
-                "this conductor can't change a goal".to_owned(),
+                "Argonauts Code can't change a goal".to_owned(),
             ))
         })
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CheckpointAnswer {
-    pub id: CheckpointId,
-    /// Must be one the card offered.
+pub struct ApprovalAnswer {
+    pub id: ApprovalId,
+    /// Must be one the question offered.
     pub action: AnswerAction,
     pub text: Option<String>,
-    /// The evidence hash the card showed. The engine refuses a mismatch.
+    /// The evidence hash the task showed. The engine refuses a mismatch.
     pub evidence_sha256: String,
-    /// For "request changes on some cards", the cards to send back. Empty means every card.
+    /// For "request changes on some tasks", the tasks to send back. Empty means every task.
     #[serde(default)]
-    pub cards: Vec<CardId>,
+    pub tasks: Vec<TaskId>,
 }
 
 /// Everything that decides or raises autonomy. Held only by the interactive app, which refuses
-/// to run inside an Argonauts agent session (`ARGONAUTS_SESSION` set) or without a terminal.
-/// Every call carries the run's approval token, and the supervisor refuses a caller that
+/// to run inside an Argonauts Code agent session (`ARGONAUTS_SESSION` set) or without a terminal.
+/// Every call carries the run's approval token, and the run host refuses a caller that
 /// descends from an agent process.
 pub trait Approvals: Send + Sync {
-    /// With the run parked, appends the answer under the run lock and starts a supervisor.
-    fn answer(&self, run: &RunId, answer: CheckpointAnswer) -> BoxFuture<'_, Result<(), ApiError>>;
+    /// With the run waiting, appends the answer under the run lock and starts a run host.
+    fn answer(&self, run: &RunId, answer: ApprovalAnswer) -> BoxFuture<'_, Result<(), ApiError>>;
     /// Hard limits and the questions that always reach you still apply.
     fn set_approval_mode(
         &self,
         run: &RunId,
         mode: ApprovalMode,
     ) -> BoxFuture<'_, Result<(), ApiError>>;
-    /// Breaks one of the role's rules, such as the reviewer family rule, for this card only.
-    /// The override is logged in `Card::Reassigned`.
+    /// Breaks one of the role's rules, such as the reviewer provider rule, for this task only.
+    /// The override is logged in `Task::Reassigned`.
     fn reassign_overriding(
         &self,
         run: &RunId,
-        card: &CardId,
-        to: WorkerRef,
+        task: &TaskId,
+        to: ModelRef,
         rule: String,
     ) -> BoxFuture<'_, Result<(), ApiError>>;
-    /// Pauses the card, commits its work, and returns what to run in the terminal.
+    /// Pauses the task, commits its work, and returns what to run in the terminal.
     fn take_over(
         &self,
         run: &RunId,
-        card: &CardId,
+        task: &TaskId,
     ) -> BoxFuture<'_, Result<TakeOverTicket, ApiError>>;
-    /// Commits your changes and opens the return card.
-    fn take_over_ended(&self, run: &RunId, card: &CardId) -> BoxFuture<'_, Result<(), ApiError>>;
+    /// Commits your changes and opens the return question.
+    fn take_over_ended(&self, run: &RunId, task: &TaskId) -> BoxFuture<'_, Result<(), ApiError>>;
 }
 
 #[cfg(test)]
 mod tests {
     use super::RunState;
 
-    /// A run that can still start its sessions again hasn't ended: parked and crashed runs
+    /// A run that can still start its sessions again hasn't ended: waiting and crashed runs
     /// resume them where they were.
     #[test]
     fn only_a_finished_run_has_ended() {
         let going = [
             RunState::Running,
             RunState::Pausing,
-            RunState::Parked,
+            RunState::Waiting,
             RunState::Crashed,
         ];
         assert!(going.iter().all(|state| !state.ended()));

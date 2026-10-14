@@ -1,6 +1,6 @@
 //! The program the Linux sandbox runs first. It is the `argonauts` binary itself, started with
 //! [`LAUNCHER_ARG`]: it builds the session's view of the filesystem and its network in fresh
-//! namespaces, applies Landlock, and then becomes the harness. It has to run before anything
+//! namespaces, applies Landlock, and then becomes the CLI. It has to run before anything
 //! starts a thread, since the kernel gives a user namespace only to a single-threaded process,
 //! so `main` calls [`launcher_main`] first.
 
@@ -31,7 +31,7 @@ const MODE_RELAY: &str = "relay";
 /// The start of the name of the folder that holds a container's proxy sockets.
 pub const BRIDGE_DIR: &str = "argonauts-bridge";
 
-/// The launcher's exit code when it can't set the sandbox up. The harness never ran.
+/// The launcher's exit code when it can't set the sandbox up. The CLI never ran.
 pub const LAUNCH_FAILED: i32 = 125;
 
 /// The profile, as the launcher gets it.
@@ -40,9 +40,9 @@ pub struct LaunchPlan {
     pub writable: Vec<PathBuf>,
     pub readable: Vec<PathBuf>,
     pub deny_read: Vec<PathBuf>,
-    /// Without it the session gets its own network namespace, where only `proxies` lead out.
+    /// Without it the session gets its own network namespace, where only `proxies` reach out.
     pub network: bool,
-    /// Proxies on this machine's loopback that the session's harness is told to use. Each is
+    /// Proxies on this machine's loopback that the session's CLI is told to use. Each is
     /// reachable inside at the same address, and nothing else outside is.
     pub proxies: Vec<SocketAddr>,
     /// Paths that stay closed even where they don't exist yet, as the profile's `closed`.
@@ -100,7 +100,7 @@ pub fn bridge_socket(dir: &Path, index: usize) -> PathBuf {
 }
 
 /// Runs the launcher when this process was started as one, and gives its exit code. `None` for
-/// any other start. On success the harness replaces this process, so it never returns.
+/// any other start. On success the CLI replaces this process, so it never returns.
 pub fn launcher_main() -> Option<i32> {
     let mut args = std::env::args_os().skip(1);
     if args.next().as_deref() != Some(OsStr::new(LAUNCHER_ARG)) {

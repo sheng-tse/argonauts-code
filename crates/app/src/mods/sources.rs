@@ -1,10 +1,10 @@
-//! The built-in sources: numbers Argonauts already keeps, shaped as a mod's reading. Each is
+//! The built-in sources: numbers Argonauts Code already keeps, shaped as a mod's reading. Each is
 //! built from plain facts gathered once, so a source never reads a file or asks a CLI itself.
 
 use argonauts_core::Spend;
 use argonauts_core::api::{RunState, RunSummary};
-use argonauts_core::app::QuotaChip;
-use argonauts_core::limits::QuotaStatus;
+use argonauts_core::app::PlanUsageChip;
+use argonauts_core::limits::PlanUsageStatus;
 use argonauts_core::settings::mods::reading::plain_number;
 use argonauts_core::settings::mods::{BuiltinSource, ModColor, ModLevel, ModPart, ModReading};
 use argonauts_core::views::ContextRow;
@@ -19,7 +19,7 @@ pub(crate) struct Numbers {
     /// The main session's context, once it has one.
     pub context: Option<ContextRow>,
     /// One per CLI in the crew.
-    pub quotas: Vec<QuotaChip>,
+    pub plan_chips: Vec<PlanUsageChip>,
     /// Today's spend, by CLI, in the crew's order.
     pub today: Vec<(String, Spend)>,
     /// Newest first.
@@ -94,7 +94,7 @@ fn plan_usage(numbers: &Numbers) -> Result<ModReading, String> {
     let mut parts = Vec::new();
     let mut level = ModLevel::Ok;
     let mut fullest: Option<(f64, String)> = None;
-    for chip in &numbers.quotas {
+    for chip in &numbers.plan_chips {
         let Some(reading) = &chip.reading else {
             continue;
         };
@@ -103,9 +103,9 @@ fn plan_usage(numbers: &Numbers) -> Result<ModReading, String> {
         };
         let label = format!("{} {}", chip.label, window_words(reading.window.as_deref()));
         level = level.max(match reading.status {
-            QuotaStatus::Rejected => ModLevel::Danger,
-            QuotaStatus::Warning => ModLevel::Warn,
-            QuotaStatus::Allowed | QuotaStatus::Unknown => ModLevel::Ok,
+            PlanUsageStatus::Rejected => ModLevel::Danger,
+            PlanUsageStatus::Warning => ModLevel::Warn,
+            PlanUsageStatus::Allowed | PlanUsageStatus::Unknown => ModLevel::Ok,
         });
         if fullest.as_ref().is_none_or(|(most, _)| used > *most) {
             fullest = Some((used, label.clone()));
@@ -185,12 +185,14 @@ fn state_words(run: &RunSummary) -> (&'static str, ModColor) {
     }
     match run.state {
         RunState::Running | RunState::Pausing => ("working", ModColor::Blue),
-        RunState::Parked => ("waiting", ModColor::Grey),
+        RunState::Waiting => ("waiting", ModColor::Grey),
         RunState::Merged => ("merged", ModColor::Green),
         RunState::PullRequest => ("pull request", ModColor::Green),
         RunState::BranchLeft => ("branch left", ModColor::Green),
-        RunState::Stopped | RunState::Abandoned => ("stopped", ModColor::Grey),
-        RunState::Crashed | RunState::Failed => ("failed", ModColor::Red),
+        RunState::Stopped | RunState::Abandoned | RunState::Crashed => ("stopped", ModColor::Grey),
+        RunState::NeverStarted => ("never started", ModColor::Grey),
+        RunState::FromAnotherBuild => ("from an older Argonauts", ModColor::Grey),
+        RunState::Failed => ("failed", ModColor::Red),
     }
 }
 
@@ -264,8 +266,8 @@ fn waiting(numbers: &Numbers) -> ModReading {
 mod tests {
     use argonauts_core::RunId;
     use argonauts_core::events::run::RunMode;
-    use argonauts_core::limits::{HealthState, QuotaReading, QuotaSource};
-    use argonauts_core::names::{CheckpointId, SessionKey, VendorId, WorkerRef};
+    use argonauts_core::limits::{HealthState, PlanUsageReading, PlanUsageSource};
+    use argonauts_core::names::{AgentId, ApprovalId, ModelRef, SessionKey};
     use time::Duration;
 
     use super::*;
@@ -274,16 +276,16 @@ mod tests {
         OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap()
     }
 
-    fn chip(label: &str, used: f64, window: &str, status: QuotaStatus) -> QuotaChip {
-        QuotaChip {
+    fn chip(label: &str, used: f64, window: &str, status: PlanUsageStatus) -> PlanUsageChip {
+        PlanUsageChip {
             label: label.to_owned(),
-            reading: Some(QuotaReading {
-                vendor: VendorId(label.to_lowercase()),
+            reading: Some(PlanUsageReading {
+                agent_id: AgentId(label.to_lowercase()),
                 status,
                 used: Some(used),
                 resets_at: Some(now() + Duration::minutes(130)),
                 window: Some(window.to_owned()),
-                source: QuotaSource::UsageProbe,
+                source: PlanUsageSource::UsageProbe,
                 observed_at: now(),
                 detail: None,
                 wrap_up: false,
@@ -306,7 +308,7 @@ mod tests {
             spent: Spend::default(),
             sessions_to_resume: 0,
             waiting: (0..waiting)
-                .map(|n| CheckpointId::numbered(n as u32))
+                .map(|n| ApprovalId::numbered(n as u32))
                 .collect(),
             live: true,
             remind: false,
@@ -327,10 +329,10 @@ mod tests {
     #[test]
     fn plan_usage_is_a_meter_a_window_and_names_the_fullest() {
         let numbers = Numbers {
-            quotas: vec![
-                chip("Claude", 0.56, "weekly", QuotaStatus::Allowed),
-                chip("Codex", 0.11, "five_hour", QuotaStatus::Warning),
-                QuotaChip {
+            plan_chips: vec![
+                chip("Claude", 0.56, "weekly", PlanUsageStatus::Allowed),
+                chip("Codex", 0.11, "five_hour", PlanUsageStatus::Warning),
+                PlanUsageChip {
                     label: "agy".to_owned(),
                     reading: None,
                     health: HealthState::Healthy,
@@ -403,13 +405,16 @@ mod tests {
                 run: None,
                 session: SessionKey::numbered(1),
                 label: "main".to_owned(),
-                worker: WorkerRef::new("claude-code", None),
+                worker: ModelRef::new("claude-code", None),
                 used: 212_000,
                 window: Some(1_000_000),
                 cap: None,
                 tool_calls: 0,
                 spent: Spend::default(),
                 rotations: 0,
+                estimated: false,
+                counts: false,
+                categories: Vec::new(),
             }),
             ..Numbers::default()
         };
@@ -423,7 +428,7 @@ mod tests {
         let numbers = Numbers {
             runs: vec![
                 run("run-0003", RunState::Running, 0),
-                run("run-0002", RunState::Parked, 2),
+                run("run-0002", RunState::Waiting, 2),
                 run("run-0001", RunState::Merged, 0),
             ],
             ..Numbers::default()

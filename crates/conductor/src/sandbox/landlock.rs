@@ -1,21 +1,21 @@
 //! Linux: the session starts under the launcher (the `argonauts` binary with a hidden first
 //! argument), which hides denied paths with mounts in a mount namespace of its own, limits writes
 //! to the writable paths with Landlock, and, without network, runs the session in a network
-//! namespace where only the proxy leads out. It fails closed: on a kernel without Landlock ABI 3
+//! namespace where only the proxy reaches out. It fails closed: on a kernel without Landlock ABI 3
 //! or without unprivileged user namespaces, every session is refused with the reason.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 
 use argonauts_core::CommandSpec;
-use argonauts_core::worker::{SandboxMode, SandboxProfile};
+use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
 
 use super::launcher::{LaunchPlan, launcher_args};
 use super::profile::check_profile;
 use super::{SandboxError, SandboxWrap, describe_network};
 use crate::process::resolve_program;
 
-/// The variables a harness reads its proxy from, as curl, Node, Go, and Rust's HTTP clients do.
+/// The variables a CLI reads its proxy from, as curl, Node, Go, and Rust's HTTP clients do.
 const PROXY_VARS: &[&str] = &[
     "HTTPS_PROXY",
     "https_proxy",
@@ -127,8 +127,8 @@ fn count(n: usize) -> String {
     }
 }
 
-/// What a session without network may still reach on this machine's loopback: the Argonauts
-/// proxy when its profile names one, else the proxies `command` points its harness at, and the
+/// What a session without network may still reach on this machine's loopback: the Argonauts Code
+/// proxy when its profile names one, else the proxies `command` points its CLI at, and the
 /// app's port for a direct turn's questions.
 pub fn reachable_proxies(profile: &SandboxProfile, command: &CommandSpec) -> Vec<SocketAddr> {
     let mut reachable = match (profile.network, profile.proxy_port) {
@@ -145,7 +145,7 @@ pub fn reachable_proxies(profile: &SandboxProfile, command: &CommandSpec) -> Vec
     reachable
 }
 
-/// The proxies on this machine's loopback that `command` points its harness at, which the
+/// The proxies on this machine's loopback that `command` points its CLI at, which the
 /// session can still reach without network. A proxy elsewhere stays out of reach.
 fn loopback_proxies(command: &CommandSpec) -> Vec<SocketAddr> {
     let value = |name: &str| -> Option<String> {
@@ -270,7 +270,7 @@ mod tests {
             ["127.0.0.1:4128", "127.0.0.1:5005"].map(|addr| addr.parse::<SocketAddr>().unwrap())
         );
         profile.ask_port = None;
-        // A gate has no proxy of ours, so the ones its command names stay reachable.
+        // A check has no proxy of ours, so the ones its command names stay reachable.
         profile.proxy_port = None;
         assert_eq!(
             reachable_proxies(&profile, &command),

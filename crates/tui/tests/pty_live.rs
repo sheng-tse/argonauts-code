@@ -1,5 +1,5 @@
-//! The live region under the chat: live blocks, the narrator's line, the working line, the
-//! input between its rules, the mode line, and the status line.
+//! The live region under the conversation: live blocks, the narrator's line, the working line, the
+//! input between its rules, and the bottom line.
 
 mod pty_support;
 
@@ -28,15 +28,15 @@ fn live_block_updates_in_place() {
         run.usage(agent, 24_300),
     ];
     // The block that updates in place is the one an agent at work has when asked for.
-    let harness = Harness::launch(script.await_signal("more").all(0, more))
-        .ui("agents_in_chat = \"as_they_work\"")
+    let driver = TestDriver::launch(script.await_signal("more").all(0, more))
+        .ui("agents_in_conversation = \"as_they_work\"")
         .start();
     let header = format!("^{BULLET} Opus on Claude Code · worker · task-002");
-    let before = harness.wait_visible("src/export.rs");
+    let before = driver.wait_visible("src/export.rs");
     assert_eq!(count_rows(&before, &header), 1, "{}", before.text());
-    harness.signal("more");
-    let after = harness.wait_visible("cargo test export");
-    harness.wait_visible("24\\.3k");
+    driver.signal("more");
+    let after = driver.wait_visible("cargo test export");
+    driver.wait_visible("24\\.3k");
     assert_eq!(
         count_rows(&after, &header),
         1,
@@ -54,10 +54,10 @@ fn live_block_updates_in_place() {
 }
 
 #[test]
-fn live_region_working_line_rules_mode_line() {
+fn live_region_working_line_rules_bottom_row() {
     let (_, _, script) = working(2);
-    let harness = Harness::start(script);
-    let screen = harness.wait_visible(WORKING);
+    let driver = TestDriver::start(script);
+    let screen = driver.wait_visible(WORKING);
     let working = expect_row(&screen, WORKING_LINE);
     let rule = expect_row(&screen, TOP_RULE);
     assert!(
@@ -102,25 +102,25 @@ fn live_region_keeps_its_order() {
             0,
             narrator_line(RUN, "Both agents are writing the JSON writer."),
         )
-        .at(0, run.question_checkpoint("cp-001", &crew[0]))
+        .at(0, run.question_approval("approval-001", &crew[0]))
         .await_command("submit")
         .at(0, run.queued(&crew[1], "m-001", "keep the CSV path"));
-    // Wide enough for the narrator's spend to fit on the mode line beside its hints.
-    let mut harness = Harness::launch(script)
-        .ui("narrator = \"live\"\nagents_in_chat = \"as_they_work\"\n[panel]\nagents = true")
+    // Wide enough for the narrator's spend to fit on the bottom line beside its hints.
+    let mut driver = TestDriver::launch(script)
+        .ui("narrator = \"live\"\nagents_in_conversation = \"as_they_work\"\n[panel]\nagents = true")
         .size(ROWS, 200)
         .start();
-    harness.wait_visible("※ narrator:");
-    harness.wait_visible("◆");
+    driver.wait_visible("※ narrator:");
+    driver.wait_visible("◆");
     // The question takes the keys, so guiding the run hands it on first.
-    past_the_card_guard();
-    harness.press(Key::Esc);
-    harness.wait_visible("◆ Question left to the agent · you, ");
-    harness.submit("keep the CSV path");
-    harness.wait_visible("keep the CSV path");
+    past_the_question_guard();
+    driver.press(Key::Esc);
+    driver.wait_visible("◆ Question left to the agent · you, ");
+    driver.submit("keep the CSV path");
+    driver.wait_visible("keep the CSV path");
     // A working agent's bullet blinks, so the order is read from a frame that shows it.
     let opus = format!("^{BULLET} Opus on Claude Code · worker · task-002");
-    let screen = harness.wait_visible(&opus);
+    let screen = driver.wait_visible(&opus);
     assert_order(
         &screen,
         &[
@@ -152,22 +152,22 @@ fn working_line_elapsed_tokens_esc_hint() {
         [
             mode_answering("t-001"),
             turn_started("t-001", "check the build"),
-            chat_tool_started("t-001", "c1", "Bash", json!({"command": "cargo build"})),
-            chat_usage("t-001", 3600),
+            conversation_tool_started("t-001", "c1", "Bash", json!({"command": "cargo build"})),
+            conversation_usage("t-001", 3600),
         ],
     );
-    let mut harness = Harness::start(script);
-    harness.wait_for(TOP_RULE);
-    harness.submit("check the build");
-    let screen = harness.wait_visible(r"^[∙✢✲✶✻✼*] [\w'-]+… \(\d+s · ↓ 3\.6k tokens");
+    let mut driver = TestDriver::start(script);
+    driver.wait_for(TOP_RULE);
+    driver.submit("check the build");
+    let screen = driver.wait_visible(r"^[∙✢✲✶✻✼*] [\w'-]+… \(\d+s · ↓ 3\.6k tokens");
     let working = expect_row(&screen, WORKING_LINE);
     assert!(
         !screen.visible[working].contains('$'),
         "{}",
         screen.visible_text()
     );
-    harness.wait_visible(WORKING);
-    let later = harness.wait_visible(r"… \([1-9]\d*s ");
+    driver.wait_visible(WORKING);
+    let later = driver.wait_visible(r"… \([1-9]\d*s ");
     assert!(row_of(&later, WORKING_LINE).is_some());
 }
 
@@ -180,10 +180,10 @@ fn queued_message_gray_and_taken_back() {
         .at(0, queued)
         .await_command("take_back")
         .at(0, taken_back(&["keep a fallback"]));
-    let mut harness = Harness::start(script);
-    harness.wait_visible(WORKING);
-    harness.submit("keep a fallback");
-    let screen = harness.wait_visible("^❯ keep a fallback");
+    let mut driver = TestDriver::start(script);
+    driver.wait_visible(WORKING);
+    driver.submit("keep a fallback");
+    let screen = driver.wait_visible("^❯ keep a fallback");
     let queued_row = expect_row(&screen, "^❯ keep a fallback");
     let rule = expect_row(&screen, TOP_RULE);
     assert!(
@@ -191,11 +191,11 @@ fn queued_message_gray_and_taken_back() {
         "queued above the input:\n{}",
         screen.visible_text()
     );
-    harness.press(Key::Up);
-    let take_back = harness.wait_command("take_back");
+    driver.press(Key::Up);
+    let take_back = driver.wait_command("take_back");
     assert_eq!(take_back["run"], RUN);
     assert_eq!(take_back["messages"], json!(["m-001"]));
-    let screen = harness.wait_until("the text back in the input", |screen| {
+    let screen = driver.wait_until("the text back in the input", |screen| {
         row_of(screen, TOP_RULE).is_some_and(|rule| {
             screen
                 .visible
@@ -215,7 +215,7 @@ fn queued_message_gray_and_taken_back() {
 
 #[test]
 fn shift_tab_cycles_approval_mode() {
-    // Shift+Tab's cycle: supervised, auto, full auto.
+    // Shift+Tab's cycle: supervised, auto, autopilot.
     let script = Script::idle()
         .await_command("approval_mode")
         .at(0, status_with(json!({"approval_mode": "auto"})))
@@ -223,35 +223,35 @@ fn shift_tab_cycles_approval_mode() {
         .at(0, status_with(json!({"approval_mode": "autopilot"})))
         .await_command("approval_mode")
         .at(0, status_with(json!({"approval_mode": "supervised"})));
-    let mut harness = Harness::start(script);
-    harness.wait_visible(MODE_IDLE);
-    harness.press(Key::ShiftTab);
-    assert_eq!(harness.wait_command("approval_mode")["mode"], "auto");
-    harness.wait_visible("^  ⏵⏵ auto mode on \\(shift\\+tab to cycle\\)");
-    harness.press(Key::ShiftTab);
-    assert_eq!(harness.wait_command("approval_mode")["mode"], "autopilot");
-    harness.wait_visible("^  ⏵⏵ autopilot on \\(shift\\+tab to cycle\\)");
-    harness.press(Key::ShiftTab);
-    assert_eq!(harness.wait_command("approval_mode")["mode"], "supervised");
-    harness.wait_visible(MODE_IDLE);
+    let mut driver = TestDriver::start(script);
+    driver.wait_visible(MODE_IDLE);
+    driver.press(Key::ShiftTab);
+    assert_eq!(driver.wait_command("approval_mode")["mode"], "auto");
+    driver.wait_visible("^  ⏵⏵ auto mode on \\(shift\\+tab to cycle\\)");
+    driver.press(Key::ShiftTab);
+    assert_eq!(driver.wait_command("approval_mode")["mode"], "autopilot");
+    driver.wait_visible("^  ⏵⏵ autopilot on \\(shift\\+tab to cycle\\)");
+    driver.press(Key::ShiftTab);
+    assert_eq!(driver.wait_command("approval_mode")["mode"], "supervised");
+    driver.wait_visible(MODE_IDLE);
 }
 
 #[test]
-fn status_line_changed_agent_quota_spend() {
+fn bottom_line_changed_agent_plan_usage_spend() {
     let status = status_with(json!({
         "main_agent": "claude-code/opus",
-        "quotas": [chip("Claude", Some(quota("claude-code", 0.71)), "healthy"),
-                   chip("Codex", Some(quota("codex", 0.38)), "healthy"),
+        "plan_chips": [chip("Claude", Some(plan_usage("claude-code", 0.71)), "healthy"),
+                   chip("Codex", Some(plan_usage("codex", 0.38)), "healthy"),
                    chip("agy", None, "healthy")],
         "spent": spend(9000, 0.21), "line": line_with_spend()}));
-    let harness = Harness::launch(Script::idle().at(0, status))
+    let driver = TestDriver::launch(Script::idle().at(0, status))
         .size(ROWS, 200)
         .start();
     // The rule names the model, so the bottom line never does. It marks the CLI in use, and
     // keeps a CLI nothing was read for yet by its name.
     let chips =
         r"^  ǁ supervised mode on .*  ● Claude 5h .{6} 71%  ○ Codex 5h .{6} 38%  ○ agy  \$0\.21$";
-    let screen = harness.wait_visible(chips);
+    let screen = driver.wait_visible(chips);
     let status = expect_row(&screen, chips);
     assert_eq!(
         status + 1 + blank_rows_at_bottom(&screen),
@@ -262,19 +262,19 @@ fn status_line_changed_agent_quota_spend() {
 }
 
 #[test]
-fn status_line_quota_chips() {
+fn bottom_line_plan_usage_chips() {
     // Out until its window resets, three hours from now.
-    let mut out = quota("claude-code", 1.0);
+    let mut out = plan_usage("claude-code", 1.0);
     out["status"] = json!("rejected");
     let status = status_with(json!({
-        "quotas": [chip("Claude", Some(out), "healthy"),
-                   chip("Codex", Some(quota("codex", 0.38)), "down"),
+        "plan_chips": [chip("Claude", Some(out), "healthy"),
+                   chip("Codex", Some(plan_usage("codex", 0.38)), "down"),
                    chip("agy", None, "healthy")]}));
-    let harness = Harness::launch(Script::idle().at(0, status))
+    let driver = TestDriver::launch(Script::idle().at(0, status))
         .size(ROWS, 200)
         .start();
     let out_until = r"● Claude .{6} out until (\w{3} )?\d{1,2}:\d{2}[ap]m  ○ Codex down  ○ agy$";
-    let screen = harness.wait_visible(out_until);
+    let screen = driver.wait_visible(out_until);
     let row = &screen.visible[expect_row(&screen, out_until)];
     // agy's plan usage isn't known yet, and it still has its place by name.
     assert!(row.ends_with("○ agy"), "{row}");
@@ -284,14 +284,14 @@ fn status_line_quota_chips() {
     );
 
     let fine = status_with(json!({
-        "quotas": [chip("Claude", Some(quota("claude-code", 0.92)), "healthy"),
-                   chip("Codex", Some(quota("codex", 0.38)), "healthy")]}));
-    let harness = Harness::launch(Script::idle().at(0, fine))
+        "plan_chips": [chip("Claude", Some(plan_usage("claude-code", 0.92)), "healthy"),
+                   chip("Codex", Some(plan_usage("codex", 0.38)), "healthy")]}));
+    let driver = TestDriver::launch(Script::idle().at(0, fine))
         .size(ROWS, 200)
         .start();
     // From 90% the window shows when it resets.
     let near = r"● Claude 5h .{6} 92% resets (\w{3} )?\d{1,2}:\d{2}[ap]m  ○ Codex 5h .{6} 38%$";
-    let screen = harness.wait_visible(near);
+    let screen = driver.wait_visible(near);
     assert!(row_of(&screen, near).is_some());
 }
 
@@ -308,10 +308,10 @@ fn the_bottom_line_names_the_workflow_under_way() {
         .at(0, status_with(json!({"run": RUN, "line": line})))
         .at(0, run.event(None, None, named));
     for agent in &crew[..3] {
-        script = script.at(0, run.card_state(agent, Some("running"), "integrated"));
+        script = script.at(0, run.task_state(agent, Some("running"), "merged"));
     }
-    let harness = Harness::launch(script).size(ROWS, 120).start();
-    let screen = harness.wait_visible(r"  add-json-flag .{6} 3/5  ● Claude 5h .{6} 71%");
+    let driver = TestDriver::launch(script).size(ROWS, 120).start();
+    let screen = driver.wait_visible(r"  add-json-flag .{6} 3/5  ● Claude 5h .{6} 71%");
     assert!(
         row_of(&screen, "▄▄▄▖▄▄ 3/5").is_some(),
         "a small bar, three fifths full: {:?}",
@@ -320,23 +320,23 @@ fn the_bottom_line_names_the_workflow_under_way() {
 }
 
 #[test]
-fn status_line_shows_narrator_spend() {
+fn bottom_line_shows_narrator_spend() {
     let script = Script::idle()
         .at(
             0,
             status_with(json!({"narrator": "live", "line": line_with_spend()})),
         )
         .at(0, narrator_status(0.06, "$0.50"));
-    let harness = Harness::launch(script)
+    let driver = TestDriver::launch(script)
         .ui("narrator = \"live\"")
         .size(ROWS, 200)
         .start();
-    let screen = harness.wait_visible("narrator \\$0\\.06/\\$0\\.50");
+    let screen = driver.wait_visible("narrator \\$0\\.06/\\$0\\.50");
     let row = expect_row(&screen, "narrator \\$0\\.06/\\$0\\.50");
     assert!(
         screen.visible[row].contains("● Claude 5h ")
             && screen.visible[row].contains("ǁ supervised mode on"),
-        "on the mode line"
+        "on the bottom line"
     );
 }
 
@@ -350,8 +350,8 @@ fn narrator_lane() {
             0,
             narrator_line(RUN, "Two agents are adding the JSON writer and its tests."),
         );
-    let harness = Harness::launch(script).ui("narrator = \"live\"").start();
-    let screen = harness.wait_visible("※ narrator: Two agents");
+    let driver = TestDriver::launch(script).ui("narrator = \"live\"").start();
+    let screen = driver.wait_visible("※ narrator: Two agents");
     let narrator = expect_row(&screen, "^※ narrator: Two agents");
     let working = expect_row(&screen, WORKING_LINE);
     assert_eq!(
@@ -375,21 +375,21 @@ fn paused_record_line() {
         .await_signal("paused")
         .at(0, mode_pausing(RUN))
         .at(0, run.paused(2))
-        .at(0, run.parked("paused"))
-        .at(0, mode_parked(RUN, "paused"));
-    let harness = Harness::start(script);
-    harness.wait_visible(WORKING);
-    harness.signal("paused");
-    let screen = harness.wait_visible("(?i)paused");
+        .at(0, run.waiting("paused"))
+        .at(0, mode_waiting(RUN, "paused"));
+    let driver = TestDriver::start(script);
+    driver.wait_visible(WORKING);
+    driver.signal("paused");
+    let screen = driver.wait_visible("(?i)paused");
     let record = expect_row(&screen, "(?i)paused");
     let rule = expect_row(&screen, TOP_RULE);
     assert!(
         record < rule,
-        "the record goes into the chat:\n{}",
+        "the record goes into the conversation:\n{}",
         screen.visible_text()
     );
-    let chat = screen.scrollback.iter().chain(&screen.visible[..rule]);
-    let records = chat
+    let conversation = screen.scrollback.iter().chain(&screen.visible[..rule]);
+    let records = conversation
         .filter(|row| row.to_lowercase().contains("paused"))
         .count();
     assert_eq!(records, 1, "one record line:\n{}", screen.text());
@@ -397,8 +397,8 @@ fn paused_record_line() {
 
 #[test]
 fn verbose_twice_returns_to_normal() {
-    // A chat turn's calls always fold into one line, as Claude Code folds them, so the
-    // levels show on an agent's calls in a run.
+    // A conversation turn's calls always fold into one line, as Claude Code folds them, so
+    // the levels show on an agent's calls in a run.
     let mut run = RunScript::default();
     let agent = Agent::numbered(1);
     let reads = |run: &mut RunScript, level: &str| {
@@ -414,7 +414,7 @@ fn verbose_twice_returns_to_normal() {
     let start = vec![
         mode_working(RUN),
         run.started("Add a --json flag to export", "crew"),
-        run.card_created(&agent),
+        run.task_created(&agent),
         run.session_started(&agent, 1),
     ];
     let full = reads(&mut run, "full");
@@ -425,22 +425,22 @@ fn verbose_twice_returns_to_normal() {
         .all(0, full)
         .await_command("verbosity")
         .all(0, normal);
-    let mut harness = Harness::launch(script)
-        .ui("verbosity = \"normal\"\nagents_in_chat = \"as_they_work\"")
+    let mut driver = TestDriver::launch(script)
+        .ui("verbosity = \"normal\"\nagents_in_conversation = \"as_they_work\"")
         .start();
-    harness.wait_visible(WORKING);
-    harness.send("/verbosity full");
-    harness.press(Key::Enter);
-    let full = harness.wait_visible("Both read at full\\.");
+    driver.wait_visible(WORKING);
+    driver.send("/verbosity full");
+    driver.press(Key::Enter);
+    let full = driver.wait_visible("Both read at full\\.");
     assert!(
         row_of(&full, "Read\\(src/a\\.rs\\)").is_some()
             && row_of(&full, "Read\\(src/b\\.rs\\)").is_some(),
         "full shows every call:\n{}",
         full.visible_text()
     );
-    harness.send("/verbosity normal");
-    harness.press(Key::Enter);
-    let normal = harness.wait_visible("Both read at normal\\.");
+    driver.send("/verbosity normal");
+    driver.press(Key::Enter);
+    let normal = driver.wait_visible("Both read at normal\\.");
     let before = last_row_of(&normal, "Both read at full\\.").unwrap_or(0);
     assert!(
         normal.visible[before..]
@@ -449,13 +449,13 @@ fn verbose_twice_returns_to_normal() {
         "normal folds the calls into one line:\n{}",
         normal.visible_text()
     );
-    let levels: Vec<String> = harness
+    let levels: Vec<String> = driver
         .command_values()
         .iter()
         .filter(|c| command_type(c) == "verbosity")
         .map(|c| c["level"].as_str().unwrap_or_default().to_owned())
         .collect();
-    let slashes = harness
+    let slashes = driver
         .command_values()
         .iter()
         .filter(|c| command_type(c) == "slash" && c["command"]["command"] == "verbose")
@@ -463,7 +463,7 @@ fn verbose_twice_returns_to_normal() {
     assert!(
         levels == ["full", "normal"] || slashes == 2,
         "the screen tells the app each change: {:?}",
-        harness.command_values()
+        driver.command_values()
     );
 }
 
@@ -474,12 +474,12 @@ fn always_on_agent_warning_once() {
         .at(0, notice("warn", warning))
         .await_command("submit")
         .at(0, notice("warn", warning))
-        .at(0, status_line());
-    let mut harness = Harness::start(script);
-    harness.wait_for("openclaw is always on");
-    harness.submit("hello");
-    harness.wait_for("❯ hello");
-    let screen = harness.screen();
+        .at(0, bottom_line());
+    let mut driver = TestDriver::start(script);
+    driver.wait_for("openclaw is always on");
+    driver.submit("hello");
+    driver.wait_for("❯ hello");
+    let screen = driver.screen();
     assert_eq!(
         count_rows(&screen, "openclaw is always on"),
         1,
@@ -517,22 +517,22 @@ fn renders_300_events_per_second_at_120_columns() {
         .all(0, events)
         .await_signal("go")
         .timed(stream);
-    let harness = Harness::launch(script)
+    let driver = TestDriver::launch(script)
         .size(40, 120)
         .ui("[panel]\nagents = true")
         .start();
-    harness.wait_visible(WORKING);
-    let frames_before = sync_updates(&harness.raw());
-    harness.signal("go");
+    driver.wait_visible(WORKING);
+    let frames_before = sync_updates(&driver.raw());
+    driver.signal("go");
     let started = Instant::now();
     let last_event = regex::Regex::new(&last).unwrap();
-    let mut previous = harness.visible();
+    let mut previous = driver.visible();
     let mut changed_at = Instant::now();
     let mut dropped = 0;
     let mut longest = Duration::ZERO;
     loop {
         let now = Instant::now();
-        let current = harness.visible();
+        let current = driver.visible();
         if current != previous {
             let gap = now - changed_at;
             longest = longest.max(gap);
@@ -552,7 +552,7 @@ fn renders_300_events_per_second_at_120_columns() {
         std::thread::sleep(Duration::from_millis(5));
     }
     let elapsed = started.elapsed();
-    let frames = sync_updates(&harness.raw()) - frames_before;
+    let frames = sync_updates(&driver.raw()) - frames_before;
     eprintln!(
         "{EVENTS} events in {elapsed:?}: {frames} frames, {dropped} dropped, longest gap {longest:?}"
     );
@@ -563,7 +563,7 @@ fn renders_300_events_per_second_at_120_columns() {
         frames <= cap,
         "{frames} frames in {elapsed:?}, over 120 a second"
     );
-    assert_frames(&harness.screen(), 120);
+    assert_frames(&driver.screen(), 120);
 }
 
 /// Frames drawn as synchronized updates (`CSI ? 2026 h`).

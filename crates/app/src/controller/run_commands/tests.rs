@@ -1,60 +1,61 @@
 use std::path::Path;
 use std::process::{Child, Command};
 
-use argonauts_core::api::{CheckpointAnswer, DiffScope, RunState, RunSummary};
+use argonauts_core::api::{ApprovalAnswer, DiffScope, RunState, RunSummary};
 use argonauts_core::app::{
     AnswerTarget, AppEvent, ChoiceKind, RepoRuns, UiCommand, ViewData, ViewRequest,
 };
-use argonauts_core::events::checkpoint::{
-    AnswerAction, CheckpointDecided, CheckpointEvent, CheckpointKind, CheckpointOpened,
-    CheckpointPacket, FreeText,
+use argonauts_core::events::agent_status::FallbackPlan;
+use argonauts_core::events::approval::{
+    AnswerAction, ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
+    FreeText,
 };
 use argonauts_core::events::run::{Party, RunMode, RunOutcome};
 use argonauts_core::events::session::SessionStarted;
-use argonauts_core::events::vendor::HandoffPlan;
+use argonauts_core::events::task::{TaskEvent, TryCause};
 use argonauts_core::events::{RunEvent, RunEventKind, SessionEvent};
 use argonauts_core::ids::RepoId;
 use argonauts_core::input::SlashCommand;
 use argonauts_core::layout::run_files;
-use argonauts_core::names::{CheckpointId, MessageId, RoleName, SessionKey, WorkerRef};
+use argonauts_core::names::{ApprovalId, MessageId, ModelRef, RoleName, SessionKey};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
-use argonauts_core::settings::handoff::HandoffMode;
+use argonauts_core::settings::fallback::FallbackMode;
 use argonauts_core::views::ContextRow;
-use argonauts_core::{AgentEvent, CardId, NoteLevel, RunId, Spend};
+use argonauts_core::{AgentEvent, NoteLevel, RunId, Spend, TaskId};
 use time::OffsetDateTime;
 
-use super::cards::handoff_rule;
+use super::tasks::{fallback_rule, reassign};
 use super::views::asks_for_status;
 use super::{guidance, mention, take_back};
 use crate::FirstView;
 use crate::ancestry::Processes;
 use crate::client::test_support::{agent, run_started, session_started, usage, write_journal};
-use crate::controller::runs::rig::{Rig, event, finished, parked, question, run_id};
-use crate::controller::test_support::{ApprovalCall, Call, Harness, HarnessOptions};
+use crate::controller::runs::rig::{Rig, event, finished, question, run_id, waiting};
+use crate::controller::test_support::{ApprovalCall, Call, CliOptions, TestDriver};
 use crate::controller::{Opening, ScopeRequest};
-use crate::live_registry::{LiveSupervisor, register};
+use crate::live_registry::{LiveRunHost, register};
 
-fn attach_to(run: &str, interactive: bool) -> HarnessOptions {
-    HarnessOptions {
+fn attach_to(run: &str, interactive: bool) -> CliOptions {
+    CliOptions {
         interactive,
         opening: Opening {
             guided_setup: false,
             first: FirstView::Attach(run_id(run)),
         },
-        ..HarnessOptions::default()
+        ..CliOptions::default()
     }
 }
 
 /// Commands run in order, so once `/status` answers every earlier command was handled.
-async fn barrier(harness: &mut Harness) {
-    harness
+async fn barrier(driver: &mut TestDriver) {
+    driver
         .send(UiCommand::Slash {
             command: SlashCommand::Status {
                 action: Default::default(),
             },
         })
         .await;
-    harness
+    driver
         .until(|event| matches!(event, AppEvent::View { .. } | AppEvent::Notice { .. }))
         .await;
 }
@@ -105,72 +106,93 @@ async fn guidance_ids_are_kept_and_take_back_answers_taken_back() {
 /// so the run never waits on it.
 #[tokio::test]
 async fn esc_on_a_runs_question_tells_the_engine_to_carry_on() {
-    let mut harness = Harness::start().await;
-    let (run, id) = (run_id("run-005"), CheckpointId::numbered(3));
-    harness
+    let mut driver = TestDriver::start().await;
+    let (run, id) = (run_id("run-005"), ApprovalId::numbered(3));
+    driver
         .send(UiCommand::SetAside {
-            to: AnswerTarget::Checkpoint {
+            to: AnswerTarget::Approval {
                 run: run.clone(),
                 id: id.clone(),
             },
         })
         .await;
-    barrier(&mut harness).await;
+    barrier(&mut driver).await;
     assert_eq!(
-        harness.approvals.calls(),
+        driver.approvals.calls(),
         [ApprovalCall::Answer {
             run,
-            answer: CheckpointAnswer {
+            answer: ApprovalAnswer {
                 id,
                 action: AnswerAction::CarryOn,
                 text: None,
                 evidence_sha256: String::new(),
-                cards: Vec::new(),
+                tasks: Vec::new(),
             },
         }]
     );
 }
 
+/// `r` on an agent that works no task asks the run to stop it and ask it again, for that
+/// one session.
+#[tokio::test]
+async fn restarting_an_agent_asks_its_run_to_start_that_session_over() {
+    let mut driver = TestDriver::start().await;
+    let (run, session) = (run_id("run-005"), SessionKey::numbered(8));
+    driver
+        .send(UiCommand::RestartAgent {
+            run: run.clone(),
+            session: session.clone(),
+        })
+        .await;
+    barrier(&mut driver).await;
+    assert!(
+        driver
+            .conductor
+            .calls()
+            .contains(&Call::RestartSession { run, session })
+    );
+}
+
 #[tokio::test]
 async fn an_answer_passes_evidence_sha256_through() {
-    let mut harness = Harness::start().await;
-    let (run, id) = (run_id("run-005"), CheckpointId::numbered(3));
+    let mut driver = TestDriver::start().await;
+    let (run, id) = (run_id("run-005"), ApprovalId::numbered(3));
     let evidence = "ab".repeat(32);
-    let card = CardId::new("task-002").expect("a task id");
-    harness
+    let task = TaskId::new("task-002").expect("a task id");
+    driver
         .send(UiCommand::Answer {
-            to: AnswerTarget::Checkpoint {
+            to: AnswerTarget::Approval {
                 run: run.clone(),
                 id: id.clone(),
             },
             action: AnswerAction::RequestChanges,
             text: Some("smaller diff".to_owned()),
             evidence_sha256: Some(evidence.clone()),
-            cards: vec![card.clone()],
+            tasks: vec![task.clone()],
             remember: false,
         })
         .await;
-    barrier(&mut harness).await;
+    barrier(&mut driver).await;
     assert_eq!(
-        harness.approvals.calls(),
+        driver.approvals.calls(),
         [ApprovalCall::Answer {
             run,
-            answer: CheckpointAnswer {
+            answer: ApprovalAnswer {
                 id,
                 action: AnswerAction::RequestChanges,
                 text: Some("smaller diff".to_owned()),
                 evidence_sha256: evidence,
-                cards: vec![card],
+                tasks: vec![task],
             },
         }]
     );
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn without_approvals_nothing_is_sent() {
-    let mut harness = Harness::start_with(attach_to("run-001", false)).await;
-    harness
+    let mut driver = TestDriver::start_with(attach_to("run-001", false)).await;
+    driver
         .until(|event| matches!(event, AppEvent::ReplayDone { .. }))
         .await;
     let commands = [
@@ -178,24 +200,24 @@ async fn without_approvals_nothing_is_sent() {
             mode: ApprovalMode::Auto,
         },
         UiCommand::Answer {
-            to: AnswerTarget::Checkpoint {
+            to: AnswerTarget::Approval {
                 run: run_id("run-001"),
-                id: CheckpointId::numbered(1),
+                id: ApprovalId::numbered(1),
             },
             action: AnswerAction::Approve,
             text: None,
             evidence_sha256: Some("e".repeat(64)),
-            cards: Vec::new(),
+            tasks: Vec::new(),
             remember: false,
         },
         UiCommand::TakeOver {
             run: run_id("run-001"),
-            card: CardId::new("task-001").expect("a task id"),
+            task: TaskId::new("task-001").expect("a task id"),
         },
     ];
     for command in commands {
-        harness.send(command).await;
-        let refusal = harness
+        driver.send(command).await;
+        let refusal = driver
             .until(|event| {
                 matches!(
                     event,
@@ -211,19 +233,19 @@ async fn without_approvals_nothing_is_sent() {
         };
         assert!(text.contains("can't approve anything"), "{text}");
     }
-    assert!(harness.approvals.calls().is_empty());
-    harness.exit().await;
+    assert!(driver.approvals.calls().is_empty());
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn status_and_every_view_start_no_model_session() {
-    let mut harness = Harness::start_with(attach_to("run-001", true)).await;
-    harness
+    let mut driver = TestDriver::start_with(attach_to("run-001", true)).await;
+    driver
         .until(|event| matches!(event, AppEvent::ReplayDone { .. }))
         .await;
     let run = run_id("run-001");
     let session = SessionKey::numbered(1);
-    let card = CardId::new("task-001").expect("a task id");
+    let task = TaskId::new("task-001").expect("a task id");
     let mut commands = vec![
         UiCommand::Slash {
             command: SlashCommand::Status {
@@ -257,15 +279,15 @@ async fn status_and_every_view_start_no_model_session() {
         },
         ViewRequest::Diff {
             run: run.clone(),
-            card,
-            scope: DiffScope::Card,
+            task,
+            scope: DiffScope::Task,
         },
         ViewRequest::Raw { run, session },
     ];
     commands.extend(views.into_iter().map(|view| UiCommand::Request { view }));
     for command in commands {
-        harness.send(command).await;
-        harness
+        driver.send(command).await;
+        driver
             .until(|event| {
                 matches!(
                     event,
@@ -274,8 +296,8 @@ async fn status_and_every_view_start_no_model_session() {
             })
             .await;
     }
-    assert!(harness.agent.specs().is_empty(), "a view started a session");
-    let asked_status = harness
+    assert!(driver.agent.specs().is_empty(), "a view started a session");
+    let asked_status = driver
         .conductor
         .calls()
         .iter()
@@ -285,36 +307,36 @@ async fn status_and_every_view_start_no_model_session() {
         asked_status, 3,
         "/status, the status view, and \"where are we\""
     );
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
-async fn revert_asks_first_then_sends_it_to_the_run() {
-    let mut harness = Harness::start_with(attach_to("run-001", true)).await;
-    harness
+async fn rewind_asks_first_then_sends_it_to_the_run() {
+    let mut driver = TestDriver::start_with(attach_to("run-001", true)).await;
+    driver
         .until(|event| matches!(event, AppEvent::ReplayDone { .. }))
         .await;
-    let card = CardId::new("task-002").expect("a task id");
-    harness
+    let task = TaskId::new("task-002").expect("a task id");
+    driver
         .send(UiCommand::Rewind {
-            card: card.clone(),
+            task: task.clone(),
             checkpoint: 1,
         })
         .await;
-    let AppEvent::Choice { choice } = harness
+    let AppEvent::Choice { choice } = driver
         .until(|event| matches!(event, AppEvent::Choice { .. }))
         .await
     else {
         unreachable!()
     };
-    assert_eq!(choice.kind, ChoiceKind::ConfirmRevert);
+    assert_eq!(choice.kind, ChoiceKind::ConfirmRewind);
     assert!(
         choice
             .body
             .iter()
             .any(|line| line.contains("task-002-replaced-1"))
     );
-    harness
+    driver
         .send(UiCommand::Answer {
             to: AnswerTarget::Choice {
                 id: choice.id.clone(),
@@ -322,11 +344,11 @@ async fn revert_asks_first_then_sends_it_to_the_run() {
             action: AnswerAction::Approve,
             text: None,
             evidence_sha256: None,
-            cards: Vec::new(),
+            tasks: Vec::new(),
             remember: false,
         })
         .await;
-    let closed = harness
+    let closed = driver
         .until(|event| matches!(event, AppEvent::ChoiceClosed { .. }))
         .await;
     let AppEvent::ChoiceClosed { id, outcome } = closed else {
@@ -334,45 +356,45 @@ async fn revert_asks_first_then_sends_it_to_the_run() {
     };
     assert_eq!(id, choice.id);
     assert!(
-        outcome.starts_with("Reverted task-002 to fallback-1.")
+        outcome.starts_with("Rewound task-002 to fallback-1.")
             && outcome.contains("argonauts/run-001/task-002-replaced-1"),
         "{outcome}"
     );
-    assert!(harness.conductor.calls().contains(&Call::Revert {
+    assert!(driver.conductor.calls().contains(&Call::Rewind {
         run: run_id("run-001"),
-        card,
+        task,
         checkpoint: 1,
     }));
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn a_spot_check_goes_to_the_run_and_needs_you_at_the_terminal() {
     let spot_check = |run: &str| UiCommand::SpotCheck {
         run: run_id(run),
-        id: CheckpointId::numbered(3),
+        id: ApprovalId::numbered(3),
         correct: false,
     };
-    let mut harness = Harness::start_with(attach_to("run-001", true)).await;
-    harness
+    let mut driver = TestDriver::start_with(attach_to("run-001", true)).await;
+    driver
         .until(|event| matches!(event, AppEvent::ReplayDone { .. }))
         .await;
-    harness.send(spot_check("run-001")).await;
-    let marked = harness
+    driver.send(spot_check("run-001")).await;
+    let marked = driver
         .until(|event| matches!(event, AppEvent::Notice { text, .. } if text.starts_with("Marked")))
         .await;
     let AppEvent::Notice { text, .. } = marked else {
         unreachable!()
     };
-    assert!(text.contains("cp-003 of run-001 wrong"), "{text}");
-    assert!(harness.conductor.calls().contains(&Call::SpotCheck {
+    assert!(text.contains("approval-003 of run-001 wrong"), "{text}");
+    assert!(driver.conductor.calls().contains(&Call::SpotCheck {
         run: run_id("run-001"),
-        id: CheckpointId::numbered(3),
+        id: ApprovalId::numbered(3),
         correct: false,
     }));
-    harness.exit().await;
+    driver.exit().await;
 
-    let mut unattended = Harness::start_with(attach_to("run-001", false)).await;
+    let mut unattended = TestDriver::start_with(attach_to("run-001", false)).await;
     unattended
         .until(|event| matches!(event, AppEvent::ReplayDone { .. }))
         .await;
@@ -405,19 +427,19 @@ async fn running_a_goals_checks_now_goes_to_the_run() {
     use argonauts_core::events::goal::GoalAction;
 
     let check_now = GoalAction::CheckNow {
-        task: Some(CardId::new("task-002").unwrap()),
+        task: Some(TaskId::new("task-002").unwrap()),
     };
-    let mut harness = Harness::start_with(attach_to("run-001", true)).await;
-    harness
+    let mut driver = TestDriver::start_with(attach_to("run-001", true)).await;
+    driver
         .until(|event| matches!(event, AppEvent::ReplayDone { .. }))
         .await;
-    harness
+    driver
         .send(UiCommand::Goal {
             run: Some(run_id("run-001")),
             action: check_now.clone(),
         })
         .await;
-    let said = harness
+    let said = driver
         .until(|event| matches!(event, AppEvent::Notice { text, .. } if text.contains("checks")))
         .await;
     let AppEvent::Notice { text, .. } = said else {
@@ -427,34 +449,34 @@ async fn running_a_goals_checks_now_goes_to_the_run() {
         text.starts_with("Running the goal's checks now, beside the try under way."),
         "{text}"
     );
-    assert!(harness.conductor.calls().contains(&Call::Goal {
+    assert!(driver.conductor.calls().contains(&Call::Goal {
         run: run_id("run-001"),
         action: check_now,
     }));
-    harness.exit().await;
+    driver.exit().await;
 }
 
-fn handoff_opened(id: &CheckpointId, card: &CardId, stopped: &WorkerRef) -> RunEventKind {
-    let plan = HandoffPlan {
-        card: card.clone(),
+fn fallback_opened(id: &ApprovalId, task: &TaskId, stopped: &ModelRef) -> RunEventKind {
+    let plan = FallbackPlan {
+        task: task.clone(),
         title: "Redis store".to_owned(),
         stopped: stopped.clone(),
         reason: "usage limit".to_owned(),
         resets_at: None,
         work: argonauts_core::DiffStat::default(),
-        gates_ran: false,
+        checks_ran: false,
         candidates: Vec::new(),
-        mode: HandoffMode::Ask,
+        mode: FallbackMode::Ask,
         strategy: Default::default(),
         race_count: 1,
         also_moving: Vec::new(),
     };
-    let opened = CheckpointOpened {
+    let opened = ApprovalOpened {
         id: id.clone(),
-        kind: CheckpointKind::Handoff,
+        kind: ApprovalKind::Fallback,
         title: "Fallback · task-002".to_owned(),
-        card: Some(card.clone()),
-        packet: CheckpointPacket::Handoff(plan),
+        task: Some(task.clone()),
+        packet: ApprovalPacket::Fallback(plan),
         evidence_sha256: "e".repeat(64),
         mode: ApprovalMode::Supervised,
         decide_with: DecideWith::Rules,
@@ -462,25 +484,25 @@ fn handoff_opened(id: &CheckpointId, card: &CardId, stopped: &WorkerRef) -> RunE
         free_text: FreeText::None,
         needs_you: true,
     };
-    RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(opened)))
+    RunEventKind::Approval(ApprovalEvent::Opened(Box::new(opened)))
 }
 
 #[test]
-fn a_remembered_handoff_pick_asks_where_to_save_the_rule() {
+fn a_remembered_fallback_pick_asks_where_to_save_the_rule() {
     let run = run_id("run-001");
-    let card = CardId::new("task-002").expect("a task id");
-    let id = CheckpointId::numbered(4);
-    let stopped = WorkerRef::new("claude-code", Some("opus".to_owned()));
-    let pick = WorkerRef::new("codex", Some("gpt-5".to_owned()));
+    let task = TaskId::new("task-002").expect("a task id");
+    let id = ApprovalId::numbered(4);
+    let stopped = ModelRef::new("claude-code", Some("opus".to_owned()));
+    let pick = ModelRef::new("codex", Some("gpt-5".to_owned()));
     let mut started = event(
         &run,
         1,
         RunEventKind::Session(SessionEvent::Started(Box::new(
             serde_json::from_value::<SessionStarted>(serde_json::json!({
                 "worker": "claude-code/opus",
-                "vendor": "claude-code",
-                "family": "claude",
-                "kind": "harness",
+                "agent_id": "claude-code",
+                "provider": "anthropic",
+                "kind": "cli",
                 "role": "reviewer",
                 "step": null,
                 "access": "build",
@@ -491,8 +513,8 @@ fn a_remembered_handoff_pick_asks_where_to_save_the_rule() {
             .expect("a session start"),
         ))),
     );
-    started.card_id = Some(card.clone());
-    let decided = CheckpointDecided {
+    started.task_id = Some(task.clone());
+    let decided = ApprovalDecided {
         id: id.clone(),
         action: AnswerAction::Candidate {
             worker: pick.clone(),
@@ -500,34 +522,34 @@ fn a_remembered_handoff_pick_asks_where_to_save_the_rule() {
         text: None,
         by: Party::User,
         evidence_sha256: "e".repeat(64),
-        shadow: None,
-        cards: Vec::new(),
+        auto_preview: None,
+        tasks: Vec::new(),
     };
     let events = vec![
         started,
-        event(&run, 2, handoff_opened(&id, &card, &stopped)),
+        event(&run, 2, fallback_opened(&id, &task, &stopped)),
         event(
             &run,
             3,
-            RunEventKind::Checkpoint(CheckpointEvent::Decided(decided)),
+            RunEventKind::Approval(ApprovalEvent::Decided(decided)),
         ),
     ];
     let expected = ScopeRequest {
-        key: "fallback.reviewers.replace.claude-code.with".to_owned(),
+        key: "fallback.reviewer.replace.claude-code.with".to_owned(),
         value: "[\"codex/gpt-5\"]".to_owned(),
         command: "fallback".to_owned(),
     };
-    assert_eq!(handoff_rule(&events, &id, None), Some(expected.clone()));
-    let other = WorkerRef::new("antigravity-cli", None);
-    let answered = handoff_rule(&events, &id, Some(other)).expect("a rule");
+    assert_eq!(fallback_rule(&events, &id, None), Some(expected.clone()));
+    let other = ModelRef::new("antigravity-cli", None);
+    let answered = fallback_rule(&events, &id, Some(other)).expect("a rule");
     assert_eq!(answered.value, "[\"antigravity-cli\"]");
     assert_eq!(
-        handoff_rule(&events[..1], &id, None),
+        fallback_rule(&events[..1], &id, None),
         None,
         "no fallback question"
     );
-    let owner = handoff_rule(&events[1..], &id, None).expect("a rule");
-    assert_eq!(owner.key, "fallback.workers.replace.claude-code.with");
+    let worker = fallback_rule(&events[1..], &id, None).expect("a rule");
+    assert_eq!(worker.key, "fallback.worker.replace.claude-code.with");
 }
 
 #[test]
@@ -549,34 +571,34 @@ fn where_are_we_is_a_status_question() {
 }
 
 #[tokio::test]
-async fn a_handoff_answer_with_remember_saves_the_rule_where_you_say() {
-    let mut harness = Harness::start_with(attach_to("run-001", true)).await;
-    harness
+async fn a_fallback_answer_with_remember_saves_the_rule_where_you_say() {
+    let mut driver = TestDriver::start_with(attach_to("run-001", true)).await;
+    driver
         .until(|event| matches!(event, AppEvent::ReplayDone { .. }))
         .await;
     let run = run_id("run-001");
-    let card = CardId::new("task-002").expect("a task id");
-    let id = CheckpointId::numbered(4);
-    let owner = SessionKey::numbered(1);
-    let started = session_started(1, &owner, Some(&card), RoleName::Worker, "claude-code");
-    let stopped = WorkerRef::new("claude-code", None);
+    let task = TaskId::new("task-002").expect("a task id");
+    let id = ApprovalId::numbered(4);
+    let worker = SessionKey::numbered(1);
+    let started = session_started(1, &worker, Some(&task), RoleName::Worker, "claude-code");
+    let stopped = ModelRef::new("claude-code", None);
     for event in [
         RunEvent {
             run_id: run.clone(),
             ..started
         },
-        event(&run, 2, handoff_opened(&id, &card, &stopped)),
+        event(&run, 2, fallback_opened(&id, &task, &stopped)),
     ] {
-        assert!(harness.conductor.push(&run, event).await);
+        assert!(driver.conductor.push(&run, event).await);
     }
-    harness
+    driver
         .until(|event| matches!(event, AppEvent::Run { event } if event.seq == 2))
         .await;
 
-    let pick = WorkerRef::new("codex", Some("gpt-5".to_owned()));
-    harness
+    let pick = ModelRef::new("codex", Some("gpt-5".to_owned()));
+    driver
         .send(UiCommand::Answer {
-            to: AnswerTarget::Checkpoint {
+            to: AnswerTarget::Approval {
                 run: run.clone(),
                 id: id.clone(),
             },
@@ -585,11 +607,11 @@ async fn a_handoff_answer_with_remember_saves_the_rule_where_you_say() {
             },
             text: None,
             evidence_sha256: Some("e".repeat(64)),
-            cards: Vec::new(),
+            tasks: Vec::new(),
             remember: true,
         })
         .await;
-    let AppEvent::Choice { choice } = harness
+    let AppEvent::Choice { choice } = driver
         .until(|event| matches!(event, AppEvent::Choice { .. }))
         .await
     else {
@@ -598,10 +620,10 @@ async fn a_handoff_answer_with_remember_saves_the_rule_where_you_say() {
     assert_eq!(choice.kind, ChoiceKind::SettingScope);
     assert_eq!(
         choice.body.first().map(String::as_str),
-        Some("fallback.workers.replace.claude-code.with = [\"codex/gpt-5\"]"),
+        Some("fallback.worker.replace.claude-code.with = [\"codex/gpt-5\"]"),
         "{choice:?}"
     );
-    let sent = harness.approvals.calls();
+    let sent = driver.approvals.calls();
     assert!(
         matches!(&sent[..], [ApprovalCall::Answer { answer, .. }]
             if answer.action == AnswerAction::Candidate { worker: pick.clone() }),
@@ -613,7 +635,7 @@ async fn a_handoff_answer_with_remember_saves_the_rule_where_you_say() {
         .iter()
         .find(|option| option.key == 'p')
         .expect("a project option");
-    harness
+    driver
         .send(UiCommand::Answer {
             to: AnswerTarget::Choice {
                 id: choice.id.clone(),
@@ -621,11 +643,11 @@ async fn a_handoff_answer_with_remember_saves_the_rule_where_you_say() {
             action: project.action.clone(),
             text: None,
             evidence_sha256: None,
-            cards: Vec::new(),
+            tasks: Vec::new(),
             remember: false,
         })
         .await;
-    let changed = harness
+    let changed = driver
         .until(|event| matches!(event, AppEvent::SettingChanged { .. }))
         .await;
     let AppEvent::SettingChanged { key, value, .. } = changed else {
@@ -634,13 +656,13 @@ async fn a_handoff_answer_with_remember_saves_the_rule_where_you_say() {
     assert_eq!(
         (key.as_str(), value.as_str()),
         (
-            "fallback.workers.replace.claude-code.with",
+            "fallback.worker.replace.claude-code.with",
             "[\"codex/gpt-5\"]"
         )
     );
-    let text = std::fs::read_to_string(harness.env.project_config()).expect("the project file");
+    let text = std::fs::read_to_string(driver.env.project_config()).expect("the project file");
     let written = toml::Value::Table(text.parse().expect("the project file is TOML"));
-    let with = ["fallback", "workers", "replace", "claude-code", "with"]
+    let with = ["fallback", "worker", "replace", "claude-code", "with"]
         .iter()
         .try_fold(&written, |node, part| node.get(part));
     assert_eq!(
@@ -651,19 +673,19 @@ async fn a_handoff_answer_with_remember_saves_the_rule_where_you_say() {
         Some(vec!["codex/gpt-5"]),
         "{text}"
     );
-    harness.exit().await;
+    driver.exit().await;
 }
 
 fn listed(run: &str, live: bool) -> RunSummary {
     RunSummary {
         run: run_id(run),
         title: format!("{run} title"),
-        mode: RunMode::Solo,
-        workflow: "solo".to_owned(),
+        mode: RunMode::Captain,
+        workflow: "captain".to_owned(),
         state: if live {
             RunState::Running
         } else {
-            RunState::Parked
+            RunState::Waiting
         },
         stopped_at: String::new(),
         updated: OffsetDateTime::UNIX_EPOCH,
@@ -678,11 +700,11 @@ fn listed(run: &str, live: bool) -> RunSummary {
 
 /// A live session of `run`, with its context fill when `window` is known.
 fn live_session(run: &RunId, seq: u64, key: &SessionKey, window: Option<u64>) -> Vec<RunEvent> {
-    let card = CardId::new("task-001").expect("a task id");
+    let task = TaskId::new("task-001").expect("a task id");
     let mut events = vec![session_started(
         seq,
         key,
-        Some(&card),
+        Some(&task),
         RoleName::Worker,
         "claude-code",
     )];
@@ -710,8 +732,65 @@ fn write_run(rig: &Rig, run: &RunId, events: &[RunEvent]) {
     write_journal(&dir.join(run_files::EVENTS), events);
 }
 
-async fn context_rows(rig: &mut Rig, chat: &ContextRow) -> Vec<ContextRow> {
-    super::context(&mut rig.ctx, &mut rig.runs, Some(chat.clone()))
+/// Giving a task to the worker it already has starts it over, and the notice says so. Any
+/// other worker takes the task, as before. Both are sent to the run alike.
+#[tokio::test]
+async fn giving_a_task_to_the_worker_it_has_starts_it_over() {
+    let mut rig = Rig::new();
+    let run = run_id("run-001");
+    let task = TaskId::new("task-001").expect("a task id");
+    let opus: ModelRef = "claude-code/claude-opus-5-5".parse().expect("a model");
+    let luna: ModelRef = "codex/gpt-5.6-luna".parse().expect("a model");
+    let mut tried = event(
+        &run,
+        1,
+        RunEventKind::Task(TaskEvent::Try {
+            try_number: 1,
+            worker: opus.clone(),
+            cause: TryCause::First,
+        }),
+    );
+    tried.task_id = Some(task.clone());
+    write_run(&rig, &run, &[tried]);
+
+    let mut said = Vec::new();
+    for to in [&opus, &luna] {
+        reassign(
+            &mut rig.ctx,
+            &mut rig.runs,
+            run.clone(),
+            task.clone(),
+            to.clone(),
+        )
+        .await
+        .expect("the run takes it");
+        let notice = rig
+            .until(|event| matches!(event, AppEvent::Notice { .. }))
+            .await;
+        let AppEvent::Notice { text, .. } = notice else {
+            unreachable!()
+        };
+        said.push(text);
+    }
+    assert!(
+        said[0].starts_with("Starting task-001 over with ") && said[0].contains("a note of it"),
+        "{said:?}"
+    );
+    assert!(said[1].starts_with("Moving task-001 to "), "{said:?}");
+    let sent: Vec<ModelRef> = rig
+        .conductor
+        .calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            Call::Reassign { to, .. } => Some(to),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sent, [opus, luna]);
+}
+
+async fn context_rows(rig: &mut Rig, conversation: &ContextRow) -> Vec<ContextRow> {
+    super::context(&mut rig.ctx, &mut rig.runs, Some(conversation.clone()))
         .await
         .expect("/context");
     let AppEvent::View { data } = rig
@@ -727,49 +806,52 @@ async fn context_rows(rig: &mut Rig, chat: &ContextRow) -> Vec<ContextRow> {
 }
 
 #[tokio::test]
-async fn context_lists_the_chat_then_live_sessions_each_capped_by_its_window() {
+async fn context_lists_the_conversation_then_live_sessions_each_capped_by_its_window() {
     let mut rig = Rig::with(true, |global| {
         std::fs::write(global, "[sessions]\nrotate_at = 0.9\n").expect("the global config");
     });
     let run = rig.start("Rename the flag").await;
-    let (owner, other_owner, starting) = (
+    let (worker, other_worker, starting) = (
         SessionKey::numbered(1),
         SessionKey::numbered(2),
         SessionKey::numbered(3),
     );
-    for event in live_session(&run, 1, &owner, Some(200_000)) {
+    for event in live_session(&run, 1, &worker, Some(200_000)) {
         assert!(rig.conductor.push(&run, event).await);
     }
     rig.settle().await;
     let other = run_id("run-002");
-    let mut other_events = live_session(&other, 1, &other_owner, Some(1_000_000));
+    let mut other_events = live_session(&other, 1, &other_worker, Some(1_000_000));
     other_events.extend(live_session(&other, 4, &starting, None));
     write_run(&rig, &other, &other_events);
     let not_live = run_id("run-003");
     write_run(
         &rig,
         &not_live,
-        &live_session(&not_live, 1, &owner, Some(200_000)),
+        &live_session(&not_live, 1, &worker, Some(200_000)),
     );
     rig.conductor.set_runs(vec![
         listed("run-001", true),
         listed("run-002", true),
         listed("run-003", false),
     ]);
-    let chat = ContextRow {
+    let conversation = ContextRow {
         run: None,
         session: SessionKey::numbered(9),
-        label: "chat".to_owned(),
-        worker: WorkerRef::new("claude-code", None),
+        label: "conversation".to_owned(),
+        worker: ModelRef::new("claude-code", None),
         used: 3_000,
         window: Some(200_000),
         cap: None,
         tool_calls: 0,
         spent: Spend::default(),
         rotations: 0,
+        estimated: false,
+        counts: false,
+        categories: Vec::new(),
     };
 
-    let rows = context_rows(&mut rig, &chat).await;
+    let rows = context_rows(&mut rig, &conversation).await;
     let shown: Vec<(Option<&str>, &SessionKey, Option<u64>)> = rows
         .iter()
         .map(|row| (row.run.as_ref().map(RunId::as_str), &row.session, row.cap))
@@ -777,14 +859,23 @@ async fn context_lists_the_chat_then_live_sessions_each_capped_by_its_window() {
     assert_eq!(
         shown,
         [
-            (None, &chat.session, None),
-            (Some("run-001"), &owner, Some(180_000)),
-            (Some("run-002"), &other_owner, Some(900_000)),
+            (None, &conversation.session, None),
+            (Some("run-001"), &worker, Some(180_000)),
+            (Some("run-002"), &other_worker, Some(900_000)),
             (Some("run-002"), &starting, None),
         ],
-        "the chat, the run on screen, then other live runs, each capped at 0.9 of its window"
+        "the conversation, the run on screen, then other live runs, each capped at 0.9 of its window"
     );
-    assert_eq!(rows[0], chat, "the chat's row is shown as given");
+    // Claude Code can say what fills a session, and reads its fill off each request.
+    let said = ContextRow {
+        counts: true,
+        ..conversation.clone()
+    };
+    assert_eq!(
+        rows[0], said,
+        "the conversation's row, with what its CLI can say"
+    );
+    assert!(rows.iter().all(|row| row.counts && !row.estimated));
     assert_eq!((rows[1].used, rows[1].spent.input_tokens), (20_000, 1_000));
 
     assert!(
@@ -793,7 +884,7 @@ async fn context_lists_the_chat_then_live_sessions_each_capped_by_its_window() {
             .await
     );
     rig.settle().await;
-    let rows = context_rows(&mut rig, &chat).await;
+    let rows = context_rows(&mut rig, &conversation).await;
     let runs: Vec<Option<&str>> = rows
         .iter()
         .map(|row| row.run.as_ref().map(RunId::as_str))
@@ -806,10 +897,10 @@ async fn context_lists_the_chat_then_live_sessions_each_capped_by_its_window() {
     assert!(rig.agent.specs().is_empty(), "/context started a session");
 }
 
-/// A child standing in for a live supervisor, killed when it drops.
-struct StandIn(Child);
+/// A child playing a live run host, killed when it drops.
+struct FakeRunHost(Child);
 
-impl StandIn {
+impl FakeRunHost {
     fn spawn() -> Self {
         Self(
             Command::new("sleep")
@@ -819,9 +910,9 @@ impl StandIn {
         )
     }
 
-    fn entry(&self, repo_root: &Path, run: &RunId) -> LiveSupervisor {
+    fn entry(&self, repo_root: &Path, run: &RunId) -> LiveRunHost {
         let pid = self.0.id();
-        LiveSupervisor {
+        LiveRunHost {
             pid,
             start_time: Processes::new().start_time(pid).expect("the fallback runs"),
             repo_root: repo_root.to_owned(),
@@ -831,7 +922,7 @@ impl StandIn {
     }
 }
 
-impl Drop for StandIn {
+impl Drop for FakeRunHost {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
@@ -845,11 +936,11 @@ fn waiting_run(rig: &Rig, root: &Path, run: &str, at: OffsetDateTime) -> RunId {
     let repo = RepoId::for_repo(root).expect("a repo id");
     let dir = rig.ctx.env.paths.run_dir(&repo, &run);
     std::fs::create_dir_all(&dir).expect("the run directory");
-    let checkpoint = CheckpointId::numbered(1);
+    let approval = ApprovalId::numbered(1);
     let events = [
         run_started(0, "Rename the loader", None),
-        question(&run, 1, checkpoint.as_str()),
-        parked(&run, 2, vec![checkpoint]),
+        question(&run, 1, approval.as_str()),
+        waiting(&run, 2, vec![approval]),
     ]
     .map(|event| RunEvent {
         run_id: run.clone(),
@@ -886,12 +977,12 @@ async fn all_repos_lists_this_repo_then_live_ones_newest_first() {
     let at = OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
     let older_run = waiting_run(&rig, &older, "run-101", at);
     let newer_run = waiting_run(&rig, &newer, "run-102", at + time::Duration::hours(1));
-    let mut stand_ins: Vec<StandIn> = (0..4).map(|_| StandIn::spawn()).collect();
+    let mut run_hosts: Vec<FakeRunHost> = (0..4).map(|_| FakeRunHost::spawn()).collect();
     for entry in [
-        stand_ins[0].entry(&here, &run_id("run-001")),
-        stand_ins[1].entry(&older, &older_run),
-        stand_ins[2].entry(&newer, &newer_run),
-        stand_ins[3].entry(&base.join("moved-away"), &run_id("run-103")),
+        run_hosts[0].entry(&here, &run_id("run-001")),
+        run_hosts[1].entry(&older, &older_run),
+        run_hosts[2].entry(&newer, &newer_run),
+        run_hosts[3].entry(&base.join("moved-away"), &run_id("run-103")),
     ] {
         register(&rig.ctx.env.paths, &entry).expect("the fallback registers");
     }
@@ -913,12 +1004,12 @@ async fn all_repos_lists_this_repo_then_live_ones_newest_first() {
             panic!("{repo:?}")
         };
         assert_eq!(&summary.run, run);
-        assert_eq!(summary.waiting, [CheckpointId::numbered(1)], "{summary:?}");
+        assert_eq!(summary.waiting, [ApprovalId::numbered(1)], "{summary:?}");
     }
 
-    // Only live supervisors are listed, so a waiting run whose supervisor exited after the
-    // park grace drops out of the tab.
-    drop(stand_ins.remove(2));
+    // Only live run hosts are listed, so a waiting run whose run host exited after the
+    // wait grace drops out of the tab.
+    drop(run_hosts.remove(2));
     let names: Vec<String> = all_repos(&mut rig)
         .await
         .into_iter()
@@ -931,24 +1022,24 @@ async fn all_repos_lists_this_repo_then_live_ones_newest_first() {
 }
 
 #[tokio::test]
-async fn rewind_lists_a_cards_checkpoints_for_the_picker() {
-    use argonauts_core::events::card::CardEvent;
+async fn rewind_lists_a_tasks_checkpoints_for_the_picker() {
+    use argonauts_core::events::task::TaskEvent;
     let mut rig = Rig::new();
     let run = rig.start("Rename the flag").await;
     let (export, docs) = (
-        CardId::new("task-001").expect("a task id"),
-        CardId::new("task-002").expect("a task id"),
+        TaskId::new("task-001").expect("a task id"),
+        TaskId::new("task-002").expect("a task id"),
     );
-    let tagged = |seq, card: &CardId, n| RunEvent {
-        card_id: Some(card.clone()),
+    let tagged = |seq, task: &TaskId, n| RunEvent {
+        task_id: Some(task.clone()),
         ..event(
             &run,
             seq,
-            RunEventKind::Card(CardEvent::CheckpointTagged {
+            RunEventKind::Task(TaskEvent::CheckpointTagged {
                 n,
                 commit: "0123456789abcdef".to_owned(),
-                from: WorkerRef::new("claude-code", None),
-                to: vec![WorkerRef::new("codex", None)],
+                from: ModelRef::new("claude-code", None),
+                to: vec![ModelRef::new("codex", None)],
                 reason: "usage limit".to_owned(),
             }),
         )
@@ -973,24 +1064,24 @@ async fn rewind_lists_a_cards_checkpoints_for_the_picker() {
     };
     let ViewData::Checkpoints {
         run: shown,
-        card,
+        task,
         checkpoints,
     } = *data
     else {
         panic!("/rewind answers with its picker");
     };
-    assert_eq!((shown, card), (run.clone(), Some(export.clone())));
+    assert_eq!((shown, task), (run.clone(), Some(export.clone())));
     let picked: Vec<(String, u32)> = checkpoints
         .iter()
-        .map(|row| (row.card.to_string(), row.n))
+        .map(|row| (row.task.to_string(), row.n))
         .collect();
     assert_eq!(
         picked,
         [("task-001".to_owned(), 1), ("task-001".to_owned(), 2)]
     );
 
-    // A card with none says so instead of an empty picker.
-    let none = CardId::new("task-009").expect("a task id");
+    // A task with none says so instead of an empty picker.
+    let none = TaskId::new("task-009").expect("a task id");
     super::checkpoints(&mut rig.ctx, &mut rig.runs, Some(none))
         .await
         .expect("/rewind task-009");
@@ -1017,9 +1108,9 @@ async fn follow_up_builds_on_a_merged_run_and_says_why_not_otherwise() {
         .set_runs(vec![listed("run-002", false), merged]);
     let follow_up = |run: Option<&str>| (run.map(run_id), "Add a CSV export too".to_owned());
 
-    // A parked run can't be followed up; /resume carries it on.
+    // A waiting run can't be followed up; /resume carries it on.
     let (run, request) = follow_up(Some("run-002"));
-    super::continue_run(&mut rig.ctx, &mut rig.runs, run, request)
+    run_follow_up(&mut rig, run, request)
         .await
         .expect("/follow-up run-002");
     let AppEvent::Notice { text, .. } = rig
@@ -1031,7 +1122,7 @@ async fn follow_up_builds_on_a_merged_run_and_says_why_not_otherwise() {
     assert!(text.contains("run-002 isn't merged"), "{text}");
 
     let (run, request) = follow_up(Some("run-404"));
-    super::continue_run(&mut rig.ctx, &mut rig.runs, run, request)
+    run_follow_up(&mut rig, run, request)
         .await
         .expect("/follow-up run-404");
     let AppEvent::Notice { text, .. } = rig
@@ -1050,7 +1141,7 @@ async fn follow_up_builds_on_a_merged_run_and_says_why_not_otherwise() {
 
     // With no run named, the newest merged one.
     let (run, request) = follow_up(None);
-    super::continue_run(&mut rig.ctx, &mut rig.runs, run, request)
+    run_follow_up(&mut rig, run, request)
         .await
         .expect("/follow-up");
     assert!(rig.conductor.calls().iter().any(|call| matches!(
@@ -1063,8 +1154,16 @@ fn merged_id() -> RunId {
     run_id("run-001")
 }
 
-/// A follow-up to a solo run stays solo, unless All hands is on, which sends it to the crew as
-/// it does every task.
+/// `/follow-up` as the controller runs it: the run it asks for, then that run's start.
+async fn run_follow_up(rig: &mut Rig, run: Option<RunId>, request: String) -> super::Handled {
+    match super::follow_up(&mut rig.ctx, &rig.runs, run, request).await? {
+        Some(follow_up) => super::continue_run(&mut rig.ctx, &mut rig.runs, follow_up).await,
+        None => Ok(Vec::new()),
+    }
+}
+
+/// A follow-up to a Captain run stays as Captain, unless Ultracode is on, which sends it to the
+/// crew as it does every task.
 #[tokio::test]
 async fn follow_up_goes_to_the_crew_while_ultracode_is_on() {
     for on in [false, true] {
@@ -1076,14 +1175,9 @@ async fn follow_up_goes_to_the_crew_while_ultracode_is_on() {
             ..listed("run-001", false)
         };
         rig.conductor.set_runs(vec![merged]);
-        super::continue_run(
-            &mut rig.ctx,
-            &mut rig.runs,
-            None,
-            "Add a CSV export too".into(),
-        )
-        .await
-        .expect("/follow-up");
+        run_follow_up(&mut rig, None, "Add a CSV export too".into())
+            .await
+            .expect("/follow-up");
         let calls = rig.conductor.calls();
         let Some(Call::Continue { merged, request }) = calls
             .iter()
@@ -1092,11 +1186,14 @@ async fn follow_up_goes_to_the_crew_while_ultracode_is_on() {
             panic!("no follow-up started: {calls:?}");
         };
         assert_eq!(*merged, merged_id());
-        let rule = request.triage.as_ref().map(|triage| triage.rule.as_str());
+        let rule = request
+            .captain_or_crew
+            .as_ref()
+            .map(|captain_or_crew| captain_or_crew.rule.as_str());
         if on {
             assert_eq!((request.mode, rule), (RunMode::Crew, Some("ultracode")));
         } else {
-            assert_eq!((request.mode, rule), (RunMode::Solo, None));
+            assert_eq!((request.mode, rule), (RunMode::Captain, None));
         }
         assert!(!request.forced);
     }
@@ -1174,9 +1271,9 @@ fn refusals_from_an_ended_run_read_in_plain_words() {
         super::plain_refusal(&ApiError::NotNow("the run isn't running".into())).as_deref(),
         Some("The run isn't running.")
     );
-    // A supervisor's own failure keeps its detail, under a plain verb at the call.
+    // A run host's own failure keeps its detail, under a plain verb at the call.
     assert_eq!(
-        super::plain_refusal(&ApiError::Supervisor("socket closed".into())),
+        super::plain_refusal(&ApiError::RunHost("socket closed".into())),
         None
     );
 }
@@ -1215,7 +1312,7 @@ fn failures_read_as_one_plain_line() {
         super::failure(&refused, "Couldn't steer task-001"),
         "Couldn't steer task-001: task-001 has no session to steer."
     );
-    let down = ApiError::Supervisor("socket closed".into());
+    let down = ApiError::RunHost("socket closed".into());
     assert_eq!(
         super::failure(&down, "Couldn't pause the run"),
         "Couldn't pause the run: its run didn't answer (socket closed)."

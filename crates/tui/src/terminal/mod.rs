@@ -7,8 +7,8 @@
 //! The design follows Codex's `custom_terminal.rs`, `insert_history.rs`, and the draw path in
 //! `tui.rs` (Apache-2.0), which derive from ratatui's `Terminal` (MIT). It keeps two buffers for
 //! the viewport and writes only the cells that changed, and it prints history in the same
-//! synchronized update as the frame, so the viewport never flickers. It writes to any `io::Write`, so tests can point it at
-//! a `vt100::Parser`.
+//! synchronized update as the frame, so the viewport never flickers. It writes to any `io::Write`,
+//! so tests can point it at a `vt100::Parser`.
 
 mod clipboard;
 mod flush;
@@ -64,8 +64,8 @@ pub struct InlineTerminal<W: Write> {
     /// The frame being drawn and the one on screen, both covering the viewport.
     buffers: [Buffer; 2],
     current: usize,
-    /// Where the cursor was parked after the last frame, if it still is.
-    parked: Option<Position>,
+    /// Where the cursor rested after the last frame, if it still does.
+    resting: Option<Position>,
     cursor_hidden: bool,
     /// A row to clear from before the next frame, after a resize.
     clear_from: Option<u16>,
@@ -97,13 +97,13 @@ struct Marked {
 
 #[derive(Debug)]
 pub struct Frame<'a> {
-    /// The rows pinned to the bottom of the screen, in screen coordinates.
+    /// The rows pinned to the bottom of the screen, counted from the screen's top left.
     pub area: Rect,
-    /// The rows right under history, in screen coordinates. Empty unless the draw asked for
-    /// some.
+    /// The rows right under history, counted from the screen's top left. Empty unless the draw
+    /// asked for some.
     pub trailing: Rect,
     pub buffer: &'a mut Buffer,
-    /// In screen coordinates.
+    /// Counted from the screen's top left.
     pub cursor: Option<Position>,
 }
 
@@ -147,7 +147,7 @@ impl<W: Write> InlineTerminal<W> {
             pending_redraw: None,
             buffers: [Buffer::empty(viewport), Buffer::empty(viewport)],
             current: 0,
-            parked: None,
+            resting: None,
             cursor_hidden: false,
             clear_from: None,
             live_rows: [0..0, 0..0],
@@ -397,22 +397,22 @@ impl<W: Write> InlineTerminal<W> {
         let before = out.len();
         flush_diff(out, previous, current)?;
         if out.len() > before {
-            self.parked = None;
+            self.resting = None;
         }
         if !self.cursor_hidden {
             queue!(out, Hide)?;
             self.cursor_hidden = true;
         }
-        // The composer draws its own block cursor. The real one stays hidden, parked where
-        // typing happens so input methods put their popups there. Without an input it waits on
+        // The composer draws its own block cursor. The real one stays hidden, resting where
+        // typing happens so input methods put their popups there. Without an input it rests on
         // the region's last row, so a resize can always tell how far the terminal moved it.
-        let park =
+        let rest =
             cursor.or_else(|| (pinned.height > 0).then(|| Position::new(0, pinned.bottom() - 1)));
-        if let Some(position) = park
-            && self.parked != Some(position)
+        if let Some(position) = rest
+            && self.resting != Some(position)
         {
             queue!(out, MoveTo(position.x, position.y))?;
-            self.parked = Some(position);
+            self.resting = Some(position);
         }
         self.swap_buffers();
         Ok(())
@@ -425,10 +425,10 @@ impl<W: Write> InlineTerminal<W> {
         let mut end = i32::from(self.history_end);
         // Codex's heuristic: terminals that rewrap scrollback, or push rows into it as the
         // screen shrinks, move the cursor with them, so history moved as far as the cursor did.
-        if let (Some(reported), Some(parked)) = (cursor, self.parked)
-            && reported.y != parked.y
+        if let (Some(reported), Some(resting)) = (cursor, self.resting)
+            && reported.y != resting.y
         {
-            end += i32::from(reported.y) - i32::from(parked.y);
+            end += i32::from(reported.y) - i32::from(resting.y);
         }
         if screen.width != self.screen.width {
             // The terminal may rewrap history, so the marked rows can't be found again.
@@ -445,7 +445,7 @@ impl<W: Write> InlineTerminal<W> {
         self.invalidate();
         // The cursor stays where the terminal just said it is, so the next resize of a burst,
         // before any frame, measures from there.
-        self.parked = cursor;
+        self.resting = cursor;
         Ok(())
     }
 
@@ -454,7 +454,7 @@ impl<W: Write> InlineTerminal<W> {
         // A reset cell would still equal a blank one, so mark every cell as changed.
         let (_, previous) = self.buffers_mut();
         mark_all_changed(previous);
-        self.parked = None;
+        self.resting = None;
         self.cursor_hidden = false;
         self.screen_rows.clear();
         self.screen_buffer = None;
@@ -548,7 +548,7 @@ impl<W: Write> InlineTerminal<W> {
         // The main screen is never drawn on, so there is no shell output to move out of the way.
         self.shell_on_screen = false;
         self.cursor_hidden = true;
-        self.parked = None;
+        self.resting = None;
         self.screen_rows.clear();
         self.screen_buffer = None;
         Ok(())
@@ -561,7 +561,7 @@ impl<W: Write> InlineTerminal<W> {
         self.emit(&out)?;
         setup::note_alternate_screen(false);
         self.cursor_hidden = false;
-        self.parked = None;
+        self.resting = None;
         self.screen_rows.clear();
         self.screen_buffer = None;
         Ok(())
@@ -590,7 +590,7 @@ impl<W: Write> InlineTerminal<W> {
         out.clear();
         let mut result = self.screen_into(&mut out, lines);
         if !out.is_empty() {
-            self.parked = None;
+            self.resting = None;
         }
         if result.is_ok() && !out.is_empty() {
             result = self.write_frame(&out);
@@ -605,12 +605,12 @@ impl<W: Write> InlineTerminal<W> {
     /// Paints the whole alternate screen from a view's buffer, writing only the cells that
     /// changed since the last one.
     pub fn draw_buffer(&mut self, next: &Buffer) -> io::Result<()> {
-        self.draw_buffer_parked(next, None)
+        self.draw_buffer_resting(next, None)
     }
 
-    /// Like [`draw_buffer`](Self::draw_buffer), then parks the hidden cursor at `park`, where
+    /// Like [`draw_buffer`](Self::draw_buffer), then rests the hidden cursor at `rest`, where
     /// typing happens, so input methods put their popups there.
-    pub fn draw_buffer_parked(&mut self, next: &Buffer, park: Option<Position>) -> io::Result<()> {
+    pub fn draw_buffer_resting(&mut self, next: &Buffer, rest: Option<Position>) -> io::Result<()> {
         let area = Rect::new(0, 0, self.screen.width, self.screen.height);
         if area.is_empty() {
             return Ok(());
@@ -633,19 +633,19 @@ impl<W: Write> InlineTerminal<W> {
         // Rows written from lines no longer describe the screen.
         self.screen_rows.clear();
         if !out.is_empty() {
-            self.parked = None;
+            self.resting = None;
         }
-        if let Some(position) = park.filter(|position| self.parked != Some(*position))
+        if let Some(position) = rest.filter(|position| self.resting != Some(*position))
             && result.is_ok()
         {
             result = queue!(out, MoveTo(position.x, position.y));
-            self.parked = Some(position);
+            self.resting = Some(position);
         }
         if result.is_ok() && !out.is_empty() {
             result = self.write_frame(&out);
         }
         if result.is_err() {
-            self.parked = None;
+            self.resting = None;
         }
         self.screen_buffer = result.is_ok().then_some(next);
         self.scratch = out;
@@ -704,7 +704,7 @@ impl<W: Write> InlineTerminal<W> {
         }
         let inserted = insert_lines(out, lines, self.history_end, live, self.screen)?;
         self.history_end = inserted.end;
-        self.parked = None;
+        self.resting = None;
         Ok(inserted.cleared)
     }
 
@@ -731,7 +731,7 @@ impl<W: Write> InlineTerminal<W> {
             write_line(out, line, width)?;
         }
         queue!(out, RestorePosition)?;
-        self.parked = None;
+        self.resting = None;
         Ok(())
     }
 
@@ -780,7 +780,7 @@ impl<W: Write> InlineTerminal<W> {
                 previous[(x, row)].reset();
             }
         }
-        self.parked = None;
+        self.resting = None;
         Ok(())
     }
 

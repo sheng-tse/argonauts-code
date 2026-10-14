@@ -1,11 +1,13 @@
-//! Prose helpers for what Argonauts says. A message often starts with something you typed, such
-//! as `limits.spend_per_run`, a file, or a worker, and that keeps its exact spelling.
+//! Prose helpers for what Argonauts Code says. A message often starts with something you typed,
+//! such as `limits.spend_per_run`, a file, or a model, and that keeps its exact spelling.
 
 /// Starts `text` with a capital, as a sentence does, unless its first word is written as code:
-/// a dotted key, a path, a flag, a worker, or anything with a digit, `_`, or backtick in it.
+/// a dotted key, a path, a flag, a model, anything with a digit, `_`, or backtick in it, or the
+/// key of a line quoted from a file, such as `workflow = "council"`.
 pub fn sentence_case(text: &str) -> String {
-    let first_word = text.split_whitespace().next().unwrap_or_default();
-    if is_code(first_word) {
+    let mut words = text.split_whitespace();
+    let first_word = words.next().unwrap_or_default();
+    if is_code(first_word) || words.next() == Some("=") {
         return text.to_owned();
     }
     let mut chars = text.chars();
@@ -59,14 +61,11 @@ fn is_code(word: &str) -> bool {
     })
 }
 
-/// A state's name in the journal, as the screen says it. The journal keeps the older words,
-/// and every place that prints a state from its serialized name goes through here.
+/// A state's name in the journal, as the screen says it. Every place that prints a state from
+/// its serialized name goes through here.
 pub fn state_words(name: &str) -> &str {
     match name {
-        "parked" => "waiting",
-        "escalated" => "needs you",
-        "landed" => "merged",
-        "integrated" => "merged into the run",
+        "needs_you" => "needs you",
         other => other,
     }
 }
@@ -101,7 +100,7 @@ mod tests {
     fn keys_paths_and_names_keep_their_spelling() {
         for text in [
             "limits.spend_per_run in .argonauts/config.local.toml is ignored",
-            "main_agent: invalid worker",
+            "crew.main: invalid model",
             ".argonauts/config.toml changed",
             "~/.argonauts/config.toml is yours",
             "--set ui.keys=vim is refused",
@@ -109,6 +108,7 @@ mod tests {
             "`cargo test` failed",
             "[[checks.run]] needs a name",
             "gpt5 is gone",
+            "workflow = \"x\" in config.toml names no workflow",
         ] {
             assert_eq!(sentence_case(text), text);
         }

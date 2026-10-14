@@ -1,30 +1,30 @@
-//! `[roles.<role>]`: fresh-session defaults, which workers a role may name, and roles that
+//! `[roles.<role>]`: fresh-session defaults, which models a role may name, and roles that
 //! never run.
 
 use argonauts_core::adapter::KNOWN_AGENT_IDS;
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::settings::Settings;
 use toml::{Table, Value};
 
 use super::validate::Problem;
-use crate::harnesses::{builtin_counts, every_builtin_harness};
+use crate::clis::{builtin_counts, every_builtin_cli};
 use crate::models::builtin_endpoint;
 
 /// Roles that start from a fresh session unless their table says otherwise, so nothing they
 /// saw before sways a verdict.
-const FRESH_BY_DEFAULT: [&str; 3] = ["judge", "adjudicator", "approver"];
+const FRESH_BY_DEFAULT: [&str; 1] = ["judge"];
 
-/// Roles whose steps need a harness with tools. An endpoint has none, so it can review,
+/// Roles whose steps need a CLI with tools. An endpoint has none, so it can review,
 /// critique, judge, and narrate, but not these.
-const HARNESS_ROLES: [RoleName; 5] = [
-    RoleName::Restater,
-    RoleName::Drafter,
-    RoleName::Spike,
+const CLI_ROLES: [RoleName; 5] = [
+    RoleName::Reader,
+    RoleName::Draft,
+    RoleName::Experiment,
     RoleName::Worker,
     RoleName::Main,
 ];
 
-/// Gives each judge, adjudicator, and approver table that doesn't set `fresh_session` a fresh
+/// Gives a judge table that doesn't set `fresh_session` a fresh
 /// session. A role with no table gets the same default where it runs.
 pub(crate) fn fill_fresh_sessions(merged: &mut Table) {
     let Some(Value::Table(roles)) = merged.get_mut("roles") else {
@@ -37,32 +37,32 @@ pub(crate) fn fill_fresh_sessions(merged: &mut Table) {
     }
 }
 
-/// Which ids name a harness and which an endpoint. An id nobody knows is a warning, never an
+/// Which ids name a CLI and which an endpoint. An id nobody knows is a warning, never an
 /// error, since a `models.toml` that doesn't parse yet may be meant to declare it.
-pub(crate) struct Workers<'a> {
+pub(crate) struct AgentIds<'a> {
     settings: &'a Settings,
-    builtin_harnesses: Vec<String>,
-    /// `[[harness]]` ids from your `models.toml` files.
+    builtin_clis: Vec<String>,
+    /// `[[cli]]` ids from your `models.toml` files.
     declared: &'a [String],
     /// Agents a settings layer turned on with `enabled = true`.
     turned_on: Vec<String>,
 }
 
-impl<'a> Workers<'a> {
+impl<'a> AgentIds<'a> {
     pub fn new(settings: &'a Settings) -> Self {
-        let builtin_harnesses = every_builtin_harness()
+        let builtin_clis = every_builtin_cli()
             .into_iter()
             .map(|manifest| manifest.id)
             .collect();
         Self {
             settings,
-            builtin_harnesses,
+            builtin_clis,
             declared: &[],
             turned_on: Vec::new(),
         }
     }
 
-    /// With what resolving knows beyond the settings: the declared harnesses and the agents
+    /// With what resolving knows beyond the settings: the declared CLIs and the agents
     /// turned on.
     pub fn resolving(self, declared: &'a [String], turned_on: Vec<String>) -> Self {
         Self {
@@ -88,39 +88,39 @@ impl<'a> Workers<'a> {
 
     pub fn is_known(&self, id: &str) -> bool {
         KNOWN_AGENT_IDS.contains(&id)
-            || self.builtin_harnesses.iter().any(|known| known == id)
+            || self.builtin_clis.iter().any(|known| known == id)
             || self.settings.agents.contains_key(id)
             || self.is_endpoint(id)
             || self.is_declared(id)
     }
 }
 
-/// An endpoint where a step needs a harness: the default agent, or a worker of a harness role.
+/// An endpoint where a step needs a CLI: the main agent, or a model of a CLI role.
 /// The `[fallback]` lists each serve several roles, so an endpoint there is fine: the fallback
 /// filters the candidates for each role when it happens.
-pub(crate) fn endpoint_problems(settings: &Settings, workers: &Workers<'_>) -> Vec<Problem> {
+pub(crate) fn endpoint_problems(settings: &Settings, agents: &AgentIds<'_>) -> Vec<Problem> {
     let mut problems = Vec::new();
-    let endpoint = |worker: &WorkerRef| workers.is_endpoint(&worker.worker);
-    if endpoint(&settings.main_agent) {
+    let endpoint = |worker: &ModelRef| agents.is_endpoint(&worker.agent);
+    if endpoint(&settings.crew.main) {
         problems.push(Problem::new(
-            "main_agent",
+            "crew.main",
             format!(
-                "main_agent is {}, an endpoint; the main agent needs a CLI with tools",
-                settings.main_agent
+                "crew.main is {}, an endpoint; the main agent needs a CLI with tools",
+                settings.crew.main
             ),
         ));
     }
-    for role in HARNESS_ROLES {
+    for role in CLI_ROLES {
         let Some(table) = settings.roles.get(&role) else {
             continue;
         };
         let name = role.as_str();
-        let mut lists: Vec<(String, Vec<&WorkerRef>)> = Vec::new();
-        // `roles.default.workers` is ignored, and says so in a warning of its own.
+        let mut lists: Vec<(String, Vec<&ModelRef>)> = Vec::new();
+        // `roles.default.models` is ignored, and says so in a warning of its own.
         if role != RoleName::Main {
             lists.push((
-                format!("roles.{name}.workers"),
-                table.workers.iter().collect(),
+                format!("roles.{name}.models"),
+                table.models.iter().collect(),
             ));
         }
         for (key, list) in lists {
@@ -138,53 +138,41 @@ pub(crate) fn endpoint_problems(settings: &Settings, workers: &Workers<'_>) -> V
     problems
 }
 
-/// A run finds no harness for a worker that's off, so it says so now rather than then.
-pub(crate) fn off(key: &str, worker: &WorkerRef) -> String {
-    let id = &worker.worker;
+/// A run finds no CLI for an agent that's off, so it says so now rather than then.
+pub(crate) fn off(key: &str, worker: &ModelRef) -> String {
+    let id = &worker.agent;
     format!(
         "{key} names {worker}, which is off, so a run finds no CLI for it; turn it on with \
          agents.{id}.enabled = true"
     )
 }
 
-/// A worker may be a harness from a `models.toml` that doesn't parse yet, so it only warns.
-pub(crate) fn unknown(key: &str, worker: &WorkerRef) -> String {
+/// A model may name a CLI from a `models.toml` that doesn't parse yet, so it only warns.
+pub(crate) fn unknown(key: &str, worker: &ModelRef) -> String {
     format!(
-        "{key} names {worker}, which isn't a CLI or endpoint Argonauts knows, and no \
-         models.toml declares it as a [[harness]]"
+        "{key} names {worker}, which isn't a CLI or endpoint Argonauts Code knows, and no \
+         models.toml declares it as a [[cli]]"
     )
 }
 
-/// Role workers nobody knows or that are off, and an adjudicator that can never run.
-pub(crate) fn warnings(settings: &Settings, workers: &Workers<'_>) -> Vec<String> {
+/// Role models nobody knows or that are off.
+pub(crate) fn warnings(settings: &Settings, agents: &AgentIds<'_>) -> Vec<String> {
     let mut warnings = Vec::new();
-    if workers.is_off(&settings.main_agent.worker) {
-        warnings.push(off("main_agent", &settings.main_agent));
+    if agents.is_off(&settings.crew.main.agent) {
+        warnings.push(off("crew.main", &settings.crew.main));
     }
     for (role, table) in &settings.roles {
         if *role == RoleName::Main {
             continue;
         }
-        let key = format!("roles.{}.workers", role.as_str());
-        for worker in &table.workers {
-            if workers.is_off(&worker.worker) {
+        let key = format!("roles.{}.models", role.as_str());
+        for worker in &table.models {
+            if agents.is_off(&worker.agent) {
                 warnings.push(off(&key, worker));
-            } else if !workers.is_known(&worker.worker) {
+            } else if !agents.is_known(&worker.agent) {
                 warnings.push(unknown(&key, worker));
             }
         }
-    }
-    let reviewers = settings
-        .roles
-        .get(&RoleName::Reviewer)
-        .and_then(|role| role.count);
-    let most_reviewers = settings.review.per_task.max(reviewers.unwrap_or(0));
-    if settings.roles.contains_key(&RoleName::Adjudicator) && most_reviewers < 2 {
-        warnings.push(format!(
-            "roles.adjudicator never runs: it settles reviewers who disagree, and no task gets \
-             two reviewers (review.per_task is {})",
-            settings.review.per_task
-        ));
     }
     warnings
 }

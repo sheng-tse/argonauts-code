@@ -1,4 +1,4 @@
-//! Tags, notes, resets, and fast-forwards: the git side of handoff checkpoints, authorship
+//! Tags, notes, resets, and fast-forwards: the git side of fallback checkpoints, authorship
 //! notes, `/rewind`, and landing.
 
 use std::path::Path;
@@ -92,7 +92,7 @@ impl Git {
     /// Writes into the files of `checkout` what changed from `base` to `rev`, and moves
     /// nothing else: no branch, and not your index, since git works out the change in an
     /// index of its own at `scratch`. Like a fast-forward it is all or nothing, and refuses
-    /// while a file of yours differs from `base` where the change would write, unless it is
+    /// while a file of yours is different from `base` where the change would write, unless it is
     /// one of `holding`, which hold what `rev` has there already and are left as they are.
     pub async fn write_files(
         &self,
@@ -108,7 +108,7 @@ impl Git {
             self.in_index(checkout, &["read-tree", base], &with_index)
                 .await?;
             // Files that still match `base` count as untouched only once git has seen them.
-            // It exits 1 for each file of yours that differs, which the merge judges.
+            // It exits 1 for each file of yours that is different, which the merge judges.
             let refresh = ["update-index", "-q", "--refresh"];
             self.output(checkout, &refresh, &with_index).await?;
             self.take_as_they_are(checkout, rev, holding, &with_index)
@@ -159,7 +159,7 @@ impl Git {
             if !out.status.success() {
                 return Err(failed(&read, &out));
             }
-            // Exits 1 for each file that differs, which the next step lists.
+            // Exits 1 for each file that is different, which the next step lists.
             let refresh = ["update-index", "-q", "--refresh"];
             self.output(checkout, &refresh, &with_index).await?;
             let list = ["diff-files", "--name-only", "--no-renames", "-z"];
@@ -236,7 +236,7 @@ impl Git {
             .await
     }
 
-    /// An annotated tag whose message records the handoff. Tagging the same commit again is a
+    /// An annotated tag whose message records the fallback. Tagging the same commit again is a
     /// no-op, so a step re-entered after a crash doesn't fail; a tag on another commit is an
     /// error, since a checkpoint never moves.
     pub async fn tag(

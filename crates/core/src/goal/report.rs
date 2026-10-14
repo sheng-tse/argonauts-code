@@ -8,8 +8,8 @@ use time::OffsetDateTime;
 
 use super::{GoalScope, KeptBy};
 use crate::events::goal::GoalStatus;
-use crate::names::{SessionKey, WorkerRef};
-use crate::{CardId, DiffStat};
+use crate::names::{ModelRef, SessionKey};
+use crate::{DiffStat, TaskId};
 
 /// One goal, as the workflow view's goal panel and the agent's Goal tab show it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -19,7 +19,7 @@ pub struct GoalReport {
     pub scope: GoalScope,
     /// The task it belongs to, for a task's or a step's goal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task: Option<CardId>,
+    pub task: Option<TaskId>,
     /// The session of the agent that works toward it, as its row is keyed. `None` for a
     /// workflow's goal, which every agent of the round works toward, and before the agent's
     /// first session.
@@ -27,7 +27,7 @@ pub struct GoalReport {
     pub session: Option<SessionKey>,
     /// The agent that works toward it, for its CLI's and its model's names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worker: Option<WorkerRef>,
+    pub worker: Option<ModelRef>,
     /// The condition in the words it was set with.
     pub condition: String,
     pub status: GoalStatus,
@@ -61,12 +61,12 @@ pub struct GoalReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Keeper {
     pub by: KeptBy,
-    /// `Codex's own goal`, or `Argonauts`.
+    /// `Codex's own goal`, or `Argonauts Code`.
     pub words: String,
     /// The CLI whose own goal keeps it, as the screen names it: `Codex`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli: Option<String>,
-    /// Why Argonauts keeps a goal that was asked of the CLI, such as "Claude Code has no goal
+    /// Why Argonauts Code keeps a goal that was asked of the CLI, such as "Claude Code has no goal
     /// of its own".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -148,10 +148,10 @@ pub struct CheckReport {
     pub ms: u64,
     /// The judge, for its model's name: `the judge · 1 of 1 line met · Astra`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<WorkerRef>,
+    pub agent: Option<ModelRef>,
 }
 
-/// What the CLI says about its own goal: its account, never Argonauts' check.
+/// What the CLI says about its own goal: its account, never Argonauts Code's check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliGoalReport {
     /// `Codex`.
@@ -178,11 +178,11 @@ impl GoalReport {
         self.status == GoalStatus::Pursuing
     }
 
-    /// `kept by Codex's own goal · checked by Argonauts`.
+    /// `kept by Codex's own goal · checked by Argonauts Code`.
     pub fn kept_words(&self) -> String {
         match self.kept.by {
-            KeptBy::Cli => format!("kept by {} · checked by Argonauts", self.kept.words),
-            KeptBy::Argonauts => "kept by Argonauts".to_owned(),
+            KeptBy::Cli => format!("kept by {} · checked by Argonauts Code", self.kept.words),
+            KeptBy::Argonauts => "kept by Argonauts Code".to_owned(),
         }
     }
 
@@ -205,19 +205,19 @@ impl GoalReport {
             GoalStatus::Cleared => {
                 format!("goal cleared · {} of {total} {lines} met", self.lines_met())
             }
-            GoalStatus::Stuck | GoalStatus::OverBudget => {
+            GoalStatus::Stuck | GoalStatus::OverLimit => {
                 format!("goal stuck · {} of {total} {lines} met", self.lines_met())
             }
         }
     }
 
-    /// The role its agent fills, in the plural as the settings name it: `workers` for a
-    /// task's or a step's goal, `main` for the main agent's alone. None for a workflow's goal,
+    /// The role its agent fills, as the settings name it: `worker` for a task's or a step's
+    /// goal, `main` for the main agent's alone. None for a workflow's goal,
     /// which every role of the round works toward.
     pub fn role(&self) -> Option<&'static str> {
         match self.scope {
-            GoalScope::Task | GoalScope::Step => Some("workers"),
-            GoalScope::Solo => Some("main"),
+            GoalScope::Task | GoalScope::Step => Some("worker"),
+            GoalScope::Captain => Some("main"),
             GoalScope::Workflow => None,
         }
     }
@@ -295,7 +295,7 @@ mod tests {
                 by,
                 words: match by {
                     KeptBy::Cli => "Codex's own goal".to_owned(),
-                    KeptBy::Argonauts => "Argonauts".to_owned(),
+                    KeptBy::Argonauts => "Argonauts Code".to_owned(),
                 },
                 cli: (by == KeptBy::Cli).then(|| "Codex".to_owned()),
                 note: None,
@@ -322,20 +322,20 @@ mod tests {
         assert_eq!(pursuing.row_words(), "try 3 · 2 of 3 lines met");
         assert_eq!(
             pursuing.kept_words(),
-            "kept by Codex's own goal · checked by Argonauts"
+            "kept by Codex's own goal · checked by Argonauts Code"
         );
         assert_eq!(pursuing.tries_words(), "3 so far · no limit set");
 
         let mut met = report(GoalStatus::Met, KeptBy::Argonauts);
         met.tries.truncate(2);
         assert_eq!(met.row_words(), "goal met in 2 tries");
-        assert_eq!(met.kept_words(), "kept by Argonauts");
+        assert_eq!(met.kept_words(), "kept by Argonauts Code");
     }
 
     #[test]
     fn a_report_says_its_agents_role_and_what_its_tries_count() {
         let mut task = report(GoalStatus::Pursuing, KeptBy::Cli);
-        assert_eq!(task.role(), Some("workers"));
+        assert_eq!(task.role(), Some("worker"));
         // Nothing counted tests yet, so the number is the lines not met.
         assert_eq!(task.counting(), "");
         task.tries[0].still_failing = Some(Failing {
@@ -344,7 +344,7 @@ mod tests {
         });
         assert_eq!(task.counting(), "failing tests");
 
-        task.scope = GoalScope::Solo;
+        task.scope = GoalScope::Captain;
         assert_eq!(task.role(), Some("main"));
         task.scope = GoalScope::Workflow;
         assert_eq!(task.role(), None);

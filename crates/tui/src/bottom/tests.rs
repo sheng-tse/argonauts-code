@@ -62,21 +62,21 @@ fn crew(t0: Instant) -> BottomState {
     state
 }
 
-fn merge_card() -> CardPrompt {
-    let mut card = CardPrompt::new(
+fn merge_question() -> QuestionPrompt {
+    let mut question = QuestionPrompt::new(
         2,
         "Merge task-002 into main?",
         "Merge task-002?",
         vec![
-            CardOption::irreversible("Merge"),
-            CardOption::new("Open a pull request"),
-            CardOption::new("Keep the branch"),
-            CardOption::irreversible("Abandon the run"),
-            CardOption::view("Show the diff"),
+            QuestionOption::irreversible("Merge"),
+            QuestionOption::new("Open a pull request"),
+            QuestionOption::new("Keep the branch"),
+            QuestionOption::irreversible("Abandon the run"),
+            QuestionOption::view("Show the diff"),
         ],
     );
-    card.detail = vec!["3 files · +48 -6 · tests passed · agy reviewed it and approved".into()];
-    card
+    question.detail = vec!["3 files · +48 -6 · tests passed · agy reviewed it and approved".into()];
+    question
 }
 
 fn render_at(state: &BottomState, width: u16, t0: Instant, elapsed: Duration) -> BottomView {
@@ -86,13 +86,13 @@ fn render_at(state: &BottomState, width: u16, t0: Instant, elapsed: Duration) ->
 }
 
 #[test]
-fn idle_chat() {
+fn idle_conversation() {
     let t0 = Instant::now();
     let mut state = BottomState::new();
     state.composer.label = Some("council".into());
     for width in [80, 120] {
         let view = render_at(&state, width, t0, Duration::ZERO);
-        insta::assert_snapshot!(format!("idle_chat_{width}"), screen(&view));
+        insta::assert_snapshot!(format!("idle_conversation_{width}"), screen(&view));
     }
 }
 
@@ -107,11 +107,11 @@ fn crew_run_in_progress() {
 }
 
 #[test]
-fn checkpoint_card_over_the_prompt() {
+fn approval_question_over_the_prompt() {
     let t0 = Instant::now();
     let mut state = crew(t0);
     state.working = None;
-    state.card = Some(merge_card());
+    state.question = Some(merge_question());
     state.queued = vec!["also add a --csv flag\nand docs".into()];
     let mut claude = CliUse::new("Claude", Role::CliClaude);
     claude.main = true;
@@ -126,7 +126,7 @@ fn checkpoint_card_over_the_prompt() {
     ];
     for width in [80, 120] {
         let view = render_at(&state, width, t0, Duration::from_secs(60));
-        insta::assert_snapshot!(format!("checkpoint_{width}"), screen(&view));
+        insta::assert_snapshot!(format!("approval_{width}"), screen(&view));
     }
 }
 
@@ -140,18 +140,18 @@ fn no_row_is_wider_than_the_screen() {
     state.line.right = vec![LinePart::PlanUsage(vec![claude])];
     state.agents.max_rows = 2;
     state.composer.set_text("a draft with a few words in it");
-    let mut card = merge_card();
-    card.question = Some("Merge it now?".into());
-    card.allow_note = true;
-    card.handle_key(crossterm::event::KeyEvent::from(
+    let mut question = merge_question();
+    question.question = Some("Merge it now?".into());
+    question.allow_note = true;
+    question.handle_key(crossterm::event::KeyEvent::from(
         crossterm::event::KeyCode::Tab,
     ));
-    state.card = Some(card);
+    state.question = Some(question);
     let theme = theme();
     for width in (1..=40).chain([80, 120]) {
         let ctx = RenderCtx::new(width, &theme, Clock::new(t0, t0 + Duration::from_secs(61)));
         for dismissed in [false, true] {
-            state.card.as_mut().unwrap().dismissed = dismissed;
+            state.question.as_mut().unwrap().dismissed = dismissed;
             for line in state.render(&ctx).lines {
                 assert!(line.width() <= usize::from(width), "{width}: {line:?}");
             }
@@ -186,16 +186,16 @@ fn the_cursor_follows_focus() {
     let view = render_at(&state, 80, t0, Duration::ZERO);
     assert_eq!(view.cursor, Some((2, 3)));
 
-    state.card = Some(merge_card());
+    state.question = Some(merge_question());
     let view = render_at(&state, 80, t0, Duration::ZERO);
     assert_eq!(view.cursor, Some((2, 15)));
 
-    state.card.as_mut().unwrap().focus();
+    state.question.as_mut().unwrap().focus();
     let view = render_at(&state, 80, t0, Duration::ZERO);
     assert_eq!(view.cursor, None);
 
-    state.card.as_mut().unwrap().dismissed = true;
-    state.card.as_mut().unwrap().focused = false;
+    state.question.as_mut().unwrap().dismissed = true;
+    state.question.as_mut().unwrap().focused = false;
     let view = render_at(&state, 80, t0, Duration::ZERO);
     assert_eq!(view.cursor, Some((2, 3)), "the input is back");
     assert!(!plain_text(&view.lines).contains("Merge task-002"));
@@ -206,16 +206,16 @@ fn the_cursor_follows_focus() {
 }
 
 #[test]
-fn a_card_note_takes_the_cursor() {
+fn a_question_note_takes_the_cursor() {
     let t0 = Instant::now();
     let mut state = BottomState::new();
-    let mut card = merge_card();
-    card.allow_note = true;
-    card.focus();
-    card.handle_key(crossterm::event::KeyEvent::from(
+    let mut question = merge_question();
+    question.allow_note = true;
+    question.focus();
+    question.handle_key(crossterm::event::KeyEvent::from(
         crossterm::event::KeyCode::Tab,
     ));
-    state.card = Some(card);
+    state.question = Some(question);
     let view = render_at(&state, 80, t0, Duration::ZERO);
     let (column, row) = view.cursor.unwrap();
     // On the placeholder's first letter, right after the option's own label.
@@ -267,12 +267,12 @@ fn tight_space_drops_parts_in_order() {
     state.queued = vec!["queued".into()];
     let words = AddedPart::words("stats", "plan usage 42%", crate::cell::Tone::Dim);
     state.line.right = vec![LinePart::Added(words)];
-    state.card = Some(merge_card());
+    state.question = Some(merge_question());
     let theme = theme();
     let ctx = RenderCtx::new(80, &theme, Clock::new(t0, t0));
     let full = state.render(&ctx);
-    // Working 2; the card's rule, title, detail, blank, 5 options, blank, and key hints, then a
-    // blank row; queued 1, composer 3, the mode line with the quota at its right end, then a
+    // Working 2; the question's rule, title, detail, blank, 5 options, blank, and key hints, then a
+    // blank row; queued 1, composer 3, the bottom line with the plan usage at its right end, then a
     // blank row and agents 3. No row goes under them for the status.
     assert_eq!(full.lines.len(), 23);
     let text = plain_text(&full.lines);
@@ -342,6 +342,29 @@ fn next_change_is_none_when_nothing_moves() {
 
     state.working = Some(WorkingLine::new("Rowing", t0));
     assert_eq!(state.next_change(&ctx), Some(t0 + SPINNER_PERIOD));
+}
+
+/// A run's row keeps its time ticking by the second with nothing else moving, and the screen
+/// wakes when the row of a run that ended is due to leave the list.
+#[test]
+fn the_run_rows_own_times_wake_the_screen() {
+    let t0 = Instant::now();
+    let theme = theme();
+    let ctx = RenderCtx::new(80, &theme, Clock::new(t0, t0));
+    let mut state = BottomState::new();
+    let mut going = WorkflowRow::new("run-1", "add-due-dates", WorkflowRowState::Running);
+    going.elapsed_ms = 2_400;
+    going.measured_at = Some(t0);
+    state.workflows.rows = vec![going];
+    assert_eq!(
+        state.next_change(&ctx),
+        Some(t0 + Duration::from_millis(600))
+    );
+
+    let mut ended = WorkflowRow::new("run-1", "add-due-dates", WorkflowRowState::Done);
+    ended.leaves_at = Some(t0 + Duration::from_secs(25));
+    state.workflows.rows = vec![ended];
+    assert_eq!(state.next_change(&ctx), Some(t0 + Duration::from_secs(25)));
 }
 
 #[test]
@@ -623,7 +646,7 @@ fn your_mods_above_the_input_draw_in_the_band() {
     state.band.hidden = true;
     assert_eq!(state.render(&ctx).lines.len(), without);
     state.band.hidden = false;
-    state.file_mods = Some(checks_mod(&[ModPlace::ModeLine]));
+    state.file_mods = Some(checks_mod(&[ModPlace::BottomLine]));
     assert_eq!(
         state.render(&ctx).lines.len(),
         without,

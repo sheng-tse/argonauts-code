@@ -20,11 +20,11 @@ use argonauts_runner::{
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
+use crate::captain;
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
-use crate::goal::round;
-use crate::solo;
 use crate::state::RunState;
+use crate::understand::round;
 use crate::workflow::runner::run_mode;
 use crate::workflow::{StepCall, StepDone, naming, yaml};
 use crate::workflow_size;
@@ -41,7 +41,7 @@ pub(crate) mod write;
 use bridge::Bridge;
 
 /// The phases a run of this kind has: the workflow's own steps as one step, then the merge.
-const PHASES: &str = include_str!("../../workflows/script.yaml");
+const PHASES: &str = include_str!("phases.yaml");
 
 /// What the phases file is recorded as having come from.
 pub const PHASES_NAME: &str = "script";
@@ -59,9 +59,9 @@ pub fn library(host: &Host) -> Library {
 
 /// The workflow in use, when the runner is what runs it: a script, a file whose steps run as
 /// written, or a file the orchestrator writes a script for. `None` leaves the run to the phases
-/// of the workflow's name. A solo run is the CLI itself and never comes here.
+/// of the workflow's name. A Captain run is the CLI itself and never comes here.
 pub fn for_run(host: &Host) -> EngineResult<Option<Loaded>> {
-    if host.read(run_mode) == Some(RunMode::Solo) {
+    if host.read(run_mode) == Some(RunMode::Captain) {
         return Ok(None);
     }
     let settings = host.settings();
@@ -107,7 +107,7 @@ pub fn phases(host: &Host) -> EngineResult<(WorkflowRef, Workflow)> {
 /// `script`: runs the workflow in use to its end, then merges what it accepted into the run.
 pub async fn script_step(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     // The steps say who checks what, so the request stands as the goal.
-    solo::prompt_is_the_goal(host).await?;
+    captain::prompt_is_the_goal(host).await?;
     let loaded = for_run(host)?.ok_or_else(|| {
         EngineError::Refused(format!(
             "the workflow in use, {}, has no steps to run",
@@ -162,7 +162,7 @@ pub async fn script_step(host: &Host, call: &StepCall) -> EngineResult<StepDone>
         limits: limits(host),
         replay: journal::read(host, call)?,
         roles,
-        token_budget: None,
+        token_limit: None,
     };
     let ended = tokio::select! {
         ended = argonauts_runner::run(&script, input, &bridge) => ended,
@@ -266,18 +266,18 @@ fn max_rounds(file: &WorkflowFile) -> BTreeMap<Option<String>, u32> {
         .collect()
 }
 
-/// What a file of steps reads: the request, how many seats each role has, and a task list you
+/// What a file of steps reads: the request, how many models each role has, and a task list you
 /// fixed.
 fn args(host: &Host, request: &str, tasks: &[String]) -> Value {
     let settings = host.settings();
-    let seats: serde_json::Map<String, Value> = CrewRole::ALL
+    let crew: serde_json::Map<String, Value> = CrewRole::ALL
         .into_iter()
         .map(|role| {
-            let seats = crate::roles::candidates(settings, role.fine_role()).len();
-            (role.as_str().to_owned(), json!(seats))
+            let models = crate::roles::candidates(settings, role.fine_role()).len();
+            (role.as_str().to_owned(), json!(models))
         })
         .collect();
-    json!({"request": request, "crew": seats, "tasks": tasks})
+    json!({"request": request, "crew": crew, "tasks": tasks})
 }
 
 fn summary(script: &Script, result: &Value, merged: usize) -> String {

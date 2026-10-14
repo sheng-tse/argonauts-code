@@ -135,7 +135,7 @@ impl LearningPicker {
     pub fn lines(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let marks = Marks::for_theme(theme);
         let dim = theme.style(Role::Dim);
-        let lead = 2;
+        let margin = 2;
         let (headings, cells) = self.table();
         let mut columns: Vec<Column> = headings
             .iter()
@@ -172,8 +172,8 @@ impl LearningPicker {
                 column.keep = 0;
             }
         }
-        let columns = fit_columns(columns, width.saturating_sub(lead), GAP);
-        let mut heading = vec![Span::raw(" ".repeat(lead))];
+        let columns = fit_columns(columns, width.saturating_sub(margin), GAP);
+        let mut heading = vec![Span::raw(" ".repeat(margin))];
         for (c, column) in columns.iter().enumerate() {
             if c > 0 {
                 heading.push(Span::raw(" ".repeat(GAP)));
@@ -186,7 +186,7 @@ impl LearningPicker {
         for (i, row) in cells.iter().enumerate() {
             let selected = i == self.list.selected;
             let mut spans = vec![if selected {
-                Span::styled(format!("{} ", marks.selected), theme.style(Role::Card))
+                Span::styled(format!("{} ", marks.selected), theme.style(Role::Question))
             } else if waiting.get(i).copied().unwrap_or(false) {
                 // Waiting on you, in the color that state has in every view.
                 Span::styled(
@@ -201,7 +201,7 @@ impl LearningPicker {
                     spans.push(Span::raw(" ".repeat(GAP)));
                 }
                 let style = match c {
-                    0 if selected => theme.style(Role::Card),
+                    0 if selected => theme.style(Role::Question),
                     0 => theme.style(Role::Text),
                     _ => dim,
                 };
@@ -285,7 +285,7 @@ impl LearningPicker {
 
     fn enter(&self) -> ViewOutcome {
         if let Some(setting) = self.selected_setting() {
-            return ViewOutcome::SendToChat(UiCommand::Slash {
+            return ViewOutcome::SendToConversation(UiCommand::Slash {
                 command: SlashCommand::Config {
                     key: Some(setting.key.clone()),
                     value: None,
@@ -469,7 +469,7 @@ mod tests {
             area: LearningArea::Records,
             tabs: vec![LearningTab {
                 title: "Agents".to_owned(),
-                columns: ["Agent", "Kind", "First pass", "Cards"]
+                columns: ["Agent", "Kind", "First pass", "Tasks"]
                     .map(str::to_owned)
                     .to_vec(),
                 rows: vec![LearningRow {

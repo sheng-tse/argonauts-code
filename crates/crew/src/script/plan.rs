@@ -1,21 +1,21 @@
 //! The plan approval of a run the runner runs. Where a plan waits for you, the steps are shown
 //! before any agent starts: the workflow's name, what it is for, and its phases in order. You
 //! approve them, send them back with a note when the orchestrator wrote them, run the request
-//! solo, or abandon the run. Where your settings decide plans nothing opens: a script has no
+//! as Captain, or abandon the run. Where your settings decide plans nothing opens: a script has no
 //! tasks yet for a rule to weigh, and the merge approval follows either way.
 
-use argonauts_core::events::checkpoint::{
-    AnswerAction, AnswerOption, CheckpointKind, FreeText, PlanWorkflow,
+use argonauts_core::events::approval::{
+    AnswerAction, AnswerOption, ApprovalKind, FreeText, PlanWorkflow,
 };
 use argonauts_core::events::run::RunOutcome;
 use argonauts_core::events::workflow::StepEnd;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::policy::EvidenceDocument;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::workflow::{Phase, StandardPhase, Workflow, WorkflowParams, WorkflowRef};
 use argonauts_runner::Script;
 
-use crate::checkpoints::{self, autopilot, options};
+use crate::approvals::{self, autopilot, options};
 use crate::divide::workflow_plan::{Shown, request_showing};
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
@@ -25,7 +25,7 @@ use crate::workflow::{Flow, StepCall, StepDone, runner};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Wrote {
     /// The orchestrator, for this request, keeping the roles of the workflow in use.
-    Orchestrator(WorkerRef),
+    Orchestrator(ModelRef),
     /// A workflow file or a script, which runs exactly as written.
     File,
 }
@@ -34,7 +34,7 @@ pub(super) enum Verdict {
     Approved,
     /// The orchestrator writes the steps again with your notes.
     SentBack,
-    /// The run goes another way: solo, or it ends here.
+    /// The run goes another way: Captain, or it ends here.
     Ended(StepDone),
 }
 
@@ -47,11 +47,11 @@ pub(super) fn sent_back(host: &Host, call: &StepCall) -> Vec<String> {
             .progress(&call.at.step)
             .map_or(0, |progress| progress.since);
         let mut decided: Vec<(u64, String)> = state
-            .checkpoints
+            .approvals
             .by_id
             .values()
             .filter(|record| {
-                record.opened.kind == CheckpointKind::Plan
+                record.opened.kind == ApprovalKind::Plan
                     && record.withdrawn.is_none()
                     && record.since > since
             })
@@ -71,9 +71,9 @@ pub(super) fn sent_back(host: &Host, call: &StepCall) -> Vec<String> {
 /// Whether a plan waits for you now: in supervised mode, and in auto preview, which asks you
 /// and records what your settings would have said.
 fn asks_you(host: &Host) -> bool {
-    !autopilot::applies_now(host, CheckpointKind::Plan)
+    !autopilot::applies_now(host, ApprovalKind::Plan)
         && matches!(
-            checkpoints::mode_now(host, CheckpointKind::Plan),
+            approvals::mode_now(host, ApprovalKind::Plan),
             ApprovalMode::Supervised | ApprovalMode::AutoPreview
         )
 }
@@ -133,14 +133,14 @@ pub(super) async fn approval(
         authors,
     };
     let request = request_showing(host, call, shown).await;
-    let decided = checkpoints::open_and_wait(host, request).await?;
+    let decided = approvals::open_and_wait(host, request).await?;
     match decided.action {
         AnswerAction::Approve => Ok(Verdict::Approved),
         AnswerAction::SendBack if can_rewrite => Ok(Verdict::SentBack),
-        AnswerAction::SwitchToSolo => Ok(Verdict::Ended(StepDone {
+        AnswerAction::SwitchToCaptain => Ok(Verdict::Ended(StepDone {
             end: StepEnd::Done,
-            summary: Some("You chose to run it solo".to_owned()),
-            flow: Flow::Switch(WorkflowRef::new(runner::solo_workflow(host.settings()))),
+            summary: Some("You chose to run it as Captain".to_owned()),
+            flow: Flow::Switch(WorkflowRef::new(runner::captain_workflow(host.settings()))),
         })),
         AnswerAction::Abandon => Ok(Verdict::Ended(StepDone {
             end: StepEnd::Done,
@@ -156,7 +156,7 @@ pub(super) async fn approval(
 /// The plan approval's options for steps: there are no tasks to edit, and only steps the
 /// orchestrator wrote can be written again.
 fn answer_options(can_rewrite: bool) -> Vec<AnswerOption> {
-    options::standard(CheckpointKind::Plan)
+    options::standard(ApprovalKind::Plan)
         .into_iter()
         .filter(|option| match option.action {
             AnswerAction::ApproveWithEdits => false,
@@ -178,7 +178,7 @@ fn as_phases(script: &Script) -> Workflow {
             .phases
             .iter()
             .map(|phase| Phase {
-                name: phase.title.clone(),
+                name: phase.name.clone(),
                 detail: phase.detail.clone(),
                 standard: StandardPhase::Do,
                 steps: Vec::new(),
@@ -205,7 +205,7 @@ mod tests {
     fn a_scripts_phases_are_what_the_approval_shows() {
         let script = Script::parse(
             "export const meta = { name: 'add-due', description: 'Due dates', \
-             phases: [{ title: 'Plan', detail: 'split it' }, { title: 'Build' }] }\nreturn 1",
+             phases: [{ name: 'Plan', detail: 'split it' }, { name: 'Build' }] }\nreturn 1",
         )
         .expect("reads");
         let shown = as_phases(&script);

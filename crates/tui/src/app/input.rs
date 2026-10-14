@@ -1,13 +1,13 @@
 //! Keys go to the transcript overlay when it is open, then to the prompt history search, an
-//! open settings picker, a focused card, the answered handoff pick's line when ↑ picked it, a
+//! open settings picker, a focused question, the answered fallback pick's line when ↑ picked it, a
 //! second Esc that clears the input, the focused agent panel, the open menu, vim's modes, the
-//! global keys, and last the composer. The search, a picker, or a focused card lets only the
-//! quit keys past it, so while a card has the keys, Ctrl+R and `/` don't open the search and
-//! `!` doesn't start shell mode. A card you set off yourself opens with the keys. One work
+//! global keys, and last the composer. The search, a picker, or a focused question lets only the
+//! quit keys past it, so while a question has the keys, Ctrl+R and `/` don't open the search and
+//! `!` doesn't start shell mode. A question you set off yourself opens with the keys. One work
 //! waits on takes them once the input is empty and left alone for a moment, so typing never
 //! reaches the input under it, and a draft, even one just cleared, is never cut off. An open
-//! search or shell mode counts as a draft. Esc sets a run's card aside and gives the keys
-//! back, and ↑ or Tab on an empty input hands them to a waiting card again.
+//! search or shell mode counts as a draft. Esc sets a run's question aside and gives the keys
+//! back, and ↑ or Tab on an empty input hands them to a waiting question again.
 //! What the named keys do comes from the [`Keymap`].
 //!
 //! [`Keymap`]: crate::keymap::Keymap
@@ -16,15 +16,15 @@ use std::io::Write;
 use std::time::{Duration, Instant};
 
 use argonauts_core::app::{UiCommand, ViewRequest};
-use argonauts_core::input::{SlashCommand, WidgetChange, WidgetsAction};
+use argonauts_core::input::{ModPlaceChange, ModsAction, SlashCommand};
 use argonauts_core::settings::ui::Place;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Position, Size};
 
 use super::{OverlayEvent, QuitArm, TranscriptOverlay, Ui, UiAction};
 use crate::bottom::{
-    BandEvent, CardEvent, ComposerEvent, HeadsUpEvent, Hint, MenuEvent, Menus, PanelEvent,
-    PickerEvent, REMEMBER_KEY, SearchEvent, WORD_IGNORED_NOTICE, ignored_notice,
+    BandEvent, ComposerEvent, Hint, MenuEvent, Menus, NoticeEvent, PanelEvent, PickerEvent,
+    QuestionEvent, REMEMBER_KEY, SearchEvent, WORD_IGNORED_NOTICE, ignored_notice,
 };
 use crate::keymap::{Action, CHORD_WAIT, KeySpec, Layer};
 use crate::views::list;
@@ -39,18 +39,22 @@ impl<W: Write> Ui<W> {
     /// Keys go to the top view while one is open, drawn against an empty app state; the
     /// runtime passes its state through [`handle_event_in`](Self::handle_event_in).
     pub fn handle_event(&mut self, event: Event, now: Instant) -> Vec<UiAction> {
-        self.settle_card_keys(now);
+        self.settle_question_keys(now);
         if self.views.is_empty() {
             if let Some(actions) = self.selection_key(&event) {
                 return actions;
             }
-            return self.handle_chat_event(event, now);
+            return self.handle_conversation_event(event, now);
         }
         let state = crate::state::AppState::default();
         self.handle_event_in(event, now, &state)
     }
 
-    pub(super) fn handle_chat_event(&mut self, event: Event, now: Instant) -> Vec<UiAction> {
+    pub(super) fn handle_conversation_event(
+        &mut self,
+        event: Event,
+        now: Instant,
+    ) -> Vec<UiAction> {
         let mut actions = Vec::new();
         let bottom = &mut self.model.bottom;
         bottom.composer.adopt_vim_mode(bottom.mode.vim);
@@ -70,7 +74,7 @@ impl<W: Write> Ui<W> {
         }
         self.model.bottom.settle_workflow_word(now);
         self.show_vim_mode();
-        self.settle_card_keys(now);
+        self.settle_question_keys(now);
         if actions
             .iter()
             .any(|action| matches!(action, UiAction::Submit { .. } | UiAction::Shell { .. }))
@@ -80,26 +84,36 @@ impl<W: Write> Ui<W> {
         actions
     }
 
-    /// A card that asks takes the keys the moment it shows, from wherever they were, so an
-    /// approval never waits unseen. Every view closes as it takes them, since a view on top
-    /// would keep them. A view
-    /// the card opens itself, such as its diff, stays, but never a docked one, which draws
-    /// where the card does. A draft goes aside while the card holds the keys and comes back
-    /// once it's answered or handed on.
-    pub(super) fn settle_card_keys(&mut self, now: Instant) {
+    /// A question that asks takes the keys the moment it shows, from wherever they were, so an
+    /// approval never waits unseen. A view on top would keep them, so the views close as it
+    /// takes them, down to one that stays up over a question, which the question draws under.
+    /// A view the question opens itself, such as its diff, stays, but no other docked one,
+    /// which draws where the question does. A draft goes aside while the question holds the
+    /// keys and comes back once it's answered or passed on.
+    pub(super) fn settle_question_keys(&mut self, now: Instant) {
         let bottom = &mut self.model.bottom;
-        let took = bottom.hand_keys_to_card(now);
+        let took = bottom.hand_keys_to_question(now);
         let mut changed = bottom.settle_draft() || took;
-        if took && !self.views.is_empty() {
-            self.views.clear();
+        if took {
+            while self
+                .views
+                .last()
+                .is_some_and(|view| !view.stays_over_question())
+            {
+                self.views.pop();
+            }
         }
-        // The transcript on the alternate screen would hide the card and keep its keys.
+        // The transcript on the alternate screen would hide the question and keep its keys.
         if took && self.overlay.is_some() {
             self.overlay = None;
             changed = true;
         }
-        if bottom.focused_card().is_some() {
-            while self.views.last().is_some_and(|view| view.docked()) {
+        if bottom.focused_question().is_some() {
+            while self
+                .views
+                .last()
+                .is_some_and(|view| view.docked() && !view.stays_over_question())
+            {
                 self.views.pop();
                 changed = true;
             }
@@ -109,9 +123,19 @@ impl<W: Write> Ui<W> {
         }
     }
 
-    /// The composer keeps vim's mode, and the mode line draws `mode.vim`, which settings also
+    /// A question holds the keys over the docked view it draws under, so they go to it and
+    /// not to the view.
+    pub(super) fn question_over_view(&self) -> bool {
+        self.model.bottom.focused_question().is_some()
+            && self
+                .views
+                .last()
+                .is_some_and(|view| view.stays_over_question())
+    }
+
+    /// The composer keeps vim's mode, and the bottom line draws `mode.vim`, which settings also
     /// set to turn vim keys on or off. The composer takes that before each event and hands its
-    /// own mode back after, so the mode line always shows the mode the next key meets.
+    /// own mode back after, so the bottom line always shows the mode the next key meets.
     fn show_vim_mode(&mut self) {
         let bottom = &mut self.model.bottom;
         let mode = bottom.composer.vim_mode();
@@ -147,10 +171,10 @@ impl<W: Write> Ui<W> {
         if self.key_times {
             self.settle_paste_burst(Some(&key), now);
         }
-        // A card that holds the keys took them from the search or the picker too, which wait
+        // A question that holds the keys took them from the search or the picker too, which wait
         // under it.
-        if self.model.bottom.focused_card().is_some() {
-            if !self.cycle_key(key, actions) && !self.card_key(key, now, actions) {
+        if self.model.bottom.focused_question().is_some() {
+            if !self.cycle_key(key, actions) && !self.question_key(key, now, actions) {
                 self.quit_key(key, now, actions);
             }
             return;
@@ -169,7 +193,7 @@ impl<W: Write> Ui<W> {
         }
         if self.chord_key(key, now, actions)
             || self.band_key(key, now, actions)
-            || self.heads_up_key(key, now, actions)
+            || self.notice_key(key, now, actions)
         {
             return;
         }
@@ -257,7 +281,7 @@ impl<W: Write> Ui<W> {
     }
 
     /// The mods above the input, while they have the keys: Tab moves between them and on to
-    /// the heads-up, `-` folds, Enter opens the mod's tab, `p` unpins, `[` and `]` move it,
+    /// the notice, `-` folds, Enter opens the mod's tab, `p` unpins, `[` and `]` move it,
     /// `,` opens its settings, and Esc gives the keys back to the input. Each change is one
     /// setting, which the controller saves and sends back.
     fn band_key(&mut self, key: KeyEvent, now: Instant, actions: &mut Vec<UiAction>) -> bool {
@@ -266,10 +290,10 @@ impl<W: Write> Ui<W> {
             return false;
         }
         let above = Place::AboveInput;
-        let change = |widget, change| {
+        let change = |the_mod, change| {
             UiAction::Command(UiCommand::Slash {
-                command: SlashCommand::Widgets {
-                    action: WidgetsAction::Change { widget, change },
+                command: SlashCommand::Mods {
+                    action: ModsAction::Change { the_mod, change },
                     scope: None,
                 },
             })
@@ -277,27 +301,31 @@ impl<W: Write> Ui<W> {
         match bottom.band.handle_key(key) {
             BandEvent::Moved | BandEvent::Leave => {}
             BandEvent::Past => {
-                // The heads-up's buttons come next, and with none Tab comes back around.
+                // The notice's buttons come next, and with none Tab comes back around.
                 bottom.band.blur();
-                if !bottom.heads_up.focus() {
+                if !bottom.notice.focus() {
                     bottom.band.focus();
                 }
             }
-            BandEvent::Fold { name, open: true } => actions.push(change(name, WidgetChange::Open)),
-            BandEvent::Fold { name, open: false } => actions.push(change(name, WidgetChange::Fold)),
+            BandEvent::Fold { name, open: true } => {
+                actions.push(change(name, ModPlaceChange::Open))
+            }
+            BandEvent::Fold { name, open: false } => {
+                actions.push(change(name, ModPlaceChange::Fold))
+            }
             BandEvent::Open(name) => actions.push(UiAction::OpenTab(name)),
             BandEvent::Unpin(name) => {
-                actions.push(change(name, WidgetChange::Hide { place: above }));
+                actions.push(change(name, ModPlaceChange::Hide { place: above }));
             }
             BandEvent::Move { name, up: true } => {
-                actions.push(change(name, WidgetChange::Up { place: Some(above) }));
+                actions.push(change(name, ModPlaceChange::Up { place: Some(above) }));
             }
             BandEvent::Move { name, up: false } => {
-                actions.push(change(name, WidgetChange::Down { place: Some(above) }));
+                actions.push(change(name, ModPlaceChange::Down { place: Some(above) }));
             }
-            BandEvent::Settings(widget) => actions.push(UiAction::Command(UiCommand::Slash {
-                command: SlashCommand::Widgets {
-                    action: WidgetsAction::Page { widget },
+            BandEvent::Settings(the_mod) => actions.push(UiAction::Command(UiCommand::Slash {
+                command: SlashCommand::Mods {
+                    action: ModsAction::Page { the_mod },
                     scope: None,
                 },
             })),
@@ -307,24 +335,24 @@ impl<W: Write> Ui<W> {
         true
     }
 
-    /// The heads-up above the input, while it has the keys: a number presses its button,
+    /// The notice above the input, while it has the keys: a number presses its button,
     /// ←/→ and Tab move, Enter or Space presses, Esc gives the keys back to the input.
-    fn heads_up_key(&mut self, key: KeyEvent, now: Instant, actions: &mut Vec<UiAction>) -> bool {
-        let heads_up = &mut self.model.bottom.heads_up;
-        if !heads_up.has_focus() {
+    fn notice_key(&mut self, key: KeyEvent, now: Instant, actions: &mut Vec<UiAction>) -> bool {
+        let notice = &mut self.model.bottom.notice;
+        if !notice.has_focus() {
             return false;
         }
-        match heads_up.handle_key(key) {
-            HeadsUpEvent::Press(at) => {
-                if let Some(button) = heads_up.drawn.buttons.get(at) {
-                    actions.push(UiAction::Command(UiCommand::PressHeadsUp {
+        match notice.handle_key(key) {
+            NoticeEvent::Press(at) => {
+                if let Some(button) = notice.drawn.buttons.get(at) {
+                    actions.push(UiAction::Command(UiCommand::PressNotice {
                         plugin: button.plugin.clone(),
                         handle: button.handle,
                     }));
                 }
             }
-            HeadsUpEvent::Leave | HeadsUpEvent::Moved => {}
-            HeadsUpEvent::Unhandled => self.quit_key(key, now, actions),
+            NoticeEvent::Leave | NoticeEvent::Moved => {}
+            NoticeEvent::Unhandled => self.quit_key(key, now, actions),
         }
         self.dirty = true;
         true
@@ -519,15 +547,16 @@ impl<W: Write> Ui<W> {
         true
     }
 
-    /// Shift+Tab cycles the approval mode while a card has the keys too, as at Claude Code's
-    /// prompts, so you can stop being asked: full auto settles the card. A note being typed on
-    /// the card keeps its keys, and so does a question's answer field once you've typed in it.
+    /// Shift+Tab cycles the approval mode while a question has the keys too, as at Claude Code's
+    /// prompts, so you can stop being asked: autopilot settles the question. A note being typed on
+    /// the question keeps its keys, and so does a question's answer field once you've typed in it.
     fn cycle_key(&mut self, key: KeyEvent, actions: &mut Vec<UiAction>) -> bool {
         let bottom = &mut self.model.bottom;
-        let typing_a_note = bottom.card.as_ref().is_some_and(|card| {
-            card.note
+        let typing_a_note = bottom.question.as_ref().is_some_and(|question| {
+            question
+                .note
                 .as_ref()
-                .is_some_and(|note| !(card.is_answer_field() && note.is_empty()))
+                .is_some_and(|note| !(question.is_answer_field() && note.is_empty()))
         });
         if typing_a_note
             || !self
@@ -543,50 +572,56 @@ impl<W: Write> Ui<W> {
         true
     }
 
-    fn card_key(&mut self, key: KeyEvent, now: Instant, actions: &mut Vec<UiAction>) -> bool {
+    fn question_key(&mut self, key: KeyEvent, now: Instant, actions: &mut Vec<UiAction>) -> bool {
         let vim = self.model.bottom.mode.vim.is_some();
-        let Some(card) = self.model.bottom.card.as_mut().filter(|card| card.focused) else {
+        let Some(question) = self
+            .model
+            .bottom
+            .question
+            .as_mut()
+            .filter(|question| question.focused)
+        else {
             return false;
         };
-        let id = card.id;
-        let key = card.read_key(key, vim);
-        let was_stray = card.stray_typing;
-        if card.held_off(&key, now) {
-            self.dirty |= card.stray_typing != was_stray;
+        let id = question.id;
+        let key = question.read_key(key, vim);
+        let was_stray = question.stray_typing;
+        if question.held_off(&key, now) {
+            self.dirty |= question.stray_typing != was_stray;
             return true;
         }
-        let event = card.handle_key(key);
-        // Stray letters change the card's key line, though the card does nothing with them.
-        if card.stray_typing != was_stray {
+        let event = question.handle_key(key);
+        // Stray letters change the question's key line, though the question does nothing with them.
+        if question.stray_typing != was_stray {
             self.dirty = true;
         }
         match event {
-            CardEvent::Answered {
+            QuestionEvent::Answered {
                 index,
                 note,
                 checked,
             } => {
-                self.model.bottom.card = None;
+                self.model.bottom.question = None;
                 actions.push(UiAction::Answer {
-                    card: id,
+                    question: id,
                     option: index,
                     note,
                     checked,
                 });
             }
-            CardEvent::OpenView { index } => actions.push(UiAction::OpenView {
-                card: id,
+            QuestionEvent::OpenView { index } => actions.push(UiAction::OpenView {
+                question: id,
                 option: index,
             }),
-            CardEvent::Dismissed => actions.push(UiAction::Dismiss { card: id }),
-            CardEvent::BackToInput | CardEvent::Moved => {}
-            CardEvent::Unhandled => return false,
+            QuestionEvent::Dismissed => actions.push(UiAction::Dismiss { question: id }),
+            QuestionEvent::BackToInput | QuestionEvent::Moved => {}
+            QuestionEvent::Unhandled => return false,
         }
         self.dirty = true;
         true
     }
 
-    /// On the answered handoff pick's line, `m` or Enter saves the pick as a rule, Esc lets it
+    /// On the answered fallback pick's line, `m` or Enter saves the pick as a rule, Esc lets it
     /// go, and ↓ goes back to the input. ↑ goes on to the prompt history, and any other key
     /// leaves the line and does what it does in the input.
     fn answered_pick_key(
@@ -691,7 +726,7 @@ impl<W: Write> Ui<W> {
         }
     }
 
-    /// Past an open picker or a focused card, only the quit keys do anything.
+    /// Past an open picker or a focused question, only the quit keys do anything.
     fn quit_key(&mut self, key: KeyEvent, now: Instant, actions: &mut Vec<UiAction>) {
         for action in self.keymap.actions_for(Layer::Global, &key) {
             if matches!(action, Action::ClearOrExit | Action::Exit)
@@ -704,7 +739,7 @@ impl<W: Write> Ui<W> {
     }
 
     /// Tries each action bound to `key` until one applies here, such as ↑ taking queued
-    /// messages back, or else giving a waiting card the keys.
+    /// messages back, or else giving a waiting question the keys.
     fn global_key(&mut self, key: KeyEvent, now: Instant, actions: &mut Vec<UiAction>) -> bool {
         let bottom = &self.model.bottom;
         let panel_focused = bottom.agents.has_focus() || bottom.workflows.selected.is_some();
@@ -762,24 +797,26 @@ impl<W: Write> Ui<W> {
                 bottom.mode.approval = bottom.mode.approval.next();
                 actions.push(UiAction::ModeChanged(bottom.mode.approval));
             }
-            // A card that waits without the keys takes the first press, which dismisses it. The
-            // next interrupts whatever works. A card that Esc would answer waits for its
+            // A question that waits without the keys takes the first press, which dismisses it. The
+            // next interrupts whatever works. A question that Esc would answer waits for its
             // focus, so Esc in the input never answers one for you.
             Action::Interrupt => {
-                if let Some(card) = bottom
-                    .card
+                if let Some(question) = bottom
+                    .question
                     .as_mut()
-                    .filter(|card| !card.dismissed && !card.esc_answers)
+                    .filter(|question| !question.dismissed && !question.esc_answers)
                 {
-                    card.dismiss();
-                    actions.push(UiAction::Dismiss { card: card.id });
+                    question.dismiss();
+                    actions.push(UiAction::Dismiss {
+                        question: question.id,
+                    });
                 } else if bottom.working.is_some() {
                     actions.push(UiAction::Interrupt);
                 } else {
                     return false;
                 }
             }
-            Action::CrewView if empty => actions.push(UiAction::OpenCrewView),
+            Action::AgentPanelView if empty => actions.push(UiAction::OpenAgentPanel),
             // With text and nothing waiting, the text goes first, then the request.
             Action::SendNow if bottom.send_now => {
                 if bottom.queued.is_empty() && !bottom.composer.is_empty() {
@@ -803,31 +840,29 @@ impl<W: Write> Ui<W> {
             }
             Action::StopAgents => self.arm_stop_all(now, actions),
             Action::OpenArtifact => actions.push(UiAction::OpenArtifact),
-            // The mods first, since they sit on top, then the heads-up's buttons.
+            // The mods first, since they sit on top, then the notice's buttons.
             Action::AboveInputFocus => {
-                if !bottom.band.focus() && !bottom.heads_up.focus() {
+                if !bottom.band.focus() && !bottom.notice.focus() {
                     return false;
                 }
                 bottom.agents.blur();
                 bottom.workflows.blur();
             }
-            Action::AboveInputToggle
-                if bottom.band.shows() || !bottom.heads_up.drawn.is_empty() =>
-            {
+            Action::AboveInputToggle if bottom.band.shows() || !bottom.notice.drawn.is_empty() => {
                 bottom.band.toggle_hidden();
-                if bottom.heads_up.hidden != bottom.band.hidden || !bottom.band.shows() {
-                    bottom.heads_up.toggle();
+                if bottom.notice.hidden != bottom.band.hidden || !bottom.band.shows() {
+                    bottom.notice.toggle();
                 }
             }
             // The controller saves the change where the list came from, and the screen
             // follows the settings it sends back.
-            Action::Widget(widget) => {
-                let change = WidgetChange::Toggle {
+            Action::Mod(the_mod) => {
+                let change = ModPlaceChange::Toggle {
                     place: Place::AboveInput,
                 };
                 actions.push(UiAction::Command(UiCommand::Slash {
-                    command: SlashCommand::Widgets {
-                        action: WidgetsAction::Change { widget, change },
+                    command: SlashCommand::Mods {
+                        action: ModsAction::Change { the_mod, change },
                         scope: None,
                     },
                 }));
@@ -837,14 +872,14 @@ impl<W: Write> Ui<W> {
             {
                 actions.push(UiAction::TakeBack(bottom.queued.clone()));
             }
-            // A waiting card gets the keys from an empty input.
-            Action::FocusCard if empty && bottom.expanded_card().is_some() => {
-                if let Some(card) = bottom.card.as_mut() {
-                    card.focus();
+            // A waiting question gets the keys from an empty input.
+            Action::FocusQuestion if empty && bottom.expanded_question().is_some() => {
+                if let Some(question) = bottom.question.as_mut() {
+                    question.focus();
                 }
             }
-            // With no card, the last handoff pick's line gets them, before the history.
-            Action::FocusCard
+            // With no question, the last fallback pick's line gets them, before the history.
+            Action::FocusQuestion
                 if empty
                     && !bottom.composer.is_browsing_history()
                     && bottom.answered_pick.is_some() =>
@@ -909,7 +944,7 @@ impl<W: Write> Ui<W> {
                 self.dirty = true;
                 return;
             }
-            // Enter on an empty prompt still means something while a run pauses or parks.
+            // Enter on an empty prompt still means something while a run pauses or waits.
             ComposerEvent::Unhandled
                 if key.code == KeyCode::Enter
                     && key.modifiers.is_empty()
@@ -930,20 +965,20 @@ impl<W: Write> Ui<W> {
         self.dirty = true;
     }
 
-    /// A paste goes where typing would: a focused card's note, the history search's filter, an
-    /// open picker, or the composer. A focused card with no note open takes no text, nor one
-    /// that only just took the keys, so the paste goes nowhere, as typing does, and the card
+    /// A paste goes where typing would: a focused question's note, the history search's filter, an
+    /// open picker, or the composer. A focused question with no note open takes no text, nor one
+    /// that only just took the keys, so the paste goes nowhere, as typing does, and the question
     /// waits for a key meant for it before anything answers it.
     fn handle_paste(&mut self, text: &str, now: Instant, actions: &mut Vec<UiAction>) {
         self.disarm_clear();
         let bottom = &mut self.model.bottom;
-        if let Some(card) = bottom
-            .card
+        if let Some(question) = bottom
+            .question
             .as_mut()
-            .filter(|card| card.focused && !card.dismissed)
+            .filter(|question| question.focused && !question.dismissed)
         {
-            if card.guarded(now) || !card.handle_paste(text) {
-                card.pasted_at();
+            if question.guarded(now) || !question.handle_paste(text) {
+                question.pasted_at();
             }
             self.dirty = true;
             return;

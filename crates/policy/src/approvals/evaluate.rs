@@ -1,16 +1,16 @@
-//! The decision for one checkpoint. It runs beside the engine's loop and the first decision
+//! The decision for one approval. It runs beside the engine's loop and the first decision
 //! wins, so nothing here may depend on this outcome being the one that counts.
 
 use std::sync::Arc;
 
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::checkpoint::CheckpointKind;
+use argonauts_core::events::approval::ApprovalKind;
 use argonauts_core::policy::{
-    DecisionPoint, EvidencePacket, PolicyOutcome, ShadowRecord, Verdict, Violation,
+    AutoPreviewRecord, DecisionPoint, EvidencePacket, PolicyOutcome, Verdict, Violation,
 };
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{
-    ApprovalMode, CheckpointSettings, DecideWith, GoalChanges, Otherwise, Presence,
+    ApprovalMode, ApprovalPointSettings, DecideWith, GoalChanges, Otherwise, Presence,
 };
 use tokio::runtime::Handle;
 
@@ -46,8 +46,8 @@ pub async fn evaluate(
         })
         .await
     };
-    // The records may only lower a mode, and a mistake there must not raise one. Full auto
-    // keeps going where they'd lower auto to shadow, since nobody answers spot checks there;
+    // The records may only lower a mode, and a mistake there must not raise one. Autopilot
+    // keeps going where they'd lower auto to auto preview, since nobody answers spot checks there;
     // `auto-off` still stops it.
     let mut mode = match (requested, effective) {
         (ApprovalMode::Autopilot, ApprovalMode::AutoPreview) => ApprovalMode::Autopilot,
@@ -82,9 +82,9 @@ pub async fn evaluate(
         }
         ApprovalMode::AutoPreview => {
             let decision = decide_point(parts, point, evidence, &settings, route.decide_with).await;
-            shadow(parts, point, evidence, &settings, &decision, None).await
+            auto_preview(parts, point, evidence, &settings, &decision, None).await
         }
-        // Full auto decides as auto does. What it can't approve comes back as a question,
+        // Autopilot decides as auto does. What it can't approve comes back as a question,
         // which the engine ends safely instead of asking, since only it knows the options.
         ApprovalMode::Auto | ApprovalMode::Autopilot => {
             let decision = decide_point(parts, point, evidence, &settings, route.decide_with).await;
@@ -93,21 +93,21 @@ pub async fn evaluate(
     }
 }
 
-/// Why full auto leaves a plan or a merge to you with `presence = required`.
+/// Why autopilot leaves a plan or a merge to you with `presence = required`.
 const PRESENCE: &str = "your /approvals settings keep it for you at the terminal";
 
-/// Whether this point is decided in full auto, as `evaluate` set it for what decides below.
+/// Whether this point is decided in autopilot, as `evaluate` set it for what decides below.
 pub(crate) fn in_autopilot(point: &DecisionPoint) -> bool {
     point.mode_override == Some(ApprovalMode::Autopilot)
 }
 
-/// In full auto an agent's question meant for you comes here with the lead's answer, for
-/// the approver to check before it's sent. Every other kind without a table asks.
+/// In autopilot an agent's question meant for you comes here with the main agent's answer, for
+/// the judge to check before it's sent. Every other kind without a table asks.
 fn autopilot_route(point: &DecisionPoint, settings: &Settings) -> Option<Route> {
     let chosen = point
         .mode_override
         .unwrap_or_else(|| settings.approvals.mode());
-    (point.kind == CheckpointKind::Question && chosen == ApprovalMode::Autopilot).then_some(Route {
+    (point.kind == ApprovalKind::Question && chosen == ApprovalMode::Autopilot).then_some(Route {
         mode: ApprovalMode::Autopilot,
         decide_with: DecideWith::Model,
         on_reject: OnReject::Ask,
@@ -145,7 +145,7 @@ async fn auto_paused(parts: &PolicyParts, settings: &Arc<Settings>) -> Option<St
     .await
 }
 
-/// How one kind of checkpoint is decided.
+/// How one kind of approval is decided.
 struct Route {
     mode: ApprovalMode,
     decide_with: DecideWith,
@@ -159,13 +159,14 @@ enum OnReject {
     Decide,
 }
 
-/// `None` for kinds that always ask you. The `autopilot` switch puts each checkpoint a run
-/// opens in full auto; a recipe promotion is decided outside runs, so it keeps its own mode.
-fn route(kind: CheckpointKind, settings: &Settings) -> Option<Route> {
+/// `None` for kinds that always ask you. The `autopilot` switch puts each approval a run
+/// opens in autopilot; a learned workflow promotion is decided outside runs, so it keeps its own
+/// mode.
+fn route(kind: ApprovalKind, settings: &Settings) -> Option<Route> {
     let approvals = &settings.approvals;
     let route = own_route(kind, settings)?;
     Some(match kind {
-        CheckpointKind::WorkflowPromotion | CheckpointKind::GoalChange => route,
+        ApprovalKind::WorkflowPromotion | ApprovalKind::GoalChange => route,
         _ => Route {
             mode: approvals.run_mode(route.mode),
             ..route
@@ -173,21 +174,21 @@ fn route(kind: CheckpointKind, settings: &Settings) -> Option<Route> {
     })
 }
 
-fn own_route(kind: CheckpointKind, settings: &Settings) -> Option<Route> {
+fn own_route(kind: ApprovalKind, settings: &Settings) -> Option<Route> {
     let approvals = &settings.approvals;
     match kind {
-        CheckpointKind::Goal => Some(configured(kind, &approvals.goal)),
-        CheckpointKind::Plan => Some(configured(kind, &approvals.plan)),
-        CheckpointKind::Merge => Some(configured(kind, &approvals.merge)),
-        CheckpointKind::Escalation => Some(configured(kind, &approvals.escalation)),
-        CheckpointKind::Budget => Some(configured(kind, &approvals.budget)),
-        CheckpointKind::WorkflowPromotion => Some(configured(
+        ApprovalKind::Understand => Some(configured(kind, &approvals.understand)),
+        ApprovalKind::Plan => Some(configured(kind, &approvals.plan)),
+        ApprovalKind::Merge => Some(configured(kind, &approvals.merge)),
+        ApprovalKind::Stuck => Some(configured(kind, &approvals.stuck)),
+        ApprovalKind::Limit => Some(configured(kind, &approvals.limit)),
+        ApprovalKind::WorkflowPromotion => Some(configured(
             kind,
-            &approvals.workflow_promotion.as_checkpoint(),
+            &approvals.workflow_promotion.as_approval(),
         )),
-        CheckpointKind::ChangeRequest => Some(configured(kind, &approvals.change_request)),
+        ApprovalKind::ChangeRequest => Some(configured(kind, &approvals.change_request)),
         // `deny` refuses the change itself, so a rejection is decided here, not by `otherwise`.
-        CheckpointKind::GoalChange => match approvals.goal_changes {
+        ApprovalKind::GoalChange => match approvals.goal_changes {
             GoalChanges::Ask => None,
             GoalChanges::Deny | GoalChanges::AllowClarifications => Some(Route {
                 mode: ApprovalMode::Auto,
@@ -195,22 +196,22 @@ fn own_route(kind: CheckpointKind, settings: &Settings) -> Option<Route> {
                 on_reject: OnReject::Decide,
             }),
         },
-        CheckpointKind::Handoff
-        | CheckpointKind::VendorDown
-        | CheckpointKind::TakeOverReturn
-        | CheckpointKind::Question
-        | CheckpointKind::OriginalReturned => None,
+        ApprovalKind::Fallback
+        | ApprovalKind::AgentDown
+        | ApprovalKind::TakeOverReturn
+        | ApprovalKind::Question
+        | ApprovalKind::OriginalReturned => None,
     }
 }
 
 /// Only a rejected plan or merge is decided by `otherwise`. Sending back a goal, an extra
-/// attempt, a reserve, or a promotion, or stopping the run over one, would cancel work that's
+/// try, a reserve, or a promotion, or stopping the run over one, would cancel work that's
 /// yours to call, so those ask.
-fn configured(kind: CheckpointKind, table: &CheckpointSettings) -> Route {
+fn configured(kind: ApprovalKind, table: &ApprovalPointSettings) -> Route {
     let on_reject = match (kind, table.otherwise) {
         (_, Otherwise::Ask) => OnReject::Ask,
-        (CheckpointKind::Plan, Otherwise::SendBack | Otherwise::Stop) => OnReject::Decide,
-        (CheckpointKind::Merge, _) => OnReject::Decide,
+        (ApprovalKind::Plan, Otherwise::SendBack | Otherwise::Stop) => OnReject::Decide,
+        (ApprovalKind::Merge, _) => OnReject::Decide,
         _ => OnReject::Ask,
     };
     Route {
@@ -220,7 +221,7 @@ fn configured(kind: CheckpointKind, table: &CheckpointSettings) -> Route {
     }
 }
 
-fn route_mode(kind: CheckpointKind, settings: &Settings) -> Option<ApprovalMode> {
+fn route_mode(kind: ApprovalKind, settings: &Settings) -> Option<ApprovalMode> {
     route(kind, settings).map(|route| route.mode)
 }
 
@@ -244,23 +245,23 @@ fn requested_mode(
 
 /// With `presence = required`, plan and merge need a passkey no one can give yet, so they
 /// never decide on their own.
-fn needs_presence(kind: CheckpointKind, settings: &Settings) -> bool {
+fn needs_presence(kind: ApprovalKind, settings: &Settings) -> bool {
     settings.approvals.presence == Presence::Required
-        && matches!(kind, CheckpointKind::Plan | CheckpointKind::Merge)
+        && matches!(kind, ApprovalKind::Plan | ApprovalKind::Merge)
 }
 
-/// The goal, budget, escalation, change request, and promotion rules hold conditions no
-/// approver model may waive, such as an open question at the goal, `use_reserve = false`, or a
+/// The understand, limit, stuck, change request, and promotion rules hold conditions no
+/// judge may waive, such as an open question about the goal, `use_reserve = false`, or a
 /// change that can't be undone. So those rules must approve before `decide_with` is asked at
 /// all.
-fn binding_rules(kind: CheckpointKind) -> bool {
+fn binding_rules(kind: ApprovalKind) -> bool {
     matches!(
         kind,
-        CheckpointKind::Goal
-            | CheckpointKind::Budget
-            | CheckpointKind::Escalation
-            | CheckpointKind::ChangeRequest
-            | CheckpointKind::WorkflowPromotion
+        ApprovalKind::Understand
+            | ApprovalKind::Limit
+            | ApprovalKind::Stuck
+            | ApprovalKind::ChangeRequest
+            | ApprovalKind::WorkflowPromotion
     )
 }
 
@@ -271,13 +272,13 @@ async fn decide_point(
     settings: &Settings,
     decide_with: DecideWith,
 ) -> Decision {
-    // Merging debt anyway is yours unless `allow_debt` is set, so no approver model and no
+    // Merging debt anyway is yours unless `allow_debt` is set, so no judge and no
     // `rules_or_model` may take that call.
     if let Some(why) = debt_blocks_merge(point, evidence, settings) {
         return Decision {
-            verdict: Verdict::Escalate,
+            verdict: Verdict::AskYou,
             by: decide_with,
-            approver: None,
+            judge: None,
             reasons: vec![why],
         };
     }
@@ -286,22 +287,14 @@ async fn decide_point(
         let bound = rules::check(point, evidence, settings, now);
         if bound.verdict != Verdict::Approve {
             return Decision {
-                verdict: Verdict::Escalate,
+                verdict: Verdict::AskYou,
                 by: DecideWith::Rules,
-                approver: None,
+                judge: None,
                 reasons: bound.reasons,
             };
         }
     }
-    decide(
-        &*parts.approver,
-        point,
-        evidence,
-        settings,
-        decide_with,
-        now,
-    )
-    .await
+    decide(&*parts.judge, point, evidence, settings, decide_with, now).await
 }
 
 fn debt_blocks_merge(
@@ -309,7 +302,7 @@ fn debt_blocks_merge(
     evidence: &EvidencePacket,
     settings: &Settings,
 ) -> Option<String> {
-    if point.kind != CheckpointKind::Merge {
+    if point.kind != ApprovalKind::Merge {
         return None;
     }
     debt_blocks(
@@ -320,7 +313,7 @@ fn debt_blocks_merge(
 
 /// Notes what auto would decide, so your answer scores it. With `asked_because`, auto would
 /// have approved but can't right now, and the reason goes last, so you see why you're asked.
-async fn shadow(
+async fn auto_preview(
     parts: &PolicyParts,
     point: &DecisionPoint,
     evidence: &EvidencePacket,
@@ -337,7 +330,7 @@ async fn shadow(
     );
     off_the_engine(parts, (), move |autonomy| {
         let (point, record, evidence, settings) = noted;
-        autonomy.note_shadow(&point, &record, &evidence, &settings);
+        autonomy.note_auto_preview(&point, &record, &evidence, &settings);
     })
     .await;
     ask_with_record(Vec::new(), record)
@@ -354,12 +347,12 @@ async fn auto(
     match decision.verdict {
         Verdict::Approve => {
             // Checked again in `reserve`, under the records lock, since a pause can land while
-            // the approver model is deciding. Full auto leaves it all to `reserve`, which still
+            // the judge is deciding. Autopilot leaves it all to `reserve`, which still
             // stops it for `auto-off` and broken records.
             if !in_autopilot(point)
                 && let Some(why) = auto_paused(parts, settings).await
             {
-                return shadow(parts, point, evidence, settings, &decision, Some(why)).await;
+                return auto_preview(parts, point, evidence, settings, &decision, Some(why)).await;
             }
             let reserved = {
                 let taken = (point.clone(), evidence.clone(), Arc::clone(settings));
@@ -374,18 +367,18 @@ async fn auto(
                 Ok(reservation) => decided(decision, reservation.spot_check),
                 // Your answer came first, so this only scores against it.
                 Err(Refusal::AlreadyDecided) => {
-                    shadow(parts, point, evidence, settings, &decision, None).await
+                    auto_preview(parts, point, evidence, settings, &decision, None).await
                 }
                 Err(Refusal::Capped(violations)) => {
                     ask_with_record(violations, record(&decision, None))
                 }
                 Err(Refusal::Paused(why) | Refusal::Unavailable(why)) => {
-                    shadow(parts, point, evidence, settings, &decision, Some(why)).await
+                    auto_preview(parts, point, evidence, settings, &decision, Some(why)).await
                 }
             }
         }
         Verdict::Reject if on_reject == OnReject::Decide => decided(decision, false),
-        Verdict::Reject | Verdict::Escalate => ask_with_record(Vec::new(), record(&decision, None)),
+        Verdict::Reject | Verdict::AskYou => ask_with_record(Vec::new(), record(&decision, None)),
     }
 }
 
@@ -393,22 +386,22 @@ fn decided(decision: Decision, spot_check: bool) -> PolicyOutcome {
     PolicyOutcome::Decided {
         verdict: decision.verdict,
         by: decision.by,
-        approver: decision.approver,
+        judge: decision.judge,
         reasons: decision.reasons,
         spot_check,
     }
 }
 
-/// What auto made of the checkpoint, and `why` it asks anyway. The approver is named in the
+/// What auto made of the approval, and `why` it asks anyway. The judge is named in the
 /// reasons, since the record has no field for it.
-fn record(decision: &Decision, why: Option<String>) -> ShadowRecord {
+fn record(decision: &Decision, why: Option<String>) -> AutoPreviewRecord {
     let mut reasons = decision.reasons.clone();
-    if let Some(approver) = &decision.approver {
-        let approver = DisplayNames::default().worker(approver);
-        reasons.push(format!("asked {approver} to approve it"));
+    if let Some(judge) = &decision.judge {
+        let judge = DisplayNames::default().worker(judge);
+        reasons.push(format!("asked {judge} to approve it"));
     }
     reasons.extend(why);
-    ShadowRecord {
+    AutoPreviewRecord {
         would: decision.verdict,
         by: decision.by,
         reasons,
@@ -417,8 +410,8 @@ fn record(decision: &Decision, why: Option<String>) -> ShadowRecord {
 
 /// Auto didn't get to decide, and `why` says what stopped it.
 fn ask_about(by: DecideWith, why: String) -> PolicyOutcome {
-    let record = ShadowRecord {
-        would: Verdict::Escalate,
+    let record = AutoPreviewRecord {
+        would: Verdict::AskYou,
         by,
         reasons: vec![why],
     };
@@ -432,14 +425,14 @@ fn ask() -> PolicyOutcome {
 fn ask_with(violations: Vec<Violation>) -> PolicyOutcome {
     PolicyOutcome::AskUser {
         violations,
-        shadow: None,
+        auto_preview: None,
     }
 }
 
-fn ask_with_record(violations: Vec<Violation>, record: ShadowRecord) -> PolicyOutcome {
+fn ask_with_record(violations: Vec<Violation>, record: AutoPreviewRecord) -> PolicyOutcome {
     PolicyOutcome::AskUser {
         violations,
-        shadow: Some(record),
+        auto_preview: Some(record),
     }
 }
 
@@ -450,13 +443,13 @@ mod tests {
     use std::time::Duration;
 
     use argonauts_core::RunId;
-    use argonauts_core::events::card::CardSpec;
+    use argonauts_core::events::task::TaskSpec;
     use argonauts_core::future::BoxFuture;
-    use argonauts_core::names::CheckpointId;
+    use argonauts_core::names::ApprovalId;
     use argonauts_core::policy::{
-        ApprovalsView, EvidenceFacts, HardLimits, ShadowRecord, UserDecision,
+        ApprovalsView, AutoPreviewRecord, EvidenceFacts, HardLimits, UserDecision,
     };
-    use argonauts_core::worker::SessionSpec;
+    use argonauts_core::session_runner::SessionSpec;
     use argonauts_testkit::FakeClock;
 
     use super::*;
@@ -470,7 +463,7 @@ mod tests {
             Vec::new()
         }
 
-        fn check_card_diff(&self, _: &CardSpec, _: &str) -> Vec<Violation> {
+        fn check_task_diff(&self, _: &TaskSpec, _: &str) -> Vec<Violation> {
             Vec::new()
         }
 
@@ -491,7 +484,7 @@ mod tests {
             Box::pin(async {
                 ModelVerdict {
                     verdict: Verdict::Approve,
-                    approver: None,
+                    judge: None,
                     reasons: Vec::new(),
                 }
             })
@@ -526,10 +519,10 @@ mod tests {
             Ok(Reservation { spot_check: false })
         }
 
-        fn note_shadow(
+        fn note_auto_preview(
             &self,
             _: &DecisionPoint,
-            _: &ShadowRecord,
+            _: &AutoPreviewRecord,
             _: &EvidencePacket,
             _: &Settings,
         ) {
@@ -556,21 +549,21 @@ mod tests {
         let parts = PolicyParts {
             source: SettingsSource::new(Arc::new(Settings::default()), Arc::new(|| None)),
             limits: Arc::new(NoLimits),
-            approver: Arc::new(Approving),
+            judge: Arc::new(Approving),
             autonomy: autonomy.clone(),
             clock: Arc::new(FakeClock::default()),
         };
         let point = DecisionPoint {
             run: RunId::new("run-01").expect("run id"),
-            checkpoint: CheckpointId::numbered(1),
-            kind: CheckpointKind::Goal,
-            recipe: None,
+            approval: ApprovalId::numbered(1),
+            kind: ApprovalKind::Understand,
+            learned_workflow: None,
             authors: Vec::new(),
             mode_override: None,
-            lead: None,
+            main_agent: None,
         };
         let evidence = EvidencePacket {
-            kind: CheckpointKind::Goal,
+            kind: ApprovalKind::Understand,
             goal: None,
             facts: EvidenceFacts::default(),
             agent_outputs: Vec::new(),

@@ -1,12 +1,12 @@
-//! Test helpers: a temporary git repository isolated from your git config, and cards and events
+//! Test helpers: a temporary git repository isolated from your git config, and tasks and events
 //! to fold.
 
 use std::path::PathBuf;
 
-use argonauts_core::events::card::{CardBudget, CardKind, CardSpec};
+use argonauts_core::events::task::{TaskKind, TaskLimit, TaskSpec};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::SessionKey;
-use argonauts_core::{CardId, RunId};
+use argonauts_core::{RunId, TaskId};
 
 pub(crate) fn git_test_env() -> Vec<(String, String)> {
     vec![
@@ -62,25 +62,25 @@ impl TestRepo {
     }
 }
 
-/// A build card with no paths, owned by `owner` when given.
-pub(crate) fn card_spec(id: &str, depends_on: &[&str], owner: Option<&str>) -> CardSpec {
-    CardSpec {
-        id: CardId::new(id).unwrap(),
+/// A build task with no paths, owned by `worker` when given.
+pub(crate) fn task_spec(id: &str, depends_on: &[&str], worker: Option<&str>) -> TaskSpec {
+    TaskSpec {
+        id: TaskId::new(id).unwrap(),
         title: format!("Build {id}"),
         task: format!("Do the work of {id}."),
-        kind: CardKind::Build,
+        kind: TaskKind::Build,
         owned_paths: Vec::new(),
         read_only_paths: Vec::new(),
         forbidden_paths: Vec::new(),
         hidden_paths: Vec::new(),
         depends_on: depends_on
             .iter()
-            .map(|dep| CardId::new(*dep).unwrap())
+            .map(|dep| TaskId::new(*dep).unwrap())
             .collect(),
         criteria: Vec::new(),
-        owner: owner.map(|worker| worker.parse().unwrap()),
+        worker: worker.map(|model| model.parse().unwrap()),
         reviewers: Vec::new(),
-        budget: CardBudget::default(),
+        limit: TaskLimit::default(),
         predictions: None,
         item: None,
     }
@@ -89,7 +89,7 @@ pub(crate) fn card_spec(id: &str, depends_on: &[&str], owner: Option<&str>) -> C
 /// An event of run `run-01`, as the sink would record it.
 pub(crate) fn run_event(
     seq: u64,
-    card: Option<&str>,
+    task: Option<&str>,
     session: Option<&str>,
     kind: RunEventKind,
 ) -> RunEvent {
@@ -97,9 +97,9 @@ pub(crate) fn run_event(
         seq,
         ts: time::OffsetDateTime::UNIX_EPOCH,
         run_id: RunId::new("run-01").unwrap(),
-        card_id: card.map(|card| CardId::new(card).unwrap()),
+        task_id: task.map(|task| TaskId::new(task).unwrap()),
         session: session.and_then(SessionKey::parse),
-        source: "conductor".to_owned(),
+        source: "argonauts-code".to_owned(),
         kind,
     }
 }

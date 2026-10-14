@@ -1,0 +1,12 @@
+# The branch you're on, as one line of words. A command that prints plain words works as it
+# is: its first line is what the mod shows. /mods branch bottom-line puts it on the bottom line.
+name   = "branch"
+title  = "branch"
+body   = "text"                # stack · meters · list · columns · sparkline · marks · text
+places = ["bottom-line"]       # above · bottom-line · overview · status · usage · context · limits · stats
+form   = "line"                # full · compact · line
+
+[data]
+command = ["git", "branch", "--show-current"]
+every   = "10s"
+timeout = "2s"

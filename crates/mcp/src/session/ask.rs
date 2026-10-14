@@ -63,7 +63,7 @@ pub(super) async fn call(
     // Nothing to ask means no, so a lost app never lets a call through.
     let reply = send(asking, ask).await.unwrap_or_else(|err| {
         AskReply::deny(&format!(
-            "Argonauts couldn't ask the user ({err}), so this wasn't allowed."
+            "Argonauts Code couldn't ask the user ({err}), so this wasn't allowed."
         ))
     });
     let content = vec![ContentBlock::text(reply.text)];

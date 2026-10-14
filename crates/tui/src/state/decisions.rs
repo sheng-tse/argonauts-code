@@ -3,8 +3,8 @@
 
 use std::collections::VecDeque;
 
-use argonauts_core::events::checkpoint::{CheckpointDecided, CheckpointOpened, PolicyCheck};
-use argonauts_core::names::CheckpointId;
+use argonauts_core::events::approval::{ApprovalDecided, ApprovalOpened, PolicyCheck};
+use argonauts_core::names::ApprovalId;
 
 /// Decisions kept beyond the ones still waiting for a spot check.
 const RECENT: usize = 32;
@@ -12,9 +12,9 @@ const RECENT: usize = 32;
 /// What the screen saw of one decision: what was asked, the call, and why.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecisionRecord {
-    pub opened: Box<CheckpointOpened>,
+    pub opened: Box<ApprovalOpened>,
     /// `None` while the policy is still deciding.
-    pub decided: Option<CheckpointDecided>,
+    pub decided: Option<ApprovalDecided>,
     pub check: Option<PolicyCheck>,
 }
 
@@ -23,16 +23,16 @@ pub struct DecisionRecord {
 pub(super) struct Decisions(VecDeque<DecisionRecord>);
 
 impl Decisions {
-    pub fn get(&self, id: &CheckpointId) -> Option<&DecisionRecord> {
+    pub fn get(&self, id: &ApprovalId) -> Option<&DecisionRecord> {
         self.0.iter().rev().find(|record| record.opened.id == *id)
     }
 
     /// `waiting` are the spot checks not yet marked, whose records are never dropped.
     pub fn checked(
         &mut self,
-        opened: Option<&CheckpointOpened>,
+        opened: Option<&ApprovalOpened>,
         check: &PolicyCheck,
-        waiting: &[CheckpointId],
+        waiting: &[ApprovalId],
     ) {
         if let Some(record) = self
             .0
@@ -53,9 +53,9 @@ impl Decisions {
 
     pub fn decided(
         &mut self,
-        opened: Option<&CheckpointOpened>,
-        decided: &CheckpointDecided,
-        waiting: &[CheckpointId],
+        opened: Option<&ApprovalOpened>,
+        decided: &ApprovalDecided,
+        waiting: &[ApprovalId],
     ) {
         let earlier = self.take(&decided.id);
         let check = earlier.as_ref().and_then(|record| record.check.clone());
@@ -72,18 +72,18 @@ impl Decisions {
         }
     }
 
-    pub fn forget(&mut self, id: &CheckpointId) {
+    pub fn forget(&mut self, id: &ApprovalId) {
         self.0.retain(|record| record.opened.id != *id);
     }
 
-    fn take(&mut self, id: &CheckpointId) -> Option<DecisionRecord> {
+    fn take(&mut self, id: &ApprovalId) -> Option<DecisionRecord> {
         let at = self.0.iter().rposition(|record| record.opened.id == *id)?;
         let record = self.0.remove(at);
         self.forget(id);
         record
     }
 
-    fn keep(&mut self, record: DecisionRecord, waiting: &[CheckpointId]) {
+    fn keep(&mut self, record: DecisionRecord, waiting: &[ApprovalId]) {
         self.0.push_back(record);
         while self.0.len() > RECENT {
             let Some(oldest) = self

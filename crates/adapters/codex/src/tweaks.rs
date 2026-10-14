@@ -58,7 +58,7 @@ pub fn native_fanout(setting: NativeFanout) -> LaunchTweak {
     let args = match setting {
         _ if subagents_off(setting) => no_subagents(),
         NativeFanout::Limit { max } => {
-            // Set on every card, since OpenAI changes each model's default cap remotely.
+            // Set on every task, since OpenAI changes each model's default cap remotely.
             config_override(&format!("agents.max_concurrent_threads_per_session={max}"))
         }
         NativeFanout::Switch(_) => Vec::new(),

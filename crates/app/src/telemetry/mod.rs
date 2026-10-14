@@ -1,4 +1,4 @@
-//! Telemetry, off until you say yes: once a day, when Argonauts starts, one anonymous event
+//! Telemetry, off until you say yes: once a day, when Argonauts Code starts, one anonymous event
 //! with the day's counts goes to PostHog. `argonauts telemetry show` prints it first, `off`
 //! stops it, and `DO_NOT_TRACK=1` always wins. A failed send waits for the next day, and none
 //! ever slows the app or shows an error.
@@ -40,7 +40,7 @@ pub enum TelemetryAction {
 
 /// `argonauts telemetry show|on|off`: what it says back.
 pub async fn telemetry(action: TelemetryAction, overrides: Vec<String>) -> anyhow::Result<String> {
-    let paths = Paths::from_env().context("finding your Argonauts folder")?;
+    let paths = Paths::from_env().context("finding your Argonauts Code folder")?;
     let now = OffsetDateTime::now_utc();
     match action {
         TelemetryAction::Show => {
@@ -178,7 +178,7 @@ fn show(
     let state = State::load(&file).unwrap_or_else(|| State::new(today));
     let mut lines = Vec::new();
     lines.push(if settings.telemetry.enabled {
-        "Telemetry is on: one anonymous event a day, sent when Argonauts starts. argonauts \
+        "Telemetry is on: one anonymous event a day, sent when Argonauts Code starts. argonauts \
          telemetry off stops it."
             .to_owned()
     } else {
@@ -229,7 +229,7 @@ fn turn_on(paths: &Paths, now: OffsetDateTime) -> anyhow::Result<String> {
     state.counted_from = today;
     state.save(&file)?;
     let mut said = vec![
-        "Telemetry is on: Argonauts sends one anonymous event a day, from tomorrow. argonauts \
+        "Telemetry is on: Argonauts Code sends one anonymous event a day, from tomorrow. argonauts \
          telemetry show prints it, and off stops it."
             .to_owned(),
     ];

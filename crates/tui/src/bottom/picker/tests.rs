@@ -299,14 +299,14 @@ fn the_slider_takes_the_arrows_enter_and_esc_and_keeps_typing_from_the_composer(
     assert_eq!(press(&mut picker, KeyCode::Char('h')), PickerEvent::Left);
 }
 
-/// A row's state leads its description as the state's glyph, in the state's color, and the
+/// A row's state comes before its description as the state's glyph, in the state's color, and the
 /// descriptions still start in one column. A narrow list cuts the words, never the mark alone.
 #[test]
-fn a_rows_state_leads_its_description_in_the_states_color() {
+fn a_rows_state_comes_before_its_description_in_the_states_color() {
+    use crate::kit::State;
     use crate::theme::Role;
-    use crate::widgets::State;
 
-    let mut picker = Picker::new("Agents", "The agents Argonauts can use");
+    let mut picker = Picker::new("Agents", "The agents Argonauts Code can use");
     picker.rows = vec![
         PickerRow {
             state: Some(State::Done),

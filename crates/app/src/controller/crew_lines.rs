@@ -1,9 +1,9 @@
 //! "Crew for this request": when your words set the crew for a request, the
-//! crew Argonauts understood is shown before any work starts, each role with where it came
+//! crew Argonauts Code understood is shown before any work starts, each role with where it came
 //! from: your words, your settings, the main session, or the role it follows. One question
 //! then asks where to keep it.
 
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::steps::intake::InstructionKind;
@@ -14,8 +14,8 @@ use crate::controller::instructions::Applied;
 /// The four roles a request's words can set, in the order the lines show them.
 const SHOWN: [CrewRole; 4] = [
     CrewRole::Orchestrator,
-    CrewRole::Workers,
-    CrewRole::Reviewers,
+    CrewRole::Worker,
+    CrewRole::Reviewer,
     CrewRole::Judge,
 ];
 
@@ -25,8 +25,8 @@ pub(crate) struct CrewLine {
     pub role: CrewRole,
     pub who: String,
     pub from: String,
-    /// Its seats, when your words set them.
-    pub asked: Option<Vec<WorkerRef>>,
+    /// Its models, when your words set them.
+    pub asked: Option<Vec<ModelRef>>,
 }
 
 /// The crew a request runs with when your followed words changed who fills a role; `None`
@@ -34,8 +34,8 @@ pub(crate) struct CrewLine {
 /// ultracode's, aren't your words, so they show nothing.
 ///
 /// `run` is the run's whole request layer as `key=value`, in the order it applies, when the run
-/// adds seats of its own around your words, as the orchestrator's workflow a crew from solo
-/// takes does. The lines then show the seats the run really has: a seat your words set counts
+/// adds models of its own around your words, as the orchestrator's workflow a crew from Captain
+/// takes does. The lines then show the models the run really has: a model your words set counts
 /// as asked only while the run keeps it, and one the run gave your main session says so.
 pub(crate) fn understood(
     settings: &Settings,
@@ -48,7 +48,7 @@ pub(crate) fn understood(
             .iter()
             .any(|instruction| instruction.kind == kind && instruction.followed())
     };
-    if !SEAT_KINDS.into_iter().any(followed) {
+    if !CREW_KINDS.into_iter().any(followed) {
         return None;
     }
     let words = with_request(settings, &request_settings(applied))?;
@@ -56,19 +56,20 @@ pub(crate) fn understood(
         Some(pairs) => with_request(settings, pairs)?,
         None => words.clone(),
     };
-    let seats = |settings: &Settings, role: CrewRole| candidates(settings, role.fine_role());
+    let models = |settings: &Settings, role: CrewRole| candidates(settings, role.fine_role());
     let by_words = |role: CrewRole| {
-        seats(settings, role) != seats(&asked, role) && seats(&words, role) == seats(&asked, role)
+        models(settings, role) != models(&asked, role)
+            && models(&words, role) == models(&asked, role)
     };
     if !SHOWN.into_iter().any(by_words) {
         return None;
     }
     // The orchestrator is your main session whenever it runs there; any other role only when
     // the run, not your settings, put it there.
-    let main = [settings.main_agent.clone()];
+    let main = [settings.crew.main.clone()];
     let given_to_main = |role: CrewRole| {
-        seats(&asked, role) == main
-            && (role == CrewRole::Orchestrator || seats(settings, role) != main)
+        models(&asked, role) == main
+            && (role == CrewRole::Orchestrator || models(settings, role) != main)
     };
     // "All the other agents" plainly means the workers; any other role it reaches without a
     // word of its own is shown with those words, since that is the part you might not expect.
@@ -87,7 +88,7 @@ pub(crate) fn understood(
                     None => "as you asked".to_owned(),
                 }
             } else if let Some(followed) = follows {
-                format!("follows the {}", followed.as_str())
+                format!("follows the {}", followed.plural())
             } else if given_to_main(role) {
                 "your main session".to_owned()
             } else {
@@ -95,20 +96,20 @@ pub(crate) fn understood(
             };
             CrewLine {
                 role,
-                who: names(&seats(&asked, role)),
+                who: names(&models(&asked, role)),
                 from,
-                asked: set_by_words.then(|| seats(&asked, role)),
+                asked: set_by_words.then(|| models(&asked, role)),
             }
         })
         .collect();
     Some(lines)
 }
 
-/// The lines as the chat shows them, the names and sources in columns.
+/// The lines as the conversation shows them, the names and sources in columns.
 pub(crate) fn text(lines: &[CrewLine]) -> String {
     let role_width = lines
         .iter()
-        .map(|line| line.role.as_str().len())
+        .map(|line| line.role.plural().len())
         .max()
         .unwrap_or(0);
     let who_width = lines
@@ -120,7 +121,7 @@ pub(crate) fn text(lines: &[CrewLine]) -> String {
     for line in lines {
         text.push_str(&format!(
             "\n{:role_width$}   {:who_width$}   {}",
-            line.role.as_str(),
+            line.role.plural(),
             line.who,
             line.from
         ));
@@ -135,26 +136,26 @@ pub(crate) fn to_keep(settings: &Settings, lines: &[CrewLine]) -> Vec<(String, S
     lines
         .iter()
         .filter_map(|line| {
-            let seats = line.asked.as_ref()?;
+            let asked = line.asked.as_ref()?;
             let fine = line.role.fine_role();
             let own = settings
                 .roles
                 .get(&fine)
-                .is_some_and(|own| !own.workers.is_empty());
+                .is_some_and(|own| !own.models.is_empty());
             let key = if own {
-                format!("roles.{}.workers", fine.as_str())
+                format!("roles.{}.models", fine.as_str())
             } else {
                 format!("crew.{}", line.role.as_str())
             };
-            Some((key, toml_list(seats)))
+            Some((key, toml_list(asked)))
         })
         .collect()
 }
 
-/// The kinds of instruction that give agents seats.
-const SEAT_KINDS: [InstructionKind; 8] = [
-    InstructionKind::Lead,
-    InstructionKind::Coordinate,
+/// The kinds of instruction that give roles their agents.
+const CREW_KINDS: [InstructionKind; 8] = [
+    InstructionKind::MainAgent,
+    InstructionKind::Orchestrate,
     InstructionKind::Build,
     InstructionKind::Review,
     InstructionKind::Judge,
@@ -167,10 +168,10 @@ const SEAT_KINDS: [InstructionKind; 8] = [
 /// the workers, which those words plainly mean.
 fn reached_by_others(role: CrewRole, followed: &dyn Fn(InstructionKind) -> bool) -> bool {
     let own = match role {
-        CrewRole::Orchestrator => InstructionKind::Coordinate,
-        CrewRole::Reviewers => InstructionKind::Review,
+        CrewRole::Orchestrator => InstructionKind::Orchestrate,
+        CrewRole::Reviewer => InstructionKind::Review,
         CrewRole::Judge => InstructionKind::Judge,
-        CrewRole::Main | CrewRole::Workers => return false,
+        CrewRole::Main | CrewRole::Worker => return false,
     };
     !followed(own)
 }
@@ -193,20 +194,20 @@ fn phrase(says: &str) -> String {
         .to_owned()
 }
 
-/// The role whose seats `role` takes, while it has none of its own.
+/// The role whose models `role` takes, while it has none of its own.
 fn follows(settings: &Settings, role: CrewRole) -> Option<CrewRole> {
     settings.crew.followed(role).filter(|_| {
         settings
             .roles
             .get(&role.fine_role())
-            .is_none_or(|own| own.workers.is_empty())
+            .is_none_or(|own| own.models.is_empty())
     })
 }
 
-fn names(seats: &[WorkerRef]) -> String {
-    match seats {
+fn names(models: &[ModelRef]) -> String {
+    match models {
         [] => "nobody".to_owned(),
-        seats => seats
+        models => models
             .iter()
             .map(display_name)
             .collect::<Vec<_>>()
@@ -214,10 +215,10 @@ fn names(seats: &[WorkerRef]) -> String {
     }
 }
 
-fn toml_list(seats: &[WorkerRef]) -> String {
-    let items: Vec<String> = seats
+fn toml_list(models: &[ModelRef]) -> String {
+    let items: Vec<String> = models
         .iter()
-        .map(|seat| toml::Value::String(seat.to_string()).to_string())
+        .map(|model| toml::Value::String(model.to_string()).to_string())
         .collect();
     format!("[{}]", items.join(", "))
 }
@@ -229,16 +230,16 @@ fn request_settings(applied: &Applied) -> Vec<String> {
         .iter()
         .map(|(key, value)| format!("{key}={value}"))
         .collect();
-    if let Some(lead) = &applied.lead {
-        let lead = toml::Value::String(lead.to_string());
-        pairs.push(format!("main_agent={lead}"));
+    if let Some(main_agent) = &applied.main_agent {
+        let main_agent = toml::Value::String(main_agent.to_string());
+        pairs.push(format!("crew.main={main_agent}"));
     }
     pairs
 }
 
 /// `settings` with the request's own `key=value` settings on top, as the run resolves them.
 /// `None` when they don't read, so nothing wrong is shown.
-fn with_request(settings: &Settings, pairs: &[String]) -> Option<Settings> {
+pub(super) fn with_request(settings: &Settings, pairs: &[String]) -> Option<Settings> {
     if pairs.is_empty() {
         return Some(settings.clone());
     }

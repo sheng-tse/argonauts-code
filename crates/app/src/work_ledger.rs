@@ -1,8 +1,9 @@
 //! The work ledger, `~/.argonauts/usage/work/<yyyy-mm>.jsonl`, beside the usage ledger. When a
-//! run ends it gets one line for each session (its role, task, tokens and time), one for each
-//! task (who built it and how review took it), one for each review, and one for the run. Stats
-//! reads it with the usage ledger's chat turns, so it says who did what per CLI, model and
-//! role long after the runs are gone. Reading it costs nothing.
+//! run ends it gets one line for each session (its role, task, tokens, tools and time), one for
+//! each task (who built it and how review took it), one for each review, one for each approval
+//! the judge decided, one for the run, and one for how its plan and its merge went. Stats reads it
+//! with the usage ledger's conversation turns, so it says who did what per CLI, model and role
+//! long after the runs are gone. Reading it costs nothing.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
@@ -12,26 +13,30 @@ use std::path::{Path, PathBuf};
 
 use argonauts_core::api::day_format;
 use argonauts_core::crew_stats::{
-    CrewRole, CrewStats, Fallback, ModelDay, ReviewTally, TaskRecord, WorkRow,
+    CrewStats, Fallback, ModelDay, ReviewTally, StatsRole, TaskRecord, WorkRow,
 };
-use argonauts_core::events::card::{CardEvent, CardKind, CardState, GateKind, ReviewEvent};
-use argonauts_core::events::checkpoint::CheckpointEvent;
+use argonauts_core::events::agent_status::{AgentStatusEvent, FallbackEvent};
+use argonauts_core::events::approval::{AnswerAction, ApprovalEvent};
 use argonauts_core::events::goal::GoalEvent;
 use argonauts_core::events::run::{Party, RunLifecycle};
-use argonauts_core::events::vendor::{HandoffEvent, VendorEvent};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::limits::QuotaStatus;
-use argonauts_core::names::{SessionKey, VendorId, WorkerRef};
+use argonauts_core::events::session::SessionStarted;
+use argonauts_core::events::task::{CheckKind, ReviewEvent, TaskEvent, TaskKind, TaskState};
+use argonauts_core::events::{MergeEvent, PlanEvent, RunEvent, RunEventKind};
+use argonauts_core::limits::PlanUsageStatus;
+use argonauts_core::names::{AgentId, ModelRef, SessionKey};
+use argonauts_core::steps::StepName;
 use argonauts_core::steps::judgment::ReviewVerdict;
-use argonauts_core::{AgentEvent, CardId, RunId, Spend, create_private_dir_all};
+use argonauts_core::{AgentEvent, RunId, Spend, TaskId, create_private_dir_all};
 use serde::{Deserialize, Serialize};
 use time::{Date, Duration, OffsetDateTime};
 
 use crate::usage_ledger::{LedgerLine, local_day};
 use crate::views::sessions::{RunFacts, SessionFacts, add_spend};
 
-/// The triage rule that sends a request to a workflow because ultracode is on.
+/// The Captain-or-crew rule that sends a request to a workflow because ultracode is on.
 const ULTRACODE_RULE: &str = "ultracode";
+/// The label of the session that writes a run's commit message, which the merger runs.
+const COMMIT_MESSAGE: &str = "commit message";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct WorkLine {
@@ -48,30 +53,33 @@ pub(crate) struct WorkLine {
 #[serde(tag = "line", rename_all = "snake_case")]
 pub(crate) enum Work {
     Session {
-        /// The role its start named, such as `worker` or `adjudicator`.
+        /// The role its start named, such as `worker` or `judge`.
         role: String,
-        by: WorkerRef,
+        by: ModelRef,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        task: Option<CardId>,
+        task: Option<TaskId>,
         /// What its task was, such as `build` or `tests`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
         spent: Spend,
         /// Seconds of wall time.
         took: u64,
-        /// The one it took the task over from, and why.
+        /// The tools it called.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        tools: u32,
+        /// The one it is the fallback for, and why.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        stood_in_for: Option<WorkerRef>,
+        fallback_for: Option<ModelRef>,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         why: String,
-        /// The plan window that had run out on the one it took over from.
+        /// The plan window that had run out on the one it is the fallback for.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         window: Option<String>,
     },
     Task {
-        task: CardId,
+        task: TaskId,
         /// The worker whose work it ended with.
-        by: WorkerRef,
+        by: ModelRef,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
         /// Review rounds that sent it back.
@@ -82,9 +90,9 @@ pub(crate) enum Work {
         reviewed: bool,
     },
     Review {
-        by: WorkerRef,
+        by: ModelRef,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        task: Option<CardId>,
+        task: Option<TaskId>,
         /// A judge's ruling rather than a reviewer's review.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         judge: bool,
@@ -102,10 +110,17 @@ pub(crate) enum Work {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         ran_own: bool,
     },
+    /// An approval the judge decided in your place.
+    Signoff {
+        by: ModelRef,
+        /// It sent the work back or stopped it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        refused: bool,
+    },
     Run {
         /// The orchestrator that planned it, when one did.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        by: Option<WorkerRef>,
+        by: Option<ModelRef>,
         /// Seconds from its start to its end.
         took: u64,
         /// The workflow it ran, such as `council`.
@@ -114,13 +129,75 @@ pub(crate) enum Work {
         /// Goals it set: its own, and each of its tasks'.
         #[serde(default, skip_serializing_if = "is_zero")]
         goals: u32,
-        /// Triage sent it to a workflow because ultracode is on.
+        /// The Captain-or-crew rules sent it to a workflow because ultracode is on.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         ultracode: bool,
         /// Questions it settled on autopilot, in your place.
         #[serde(default, skip_serializing_if = "is_zero")]
         answered: u32,
     },
+    /// How the run's plan and its merge went, beside its `Run` line.
+    Outcome {
+        /// Its work reached your branch.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        merged: bool,
+        /// Times its plan was made again after the first.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        replans: u32,
+        /// How its merge went, when it got that far, and who merged when a model did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        merge: Option<MergeEnd>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        merged_by: Option<ModelRef>,
+        /// Its checks failed after the merge.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        checks_failed: bool,
+    },
+}
+
+/// How a run's merge went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MergeEnd {
+    /// Nothing was in conflict.
+    Clean,
+    /// A conflict came up and was settled.
+    Settled,
+    /// A conflict came up and the work never reached your branch.
+    Failed,
+}
+
+/// What a run's log says of its merge.
+#[derive(Default)]
+struct MergeFacts {
+    conflict: bool,
+    /// The work reached your branch, or was offered to you to take.
+    merged: bool,
+    offered: bool,
+    checks_failed: bool,
+}
+
+impl MergeFacts {
+    fn end(&self) -> Option<MergeEnd> {
+        match (self.merged || self.offered, self.conflict) {
+            (true, false) => Some(MergeEnd::Clean),
+            (true, true) => Some(MergeEnd::Settled),
+            (false, true) => Some(MergeEnd::Failed),
+            (false, false) => None,
+        }
+    }
+}
+
+/// The role a session's line is filed under: its own, or the merger's for the sessions that
+/// settle a conflict or write the commit message, which start as a worker's.
+fn role_of(started: &SessionStarted) -> &'static str {
+    let merges = started.step == Some(StepName::ResolveConflict)
+        || started.label.as_deref() == Some(COMMIT_MESSAGE);
+    if merges {
+        StatsRole::MERGER
+    } else {
+        started.role.as_str()
+    }
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -219,14 +296,14 @@ fn month_name(day: Date) -> String {
 }
 
 /// What a task was, in the words Stats shows: `build`, `tests`, `docs`.
-fn kind_word(kind: &CardKind) -> &'static str {
+fn kind_word(kind: &TaskKind) -> &'static str {
     match kind {
-        CardKind::Solo | CardKind::Build => "build",
-        CardKind::Interface => "interfaces",
-        CardKind::AcceptanceTests { .. } => "tests",
-        CardKind::Chore => "chores",
-        CardKind::Docs => "docs",
-        CardKind::Spike { .. } => "experiments",
+        TaskKind::Captain | TaskKind::Build => "build",
+        TaskKind::Interface => "interfaces",
+        TaskKind::AcceptanceTests { .. } => "tests",
+        TaskKind::Chore => "chores",
+        TaskKind::Docs => "docs",
+        TaskKind::Experiment { .. } => "experiments",
     }
 }
 
@@ -242,7 +319,7 @@ fn workflow_of(events: &[RunEvent]) -> Option<String> {
 /// The goals a run set, one for the run and one for each task that had one. A goal set again,
 /// as when its lines change, is still one goal.
 fn goals_of(events: &[RunEvent]) -> u32 {
-    let set: BTreeSet<Option<&CardId>> = events
+    let set: BTreeSet<Option<&TaskId>> = events
         .iter()
         .filter_map(|event| match &event.kind {
             RunEventKind::Goal(GoalEvent::Set(goal)) => Some(goal.task.as_ref()),
@@ -252,29 +329,31 @@ fn goals_of(events: &[RunEvent]) -> u32 {
     set.len() as u32
 }
 
-/// Whether triage sent the run to a workflow because ultracode is on.
+/// Whether the Captain-or-crew rules sent the run to a workflow because ultracode is on.
 fn ultracode_of(events: &[RunEvent]) -> bool {
     events.iter().any(|event| match &event.kind {
         RunEventKind::Run(RunLifecycle::Started(started)) => started
-            .triage
+            .captain_or_crew
             .as_ref()
-            .is_some_and(|triage| triage.rule == ULTRACODE_RULE),
+            .is_some_and(|captain_or_crew| captain_or_crew.rule == ULTRACODE_RULE),
         _ => false,
     })
 }
 
 fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<WorkLine> {
     let facts = RunFacts::of(events);
-    let mut kinds: BTreeMap<CardId, &'static str> = BTreeMap::new();
-    let mut merged: BTreeSet<CardId> = BTreeSet::new();
+    let mut kinds: BTreeMap<TaskId, &'static str> = BTreeMap::new();
+    let mut merged: BTreeSet<TaskId> = BTreeSet::new();
     // Each task's review rounds that sent it back.
-    let mut sent_back: BTreeMap<CardId, BTreeSet<u32>> = BTreeMap::new();
-    // Who stopped on a task, and why, until the one taking over starts.
-    let mut stopped: BTreeMap<CardId, (String, Option<String>)> = BTreeMap::new();
+    let mut sent_back: BTreeMap<TaskId, BTreeSet<u32>> = BTreeMap::new();
+    let mut merge = MergeFacts::default();
+    let mut plans = 0u32;
+    // Who stopped on a task, and why, until its fallback starts.
+    let mut stopped: BTreeMap<TaskId, (String, Option<String>)> = BTreeMap::new();
     // Each CLI's plan window that has run out, by its last reading.
-    let mut out_of: BTreeMap<VendorId, String> = BTreeMap::new();
+    let mut out_of: BTreeMap<AgentId, String> = BTreeMap::new();
     // Each task's check commands as they last ran, and whether each passed.
-    let mut checks: BTreeMap<CardId, BTreeMap<String, bool>> = BTreeMap::new();
+    let mut checks: BTreeMap<TaskId, BTreeMap<String, bool>> = BTreeMap::new();
     // The model each session's CLI said it runs, which the line is filed under.
     let mut reported: BTreeMap<&SessionKey, &str> = BTreeMap::new();
     let line = |day: Date, what: Work| WorkLine {
@@ -285,23 +364,23 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
     };
     let mut lines = Vec::new();
     for event in events {
-        let card = event.card_id.as_ref();
+        let task = event.task_id.as_ref();
         match &event.kind {
-            RunEventKind::Card(CardEvent::Created(spec)) => {
+            RunEventKind::Task(TaskEvent::Created(spec)) => {
                 kinds.insert(spec.id.clone(), kind_word(&spec.kind));
             }
-            RunEventKind::Card(CardEvent::State {
-                to: CardState::Integrated,
+            RunEventKind::Task(TaskEvent::State {
+                to: TaskState::Merged,
                 ..
             }) => {
-                merged.extend(card.cloned());
+                merged.extend(task.cloned());
             }
-            RunEventKind::Gate(gate) if gate.kind == GateKind::Command && !gate.skipped => {
-                if let (Some(card), Some(command)) = (card, &gate.command) {
+            RunEventKind::Check(check) if check.kind == CheckKind::Command && !check.skipped => {
+                if let (Some(task), Some(command)) = (task, &check.command) {
                     checks
-                        .entry(card.clone())
+                        .entry(task.clone())
                         .or_default()
-                        .insert(command.join(" "), gate.passed);
+                        .insert(command.join(" "), check.passed);
                 }
             }
             RunEventKind::Agent(AgentEvent::Init {
@@ -318,17 +397,17 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
                 ..
             }) => {
                 let back = review.verdict != ReviewVerdict::Approve;
-                if back && let Some(card) = card {
-                    sent_back.entry(card.clone()).or_default().insert(*round);
-                }
-                let given = card.and_then(|card| checks.get(card));
+                let given = task.and_then(|task| checks.get(task));
                 let failed = given.map(|given| given.values().any(|passed| !passed));
                 let test_named = review.comments.iter().any(|comment| {
                     comment.text.to_lowercase().contains("test") || comment.path.contains("test")
                 });
+                if back && let Some(task) = task {
+                    sent_back.entry(task.clone()).or_default().insert(*round);
+                }
                 let what = Work::Review {
                     by: reviewer.clone(),
-                    task: card.cloned(),
+                    task: task.cloned(),
                     judge: false,
                     sent_back: back,
                     reason: back.then(|| sent_back_for(review.verdict, failed, test_named)),
@@ -340,16 +419,16 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
                 };
                 lines.push(line(local_day(event.ts), what));
             }
-            RunEventKind::Review(ReviewEvent::Adjudicated {
-                adjudicator,
+            RunEventKind::Review(ReviewEvent::Settled {
+                judge: settled_by,
                 ruling,
             }) => {
                 let back = ruling.verdict != ReviewVerdict::Approve;
-                let given = card.and_then(|card| checks.get(card));
+                let given = task.and_then(|task| checks.get(task));
                 let failed = given.map(|given| given.values().any(|passed| !passed));
                 let what = Work::Review {
-                    by: adjudicator.clone(),
-                    task: card.cloned(),
+                    by: settled_by.clone(),
+                    task: task.cloned(),
                     judge: true,
                     sent_back: back,
                     reason: back.then(|| sent_back_for(ruling.verdict, failed, false)),
@@ -361,18 +440,38 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
                 };
                 lines.push(line(local_day(event.ts), what));
             }
-            RunEventKind::Vendor(VendorEvent::Quota(reading)) => match &reading.window {
-                Some(window) if reading.status == QuotaStatus::Rejected => {
-                    out_of.insert(reading.vendor.clone(), window.clone());
+            RunEventKind::AgentStatus(AgentStatusEvent::PlanUsage(reading)) => {
+                match &reading.window {
+                    Some(window) if reading.status == PlanUsageStatus::Rejected => {
+                        out_of.insert(reading.agent_id.clone(), window.clone());
+                    }
+                    _ if reading.status == PlanUsageStatus::Allowed => {
+                        out_of.remove(&reading.agent_id);
+                    }
+                    _ => {}
                 }
-                _ if reading.status == QuotaStatus::Allowed => {
-                    out_of.remove(&reading.vendor);
+            }
+            RunEventKind::Fallback(FallbackEvent::Needed(plan)) => {
+                let window = out_of.get(&plan.stopped.agent_id()).cloned();
+                stopped.insert(plan.task.clone(), (plan.reason.clone(), window));
+            }
+            RunEventKind::Approval(ApprovalEvent::Decided(decided)) => {
+                if let Party::Judge { model } = &decided.by {
+                    let what = Work::Signoff {
+                        by: model.clone(),
+                        refused: refuses(&decided.action),
+                    };
+                    lines.push(line(local_day(event.ts), what));
                 }
-                _ => {}
-            },
-            RunEventKind::Handoff(HandoffEvent::Needed(plan)) => {
-                let window = out_of.get(&plan.stopped.vendor()).cloned();
-                stopped.insert(plan.card.clone(), (plan.reason.clone(), window));
+            }
+            RunEventKind::Plan(PlanEvent::Orchestrated { .. }) => plans += 1,
+            RunEventKind::Merge(MergeEvent::Conflict { .. }) => merge.conflict = true,
+            RunEventKind::Merge(MergeEvent::RunMerged { .. }) => merge.merged = true,
+            RunEventKind::Merge(
+                MergeEvent::PullRequest { .. } | MergeEvent::WaitingToMerge { .. },
+            ) => merge.offered = true,
+            RunEventKind::Merge(MergeEvent::FinalCheck { passed }) => {
+                merge.checks_failed = !passed;
             }
             _ => {}
         }
@@ -380,28 +479,28 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
 
     // A line is filed under the model the session's CLI said it ran, which an alias in the
     // settings, such as `haiku`, may not name the way the catalog does.
-    let ran_on = |session: &SessionFacts| -> WorkerRef {
+    let ran_on = |session: &SessionFacts| -> ModelRef {
         match reported.get(&session.key) {
-            Some(model) => WorkerRef::new(session.worker.worker.clone(), Some((*model).to_owned())),
+            Some(model) => ModelRef::new(session.worker.agent.clone(), Some((*model).to_owned())),
             None => session.worker.clone(),
         }
     };
     // A review names the reviewer as its step asked; its session knows the model it ran, and
     // whether it ran commands of its own.
-    let ran: BTreeMap<&WorkerRef, WorkerRef> = facts
+    let ran: BTreeMap<&ModelRef, ModelRef> = facts
         .sessions
         .iter()
         .map(|session| (&session.started.worker, ran_on(session)))
         .collect();
-    let own_commands: BTreeSet<(&CardId, &WorkerRef)> = facts
+    let own_commands: BTreeSet<(&TaskId, &ModelRef)> = facts
         .sessions
         .iter()
         .filter(|session| {
-            let role = CrewRole::of(session.started.role.as_str());
-            matches!(role, CrewRole::Reviewer | CrewRole::Judge)
+            let role = StatsRole::counted_as(role_of(&session.started));
+            matches!(role, StatsRole::Reviewer | StatsRole::Judge)
                 && session.tools.iter().any(|tool| is_shell(&tool.name))
         })
-        .filter_map(|session| Some((session.card.as_ref()?, &session.started.worker)))
+        .filter_map(|session| Some((session.task.as_ref()?, &session.started.worker)))
         .collect();
     for review in &mut lines {
         if let Work::Review {
@@ -417,20 +516,25 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
         }
     }
 
-    let mut builders: BTreeMap<CardId, WorkerRef> = BTreeMap::new();
+    let mut builders: BTreeMap<TaskId, ModelRef> = BTreeMap::new();
     let mut orchestrator = None;
+    let mut merged_by = None;
     for session in &facts.sessions {
-        let role = session.started.role.as_str();
-        let crew_role = CrewRole::of(role);
+        let role = role_of(&session.started);
+        let crew_role = StatsRole::counted_as(role);
         let worker = ran_on(session);
-        if crew_role == CrewRole::Orchestrator && orchestrator.is_none() {
+        if crew_role == StatsRole::Orchestrator && orchestrator.is_none() {
             orchestrator = Some(worker.clone());
         }
-        let kind = session.card.as_ref().and_then(|card| kinds.get(card));
-        if crew_role == CrewRole::Worker
-            && let Some(card) = &session.card
+        if crew_role == StatsRole::Merger {
+            merged_by.get_or_insert_with(|| worker.clone());
+            merge.conflict |= session.started.step == Some(StepName::ResolveConflict);
+        }
+        let kind = session.task.as_ref().and_then(|task| kinds.get(task));
+        if crew_role == StatsRole::Worker
+            && let Some(task) = &session.task
         {
-            builders.insert(card.clone(), worker.clone());
+            builders.insert(task.clone(), worker.clone());
         }
         let ended_at = session.ended.as_ref().map(|end| {
             session.started_at + Duration::milliseconds(end.duration_ms.min(i64::MAX as u64) as i64)
@@ -439,25 +543,26 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
         let took = until.map_or(0, |until| {
             (until - session.started_at).whole_seconds().max(0)
         });
-        let (why, window) = match (&session.standing_in_for, &session.card) {
-            (Some(_), Some(card)) => stopped.get(card).cloned().unwrap_or_default(),
+        let (why, window) = match (&session.fallback_for, &session.task) {
+            (Some(_), Some(task)) => stopped.get(task).cloned().unwrap_or_default(),
             _ => Default::default(),
         };
         let what = Work::Session {
             role: role.to_owned(),
             by: worker,
-            task: session.card.clone(),
+            task: session.task.clone(),
             kind: kind.map(|kind| (*kind).to_owned()),
             spent: session.spent(),
             took: took as u64,
-            stood_in_for: session.standing_in_for.clone(),
+            tools: session.tools.len() as u32,
+            fallback_for: session.fallback_for.clone(),
             why,
             window,
         };
         lines.push(line(local_day(session.started_at), what));
     }
 
-    let reviewed: BTreeSet<CardId> = lines
+    let reviewed: BTreeSet<TaskId> = lines
         .iter()
         .filter_map(|line| match &line.what {
             Work::Review {
@@ -466,13 +571,13 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
             _ => None,
         })
         .collect();
-    for (card, by) in builders {
+    for (task, by) in builders {
         let what = Work::Task {
-            kind: kinds.get(&card).map(|kind| (*kind).to_owned()),
-            sent_back: sent_back.get(&card).map_or(0, |rounds| rounds.len() as u32),
-            merged: merged.contains(&card),
-            reviewed: reviewed.contains(&card),
-            task: card,
+            kind: kinds.get(&task).map(|kind| (*kind).to_owned()),
+            sent_back: sent_back.get(&task).map_or(0, |rounds| rounds.len() as u32),
+            merged: merged.contains(&task),
+            reviewed: reviewed.contains(&task),
+            task,
             by,
         };
         lines.push(line(ended, what));
@@ -489,7 +594,7 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
         .filter(|event| {
             matches!(
                 &event.kind,
-                RunEventKind::Checkpoint(CheckpointEvent::Decided(decided))
+                RunEventKind::Approval(ApprovalEvent::Decided(decided))
                     if decided.by == Party::Autopilot
             )
         })
@@ -505,7 +610,28 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
             answered,
         },
     ));
+    lines.push(line(
+        ended,
+        Work::Outcome {
+            merged: merge.merged,
+            replans: plans.saturating_sub(1),
+            merge: merge.end(),
+            merged_by,
+            checks_failed: merge.checks_failed,
+        },
+    ));
     lines
+}
+
+/// Whether the judge's answer to an approval turned the work down.
+fn refuses(action: &AnswerAction) -> bool {
+    matches!(
+        action,
+        AnswerAction::SendBack
+            | AnswerAction::Stop
+            | AnswerAction::RequestChanges
+            | AnswerAction::Abandon
+    )
 }
 
 /// Why a review sent the work back, in the words Stats shows: a check it was given had
@@ -532,9 +658,9 @@ fn is_shell(tool: &str) -> bool {
 }
 
 /// Stats for the days from `first` on, or every day: the work ledger's lines with the usage
-/// ledger's chat turns, whose answers the main role gave. A run the work ledger missed still
-/// counts its tokens, as work no role is known for. Each day of the period keeps what each
-/// model did and used in each role, for the charts.
+/// ledger's conversation turns, whose answers the main role gave and whose conversations are
+/// its work. A run the work ledger missed still counts its tokens, as work no role is known
+/// for. Each day of the period keeps what each model did and used in each role, for the charts.
 pub(crate) fn stats(ledger: &WorkLedger, first: Option<Date>, usage: &[LedgerLine]) -> CrewStats {
     let lines = ledger.read_since(first);
     let in_period = |day: Date| first.is_none_or(|first| day >= first);
@@ -543,6 +669,23 @@ pub(crate) fn stats(ledger: &WorkLedger, first: Option<Date>, usage: &[LedgerLin
     let mut stats = CrewStats::default();
     let mut rows: BTreeMap<RowKey, WorkRow> = BTreeMap::new();
     let mut days: BTreeMap<DayKey, (Spend, u32)> = BTreeMap::new();
+    // Why each task was sent back, as each review that did so said, in the order they came.
+    let mut returned: BTreeMap<(&RunId, &TaskId), Vec<String>> = BTreeMap::new();
+    for line in &lines {
+        if let Work::Review {
+            task: Some(task),
+            judge: false,
+            sent_back: true,
+            reason: Some(why),
+            ..
+        } = &line.what
+        {
+            returned
+                .entry((&line.run, task))
+                .or_default()
+                .push(why.clone());
+        }
+    }
 
     for line in &lines {
         if !in_period(line.day) {
@@ -555,25 +698,28 @@ pub(crate) fn stats(ledger: &WorkLedger, first: Option<Date>, usage: &[LedgerLin
                 kind,
                 spent,
                 took,
-                stood_in_for,
+                tools,
+                fallback_for,
                 why,
                 window,
                 ..
             } => {
-                let crew_role = CrewRole::of(role);
+                let crew_role = StatsRole::counted_as(role);
                 add_spend(
                     &mut day_of(&mut days, line.day, by, Some(crew_role)).0,
                     spent,
                 );
-                let kind = kind.clone().filter(|_| crew_role == CrewRole::Worker);
+                let kind = kind.clone().filter(|_| crew_role == StatsRole::Worker);
                 let row = row_of(&mut rows, by, crew_role, kind);
                 add_spend(&mut row.spent, spent);
                 row.took_secs += took;
-                if let Some(from) = stood_in_for {
+                row.sessions += 1;
+                row.tool_calls += tools;
+                if let Some(from) = fallback_for {
                     stats.fallbacks.push(Fallback {
-                        agent: by.worker.clone(),
+                        agent: by.agent.clone(),
                         model: by.model.clone(),
-                        from_agent: from.worker.clone(),
+                        from_agent: from.agent.clone(),
                         from_model: from.model.clone(),
                         why: why.clone(),
                         window: window.clone(),
@@ -581,20 +727,21 @@ pub(crate) fn stats(ledger: &WorkLedger, first: Option<Date>, usage: &[LedgerLin
                 }
             }
             Work::Task {
+                task,
                 by,
                 kind,
                 sent_back,
                 merged,
                 reviewed,
-                ..
             } => {
-                day_of(&mut days, line.day, by, Some(CrewRole::Worker)).1 += 1;
-                row_of(&mut rows, by, CrewRole::Worker, kind.clone()).done += 1;
+                day_of(&mut days, line.day, by, Some(StatsRole::Worker)).1 += 1;
+                row_of(&mut rows, by, StatsRole::Worker, kind.clone()).done += 1;
                 stats.tasks.push(TaskRecord {
-                    agent: by.worker.clone(),
+                    agent: by.agent.clone(),
                     model: by.model.clone(),
                     kind: kind.clone(),
                     sent_back: *sent_back,
+                    reasons: returned.remove(&(&line.run, task)).unwrap_or_default(),
                     merged: *merged,
                     reviewed: *reviewed,
                 });
@@ -609,15 +756,23 @@ pub(crate) fn stats(ledger: &WorkLedger, first: Option<Date>, usage: &[LedgerLin
                 ran_own,
                 ..
             } => {
+                // A judge's ruling between a worker and a reviewer isn't one of its sign-offs:
+                // it counts with the runs' outcomes, and its row keeps only why it ruled.
                 let role = if *judge {
-                    CrewRole::Judge
+                    StatsRole::Judge
                 } else {
-                    CrewRole::Reviewer
+                    StatsRole::Reviewer
                 };
-                day_of(&mut days, line.day, by, Some(role)).1 += 1;
                 let row = row_of(&mut rows, by, role, None);
-                row.done += 1;
-                row.sent_back += u32::from(*sent_back);
+                if *judge && *sent_back {
+                    stats.outcomes.sided_with_reviewer += 1;
+                } else if *judge {
+                    stats.outcomes.sided_with_worker += 1;
+                } else {
+                    row.done += 1;
+                    row.sent_back += u32::from(*sent_back);
+                    day_of(&mut days, line.day, by, Some(role)).1 += 1;
+                }
                 let mut tally = ReviewTally {
                     checks: checks.clone(),
                     ran_own: u32::from(*ran_own),
@@ -633,34 +788,79 @@ pub(crate) fn stats(ledger: &WorkLedger, first: Option<Date>, usage: &[LedgerLin
                 }
                 row.review.add(&tally);
             }
+            Work::Signoff { by, refused } => {
+                day_of(&mut days, line.day, by, Some(StatsRole::Judge)).1 += 1;
+                let row = row_of(&mut rows, by, StatsRole::Judge, None);
+                row.done += 1;
+                row.sent_back += u32::from(*refused);
+            }
             Work::Run { by, took, .. } => {
                 stats.workflows += 1;
                 stats.took_secs += took;
                 if let Some(by) = by {
-                    day_of(&mut days, line.day, by, Some(CrewRole::Orchestrator)).1 += 1;
-                    row_of(&mut rows, by, CrewRole::Orchestrator, None).done += 1;
+                    day_of(&mut days, line.day, by, Some(StatsRole::Orchestrator)).1 += 1;
+                    row_of(&mut rows, by, StatsRole::Orchestrator, None).done += 1;
+                }
+            }
+            Work::Outcome {
+                merged,
+                replans,
+                merge,
+                merged_by,
+                checks_failed,
+            } => {
+                let outcomes = &mut stats.outcomes;
+                outcomes.runs += 1;
+                outcomes.runs_merged += u32::from(*merged);
+                outcomes.runs_replanned += u32::from(*replans > 0);
+                match merge {
+                    Some(MergeEnd::Clean) => outcomes.merges_clean += 1,
+                    Some(MergeEnd::Settled) => outcomes.merges_settled += 1,
+                    Some(MergeEnd::Failed) => outcomes.merges_failed += 1,
+                    None => {}
+                }
+                outcomes.checks_failed += u32::from(merge.is_some() && *checks_failed);
+                if let (Some(by), Some(_)) = (merged_by, merge) {
+                    day_of(&mut days, line.day, by, Some(StatsRole::Merger)).1 += 1;
+                    row_of(&mut rows, by, StatsRole::Merger, None).done += 1;
                 }
             }
         }
     }
 
+    // The conversations the main agent held, by who answered in them. A turn filed with
+    // none is a conversation of its own.
+    let mut held: BTreeSet<(&str, &str, &str, Option<&str>)> = BTreeSet::new();
     for line in usage {
         let unrecorded = line.run.as_ref().is_some_and(|run| !recorded.contains(run));
         if line.run.is_some() && !unrecorded || !in_period(line.day) {
             continue;
         }
-        let by = WorkerRef::new(line.agent.clone(), line.model.clone());
+        let by = ModelRef::new(line.agent.clone(), line.model.clone());
         let role = if unrecorded {
-            CrewRole::Worker
+            StatsRole::Worker
         } else {
-            CrewRole::Main
+            StatsRole::Main
         };
+        let begun = !unrecorded
+            && line.conversation.as_deref().is_none_or(|conversation| {
+                held.insert((
+                    line.repo.as_str(),
+                    conversation,
+                    line.agent.as_str(),
+                    line.model.as_deref(),
+                ))
+            });
         let day = day_of(&mut days, line.day, &by, (!unrecorded).then_some(role));
         add_spend(&mut day.0, &line.spent());
-        day.1 += u32::from(!unrecorded);
+        day.1 += u32::from(begun);
         let row = row_of(&mut rows, &by, role, None);
         add_spend(&mut row.spent, &line.spent());
-        row.done += u32::from(!unrecorded);
+        row.done += u32::from(begun);
+        if !unrecorded {
+            row.turns += 1;
+            row.took_secs += line.took;
+        }
     }
 
     stats.work = rows.into_values().collect();
@@ -703,30 +903,30 @@ pub(crate) fn name_unnamed_models(stats: &mut CrewStats, defaults: &BTreeMap<Str
     }
 }
 
-type DayKey = (Date, String, Option<String>, Option<CrewRole>);
+type DayKey = (Date, String, Option<String>, Option<StatsRole>);
 
 /// The tokens and the pieces of work of one model in one role on one day.
 fn day_of<'a>(
     days: &'a mut BTreeMap<DayKey, (Spend, u32)>,
     day: Date,
-    by: &WorkerRef,
-    role: Option<CrewRole>,
+    by: &ModelRef,
+    role: Option<StatsRole>,
 ) -> &'a mut (Spend, u32) {
-    let key = (day, by.worker.clone(), by.model.clone(), role);
+    let key = (day, by.agent.clone(), by.model.clone(), role);
     days.entry(key).or_default()
 }
 
-type RowKey = (String, Option<String>, CrewRole, Option<String>);
+type RowKey = (String, Option<String>, StatsRole, Option<String>);
 
 fn row_of<'a>(
     rows: &'a mut BTreeMap<RowKey, WorkRow>,
-    by: &WorkerRef,
-    role: CrewRole,
+    by: &ModelRef,
+    role: StatsRole,
     kind: Option<String>,
 ) -> &'a mut WorkRow {
-    let key = (by.worker.clone(), by.model.clone(), role, kind.clone());
+    let key = (by.agent.clone(), by.model.clone(), role, kind.clone());
     rows.entry(key).or_insert_with(|| WorkRow {
-        agent: by.worker.clone(),
+        agent: by.agent.clone(),
         model: by.model.clone(),
         role,
         kind,
@@ -734,6 +934,9 @@ fn row_of<'a>(
         done: 0,
         sent_back: 0,
         took_secs: 0,
+        sessions: 0,
+        tool_calls: 0,
+        turns: 0,
         review: ReviewTally::default(),
     })
 }

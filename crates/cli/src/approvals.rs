@@ -3,12 +3,31 @@
 use std::process::ExitCode;
 
 use argonauts_app::ApprovalsReport;
+use argonauts_core::sanitize::sanitize_for_terminal;
 
+use crate::runs::run_line;
 use crate::text::{count, words};
 
 pub async fn show() -> anyhow::Result<ExitCode> {
+    let runs = argonauts_app::waiting_runs(None).await?;
+    // Learning's proposals wait too; a repo whose learning files can't be read still lists
+    // its runs.
+    let proposals = argonauts_app::learning_proposals(None).unwrap_or_else(|err| {
+        let err = sanitize_for_terminal(&format!("{err:#}"));
+        eprintln!("argonauts: learning's proposals couldn't be read: {err}");
+        Vec::new()
+    });
+    if runs.is_empty() && proposals.is_empty() {
+        println!("Nothing waits for you.");
+    }
+    for run in &runs {
+        println!("{}", sanitize_for_terminal(&run_line(run)));
+    }
+    for line in &proposals {
+        println!("{}", sanitize_for_terminal(line));
+    }
     let report = argonauts_app::approvals_report(None).await?;
-    print!("{}", report_text(&report));
+    print!("\n{}", report_text(&report));
     Ok(ExitCode::SUCCESS)
 }
 
@@ -47,8 +66,8 @@ fn report_text(report: &ApprovalsReport) -> String {
             )
         ));
     }
-    if let Some(approver) = &view.approver {
-        out.push_str(&format!("The approver model is {approver}.\n"));
+    if let Some(judge) = &view.judge {
+        out.push_str(&format!("The judge is {judge}.\n"));
     }
     for note in &report.notes {
         out.push_str(note);
@@ -65,18 +84,18 @@ pub fn auto_off() -> anyhow::Result<ExitCode> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::checkpoint::CheckpointKind;
+    use argonauts_core::events::approval::ApprovalKind;
     use argonauts_core::policy::{ApprovalRow, ApprovalsView};
     use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 
     use super::*;
 
     #[test]
-    fn each_checkpoint_shows_its_mode_and_record() {
+    fn each_approval_shows_its_mode_and_record() {
         let report = ApprovalsReport {
             view: ApprovalsView {
                 points: vec![ApprovalRow {
-                    kind: CheckpointKind::ChangeRequest,
+                    kind: ApprovalKind::ChangeRequest,
                     mode: ApprovalMode::AutoPreview,
                     decide_with: DecideWith::default(),
                     matches_in_a_row: 4,
@@ -84,10 +103,10 @@ mod tests {
                     suggest_auto: true,
                 }],
                 spot_checks_waiting: 2,
-                approver: None,
+                judge: None,
                 warnings: Vec::new(),
             },
-            notes: vec!["CI failures wait for a CI integration.".to_owned()],
+            notes: vec!["CI failures wait for a CI run.".to_owned()],
         };
         let text = report_text(&report);
         assert!(
@@ -99,10 +118,7 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("2 spot checks waiting for you."), "{text}");
-        assert!(
-            text.ends_with("CI failures wait for a CI integration.\n"),
-            "{text}"
-        );
+        assert!(text.ends_with("CI failures wait for a CI run.\n"), "{text}");
     }
 
     #[test]

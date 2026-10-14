@@ -1,0 +1,616 @@
+# Every retired name and the name that replaced it. `tests/retired_names.rs` fails when one
+# comes back, in any tracked file or file name, and prints the replacement beside it.
+#
+# This is the one file that may spell a retired name. A new rename goes here in the commit
+# that makes it, so the old name can't return.
+#
+# How it matches: each line is split into word parts (at anything that isn't a letter or a
+# digit, at camelCase steps and between letters and digits) and lowercased, and a part must
+# equal a listed form whole. Only the listed forms count, so list every ending that was in
+# use. A word with a plain English sense of its own is banned as a phrase instead, and a
+# plain use of a banned word is reworded, not allowed.
+
+# ── Retired words ────────────────────────────────────────────────────────────────────────
+
+[[word]]
+old = ["solo"]
+new = "Captain"
+
+# A drawn box of numbers is still a card: a mod draws one, above the input or on a tab of the
+# usage panel. Everything else that was a card is a task or a question. The word is let
+# through only in the files that draw a mod's card, place it or feed it its numbers.
+[[word]]
+old = ["card", "cards"]
+new = "task (a piece of a plan) or question (the box that asks)"
+allowed_in = [
+    # drawing
+    "crates/tui/src/mods/**",
+    "crates/tui/src/overview/**",
+    "crates/tui/src/kit/**",
+    "crates/tui/src/bottom/band*.rs",
+    "crates/tui/src/bottom/mod.rs",
+    "crates/tui/src/bottom/tests.rs",
+    "crates/tui/src/views/goal_panel.rs",
+    "crates/tui/src/views/mod.rs",
+    "crates/tui/src/a11y/views.rs",
+    "crates/tui/src/format/numbers.rs",
+    "crates/tui/src/state/mod.rs",
+    "crates/tui/src/app/tests.rs",
+    "crates/tui/src/bridge/band.rs",
+    "crates/tui/src/bridge/bottom_line.rs",
+    "crates/tui/src/bridge/bottom_line/tests.rs",
+    "crates/tui/src/bridge/keys.rs",
+    "crates/tui/src/bridge/mod.rs",
+    "crates/tui/src/bridge/status.rs",
+    "crates/tui/tests/snap_mods.rs",
+    "crates/tui/tests/snap_mods/**",
+    "crates/tui/tests/snapshots/snap_mods__*",
+    "crates/tui/tests/fixtures/mods/**",
+    # placing and settings
+    "crates/app/src/mods/**",
+    "crates/app/src/controller/account.rs",
+    "crates/app/src/controller/mod_places.rs",
+    "crates/app/src/setup/tests.rs",
+    "crates/app/src/usage_ledger.rs",
+    "crates/scenarios/tests/app_settings.rs",
+    "crates/core/src/settings/mods/**",
+    "crates/core/src/settings/mods.rs",
+    "templates/mods/**",
+    "crates/core/src/settings/stats.rs",
+    "crates/core/src/settings/ui/mods.rs",
+    "crates/core/src/settings/ui/places.rs",
+    "crates/core/src/input.rs",
+    "crates/core/src/input/mods.rs",
+    # the numbers a card shows
+    "crates/core/src/api.rs",
+    "crates/core/src/app.rs",
+    "crates/core/src/crew_stats.rs",
+    "crates/core/src/plan_usage.rs",
+    "crates/adapters/antigravity-cli/src/probe.rs",
+    "crates/adapters/codex/src/probe.rs",
+]
+
+[[word]]
+old = ["preset", "presets"]
+new = "workflow"
+
+[[word]]
+old = ["coordinate", "coordinates", "coordinated", "coordinating", "coordinator", "coordinators"]
+new = "orchestrator"
+
+[[word]]
+old = ["lead", "leads", "leader", "leaders"]
+new = "main (the main agent), or orchestrator for who plans"
+
+[[word]]
+old = ["owner", "owners"]
+new = "worker"
+
+[[word]]
+old = ["shadow"]
+new = "auto preview"
+
+[[word]]
+old = ["handoff", "handoffs"]
+new = "fallback"
+
+[[word]]
+old = ["budget", "budgets"]
+new = "spend (money) or limits (caps you set)"
+
+# The CLIs and providers say quota in their own errors, which these files read or replay.
+[[word]]
+old = ["quota", "quotas"]
+new = "plan usage"
+allowed_in = [
+    "crates/adapters/antigravity-cli/src/errors.rs",
+    "crates/adapters/antigravity-cli/src/parser.rs",
+    "crates/adapters/antigravity-cli/src/probe.rs",
+    "crates/adapters/codex/src/classify.rs",
+    "crates/adapters/manifest/src/output/mod.rs",
+    "crates/endpoints/src/errors.rs",
+    "crates/endpoints/tests/runner.rs",
+    "crates/testkit/src/openai.rs",
+    "crates/registry/src/clis/tests.rs",
+    "crates/registry/tests/fixtures/models.toml",
+]
+
+[[word]]
+old = ["gate", "gates", "gated"]
+new = "check"
+
+[[word]]
+old = ["park", "parks", "parked", "parking"]
+new = "waiting"
+
+[[word]]
+old = ["escalate", "escalates", "escalated", "escalating", "escalation", "escalations"]
+new = "needs you"
+
+[[word]]
+old = ["landed"]
+new = "merged"
+
+[[word]]
+old = ["integrate", "integrates", "integrated", "integrating", "integration", "integrations"]
+new = "merge, merged"
+
+[[word]]
+old = ["spike", "spikes"]
+new = "experiment"
+
+[[word]]
+old = ["retro", "retros"]
+new = "run review"
+
+[[word]]
+old = ["recipe", "recipes"]
+new = "learned workflow"
+
+[[word]]
+old = ["triage"]
+new = "captain_or_crew"
+
+[[word]]
+old = ["vendor", "vendors"]
+new = "agent, or CLI for the tool (provider for money)"
+
+[[word]]
+old = ["harness", "harnesses"]
+new = "CLI (test driver in tests)"
+
+[[word]]
+old = ["family", "families"]
+new = "provider"
+
+[[word]]
+old = ["company", "companies"]
+new = "provider"
+
+[[word]]
+old = ["widget", "widgets"]
+new = "mod"
+
+[[word]]
+old = ["restate", "restates", "restated", "restater", "restaters", "restatement", "restatements"]
+new = "read, reader, reading"
+
+[[word]]
+old = ["differ", "differs"]
+new = "compare (reword a plain use: are different)"
+
+[[word]]
+old = ["drafter", "drafters"]
+new = "draft"
+
+[[word]]
+old = ["mapper", "mappers"]
+new = "map"
+
+[[word]]
+old = ["approver", "approvers"]
+new = "judge"
+
+[[word]]
+old = ["adjudicate", "adjudicates", "adjudicated", "adjudicator", "adjudicators", "adjudication"]
+new = "judge"
+
+[[word]]
+old = ["seat", "seats", "seated"]
+new = "a role's model"
+
+# Antigravity CLI numbers its retries "attempt N", and Claude Code's retry line has the key.
+[[word]]
+old = ["attempt", "attempts", "attempted"]
+new = "try"
+allowed_in = [
+    "crates/adapters/antigravity-cli/src/errors.rs",
+    "crates/adapters/antigravity-cli/src/parser.rs",
+    "crates/adapters/antigravity-cli/tests/replay.rs",
+    "crates/adapters/claude-code/src/parser.rs",
+    "crates/adapters/claude-code/src/workflows.rs",
+    "crates/scenarios/scenarios/limits/*.toml",
+]
+
+[[word]]
+old = ["takeover", "takeovers"]
+new = "fallback (fell back to)"
+
+[[word]]
+old = ["supervisor", "supervisors", "supervise", "supervises", "supervising"]
+new = "run host"
+
+[[word]]
+old = ["refute", "refutes", "refuted"]
+new = "critique"
+
+# Going back to a checkpoint is a rewind. The word is let through only where it is git's own:
+# the files that run `git revert`, and the ones that read a commit of yours that undid an
+# auto-merge.
+[[word]]
+old = ["revert", "reverts", "reverted", "reverting"]
+new = "rewind (rewound); undo for plain uses"
+allowed_in = [
+    "crates/crew/src/git.rs",
+    "crates/crew/src/fallback/rewind.rs",
+    "crates/crew/src/run_review/reversals.rs",
+    "crates/crew/src/approvals/mod.rs",
+    "crates/app/src/host/mod.rs",
+    "crates/app/src/host/revert_check.rs",
+    "crates/app/src/example_prompt.rs",
+    "crates/policy/src/parts.rs",
+    "crates/policy/src/autonomy/**",
+    "crates/learning/**",
+    "crates/scenarios/tests/policy_revert_of_auto_merge_demotes.rs",
+]
+
+# The endpoints speak the OpenAI Chat Completions API, which is the API's own name.
+[[word]]
+old = ["chat", "chats"]
+new = "conversation"
+allowed_in = [
+    "crates/endpoints/**",
+    "crates/testkit/src/openai.rs",
+    "crates/testkit/tests/openai_endpoint.rs",
+]
+
+# ── Retired phrases ──────────────────────────────────────────────────────────────────────
+# Consecutive word parts, so "stand in" also catches stand-in, StandIn and stand_in.
+
+[[phrase]]
+old = ["full auto"]
+new = "autopilot"
+
+[[phrase]]
+old = ["all hands"]
+new = "ultracode"
+
+[[phrase]]
+old = ["default agent"]
+new = "the main agent"
+
+[[phrase]]
+old = ["for the lead"]
+new = "for main"
+
+[[phrase]]
+old = ["phase lead"]
+new = "tie-breaker"
+
+[[phrase]]
+old = ["hand off", "hands off", "handed off", "handed to", "handed on", "handing off"]
+new = "fallback (fell back to); give, pass or send for plain uses"
+
+[[phrase]]
+old = ["stand in"]
+new = "fallback"
+
+[[phrase]]
+old = ["peer crew"]
+new = "council"
+
+[[phrase]]
+old = ["coordinated crew"]
+new = "orchestrator"
+
+[[phrase]]
+old = ["solo reviewed"]
+new = "maker-checker"
+
+[[phrase]]
+old = ["checked copy", "its copy", "own copy", "copy of the code", "needs a copy", "run copy", "other copies"]
+new = "worktree"
+
+[[phrase]]
+old = ["checkpoint kind", "checkpoint id", "checkpoint event", "kind checkpoint", "checkpoint goal", "checkpoint plan", "checkpoint merge"]
+new = "approval"
+
+[[phrase]]
+old = ["gemini cli"]
+new = "Antigravity CLI (agy)"
+
+[[phrase]]
+old = ["argonauts init"]
+new = "argonauts setup"
+
+[[phrase]]
+old = ["argonauts inbox"]
+new = "argonauts approvals"
+
+[[phrase]]
+old = ["argonauts cli"]
+new = "argonauts-code (the package), Argonauts Code (the product)"
+
+[[phrase]]
+old = ["heads up"]
+new = "notices"
+
+[[phrase]]
+old = ["mode line"]
+new = "bottom line"
+
+[[phrase]]
+old = ["crew panel", "crew view"]
+new = "agent panel"
+
+[[phrase]]
+old = ["merge agent"]
+new = "merger"
+
+[[phrase]]
+old = ["self improvement"]
+new = "evolution"
+
+[[phrase]]
+old = ["front end", "front ends"]
+new = "outside agent"
+
+[[phrase]]
+old = ["fallback packet", "handoff packet"]
+new = "fallback note"
+
+[[phrase]]
+old = ["chat agent"]
+new = "the main agent"
+
+# ── Retired patterns ─────────────────────────────────────────────────────────────────────
+
+[[pattern]]
+old = '\b(cp|card|spike|chat)-\d{3}\b'
+new = "approval-NNN, task-NNN, experiment-NNN, conversation-NNN"
+
+# A setting has one name, so nothing reads an older spelling of it.
+[[pattern]]
+old = 'serde\(\s*alias'
+new = "one name for the key: no alias"
+
+[[pattern]]
+old = '\b(7d|30d)\b'
+new = "week, month"
+only_in = ["crates/core/src/settings/stats.rs", "crates/core/src/input.rs", "crates/core/src/input/**"]
+
+# ── What a CLI itself wrote ──────────────────────────────────────────────────────────────
+# A recording's words are the CLI's, so it is checked by name only. Real folders and
+# addresses are still looked for inside it.
+
+[recordings]
+endings_under_fixtures = [
+    ".stdout.jsonl",
+    ".stderr.txt",
+    ".stdin.jsonl",
+    ".approve.jsonl",
+    ".app-server.jsonl",
+    ".transcript.jsonl",
+    "/transcript.jsonl",
+    ".meta.json",
+    "/meta.json",
+]
+also = [
+    "crates/adapters/claude-code/tests/data/*.jsonl",
+    "crates/adapters/codex/session-store/**",
+    "crates/registry/tests/fixtures/agy/**",
+    "crates/registry/tests/fixtures/codex/**",
+    "crates/registry/tests/fixtures/anthropic/**",
+    "crates/registry/tests/fixtures/openai-models/**",
+    "crates/policy/tests/fixtures/live/**",
+    # git's own output
+    "crates/policy/tests/fixtures/diffs/**",
+    # a run an older build wrote, kept in the words it wrote
+    "crates/app/tests/fixtures/older-run/**",
+]
+
+# ── Real names ───────────────────────────────────────────────────────────────────────────
+# No real home folder and no real address belongs in a tracked file. Sample text uses one of
+# the neutral folders and a reserved mail domain.
+
+[private]
+neutral_homes = ["you", "me", "someone", "user", "alice", "a"]
+neutral_mail_endings = ["example.com", "example.org", "example.net", "example", "invalid", "test", "localhost", "127.0.0.1"]
+# `@notes.txt` names a file, not an address.
+file_endings = ["md", "txt", "rs", "toml", "json", "jsonl", "yaml", "yml", "sh", "py", "js", "ts", "lock", "log", "html", "css", "snap", "star"]
+home_fix = "a neutral folder, such as /Users/you"
+mail_fix = "a reserved address, such as you@example.com"
+
+# The names that were once in the code. Each is kept as its length and FNV-1a hash
+# (lowercased), so this file doesn't hold them either.
+[[private.banned]]
+what = "a real home folder's name"
+fix = "a neutral name, such as you"
+length = 12
+hash = "0x86b574fd3b73e"
+
+[[private.banned]]
+what = "a real mail address"
+fix = "a reserved address, such as you@example.com"
+length = 22
+hash = "0x9d392f0bfbe1f65"
+
+# ── Keys and their fields ────────────────────────────────────────────────────────────────
+# A key of ours is spelled like its field. These files read someone else's JSON or TOML,
+# whose keys aren't ours to choose.
+
+[serde_keys]
+not_ours = [
+    "crates/adapters/**",
+    # the CLIs' own usage files, read for the usage panel
+    "crates/app/src/overview/import/**",
+]
+
+# ── Slash commands ───────────────────────────────────────────────────────────────────────
+# A command is a SlashCommand variant of the same name. These are carried by another
+# variant: the thing's full name, or one variant for both ways of a switch.
+
+[slash_commands]
+table = "crates/core/src/input.rs"
+
+[slash_commands.variant_of]
+learned = "LearnedWorkflows"
+pin = "Mods"
+unpin = "Mods"
+
+# ── Recordings folders ───────────────────────────────────────────────────────────────────
+# A folder under fixtures/ is named by CLI or by what it holds, never by a version, a date,
+# a numbered change or mockup, or a model.
+
+[fixture_folders]
+models = ["haiku", "sonnet", "opus", "fable", "gpt", "luna", "gemini", "llama", "glm", "qwen", "mistral", "deepseek"]
+numbered = ["change", "mock", "mockup", "design", "round", "fix", "draft"]
+
+# ── The living docs ──────────────────────────────────────────────────────────────────────
+# Docs in the folder ARGONAUTS_DOCS names, read with the same table when it is set. The ones
+# to read go in files, and what they may still spell in [[living_docs.allow]] entries.
+
+[living_docs]
+files = []
+
+# ── What a failing run prints ────────────────────────────────────────────────────────────
+# Kept here because it shows three retired words.
+
+[report_example]
+prints = '''
+✘ retired names · 3 places
+  crates/tui/src/bridge/transcript/steps.rs:256   "coordinated" → orchestrator
+  crates/app/src/setup/questions.rs:456           "coordinates" → orchestrator
+  crates/crew/src/labels.rs:144                   "handoff" → fallback
+
+  one table holds every retired name and its replacement (crates/testkit/retired-names.toml);
+  words are matched whole, so seatbelt or discard never trip it; CLI recordings are checked by name only
+'''
+
+[[report_example.places]]
+path = "crates/crew/src/labels.rs"
+line = 144
+word = "handoff"
+
+[[report_example.places]]
+path = "crates/tui/src/bridge/transcript/steps.rs"
+line = 256
+word = "coordinated"
+
+[[report_example.places]]
+path = "crates/app/src/setup/questions.rs"
+line = 456
+word = "coordinates"
+
+# ── Exact places that may spell a retired name ───────────────────────────────────────────
+# Each is one text in one file, with the reason. An entry that no longer matches fails the
+# test, so the list can't outlive what it excuses.
+
+[[allow]]
+path = "crates/**"
+text = "--max-budget-usd"
+why = "Claude Code's own flag"
+
+[[allow]]
+path = "crates/**"
+text = "error_max_budget_usd"
+why = "Claude Code's own result subtype"
+
+[[allow]]
+path = "crates/adapters/claude-code/src/parser.rs"
+text = "Reached maximum budget"
+why = "Claude Code's own error text"
+
+[[allow]]
+path = "crates/adapters/claude-code/src/errors.rs"
+text = "budget_exhausted"
+why = "Claude Code's own reason for a turn that ended on its cap"
+
+[[allow]]
+path = "crates/adapters/codex/src/classify.rs"
+text = "token budget exhausted"
+why = "Codex's own error text"
+
+[[allow]]
+path = "crates/**"
+text = "Heads up"
+why = "the label Claude Code itself puts on a notice it sends"
+
+[[allow]]
+path = "crates/**"
+text = "ChatGPT"
+why = "OpenAI's product name"
+
+[[allow]]
+path = "crates/**"
+text = "chat/completions"
+why = "the path of the OpenAI Chat Completions API"
+
+[[allow]]
+path = "crates/**"
+text = "ChatCompletions"
+why = "the OpenAI Chat Completions API, as the endpoint setting names it"
+
+[[allow]]
+path = "crates/**"
+text = "chat_completions"
+why = "the OpenAI Chat Completions API, as the endpoint setting's value"
+
+[[allow]]
+path = "crates/conductor/src/sandbox/proxy/tests.rs"
+text = "/api/chat"
+why = "the path of Ollama's own API"
+
+[[allow]]
+path = "crates/conductor/src/doctor/always_on.rs"
+text = '"hermes", "chat"'
+why = "Hermes's own subcommand"
+
+[[allow]]
+path = "crates/tui/src/keymap.rs"
+text = "chat:killAgents"
+why = "Claude Code's own name for the key's action"
+
+[[allow]]
+path = "crates/adapters/codex/src/probe.rs"
+text = "workspace_owner_credits_depleted"
+why = "Codex's own value for a limit that was reached"
+
+[[allow]]
+path = "crates/crew/src/git.rs"
+text = " differ\""
+why = "git's own line for a binary file"
+
+[[allow]]
+path = "crates/policy/src/limits/tests.rs"
+text = "logo.png differ"
+why = "git's own line for a binary file"
+
+[[allow]]
+path = "crates/learning/src/scan.rs"
+text = "approvers?"
+why = "a word injected text may use to address a model, which the scan looks for"
+
+[[allow]]
+path = "crates/policy/src/limits/*.rs"
+text = '"harness"'
+why = "Cargo's own key for a test target"
+
+[[allow]]
+path = "crates/policy/src/limits/tests.rs"
+text = "harness = false"
+why = "Cargo's own key for a test target"
+
+[[allow]]
+path = "crates/tui/src/**"
+text = "ratatui::widgets::"
+why = "ratatui's own module"
+
+[[allow]]
+path = "crates/tui/src/**"
+text = " Widget}"
+why = "ratatui's own trait"
+
+# ── Files whose words aren't read ────────────────────────────────────────────────────────
+
+[[unread]]
+path = "crates/app/src/controller/instructions/request_words.rs"
+why = "the one table of words a person may type in a request; none is ever shown back"
+
+[[unread]]
+path = "Cargo.lock"
+why = "the names of other people's packages"
+
+[[unread]]
+path = "LICENSE"
+why = "the license's own wording"

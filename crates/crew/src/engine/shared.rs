@@ -11,16 +11,16 @@ use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use argonauts_core::engine::{EngineContext, EventSink, RepoContext, Services};
 use argonauts_core::events::run::RunMode;
 use argonauts_core::main_sessions::{MainSessionLease, MainSessions};
-use argonauts_core::names::{CheckpointId, SessionKey};
+use argonauts_core::names::{ApprovalId, SessionKey};
 use argonauts_core::policy::PolicyOutcome;
 use argonauts_core::settings::Settings;
-use argonauts_core::{CardId, RunId};
+use argonauts_core::{RunId, TaskId};
 
-use crate::checkpoints::Desk;
+use crate::approvals::Desk;
+use crate::engine::job_fallback;
 use crate::engine::journal::DeltaBuffer;
 use crate::engine::live::LiveSessions;
 use crate::engine::run_meter::RunMeter;
-use crate::engine::stand_in;
 use crate::engine::tasks::Tasks;
 use crate::error::EngineResult;
 use crate::git::Git;
@@ -48,8 +48,8 @@ pub struct StatusTarget {
     pub viewer: Viewer,
 }
 
-/// A policy outcome for a checkpoint, sent by whoever runs `policy.evaluate` beside the loop.
-pub type PolicyResult = (CheckpointId, PolicyOutcome);
+/// A policy outcome for an approval, sent by whoever runs `policy.evaluate` beside the loop.
+pub type PolicyResult = (ApprovalId, PolicyOutcome);
 
 tokio::task_local! {
     static GIT_ENV: Vec<(String, String)>;
@@ -81,9 +81,9 @@ pub struct Shared {
     pub start_turn: tokio::sync::Mutex<()>,
     /// Tasks whose step lets its worker run a workflow of its own. A workflow's script says
     /// so again each time it asks for the worker, so nothing of it is kept between stretches.
-    pub own_workflows: Mutex<BTreeSet<CardId>>,
+    pub own_workflows: Mutex<BTreeSet<TaskId>>,
     /// Tasks Claude Code works as its own workflow, and what their session gets for it.
-    pub claude_codes_own: Mutex<BTreeMap<CardId, crate::claude_codes::OwnSession>>,
+    pub claude_codes_own: Mutex<BTreeMap<TaskId, crate::claude_codes::OwnSession>>,
     /// The run said once that git ignores its own files here.
     pub said_ignored: std::sync::atomic::AtomicBool,
     pub desk: Desk,
@@ -99,11 +99,11 @@ pub struct Shared {
     interrupt: Mutex<CancellationToken>,
     pub shutdown: CancellationToken,
     /// Session pumps, sessions run for asks, and policy evaluations: everything that records
-    /// beside the loop. The loop joins them before it parks or finishes.
+    /// beside the loop. The loop joins them before it waits or finishes.
     pub tasks: Tasks,
     /// Cancelled once the loop winds down, so tracked tasks end without recording more.
     pub halt: CancellationToken,
-    /// Notified after every recorded event, so the loop checks whether to park.
+    /// Notified after every recorded event, so the loop checks whether to wait.
     pub changed: Notify,
     /// Where policy outcomes go; the loop applies them in order.
     pub policy_outcomes: mpsc::UnboundedSender<PolicyResult>,
@@ -114,37 +114,46 @@ pub struct Shared {
     pub leases: Mutex<BTreeMap<SessionKey, MainSessionLease>>,
     /// Sessions a pause stopped: they end `Paused`, and their steps resume them.
     pub pausing: Mutex<BTreeSet<SessionKey>>,
-    /// Sessions the pause or stop under way told to stop, with their cards, for its commit.
+    /// Sessions the pause or stop under way told to stop, with their tasks, for its commit.
     /// Holds the ones that went live after it began too.
-    pub stopped: Mutex<BTreeMap<SessionKey, Option<CardId>>>,
+    pub stopped: Mutex<BTreeMap<SessionKey, Option<TaskId>>>,
     /// Held while a pause commits and records `Paused`, across those awaits. A second Esc's
     /// pause waits for it, rather than record `Paused` first with nothing committed.
     pub settling_pause: tokio::sync::Mutex<()>,
-    /// One of the evolution loop's replays: what its cards keep hidden and what it reuses.
+    /// One of the evolution loop's replays: what its tasks keep hidden and what it reuses.
     pub replay: Option<ReplayTerms>,
     /// Held while an ask takes a recorded answer, so two asks of one step never take the same.
     pub reusing: Mutex<()>,
-    /// The run's spend against its budget, from every session's meter readings.
+    /// The run's spend against its limit, from every session's meter readings.
     pub run_meter: Mutex<RunMeter>,
     /// The build and cache output the run's commits left out that it has named so far, so each
     /// commit names only what's new.
     pub told_left_out: Mutex<BTreeSet<String>>,
     /// The tasks whose goal is being checked on your ask right now, so a second ask doesn't
     /// run the same commands beside the first.
-    pub checking_goals: Mutex<BTreeSet<CardId>>,
-    /// Who is out, which stand-in took which seat, and which handovers were said.
-    pub(crate) stand_ins: Mutex<stand_in::Memory>,
+    pub checking_goals: Mutex<BTreeSet<TaskId>>,
+    /// The tasks you asked to start over while a session worked them. That session was told
+    /// to stop, and its end starts a new one in its place.
+    pub restarting: Mutex<BTreeSet<TaskId>>,
+    /// Who is out, which fallback took which job, and which fallbacks were said.
+    pub(crate) job_fallbacks: Mutex<job_fallback::Memory>,
+    /// Sessions you asked to start over. Each is stopped, and the one that waits for its end
+    /// starts it again in place of taking the stop for its answer.
+    pub(crate) starting_over: Mutex<BTreeSet<SessionKey>>,
     /// How many times each task's agent ended its turn with a question and was told to decide
     /// since the task last reported, so `approvals.ask_limit` holds across its resumes.
-    pub(crate) asked_anyway: Mutex<BTreeMap<CardId, u32>>,
+    pub(crate) asked_anyway: Mutex<BTreeMap<TaskId, u32>>,
+    /// Held while the checks run on the starting code, so they run once however many ask.
+    /// True once the starting code couldn't be checked, so nothing tries it again.
+    pub(crate) start_checks: tokio::sync::Mutex<bool>,
 }
 
 impl Shared {
-    /// Takes what the loop keeps for itself (the inbox and vendor events) out of the context
+    /// Takes what the loop keeps for itself (the inbox and agent events) out of the context
     /// first; builds the rest from it and the folded history.
     pub fn new(context: &EngineContext, state: RunState) -> EngineResult<Self> {
         let mut status = Folder::default();
-        let mut run_meter = RunMeter::new(&context.settings.limits.budget);
+        let mut run_meter = RunMeter::new(&context.settings.limits.spend);
         for event in &context.history {
             status.push(event);
             run_meter.observe(event);
@@ -177,7 +186,7 @@ impl Shared {
             sink: context.sink.clone(),
             services: context.services.clone(),
             git,
-            mode: state.run.mode.unwrap_or(RunMode::Solo),
+            mode: state.run.mode.unwrap_or(RunMode::Captain),
             allocated: Mutex::new(state.ids.clone()),
             state: Mutex::new(state),
             live: LiveSessions::default(),
@@ -190,7 +199,7 @@ impl Shared {
             status_files: Mutex::new(StatusFiles::default()),
             status_targets: Mutex::new(BTreeMap::new()),
             deltas: Mutex::new(DeltaBuffer::new(
-                settings.supervisor.journal_deltas_per_second,
+                settings.run_host.journal_deltas_per_second,
             )),
             admission: watch::channel(Admission::Open).0,
             interrupt: Mutex::new(CancellationToken::new()),
@@ -210,8 +219,11 @@ impl Shared {
             run_meter: Mutex::new(run_meter),
             told_left_out: Mutex::new(BTreeSet::new()),
             checking_goals: Mutex::new(BTreeSet::new()),
-            stand_ins: Mutex::default(),
+            restarting: Mutex::new(BTreeSet::new()),
+            job_fallbacks: Mutex::default(),
+            starting_over: Mutex::default(),
             asked_anyway: Mutex::default(),
+            start_checks: tokio::sync::Mutex::new(false),
             settings,
         })
     }
@@ -226,27 +238,27 @@ impl Shared {
     }
 
     /// A workflow's step lets this task's worker run a workflow of its own.
-    pub fn let_run_its_own_workflow(&self, card: &CardId) {
-        lock(&self.own_workflows).insert(card.clone());
+    pub fn let_run_its_own_workflow(&self, task: &TaskId) {
+        lock(&self.own_workflows).insert(task.clone());
     }
 
-    pub fn may_run_its_own_workflow(&self, card: &CardId) -> bool {
-        lock(&self.own_workflows).contains(card)
+    pub fn may_run_its_own_workflow(&self, task: &TaskId) -> bool {
+        lock(&self.own_workflows).contains(task)
     }
 
     /// Claude Code works this task as its own workflow, its session as `own` says.
-    pub fn work_as_claude_codes_own(&self, card: &CardId, own: crate::claude_codes::OwnSession) {
-        lock(&self.own_workflows).insert(card.clone());
-        lock(&self.claude_codes_own).insert(card.clone(), own);
+    pub fn work_as_claude_codes_own(&self, task: &TaskId, own: crate::claude_codes::OwnSession) {
+        lock(&self.own_workflows).insert(task.clone());
+        lock(&self.claude_codes_own).insert(task.clone(), own);
     }
 
-    pub fn claude_codes_own(&self, card: &CardId) -> Option<crate::claude_codes::OwnSession> {
-        lock(&self.claude_codes_own).get(card).cloned()
+    pub fn claude_codes_own(&self, task: &TaskId) -> Option<crate::claude_codes::OwnSession> {
+        lock(&self.claude_codes_own).get(task).cloned()
     }
 
     /// The task's workflow is over, so its tools are gone with it.
-    pub fn done_as_claude_codes_own(&self, card: &CardId) {
-        lock(&self.claude_codes_own).remove(card);
+    pub fn done_as_claude_codes_own(&self, task: &TaskId) {
+        lock(&self.claude_codes_own).remove(task);
     }
 
     /// The interrupt as it is now. A wait reads it when it starts.

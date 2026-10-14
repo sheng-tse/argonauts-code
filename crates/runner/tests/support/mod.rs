@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use argonauts_core::events::session::VendorWorkflow;
+use argonauts_core::events::session::CliWorkflowRun;
 use argonauts_runner::{
     AgentCall, AgentEnd, Check, Checked, Host, JournalEntry, Kept, RunInput, Script,
 };
@@ -22,7 +22,7 @@ pub struct Fake {
     pub workflows: HashMap<String, Script>,
     pub calls: Mutex<Vec<AgentCall>>,
     pub checks: Mutex<Vec<Check>>,
-    pub reports: Mutex<Vec<VendorWorkflow>>,
+    pub reports: Mutex<Vec<CliWorkflowRun>>,
     pub journal: Mutex<Vec<JournalEntry>>,
     pub logs: Mutex<Vec<String>>,
     pub kept: Mutex<Vec<Kept>>,
@@ -58,27 +58,27 @@ impl Fake {
         self
     }
 
-    /// Each call as `label role attempt`, in the order the script asked.
+    /// Each call as `label role try`, in the order the script asked.
     pub fn asked(&self) -> Vec<String> {
         let mut calls = self.calls.lock().unwrap().clone();
         calls.sort_by_key(|call| call.index);
         calls
             .iter()
-            .map(|call| format!("{} {} {}", call.label, call.role, call.attempt))
+            .map(|call| format!("{} {} {}", call.label, call.role, call.try_number))
             .collect()
     }
 
-    pub fn call(&self, label: &str, attempt: u32) -> AgentCall {
+    pub fn call(&self, label: &str, try_number: u32) -> AgentCall {
         self.calls
             .lock()
             .unwrap()
             .iter()
-            .find(|call| call.label == label && call.attempt == attempt)
+            .find(|call| call.label == label && call.try_number == try_number)
             .cloned()
-            .unwrap_or_else(|| panic!("no call {label} #{attempt}"))
+            .unwrap_or_else(|| panic!("no call {label} #{try_number}"))
     }
 
-    pub fn last_report(&self) -> VendorWorkflow {
+    pub fn last_report(&self) -> CliWorkflowRun {
         self.reports
             .lock()
             .unwrap()
@@ -116,7 +116,7 @@ impl Host for Fake {
         self.replayed.lock().unwrap().push((call.index, call.row));
     }
 
-    fn report(&self, workflow: &VendorWorkflow) {
+    fn report(&self, workflow: &CliWorkflowRun) {
         self.reports.lock().unwrap().push(workflow.clone());
     }
 
@@ -172,13 +172,13 @@ pub fn tasks(titles: &[&str]) -> AgentEnd {
     said(json!({"summary": "the plan", "tasks": tasks}))
 }
 
-/// What a file of steps is started with: the request, and how many seats each role has.
+/// What a file of steps is started with: the request, and how many models each role has.
 pub fn request(request: &str, workers: u32, reviewers: u32) -> RunInput {
     RunInput {
         id: "wf-1".to_owned(),
         args: json!({
             "request": request,
-            "crew": {"main": 1, "orchestrator": 1, "workers": workers, "reviewers": reviewers, "judge": 1},
+            "crew": {"main": 1, "orchestrator": 1, "worker": workers, "reviewer": reviewers, "judge": 1},
         }),
         ..RunInput::default()
     }

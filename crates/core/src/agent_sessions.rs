@@ -1,6 +1,6 @@
-//! The sessions a run's agents ran in. Every agent Argonauts starts is a real session of its CLI,
-//! so `/resume` lists each under its run, and one that finished carries on through its CLI's own
-//! resume as a direct conversation, in the folder it ran in. Helpers a CLI starts inside its
+//! The sessions a run's agents ran in. Every agent Argonauts Code starts is a real session of its
+//! CLI, so `/resume` lists each under its run, and one that finished carries on through its CLI's
+//! own resume as a direct conversation, in the folder it ran in. Helpers a CLI starts inside its
 //! session (subagents, its workflows, Codex threads) are listed under it, and come back when the
 //! session does, never on their own.
 
@@ -11,7 +11,7 @@ use time::OffsetDateTime;
 
 use crate::RunId;
 use crate::events::session::{SubagentKind, SubagentStatus};
-use crate::names::{RoleName, SessionKey, WorkerRef};
+use crate::names::{ModelRef, RoleName, SessionKey};
 
 /// Names one agent session of a run. Written `<run>/<session>`, as in `/resume run-03/s-002`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -47,10 +47,10 @@ pub struct AgentSession {
     pub session: SessionKey,
     pub role: RoleName,
     /// Its name in the run, such as `build:slugify`. A run from before agents had names gives
-    /// what it worked on: its card, or its step when it had none.
+    /// what it worked on: its task, or its step when it had none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    pub worker: WorkerRef,
+    pub worker: ModelRef,
     /// What it said last, on one line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message: Option<String>,
@@ -106,7 +106,7 @@ pub enum Resume {
     Ready,
     /// It's still running, so taking it over is how to work in it.
     Working,
-    /// It finished, but its run hasn't ended, and the run's next round on its card resumes the
+    /// It finished, but its run hasn't ended, and the run's next round on its task resumes the
     /// same CLI session. So the run still owns it: taking it over works in it, and it carries on
     /// here once the run ends.
     RunOwns,

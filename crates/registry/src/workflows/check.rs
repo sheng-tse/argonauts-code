@@ -1,8 +1,8 @@
 //! What a workflow file can get wrong on its own. The engine's validator checks the run rules
-//! (gates and a cross-family review after every `build`, loop maximums, budgets, allowed
-//! workers, and required checkpoints) when it runs one.
+//! (checks and a cross-provider review after every `build`, loop maximums, limits, allowed
+//! workers, and required approvals) when it runs one.
 
-use argonauts_core::workflow::{Count, Step, StepKind, StepWorkers, Workflow, WorkflowRef};
+use argonauts_core::workflow::{Count, Step, StepKind, StepModels, Workflow, WorkflowRef};
 
 use super::lookup::load_unchecked;
 use super::placeholders::{names_in, names_in_value, sole};
@@ -57,7 +57,7 @@ pub fn check_workflow(
     problems
 }
 
-/// `count` and `workers` are a value or one placeholder, and every placeholder in them, the
+/// `count` and `models` are a value or one placeholder, and every placeholder in them, the
 /// task, and a nested workflow's `params` is declared.
 fn placeholder_problems(step: &Step, workflow: &Workflow) -> Vec<String> {
     let mut problems = Vec::new();
@@ -70,11 +70,11 @@ fn placeholder_problems(step: &Step, workflow: &Workflow) -> Vec<String> {
             )),
         }
     }
-    if let StepWorkers::Param(text) = &step.workers {
+    if let StepModels::Param(text) = &step.models {
         match sole(text) {
-            Some(name) => used.push(("workers", name)),
+            Some(name) => used.push(("models", name)),
             None => problems.push(format!(
-                "workers {text:?} must be a list or one {{{{name}}}} placeholder"
+                "models {text:?} must be a list or one {{{{name}}}} placeholder"
             )),
         }
     }

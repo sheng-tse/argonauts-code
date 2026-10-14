@@ -1,0 +1,83 @@
+{
+  "adapter": "claude-code",
+  "program": "claude",
+  "name": "send_now_resume",
+  "args": [
+    "-p",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--model",
+    "haiku",
+    "--effort",
+    "low",
+    "--max-budget-usd",
+    "0.08",
+    "--strict-mcp-config",
+    "--resume",
+    "4c0902c3-3b6f-479c-af46-6194e65e2279",
+    "--permission-mode",
+    "acceptEdits",
+    "--permission-prompts",
+    "none",
+    "--allowedTools",
+    "Bash(./slow-test.sh)",
+    "--disallowedTools",
+    "SendMessage",
+    "ListAgents",
+    "Agent",
+    "--settings",
+    "<live>/claude-settings.json"
+  ],
+  "date": "2026-10-04T13:26:57Z",
+  "duration_ms": 14930,
+  "exit_code": 0,
+  "sanitized": "absolute paths replaced with <workdir> (the throwaway repo), <live> (its check folder), <probe> (the folder holding the test plugin and hook), <scratch> (the scratch folder), Claude Code's folder slug with <workdir-slug>, its per-user temp folder with /tmp/claude-uid, the home directory with ~, and email addresses with <email>",
+  "cli_version": "2.1.289",
+  "also_matches": [],
+  "model": "haiku",
+  "effort": "low",
+  "env_removed": [
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_PID",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "EMPTY_VAR"
+  ],
+  "keep_input_open": true,
+  "role": "direct",
+  "stdin_file": "send_now_resume.stdin.jsonl",
+  "stdin_note": "each line as written, with _t seconds since the start; _stdin: closed marks where the input closed",
+  "session_id": "4c0902c3-3b6f-479c-af46-6194e65e2279",
+  "result_total_cost_usd": [
+    0.0431551
+  ],
+  "files": [
+    {
+      "path": "<live>/claude-settings.json",
+      "contents": "{\"crossSessionInbound\": \"refuse\", \"attribution\": {\"commit\": \"\", \"pr\": \"\"}, \"sandbox\": {\"enabled\": false}}\n"
+    },
+    {
+      "path": "<workdir>/slow-test.sh",
+      "contents": "#!/bin/sh\nsleep 45\necho 'slow test: 12 passed'\n"
+    }
+  ],
+  "files_after": [
+    "README.md",
+    "slow-test.sh"
+  ],
+  "note": "A main-session turn that resumes send_now_resume_setup's session and opens with initialize. While ./slow-test.sh ran in the foreground, a second message was written with its uuid (command_lifecycle queued), then interrupt {send_now: true, message_uuid} answered {still_queued: [uuid], send_now: delivering}. background_tasks_changed listed the task, task_updated set is_backgrounded, the Bash result said 'Command was moved to the background ... it was not interrupted', the second message started, and Claude answered PONG. The turn then ended, with the test still running. The input closed at the result, as Argonauts does today, and Claude Code killed the moved command: task_updated status killed, task_notification status stopped. total_cost_usd and modelUsage carry the resumed session's earlier spend (0.037009 of 0.0431551).",
+  "resume_session": "4c0902c3-3b6f-479c-af46-6194e65e2279"
+}

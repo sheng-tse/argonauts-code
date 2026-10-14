@@ -1,4 +1,4 @@
-//! A component tree from `ui_render` read into rows of text and buttons. Argonauts draws it in
+//! A component tree from `ui_render` read into rows of text and buttons. Argonauts Code draws it in
 //! its own terminal style, so only what the tree says matters: `Box` lays children out in a
 //! row or a column, `Text` carries text and a look, and `Button` carries a label and what a
 //! press sends back. Any other element lays its children out as a `Box` does, so a button
@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::json::{str_at, string_at};
 
-/// Deeper than any tree a mod draws, so a reply that loops can't run away.
+/// Deeper than any tree a plugin draws, so a reply that loops can't run away.
 const MAX_DEPTH: usize = 64;
 
 pub fn read(tree: &Value) -> Result<Drawn, String> {
@@ -131,7 +131,7 @@ fn row_of(text: &str, look: DrawnLook) -> DrawnRow {
     }
 }
 
-/// Claude Code's theme names, in the few looks Argonauts draws.
+/// Claude Code's theme names, in the few looks Argonauts Code draws.
 fn look_of(props: &Value) -> Option<DrawnLook> {
     if props.get("dimColor").and_then(Value::as_bool) == Some(true) {
         return Some(DrawnLook::Dim);
@@ -157,7 +157,7 @@ mod tests {
     use super::*;
 
     /// You should know's tree as Claude Code 2.1.289 drew it in a recorded session.
-    fn heads_up() -> Value {
+    fn notice() -> Value {
         json!({"type": "Box", "props": {"flexDirection": "column", "marginTop": 1}, "children": [
             {"type": "Box", "props": {"flexDirection": "row", "alignItems": "flex-start"},
              "children": [
@@ -188,8 +188,8 @@ mod tests {
     }
 
     #[test]
-    fn a_heads_up_reads_as_one_line_and_three_buttons() {
-        let drawn = read(&heads_up()).unwrap();
+    fn a_notice_reads_as_one_line_and_three_buttons() {
+        let drawn = read(&notice()).unwrap();
         assert_eq!(drawn.rows.len(), 1, "{drawn:?}");
         assert_eq!(
             drawn.rows[0].text(),
@@ -212,12 +212,12 @@ mod tests {
         let drawn = read(&tree).unwrap();
         assert_eq!(drawn.rows[0].text(), "the doc");
         assert_eq!(drawn.left_out, ["Spinner"]);
-        // The first render of a session, before any mod drew.
+        // The first render of a session, before any plugin drew.
         let nothing = read(&json!({"type": "engine", "ref": 1})).unwrap();
         assert!(nothing.is_empty());
     }
 
-    /// A later version may wrap the buttons in an element Argonauts doesn't know. They stay
+    /// A later version may wrap the buttons in an element Argonauts Code doesn't know. They stay
     /// buttons you can press, Dismiss among them, and never show as text.
     #[test]
     fn buttons_under_an_unknown_container_stay_buttons() {

@@ -1,4 +1,4 @@
-//! Understand's events (once goal alignment), the goal file, and a goal's own events: the goal
+//! Understand's events, the goal file, and a goal's own events: the goal
 //! as it's set, its tries, the checks, and the answers given for you. A goal is a condition
 //! around a run's workflow or around one task; the events of a task's goal carry its id.
 
@@ -9,32 +9,32 @@ use serde::{Deserialize, Serialize};
 
 use super::run::Party;
 use crate::goal::{CheckWith, GoalFrom, GoalScope, KeptBy};
-use crate::names::{MessageId, WorkerRef};
-use crate::steps::goal::{DiffTag, Difference, Restatement};
-use crate::{CardId, RunId};
+use crate::names::{MessageId, ModelRef};
+use crate::steps::understand::{DiffTag, Difference, Reading};
+use crate::{RunId, TaskId};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum GoalEvent {
-    /// One restatement, under its anonymous label.
-    Restated {
+    /// One reading, under its anonymous label.
+    Read {
         /// `A`, `B`, `C`.
         label: String,
-        /// Shown to you, never to the differs.
-        worker: WorkerRef,
-        restatement: Restatement,
+        /// Shown to you, never to the comparers.
+        worker: ModelRef,
+        reading: Reading,
     },
     Compared {
-        worker: WorkerRef,
+        worker: ModelRef,
         differences: Vec<Difference>,
     },
     /// The materiality rules' result, computed by code.
     Settled {
-        /// What every restatement shares.
+        /// What every reading shares.
         agreements: Vec<String>,
         /// Majority readings adopted as stated assumptions.
         assumptions: Vec<Assumption>,
-        /// At most `goal.max_questions`.
+        /// At most `understand.max_questions`.
         questions: Vec<GoalQuestion>,
         /// Differences dropped as wording.
         dropped: u32,
@@ -61,16 +61,16 @@ pub enum GoalEvent {
     /// A goal is set: the run's, when it starts with one or takes one on the way, or a task's,
     /// when its role works each task as a goal.
     Set(Box<GoalRun>),
-    /// A try began: for the run's goal a round, as the phase of the same title, and for a
+    /// A try began: for the run's goal a round, as the phase of the same name, and for a
     /// task's goal the session that works it.
-    AttemptStarted {
+    TryStarted {
         n: u32,
         title: String,
         /// The workflow phase it runs as, from 0.
         phase: u32,
         /// The task whose goal it is. `None` for the run's.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        task: Option<CardId>,
+        task: Option<TaskId>,
     },
     /// The check's verdicts on a try, and what code decided from them.
     Checked(Box<GoalChecked>),
@@ -78,7 +78,7 @@ pub enum GoalEvent {
         status: GoalStatus,
         by: Party,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        task: Option<CardId>,
+        task: Option<TaskId>,
         /// Why, when it's stuck or stopped short: "the same failure 3 rounds running".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         why: Option<String>,
@@ -90,20 +90,20 @@ pub enum GoalEvent {
         after: u32,
         why: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        task: Option<CardId>,
+        task: Option<TaskId>,
     },
     /// What the CLI that keeps a goal says about it: its own account, never the check.
     CliSaid {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        task: Option<CardId>,
+        task: Option<TaskId>,
         said: CliGoalSaid,
     },
     /// You asked for a goal's checks now, while its try is still at work.
     CheckingNow {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        task: Option<CardId>,
+        task: Option<TaskId>,
         /// The try under way, from 1.
-        attempt: u32,
+        try_number: u32,
     },
     /// What a check you asked for found. It shows as the last check and decides nothing: only
     /// a try's own check sends the work round again or ends the goal.
@@ -111,10 +111,10 @@ pub enum GoalEvent {
     /// A check you asked for ended with nothing found, as when the run stopped under it.
     CheckNowDropped {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        task: Option<CardId>,
+        task: Option<TaskId>,
         why: String,
     },
-    /// A question answered, by you, the lead, your rules, or a majority of readings.
+    /// A question answered, by you, the main agent, your rules, or a majority of readings.
     Answered {
         question: String,
         answer: String,
@@ -150,30 +150,30 @@ pub enum GoalAction {
     /// again until it's resumed. `task` names one task's goal; `None` is the run's own.
     Pause {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        task: Option<CardId>,
+        task: Option<TaskId>,
     },
     /// Pick a paused goal up again.
     Resume {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        task: Option<CardId>,
+        task: Option<TaskId>,
     },
     /// Rewrite a goal's lines, one thing that must hold a line. The tries so far stay, and the
     /// next check reads the new lines.
     EditLines {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        task: Option<CardId>,
+        task: Option<TaskId>,
         lines: Vec<String>,
     },
     /// Run a task's goal's checks now, beside the try under way. What they find shows as the
     /// last check; the try's own check still decides what follows.
     CheckNow {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        task: Option<CardId>,
+        task: Option<TaskId>,
     },
     /// The running workflow becomes round 1 of a goal with its done-when list, checked when
     /// it ends.
     TurnIntoGoal,
-    /// Assumption `id` (from 1) takes another reading, from the next attempt or phase end.
+    /// Assumption `id` (from 1) takes another reading, from the next try or phase end.
     ChangeAssumption { id: u32, to: String },
 }
 
@@ -183,26 +183,26 @@ pub enum GoalAction {
 pub enum Decider {
     /// Two of three readings shared it, outside `understand.always_ask`.
     Majority,
-    Lead,
+    MainAgent,
     Rules,
     You,
 }
 
-/// How the basis of an answer the lead gave for you starts, when the lead answers the crew's
-/// questions. The goal file shows the basis, so this marks it there too.
-pub const LEAD_ANSWER: &str = "the main agent's answer";
+/// How the basis of an answer the main agent gave for you starts, when the main agent answers the
+/// crew's questions. The goal file shows the basis, so this marks it there too.
+pub const MAIN_AGENT_ANSWER: &str = "the main agent's answer";
 
-/// The go-ahead's second answer: yes, and from now on the lead answers the crew's questions in
-/// this project, as `approvals.answers = "lead"` saved for you.
-pub const LET_THE_LEAD_ANSWER: &str = "Yes, and let the main agent answer";
+/// The go-ahead's second answer: yes, and from now on the main agent answers the crew's questions
+/// in this project, as `approvals.answers = "main"` saved for you.
+pub const LET_THE_MAIN_AGENT_ANSWER: &str = "Yes, and let the main agent answer";
 
-/// Every question's last answer: the lead answers this question and the ones after it.
-pub const LET_THE_LEAD_DECIDE: &str = "Let the main agent decide this and the rest";
+/// Every question's last answer: the main agent answers this question and the ones after it.
+pub const LET_THE_MAIN_AGENT_DECIDE: &str = "Let the main agent decide this and the rest";
 
 impl Assumption {
-    /// The lead answered it for you.
-    pub fn by_lead(&self) -> bool {
-        self.basis.starts_with(LEAD_ANSWER)
+    /// The main agent answered it for you.
+    pub fn by_main_agent(&self) -> bool {
+        self.basis.starts_with(MAIN_AGENT_ANSWER)
     }
 }
 
@@ -227,7 +227,7 @@ pub struct ChoiceOption {
     pub key: char,
     pub label: String,
     pub recommended: bool,
-    /// Such as "2 of 3 restatements read it this way".
+    /// Such as "2 of 3 readings read it this way".
     pub basis: Option<String>,
 }
 
@@ -298,19 +298,19 @@ pub struct GoalRun {
     pub objective: String,
     /// The goal's lines, each with how it's checked.
     pub criteria: Vec<Criterion>,
-    pub attempts: Vec<Attempt>,
+    pub tries: Vec<Try>,
     pub status: GoalStatus,
     /// The most rounds, when you set one. No fixed number otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_rounds: Option<u32>,
     /// The task it sits around. `None` for the run's goal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task: Option<CardId>,
+    pub task: Option<TaskId>,
     #[serde(default)]
     pub scope: GoalScope,
     #[serde(default)]
     pub kept_by: KeptBy,
-    /// Why Argonauts keeps a goal that was asked of the CLI.
+    /// Why Argonauts Code keeps a goal that was asked of the CLI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept_note: Option<String>,
     #[serde(default)]
@@ -329,7 +329,7 @@ impl GoalRun {
         Self {
             objective: spec.condition.clone(),
             criteria: spec.lines.clone(),
-            attempts: Vec::new(),
+            tries: Vec::new(),
             status: GoalStatus::Pursuing,
             max_rounds: spec.max_rounds,
             task: None,
@@ -371,7 +371,7 @@ pub struct CliGoalSaid {
 
 /// One try at a goal: a round of the workflow, shown as its phases, or one session on a task.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Attempt {
+pub struct Try {
     /// From 1.
     pub n: u32,
     pub title: String,
@@ -392,7 +392,7 @@ pub enum GoalStatus {
     /// The same failure `goal.stuck_after` rounds running after it changed approach once,
     /// `max_rounds` used up, or the check says it can't be met.
     Stuck,
-    OverBudget,
+    OverLimit,
     /// You stopped pursuing it.
     Cleared,
 }
@@ -429,14 +429,14 @@ pub enum GoalVerdict {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GoalChecked {
-    pub attempt: u32,
+    pub try_number: u32,
     pub verdicts: Vec<CriterionVerdict>,
-    /// What code decided from the verdicts and the gates.
+    /// What code decided from the verdicts and the checks.
     pub overall: GoalVerdict,
     pub reason: String,
     /// The task whose goal was checked. `None` for the run's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task: Option<CardId>,
+    pub task: Option<TaskId>,
     /// Everything that ran, in order: each command, then the judge.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<CheckRun>,
@@ -464,7 +464,7 @@ pub struct CheckRun {
     pub output: String,
     /// The judge's agent, such as `claude-code/opus`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<WorkerRef>,
+    pub agent: Option<ModelRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -479,9 +479,9 @@ pub enum CheckedBy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalSource {
-    /// Your prompt recorded as the goal (solo without `restate_first`).
+    /// Your prompt recorded as the goal (Captain without `understand_first`).
     Prompt,
-    Restatements,
+    Readings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -489,7 +489,7 @@ pub enum GoalSource {
 pub enum GoalChangeResolution {
     /// A clarification recorded as a decision (`allow_clarifications`).
     Recorded,
-    /// `deny`. The card continues against the approved goal, or escalates.
+    /// `deny`. The task continues against the approved goal, or comes to you.
     Refused,
     AskedYou,
     Changed,

@@ -13,7 +13,7 @@ fn plain() -> Theme {
     theme
 }
 
-fn band(mods: &[WidgetName]) -> Band {
+fn band(mods: &[ModName]) -> Band {
     Band {
         mods: mods.to_vec(),
         usage: Some(Arc::new(sample::usage())),
@@ -42,7 +42,7 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
-const BOTH: [WidgetName; 2] = [WidgetName::Quota, WidgetName::Spend];
+const BOTH: [ModName; 2] = [ModName::PlanUsage, ModName::Spend];
 
 #[test]
 fn pinned_mods_stack_in_order_each_with_its_fold_toggle() {
@@ -53,8 +53,8 @@ fn pinned_mods_stack_in_order_each_with_its_fold_toggle() {
     assert!(rows[plan - 1].ends_with("╮ [-]"), "{rows:#?}");
     assert!(rows[spend - 1].ends_with("╮ [-]"), "{rows:#?}");
     assert!(rows.iter().any(|row| row.contains("Claude Code      Max")));
-    // A row per plan window leaves the spend card its bar, not its legend.
-    assert!(rows[spend + 1].contains("████"), "{rows:#?}");
+    // A row per plan window leaves the spend card its bar, not its rows.
+    assert!(rows[spend + 1].contains("━━━━"), "{rows:#?}");
     assert!(rows.len() <= 14, "{rows:#?}");
 }
 
@@ -67,13 +67,13 @@ fn nothing_pinned_or_a_band_turned_off_draws_nothing() {
     };
     assert!(rows(&off).is_empty());
     // A name no card here answers to is another mod's to draw.
-    assert!(rows(&band(&[WidgetName::Narrator])).is_empty());
+    assert!(rows(&band(&[ModName::Narrator])).is_empty());
 }
 
 #[test]
 fn a_folded_mod_is_one_line_with_its_number() {
     let folded = Band {
-        folded: vec![WidgetName::Spend],
+        folded: vec![ModName::Spend],
         ..band(&BOTH)
     };
     let rows = rows(&folded);
@@ -141,15 +141,18 @@ fn the_keys_move_fold_open_unpin_and_reorder_the_mod_that_has_them() {
     let mut band = band(&BOTH);
     assert_eq!(band.handle_key(key(KeyCode::Tab)), BandEvent::Unhandled);
     assert!(band.focus() && band.has_focus());
-    let (quota, spend) = (WidgetName::Quota, WidgetName::Spend);
+    let (plan_usage, spend) = (ModName::PlanUsage, ModName::Spend);
     assert_eq!(
         band.handle_key(key(KeyCode::Char('-'))),
         BandEvent::Fold {
-            name: quota,
+            name: plan_usage,
             open: false
         }
     );
-    assert_eq!(band.handle_key(key(KeyCode::Enter)), BandEvent::Open(quota));
+    assert_eq!(
+        band.handle_key(key(KeyCode::Enter)),
+        BandEvent::Open(plan_usage)
+    );
     assert_eq!(band.handle_key(key(KeyCode::Tab)), BandEvent::Moved);
     assert_eq!(
         band.handle_key(key(KeyCode::Char('['))),
@@ -160,7 +163,7 @@ fn the_keys_move_fold_open_unpin_and_reorder_the_mod_that_has_them() {
     );
     assert_eq!(
         band.handle_key(key(KeyCode::Char(','))),
-        BandEvent::Settings(quota),
+        BandEvent::Settings(plan_usage),
         "the keys follow the mod up"
     );
     assert_eq!(band.handle_key(key(KeyCode::Tab)), BandEvent::Moved);
@@ -174,14 +177,14 @@ fn the_keys_move_fold_open_unpin_and_reorder_the_mod_that_has_them() {
 
     // A folded mod opens again with the same key.
     let mut band = Band {
-        folded: vec![quota],
+        folded: vec![plan_usage],
         ..band
     };
     band.focus();
     assert_eq!(
         band.handle_key(key(KeyCode::Char(' '))),
         BandEvent::Fold {
-            name: quota,
+            name: plan_usage,
             open: true
         }
     );
@@ -212,7 +215,7 @@ fn drawing_the_band_asks_for_its_numbers() {
 
 #[test]
 fn two_half_width_mods_share_a_row_on_a_wide_screen() {
-    let pair = [WidgetName::Tokens, WidgetName::History];
+    let pair = [ModName::Tokens, ModName::History];
     let halves = Band {
         halves: pair.to_vec(),
         ..band(&pair)
@@ -233,7 +236,7 @@ fn two_half_width_mods_share_a_row_on_a_wide_screen() {
 
     // One of the two folded leaves the other its whole row.
     let folded = Band {
-        folded: vec![WidgetName::History],
+        folded: vec![ModName::History],
         ..halves
     };
     let rows = rows_in(&folded, 130, 40, false);
@@ -247,8 +250,8 @@ fn two_half_width_mods_share_a_row_on_a_wide_screen() {
 #[test]
 fn a_folded_mod_names_its_own_key() {
     let folded = Band {
-        folded: vec![WidgetName::Quota],
-        keys: vec![(WidgetName::Quota, "ctrl+x q".to_owned())],
+        folded: vec![ModName::PlanUsage],
+        keys: vec![(ModName::PlanUsage, "ctrl+x q".to_owned())],
         ..band(&BOTH)
     };
     let rows = rows(&folded);
@@ -259,7 +262,7 @@ fn a_folded_mod_names_its_own_key() {
     assert!(line.ends_with("ctrl+x q  [+]"), "{rows:#?}");
     // A mod with no key bound shows only its toggle.
     let spend = Band {
-        folded: vec![WidgetName::Spend],
+        folded: vec![ModName::Spend],
         ..folded
     };
     let rows = self::rows(&spend);
@@ -301,20 +304,20 @@ fn a_change_of_height_waits_a_moment_then_lands_in_one_frame() {
 }
 
 /// A band with the run's cards and the context card fed, as the bridge feeds them.
-fn following_a_run(mods: &[WidgetName]) -> Band {
+fn following_a_run(mods: &[ModName]) -> Band {
     Band {
         run: Some(PinnedRun {
             summary: sample::status_with_limit(),
             title: Some("export-reports-csv".to_owned()),
         }),
-        context: Some(crate::overview::conversation_context(&sample::breakdown())),
+        context: Some(crate::overview::conversation_context(&sample::counted())),
         ..band(mods)
     }
 }
 
 #[test]
 fn the_runs_card_pins_without_its_goal_and_plan_and_folds_to_how_far_it_is() {
-    let pinned = following_a_run(&[WidgetName::Run]);
+    let pinned = following_a_run(&[ModName::Run]);
     let rows = rows(&pinned);
     assert!(
         rows[1].starts_with(" │ ◆ run-03 · export-reports-csv"),
@@ -331,7 +334,7 @@ fn the_runs_card_pins_without_its_goal_and_plan_and_folds_to_how_far_it_is() {
     assert_eq!(rows.len(), 9, "{rows:#?}");
 
     let folded = Band {
-        folded: vec![WidgetName::Run],
+        folded: vec![ModName::Run],
         ..pinned
     };
     let rows = self::rows(&folded);
@@ -344,7 +347,7 @@ fn the_runs_card_pins_without_its_goal_and_plan_and_folds_to_how_far_it_is() {
 
 #[test]
 fn the_runs_spend_and_what_needs_you_pin_as_cards_of_their_own() {
-    let rows = rows(&following_a_run(&[WidgetName::Budget, WidgetName::Waiting]));
+    let rows = rows(&following_a_run(&[ModName::RunLimits, ModName::Waiting]));
     let at = |text: &str| rows.iter().position(|row| row.contains(text));
     let spend = at("◆ spend · run-03").unwrap();
     assert!(rows[spend].contains("$1.20 of $3.00"), "{rows:#?}");
@@ -357,8 +360,8 @@ fn the_runs_spend_and_what_needs_you_pin_as_cards_of_their_own() {
     assert!(rows[waits + 1].contains("Review asks"), "{rows:#?}");
 
     let folded = Band {
-        folded: vec![WidgetName::Budget, WidgetName::Waiting],
-        ..following_a_run(&[WidgetName::Budget, WidgetName::Waiting])
+        folded: vec![ModName::RunLimits, ModName::Waiting],
+        ..following_a_run(&[ModName::RunLimits, ModName::Waiting])
     };
     let rows = self::rows(&folded);
     assert!(
@@ -373,7 +376,7 @@ fn the_runs_spend_and_what_needs_you_pin_as_cards_of_their_own() {
 
 #[test]
 fn the_context_card_pins_by_category_and_folds_to_how_full_it_is() {
-    let pinned = following_a_run(&[WidgetName::Context]);
+    let pinned = following_a_run(&[ModName::Context]);
     let rows = rows(&pinned);
     assert!(rows[1].starts_with(" │ ◆ context"), "{rows:#?}");
     assert!(rows[1].contains("of 1M"), "{rows:#?}");
@@ -388,7 +391,7 @@ fn the_context_card_pins_by_category_and_folds_to_how_full_it_is() {
     );
 
     let folded = Band {
-        folded: vec![WidgetName::Context],
+        folded: vec![ModName::Context],
         ..pinned.clone()
     };
     let line = &self::rows(&folded)[0];
@@ -398,7 +401,7 @@ fn the_context_card_pins_by_category_and_folds_to_how_full_it_is() {
     // Hidden, the band still says each card's number.
     let hidden = Band {
         hidden: true,
-        ..following_a_run(&[WidgetName::Context, WidgetName::Run, WidgetName::Budget])
+        ..following_a_run(&[ModName::Context, ModName::Run, ModName::RunLimits])
     };
     let line = &self::rows(&hidden)[0];
     assert!(
@@ -414,7 +417,7 @@ fn a_card_with_nothing_to_show_takes_no_row_and_no_key() {
     // No run is followed, so its cards have nothing to draw, and usage hasn't come.
     let mut waiting = Band {
         usage: None,
-        ..band(&[WidgetName::Run, WidgetName::Budget, WidgetName::Spend])
+        ..band(&[ModName::Run, ModName::RunLimits, ModName::Spend])
     };
     assert!(rows(&waiting).is_empty());
     assert!(!waiting.shows());
@@ -423,7 +426,7 @@ fn a_card_with_nothing_to_show_takes_no_row_and_no_key() {
     // The run's cards draw before the usage numbers come, from what the screen holds.
     let run_only = Band {
         usage: None,
-        ..following_a_run(&[WidgetName::Spend, WidgetName::Run])
+        ..following_a_run(&[ModName::Spend, ModName::Run])
     };
     let rows = rows(&run_only);
     assert!(rows[1].contains("◆ run-03"), "{rows:#?}");
@@ -432,17 +435,17 @@ fn a_card_with_nothing_to_show_takes_no_row_and_no_key() {
 
 #[test]
 fn a_run_that_ends_hands_the_keys_to_the_last_card_left() {
-    let mut band = following_a_run(&[WidgetName::Spend, WidgetName::Run]);
+    let mut band = following_a_run(&[ModName::Spend, ModName::Run]);
     assert!(band.focus());
     assert_eq!(band.handle_key(key(KeyCode::Tab)), BandEvent::Moved);
     assert_eq!(
         band.handle_key(key(KeyCode::Enter)),
-        BandEvent::Open(WidgetName::Run)
+        BandEvent::Open(ModName::Run)
     );
     band.run = None;
     assert_eq!(
         band.handle_key(key(KeyCode::Enter)),
-        BandEvent::Open(WidgetName::Spend),
+        BandEvent::Open(ModName::Spend),
         "the run's card left, so the keys are on the one above it"
     );
 }
@@ -460,7 +463,7 @@ fn the_stats_card_asks_for_the_period_its_file_sets() {
     let ctx = RenderCtx::new(110, &theme, Clock::still(now));
     let waiting = Band {
         usage: None,
-        ..band(&[WidgetName::Stats])
+        ..band(&[ModName::Stats])
     };
     waiting.lines(&ctx, 40, false, false);
     assert!(waiting.watch.due(now).is_some(), "pinned alone, it asks");
@@ -472,7 +475,7 @@ fn the_stats_card_asks_for_the_period_its_file_sets() {
     usage.stats = Some(stats);
     let after_the_tab = Band {
         usage: Some(Arc::new(usage)),
-        ..band(&[WidgetName::Stats])
+        ..band(&[ModName::Stats])
     };
     after_the_tab.lines(&ctx, 40, false, false);
     assert_eq!(

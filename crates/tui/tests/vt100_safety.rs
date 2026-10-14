@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 use argonauts_tui::model::{
-    AssistantMessage, CardOption, CardPrompt, ToolCall, ToolItem, UserMessage, ViewModel,
+    AssistantMessage, QuestionOption, QuestionPrompt, ToolCall, ToolItem, UserMessage, ViewModel,
 };
 use argonauts_tui::{InlineTerminal, Ui};
 use common::{t0, theme};
@@ -102,12 +102,12 @@ fn agent_escape_cannot_set_title_or_clear() {
     ui.handle_event(Event::Paste(format!("pasted {HOSTILE}")), now);
     settle(&mut ui, &mut now);
 
-    // A card from a run says so in the title, which is still built from sanitized text.
-    ui.model_mut().bottom.card = Some(CardPrompt::new(
+    // A question from a run says so in the title, which is still built from sanitized text.
+    ui.model_mut().bottom.question = Some(QuestionPrompt::new(
         1,
         format!("Merge {HOSTILE}?"),
         format!("Merge {HOSTILE}?"),
-        vec![CardOption::new(format!("Yes {HOSTILE}"))],
+        vec![QuestionOption::new(format!("Yes {HOSTILE}"))],
     ));
     settle(&mut ui, &mut now);
     let shown = rows(&ui);

@@ -1,10 +1,10 @@
-//! A rehearsal runs a script against stand-in answers, so one that throws is caught before any
+//! A rehearsal runs a script against placeholder answers, so one that throws is caught before any
 //! agent starts.
 
 use std::collections::BTreeSet;
 
 use argonauts_core::settings::crew::CrewRole;
-use argonauts_runner::{BUILT_IN, Rehearsal, RunInput, Script, WorkflowFile, rehearse};
+use argonauts_runner::{Rehearsal, RunInput, Script, WorkflowFile, built_ins, rehearse};
 use serde_json::json;
 
 fn script(source: &str) -> Script {
@@ -16,7 +16,7 @@ fn input(roles: Option<&[CrewRole]>) -> RunInput {
         id: "rehearsal".to_owned(),
         args: json!({
             "request": "add due dates",
-            "crew": {"main": 1, "orchestrator": 1, "workers": 2, "reviewers": 2, "judge": 1},
+            "crew": {"main": 1, "orchestrator": 1, "worker": 2, "reviewer": 2, "judge": 1},
             "tasks": [],
         }),
         roles: roles.map(|roles| roles.iter().copied().collect::<BTreeSet<_>>()),
@@ -32,7 +32,7 @@ const UNTIL_ACCEPTED: &str = r#"
 export const meta = {
   name: 'review-until-clean',
   description: 'Build, then review until the reviewer accepts',
-  phases: [{ title: 'Plan' }, { title: 'Build' }, { title: 'Review' }],
+  phases: [{ name: 'Plan' }, { name: 'Build' }, { name: 'Review' }],
 }
 const PLAN = {
   type: 'object',
@@ -50,8 +50,8 @@ for (const task of plan.tasks) {
   let findings = []
   while (true) {
     rounds++
-    await agent(`Build ${task.title}\n${findings.join('\n')}`, { role: 'workers', phase: 'Build', task: 'one' })
-    const verdict = await agent('Review it.', { role: 'reviewers', phase: 'Review', task: 'one', schema: VERDICT })
+    await agent(`Build ${task.title}\n${findings.join('\n')}`, { role: 'worker', phase: 'Build', task: 'one' })
+    const verdict = await agent('Review it.', { role: 'reviewer', phase: 'Review', task: 'one', schema: VERDICT })
     if (verdict && verdict.accept) break
     findings = verdict ? verdict.findings : []
   }
@@ -62,7 +62,7 @@ return { rounds }
 #[tokio::test]
 async fn a_script_that_loops_until_a_review_accepts_goes_round_once_and_ends() {
     let rehearsed = rehearse(&script(UNTIL_ACCEPTED), input(None), &no_workflows).await;
-    // The plan lists one stand-in task; its first review says no and its second says yes.
+    // The plan lists one placeholder task; its first review says no and its second says yes.
     assert_eq!(
         rehearsed,
         Ok(Rehearsal {
@@ -70,9 +70,9 @@ async fn a_script_that_loops_until_a_review_accepts_goes_round_once_and_ends() {
             finished: true,
             tasks: vec!["one".to_owned()],
             ran: BTreeSet::from([
-                ("Build".to_owned(), CrewRole::Workers),
+                ("Build".to_owned(), CrewRole::Worker),
                 ("Plan".to_owned(), CrewRole::Orchestrator),
-                ("Review".to_owned(), CrewRole::Reviewers),
+                ("Review".to_owned(), CrewRole::Reviewer),
             ]),
         })
     );
@@ -80,13 +80,13 @@ async fn a_script_that_loops_until_a_review_accepts_goes_round_once_and_ends() {
 
 #[tokio::test]
 async fn a_role_the_workflow_does_not_have_is_caught_before_anything_runs() {
-    let roles = [CrewRole::Orchestrator, CrewRole::Workers, CrewRole::Judge];
+    let roles = [CrewRole::Orchestrator, CrewRole::Worker, CrewRole::Judge];
     let rehearsed = rehearse(&script(UNTIL_ACCEPTED), input(Some(&roles)), &no_workflows).await;
     let why = rehearsed.expect_err("the script names reviewers");
     assert_eq!(
         why,
-        "rehearsed with stand-in answers, it threw: Error: agent(): this workflow's file has \
-         no reviewers step; its roles are orchestrator, workers, judge"
+        "rehearsed with placeholder answers, it threw: Error: agent(): this workflow's file has \
+         no reviewer step; its roles are orchestrator, worker, judge"
     );
 }
 
@@ -101,7 +101,7 @@ return plan.tasks.map((task) => task.title)
         .await
         .expect_err("a text answer has no tasks");
     assert!(
-        why.starts_with("rehearsed with stand-in answers, it threw: TypeError"),
+        why.starts_with("rehearsed with placeholder answers, it threw: TypeError"),
         "{why}"
     );
     assert!(!why.contains('\n'), "one line: {why}");
@@ -140,7 +140,7 @@ return await workflow('inner', { request: args.request })
     let inner = |name: &str| match name {
         "inner" => Ok(script(
             "export const meta = { name: 'inner', description: 'One agent' }\n\
-             return await agent('Do it: ' + args.request, { role: 'workers' })",
+             return await agent('Do it: ' + args.request, { role: 'worker' })",
         )),
         other => Err(format!("there's no workflow named {other}")),
     };
@@ -152,7 +152,7 @@ return await workflow('inner', { request: args.request })
             finished: true,
             tasks: Vec::new(),
             // A workflow run as a step is a phase of its own.
-            ran: BTreeSet::from([("▸ inner".to_owned(), CrewRole::Workers)]),
+            ran: BTreeSet::from([("▸ inner".to_owned(), CrewRole::Worker)]),
         })
     );
     let missing = rehearse(&script(source), input(None), &no_workflows).await;
@@ -167,7 +167,7 @@ return await workflow('inner', { request: args.request })
 /// they have to get through a rehearsal themselves.
 #[tokio::test]
 async fn every_built_in_workflows_own_steps_get_through_a_rehearsal() {
-    for (name, text) in BUILT_IN {
+    for (name, text) in built_ins() {
         let file = WorkflowFile::parse(text)
             .unwrap_or_else(|err| panic!("{name}: {err}"))
             .unwrap_or_else(|| panic!("{name} has no steps"));

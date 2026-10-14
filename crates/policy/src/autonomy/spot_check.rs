@@ -1,13 +1,13 @@
-//! Spot-check sampling from a hash of the run id, the checkpoint id, and a per-install salt.
-//! Checkpoint ids like `cp-003` repeat across runs, so the id alone would always or never
-//! sample a solo merge.
+//! Spot-check sampling from a hash of the run id, the approval id, and a per-install salt.
+//! Approval ids like `approval-003` repeat across runs, so the id alone would always or never
+//! sample a Captain merge.
 
 use std::fs;
 use std::io;
 use std::path::Path;
 
 use argonauts_core::RunId;
-use argonauts_core::names::CheckpointId;
+use argonauts_core::names::ApprovalId;
 use argonauts_core::paths::write_private_file;
 use argonauts_core::sha256_hex;
 
@@ -15,7 +15,7 @@ use argonauts_core::sha256_hex;
 pub const SALT_FILE: &str = "spot-check-salt";
 
 /// Whether this approval joins your spot-check queue, for a sample share from 0 to 1.
-pub fn sampled(salt: &[u8; 32], run: &RunId, checkpoint: &CheckpointId, sample: f64) -> bool {
+pub fn sampled(salt: &[u8; 32], run: &RunId, approval: &ApprovalId, sample: f64) -> bool {
     if sample.is_nan() {
         // A share that isn't a number samples everything, the safe side.
         return true;
@@ -23,9 +23,9 @@ pub fn sampled(salt: &[u8; 32], run: &RunId, checkpoint: &CheckpointId, sample: 
     let mut input = Vec::with_capacity(salt.len() + run.as_str().len() + 1 + 16);
     input.extend_from_slice(salt);
     input.extend_from_slice(run.as_str().as_bytes());
-    // Ids never hold a NUL, so no two (run, checkpoint) pairs hash the same bytes.
+    // Ids never hold a NUL, so no two (run, approval) pairs hash the same bytes.
     input.push(0);
-    input.extend_from_slice(checkpoint.as_str().as_bytes());
+    input.extend_from_slice(approval.as_str().as_bytes());
     let digest = sha256_hex(&input);
     let Some(first_eight_bytes) = digest
         .get(..16)
@@ -46,7 +46,7 @@ pub fn load_or_create_salt(install_state_dir: &Path) -> io::Result<[u8; 32]> {
     }
     let mut salt = [0u8; 32];
     rand::fill(&mut salt[..]);
-    // Linked into place from a unique name, so supervisors starting at once agree on one salt.
+    // Linked into place from a unique name, so run hosts starting at once agree on one salt.
     let unique = format!(
         "{SALT_FILE}.{}.{:016x}.tmp",
         std::process::id(),
@@ -90,24 +90,24 @@ mod tests {
     #[test]
     fn spot_check_sampling() {
         let salt = [7u8; 32];
-        let solo_merge = CheckpointId::numbered(3);
+        let captain_merge = ApprovalId::numbered(3);
 
         // A fixed salt is stable.
         for n in 0..20 {
-            let first = sampled(&salt, &run(n), &solo_merge, 0.5);
-            assert_eq!(first, sampled(&salt, &run(n), &solo_merge, 0.5));
+            let first = sampled(&salt, &run(n), &captain_merge, 0.5);
+            assert_eq!(first, sampled(&salt, &run(n), &captain_merge, 0.5));
         }
 
-        // The same checkpoint id in two runs samples independently.
+        // The same approval id in two runs samples independently.
         let draws: Vec<bool> = (0..200)
-            .map(|n| sampled(&salt, &run(n), &solo_merge, 0.5))
+            .map(|n| sampled(&salt, &run(n), &captain_merge, 0.5))
             .collect();
         assert!(draws.contains(&true) && draws.contains(&false));
         let other_salt = [9u8; 32];
         let moved = (0..200)
             .filter(|&n| {
-                sampled(&salt, &run(n), &solo_merge, 0.5)
-                    != sampled(&other_salt, &run(n), &solo_merge, 0.5)
+                sampled(&salt, &run(n), &captain_merge, 0.5)
+                    != sampled(&other_salt, &run(n), &captain_merge, 0.5)
             })
             .count();
         assert!(
@@ -118,15 +118,15 @@ mod tests {
         // The share comes near the sample over many draws.
         for sample in [0.1, 0.5] {
             let hits = (0..10_000)
-                .filter(|&n| sampled(&salt, &run(n), &solo_merge, sample))
+                .filter(|&n| sampled(&salt, &run(n), &captain_merge, sample))
                 .count();
             let share = hits as f64 / 10_000.0;
             assert!((share - sample).abs() < 0.02, "share {share} for {sample}");
         }
 
-        assert!(!sampled(&salt, &run(1), &solo_merge, 0.0));
-        assert!(sampled(&salt, &run(1), &solo_merge, 1.0));
-        assert!(sampled(&salt, &run(1), &solo_merge, f64::NAN));
+        assert!(!sampled(&salt, &run(1), &captain_merge, 0.0));
+        assert!(sampled(&salt, &run(1), &captain_merge, 1.0));
+        assert!(sampled(&salt, &run(1), &captain_merge, f64::NAN));
     }
 
     #[test]

@@ -1,27 +1,27 @@
 //! A run that Claude Code's own workflow runs, built from the events such a run records: the
 //! session that plans it, the workflow it reports, and the reviewer and sign-off it asks
-//! through Argonauts. The view it gives is the one the terminal's golden test draws.
+//! through Argonauts Code. The view it gives is the one the terminal's test draws, in the same
+//! view every workflow has.
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::run::{RunLifecycle, RunNamed};
 use argonauts_core::events::session::{
-    EndReason, SessionEvent, SubagentStatus, VendorAgent, VendorAgentState, VendorPhase,
-    VendorWorkflow,
+    CliAgent, CliAgentState, CliPhase, CliWorkflowRun, EndReason, SessionEvent, SubagentStatus,
 };
 use argonauts_core::events::workflow::{StepStarted, WorkflowEvent, WorkflowStarted};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{RoleName, SessionKey, WorkflowId};
 use argonauts_core::settings::workflows::RunStyle;
-use argonauts_core::views::WorkflowView;
+use argonauts_core::views::{AgentRow, InnerAgent, RowStatus, WorkflowRow, WorkflowView};
 use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow};
 use argonauts_core::{AgentEvent, Spend};
 use serde_json::json;
 
 use crate::client::test_support::{event, run_id, session_ended, session_started, usage};
-use crate::views::workflow_view;
+use crate::views::{inner_agent_view, workflow_view};
 
 /// The view the terminal's golden test draws, kept beside its golden file.
-const DRAWN: &str = include_str!("../../../../tui/tests/golden/run_after.view.json");
+const DRAWN: &str = include_str!("../../../../tui/tests/golden/own_workflow.view.json");
 
 /// A session the run starts at `seq` for its one step, under `label`.
 fn asked(seq: u64, session: &SessionKey, role: RoleName, worker: &str, label: &str) -> RunEvent {
@@ -42,8 +42,8 @@ fn script_step() -> StepRef {
     }
 }
 
-fn vendor_agent(index: u32, label: &str, phase: u32, state: VendorAgentState) -> VendorAgent {
-    VendorAgent {
+fn cli_agent(index: u32, label: &str, phase: u32, state: CliAgentState) -> CliAgent {
+    CliAgent {
         index,
         label: label.to_owned(),
         phase: Some(phase),
@@ -53,9 +53,10 @@ fn vendor_agent(index: u32, label: &str, phase: u32, state: VendorAgentState) ->
         tool_calls: 0,
         duration_ms: 0,
         started_at_ms: None,
-        attempt: 1,
+        try_number: 1,
         prompt: None,
         result: None,
+        ..CliAgent::default()
     }
 }
 
@@ -65,20 +66,23 @@ fn add_due_dates() -> Vec<RunEvent> {
     let host = SessionKey::numbered(1);
     let reviewer = SessionKey::numbered(2);
     let judge = SessionKey::numbered(3);
-    let card = CardId::new("task-add-due-dates").unwrap();
+    let task = TaskId::new("task-add-due-dates").unwrap();
     let workflow: Workflow = serde_json::from_value(json!({
         "name": "add-due-dates",
         "phases": [{"name": "Work", "standard": "do", "steps": [{"kind": "script"}]}]
     }))
     .unwrap();
-    let mut build = vendor_agent(1, "build:add-due-dates", 1, VendorAgentState::Done);
+    let mut build = cli_agent(1, "build:add-due-dates", 1, CliAgentState::Done);
     (build.tokens, build.duration_ms) = (210_000, 69_000);
+    (build.tool_calls, build.try_number) = (14, 2);
+    build.prompt = Some("Add a due date to each task, and show it in the list.".to_owned());
+    build.result = Some("Tasks take --due, and the list shows the date.".to_owned());
     let phases = [
         ("Build", "each agent on the model its role names"),
         ("Review", ""),
         ("Final", ""),
     ];
-    let reported = VendorWorkflow {
+    let reported = CliWorkflowRun {
         id: "wf_due_dates".to_owned(),
         call: None,
         name: "add-due-dates".to_owned(),
@@ -86,7 +90,7 @@ fn add_due_dates() -> Vec<RunEvent> {
         phases: phases
             .iter()
             .zip(1..)
-            .map(|((title, detail), index)| VendorPhase {
+            .map(|((title, detail), index)| CliPhase {
                 index,
                 title: (*title).to_owned(),
                 detail: (*detail).to_owned(),
@@ -94,8 +98,8 @@ fn add_due_dates() -> Vec<RunEvent> {
             .collect(),
         agents: vec![
             build,
-            vendor_agent(2, "review:due-dates", 2, VendorAgentState::Done),
-            vendor_agent(3, "final:due-dates", 2, VendorAgentState::Running),
+            cli_agent(2, "review:due-dates", 2, CliAgentState::Done),
+            cli_agent(3, "final:due-dates", 2, CliAgentState::Running),
         ],
         status: SubagentStatus::Running,
         tokens: 210_000,
@@ -124,7 +128,7 @@ fn add_due_dates() -> Vec<RunEvent> {
         "claude-code",
         "build:add-due-dates",
     );
-    planner.card_id = Some(card);
+    planner.task_id = Some(task);
     let mut review_ended = session_ended(80, &reviewer, EndReason::Completed, 21_000);
     if let RunEventKind::Session(SessionEvent::Ended(end)) = &mut review_ended.kind {
         end.structured = Some(json!({"accept": false, "summary": "Due dates can be in the past"}));
@@ -181,17 +185,82 @@ fn add_due_dates() -> Vec<RunEvent> {
 }
 
 #[test]
-fn the_runs_view_is_the_one_the_golden_test_draws() {
+fn the_runs_view_is_the_one_the_terminal_draws() {
     let events = add_due_dates();
     let view = workflow_view(&events, &run_id(), None).expect("the run's view");
     let shown = serde_json::to_string_pretty(&view).unwrap();
     if let Some(dir) = std::env::var_os("ARGONAUTS_PICTURE_DUMP") {
         std::fs::write(
-            std::path::Path::new(&dir).join("run_after.view.json"),
+            std::path::Path::new(&dir).join("own_workflow.view.json"),
             &shown,
         )
         .unwrap();
     }
     let drawn: WorkflowView = serde_json::from_str(DRAWN).unwrap();
     assert_eq!(view, drawn, "{shown}");
+}
+
+fn agents(view: &WorkflowView) -> Vec<&AgentRow> {
+    view.phases
+        .iter()
+        .flat_map(|phase| &phase.rows)
+        .filter_map(|row| match row {
+            WorkflowRow::Agent(agent) => Some(agent),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Claude Code's own agent has no session of ours, so its row says which of the workflow's
+/// agents it is, and that opens what Claude Code reports of it. The reviewer and the judge
+/// it asked through Argonauts Code are sessions, and open as such.
+#[test]
+fn claude_codes_own_agent_opens_as_itself() {
+    let events = add_due_dates();
+    let view = workflow_view(&events, &run_id(), None).expect("the run's view");
+    let rows = agents(&view);
+    let labels: Vec<(&str, bool)> = rows
+        .iter()
+        .map(|row| (row.label.as_str(), row.inner.is_some()))
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            ("build:add-due-dates", true),
+            ("review:due-dates", false),
+            ("final:due-dates", false),
+        ]
+    );
+
+    let build = rows[0];
+    let inner = build.inner.clone().expect("which agent it is");
+    assert_eq!(inner.index, 1);
+    let opened = inner_agent_view(&events, &run_id(), &inner).expect("its own view");
+    assert!(opened.row.is(build), "{:?}", opened.row);
+    assert_eq!(opened.row.session, SessionKey::numbered(1));
+    assert_eq!(opened.row.status, RowStatus::Done);
+    assert_eq!(opened.row.worker.model.as_deref(), Some("claude-haiku-4-5"));
+    assert_eq!(
+        opened.prompt,
+        "Add a due date to each task, and show it in the list."
+    );
+    assert_eq!(
+        opened.outcome.as_deref(),
+        Some("Tasks take --due, and the list shows the date.")
+    );
+    assert_eq!(opened.tool_calls, 14);
+    assert_eq!(opened.facts, ["try 2"]);
+    assert!(opened.activity.is_empty());
+
+    // An agent the workflow never had, and a workflow the run never ran.
+    let gone = InnerAgent {
+        index: 9,
+        ..inner.clone()
+    };
+    assert!(inner_agent_view(&events, &run_id(), &gone).is_none());
+    let other = InnerAgent {
+        workflow: WorkflowId::numbered(7),
+        index: 1,
+    };
+    assert!(inner_agent_view(&events, &run_id(), &other).is_none());
 }

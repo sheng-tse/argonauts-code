@@ -3,8 +3,8 @@
 //! `goal.stuck_after` rounds running makes it change approach once, and stuck again it stops
 //! and says why. `max_rounds` is a cap only when you set one.
 //!
-//! Nothing here runs anything, so the engine keeps a run's goals with it and the chat keeps the
-//! main agent's.
+//! Nothing here runs anything, so the engine keeps a run's goals with it and the conversation keeps
+//! the main agent's.
 
 use crate::events::goal::{CheckedBy, Criterion, CriterionState, GoalChecked, GoalVerdict};
 
@@ -136,7 +136,7 @@ pub fn send_back(
     change_approach: Option<&str>,
 ) -> String {
     let mut text = String::from(
-        "The goal doesn't hold yet. Argonauts ran the check itself, and this still fails:\n",
+        "The goal doesn't hold yet. Argonauts Code ran the check itself, and this still fails:\n",
     );
     for verdict in checked
         .verdicts
@@ -209,10 +209,10 @@ mod tests {
     }
 
     /// A check of two lines: G1 met or not, G2 failing `failed` tests (met at 0).
-    fn checked(attempt: u32, first_met: bool, failed: u32) -> GoalChecked {
+    fn checked(try_number: u32, first_met: bool, failed: u32) -> GoalChecked {
         let met = first_met && failed == 0;
         GoalChecked {
-            attempt,
+            try_number,
             verdicts: vec![verdict("G1", first_met), verdict("G2", failed == 0)],
             overall: if met {
                 GoalVerdict::Met

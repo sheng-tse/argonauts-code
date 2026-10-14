@@ -1,0 +1,10 @@
+---
+source: crates/tui/tests/snap_claude_code_live.rs
+expression: text(&view.lines)
+---
+✶ Rowing… (38s · ↓ 2.9k tokens)
+
+────────────────────────────────────────────────────────────────────────────────────────── captain ─
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)           ● Claude 5h ▄▄▄▄▄▄ 53%  PR #482 · 2 reviews waiting

@@ -1,15 +1,15 @@
 //! What Enter on a run's panel row opens, which is always something, and the
 //! short view for a run that has nothing to show yet.
 //!
-//! Before its workflow is declared, a run's work is its lead designing it, so Enter opens the
-//! lead's session as it works, the newest one when a design starts over. Once the
+//! Before its workflow is declared, a run's work is its main agent designing it, so Enter opens the
+//! main agent's session as it works, the newest one when a design starts over. Once the
 //! workflow is declared, Enter opens the workflow view. A run no agent has started in yet opens
 //! [`WaitingView`], which says what the run waits for. What opens this way follows the run: on to
-//! the lead once it starts, to its next design, and to the workflow view once it's declared.
+//! the main agent once it starts, to its next design, and to the workflow view once it's declared.
 
 use argonauts_core::RunId;
 use argonauts_core::app::ViewRequest;
-use argonauts_core::events::run::{ParkReason, RunMode};
+use argonauts_core::events::run::{RunMode, WaitReason};
 use argonauts_core::names::{RoleName, SessionKey};
 use argonauts_core::steps::StepName;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -55,7 +55,7 @@ pub fn entry(state: &AppState, run: &RunId) -> RunEntry {
 }
 
 /// Where a view opened from a run's row goes once the run has moved on from `shown`, the
-/// session it shows (`None` for [`WaitingView`]): the lead's next design, or the agent that
+/// session it shows (`None` for [`WaitingView`]): the main agent's next design, or the agent that
 /// started, or the workflow view once the workflow is declared.
 pub(crate) fn follow(state: &AppState, run: &RunId, shown: Option<&SessionKey>) -> Option<Follow> {
     match entry(state, run) {
@@ -77,28 +77,28 @@ fn declared(run: &RunState) -> bool {
     !run.workflows.is_empty()
 }
 
-/// The one agent a run's work is: a solo run's owner while it's the only one at work in the
+/// The one agent a run's work is: a Captain run's worker while it's the only one at work in the
 /// run's one workflow, the newest when the run tries again, or the only agent a run started.
-/// A solo run the crew took over has a workflow of its own, which its view shows. The lead
-/// whose design became the workflow isn't the work, so a declared workflow opens its view even
-/// before its first step starts.
+/// A Captain run that moved to the crew has a workflow of its own, which its view shows. The main
+/// agent whose design became the workflow isn't the work, so a declared workflow opens its view
+/// even before its first step starts.
 fn single_agent(run: &RunState) -> Option<SessionKey> {
-    if run.mode == Some(RunMode::Solo) && run.workflows.len() <= 1 {
-        let owners: Vec<&SessionState> = run
+    if run.mode == Some(RunMode::Captain) && run.workflows.len() <= 1 {
+        let workers: Vec<&SessionState> = run
             .sessions_in_order()
             .filter(|session| session.role == RoleName::Worker)
             .collect();
-        let owner = owners
+        let worker = workers
             .iter()
             .rev()
-            .find(|owner| owner.is_running())
-            .or(owners.last());
-        if let Some(owner) = owner
+            .find(|worker| worker.is_running())
+            .or(workers.last());
+        if let Some(worker) = worker
             && run
                 .sessions_in_order()
-                .all(|session| session.key == owner.key || !session.is_running())
+                .all(|session| session.key == worker.key || !session.is_running())
         {
-            return Some(owner.key.clone());
+            return Some(worker.key.clone());
         }
     }
     let mut sessions = run.sessions_in_order();
@@ -108,8 +108,8 @@ fn single_agent(run: &RunState) -> Option<SessionKey> {
     (sessions.next().is_none() && !designed && one_workflow).then(|| only.key.clone())
 }
 
-/// The lead designing the workflow before it's declared: the newest design still running, such
-/// as `lead:design-2` after `lead:design` ended, else the newest one.
+/// The main agent designing the workflow before it's declared: the newest design still running,
+/// such as `main:design-2` after `main:design` ended, else the newest one.
 fn designing(run: &RunState) -> Option<SessionKey> {
     let designs: Vec<_> = run
         .sessions_in_order()
@@ -196,20 +196,20 @@ pub(crate) fn waiting_for(run: Option<&RunState>) -> String {
     if run.finished.is_some() {
         return "This run ended before any agent started.".to_owned();
     }
-    if let Some(open) = run.checkpoints.first() {
+    if let Some(open) = run.approvals.first() {
         return format!(
             "Waiting for you: {}.",
             open.opened.title.trim_end_matches('.')
         );
     }
-    match &run.parked {
-        Some(ParkReason::Checkpoint) => "Waiting for you to answer its question.".to_owned(),
-        Some(ParkReason::Paused) => "Paused. /resume goes on.".to_owned(),
-        Some(ParkReason::AllVendorsOut { .. }) => {
+    match &run.waiting {
+        Some(WaitReason::Approval) => "Waiting for you to answer its question.".to_owned(),
+        Some(WaitReason::Paused) => "Paused. /resume goes on.".to_owned(),
+        Some(WaitReason::AllAgentsOut { .. }) => {
             "Every agent is out, so it waits for one to come back.".to_owned()
         }
-        Some(ParkReason::WaitingForVendor { vendor, .. }) => format!("Waiting for {vendor}."),
-        Some(ParkReason::NoStandIn { detail, until }) => {
+        Some(WaitReason::WaitingForAgent { agent_id, .. }) => format!("Waiting for {agent_id}."),
+        Some(WaitReason::NoFallback { detail, until }) => {
             let next = if until.is_some() {
                 "It tries again on its own; /resume tries now."
             } else {
@@ -219,7 +219,7 @@ pub(crate) fn waiting_for(run: Option<&RunState>) -> String {
         }
         None if run.stopping => "Stopping.".to_owned(),
         None if run.pausing => "Pausing at a safe point.".to_owned(),
-        None if run.mode == Some(RunMode::Solo) => "Waiting for its agent to start.".to_owned(),
+        None if run.mode == Some(RunMode::Captain) => "Waiting for its agent to start.".to_owned(),
         None => "Waiting for the main agent to start designing the workflow.".to_owned(),
     }
 }
@@ -274,7 +274,7 @@ impl View for WaitingView {
     }
 }
 
-/// A crew run as the engine reports it while its lead designs the workflow, built from the
+/// A crew run as the engine reports it while its main agent designs the workflow, built from the
 /// log's own JSON, for tests here and of the keys that open it.
 #[cfg(test)]
 pub(crate) mod fixture {
@@ -303,7 +303,7 @@ pub(crate) mod fixture {
             Self::started_as("crew")
         }
 
-        /// The same, in `mode`, such as `solo`.
+        /// The same, in `mode`, such as `captain`.
         pub(crate) fn started_as(mode: &str) -> Self {
             let mut log = Self {
                 seq: 0,
@@ -315,10 +315,10 @@ pub(crate) mod fixture {
                 None,
                 json!({"type": "run", "data": {"event": "started", "request": request,
                     "title": request, "mode": mode, "forced": false, "workflow": "council",
-                    "estimate": null, "triage": null, "chat_turn": null, "continues": null,
+                    "estimate": null, "captain_or_crew": null, "conversation_turn": null, "continues": null,
                     "repo_root": "/repo", "base_branch": "main", "base_commit": "8b41d07",
                     "uncommitted": [], "uncommitted_included": false, "settings_sha256": "",
-                    "settings": {}, "overrides": [], "harness_versions": {},
+                    "settings": {}, "overrides": [], "cli_versions": {},
                     "version": "0.1.0"}}),
             );
             log.send(
@@ -332,39 +332,39 @@ pub(crate) mod fixture {
 
         pub(crate) fn send(&mut self, session: Option<&str>, kind: Value) {
             let event = json!({"type": "run", "event": {"seq": self.seq,
-                "ts": "2026-10-04T16:54:13Z", "run_id": RUN, "card_id": null,
-                "session": session, "source": "conductor", "kind": kind}});
+                "ts": "2026-10-04T16:54:13Z", "run_id": RUN, "task_id": null,
+                "session": session, "source": "argonauts-code", "kind": kind}});
             self.seq += 1;
             let event: AppEvent = serde_json::from_value(event).expect("a run event");
             self.state.apply(&event);
             self.events.push(event);
         }
 
-        /// The lead starts a design of the workflow, such as `lead:design-2` after one that
+        /// The main agent starts a design of the workflow, such as `main:design-2` after one that
         /// didn't hold.
         pub(crate) fn design(&mut self, session: &str, label: &str) {
             self.design_from(session, label, None);
         }
 
-        /// The same, resuming the vendor session `from` when code sent its brief back.
+        /// The same, resuming the CLI session `from` when code sent its brief back.
         pub(crate) fn design_from(&mut self, session: &str, label: &str, from: Option<&str>) {
             self.send(
                 Some(session),
                 json!({"type": "session", "data": {"event": "started",
-                    "worker": "claude-code/haiku", "vendor": "claude-code", "family": "claude",
-                    "kind": "harness", "role": "phase-lead", "step": "design_workflow",
+                    "worker": "claude-code/haiku", "agent_id": "claude-code", "provider": "anthropic",
+                    "kind": "cli", "role": "tie-breaker", "step": "design_workflow",
                     "access": "read_only", "lifetime": "task", "resumed_from": from,
                     "follow_key": null, "label": label}}),
             );
         }
 
-        /// A card's owner, such as a solo run's.
-        pub(crate) fn owner(&mut self, session: &str) {
+        /// A task's worker, such as a Captain run's.
+        pub(crate) fn worker(&mut self, session: &str) {
             self.send(
                 Some(session),
                 json!({"type": "session", "data": {"event": "started",
-                    "worker": "claude-code/haiku", "vendor": "claude-code", "family": "claude",
-                    "kind": "harness", "role": "worker", "step": null, "access": "build",
+                    "worker": "claude-code/haiku", "agent_id": "claude-code", "provider": "anthropic",
+                    "kind": "cli", "role": "worker", "step": null, "access": "build",
                     "lifetime": "task", "resumed_from": null, "follow_key": 1,
                     "label": "build:limiter"}}),
             );
@@ -373,7 +373,7 @@ pub(crate) mod fixture {
         pub(crate) fn ended(&mut self, session: &str) {
             self.send(
                 Some(session),
-                json!({"type": "session", "data": {"event": "ended", "vendor_session": null,
+                json!({"type": "session", "data": {"event": "ended", "cli_session": null,
                     "exit_code": 0, "signal": null, "duration_ms": 82_711,
                     "reason": {"why": "completed"},
                     "spend": {"input_tokens": 12_611, "output_tokens": 8_142,
@@ -384,12 +384,12 @@ pub(crate) mod fixture {
             );
         }
 
-        /// The lead's brief held, so the run's workflow starts.
+        /// The main agent's brief held, so the run's workflow starts.
         pub(crate) fn declare(&mut self) {
             self.workflow("wf-001");
         }
 
-        /// A workflow starts, such as the crew's when a solo run is taken over.
+        /// A workflow starts, such as the crew's when a Captain run moves to it.
         pub(crate) fn workflow(&mut self, id: &str) {
             self.send(
                 None,
@@ -406,8 +406,8 @@ pub(crate) mod fixture {
             self.send(
                 Some(session),
                 json!({"type": "session", "data": {"event": "started",
-                    "worker": "codex/gpt-5.6-luna", "vendor": "codex", "family": "gpt",
-                    "kind": "harness", "role": "restater", "step": "restate",
+                    "worker": "codex/gpt-5.6-luna", "agent_id": "codex", "provider": "openai",
+                    "kind": "cli", "role": "reader", "step": "read",
                     "access": "read_only", "lifetime": "task", "resumed_from": null,
                     "follow_key": follow, "label": label,
                     "workflow_step": {"workflow": "wf-001", "phase": 0, "path": [0]}}}),
@@ -430,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_opens_the_lead_at_work_until_the_workflow_is_declared() {
+    fn enter_opens_the_main_agent_at_work_until_the_workflow_is_declared() {
         let mut log = RunLog::started();
         assert_eq!(entry(&log.state, &run_id()), RunEntry::Waiting);
         log.design("s-001", "main:design");
@@ -443,32 +443,32 @@ mod tests {
         log.ended("s-002");
         log.declare();
         assert_eq!(entry(&log.state, &run_id()), RunEntry::Workflow);
-        log.step_agent("s-003", "read:gpt");
+        log.step_agent("s-003", "read:openai");
         assert_eq!(entry(&log.state, &run_id()), RunEntry::Workflow);
     }
 
-    /// A solo run is its owner's while the owner is the only one at work in its one workflow:
-    /// the newest attempt's owner, not the first. Once a reviewer works, or the crew takes the
+    /// A Captain run is its worker's while the worker is the only one at work in its one workflow:
+    /// the newest try's worker, not the first. Once a reviewer works, or the crew takes the
     /// run over in a workflow of its own, the row opens the workflow view.
     #[test]
-    fn a_solo_run_opens_its_owner_while_that_is_the_work() {
-        let mut log = RunLog::started_as("solo");
+    fn a_captain_run_opens_its_worker_while_that_is_the_work() {
+        let mut log = RunLog::started_as("captain");
         log.workflow("wf-001");
-        log.owner("s-001");
+        log.worker("s-001");
         assert_eq!(entry(&log.state, &run_id()), session("s-001"));
         log.ended("s-001");
         assert_eq!(entry(&log.state, &run_id()), session("s-001"));
-        log.owner("s-002");
+        log.worker("s-002");
         assert_eq!(entry(&log.state, &run_id()), session("s-002"));
         log.step_agent("s-003", "review:limiter");
         assert_eq!(entry(&log.state, &run_id()), RunEntry::Workflow);
 
-        let mut taken_over = RunLog::started_as("solo");
-        taken_over.workflow("wf-001");
-        taken_over.owner("s-001");
-        taken_over.ended("s-001");
-        taken_over.workflow("wf-002");
-        assert_eq!(entry(&taken_over.state, &run_id()), RunEntry::Workflow);
+        let mut moved = RunLog::started_as("captain");
+        moved.workflow("wf-001");
+        moved.worker("s-001");
+        moved.ended("s-001");
+        moved.workflow("wf-002");
+        assert_eq!(entry(&moved.state, &run_id()), RunEntry::Workflow);
     }
 
     /// A log from before runs declared their workflows has agents and no design, and its row
@@ -476,8 +476,8 @@ mod tests {
     #[test]
     fn agents_with_no_design_and_no_workflow_open_the_newest_at_work() {
         let mut log = RunLog::started();
-        log.step_agent("s-001", "read:gpt");
-        log.step_agent("s-002", "read:claude");
+        log.step_agent("s-001", "read:openai");
+        log.step_agent("s-002", "read:anthropic");
         assert_eq!(entry(&log.state, &run_id()), session("s-002"));
         log.ended("s-002");
         assert_eq!(entry(&log.state, &run_id()), session("s-001"));
@@ -496,7 +496,7 @@ mod tests {
             .map_or_else(String::new, |next| format!("{next:?}"))
     }
 
-    /// What opens from a run's row moves on with the run: to the lead once it starts, to the
+    /// What opens from a run's row moves on with the run: to the main agent once it starts, to the
     /// session that fixes its brief, and to the workflow view once it's declared.
     #[test]
     fn a_view_from_the_row_follows_the_run() {
@@ -510,12 +510,12 @@ mod tests {
             "{next}"
         );
 
-        let mut lead = SessionView::for_run(run_id(), SessionKey::parse("s-001").unwrap());
-        assert_eq!(followed(&mut lead, &log.state), "");
+        let mut main_agent = SessionView::for_run(run_id(), SessionKey::parse("s-001").unwrap());
+        assert_eq!(followed(&mut main_agent, &log.state), "");
         log.ended("s-001");
-        assert_eq!(followed(&mut lead, &log.state), "");
-        log.design_from("s-002", "main:design", Some("vendor-7"));
-        let next = followed(&mut lead, &log.state);
+        assert_eq!(followed(&mut main_agent, &log.state), "");
+        log.design_from("s-002", "main:design", Some("cli-7"));
+        let next = followed(&mut main_agent, &log.state);
         assert!(next.contains("s-002"), "{next}");
 
         let mut fixing = SessionView::for_run(run_id(), SessionKey::parse("s-002").unwrap());
@@ -540,9 +540,9 @@ mod tests {
     #[test]
     fn a_view_stays_on_an_agent_while_it_works() {
         let mut log = RunLog::started();
-        log.step_agent("s-001", "read:gpt");
+        log.step_agent("s-001", "read:openai");
         let mut reading = SessionView::for_run(run_id(), SessionKey::parse("s-001").unwrap());
-        log.step_agent("s-002", "read:claude");
+        log.step_agent("s-002", "read:anthropic");
         assert_eq!(followed(&mut reading, &log.state), "");
         log.ended("s-001");
         let next = followed(&mut reading, &log.state);
@@ -633,7 +633,7 @@ mod tests {
         let mut log = RunLog::started();
         log.send(
             None,
-            serde_json::json!({"type": "run", "data": {"event": "parked",
+            serde_json::json!({"type": "run", "data": {"event": "waiting",
                 "reason": {"why": "paused"}, "waiting_on": []}}),
         );
         assert_eq!(

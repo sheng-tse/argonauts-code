@@ -7,10 +7,10 @@ use std::time::Instant;
 use argonauts_core::api::{RawView, RunState as RunPhase, RunSummary};
 use argonauts_core::app::{SettingRow, UiCommand};
 use argonauts_core::events::run::RunMode;
-use argonauts_core::names::{SessionKey, WorkerRef};
+use argonauts_core::names::{ModelRef, SessionKey};
 use argonauts_core::settings::SettingScope;
 use argonauts_core::views::{CheckpointRow, WorkflowFile, WorkflowOrigin};
-use argonauts_core::{CardId, RunId, Spend};
+use argonauts_core::{RunId, Spend, TaskId};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -80,7 +80,7 @@ fn run(n: u32) -> RunSummary {
         title: format!("Run {n}"),
         mode: RunMode::Crew,
         workflow: "council".into(),
-        state: RunPhase::Parked,
+        state: RunPhase::Waiting,
         stopped_at: "merge approval".into(),
         updated: OffsetDateTime::UNIX_EPOCH,
         spent: Spend::default(),
@@ -97,7 +97,7 @@ fn setting(key: &str) -> SettingRow {
         key: key.into(),
         value: "\"x\"".into(),
         layer: "global".into(),
-        preset_from: None,
+        workflow_from: None,
         default_scope: SettingScope::Global,
         safety: false,
         allowed: vec!["\"x\"".into(), "\"y\"".into()],
@@ -125,7 +125,7 @@ fn resume_picker() {
     vim.press(&mut view, 'G');
     vim.press(&mut view, 'k');
     let resumed = |outcome: ViewOutcome| match outcome {
-        ViewOutcome::SendToChat(UiCommand::Resume { run: Some(run) }) => run.to_string(),
+        ViewOutcome::SendToConversation(UiCommand::Resume { run: Some(run) }) => run.to_string(),
         other => panic!("{other:?}"),
     };
     assert_eq!(resumed(vim.press(&mut view, 'l')), "run-02");
@@ -144,7 +144,7 @@ fn help_and_pagers_scroll() {
             lines: (0..100).map(|n| format!("line {n}")).collect(),
             truncated: false,
             path: PathBuf::from("raw.jsonl"),
-            vendor_transcript: None,
+            cli_transcript: None,
         })
     };
     let off = Driver::new(false);
@@ -204,7 +204,7 @@ fn a_long_raw_log_draws_quickly_and_search_finds_its_start() {
             .collect(),
         truncated: false,
         path: PathBuf::from("raw.jsonl"),
-        vendor_transcript: None,
+        cli_transcript: None,
     });
     let started = Instant::now();
     for _ in 0..20 {
@@ -341,14 +341,14 @@ fn without_vim_keys_right_opens_a_level_and_left_goes_back() {
 
 fn checkpoint(n: u32) -> CheckpointRow {
     CheckpointRow {
-        card: CardId::new("task-001").unwrap(),
+        task: TaskId::new("task-001").unwrap(),
         n,
         at: OffsetDateTime::UNIX_EPOCH,
         commit: "0123456789abcdef".to_owned(),
-        from: WorkerRef::new("claude-code", None),
-        to: vec![WorkerRef::new("codex", None)],
+        from: ModelRef::new("claude-code", None),
+        to: vec![ModelRef::new("codex", None)],
         reason: "usage limit".to_owned(),
-        reverted_here: false,
+        rewound_here: false,
     }
 }
 
@@ -372,7 +372,7 @@ fn rewind_picker() {
     let mut view = open();
     vim.draw(&mut view);
     let picked = |outcome: ViewOutcome| match outcome {
-        ViewOutcome::SendToChat(UiCommand::Rewind { checkpoint, .. }) => checkpoint,
+        ViewOutcome::SendToConversation(UiCommand::Rewind { checkpoint, .. }) => checkpoint,
         other => panic!("{other:?}"),
     };
     // It opens on the newest checkpoint.
@@ -400,7 +400,7 @@ fn workflow_file(name: &str) -> WorkflowFile {
 
 #[test]
 fn workflow_library() {
-    let open = || LibraryView::new(vec![workflow_file("solo"), workflow_file("council")]);
+    let open = || LibraryView::new(vec![workflow_file("captain"), workflow_file("council")]);
     let off = Driver::new(false);
     let mut view = open();
     off.draw(&mut view);
@@ -422,18 +422,18 @@ fn workflow_library() {
     assert!(matches!(vim.press(&mut view, 'h'), ViewOutcome::Close));
 }
 
-/// The pointer and the chosen row are in the card colour, as on every list.
+/// The pointer and the chosen row are in the question colour, as on every list.
 #[test]
-fn the_chosen_row_is_in_the_card_colour() {
+fn the_chosen_row_is_in_the_question_colour() {
     let driver = Driver::new(false);
-    let card = driver.theme.style(Role::Card).fg;
+    let colour = driver.theme.style(Role::Question).fg;
     let rewind = RewindPicker::new(RunId::new("run-02").unwrap(), None, vec![checkpoint(1)]);
     let views: Vec<(&str, Box<dyn View>)> = vec![
         ("resume", Box::new(ResumePicker::new(vec![run(1)]))),
         ("rewind", Box::new(rewind)),
         (
             "library",
-            Box::new(LibraryView::new(vec![workflow_file("solo")])),
+            Box::new(LibraryView::new(vec![workflow_file("captain")])),
         ),
     ];
     for (name, mut view) in views {
@@ -443,6 +443,6 @@ fn the_chosen_row_is_in_the_card_colour() {
             .iter()
             .find(|cell| cell.symbol() == "❯")
             .unwrap_or_else(|| panic!("{name} draws no pointer"));
-        assert_eq!(pointer.fg, card.unwrap(), "{name}");
+        assert_eq!(pointer.fg, colour.unwrap(), "{name}");
     }
 }

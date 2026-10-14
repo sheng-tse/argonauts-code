@@ -1,4 +1,4 @@
-//! Deciding one checkpoint: hard limits first, then the mode and `decide_with`.
+//! Deciding one approval: hard limits first, then the mode and `decide_with`.
 
 pub mod decide;
 pub mod evaluate;

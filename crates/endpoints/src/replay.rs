@@ -8,9 +8,9 @@ use crate::sse::SseDecoder;
 use crate::stream::{Reply, ReplyStream};
 use crate::structured;
 
-const META: &str = include_str!("../tests/fixtures/ollama-llama3.2/meta.json");
-const TEXT: &str = include_str!("../tests/fixtures/ollama-llama3.2/text.stdout.jsonl");
-const SCHEMA: &str = include_str!("../tests/fixtures/ollama-llama3.2/schema.stdout.jsonl");
+const META: &str = include_str!("../tests/fixtures/ollama/meta.json");
+const TEXT: &str = include_str!("../tests/fixtures/ollama/text.stdout.jsonl");
+const SCHEMA: &str = include_str!("../tests/fixtures/ollama/schema.stdout.jsonl");
 
 /// A raw log back as the stream it came from: the log leaves out the blank line that ends each
 /// event, and every event here is one line.

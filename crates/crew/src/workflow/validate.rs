@@ -1,22 +1,24 @@
-//! Checks a workflow before it runs, whether a built-in, your file, or one the lead composed.
+//! Checks a workflow before it runs, whether a built-in, your file, or one the main agent composed.
 //! An invalid one goes back to its author with every error at once. A `workflow` step's
 //! target is checked too, in place, so a broken or too deep nested workflow is found before
 //! anything runs.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use argonauts_core::events::checkpoint::CheckpointKind;
+use argonauts_core::events::approval::ApprovalKind;
 use argonauts_core::events::run::CheckedInstruction;
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::settings::Settings;
 use argonauts_core::steps::intake::InstructionKind;
-use argonauts_core::workflow::{Count, Step, StepKind, StepWorkers, Workflow, WorkflowParams};
+use argonauts_core::workflow::{
+    Count, StandardPhase, Step, StepKind, StepModels, Workflow, WorkflowParams,
+};
 
 use argonauts_core::labels;
 
-use crate::card;
 use crate::plan::context::crew_for;
 use crate::plan::judge;
+use crate::task;
 use crate::workflow::{conditions, kinds, params};
 
 /// What the rules are checked against.
@@ -24,18 +26,18 @@ use crate::workflow::{conditions, kinds, params};
 pub struct Context<'a> {
     pub settings: &'a Settings,
     /// Workers this run may use: the crew and every role's workers.
-    pub allowed: &'a [WorkerRef],
-    /// Each allowed worker's model family.
-    pub families: &'a BTreeMap<WorkerRef, String>,
+    pub allowed: &'a [ModelRef],
+    /// Each allowed worker's model provider.
+    pub providers: &'a BTreeMap<ModelRef, String>,
     /// The workflow a `workflow` step names, found as the runner finds it.
     pub lookup: &'a dyn Fn(&str) -> Result<Workflow, String>,
     /// The depth the workflow would run at: 0 for the run's own.
     pub depth: u32,
-    /// What's left of the run budget, when there is one.
-    pub budget_left_usd: Option<f64>,
+    /// What's left of the run limit, when there is one.
+    pub limit_left_usd: Option<f64>,
     /// The roles your request gave to agents, each with its agents. A step of one of these
     /// roles may name only them.
-    pub as_you_asked: &'a [(RoleName, Vec<WorkerRef>)],
+    pub as_you_asked: &'a [(RoleName, Vec<ModelRef>)],
 }
 
 /// The roles a followed instruction gave to agents, with the agents the request layer set
@@ -43,21 +45,21 @@ pub struct Context<'a> {
 pub fn roles_as_you_asked(
     instructions: &[CheckedInstruction],
     settings: &Settings,
-) -> Vec<(RoleName, Vec<WorkerRef>)> {
-    let mut roles: Vec<(RoleName, Vec<WorkerRef>)> = Vec::new();
+) -> Vec<(RoleName, Vec<ModelRef>)> {
+    let mut roles: Vec<(RoleName, Vec<ModelRef>)> = Vec::new();
     for instruction in instructions.iter().filter(|i| i.followed()) {
         let role = match instruction.kind {
             InstructionKind::Build => RoleName::Worker,
             InstructionKind::Review => RoleName::Reviewer,
             InstructionKind::Judge => RoleName::Judge,
-            InstructionKind::Plan => RoleName::Drafter,
-            InstructionKind::Coordinate => RoleName::Orchestrator,
+            InstructionKind::Plan => RoleName::Draft,
+            InstructionKind::Orchestrate => RoleName::Orchestrator,
             _ => continue,
         };
         let workers = settings
             .roles
             .get(&role)
-            .map(|settings| settings.workers.clone())
+            .map(|settings| settings.models.clone())
             .unwrap_or_default();
         if !workers.is_empty() && !roles.iter().any(|(known, _)| *known == role) {
             roles.push((role, workers));
@@ -66,18 +68,18 @@ pub fn roles_as_you_asked(
     roles
 }
 
-/// Each rule a workflow can break, so tests and the lead's retry can name it.
+/// Each rule a workflow can break, so tests and the main agent's retry can name it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Rule {
-    /// Every `build` is followed by a gate and a review by another family.
-    BuildNeedsGateAndReview,
-    ReviewSameFamily,
+    /// Every `build` is followed by a check and a review by another provider.
+    BuildNeedsCheckAndReview,
+    ReviewSameProvider,
     LoopWithoutMax,
-    OverBudget,
-    WorkerNotAllowed,
+    OverLimit,
+    ModelNotAllowed,
     /// A step gives a role your request gave to some agents to another agent.
     NotAsYouAsked,
-    MissingCheckpoint,
+    MissingApproval,
     TooDeep,
     UnknownCondition,
     UnknownInput,
@@ -93,8 +95,8 @@ pub enum Rule {
     Label,
     /// A `review_in` that names no later phase.
     ReviewIn,
-    /// Two phases share a title, so a `review_in` or a row couldn't tell them apart.
-    PhaseTitle,
+    /// Two phases share a name, so a `review_in` or a row couldn't tell them apart.
+    PhaseName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,7 +108,7 @@ pub struct WorkflowError {
 }
 
 /// The inputs every workflow may name besides its own earlier steps.
-pub const RESERVED_INPUTS: &[&str] = &["goal", "plan", "diff", "spikes"];
+pub const RESERVED_INPUTS: &[&str] = &["goal", "plan", "diff", "experiments"];
 
 /// Nesting never goes deeper than this, whatever the settings say.
 pub const MAX_DEPTH: u32 = 2;
@@ -114,8 +116,8 @@ pub const MAX_DEPTH: u32 = 2;
 /// No loop runs more rounds than this, whatever its `max` says.
 pub const MAX_LOOP_ROUNDS: u32 = 10;
 
-/// What a card build costs at the least when `limits.per_task_usd` isn't set.
-const MIN_CARD_USD: f64 = 0.05;
+/// What a task build costs at the least when `limits.per_task_usd` isn't set.
+const MIN_TASK_USD: f64 = 0.05;
 
 /// A template is checked as it would run, with its placeholders filled from its own params.
 pub fn validate(workflow: &Workflow, context: &Context<'_>) -> Result<(), Vec<WorkflowError>> {
@@ -127,6 +129,7 @@ pub fn validate(workflow: &Workflow, context: &Context<'_>) -> Result<(), Vec<Wo
         scope: 0,
         scopes: 1,
         chain: vec![workflow.name.clone()],
+        standard: StandardPhase::Understand,
     };
     let filled = params::fill(workflow, &WorkflowParams::default());
     let workflow = match &filled {
@@ -155,7 +158,7 @@ pub fn validate(workflow: &Workflow, context: &Context<'_>) -> Result<(), Vec<Wo
     }
     check.workflow(workflow, "", 1);
     check.order();
-    check.budget();
+    check.limit();
     if check.errors.is_empty() {
         Ok(())
     } else {
@@ -180,15 +183,15 @@ struct Seen {
     kind: StepKind,
     name: Option<String>,
     input: Option<String>,
-    checkpoint: Option<CheckpointKind>,
+    approval: Option<ApprovalKind>,
     /// The step may not run: it or a step around it has `when`, or it's inside `for_each`.
     conditional: bool,
     when: Option<String>,
-    workers: Vec<WorkerRef>,
+    workers: Vec<ModelRef>,
     /// How many times it may run: the product of the enclosing loops' maximums.
     runs: u32,
-    /// Cards each run builds, at least: a solo `build`'s attempts, else 1.
-    cards: u32,
+    /// Tasks each run builds, at least: a Captain `build`'s tries, else 1.
+    tasks: u32,
     /// Which workflow it belongs to, since step names are only known inside their own.
     scope: usize,
 }
@@ -203,6 +206,8 @@ struct Check<'a, 'c> {
     scopes: usize,
     /// The nested workflows being checked, outermost first, to catch one that runs itself.
     chain: Vec<String>,
+    /// The standard of the phase whose steps are being checked now.
+    standard: StandardPhase,
 }
 
 impl Check<'_, '_> {
@@ -218,9 +223,9 @@ impl Check<'_, '_> {
         self.context.settings.workflows.max_depth.min(MAX_DEPTH)
     }
 
-    fn family(&self, worker: &WorkerRef) -> String {
+    fn provider(&self, worker: &ModelRef) -> String {
         self.context
-            .families
+            .providers
             .get(worker)
             .cloned()
             .unwrap_or_else(|| worker.to_string())
@@ -236,14 +241,14 @@ impl Check<'_, '_> {
             };
             self.error(Rule::Empty, &at, "it has no phases".to_owned());
         }
-        let mut titles = BTreeSet::new();
+        let mut names = BTreeSet::new();
         for (index, phase) in workflow.phases.iter().enumerate() {
-            if !titles.insert(phase.name.trim().to_lowercase()) {
+            if !names.insert(phase.name.trim().to_lowercase()) {
                 let at = format!("{prefix}phase {} ({})", index + 1, phase.name);
                 self.error(
-                    Rule::PhaseTitle,
+                    Rule::PhaseName,
                     &at,
-                    format!("another phase is also titled `{}`", phase.name.trim()),
+                    format!("another phase is also named `{}`", phase.name.trim()),
                 );
             }
         }
@@ -277,7 +282,9 @@ impl Check<'_, '_> {
             }
         }
         let mut labels = BTreeMap::new();
+        let outer = self.standard;
         for (index, phase) in workflow.phases.iter().enumerate() {
+            self.standard = phase.standard;
             let at = format!("{prefix}phase {} ({})", index + 1, phase.name);
             if phase.steps.is_empty() && !reviewed_in.contains(&index) {
                 self.error(Rule::Empty, &at, "the phase has no steps".to_owned());
@@ -288,6 +295,7 @@ impl Check<'_, '_> {
                 self.step(step, at, runs, false);
             }
         }
+        self.standard = outer;
     }
 
     /// Each step's label pattern, and no fixed label twice: two agents never share a name.
@@ -315,13 +323,13 @@ impl Check<'_, '_> {
 
     /// A step of a role your request gave to some agents names only them.
     fn as_you_asked(&mut self, step: &Step, at: &str) {
-        let StepWorkers::Named(workers) = &step.workers else {
+        let StepModels::Named(workers) = &step.models else {
             return;
         };
         let default_role = match step.kind {
             StepKind::Review => Some(RoleName::Reviewer),
             StepKind::Build => Some(RoleName::Worker),
-            StepKind::Draft => Some(RoleName::Drafter),
+            StepKind::Draft => Some(RoleName::Draft),
             _ => None,
         };
         let roles: Vec<RoleName> = match (step.role, step.roles.is_empty()) {
@@ -364,23 +372,23 @@ impl Check<'_, '_> {
                 );
             }
         }
-        if let StepWorkers::Named(workers) = &step.workers {
+        if let StepModels::Named(workers) = &step.models {
             for worker in workers {
                 if !self.context.allowed.contains(worker) {
                     self.error(
-                        Rule::WorkerNotAllowed,
+                        Rule::ModelNotAllowed,
                         &at,
-                        format!("{worker} isn't in the crew or any role's workers"),
+                        format!("{worker} isn't in the crew or any role's models"),
                     );
                 }
             }
         }
         self.as_you_asked(step, &at);
-        let doing_owner_work =
+        let doing_worker_work =
             step.role == Some(RoleName::Worker) || step.roles.contains(&RoleName::Worker);
-        if doing_owner_work && step.kind != StepKind::Build {
+        if doing_worker_work && step.kind != StepKind::Build {
             self.error(
-                Rule::BuildNeedsGateAndReview,
+                Rule::BuildNeedsCheckAndReview,
                 &at,
                 "only a `build` step gives workers work, since only its tasks run the checks and a review by another provider".to_owned(),
             );
@@ -418,7 +426,7 @@ impl Check<'_, '_> {
                 &at,
                 "`fan_out` needs `role` or `roles`".to_owned(),
             ),
-            StepKind::Checkpoint => self.checkpoint(step, &at),
+            StepKind::Approval => self.approval(step, &at),
             StepKind::Build => self.build(step, &at),
             StepKind::Judge => self.judge(step, &at),
             _ => {}
@@ -432,21 +440,21 @@ impl Check<'_, '_> {
             kind: step.kind,
             name: step.name.clone(),
             input: step.input.clone(),
-            checkpoint: step.checkpoint,
+            approval: step.approval,
             conditional,
             when: step.when.clone(),
-            workers: match &step.workers {
-                StepWorkers::Named(workers) => workers.clone(),
-                StepWorkers::Param(_) => Vec::new(),
+            workers: match &step.models {
+                StepModels::Named(workers) => workers.clone(),
+                StepModels::Param(_) => Vec::new(),
             },
             runs,
-            cards: match step.count {
+            tasks: match step.count {
                 Some(Count::Fixed(count)) if step.kind == StepKind::Build => count.max(1),
                 _ => 1,
             },
             scope: self.scope,
         });
-        self.review_family(step, &at);
+        self.review_provider(step, &at);
         if step.kind == StepKind::Workflow {
             self.nested(step, &at, runs, conditional);
         }
@@ -467,18 +475,18 @@ impl Check<'_, '_> {
         }
     }
 
-    /// A `checkpoint` step opens the goal or the plan checkpoint. Only the solo goal
-    /// checkpoint may wait for `restate_first`; `order` finds whether a build has the
+    /// An `approval` step opens the Understand or the plan approval. Only the Captain Understand
+    /// approval may wait for `understand_first`; `order` finds whether a build has the
     /// unconditional ones it needs.
-    fn checkpoint(&mut self, step: &Step, at: &str) {
-        match step.checkpoint {
+    fn approval(&mut self, step: &Step, at: &str) {
+        match step.approval {
             None => self.error(
-                Rule::MissingCheckpoint,
+                Rule::MissingApproval,
                 at,
-                "a `checkpoint` step names its kind, `goal` or `plan`".to_owned(),
+                "an `approval` step names its kind, `understand` or `plan`".to_owned(),
             ),
-            Some(CheckpointKind::Goal | CheckpointKind::Plan) => {}
-            Some(CheckpointKind::Merge) => self.error(
+            Some(ApprovalKind::Understand | ApprovalKind::Plan) => {}
+            Some(ApprovalKind::Merge) => self.error(
                 Rule::FieldNotForKind,
                 at,
                 "the merge approval comes with the `merge` step".to_owned(),
@@ -491,13 +499,13 @@ impl Check<'_, '_> {
                 ),
             ),
         }
-        if step.when.as_deref() == Some("restate_first")
-            && step.checkpoint != Some(CheckpointKind::Goal)
+        if step.when.as_deref() == Some("understand_first")
+            && step.approval != Some(ApprovalKind::Understand)
         {
             self.error(
-                Rule::MissingCheckpoint,
+                Rule::MissingApproval,
                 at,
-                "only the goal approval may wait for `restate_first`".to_owned(),
+                "only the Understand approval may wait for `understand_first`".to_owned(),
             );
         }
     }
@@ -572,19 +580,19 @@ impl Check<'_, '_> {
         let set = [
             ("role", step.role.is_some()),
             ("roles", !step.roles.is_empty()),
-            ("workers", !step.workers.is_empty()),
+            ("models", !step.models.is_empty()),
             ("count", step.count.is_some()),
             ("blind", step.blind),
             (
-                "different_family_from",
-                step.different_family_from.is_some(),
+                "different_provider_from",
+                step.different_provider_from.is_some(),
             ),
             ("task", step.task.is_some()),
             ("input", step.input.is_some()),
             ("steps", !step.steps.is_empty()),
             ("until", step.until.is_some()),
             ("max", step.max.is_some()),
-            ("checkpoint", step.checkpoint.is_some()),
+            ("approval", step.approval.is_some()),
             ("workflow", step.workflow.is_some()),
             ("params", !step.params.is_empty()),
             ("review_in", step.review_in.is_some()),
@@ -599,8 +607,8 @@ impl Check<'_, '_> {
                 format!("`{}` doesn't take `{field}`", kind_name(step.kind)),
             );
         }
-        // Only reviewers pick their workers by family; judges and critics pick their own.
-        if step.kind == StepKind::FanOut && step.different_family_from.is_some() {
+        // Only reviewers pick their workers by provider; judges and critics pick their own.
+        if step.kind == StepKind::FanOut && step.different_provider_from.is_some() {
             let roles = step.role.iter().chain(&step.roles);
             for role in roles.filter(|role| kinds::kind_for_role(**role) != Some(StepKind::Review))
             {
@@ -608,7 +616,7 @@ impl Check<'_, '_> {
                     Rule::FieldNotForKind,
                     at,
                     format!(
-                        "`different_family_from` picks reviewers, and the {} role doesn't review",
+                        "`different_provider_from` picks reviewers, and the {} role doesn't review",
                         role.as_str()
                     ),
                 );
@@ -616,9 +624,9 @@ impl Check<'_, '_> {
         }
     }
 
-    /// What `build` does comes from its `input`: `goal` builds the solo card, `count` attempts
-    /// of it, reviewed by another family with `different_family_from: author`; `plan` builds
-    /// the plan's cards, whose owners and reviewers the plan checkpoint settles.
+    /// What `build` does comes from its `input`: `goal` builds the Captain task, `count` tries
+    /// of it, reviewed by another provider with `different_provider_from: author`; `plan` builds
+    /// the plan's tasks, whose workers and reviewers the plan approval settles.
     fn build(&mut self, step: &Step, at: &str) {
         if let Some(role) = step.role.filter(|role| *role != RoleName::Worker) {
             self.error(
@@ -630,9 +638,9 @@ impl Check<'_, '_> {
                 ),
             );
         }
-        let solo = match step.input.as_deref() {
-            Some(card::GOAL) => true,
-            Some("plan" | card::SPIKES) => false,
+        let captain = match step.input.as_deref() {
+            Some(task::GOAL) => true,
+            Some("plan" | task::EXPERIMENTS) => false,
             other => {
                 let said = other.map_or_else(
                     || "no `input`".to_owned(),
@@ -642,18 +650,18 @@ impl Check<'_, '_> {
                     Rule::UnknownInput,
                     at,
                     format!(
-                        "`build` has {said}; it builds `goal` (the solo task), `plan` (the plan's tasks), or `spikes`"
+                        "`build` has {said}; it builds `goal` (the Captain task), `plan` (the plan's tasks), or `experiments`"
                     ),
                 );
                 return;
             }
         };
-        if !solo {
+        if !captain {
             for (field, set) in [
                 ("count", step.count.is_some()),
                 (
-                    "different_family_from",
-                    step.different_family_from.is_some(),
+                    "different_provider_from",
+                    step.different_provider_from.is_some(),
                 ),
             ] {
                 if set {
@@ -672,13 +680,13 @@ impl Check<'_, '_> {
             self.error(
                 Rule::InvalidValue,
                 at,
-                "`count` is the number of attempts, at least 1".to_owned(),
+                "`count` is the number of tries, at least 1".to_owned(),
             );
         }
         if let Some(from) = step
-            .different_family_from
+            .different_provider_from
             .as_deref()
-            .filter(|from| *from != card::AUTHOR && !from.contains("{{"))
+            .filter(|from| *from != task::AUTHOR && !from.contains("{{"))
         {
             self.error(
                 Rule::InvalidValue,
@@ -690,17 +698,19 @@ impl Check<'_, '_> {
         }
     }
 
-    /// A planning `judge` may name its method in `params`, such as `method: vote`; the
-    /// adjudicator rules on reviews and takes none.
+    /// A planning `judge` may name its method in `params`, such as `method: vote`; outside a
+    /// plan phase the judge settles reviewers who disagree and takes none.
     fn judge(&mut self, step: &Step, at: &str) {
         if step.params.is_empty() {
             return;
         }
-        if step.role == Some(RoleName::Adjudicator) {
+        if self.standard != StandardPhase::Plan {
             self.error(
                 Rule::FieldNotForKind,
                 at,
-                "the adjudicator rules on disagreeing reviews and takes no `params`".to_owned(),
+                "outside a plan phase the judge settles reviewers who disagree and takes no \
+                 `params`"
+                    .to_owned(),
             );
             return;
         }
@@ -725,12 +735,12 @@ impl Check<'_, '_> {
         if let Some(Count::Param(text)) = &step.count {
             left.push(text.clone());
         }
-        if let StepWorkers::Param(text) = &step.workers {
+        if let StepModels::Param(text) = &step.models {
             left.push(text.clone());
         }
         for text in [
             &step.name,
-            &step.different_family_from,
+            &step.different_provider_from,
             &step.when,
             &step.task,
             &step.input,
@@ -753,23 +763,23 @@ impl Check<'_, '_> {
         }
     }
 
-    /// A reviewer never reviews its own work, and with `different_family_from` never work
-    /// from its own model family. Only named workers are known here; the runner leaves out
-    /// the rest by family when it picks reviewers.
-    fn review_family(&mut self, step: &Step, at: &str) {
+    /// A reviewer never reviews its own work, and with `different_provider_from` never work
+    /// from its own model provider. Only named workers are known here; the runner leaves out
+    /// the rest by provider when it picks reviewers.
+    fn review_provider(&mut self, step: &Step, at: &str) {
         if !matches!(step.kind, StepKind::Review | StepKind::FanOut) {
             return;
         }
-        let from = step.different_family_from.as_deref();
+        let from = step.different_provider_from.as_deref();
         let target = match from {
             Some("author") | None => step.input.as_deref(),
             Some(name) => {
                 if !self.named_here(name) {
                     self.error(
-                        Rule::ReviewSameFamily,
+                        Rule::ReviewSameProvider,
                         at,
                         format!(
-                            "`different_family_from: {name}` names neither `author` nor an earlier step"
+                            "`different_provider_from: {name}` names neither `author` nor an earlier step"
                         ),
                     );
                     return;
@@ -780,7 +790,7 @@ impl Check<'_, '_> {
         let Some(target) = target else {
             return;
         };
-        let authors: Vec<WorkerRef> = self
+        let authors: Vec<ModelRef> = self
             .flat
             .iter()
             .filter(|seen| seen.scope == self.scope && seen.name.as_deref() == Some(target))
@@ -789,32 +799,32 @@ impl Check<'_, '_> {
         if authors.is_empty() {
             return;
         }
-        let named = match &step.workers {
-            StepWorkers::Named(workers) if !workers.is_empty() => Some(workers.clone()),
+        let named = match &step.models {
+            StepModels::Named(workers) if !workers.is_empty() => Some(workers.clone()),
             _ => None,
         };
         if from.is_none() {
             for reviewer in named.iter().flatten().filter(|r| authors.contains(r)) {
                 self.error(
-                    Rule::ReviewSameFamily,
+                    Rule::ReviewSameProvider,
                     at,
                     format!("{reviewer} would review its own work from `{target}`"),
                 );
             }
             return;
         }
-        let author_families: BTreeSet<String> =
-            authors.iter().map(|worker| self.family(worker)).collect();
+        let author_providers: BTreeSet<String> =
+            authors.iter().map(|worker| self.provider(worker)).collect();
         match named {
             Some(reviewers) => {
                 for reviewer in &reviewers {
-                    let family = self.family(reviewer);
-                    if author_families.contains(&family) {
+                    let provider = self.provider(reviewer);
+                    if author_providers.contains(&provider) {
                         self.error(
-                            Rule::ReviewSameFamily,
+                            Rule::ReviewSameProvider,
                             at,
                             format!(
-                                "{reviewer} is of the {family} provider, like the authors of `{target}`"
+                                "{reviewer} is of the {provider} provider, like the authors of `{target}`"
                             ),
                         );
                     }
@@ -824,10 +834,10 @@ impl Check<'_, '_> {
                 let pool = crew_for(self.context.settings, RoleName::Reviewer);
                 if !pool
                     .iter()
-                    .any(|reviewer| !author_families.contains(&self.family(reviewer)))
+                    .any(|reviewer| !author_providers.contains(&self.provider(reviewer)))
                 {
                     self.error(
-                        Rule::ReviewSameFamily,
+                        Rule::ReviewSameProvider,
                         at,
                         format!(
                             "no reviewer comes from another provider than the authors of `{target}`"
@@ -846,14 +856,14 @@ impl Check<'_, '_> {
     }
 
     /// The rules about order: inputs come from earlier steps of the same workflow, and
-    /// building needs the merge after it and, from a plan, the goal and plan checkpoints
+    /// building needs the merge after it and, from a plan, the Understand and plan approvals
     /// before it, neither of them conditional.
     fn order(&mut self) {
         let mut errors = Vec::new();
         let crew_build = self
             .flat
             .iter()
-            .any(|seen| seen.kind == StepKind::Build && !solo_build(seen));
+            .any(|seen| seen.kind == StepKind::Build && !captain_build(seen));
         for (index, seen) in self.flat.iter().enumerate() {
             let before = &self.flat[..index];
             let after = &self.flat[index + 1..];
@@ -875,13 +885,13 @@ impl Check<'_, '_> {
                 }
             }
             if crew_build
-                && seen.kind == StepKind::Checkpoint
-                && seen.when.as_deref() == Some("restate_first")
+                && seen.kind == StepKind::Approval
+                && seen.when.as_deref() == Some("understand_first")
             {
                 errors.push((
-                    Rule::MissingCheckpoint,
+                    Rule::MissingApproval,
                     seen.at.clone(),
-                    "only a solo workflow's goal approval may wait for `restate_first`; a crew always asks you"
+                    "only a Captain workflow's Understand approval may wait for `understand_first`; a crew always asks you"
                         .to_owned(),
                 ));
             }
@@ -890,26 +900,26 @@ impl Check<'_, '_> {
             }
             if !after.iter().any(|later| later.kind == StepKind::Merge) {
                 errors.push((
-                    Rule::MissingCheckpoint,
+                    Rule::MissingApproval,
                     seen.at.clone(),
                     "a `build` needs a `merge` after it, where the merge approval asks".to_owned(),
                 ));
             }
-            if solo_build(seen) {
+            if captain_build(seen) {
                 continue;
             }
             for (needed, name) in [
-                (CheckpointKind::Goal, "goal"),
-                (CheckpointKind::Plan, "plan"),
+                (ApprovalKind::Understand, "Understand"),
+                (ApprovalKind::Plan, "plan"),
             ] {
                 let present = before.iter().any(|earlier| {
-                    earlier.kind == StepKind::Checkpoint
-                        && earlier.checkpoint == Some(needed)
+                    earlier.kind == StepKind::Approval
+                        && earlier.approval == Some(needed)
                         && !earlier.conditional
                 });
                 if !present {
                     errors.push((
-                        Rule::MissingCheckpoint,
+                        Rule::MissingApproval,
                         seen.at.clone(),
                         format!(
                             "building from a plan needs the {name} approval before it, with no `when` and outside `for_each`"
@@ -923,30 +933,30 @@ impl Check<'_, '_> {
         }
     }
 
-    /// A floor on what the workflow costs, nested workflows included: each card build at
+    /// A floor on what the workflow costs, nested workflows included: each task build at
     /// `limits.per_task_usd`, times the rounds its loops may run.
-    fn budget(&mut self) {
-        let Some(left) = self.context.budget_left_usd else {
+    fn limit(&mut self) {
+        let Some(left) = self.context.limit_left_usd else {
             return;
         };
         let per_task = self
             .context
             .settings
             .limits
-            .budget
+            .spend
             .per_task_usd
             .filter(|usd| *usd > 0.0)
-            .unwrap_or(MIN_CARD_USD);
+            .unwrap_or(MIN_TASK_USD);
         let estimate: f64 = self
             .flat
             .iter()
             .filter(|seen| seen.kind == StepKind::Build)
-            .map(|seen| per_task * f64::from(seen.runs) * f64::from(seen.cards))
+            .map(|seen| per_task * f64::from(seen.runs) * f64::from(seen.tasks))
             .sum();
         let spends = self.flat.iter().any(|seen| takes_agents(seen.kind));
         if estimate > left || (left <= 0.0 && spends) {
             self.error(
-                Rule::OverBudget,
+                Rule::OverLimit,
                 "the workflow",
                 format!("it needs at least ${estimate:.2}, and ${left:.2} of the limit is left"),
             );
@@ -954,67 +964,67 @@ impl Check<'_, '_> {
     }
 }
 
-/// A solo build makes one card from the goal, so it needs no plan and no plan checkpoint.
-fn solo_build(seen: &Seen) -> bool {
-    seen.input.as_deref() == Some(card::GOAL)
+/// A Captain build makes one task from the goal, so it needs no plan and no plan approval.
+fn captain_build(seen: &Seen) -> bool {
+    seen.input.as_deref() == Some(task::GOAL)
 }
 
 fn takes_agents(kind: StepKind) -> bool {
     !matches!(
         kind,
-        StepKind::Gate
+        StepKind::Checks
             | StepKind::LoopUntil
             | StepKind::ForEach
-            | StepKind::Checkpoint
+            | StepKind::Approval
             | StepKind::Workflow
     )
 }
 
 fn allowed_fields(kind: StepKind) -> &'static [&'static str] {
     match kind {
-        StepKind::Restate => &["role", "workers", "count", "task", "input"],
-        StepKind::Differ => &["role", "workers", "count", "input"],
-        StepKind::Draft => &["role", "workers", "count", "blind", "task", "input"],
-        StepKind::Map => &["role", "workers", "input"],
+        StepKind::Read => &["role", "models", "count", "task", "input"],
+        StepKind::Compare => &["role", "models", "count", "input"],
+        StepKind::Draft => &["role", "models", "count", "blind", "task", "input"],
+        StepKind::Map => &["role", "models", "input"],
         StepKind::FanOut => &[
             "role",
             "roles",
-            "workers",
+            "models",
             "count",
             "blind",
-            "different_family_from",
+            "different_provider_from",
             "task",
             "input",
         ],
         StepKind::ForEach => &["input", "steps"],
         StepKind::Review => &[
             "role",
-            "workers",
+            "models",
             "count",
             "blind",
-            "different_family_from",
+            "different_provider_from",
             "task",
             "input",
         ],
         StepKind::Judge => &[
-            "role", "workers", "count", "blind", "task", "input", "params",
+            "role", "models", "count", "blind", "task", "input", "params",
         ],
-        StepKind::Refute => &["role", "workers", "count", "task", "input"],
-        StepKind::Synthesize => &["role", "workers", "task", "input"],
-        // The solo card's owner is the default agent, the plan's owners come from the plan
-        // checkpoint, and each card's task is its spec, so `workers` and `task` would do nothing.
+        StepKind::Critique => &["role", "models", "count", "task", "input"],
+        StepKind::Synthesize => &["role", "models", "task", "input"],
+        // The Captain task's worker is the main agent, the plan's workers come from the plan
+        // approval, and each task's brief is its spec, so `models` and `task` would do nothing.
         StepKind::Build => &[
             "role",
             "count",
-            "different_family_from",
+            "different_provider_from",
             "input",
             "review_in",
         ],
-        StepKind::Gate => &["input"],
+        StepKind::Checks => &["input"],
         StepKind::LoopUntil => &["steps", "until", "max"],
-        StepKind::Checkpoint => &["checkpoint", "input"],
+        StepKind::Approval => &["approval", "input"],
         StepKind::Merge => &[],
-        StepKind::Check => &[],
+        StepKind::GoalCheck => &[],
         StepKind::Workflow => &["workflow", "params"],
         StepKind::Script => &[],
     }
@@ -1053,16 +1063,16 @@ mod tests {
     #[test]
     fn a_workflow_wide_error_reads_as_one_phrase() {
         let error = |at: &str, message: &str| WorkflowError {
-            rule: Rule::OverBudget,
+            rule: Rule::OverLimit,
             at: at.to_owned(),
             message: message.to_owned(),
         };
-        let budget = error(
+        let limit = error(
             "the workflow",
             "it needs at least $3.00, and $0.61 of the limit is left",
         );
         assert_eq!(
-            budget.to_string(),
+            limit.to_string(),
             "the workflow needs at least $3.00, and $0.61 of the limit is left"
         );
         let step = error("phase Build, step 1", "it has no worker");
@@ -1070,20 +1080,25 @@ mod tests {
     }
 
     fn rules(steps: &str) -> Vec<Rule> {
+        rules_in("do", steps)
+    }
+
+    /// The rules `steps` break in a phase of this `standard`.
+    fn rules_in(standard: &str, steps: &str) -> Vec<Rule> {
         let text = format!(
-            "name: checked\nparams:\n  tries: 2\nphases:\n  - name: Build\n    standard: do\n    steps:\n{steps}      - kind: merge\n"
+            "name: checked\nparams:\n  tries: 2\nphases:\n  - name: Build\n    standard: {standard}\n    steps:\n{steps}      - kind: merge\n"
         );
         let workflow = yaml::parse(&text).unwrap_or_else(|err| panic!("{err}\n{text}"));
         let settings = Settings::default();
-        let families = BTreeMap::new();
+        let providers = BTreeMap::new();
         let lookup = |name: &str| builtin::load(name);
         let context = Context {
             settings: &settings,
             allowed: &[],
-            families: &families,
+            providers: &providers,
             lookup: &lookup,
             depth: 0,
-            budget_left_usd: None,
+            limit_left_usd: None,
             as_you_asked: &[],
         };
         match validate(&workflow, &context) {
@@ -1093,18 +1108,14 @@ mod tests {
     }
 
     /// A role your request gave to some agents goes to them, so a workflow naming another
-    /// agent for it goes back to the lead with the error.
+    /// agent for it goes back to the main agent with the error.
     #[test]
     fn a_step_must_give_an_instructed_role_to_its_agents() {
         use argonauts_core::events::run::InstructionOutcome;
 
         let mut settings = Settings::default();
-        let agy = WorkerRef::new("antigravity-cli", None);
-        settings
-            .roles
-            .entry(RoleName::Reviewer)
-            .or_default()
-            .workers = vec![agy.clone()];
+        let agy = ModelRef::new("antigravity-cli", None);
+        settings.roles.entry(RoleName::Reviewer).or_default().models = vec![agy.clone()];
         let review = CheckedInstruction {
             says: "gemini reviews".to_owned(),
             kind: InstructionKind::Review,
@@ -1127,19 +1138,19 @@ mod tests {
         let check = |workers: &str| {
             let text = format!(
                 "name: checked\nphases:\n  - name: Look\n    standard: do\n    steps:\n      \
-                 - kind: review\n        input: goal\n        workers: [{workers}]\n"
+                 - kind: review\n        input: goal\n        models: [{workers}]\n"
             );
             let workflow = yaml::parse(&text).unwrap_or_else(|err| panic!("{err}\n{text}"));
-            let families = BTreeMap::new();
+            let providers = BTreeMap::new();
             let lookup = |name: &str| builtin::load(name);
-            let allowed = [WorkerRef::new("codex", None), agy.clone()];
+            let allowed = [ModelRef::new("codex", None), agy.clone()];
             let context = Context {
                 settings: &settings,
                 allowed: &allowed,
-                families: &families,
+                providers: &providers,
                 lookup: &lookup,
                 depth: 1,
-                budget_left_usd: None,
+                limit_left_usd: None,
                 as_you_asked: &as_you_asked,
             };
             match validate(&workflow, &context) {
@@ -1161,11 +1172,14 @@ mod tests {
     #[test]
     fn build_refuses_what_its_executor_would_ignore() {
         let cases = [
-            ("        workers: [codex]\n", Rule::FieldNotForKind),
+            ("        models: [codex]\n", Rule::FieldNotForKind),
             ("        task: do it twice\n", Rule::FieldNotForKind),
             ("        role: reviewer\n", Rule::FieldNotForKind),
             ("        count: 0\n", Rule::InvalidValue),
-            ("        different_family_from: judge\n", Rule::InvalidValue),
+            (
+                "        different_provider_from: judge\n",
+                Rule::InvalidValue,
+            ),
         ];
         for (field, rule) in cases {
             let step = format!("      - kind: build\n        input: goal\n{field}");
@@ -1173,10 +1187,10 @@ mod tests {
         }
         let unknown = rules("      - kind: build\n        role: worker\n");
         assert!(unknown.contains(&Rule::UnknownInput), "{unknown:?}");
-        // The plan's cards get their owners and reviewers at the plan checkpoint.
-        for field in ["count: 2", "different_family_from: author"] {
+        // The plan's tasks get their workers and reviewers at the plan approval.
+        for field in ["count: 2", "different_provider_from: author"] {
             let step = format!(
-                "      - kind: checkpoint\n        checkpoint: goal\n      - kind: checkpoint\n        checkpoint: plan\n      - kind: build\n        input: plan\n        {field}\n"
+                "      - kind: approval\n        approval: understand\n      - kind: approval\n        approval: plan\n      - kind: build\n        input: plan\n        {field}\n"
             );
             assert_eq!(rules(&step), [Rule::FieldNotForKind], "{field}");
         }
@@ -1186,15 +1200,15 @@ mod tests {
     fn workflow_rules(text: &str) -> Vec<Rule> {
         let workflow = yaml::parse(text).unwrap_or_else(|err| panic!("{err}\n{text}"));
         let settings = Settings::default();
-        let families = BTreeMap::new();
+        let providers = BTreeMap::new();
         let lookup = |name: &str| builtin::load(name);
         let context = Context {
             settings: &settings,
             allowed: &[],
-            families: &families,
+            providers: &providers,
             lookup: &lookup,
             depth: 0,
-            budget_left_usd: None,
+            limit_left_usd: None,
             as_you_asked: &[],
         };
         match validate(&workflow, &context) {
@@ -1203,13 +1217,13 @@ mod tests {
         }
     }
 
-    const FIX_THEN_REVIEW: &str = "name: fix\nphases:\n  - title: Goal\n    standard: understand\n    steps:\n      - { kind: checkpoint, checkpoint: goal }\n  - title: Fix\n    standard: do\n    steps:\n      - { kind: checkpoint, checkpoint: plan }\n      - { kind: build, input: plan, label: \"fix:{item}\", review_in: REVIEW_IN }\n  - title: Review\n    standard: check\n    steps: []\n  - title: Merge\n    standard: decide\n    steps:\n      - { kind: merge, label: \"merge:{branch}\" }\n";
+    const FIX_THEN_REVIEW: &str = "name: fix\nphases:\n  - name: Understand\n    standard: understand\n    steps:\n      - { kind: approval, approval: understand }\n  - name: Fix\n    standard: do\n    steps:\n      - { kind: approval, approval: plan }\n      - { kind: build, input: plan, label: \"fix:{item}\", review_in: REVIEW_IN }\n  - name: Review\n    standard: check\n    steps: []\n  - name: Merge\n    standard: decide\n    steps:\n      - { kind: merge, label: \"merge:{branch}\" }\n";
 
     #[test]
     fn a_phase_may_hold_only_an_earlier_builds_reviews() {
         let later = FIX_THEN_REVIEW.replace("REVIEW_IN", "Review");
         assert_eq!(workflow_rules(&later), []);
-        let earlier = FIX_THEN_REVIEW.replace("REVIEW_IN", "Goal");
+        let earlier = FIX_THEN_REVIEW.replace("REVIEW_IN", "Understand");
         let refused = workflow_rules(&earlier);
         assert!(refused.contains(&Rule::ReviewIn), "{refused:?}");
         // Nothing feeds Review now, so its emptiness counts too.
@@ -1218,80 +1232,92 @@ mod tests {
         assert!(workflow_rules(&unknown).contains(&Rule::ReviewIn));
         // Only a build points its reviews somewhere.
         assert!(
-            rules("      - kind: gate\n        review_in: Build\n")
+            rules("      - kind: checks\n        review_in: Build\n")
                 .contains(&Rule::FieldNotForKind)
         );
-        // Two phases by one title can't be told apart, whatever their case.
+        // Two phases by one name can't be told apart, whatever their case.
         let twice = FIX_THEN_REVIEW
             .replace("REVIEW_IN", "Review")
-            .replace("title: Goal", "title: review");
-        assert!(workflow_rules(&twice).contains(&Rule::PhaseTitle));
+            .replace("name: Understand", "name: review");
+        assert!(workflow_rules(&twice).contains(&Rule::PhaseName));
     }
 
     #[test]
     fn labels_are_one_token_and_never_shared() {
         assert_eq!(
-            rules("      - kind: gate\n        label: \"tests:{item}\"\n"),
+            rules("      - kind: checks\n        label: \"checks:{item}\"\n"),
             []
         );
         for bad in [
             "Tests:x",
             "tests x",
-            "tests:{thing}",
+            "checks:{thing}",
             "a-label-much-too-long-to-fit",
         ] {
-            let step = format!("      - kind: gate\n        label: \"{bad}\"\n");
+            let step = format!("      - kind: checks\n        label: \"{bad}\"\n");
             assert_eq!(rules(&step), [Rule::Label], "{bad}");
         }
-        let twice = "      - kind: gate\n        label: \"look:once\"\n      - kind: gate\n        label: \"look:once\"\n";
+        let twice = "      - kind: checks\n        label: \"look:once\"\n      - kind: checks\n        label: \"look:once\"\n";
         assert_eq!(rules(twice), [Rule::Label]);
     }
 
     #[test]
     fn the_check_step_takes_only_its_label() {
         assert_eq!(
-            rules("      - kind: check\n        label: \"check:final\"\n"),
+            rules("      - kind: goal_check\n        label: \"check:final\"\n"),
             []
         );
         assert_eq!(
-            rules("      - kind: check\n        role: reviewer\n"),
+            rules("      - kind: goal_check\n        role: reviewer\n"),
             [Rule::FieldNotForKind]
         );
     }
 
     #[test]
-    fn solo_builds_take_attempts_and_a_review() {
-        let step = "      - kind: build\n        role: worker\n        input: goal\n        count: \"{{tries}}\"\n        different_family_from: author\n";
+    fn captain_builds_take_tries_and_a_review() {
+        let step = "      - kind: build\n        role: worker\n        input: goal\n        count: \"{{tries}}\"\n        different_provider_from: author\n";
         assert_eq!(rules(step), []);
     }
 
     #[test]
     fn judge_names_a_known_method_only() {
-        let judge = |params: &str| {
-            rules(&format!(
-                "      - kind: judge\n        role: judge\n        params:\n{params}"
-            ))
+        let judge = |standard: &str, params: &str| {
+            rules_in(
+                standard,
+                &format!("      - kind: judge\n        role: judge\n        params:\n{params}"),
+            )
         };
-        assert_eq!(judge("          method: vote\n"), []);
-        assert_eq!(judge("          method: loudest\n"), [Rule::InvalidValue]);
-        assert_eq!(judge("          rounds: 2\n"), [Rule::FieldNotForKind]);
+        assert_eq!(judge("plan", "          method: vote\n"), []);
+        assert_eq!(
+            judge("plan", "          method: loudest\n"),
+            [Rule::InvalidValue]
+        );
+        assert_eq!(
+            judge("plan", "          rounds: 2\n"),
+            [Rule::FieldNotForKind]
+        );
+        // Outside a plan phase the judge settles reviews, which takes no method.
+        assert_eq!(
+            judge("check", "          method: vote\n"),
+            [Rule::FieldNotForKind]
+        );
     }
 
     #[test]
     fn builtins_validate_with_their_own_params() {
         let settings = Settings::default();
-        let families = BTreeMap::new();
+        let providers = BTreeMap::new();
         let lookup = |name: &str| builtin::load(name);
         let context = Context {
             settings: &settings,
             allowed: &[],
-            families: &families,
+            providers: &providers,
             lookup: &lookup,
             depth: 0,
-            budget_left_usd: None,
+            limit_left_usd: None,
             as_you_asked: &[],
         };
-        for (name, _) in builtin::BUILTIN {
+        for name in builtin::names() {
             let workflow = builtin::load(name).unwrap_or_else(|err| panic!("{err}"));
             assert_eq!(validate(&workflow, &context), Ok(()), "{name}");
         }

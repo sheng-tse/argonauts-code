@@ -1,25 +1,25 @@
-//! Your edits at the plan checkpoint. Lines of the note in these forms change the graph, and
+//! Your edits at the plan approval. Lines of the note in these forms change the graph, and
 //! the whole note becomes a decision record:
 //!
 //! ```text
-//! card-002 owner codex/gpt-5.6
-//! card-002 reviewers agy, claude-code/opus
-//! card-002 paths src/store/**, src/cache.rs
-//! card-002 budget 4.5
-//! budget cards 0.45
+//! task-002 worker codex/gpt-5.6
+//! task-002 reviewers agy, claude-code/opus
+//! task-002 paths src/store/**, src/cache.rs
+//! task-002 limit 4.5
+//! limit tasks 0.45
 //! ```
 //!
 //! An edited graph goes through the same rules as a proposal, so an edit that breaks one
-//! reopens the checkpoint with the reason.
+//! reopens the approval with the reason.
 
-use argonauts_core::CardId;
-use argonauts_core::events::card::{CardKind, CardSpec};
-use argonauts_core::events::plan::{BudgetPlan, DesignDecision, TaskGraph};
-use argonauts_core::names::{DecisionId, RoleName, WorkerRef};
+use argonauts_core::TaskId;
+use argonauts_core::events::plan::{DesignDecision, LimitPlan, TaskGraph};
+use argonauts_core::events::task::{TaskKind, TaskSpec};
+use argonauts_core::names::{DecisionId, ModelRef, RoleName};
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::budget::{BudgetAmount, BudgetLineKind, BudgetUnit};
+use argonauts_core::settings::limit::{LimitAmount, LimitLineKind, LimitUnit};
 
-use super::{budget_lines, graph};
+use super::{graph, limit_lines};
 use crate::roles;
 
 /// Its title gives the record's file name, `D-NNN-your-edits.md`.
@@ -27,36 +27,36 @@ pub const DECISION_TITLE: &str = "Your edits";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Edit {
-    Owner {
-        card: CardId,
-        worker: WorkerRef,
+    Worker {
+        task: TaskId,
+        worker: ModelRef,
     },
     Reviewers {
-        card: CardId,
-        workers: Vec<WorkerRef>,
+        task: TaskId,
+        workers: Vec<ModelRef>,
     },
     Paths {
-        card: CardId,
+        task: TaskId,
         paths: Vec<String>,
     },
-    CardBudget {
-        card: CardId,
+    TaskLimit {
+        task: TaskId,
         amount: f64,
     },
     Line {
-        line: BudgetLineKind,
+        line: LimitLineKind,
         share: f64,
     },
 }
 
-/// The graph and budget after your edits, and what changed.
+/// The graph and limit after your edits, and what changed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Edited {
     pub graph: TaskGraph,
-    pub budget: BudgetPlan,
-    pub owners: Vec<CardId>,
-    pub reviewers: Vec<CardId>,
-    pub budget_changed: bool,
+    pub limit: LimitPlan,
+    pub workers: Vec<TaskId>,
+    pub reviewers: Vec<TaskId>,
+    pub limit_changed: bool,
 }
 
 /// The edits in the note. A line that starts like an edit but doesn't parse is an error, so a
@@ -71,7 +71,7 @@ pub fn parse(note: &str) -> Result<Vec<Edit>, String> {
         let rest = words.next().unwrap_or("").trim();
         let keyword = second.trim_end_matches(':').to_ascii_lowercase();
         if first.eq_ignore_ascii_case("limit") {
-            let Some(line_kind) = budget_lines::line_named(second.trim_end_matches(':')) else {
+            let Some(line_kind) = limit_lines::line_named(second.trim_end_matches(':')) else {
                 continue;
             };
             let share = number(rest, line)?;
@@ -81,30 +81,30 @@ pub fn parse(note: &str) -> Result<Vec<Edit>, String> {
             });
             continue;
         }
-        if !looks_like_card(first)
+        if !looks_like_task(first)
             || !matches!(keyword.as_str(), "worker" | "reviewers" | "paths" | "limit")
         {
             continue;
         }
-        let card = CardId::new(first).map_err(|_| format!("`{first}` isn't a task id."))?;
+        let task = TaskId::new(first).map_err(|_| format!("`{first}` isn't a task id."))?;
         let edit = match keyword.as_str() {
-            "worker" => Edit::Owner {
-                card,
+            "worker" => Edit::Worker {
+                task,
                 worker: worker(rest, line)?,
             },
             "reviewers" => Edit::Reviewers {
-                card,
+                task,
                 workers: list(rest)
                     .iter()
                     .map(|item| worker(item, line))
                     .collect::<Result<_, _>>()?,
             },
             "paths" => Edit::Paths {
-                card,
+                task,
                 paths: list(rest),
             },
-            _ => Edit::CardBudget {
-                card,
+            _ => Edit::TaskLimit {
+                task,
                 amount: number(rest, line)?,
             },
         };
@@ -114,48 +114,51 @@ pub fn parse(note: &str) -> Result<Vec<Edit>, String> {
 }
 
 /// Applies the edits and checks the result like a proposal. `Err` is the reason to reopen the
-/// checkpoint with.
+/// approval with.
 pub fn apply(
     graph: &TaskGraph,
-    budget: &BudgetPlan,
+    limit: &LimitPlan,
     edits: &[Edit],
     settings: &Settings,
-    family: &dyn Fn(&WorkerRef) -> String,
+    provider: &dyn Fn(&ModelRef) -> String,
 ) -> Result<Edited, String> {
-    let mut cards = graph.cards.clone();
-    let mut budget = budget.clone();
-    let (mut owners, mut reviewers, mut budget_changed) = (Vec::new(), Vec::new(), false);
-    let owner_pool = roles::candidates(settings, RoleName::Worker);
+    let mut tasks = graph.tasks.clone();
+    let mut limit = limit.clone();
+    let (mut workers, mut reviewers, mut limit_changed) = (Vec::new(), Vec::new(), false);
+    let worker_pool = roles::candidates(settings, RoleName::Worker);
     let reviewer_pool = roles::candidates(settings, RoleName::Reviewer);
     for edit in edits {
         match edit {
-            Edit::Owner { card, worker } => {
-                if !owner_pool.contains(worker) {
-                    return Err(format!("{worker} isn't one of the worker candidates."));
+            Edit::Worker {
+                task,
+                worker: model,
+            } => {
+                if !worker_pool.contains(model) {
+                    return Err(format!("{model} isn't one of the worker candidates."));
                 }
-                find(&mut cards, card)?.owner = Some(worker.clone());
-                owners.push(card.clone());
+                find(&mut tasks, task)?.worker = Some(model.clone());
+                workers.push(task.clone());
             }
-            Edit::Reviewers { card, workers } => {
-                if let Some(worker) = workers.iter().find(|w| !reviewer_pool.contains(w)) {
-                    return Err(format!("{worker} isn't one of the reviewer candidates."));
+            Edit::Reviewers {
+                task,
+                workers: models,
+            } => {
+                if let Some(model) = models.iter().find(|w| !reviewer_pool.contains(w)) {
+                    return Err(format!("{model} isn't one of the reviewer candidates."));
                 }
-                find(&mut cards, card)?.reviewers.clone_from(workers);
-                reviewers.push(card.clone());
+                find(&mut tasks, task)?.reviewers.clone_from(models);
+                reviewers.push(task.clone());
             }
-            Edit::Paths { card, paths } => {
-                find(&mut cards, card)?.owned_paths.clone_from(paths);
+            Edit::Paths { task, paths } => {
+                find(&mut tasks, task)?.owned_paths.clone_from(paths);
             }
-            Edit::CardBudget { card, amount } => {
+            Edit::TaskLimit { task, amount } => {
                 if !amount.is_finite() || *amount <= 0.0 {
-                    return Err(format!("{card}'s limit must be more than 0."));
+                    return Err(format!("{task}'s limit must be more than 0."));
                 }
-                let spec = find(&mut cards, card)?;
-                let unit = spec
-                    .budget
-                    .limit
-                    .map_or(BudgetUnit::Usd, |limit| limit.unit);
-                spec.budget.limit = Some(BudgetAmount {
+                let spec = find(&mut tasks, task)?;
+                let unit = spec.limit.limit.map_or(LimitUnit::Usd, |limit| limit.unit);
+                spec.limit.limit = Some(LimitAmount {
                     unit,
                     amount: *amount,
                 });
@@ -164,26 +167,26 @@ pub fn apply(
                 if !(0.0..=1.0).contains(share) {
                     return Err(format!(
                         "The {} limit line's share must be between 0 and 1.",
-                        budget_lines::line_name(*line)
+                        limit_lines::line_name(*line)
                     ));
                 }
-                let total = budget.total.amount;
-                let entry = budget
+                let total = limit.total.amount;
+                let entry = limit
                     .lines
                     .iter_mut()
                     .find(|entry| entry.line == *line)
                     .ok_or_else(|| {
-                        format!("The plan has no {} line.", budget_lines::line_name(*line))
+                        format!("The plan has no {} line.", limit_lines::line_name(*line))
                     })?;
                 entry.amount.amount = total * share;
-                budget_changed = true;
+                limit_changed = true;
             }
         }
     }
-    follow_reviewers(&mut cards, &reviewers, &owners);
-    let mut broken = graph::rules(&cards, settings);
-    broken.extend(conflicts(&cards, settings, family));
-    if budget_changed && let Err(reason) = budget_lines::check(&budget) {
+    follow_reviewers(&mut tasks, &reviewers, &workers);
+    let mut broken = graph::rules(&tasks, settings);
+    broken.extend(conflicts(&tasks, settings, provider));
+    if limit_changed && let Err(reason) = limit_lines::check(&limit) {
         broken.push(reason);
     }
     if !broken.is_empty() {
@@ -192,12 +195,12 @@ pub fn apply(
     Ok(Edited {
         graph: TaskGraph {
             critical_path: graph.critical_path.clone(),
-            cards,
+            tasks,
         },
-        budget,
-        owners,
+        limit,
+        workers,
         reviewers,
-        budget_changed,
+        limit_changed,
     })
 }
 
@@ -213,65 +216,66 @@ pub fn decision(id: DecisionId, note: &str) -> DesignDecision {
     }
 }
 
-/// A test card is written by its card's first reviewer, so it follows a reviewer edit unless
-/// you set its owner yourself.
-fn follow_reviewers(cards: &mut [CardSpec], reviewed: &[CardId], owned: &[CardId]) {
-    let firsts: Vec<(CardId, WorkerRef)> = cards
+/// A test task is written by its task's first reviewer, so it follows a reviewer edit unless
+/// you set its worker yourself.
+fn follow_reviewers(tasks: &mut [TaskSpec], reviewed: &[TaskId], owned: &[TaskId]) {
+    let firsts: Vec<(TaskId, ModelRef)> = tasks
         .iter()
-        .filter(|card| reviewed.contains(&card.id))
-        .filter_map(|card| Some((card.id.clone(), card.reviewers.first()?.clone())))
+        .filter(|task| reviewed.contains(&task.id))
+        .filter_map(|task| Some((task.id.clone(), task.reviewers.first()?.clone())))
         .collect();
-    for card in cards.iter_mut() {
-        if let CardKind::AcceptanceTests { for_card } = &card.kind
-            && !owned.contains(&card.id)
-            && let Some((_, first)) = firsts.iter().find(|(id, _)| id == for_card)
+    for task in tasks.iter_mut() {
+        if let TaskKind::AcceptanceTests { for_task } = &task.kind
+            && !owned.contains(&task.id)
+            && let Some((_, first)) = firsts.iter().find(|(id, _)| id == for_task)
         {
-            card.owner = Some(first.clone());
+            task.worker = Some(first.clone());
         }
     }
 }
 
 fn conflicts(
-    cards: &[CardSpec],
+    tasks: &[TaskSpec],
     settings: &Settings,
-    family: &dyn Fn(&WorkerRef) -> String,
+    provider: &dyn Fn(&ModelRef) -> String,
 ) -> Vec<String> {
     let mut broken = Vec::new();
-    for card in cards {
-        let Some(owner) = &card.owner else { continue };
-        for reviewer in &card.reviewers {
-            if let Some(reason) = roles::conflict(RoleName::Reviewer, reviewer, Some(owner), family)
+    for task in tasks {
+        let Some(worker) = &task.worker else { continue };
+        for reviewer in &task.reviewers {
+            if let Some(reason) =
+                roles::conflict(RoleName::Reviewer, reviewer, Some(worker), provider)
             {
-                broken.push(format!("{reason} ({}).", card.id));
-            } else if settings.review.other_provider && family(reviewer) == family(owner) {
+                broken.push(format!("{reason} ({}).", task.id));
+            } else if settings.review.other_provider && provider(reviewer) == provider(worker) {
                 broken.push(format!(
-                    "{reviewer} is in the same provider as {owner}, {}'s worker.",
-                    card.id
+                    "{reviewer} is in the same provider as {worker}, {}'s worker.",
+                    task.id
                 ));
             }
         }
-        if let CardKind::AcceptanceTests { for_card } = &card.kind
-            && let Some(tested) = cards.iter().find(|c| &c.id == for_card)
-            && let Some(tested_owner) = &tested.owner
-            && roles::conflict(RoleName::Reviewer, owner, Some(tested_owner), family).is_some()
+        if let TaskKind::AcceptanceTests { for_task } = &task.kind
+            && let Some(tested) = tasks.iter().find(|c| &c.id == for_task)
+            && let Some(tested_worker) = &tested.worker
+            && roles::conflict(RoleName::Reviewer, worker, Some(tested_worker), provider).is_some()
         {
             broken.push(format!(
-                "{} can't write the acceptance tests for its own task {for_card}.",
-                roles::display_name(owner)
+                "{} can't write the acceptance tests for its own task {for_task}.",
+                roles::display_name(worker)
             ));
         }
     }
     broken
 }
 
-fn find<'a>(cards: &'a mut [CardSpec], id: &CardId) -> Result<&'a mut CardSpec, String> {
-    cards
+fn find<'a>(tasks: &'a mut [TaskSpec], id: &TaskId) -> Result<&'a mut TaskSpec, String> {
+    tasks
         .iter_mut()
-        .find(|card| &card.id == id)
+        .find(|task| &task.id == id)
         .ok_or_else(|| format!("There's no {id} in the plan."))
 }
 
-fn looks_like_card(word: &str) -> bool {
+fn looks_like_task(word: &str) -> bool {
     word.split_once('-').is_some_and(|(prefix, number)| {
         !prefix.is_empty()
             && prefix.chars().all(|c| c.is_ascii_lowercase())
@@ -287,7 +291,7 @@ fn list(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn worker(text: &str, line: &str) -> Result<WorkerRef, String> {
+fn worker(text: &str, line: &str) -> Result<ModelRef, String> {
     text.trim()
         .parse()
         .map_err(|_| format!("\"{line}\" doesn't name an agent."))
@@ -302,22 +306,22 @@ fn number(text: &str, line: &str) -> Result<f64, String> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::card::CardBudget;
-    use argonauts_core::events::plan::BudgetLine;
+    use argonauts_core::events::plan::LimitLine;
+    use argonauts_core::events::task::TaskLimit;
 
     use super::*;
 
-    fn worker(text: &str) -> WorkerRef {
+    fn worker(text: &str) -> ModelRef {
         text.parse().unwrap()
     }
 
-    fn family(worker: &WorkerRef) -> String {
-        worker.worker.clone()
+    fn provider(worker: &ModelRef) -> String {
+        worker.agent.clone()
     }
 
-    fn spec(id: &str, kind: CardKind, owned: &str, owner: &str, reviewer: &str) -> CardSpec {
-        CardSpec {
-            id: CardId::new(id).unwrap(),
+    fn spec(id: &str, kind: TaskKind, owned: &str, who: &str, reviewer: &str) -> TaskSpec {
+        TaskSpec {
+            id: TaskId::new(id).unwrap(),
             title: id.to_owned(),
             task: id.to_owned(),
             kind,
@@ -327,24 +331,24 @@ mod tests {
             hidden_paths: Vec::new(),
             depends_on: Vec::new(),
             criteria: Vec::new(),
-            owner: Some(worker(owner)),
+            worker: Some(worker(who)),
             reviewers: vec![worker(reviewer)],
-            budget: CardBudget::default(),
+            limit: TaskLimit::default(),
             predictions: None,
             item: None,
         }
     }
 
-    fn fixture() -> (TaskGraph, BudgetPlan, Settings) {
+    fn fixture() -> (TaskGraph, LimitPlan, Settings) {
         let settings = Settings {
             crew: vec![worker("claude-code"), worker("codex"), worker("agy")].into(),
             ..Settings::default()
         };
-        let tests = CardKind::AcceptanceTests {
-            for_card: CardId::numbered(1),
+        let tests = TaskKind::AcceptanceTests {
+            for_task: TaskId::numbered(1),
         };
         let graph = TaskGraph {
-            cards: vec![
+            tasks: vec![
                 spec(
                     "test-002",
                     tests,
@@ -354,7 +358,7 @@ mod tests {
                 ),
                 spec(
                     "task-001",
-                    CardKind::Build,
+                    TaskKind::Build,
                     "src/store/**",
                     "claude-code",
                     "codex",
@@ -362,24 +366,24 @@ mod tests {
             ],
             critical_path: Vec::new(),
         };
-        let budget = BudgetPlan {
-            lines: [(BudgetLineKind::Cards, 6.0), (BudgetLineKind::Reserve, 4.0)]
-                .map(|(line, amount)| BudgetLine {
+        let limit = LimitPlan {
+            lines: [(LimitLineKind::Tasks, 6.0), (LimitLineKind::Reserve, 4.0)]
+                .map(|(line, amount)| LimitLine {
                     line,
-                    amount: BudgetAmount {
-                        unit: BudgetUnit::Usd,
+                    amount: LimitAmount {
+                        unit: LimitUnit::Usd,
                         amount,
                     },
                 })
                 .to_vec(),
-            total: BudgetAmount {
-                unit: BudgetUnit::Usd,
+            total: LimitAmount {
+                unit: LimitUnit::Usd,
                 amount: 10.0,
             },
             estimate_low: 5.0,
             estimate_high: 9.0,
         };
-        (graph, budget, settings)
+        (graph, limit, settings)
     }
 
     #[test]
@@ -389,20 +393,20 @@ mod tests {
         assert_eq!(
             edits,
             [
-                Edit::Owner {
-                    card: CardId::numbered(1),
+                Edit::Worker {
+                    task: TaskId::numbered(1),
                     worker: worker("codex")
                 },
                 Edit::Paths {
-                    card: CardId::numbered(1),
+                    task: TaskId::numbered(1),
                     paths: vec!["src/store/**".to_owned(), "src/cache.rs".to_owned()]
                 },
                 Edit::Line {
-                    line: BudgetLineKind::Cards,
+                    line: LimitLineKind::Tasks,
                     share: 0.5
                 },
-                Edit::CardBudget {
-                    card: CardId::new("test-002").unwrap(),
+                Edit::TaskLimit {
+                    task: TaskId::new("test-002").unwrap(),
                     amount: 2.0
                 },
             ]
@@ -412,11 +416,11 @@ mod tests {
 
     #[test]
     fn edits_are_checked_like_a_proposal() {
-        let (graph, budget, settings) = fixture();
+        let (graph, limit, settings) = fixture();
         let try_edit =
-            |note: &str| apply(&graph, &budget, &parse(note).unwrap(), &settings, &family);
+            |note: &str| apply(&graph, &limit, &parse(note).unwrap(), &settings, &provider);
 
-        // The test card follows its card's new reviewer, and then needs another reviewer.
+        // The test task follows its task's new reviewer, and then needs another reviewer.
         let reason = try_edit("task-001 reviewers agy").unwrap_err();
         assert!(
             reason.contains("agy can't review its own task (test-002)"),
@@ -424,18 +428,18 @@ mod tests {
         );
         let edited =
             try_edit("task-001 reviewers agy\ntest-002 reviewers codex\ntask-001 limit 4").unwrap();
-        let tests = &edited.graph.cards[0];
+        let tests = &edited.graph.tasks[0];
         assert_eq!(
-            tests.owner,
+            tests.worker,
             Some(worker("agy")),
             "the test task follows the reviewer"
         );
         assert_eq!(
             edited.reviewers,
-            [CardId::numbered(1), CardId::new("test-002").unwrap()]
+            [TaskId::numbered(1), TaskId::new("test-002").unwrap()]
         );
-        assert_eq!(edited.graph.cards[1].budget.limit.unwrap().amount, 4.0);
-        assert!(!edited.budget_changed);
+        assert_eq!(edited.graph.tasks[1].limit.limit.unwrap().amount, 4.0);
+        assert!(!edited.limit_changed);
 
         let reason = try_edit("task-001 worker codex").unwrap_err();
         assert!(
@@ -447,8 +451,8 @@ mod tests {
             "{reason}"
         );
         assert_eq!(
-            try_edit("task-001 worker agy").unwrap().owners,
-            [CardId::numbered(1)]
+            try_edit("task-001 worker agy").unwrap().workers,
+            [TaskId::numbered(1)]
         );
         let reason = try_edit("task-001 paths tests/acceptance/**").unwrap_err();
         assert!(reason.contains("overlap"), "{reason}");
@@ -460,7 +464,7 @@ mod tests {
         assert!(
             try_edit("limit tasks 0.7\nlimit reserve 0.3")
                 .unwrap()
-                .budget_changed
+                .limit_changed
         );
         assert!(
             try_edit("task-009 worker agy")

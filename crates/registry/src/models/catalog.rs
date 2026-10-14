@@ -1,5 +1,5 @@
 //! The model catalog's layers, each later one winning field by field: the catalog shipped in
-//! `catalog/models.toml`, the copy of that file on Argonauts' main branch fetched once a day
+//! `catalog/models.toml`, the copy of that file on Argonauts Code's main branch fetched once a day
 //! and checked against the hash published next to it, what the CLIs say of their own models,
 //! and your own `models.toml`.
 
@@ -92,7 +92,7 @@ pub fn parse_catalog(text: &str) -> Result<ModelCatalog, String> {
 fn check_catalog(catalog: &ModelCatalog) -> Result<(), String> {
     if catalog.version > CATALOG_VERSION {
         return Err(format!(
-            "its format {} is newer than this Argonauts reads ({CATALOG_VERSION})",
+            "its format {} is newer than this Argonauts Code reads ({CATALOG_VERSION})",
             catalog.version
         ));
     }
@@ -185,24 +185,24 @@ pub fn cli_layer(discovered: &[ModelEntry]) -> ModelCatalog {
     let mut counts: Vec<(&str, u32)> = Vec::new();
     for entry in discovered
         .iter()
-        .filter(|entry| entry.kind == RegistryKind::Harness)
+        .filter(|entry| entry.kind == RegistryKind::Cli)
     {
         let Some(mut layer) = CatalogEntry::from_cli(entry) else {
             continue;
         };
-        let harness = entry.id.worker.as_str();
-        let rank = match counts.iter_mut().find(|(id, _)| *id == harness) {
+        let cli = entry.id.agent.as_str();
+        let rank = match counts.iter_mut().find(|(id, _)| *id == cli) {
             Some((_, count)) => {
                 *count += 1;
                 *count
             }
             None => {
-                counts.push((harness, 1));
+                counts.push((cli, 1));
                 1
             }
         };
         layer.rank = Some(rank);
-        layer.efforts = if entry.efforts.is_empty() && names_every_level(harness) {
+        layer.efforts = if entry.efforts.is_empty() && names_every_level(cli) {
             Some(Vec::new())
         } else {
             (!entry.efforts.is_empty()).then(|| entry.efforts.clone())
@@ -216,8 +216,8 @@ pub fn cli_layer(discovered: &[ModelEntry]) -> ModelCatalog {
 /// agy names each level it runs as a model of its own, so a model it lists without one takes
 /// none, until a recording shows its `--effort` works for one. Its known "--effort is not
 /// supported for the current model" error says as much.
-fn names_every_level(harness: &str) -> bool {
-    harness == "antigravity-cli"
+fn names_every_level(cli: &str) -> bool {
+    cli == "antigravity-cli"
 }
 
 /// One `models.toml`: what each whole `[[model]]` says of names, descriptions, levels, and

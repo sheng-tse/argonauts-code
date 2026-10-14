@@ -12,8 +12,8 @@ use super::Cx;
 use super::status::{apply_keys, verb_style};
 
 /// Applies `AppEvent::UiSettings`: theme, accent, color, motion, glyphs, ambiguous width, verbs,
-/// keys, the live area's share, and the panel settings. The bridge keeps the section itself for the parts
-/// that read it as they draw, such as `turn_duration` and `bell`.
+/// keys, the live area's share, and the panel settings. The bridge keeps the section itself for the
+/// parts that read it as they draw, such as `turn_duration` and `bell`.
 pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>) {
     let AppEvent::UiSettings { vim, ui, .. } = event else {
         return;
@@ -24,7 +24,7 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>) {
         let keys = if *vim {
             KeyScheme::Vim
         } else {
-            KeyScheme::Standard
+            KeyScheme::Default
         };
         apply_keys(&mut cx.model.bottom.mode, keys);
         return;

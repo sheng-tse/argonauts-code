@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-core"
-description = "Shared types, traits, event log, config, and budget meter for Argonauts."
+description = "Shared types, traits, event log, config, and spend meter for Argonauts Code."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

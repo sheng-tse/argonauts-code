@@ -22,7 +22,7 @@ impl RoleShell {
     /// A role's shell when its settings name none: the checks for those who judge the work.
     pub fn default_for(role: RoleName) -> Self {
         match role {
-            RoleName::Reviewer | RoleName::Judge | RoleName::Adjudicator => Self::Checks,
+            RoleName::Reviewer | RoleName::Judge => Self::Checks,
             _ => Self::None,
         }
     }

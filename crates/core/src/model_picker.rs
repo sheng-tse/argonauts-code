@@ -4,14 +4,14 @@
 use serde::{Deserialize, Serialize};
 
 use crate::app::ModelChoice;
-use crate::names::{RoleName, WorkerRef};
+use crate::names::{ModelRef, RoleName};
 
 /// One CLI's or endpoint's models, as Claude Code's picker lists them: Default first, then the
 /// models in the controller's order (newest first), with the aliases on one line under Default.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelsLevel {
     /// Adapter or endpoint id.
-    pub harness: String,
+    pub cli: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<ModelChoice>,
     pub models: Vec<ModelChoice>,
@@ -20,18 +20,15 @@ pub struct ModelsLevel {
 }
 
 impl ModelsLevel {
-    /// The choices of `harness` from `ViewData::Models`, keeping their order.
-    pub fn new(harness: &str, choices: &[ModelChoice]) -> Self {
+    /// The choices of `cli` from `ViewData::Models`, keeping their order.
+    pub fn new(cli: &str, choices: &[ModelChoice]) -> Self {
         let mut level = Self {
-            harness: harness.to_owned(),
+            cli: cli.to_owned(),
             default: None,
             models: Vec::new(),
             aliases: Vec::new(),
         };
-        for choice in choices
-            .iter()
-            .filter(|choice| choice.worker.worker == harness)
-        {
+        for choice in choices.iter().filter(|choice| choice.worker.agent == cli) {
             if choice.worker.model.is_none() {
                 level.default.get_or_insert_with(|| choice.clone());
             } else if choice.alias {
@@ -132,19 +129,19 @@ impl EffortLine {
     }
 }
 
-/// `/effort`'s slider for the default agent or a role: the model's levels from "Faster" to
+/// `/effort`'s slider for the main agent or a role: the model's levels from "Faster" to
 /// "Smarter", a marker over the chosen one, and a line on what it means.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffortSlider {
-    /// The default agent when `None`.
+    /// The main agent when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<RoleName>,
     /// The model whose levels these are.
-    pub worker: WorkerRef,
+    pub worker: ModelRef,
     /// Its display name.
     pub model: String,
-    /// Lowest first. Empty only on the default agent's view of a model that takes no effort
-    /// setting, which opens for All hands alone.
+    /// Lowest first. Empty only on the main agent's view of a model that takes no effort
+    /// setting, which opens for Ultracode alone.
     pub stops: Vec<EffortStop>,
     pub chosen: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -153,7 +150,7 @@ pub struct EffortSlider {
     /// only starts in the middle. Moving it clears this.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cli_default: bool,
-    /// The All hands toggle beside the slider, which Tab flips. Only the default agent's
+    /// The Ultracode toggle beside the slider, which Tab flips. Only the main agent's
     /// slider offers it, since it decides how every task runs, not how one role thinks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ultracode: Option<UltracodeToggle>,
@@ -195,7 +192,7 @@ impl EffortSlider {
     /// `None` when the model has no levels.
     pub fn new(
         role: Option<RoleName>,
-        worker: WorkerRef,
+        worker: ModelRef,
         model: impl Into<String>,
         stops: Vec<EffortStop>,
         default: Option<&str>,
@@ -221,11 +218,11 @@ impl EffortSlider {
         })
     }
 
-    /// The default agent's view when its model takes no effort setting, so All hands still has
+    /// The main agent's view when its model takes no effort setting, so Ultracode still has
     /// somewhere to be.
     pub fn without_levels(
         role: Option<RoleName>,
-        worker: WorkerRef,
+        worker: ModelRef,
         model: impl Into<String>,
     ) -> Self {
         Self {
@@ -240,7 +237,7 @@ impl EffortSlider {
         }
     }
 
-    /// Offers the All hands toggle, as it is now.
+    /// Offers the Ultracode toggle, as it is now.
     pub fn with_ultracode(self, on: bool) -> Self {
         Self {
             ultracode: Some(UltracodeToggle::new(on)),
@@ -312,8 +309,8 @@ mod tests {
 
     fn choice(worker: &str) -> ModelChoice {
         serde_json::from_value(json!({
-            "worker": worker, "family": "claude", "access": "subscription",
-            "cost": {"unit": "unknown"}, "quota": null, "efforts": [], "strengths": []
+            "worker": worker, "provider": "anthropic", "access": "subscription",
+            "cost": {"unit": "unknown"}, "plan_usage": null, "efforts": [], "strengths": []
         }))
         .unwrap()
     }
@@ -414,7 +411,7 @@ mod tests {
                 description: format!("{level} effort"),
             })
             .collect();
-        let worker: WorkerRef = "claude-code/claude-opus-5-5".parse().unwrap();
+        let worker: ModelRef = "claude-code/claude-opus-5-5".parse().unwrap();
         let mut slider = EffortSlider::new(
             Some(RoleName::Reviewer),
             worker.clone(),
@@ -478,7 +475,7 @@ mod tests {
             level: "high".into(),
             description: String::new(),
         }];
-        let worker: WorkerRef = "antigravity-cli/gemini-3.8-flash-high".parse().unwrap();
+        let worker: ModelRef = "antigravity-cli/gemini-3.8-flash-high".parse().unwrap();
         let mut slider =
             EffortSlider::new(None, worker, "Gemini 3.8 Flash (High)", stops, None, None).unwrap();
         assert!(slider.is_fixed() && !slider.cli_default && !slider.moves());
@@ -486,11 +483,11 @@ mod tests {
         assert!(!slider.raise() && !slider.lower());
     }
 
-    /// Haiku takes no effort setting, so the default agent's view has no level, and the arrows
+    /// Haiku takes no effort setting, so the main agent's view has no level, and the arrows
     /// have nothing to move.
     #[test]
     fn a_model_with_no_levels_has_a_view_without_them() {
-        let worker: WorkerRef = "claude-code/haiku".parse().unwrap();
+        let worker: ModelRef = "claude-code/haiku".parse().unwrap();
         let mut view =
             EffortSlider::without_levels(None, worker, "Haiku 4.5").with_ultracode(false);
         assert_eq!((view.level(), view.description()), (None, None));

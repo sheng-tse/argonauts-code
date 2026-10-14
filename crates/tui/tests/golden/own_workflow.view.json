@@ -1,0 +1,126 @@
+{
+  "run": "run-20260930-101500-00ab",
+  "id": "wf-001",
+  "name": "Add due dates",
+  "description": "Tasks get a due date, shown in the list",
+  "style": "workflow",
+  "breadcrumb": [],
+  "agents_done": 2,
+  "agents_total": 3,
+  "elapsed_ms": 96000,
+  "spent": {
+    "input_tokens": 251000,
+    "output_tokens": 13100,
+    "cached_tokens": 0,
+    "cost_usd": 0.07,
+    "cost_partial": false,
+    "cost_estimated": false
+  },
+  "phases": [
+    {
+      "name": "Build",
+      "detail": "each agent on the model its role names",
+      "standard": "do",
+      "status": "done",
+      "count": {
+        "done": 1,
+        "total": 1
+      },
+      "rows": [
+        {
+          "row": "agent",
+          "session": "s-001",
+          "label": "build:add-due-dates",
+          "worker": "claude-code/claude-haiku-4-5",
+          "status": "done",
+          "tokens": 210000,
+          "spent": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cached_tokens": 0,
+            "cost_usd": 0.0,
+            "cost_partial": false,
+            "cost_estimated": false
+          },
+          "elapsed_ms": 69000,
+          "subagents": 0,
+          "context": null,
+          "fallback_for": null,
+          "inner": {
+            "workflow": "cli-wfduedates",
+            "index": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "Review",
+      "detail": "",
+      "standard": "do",
+      "status": "running",
+      "count": {
+        "done": 1,
+        "total": 2
+      },
+      "rows": [
+        {
+          "row": "agent",
+          "session": "s-002",
+          "label": "review:due-dates",
+          "worker": "codex/gpt-5.6-luna",
+          "status": "done",
+          "tokens": 17700,
+          "spent": {
+            "input_tokens": 16000,
+            "output_tokens": 1700,
+            "cached_tokens": 0,
+            "cost_usd": 0.0,
+            "cost_partial": false,
+            "cost_estimated": false
+          },
+          "elapsed_ms": 21000,
+          "subagents": 0,
+          "context": null,
+          "fallback_for": null,
+          "answered": true,
+          "note": {
+            "text": "sent it back",
+            "tone": "warn"
+          }
+        },
+        {
+          "row": "agent",
+          "session": "s-003",
+          "label": "final:due-dates",
+          "worker": "codex/gpt-5.6-luna",
+          "status": "running",
+          "tokens": 36400,
+          "spent": {
+            "input_tokens": 35000,
+            "output_tokens": 1400,
+            "cached_tokens": 0,
+            "cost_usd": 0.02,
+            "cost_partial": false,
+            "cost_estimated": false
+          },
+          "elapsed_ms": 15000,
+          "subagents": 0,
+          "context": null,
+          "fallback_for": null,
+          "answered": true
+        }
+      ]
+    },
+    {
+      "name": "Final",
+      "detail": "",
+      "standard": "do",
+      "status": "waiting",
+      "rows": []
+    }
+  ],
+  "notes": [
+    "orchestrator workflow"
+  ],
+  "worker": "claude-code"
+}

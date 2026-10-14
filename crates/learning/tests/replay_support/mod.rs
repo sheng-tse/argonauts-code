@@ -1,5 +1,5 @@
 //! Shared helpers for the replay tests: your repository with merged tasks and the journals of
-//! the runs that merged them, gates that run a test command for real, and a runner that plays
+//! the runs that merged them, checks that run a test command for real, and a runner that plays
 //! the agents from a script. Each `tests/replay_*.rs` file includes it with
 //! `mod replay_support;`.
 #![allow(dead_code)]
@@ -13,22 +13,22 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use argonauts_core::budget::Spend;
-use argonauts_core::events::card::GateKind;
+use argonauts_core::events::agent_status::RunSpend;
 use argonauts_core::events::run::{RunMode, RunStarted};
-use argonauts_core::events::vendor::RunBudget;
+use argonauts_core::events::task::CheckKind;
 use argonauts_core::events::{
-    BudgetEvent, GateOutcome, IntegrationEvent, ReviewEvent, RunEvent, RunEventKind, RunLifecycle,
+    CheckOutcome, MergeEvent, ReviewEvent, RunEvent, RunEventKind, RunLifecycle, SpendEvent,
 };
 use argonauts_core::future::BoxFuture;
-use argonauts_core::limits::{GateRequest, GateRunner};
-use argonauts_core::names::WorkerRef;
+use argonauts_core::limits::{CheckRequest, CheckRunner};
+use argonauts_core::meter::Spend;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::agents::EndpointSettings;
 use argonauts_core::steps::intake::ChangeEstimate;
-use argonauts_core::{CardId, RunId};
+use argonauts_core::{RunId, TaskId};
 use argonauts_learning::git;
-use argonauts_learning::recipes::{LoadedRecipe, Match, Recipe};
+use argonauts_learning::learned_workflows::{LearnedWorkflow, LoadedLearnedWorkflow, Match};
 use argonauts_learning::replay::{
     Entry, Proposal, ReplayRequest, ReplayRun, ReplayRunner, ReplaySet, holdout_draw,
 };
@@ -42,7 +42,7 @@ pub const IDENTITY: [(&str, &str); 4] = [
     ("GIT_COMMITTER_EMAIL", "agent@argonauts.invalid"),
 ];
 
-/// What each run of the fixture spent, and so each entry's replay budget.
+/// What each run of the fixture spent, and so each entry's replay limit.
 pub const RUN_SPEND_USD: f64 = 1.0;
 
 /// A task that merged: the commits on either side and what solved it.
@@ -130,10 +130,13 @@ impl Fixture {
         &self,
         task: &Task,
         settings: &Settings,
-        gates: &Arc<ShellGates>,
+        checks: &Arc<ShellChecks>,
     ) -> Option<Proposal> {
-        let gates: Arc<dyn GateRunner> = gates.clone();
-        self.set.consider(&task.run, settings, gates).await.unwrap()
+        let checks: Arc<dyn CheckRunner> = checks.clone();
+        self.set
+            .consider(&task.run, settings, checks)
+            .await
+            .unwrap()
     }
 
     /// Considers every task under `ask` and accepts each with a seed that draws `holdout`.
@@ -141,11 +144,11 @@ impl Fixture {
         let mut asking = settings.clone();
         asking.evolution.replay.accept_entries =
             argonauts_core::settings::evolution::EntryAcceptance::Ask;
-        let gates = Arc::new(ShellGates::default());
+        let checks = Arc::new(ShellChecks::default());
         let share = holdout_share(settings);
         let mut entries = Vec::new();
         for (task, holdout) in tasks {
-            let proposal = self.consider(task, &asking, &gates).await.unwrap();
+            let proposal = self.consider(task, &asking, &checks).await.unwrap();
             assert!(proposal.valid(), "{:?}", proposal.checks);
             entries.push(
                 self.set
@@ -172,8 +175,8 @@ impl Fixture {
                 tests_exist: true,
                 unknowns: Vec::new(),
             }),
-            triage: None,
-            chat_turn: None,
+            captain_or_crew: None,
+            conversation_turn: None,
             continues: None,
             repo_root: self.repo.root().to_path_buf(),
             base_branch: Some("main".to_owned()),
@@ -183,22 +186,22 @@ impl Fixture {
             settings_sha256: String::new(),
             settings: Value::Null,
             overrides: Vec::new(),
-            harness_versions: BTreeMap::new(),
+            cli_versions: BTreeMap::new(),
             version: "0.0.1".to_owned(),
-            front_end: None,
+            outside_agent: None,
             instructions: Vec::new(),
             required_steps: Vec::new(),
         };
         let kinds = vec![
             RunEventKind::Run(RunLifecycle::Started(Box::new(started))),
             RunEventKind::Review(ReviewEvent::TestsWritten {
-                reviewer: WorkerRef::new("codex", None),
-                for_card: CardId::numbered(1),
+                reviewer: ModelRef::new("codex", None),
+                for_task: TaskId::numbered(1),
                 files: vec![test.to_owned()],
             }),
-            RunEventKind::Gate(GateOutcome {
+            RunEventKind::Check(CheckOutcome {
                 name: "suite".to_owned(),
-                kind: GateKind::FullSuite,
+                kind: CheckKind::FullSuite,
                 passed: true,
                 command: Some(vec!["sh".to_owned(), test.to_owned()]),
                 exit_code: Some(0),
@@ -209,7 +212,7 @@ impl Fixture {
                 sandboxed: true,
                 skipped: false,
             }),
-            RunEventKind::Budget(BudgetEvent::Run(RunBudget {
+            RunEventKind::Spend(SpendEvent::Run(RunSpend {
                 spent: Spend {
                     cost_usd: RUN_SPEND_USD,
                     ..Spend::default()
@@ -218,7 +221,7 @@ impl Fixture {
                 lines: Vec::new(),
                 reserve_left: None,
             })),
-            RunEventKind::Integration(IntegrationEvent::Landed {
+            RunEventKind::Merge(MergeEvent::RunMerged {
                 target: "main".to_owned(),
                 sha: merged.to_owned(),
                 fast_forward: true,
@@ -230,9 +233,9 @@ impl Fixture {
                 seq: seq as u64,
                 ts: OffsetDateTime::now_utc(),
                 run_id: run.clone(),
-                card_id: None,
+                task_id: None,
                 session: None,
-                source: "conductor".to_owned(),
+                source: "argonauts-code".to_owned(),
                 kind,
             };
             lines.push_str(&serde_json::to_string(&event).unwrap());
@@ -247,7 +250,7 @@ impl Fixture {
 /// Settings whose one worker is an endpoint you allowed to bill, so replays may run.
 pub fn settings() -> Settings {
     let mut settings = Settings::default();
-    let worker = WorkerRef::new("openrouter", Some("open-model".to_owned()));
+    let worker = ModelRef::new("openrouter", Some("open-model".to_owned()));
     settings.endpoints.insert(
         "openrouter".to_owned(),
         EndpointSettings {
@@ -256,7 +259,7 @@ pub fn settings() -> Settings {
         },
     );
     settings.crew = vec![worker.clone()].into();
-    settings.main_agent = worker;
+    settings.crew.main = worker;
     settings
 }
 
@@ -272,11 +275,11 @@ pub fn seed_for(holdout: bool, share: f64) -> u64 {
         .unwrap()
 }
 
-pub fn recipe(version: u32, settings: Value) -> LoadedRecipe {
+pub fn learned_workflow(version: u32, settings: Value) -> LoadedLearnedWorkflow {
     let settings: BTreeMap<String, Value> = serde_json::from_value(settings).unwrap();
-    LoadedRecipe {
-        recipe: Recipe {
-            recipe: "api-feature".to_owned(),
+    LoadedLearnedWorkflow {
+        learned_workflow: LearnedWorkflow {
+            name: "api-feature".to_owned(),
             version,
             parent: version.checked_sub(1).filter(|&parent| parent > 0),
             description: "Endpoints with tests".to_owned(),
@@ -318,21 +321,21 @@ pub fn files_under(dir: &Path) -> Vec<String> {
     found
 }
 
-/// Runs each gate's command in its folder, without a sandbox, and records what it was asked,
+/// Runs each check's command in its folder, without a sandbox, and records what it was asked,
 /// with the files the folder held while the command ran.
 #[derive(Default)]
-pub struct ShellGates {
-    requests: Mutex<Vec<(GateRequest, Vec<String>)>>,
+pub struct ShellChecks {
+    requests: Mutex<Vec<(CheckRequest, Vec<String>)>>,
 }
 
-impl ShellGates {
-    pub fn requests(&self) -> Vec<(GateRequest, Vec<String>)> {
+impl ShellChecks {
+    pub fn requests(&self) -> Vec<(CheckRequest, Vec<String>)> {
         self.requests.lock().unwrap().clone()
     }
 }
 
-impl GateRunner for ShellGates {
-    fn run(&self, request: GateRequest) -> BoxFuture<'_, GateOutcome> {
+impl CheckRunner for ShellChecks {
+    fn run(&self, request: CheckRequest) -> BoxFuture<'_, CheckOutcome> {
         let output = request.command.split_first().map(|(program, args)| {
             Command::new(program)
                 .args(args)
@@ -344,9 +347,9 @@ impl GateRunner for ShellGates {
             .into_iter()
             .filter(|file| !file.starts_with(".git/"))
             .collect();
-        let outcome = GateOutcome {
+        let outcome = CheckOutcome {
             name: request.name.clone(),
-            kind: GateKind::Command,
+            kind: CheckKind::Command,
             passed,
             command: Some(request.command.clone()),
             exit_code: Some(i32::from(!passed)),
@@ -362,7 +365,7 @@ impl GateRunner for ShellGates {
     }
 }
 
-/// Whether a version passes a task, given the request and which attempt it is, from 1.
+/// Whether a version passes a task, given the request and which try it is, from 1.
 type Script = dyn Fn(&ReplayRequest, u32) -> bool + Send + Sync;
 
 /// Plays the agents: a version that passes commits the task's solution in the replay repo, and
@@ -377,7 +380,7 @@ pub struct ScriptedRunner {
 }
 
 impl ScriptedRunner {
-    /// `passes` gets the request and which attempt of that task and version it is, from 1.
+    /// `passes` gets the request and which try of that task and version it is, from 1.
     pub fn new(
         tasks: &[Task],
         passes: impl Fn(&ReplayRequest, u32) -> bool + Send + Sync + 'static,
@@ -400,14 +403,15 @@ impl ScriptedRunner {
     }
 
     fn play(&self, request: &ReplayRequest) -> Result<ReplayRun> {
-        let attempt = {
+        let try_number = {
             let mut requests = self.requests.lock().unwrap();
             requests.push(request.clone());
             requests
                 .iter()
                 .filter(|seen| {
                     seen.entry.id == request.entry.id
-                        && seen.recipe.recipe.version == request.recipe.recipe.version
+                        && seen.learned_workflow.learned_workflow.version
+                            == request.learned_workflow.learned_workflow.version
                 })
                 .count() as u32
         };
@@ -420,7 +424,7 @@ impl ScriptedRunner {
             self.saw_hidden.store(true, Ordering::SeqCst);
         }
         let repo = &request.repo;
-        if (self.passes)(request, attempt) {
+        if (self.passes)(request, try_number) {
             for (path, body) in &task.solution {
                 let path = repo.join(path);
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();

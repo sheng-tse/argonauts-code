@@ -1,0 +1,66 @@
+Every role in the crew: all together, then each one by itself                           By CLI    By model    By role 
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ◆ all roles  every day so far                     14 workflows · 63 tasks merged · 5.0M tokens · ~$11.20 · 12h 40m │
+│                                                                                                                    │
+│                                 tokens by role · 5.0M                                                              │
+│                                 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
+│                                 ■ main 0.5M 10%  ■ orchestrator 0.6M 12%  ■ workers 3.0M 60%                       │
+│                                 ■ reviewers 0.6M 12%  ■ judge 0.12M 2%  ■ merger 0.18M 4%                          │
+│                                                                                                                    │
+│                            ██   spend by role · ~$11.20                                                            │
+│                            ██   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
+│                   ██ ██ ██ ██   ■ main ~$1.10 10%  ■ orchestrator ~$1.40 13%  ■ workers ~$7.55 67%                 │
+│          ██    ██ ██ ██ ██ ██   ■ reviewers ~$0.65 6%  ■ judge ~$0.10 1%  ■ merger ~$0.40 3%                       │
+│    ██    ██ ██ ██ ██ ██ ██ ██                                                                                      │
+│ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██   agent time by role · 12h 40m                                                       │
+│ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
+│ ██ ██ ██ ██ ██ ██ ██ ██ ██ ██   ■ main 2h 24m 19%  ■ orchestrator 28m 4%  ■ workers 8h 57m 71%                     │
+│ Aug      Sep         Oct        ■ reviewers 41m 5%  ■ judge 3m  ■ merger 6m 1%                                     │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭────────────────────────────────────╮  ╭────────────────────────────────────╮  ╭────────────────────────────────────╮
+│ ■ main                    0.5M tok │  │ ■ orchestrator            0.6M tok │  │ ■ workers                 3.0M tok │
+│ 9 conversations · 1 model   ~$1.10 │  │ 14 workflows · 1 model      ~$1.40 │  │ 63 tasks · 4 models         ~$7.55 │
+│                                    │  │                                    │  │                                    │
+│ ■ Opus 5.5         ━━━━ 0.5M · 9   │  │ ■ Opus 5.5         ━━━━ 0.6M · 14  │  │ ■ Opus 5.5         ━━━━ 0.82M · 24 │
+│                                    │  │                                    │  │ ■ Sonnet 5.5       ━━━━ 0.8M · 11  │
+│                                    │  │                                    │  │ ■ GPT 5.6          ━━━━ 1.03M · 21 │
+│                                    │  │                                    │  │ ■ GPT 5.6 Luna     ━━━━ 0.35M · 7  │
+│                                    │  │                                    │  │                                    │
+│ turns    61 in 9 · 7 each          │  │ runs     ▪▪▪▪▪▪▪▪▪▪ 93% merged     │  │ tasks    ▪▪▪▪▪▪▪▪▪▪ 92% first pass │
+│ handed   14 runs to the crew       │  │ plans    14 · 4.5 tasks a plan     │  │ returns  6 · most: a test missing  │
+│ ▂▃▁▃▄▂▃▄▅▆ weeks · 16m each        │  │ ▁▂▁▂▃▁▂▃▃▄ weeks · 2m a plan       │  │ ▃▅▂▄▇▁▃▅▆█ weeks · 8m 31s a task   │
+│ Opus 5.5 · $0.12 a conversation    │  │ replanned once · $0.10 a plan      │  │ best first pass: Opus 5.5, 96%     │
+╰────────────────────────────────────╯  ╰────────────────────────────────────╯  ╰────────────────────────────────────╯
+
+╭────────────────────────────────────╮  ╭────────────────────────────────────╮  ╭────────────────────────────────────╮
+│ ■ reviewers               0.6M tok │  │ ■ judge                  0.12M tok │  │ ■ merger                 0.18M tok │
+│ 63 reviews · 2 models       ~$0.65 │  │ 14 sign-offs · 1 model      ~$0.10 │  │ 14 merges · 1 model         ~$0.40 │
+│                                    │  │                                    │  │                                    │
+│ ■ GPT 5.6          ━━━━ 0.17M · 14 │  │ ■ Gemini 3.6 Flash ━━━━ 0.12M · 14 │  │ ■ Opus 5.5         ━━━━ 0.18M · 14 │
+│ ■ Gemini 3.6 Pro   ━━━━ 0.43M · 49 │  │                                    │  │                                    │
+│                                    │  │                                    │  │                                    │
+│ reviews  ▪▪▪▪▪▪▪▪▪▪ 90% accepted   │  │ signed   ▪▪▪▪▪▪▪▪▪▪ 100% passed    │  │ merges   ▪▪▪▪▪▪▪▪▪▪ 79% clean      │
+│ caught   6 tasks to send back      │  │ rulings  2 · one each way          │  │ settled  3 conflicts · 0 failed    │
+│ ▂▃▁▃▄▁▂▃▄▅ weeks · 39s a review    │  │ ▁▁▁▂▂▁▁▂▂▃ weeks · 11s a sign-off  │  │ ▁▂▁▂▂▁▂▂▃▃ weeks · 26s a merge     │
+│ most accepted: Gemini 3.6 Pro      │  │ Gemini 3.6 Flash · $0.007 each     │  │ Opus 5.5 · $0.03 a merge           │
+╰────────────────────────────────────╯  ╰────────────────────────────────────╯  ╰────────────────────────────────────╯
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ◆ what each role caught or changed                       every send-back, ruling and conflict · enter opens a role │
+│                                                                                                                    │
+│ orchestrator    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
+│                 ■ ran as planned 13   ■ replanned 1   of 14 runs                                                   │
+│                                                                                                                    │
+│ reviewers       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
+│                 ■ a test missing 3   ■ wrong rounding 2   ■ style 1   of 6 sent back                               │
+│                                                                                                                    │
+│ judge           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
+│                 ■ sided with the worker 1   ■ with the reviewer 1   of 2 rulings · 14 sign-offs, none refused      │
+│                                                                                                                    │
+│ merger          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
+│                 ■ no conflict 11   ■ settled a conflict 3   of 14 merges · checks passed after every one           │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+r to cycle dates · tab By CLI, By model, By role · ↓ into the cards · enter opens a role · esc closes

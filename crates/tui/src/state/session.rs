@@ -1,32 +1,32 @@
 use argonauts_core::AgentEvent;
 use argonauts_core::events::session::{
-    EndReason, FileDiff, QueuedMessage, SessionEnd, SessionInput, SessionStarted, SubagentUpdate,
-    VendorWorkflow,
+    CliWorkflowRun, EndReason, FileDiff, QueuedMessage, SessionEnd, SessionInput, SessionStarted,
+    SubagentUpdate,
 };
-use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName, SessionKey};
 use argonauts_core::settings::sessions::SessionSettings;
 use argonauts_core::steps::StepName;
 use argonauts_core::views::ContextUse;
 use argonauts_core::workflow::StepRef;
-use argonauts_core::{CardId, ErrorCategory, RetryReason, TodoItem};
+use argonauts_core::{ErrorCategory, RetryReason, TaskId, TodoItem};
 use time::OffsetDateTime;
 
-/// One agent session of a run, everything the live block, the panel, the crew view, and the
+/// One agent session of a run, everything the live block, the panel, the agent panel, and the
 /// session view show about it.
 #[derive(Debug, Clone)]
 pub struct SessionState {
     pub key: SessionKey,
     /// 1 to 9, the key that opens its session view.
     pub follow: Option<u8>,
-    pub worker: WorkerRef,
+    pub worker: ModelRef,
     /// Its model is its CLI's default as the catalog has it, which the model it reports replaces.
     pub model_assumed: bool,
     /// Adapter or endpoint id, such as `claude-code` or `ollama`.
-    pub vendor: String,
+    pub agent_id: String,
     pub role: RoleName,
-    /// The step it runs, which tells an owner's forecast for its card from building it.
+    /// The step it runs, which tells a worker's forecast for its task from building it.
     pub step: Option<StepName>,
-    pub card: Option<CardId>,
+    pub task: Option<TaskId>,
     pub workflow_step: Option<StepRef>,
     /// The run's name for it, such as `fix:slugify`. A log from before labels has none.
     pub label: Option<String>,
@@ -41,7 +41,7 @@ pub struct SessionState {
     pub context: Option<ContextUse>,
     /// The model's whole window when the stream said, which can be larger than the cap.
     pub context_window: Option<u64>,
-    /// Fresh sessions it has rotated to (`Card::Attempt` with cause rotation).
+    /// Fresh sessions it has rotated to (`Task::Try` with cause rotation).
     pub rotations: u32,
     pub todos: Vec<TodoItem>,
     /// Every tool call, oldest first.
@@ -57,21 +57,21 @@ pub struct SessionState {
     /// The latest update per child, in first-seen order.
     pub subagents: Vec<SubagentUpdate>,
     /// Workflows the agent's own CLI runs, the latest state of each, in first-seen order.
-    pub workflows: Vec<VendorWorkflow>,
-    /// What Argonauts sent it (`Session::Input`), for the session view's input side.
+    pub workflows: Vec<CliWorkflowRun>,
+    /// What Argonauts Code sent it (`Session::Input`), for the session view's input side.
     pub inputs: Vec<SessionInput>,
     pub queued: Vec<QueuedMessage>,
     pub retry: Option<Retrying>,
-    pub standing_in_for: Option<WorkerRef>,
+    pub fallback_for: Option<ModelRef>,
     pub end: Option<Box<SessionEnd>>,
-    /// Vendor lines no parser understood, drawn as `? unknown event`.
+    /// Agent lines no parser understood, drawn as `? unknown event`.
     pub unknown: Vec<serde_json::Value>,
     /// What its last event says it's doing, for the working line's words.
     pub doing: Doing,
-    /// The conductor said its stream stalled, and nothing has come from it since.
+    /// Argonauts Code said its stream stalled, and nothing has come from it since.
     pub stalled: bool,
-    /// The vendor's own session id, for resuming.
-    pub vendor_session: Option<String>,
+    /// The agent's own session id, for resuming.
+    pub cli_session: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -79,7 +79,7 @@ pub enum SessionStatus {
     #[default]
     Starting,
     Working,
-    /// Waiting on other work, such as a card it depends on.
+    /// Waiting on other work, such as a task it depends on.
     Waiting,
     /// Waiting on a timer, such as a usage reset.
     Sleeping,
@@ -103,7 +103,7 @@ pub enum Doing {
 pub struct Retrying {
     pub reason: RetryReason,
     pub delay_ms: Option<u64>,
-    pub attempt: u32,
+    pub try_number: u32,
     pub since: OffsetDateTime,
 }
 
@@ -128,15 +128,15 @@ impl ToolRecord {
 }
 
 /// What a session does, as the live block, the started tree and the panel name it:
-/// `owner · card-002`. An owner forecasting its card runs before you approve the plan, so it's
-/// an `estimator` there; `owner` would read as if building had begun.
-pub fn task_label(role: RoleName, step: Option<StepName>, card: Option<&CardId>) -> String {
+/// `worker · task-002`. A worker forecasting its task runs before you approve the plan, so it's
+/// an `estimator` there; `worker` would read as if building had begun.
+pub fn task_label(role: RoleName, step: Option<StepName>, task: Option<&TaskId>) -> String {
     let role = match (role, step) {
         (RoleName::Worker, Some(StepName::Predict)) => "estimator",
         _ => role.as_str(),
     };
-    match card {
-        Some(card) => format!("{role} · {card}"),
+    match task {
+        Some(task) => format!("{role} · {task}"),
         None => role.to_owned(),
     }
 }
@@ -144,8 +144,8 @@ pub fn task_label(role: RoleName, step: Option<StepName>, card: Option<&CardId>)
 impl SessionState {
     pub fn new(
         key: SessionKey,
-        worker: WorkerRef,
-        vendor: impl Into<String>,
+        worker: ModelRef,
+        agent_id: impl Into<String>,
         role: RoleName,
         started: OffsetDateTime,
     ) -> Self {
@@ -154,10 +154,10 @@ impl SessionState {
             follow: None,
             worker,
             model_assumed: false,
-            vendor: vendor.into(),
+            agent_id: agent_id.into(),
             role,
             step: None,
-            card: None,
+            task: None,
             workflow_step: None,
             label: None,
             status: SessionStatus::Starting,
@@ -181,31 +181,31 @@ impl SessionState {
             inputs: Vec::new(),
             queued: Vec::new(),
             retry: None,
-            standing_in_for: None,
+            fallback_for: None,
             end: None,
             unknown: Vec::new(),
             doing: Doing::Nothing,
             stalled: false,
-            vendor_session: None,
+            cli_session: None,
         }
     }
 
     pub(super) fn started(
         key: SessionKey,
         started: &SessionStarted,
-        card: Option<CardId>,
+        task: Option<TaskId>,
         at: OffsetDateTime,
     ) -> Self {
         let mut session = Self::new(
             key,
             started.worker.clone(),
-            started.vendor.0.clone(),
+            started.agent_id.0.clone(),
             started.role,
             at,
         );
         session.follow = started.follow_key;
         session.step = started.step;
-        session.card = card;
+        session.task = task;
         session.workflow_step = started.workflow_step.clone();
         session.label = started
             .label
@@ -213,16 +213,16 @@ impl SessionState {
             .map(str::trim)
             .filter(|label| !label.is_empty())
             .map(str::to_owned);
-        session.vendor_session = started.resumed_from.clone();
+        session.cli_session = started.resumed_from.clone();
         session
     }
 
     /// Its label, such as `fix:slugify`, as its rows name what it does, or for a log from
-    /// before labels, `owner · card-002`.
+    /// before labels, `worker · task-002`.
     pub fn task(&self) -> String {
         self.label
             .clone()
-            .unwrap_or_else(|| task_label(self.role, self.step, self.card.as_ref()))
+            .unwrap_or_else(|| task_label(self.role, self.step, self.task.as_ref()))
     }
 
     pub fn tokens(&self) -> u64 {
@@ -231,8 +231,8 @@ impl SessionState {
 
     /// Whether it's the session of `worker`, which an event may name without the model the
     /// session filled in from its settings or its start.
-    pub fn is_worker(&self, worker: &WorkerRef) -> bool {
-        self.worker.worker == worker.worker
+    pub fn is_worker(&self, worker: &ModelRef) -> bool {
+        self.worker.agent == worker.agent
             && (worker.model.is_none() || self.worker.model == worker.model)
     }
 
@@ -266,9 +266,9 @@ impl SessionState {
                 | AgentEvent::ContextFill { .. }
                 | AgentEvent::ContextBreakdown { .. }
                 | AgentEvent::Plan { .. }
-                | AgentEvent::QuotaSignal { .. }
-                | AgentEvent::Quota { .. }
-                | AgentEvent::ModOutput { .. }
+                | AgentEvent::PlanUsageSignal { .. }
+                | AgentEvent::PlanUsage { .. }
+                | AgentEvent::PluginOutput { .. }
                 | AgentEvent::ModelsReported { .. }
                 | AgentEvent::IsolationLeak { .. }
                 | AgentEvent::CommandsChanged { .. }
@@ -283,7 +283,7 @@ impl SessionState {
                 session_id, model, ..
             } => {
                 if session_id.is_some() {
-                    self.vendor_session.clone_from(session_id);
+                    self.cli_session.clone_from(session_id);
                 }
                 if self.worker.model.is_none() || (self.model_assumed && model.is_some()) {
                     self.worker.model.clone_from(model);
@@ -393,19 +393,19 @@ impl SessionState {
                 });
             }
             AgentEvent::Retry { reason, delay_ms } => {
-                let attempt = self.retry.as_ref().map_or(1, |retry| retry.attempt + 1);
+                let try_number = self.retry.as_ref().map_or(1, |retry| retry.try_number + 1);
                 self.retry = Some(Retrying {
                     reason: reason.clone(),
                     delay_ms: *delay_ms,
-                    attempt,
+                    try_number,
                     since: at,
                 });
             }
-            AgentEvent::QuotaSignal { .. }
+            AgentEvent::PlanUsageSignal { .. }
             | AgentEvent::ContextBreakdown { .. }
             | AgentEvent::Plan { .. }
-            | AgentEvent::Quota { .. }
-            | AgentEvent::ModOutput { .. }
+            | AgentEvent::PlanUsage { .. }
+            | AgentEvent::PluginOutput { .. }
             | AgentEvent::ModelsReported { .. }
             | AgentEvent::IsolationLeak { .. }
             | AgentEvent::CommandsChanged { .. }
@@ -458,7 +458,7 @@ impl SessionState {
         self.finish_streaming();
         self.status = match end.reason {
             EndReason::Completed => SessionStatus::Done,
-            EndReason::Paused | EndReason::Stopped | EndReason::BudgetHit { .. } => {
+            EndReason::Paused | EndReason::Stopped | EndReason::LimitHit { .. } => {
                 SessionStatus::Stopped
             }
             _ => SessionStatus::Failed,
@@ -472,7 +472,7 @@ impl SessionState {
         for workflow in &mut self.workflows {
             workflow.end_with_session("its session ended before the workflow did");
         }
-        // The metered count is the session's own. The vendor's totals for a session that
+        // The metered count is the session's own. The agent's totals for a session that
         // resumed another's include what the earlier one spent, which its own row shows.
         let spend = &end.spend;
         if spend.cost_usd > 0.0 {
@@ -515,7 +515,7 @@ mod writing_tests {
     fn session() -> SessionState {
         SessionState::new(
             SessionKey::numbered(1),
-            WorkerRef::new("claude-code", Some("haiku".into())),
+            ModelRef::new("claude-code", Some("haiku".into())),
             "claude-code",
             RoleName::Worker,
             OffsetDateTime::UNIX_EPOCH,

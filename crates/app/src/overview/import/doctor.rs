@@ -1,5 +1,5 @@
 //! Doctor's lines about the import: Claude Code's tokens as counted here beside the total its
-//! own /stats shows, and why the two differ. The two can't match: /stats adds up every line
+//! own /stats shows, and why the two are different. The two can't match: /stats adds up every line
 //! Claude Code writes as an answer streams, so an answer written over several lines counts
 //! more than once, and it leaves out the agents its workflows start. Here each answer counts
 //! once and those agents count too.
@@ -13,7 +13,7 @@ use super::stats_cache::{self, StatsCache};
 use super::{Locations, Source};
 use crate::overview::records::{Record, Store};
 
-/// Why the two totals differ, under the line that gives them.
+/// Why the two totals are different, under the line that gives them.
 const WHY: &str = "  /stats counts an answer once per line Claude Code writes for it and leaves out its \
                    workflows' agents; here each answer counts once, agents included";
 

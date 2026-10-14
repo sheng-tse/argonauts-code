@@ -1,5 +1,5 @@
 //! Files that building or testing leaves in a worktree: compiled bytecode, object files,
-//! installed packages, and the caches tools write. What counts as build output differs by
+//! installed packages, and the caches tools write. What counts as build output varies by
 //! language and tool, so by default the engine's commits take every file git doesn't ignore.
 //! `merge.leave_out` names untracked files to leave out, and `merge.leave_out_builtin` turns
 //! on the built-in list. Only names no source tree uses for its own files are on it: folders

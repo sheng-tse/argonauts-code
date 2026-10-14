@@ -10,7 +10,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use argonauts_testkit::scenario::FakeScenario;
-use argonauts_testkit::{FakeVendors, Key, Pty, PtyCommand, TempRepo};
+use argonauts_testkit::{FakeClis, Key, Pty, PtyCommand, TempRepo};
 
 fn argonauts(repo: &TempRepo, dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_argonauts"))
@@ -64,7 +64,7 @@ fn real_git() -> PathBuf {
 }
 
 #[test]
-fn help_lists_the_commands_but_not_the_supervisor() {
+fn help_lists_the_commands_but_not_the_run_host() {
     let repo = TempRepo::new().unwrap();
     let output = argonauts(&repo, repo.root(), &["--help"]);
     assert!(output.status.success(), "{}", describe(&output));
@@ -73,14 +73,13 @@ fn help_lists_the_commands_but_not_the_supervisor() {
         "run",
         "resume",
         "status",
-        "init",
+        "setup",
         "doctor",
         "config",
         "models",
         "approve",
         "approvals",
         "auto",
-        "inbox",
         "mcp",
     ] {
         assert!(
@@ -88,7 +87,7 @@ fn help_lists_the_commands_but_not_the_supervisor() {
             "{command} in {help}"
         );
     }
-    assert!(!help.contains("supervise"), "{help}");
+    assert!(!help.contains("host"), "{help}");
 }
 
 #[test]
@@ -113,7 +112,7 @@ fn config_show_prints_the_settings_as_toml() {
     let repo = TempRepo::new().unwrap();
     repo.write(
         ".argonauts/config.toml",
-        "[solo_or_crew]\nsolo_max_files = 5\n",
+        "[captain_or_crew]\ncaptain_max_files = 5\n",
     )
     .unwrap();
     let output = argonauts(
@@ -128,7 +127,7 @@ fn config_show_prints_the_settings_as_toml() {
     assert!(text.contains(".argonauts/config.toml (read)"), "{text}");
     let table: toml::Table = text.parse().unwrap();
     assert_eq!(
-        table["solo_or_crew"]["solo_max_files"].as_integer(),
+        table["captain_or_crew"]["captain_max_files"].as_integer(),
         Some(5)
     );
     assert_eq!(table["ui"]["bell"].as_bool(), Some(false));
@@ -206,11 +205,11 @@ fn config_schema_is_json_schema() {
     let output = argonauts(&repo, repo.root(), &["config", "schema"]);
     assert!(output.status.success(), "{}", describe(&output));
     let schema: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(schema["properties"]["main_agent"].is_object(), "{schema}");
+    assert!(schema["properties"]["crew"].is_object(), "{schema}");
 }
 
-/// `ARGONAUTS_HOME` holds everything a first start writes: the setup's answers, the preset
-/// files, the terms note. Nothing lands under `HOME/.argonauts`. Esc on the first card, once it
+/// `ARGONAUTS_HOME` holds everything a first start writes: the setup's answers, the workflow
+/// files, the terms note. Nothing lands under `HOME/.argonauts`. Esc on the first question, once it
 /// has the keys, says how to walk through the setup again.
 #[test]
 fn a_first_start_with_argonauts_home_set_writes_nothing_under_your_home() {
@@ -218,7 +217,7 @@ fn a_first_start_with_argonauts_home_set_writes_nothing_under_your_home() {
     let bin = repo.scratch().join("bin");
     fs::create_dir_all(&bin).unwrap();
     std::os::unix::fs::symlink(real_git(), bin.join("git")).unwrap();
-    // Answers every call with its version, so nothing can reach a vendor.
+    // Answers every call with its version, so nothing can reach an agent.
     script(&bin, "claude", "echo '2.1.284 (Claude Code)'");
     let command = PtyCommand::new(env!("CARGO_BIN_EXE_argonauts"))
         .cwd(repo.root())
@@ -234,12 +233,12 @@ fn a_first_start_with_argonauts_home_set_writes_nothing_under_your_home() {
         wait,
     )
     .unwrap();
-    // Esc in the input never answers a card, so ↑ hands it the keys first.
+    // Esc in the input never answers a question, so ↑ hands it the keys first.
     pty.press(Key::Up).unwrap();
     pty.wait_for(r"Esc to take the recommended answers", wait)
         .unwrap();
     pty.press(Key::Esc).unwrap();
-    pty.wait_for(r"/setup \(or argonauts init\) walks through", wait)
+    pty.wait_for(r"/setup \(or argonauts setup\) walks", wait)
         .unwrap();
     // The second Ctrl+D leaves.
     pty.press(Key::Ctrl('d')).unwrap();
@@ -266,7 +265,7 @@ fn at_lists_the_repos_files_and_completes_one() {
     let bin = repo.scratch().join("bin");
     fs::create_dir_all(&bin).unwrap();
     std::os::unix::fs::symlink(real_git(), bin.join("git")).unwrap();
-    // Answers every call with its version, so nothing can reach a vendor.
+    // Answers every call with its version, so nothing can reach an agent.
     script(&bin, "claude", "echo '2.1.284 (Claude Code)'");
     let command = PtyCommand::new(env!("CARGO_BIN_EXE_argonauts"))
         .cwd(repo.root())
@@ -286,7 +285,7 @@ fn at_lists_the_repos_files_and_completes_one() {
     pty.wait_for(r"Esc to take the recommended answers", wait)
         .unwrap();
     pty.press(Key::Esc).unwrap();
-    pty.wait_for(r"/setup \(or argonauts init\) walks through", wait)
+    pty.wait_for(r"/setup \(or argonauts setup\) walks", wait)
         .unwrap();
 
     pty.send("@").unwrap();
@@ -346,7 +345,7 @@ fn doctor_fails_without_an_agent_cli_and_passes_with_one() {
     assert!(output.status.success(), "{}", describe(&output));
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(json["agents"].is_array(), "{json}");
-    assert_eq!(json["parked"], serde_json::json!([]));
+    assert_eq!(json["waiting"], serde_json::json!([]));
 }
 
 #[test]
@@ -358,21 +357,21 @@ fn doctor_lists_every_cli_with_its_version() {
         .version("codex", "codex-cli 0.158.0")
         .save(&scenario)
         .unwrap();
-    let vendors = FakeVendors::install(repo.scratch(), &scenario).unwrap();
+    let clis = FakeClis::install(repo.scratch(), &scenario).unwrap();
     for absent in ["agy", "opencode"] {
-        fs::remove_file(vendors.bin_dir().join(absent)).unwrap();
+        fs::remove_file(clis.bin_dir().join(absent)).unwrap();
     }
     // The fakes and git alone, so no CLI installed on this machine shows up.
     let git = repo.scratch().join("git-bin");
     fs::create_dir_all(&git).unwrap();
     std::os::unix::fs::symlink(real_git(), git.join("git")).unwrap();
-    let path = std::env::join_paths([vendors.bin_dir(), git.as_path()]).unwrap();
+    let path = std::env::join_paths([clis.bin_dir(), git.as_path()]).unwrap();
     let doctor = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_argonauts"))
             .args(args)
             .current_dir(elsewhere(&repo))
             .envs(repo.envs())
-            .envs(vendors.envs())
+            .envs(clis.envs())
             .env("PATH", &path)
             .env_remove("ARGONAUTS_SESSION")
             .stdin(Stdio::null())
@@ -432,7 +431,7 @@ fn run_flag_mistakes_are_usage_errors() {
     let repo = TempRepo::new().unwrap();
     for args in [
         &["run", "--check", "test -f 'x", "task"][..],
-        &["run", "--solo", "--crew", "task"][..],
+        &["run", "--captain", "--crew", "task"][..],
         &["run", "--limit-usd", "0", "task"][..],
     ] {
         let output = argonauts(&repo, repo.root(), args);
@@ -446,15 +445,15 @@ fn run_flag_mistakes_are_usage_errors() {
 }
 
 #[test]
-fn run_gate_and_merge_without_a_terminal_are_refused_by_name() {
+fn run_check_and_merge_without_a_terminal_are_refused_by_name() {
     let repo = TempRepo::new().unwrap();
     for (args, flag) in [
         (
-            &["run", "--solo", "--merge", "leave", "--detach", "say hi"][..],
+            &["run", "--captain", "--merge", "leave", "--detach", "say hi"][..],
             "--merge",
         ),
         (
-            &["run", "--solo", "--check", "true", "--detach", "say hi"][..],
+            &["run", "--captain", "--check", "true", "--detach", "say hi"][..],
             "--check",
         ),
     ] {
@@ -491,14 +490,15 @@ fn status_outside_a_repo_lists_nothing() {
     assert_eq!(stdout(&output), "Nothing is running.\n");
 }
 
-/// Any folder is a project, so a folder Argonauts never worked in has nothing waiting, and
+/// Any folder is a project, so a folder Argonauts Code never worked in has nothing waiting, and
 /// looking keeps no state for it.
 #[test]
-fn inbox_outside_a_repo_lists_nothing() {
+fn approvals_outside_a_repo_has_nothing_waiting() {
     let repo = TempRepo::new().unwrap();
-    let output = argonauts(&repo, &elsewhere(&repo), &["inbox"]);
+    let output = argonauts(&repo, &elsewhere(&repo), &["approvals"]);
     assert!(output.status.success(), "{}", describe(&output));
-    assert_eq!(stdout(&output), "Nothing waits for you.\n");
+    let shown = stdout(&output);
+    assert!(shown.starts_with("Nothing waits for you.\n\n"), "{shown}");
     let state = repo.home().join("state");
     let kept = fs::read_dir(&state).map_or(0, Iterator::count);
     assert_eq!(kept, 0, "state was kept under {}", state.display());
@@ -531,7 +531,7 @@ fn models_says_how_to_discover_some() {
 #[test]
 fn approve_needs_a_terminal_and_refuses_inside_an_agent() {
     let repo = TempRepo::new().unwrap();
-    let output = argonauts(&repo, repo.root(), &["approve", "run-03", "cp-001"]);
+    let output = argonauts(&repo, repo.root(), &["approve", "run-03", "approval-001"]);
     assert_eq!(output.status.code(), Some(1), "{}", describe(&output));
     assert!(
         stderr(&output).contains("approving needs you at a terminal"),
@@ -540,7 +540,7 @@ fn approve_needs_a_terminal_and_refuses_inside_an_agent() {
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_argonauts"))
-        .args(["approve", "run-03", "cp-001"])
+        .args(["approve", "run-03", "approval-001"])
         .current_dir(repo.root())
         .envs(repo.envs())
         .env("OPENCLAW_SHELL", "1")
@@ -555,7 +555,7 @@ fn approve_needs_a_terminal_and_refuses_inside_an_agent() {
     );
 
     for args in [
-        &["approve", "run/03", "cp-001"][..],
+        &["approve", "run/03", "approval-001"][..],
         &["approve", "run-03", "cp 1"][..],
         &["approve", "run-03"][..],
     ] {

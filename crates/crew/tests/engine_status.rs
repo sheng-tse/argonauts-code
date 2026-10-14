@@ -10,69 +10,69 @@ use serde_json::json;
 use time::{Duration, OffsetDateTime};
 
 use argonauts_core::event::AgentEvent;
-use argonauts_core::events::card::{
-    CardEvent, CardKind, CardSpec, CardState, GateKind, GateOutcome,
-};
+use argonauts_core::events::agent_status::{RunSpend, SpendEvent};
 use argonauts_core::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
 use argonauts_core::events::run::Party;
 use argonauts_core::events::session::InputPartKind;
-use argonauts_core::events::vendor::{BudgetEvent, RunBudget};
+use argonauts_core::events::task::{
+    CheckKind, CheckOutcome, TaskEvent, TaskKind, TaskSpec, TaskState,
+};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
-use argonauts_core::steps::goal::{Restate, RestateInput};
-use argonauts_core::{CardId, RunId, Spend};
+use argonauts_core::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::steps::understand::{Read, ReadInput};
+use argonauts_core::{RunId, Spend, TaskId};
 use argonauts_crew::engine::host::{Ask, Host};
 use argonauts_crew::engine::shared::Shared;
 use argonauts_crew::state::RunState;
 use argonauts_crew::status::files::StatusFiles;
 use argonauts_crew::status::folder::Folder;
 use argonauts_crew::status::{self, Viewer};
-use argonauts_testkit::worker::FakeSession;
+use argonauts_testkit::runner::FakeSession;
 
-fn at(seq: u64, card: Option<&str>, session: Option<&str>, kind: RunEventKind) -> RunEvent {
+fn at(seq: u64, task: Option<&str>, session: Option<&str>, kind: RunEventKind) -> RunEvent {
     RunEvent {
         seq,
         ts: OffsetDateTime::UNIX_EPOCH + Duration::seconds(seq as i64),
         run_id: RunId::new("run-01").unwrap(),
-        card_id: card.map(|card| CardId::new(card).unwrap()),
+        task_id: task.map(|task| TaskId::new(task).unwrap()),
         session: session.map(|key| SessionKey::parse(key).unwrap()),
-        source: "conductor".to_owned(),
+        source: "argonauts-code".to_owned(),
         kind,
     }
 }
 
-fn spec(id: &str, depends_on: &[&str]) -> CardSpec {
-    CardSpec {
-        id: CardId::new(id).unwrap(),
+fn spec(id: &str, depends_on: &[&str]) -> TaskSpec {
+    TaskSpec {
+        id: TaskId::new(id).unwrap(),
         title: format!("Build {id}"),
         task: String::new(),
-        kind: CardKind::Build,
+        kind: TaskKind::Build,
         owned_paths: vec![format!("src/{id}/**")],
         read_only_paths: Vec::new(),
         forbidden_paths: Vec::new(),
         hidden_paths: Vec::new(),
         depends_on: depends_on
             .iter()
-            .map(|card| CardId::new(*card).unwrap())
+            .map(|task| TaskId::new(*task).unwrap())
             .collect(),
         criteria: Vec::new(),
-        owner: Some(WorkerRef::new("codex", None)),
+        worker: Some(ModelRef::new("codex", None)),
         reviewers: Vec::new(),
-        budget: Default::default(),
+        limit: Default::default(),
         predictions: None,
         item: None,
     }
 }
 
-fn state(from: CardState, to: CardState) -> RunEventKind {
-    RunEventKind::Card(CardEvent::State {
+fn state(from: TaskState, to: TaskState) -> RunEventKind {
+    RunEventKind::Task(TaskEvent::State {
         from: Some(from),
         to,
         reason: String::new(),
     })
 }
 
-/// A short run: the goal, two cards, output deltas, a gate, a budget reading, an integration.
+/// A short run: the goal, two tasks, output deltas, a check, a limit reading, a merge.
 fn log() -> Vec<RunEvent> {
     let kinds: Vec<(Option<&str>, Option<&str>, RunEventKind)> = vec![
         (
@@ -88,7 +88,7 @@ fn log() -> Vec<RunEvent> {
                     out_of_scope: Vec::new(),
                     assumptions: Vec::new(),
                     answers: Vec::new(),
-                    source: GoalSource::Restatements,
+                    source: GoalSource::Readings,
                     path: PathBuf::from(".argonauts/goal/run-01.md"),
                     sha256: "abc".to_owned(),
                 },
@@ -98,12 +98,12 @@ fn log() -> Vec<RunEvent> {
         (
             Some("task-001"),
             None,
-            RunEventKind::Card(CardEvent::Created(Box::new(spec("task-001", &[])))),
+            RunEventKind::Task(TaskEvent::Created(Box::new(spec("task-001", &[])))),
         ),
         (
             Some("task-002"),
             None,
-            RunEventKind::Card(CardEvent::Created(Box::new(spec(
+            RunEventKind::Task(TaskEvent::Created(Box::new(spec(
                 "task-002",
                 &["task-001"],
             )))),
@@ -111,7 +111,7 @@ fn log() -> Vec<RunEvent> {
         (
             Some("task-001"),
             None,
-            state(CardState::Ready, CardState::Running),
+            state(TaskState::Ready, TaskState::Running),
         ),
         (
             Some("task-001"),
@@ -132,9 +132,9 @@ fn log() -> Vec<RunEvent> {
         (
             Some("task-001"),
             None,
-            RunEventKind::Gate(GateOutcome {
+            RunEventKind::Check(CheckOutcome {
                 name: "cargo test".to_owned(),
-                kind: GateKind::Command,
+                kind: CheckKind::Command,
                 passed: true,
                 command: None,
                 exit_code: Some(0),
@@ -149,7 +149,7 @@ fn log() -> Vec<RunEvent> {
         (
             None,
             None,
-            RunEventKind::Budget(BudgetEvent::Run(RunBudget {
+            RunEventKind::Spend(SpendEvent::Run(RunSpend {
                 spent: Spend {
                     cost_usd: 1.25,
                     ..Spend::default()
@@ -162,29 +162,29 @@ fn log() -> Vec<RunEvent> {
         (
             Some("task-001"),
             None,
-            state(CardState::Integrating, CardState::Integrated),
+            state(TaskState::Merging, TaskState::Merged),
         ),
     ];
     kinds
         .into_iter()
         .enumerate()
-        .map(|(seq, (card, session, kind))| at(seq as u64, card, session, kind))
+        .map(|(seq, (task, session, kind))| at(seq as u64, task, session, kind))
         .collect()
 }
 
 #[test]
 fn status_refresh_is_incremental() {
     let events = log();
-    let owner = Viewer::Session {
+    let worker = Viewer::Session {
         role: RoleName::Worker,
-        card: Some(CardId::new("task-002").unwrap()),
+        task: Some(TaskId::new("task-002").unwrap()),
         label: None,
     };
     let mut folder = Folder::default();
     for (at, event) in events.iter().enumerate() {
         folder.push(event);
         // One event at a time gives what a fold of the whole prefix gives.
-        for viewer in [Viewer::User, owner.clone(), Viewer::Narrator] {
+        for viewer in [Viewer::User, worker.clone(), Viewer::Narrator] {
             assert_eq!(
                 folder.summary(&viewer),
                 status::summary(&events[..=at], &viewer),
@@ -193,26 +193,26 @@ fn status_refresh_is_incremental() {
         }
         // Output deltas change nothing anyone sees, so no status file is rewritten for them.
         let delta = matches!(event.kind, RunEventKind::Agent(_));
-        assert_eq!(folder.changed_for(&owner), !delta, "event {at}");
+        assert_eq!(folder.changed_for(&worker), !delta, "event {at}");
     }
 
-    let summary = folder.summary(&owner);
+    let summary = folder.summary(&worker);
     assert_eq!(summary.goal[0], "Per-key rate limiting on the public API");
     let waiting = summary
-        .cards
+        .tasks
         .iter()
-        .find(|card| card.card.as_str() == "task-002")
+        .find(|task| task.task.as_str() == "task-002")
         .unwrap();
     assert_eq!(waiting.note, "", "task-001 is merged into the run now");
     assert!(summary.recent.iter().any(|line| line.contains("41 passed")));
-    assert_eq!(summary.budget.as_ref().unwrap().spent.cost_usd, 1.25);
+    assert_eq!(summary.spend.as_ref().unwrap().spent.cost_usd, 1.25);
 
     // Status files: at most one write a second, and a held change is written once due.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sessions/s-002/status.json");
     let mut files = StatusFiles::default();
     let start = OffsetDateTime::UNIX_EPOCH;
-    let before = status::summary(&events[..3], &owner);
+    let before = status::summary(&events[..3], &worker);
     assert!(files.write(&path, &before, start).unwrap());
     assert!(
         !files
@@ -237,8 +237,8 @@ fn status_refresh_is_incremental() {
 #[tokio::test]
 async fn status_summary_injected_at_session_start() -> anyhow::Result<()> {
     let mut crew = support::Crew::new()?;
-    let restater = crew.worker("claude-code", "anthropic");
-    restater.push(FakeSession::structured(json!({
+    let reader = crew.worker("claude-code", "anthropic");
+    reader.push(FakeSession::structured(json!({
         "summary": "Rate limit the API per key.",
         "success_criteria": ["429 past the limit"],
         "in_scope": [],
@@ -248,25 +248,25 @@ async fn status_summary_injected_at_session_start() -> anyhow::Result<()> {
     })));
     let (context, sink, _commands) = crew.context(Vec::new())?;
     let host = Host::new(Arc::new(Shared::new(&context, RunState::default())?));
-    let card = CardId::new("task-001")?;
+    let task = TaskId::new("task-001")?;
     host.record(
-        Some(&card),
+        Some(&task),
         None,
-        RunEventKind::Card(CardEvent::Created(Box::new(spec("task-001", &[])))),
+        RunEventKind::Task(TaskEvent::Created(Box::new(spec("task-001", &[])))),
     )?;
     let viewer = Viewer::Session {
-        role: RoleName::Restater,
-        card: None,
+        role: RoleName::Reader,
+        task: None,
         label: None,
     };
     let expected = status::render(&status::summary(&sink.events(), &viewer));
 
-    host.ask::<Restate>(Ask::new(
+    host.ask::<Read>(Ask::new(
         None,
-        RoleName::Restater,
-        WorkerRef::new("claude-code", None),
-        "Restate the goal.",
-        RestateInput {
+        RoleName::Reader,
+        ModelRef::new("claude-code", None),
+        "Read the request back.",
+        ReadInput {
             request: "add per-key rate limiting to the public API".to_owned(),
             notes: Vec::new(),
             decisions: Vec::new(),
@@ -274,7 +274,7 @@ async fn status_summary_injected_at_session_start() -> anyhow::Result<()> {
     ))
     .await?;
 
-    let specs = restater.specs();
+    let specs = reader.specs();
     let status = specs[0]
         .prompt
         .iter()
@@ -285,17 +285,17 @@ async fn status_summary_injected_at_session_start() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A session's start or its end with what it spent, as the conductor records them.
+/// A session's start or its end with what it spent, as Argonauts Code records them.
 fn session_spend(step: &str, usd: f64) -> anyhow::Result<RunEventKind> {
     let data = match step {
         "started" => json!({
-            "event": "started", "worker": "claude-code", "vendor": "claude-code",
-            "family": "claude", "kind": "harness", "role": "worker", "step": "build",
+            "event": "started", "worker": "claude-code", "agent_id": "claude-code",
+            "provider": "anthropic", "kind": "cli", "role": "worker", "step": "build",
             "access": "build", "lifetime": "task", "resumed_from": null, "follow_key": null,
             "workflow_step": null,
         }),
         _ => json!({
-            "event": "ended", "vendor_session": null, "exit_code": 0, "signal": null,
+            "event": "ended", "cli_session": null, "exit_code": 0, "signal": null,
             "duration_ms": 1000, "reason": {"why": "completed"},
             "spend": {"input_tokens": 1000, "output_tokens": 100, "cached_tokens": 0,
                       "cost_usd": usd, "cost_partial": false, "cost_estimated": false},
@@ -312,7 +312,7 @@ async fn at_the_run_limit(autopilot: bool) -> anyhow::Result<(bool, bool, Vec<St
     use argonauts_core::events::run::RunLifecycle;
     use argonauts_core::settings::approvals::ApprovalMode;
     let mut crew = support::Crew::new()?;
-    crew.settings.limits.budget.spend_per_run = Some(0.02);
+    crew.settings.limits.spend.spend_per_run = Some(0.02);
     let (context, sink, _commands) = crew.context(Vec::new())?;
     let host = Host::new(Arc::new(Shared::new(&context, RunState::default())?));
     if autopilot {

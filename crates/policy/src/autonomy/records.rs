@@ -10,27 +10,27 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use argonauts_core::RunId;
-use argonauts_core::events::checkpoint::CheckpointKind;
+use argonauts_core::events::approval::ApprovalKind;
 use argonauts_core::layout::repo_state;
-use argonauts_core::names::CheckpointId;
+use argonauts_core::names::ApprovalId;
 use argonauts_core::policy::{DecisionPoint, Verdict};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use super::file_lock::{self, Access};
 
-/// Records are per decision-point kind and per recipe.
+/// Records are per decision-point kind and per learned workflow.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Record {
     #[serde(with = "time::serde::rfc3339")]
     pub at: OffsetDateTime,
-    /// `None`, with `checkpoint`, on a record about the whole kind.
+    /// `None`, with `approval`, on a record about the whole kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<RunId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checkpoint: Option<CheckpointId>,
-    pub kind: CheckpointKind,
-    pub recipe: Option<String>,
+    pub approval: Option<ApprovalId>,
+    pub kind: ApprovalKind,
+    pub learned_workflow: Option<String>,
     pub event: Event,
 }
 
@@ -39,30 +39,30 @@ impl Record {
         Self {
             at,
             run: Some(point.run.clone()),
-            checkpoint: Some(point.checkpoint.clone()),
+            approval: Some(point.approval.clone()),
             kind: point.kind,
-            recipe: point.recipe.clone(),
+            learned_workflow: point.learned_workflow.clone(),
             event,
         }
     }
 
-    pub fn for_kind(kind: CheckpointKind, at: OffsetDateTime, event: Event) -> Self {
+    pub fn for_kind(kind: ApprovalKind, at: OffsetDateTime, event: Event) -> Self {
         Self {
             at,
             run: None,
-            checkpoint: None,
+            approval: None,
             kind,
-            recipe: None,
+            learned_workflow: None,
             event,
         }
     }
 
-    pub fn key(&self) -> (Option<&RunId>, Option<&CheckpointId>) {
-        (self.run.as_ref(), self.checkpoint.as_ref())
+    pub fn key(&self) -> (Option<&RunId>, Option<&ApprovalId>) {
+        (self.run.as_ref(), self.approval.as_ref())
     }
 
-    fn is_for(&self, run: &RunId, checkpoint: &CheckpointId) -> bool {
-        self.key() == (Some(run), Some(checkpoint))
+    fn is_for(&self, run: &RunId, approval: &ApprovalId) -> bool {
+        self.key() == (Some(run), Some(approval))
     }
 
     /// Losing one of these to a crash could raise autonomy.
@@ -78,8 +78,8 @@ impl Record {
     }
 }
 
-/// A fingerprint is a hash of the kind's rules, `decide_with`, and approver when it's scored.
-/// `rules` is the SHA-256 of your rules document when the approver model read it.
+/// A fingerprint is a hash of the kind's rules, `decide_with`, and judge when it's scored.
+/// `rules` is the SHA-256 of your rules document when the judge read it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
@@ -87,7 +87,7 @@ pub enum Event {
         answer: Answer,
     },
     /// What auto would have decided, waiting for your answer.
-    Shadow {
+    AutoPreview {
         fingerprint: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rules: Option<String>,
@@ -110,7 +110,7 @@ pub enum Event {
     /// Your answer beat auto's, so the reservation was given back.
     Released,
     /// You checked an auto-approval, or the host found its merge reverted. A wrong one demotes
-    /// the kind to shadow until you reinstate it.
+    /// the kind to auto preview until you reinstate it.
     SpotChecked {
         fingerprint: Option<String>,
         correct: bool,
@@ -122,13 +122,13 @@ pub enum Event {
     Reinstated,
 }
 
-/// Your answer, as far as scoring a shadow verdict goes.
+/// Your answer, as far as scoring an auto preview verdict goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Answer {
     /// Approved or merged without edits.
     Approved,
-    /// Any answer that decides the checkpoint some other way, such as edits, a send back, a
+    /// Any answer that decides the approval some other way, such as edits, a send back, a
     /// pull request instead of a merge, or waiting.
     Corrected,
     /// An answer that decides nothing, which doesn't score.
@@ -209,7 +209,7 @@ impl Records {
     }
 
     /// Holds the file's exclusive lock until the result is dropped, so a check and the records
-    /// it leads to are written as one step, across threads and supervisors.
+    /// that follow from it are written as one step, across threads and run hosts.
     pub fn lock(&self) -> io::Result<LockedRecords<'_>> {
         let file = OpenOptions::new()
             .read(true)
@@ -358,12 +358,12 @@ impl LockedRecords<'_> {
     }
 }
 
-/// What the records say about one checkpoint of one run.
+/// What the records say about one approval of one run.
 #[derive(Debug, Default)]
-pub struct CheckpointLog<'a> {
+pub struct ApprovalLog<'a> {
     pub answer: Option<Answer>,
-    /// The first shadow verdict noted, with what it was decided under.
-    pub shadow: Option<(Basis<'a>, Verdict)>,
+    /// The first auto preview verdict noted, with what it was decided under.
+    pub auto_preview: Option<(Basis<'a>, Verdict)>,
     pub scored: bool,
     /// Auto's reservation, unless your answer released it.
     pub reservation: Option<ReservationEntry<'a>>,
@@ -372,7 +372,7 @@ pub struct CheckpointLog<'a> {
 }
 
 /// What a verdict was decided under: the kind's settings fingerprint, and the SHA-256 of your
-/// rules document when the approver model read it.
+/// rules document when the judge read it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Basis<'a> {
     pub fingerprint: &'a str,
@@ -387,21 +387,18 @@ pub struct ReservationEntry<'a> {
     pub spot_check: bool,
 }
 
-pub fn checkpoint_log<'a>(
+pub fn approval_log<'a>(
     records: &'a [Record],
     run: &RunId,
-    checkpoint: &CheckpointId,
-) -> CheckpointLog<'a> {
-    let mut log = CheckpointLog::default();
-    for record in records
-        .iter()
-        .filter(|record| record.is_for(run, checkpoint))
-    {
+    approval: &ApprovalId,
+) -> ApprovalLog<'a> {
+    let mut log = ApprovalLog::default();
+    for record in records.iter().filter(|record| record.is_for(run, approval)) {
         match &record.event {
             Event::Answered { answer } => {
                 log.answer.get_or_insert(*answer);
             }
-            Event::Shadow {
+            Event::AutoPreview {
                 fingerprint,
                 rules,
                 would,
@@ -410,7 +407,7 @@ pub fn checkpoint_log<'a>(
                     fingerprint,
                     rules: rules.as_deref(),
                 };
-                log.shadow.get_or_insert((basis, *would));
+                log.auto_preview.get_or_insert((basis, *would));
             }
             Event::Scored { .. } => log.scored = true,
             Event::Reserved {
@@ -467,12 +464,12 @@ mod tests {
     fn answered(n: u32) -> Record {
         let point = DecisionPoint {
             run: RunId::new("run-a").expect("run id"),
-            checkpoint: CheckpointId::numbered(n),
-            kind: CheckpointKind::Goal,
-            recipe: None,
+            approval: ApprovalId::numbered(n),
+            kind: ApprovalKind::Understand,
+            learned_workflow: None,
             authors: Vec::new(),
             mode_override: None,
-            lead: None,
+            main_agent: None,
         };
         Record::new(
             &point,

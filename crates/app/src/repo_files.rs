@@ -90,7 +90,7 @@ fn is_link(root: &Path, path: &str) -> bool {
 }
 
 /// A link is offered only when what it reaches is: a file or folder git lists, inside the
-/// repo. One that leads out of it, or to an ignored file, would send nothing, or a secret.
+/// repo. One that points out of it, or to an ignored file, would send nothing, or a secret.
 fn link_offered(root: &Path, real_root: &Path, path: &str, listed: &BTreeSet<&str>) -> bool {
     let Some(target) = inside_repo(real_root, &root.join(path)) else {
         return false;
@@ -103,7 +103,7 @@ fn link_offered(root: &Path, real_root: &Path, path: &str, listed: &BTreeSet<&st
             .is_some_and(|first| first.starts_with(&folder))
 }
 
-/// Where `full` leads once every link on the way is followed, relative to the repo with `/`.
+/// Where `full` ends up once every link on the way is followed, relative to the repo with `/`.
 /// `None` when that's outside the repo or inside `.git`.
 fn inside_repo(real_root: &Path, full: &Path) -> Option<String> {
     let real = full.canonicalize().ok()?;
@@ -128,7 +128,7 @@ pub(crate) struct Mentioned {
     /// Relative to the repo, with `/`, and a folder's ending in `/`.
     pub path: String,
     pub folder: bool,
-    /// Where a link leads, relative to the repo with `/`, when `path` goes through one.
+    /// Where a link points, relative to the repo with `/`, when `path` goes through one.
     pub target: Option<String>,
 }
 
@@ -157,11 +157,19 @@ pub(crate) fn mentioned(root: &Path, text: &str) -> Vec<Mentioned> {
 
 /// Whether `text` starts with `@` and the name of a file or folder in the repo, which makes
 /// it a message about that file rather than one for an agent.
-pub(crate) fn leads_with_file(root: &Path, text: &str) -> bool {
+pub(crate) fn starts_with_file(root: &Path, text: &str) -> bool {
     let text = text.trim_start();
     at_words(text)
         .first()
         .is_some_and(|word| word.range.start == 0 && resolve(root, &word.name).is_some())
+}
+
+/// Whether the first word of `text` is something on this computer, such as `/tmp`. A prompt
+/// may start with one, and the screen asks the same before it calls the word no command.
+pub(crate) fn starts_with_path(text: &str) -> bool {
+    text.split_whitespace()
+        .next()
+        .is_some_and(|word| Path::new(word).exists())
 }
 
 fn resolve(root: &Path, name: &str) -> Option<Mentioned> {
@@ -207,14 +215,14 @@ pub(crate) fn parts(root: &Path, mentions: &[Mentioned], can_read: bool) -> Vec<
         return Vec::new();
     }
     let listed = listed_under(root, mentions);
-    let mut budget = MAX_TOTAL_BYTES;
+    let mut limit = MAX_TOTAL_BYTES;
     mentions
         .iter()
         .map(|mention| {
             let text = if mention.folder {
                 folder_text(mention, &listed, can_read)
             } else {
-                file_text(root, mention, &listed, can_read, &mut budget)
+                file_text(root, mention, &listed, can_read, &mut limit)
             };
             InputPart {
                 kind: InputPartKind::File,
@@ -262,7 +270,7 @@ fn file_text(
     mention: &Mentioned,
     listed: &BTreeSet<String>,
     can_read: bool,
-    budget: &mut u64,
+    limit: &mut u64,
 ) -> String {
     let path = &mention.path;
     let head = format!("{} is the file {path} in the repo", at_word(path));
@@ -284,7 +292,7 @@ fn file_text(
     if size > MAX_FILE_BYTES {
         return left_out(format!("{}, too big to include here", byte_size(size)));
     }
-    if size > *budget {
+    if size > *limit {
         return left_out("not included, since the other files took the room".into());
     }
     let mut bytes = Vec::new();
@@ -296,7 +304,7 @@ fn file_text(
         _ if !read => return left_out("it couldn't be read".into()),
         _ => return left_out("binary, so its contents aren't included".into()),
     };
-    *budget = budget.saturating_sub(size);
+    *limit = limit.saturating_sub(size);
     let text = text.strip_suffix('\n').unwrap_or(&text);
     format!("{head}:\n\n<file path=\"{path}\">\n{text}\n</file>")
 }
@@ -456,12 +464,25 @@ mod tests {
     }
 
     #[test]
+    fn a_prompt_may_start_with_a_path_that_exists() {
+        let repo = repo();
+        let folder = repo.root().display();
+        assert!(starts_with_path(&format!("{folder} is full, clean it")));
+        assert!(starts_with_path(&format!("  {folder}")));
+        assert!(!starts_with_path(&format!(
+            "{folder}-is-nowhere holds what?"
+        )));
+        assert!(!starts_with_path("/no-such-command"));
+        assert!(!starts_with_path(""));
+    }
+
+    #[test]
     fn a_message_led_by_a_file_is_about_it() {
         let repo = repo();
-        assert!(leads_with_file(repo.root(), "  @README.md what is this?"));
-        assert!(leads_with_file(repo.root(), "@src/ tour it"));
-        assert!(!leads_with_file(repo.root(), "@codex look at @README.md"));
-        assert!(!leads_with_file(repo.root(), "what is @README.md"));
+        assert!(starts_with_file(repo.root(), "  @README.md what is this?"));
+        assert!(starts_with_file(repo.root(), "@src/ tour it"));
+        assert!(!starts_with_file(repo.root(), "@codex look at @README.md"));
+        assert!(!starts_with_file(repo.root(), "what is @README.md"));
     }
 
     #[test]
@@ -518,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn the_files_share_one_budget() {
+    fn the_files_share_one_limit() {
         let repo = repo();
         let root = repo.root();
         for name in ["a", "b", "c", "d"] {

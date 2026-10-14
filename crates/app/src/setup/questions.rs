@@ -1,22 +1,23 @@
 //! Each step's question and what its answer changes. The first option is what Enter and Esc
 //! take: the recommendation, or on a rerun the value your global file already holds. A rerun
 //! never loosens what the file sets more finely than a question asks, such as a model or one
-//! checkpoint's approval mode.
+//! approval's approval mode.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use argonauts_core::app::ChoiceKind;
-use argonauts_core::events::checkpoint::{AnswerAction, AnswerOption};
+use argonauts_core::events::approval::{AnswerAction, AnswerOption};
 use argonauts_core::model_catalog::display_name_from_id;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::approvals::ApprovalMode;
+use argonauts_core::text::shown_name;
 use argonauts_registry::TERMS_NOTE;
 
 use super::probe::{FoundAgent, LocalServer, LoginState};
 use super::roles::{self, ModelOption};
 use super::steps::{
-    APPROVAL_POINTS, Answers, COORDINATED_CREW, PEER_CREW, ReviewerPick, SOLO, approval_mode_from,
+    APPROVAL_POINTS, Answers, CAPTAIN, COUNCIL, ORCHESTRATOR, ReviewerPick, approval_mode_from,
     approval_mode_name, built_in_mode,
 };
 use crate::choices::{InitAnswer, choose, init_options, option, options};
@@ -24,17 +25,17 @@ use crate::choices::{InitAnswer, choose, init_options, option, options};
 /// What the Continue option carries back.
 pub(crate) const CONTINUE: &str = "continue";
 const NOT_NOW: &str = "not-now";
-/// Leaves every checkpoint's approval mode as your file has it.
+/// Leaves every approval's approval mode as your file has it.
 const KEEP: &str = "keep";
 
-const ABOUT: &str = "Argonauts runs your coding-agent CLIs as one crew, each in its own git \
+const ABOUT: &str = "Argonauts Code runs your coding-agent CLIs as one crew, each in its own git \
                      worktree, and merges only the work that passes your rules.";
 
 /// What the recommended approvals mean, in one line on that question.
 pub(crate) const AUTONOMY: &str = "With auto, the agents work and merge on their own under the \
                                    rules. Change that any time in /permissions and /approvals.";
 
-/// The order the default agent is recommended in.
+/// The order the main agent is recommended in.
 const PREFERRED_AGENTS: &[&str] = &["claude-code", "codex", "antigravity-cli"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,9 +45,9 @@ pub(crate) enum Step {
     /// Becomes one [`Step::Server`] per local server that answered, once they're probed.
     Servers,
     Server(LocalServer),
-    DefaultAgent,
-    Preset,
-    Coordinator,
+    MainAgent,
+    Workflow,
+    Orchestrator,
     /// Every role with who fills it now; Enter keeps them all.
     WhoDoesWhat,
     /// Which agent fills the role at this `/model` key.
@@ -77,6 +78,8 @@ pub(crate) struct SetupView {
     pub role_keys: Vec<String>,
     /// Each agent's models, by its id, its default first.
     pub models: BTreeMap<String, Vec<ModelOption>>,
+    /// The workflows you can pick: the built-ins, then yours and the repo's.
+    pub workflows: Vec<String>,
 }
 
 impl SetupView {
@@ -95,8 +98,8 @@ impl SetupView {
     }
 
     /// `Claude Code`, or `Claude Code (opus)` with a model.
-    fn name_of(&self, worker: &WorkerRef) -> String {
-        let Some(agent) = self.agent(&worker.worker) else {
+    fn name_of(&self, worker: &ModelRef) -> String {
+        let Some(agent) = self.agent(&worker.agent) else {
             return worker.to_string();
         };
         match &worker.model {
@@ -119,28 +122,28 @@ impl SetupView {
         self.current_value(key)?.as_str()
     }
 
-    /// Your default agent now, when its harness is ready.
-    fn current_main_agent(&self) -> Option<WorkerRef> {
-        self.ready_worker(self.current_str("main_agent")?)
+    /// Your main agent now, when its CLI is ready.
+    fn current_main_agent(&self) -> Option<ModelRef> {
+        self.ready_worker(self.current_str("crew.main")?)
     }
 
-    /// Your coordinator now, when its harness is ready.
-    fn current_coordinator(&self) -> Option<WorkerRef> {
-        let workers = self.current_list("roles.orchestrator.workers");
+    /// Your orchestrator now, when its CLI is ready.
+    fn current_orchestrator(&self) -> Option<ModelRef> {
+        let workers = self.current_list("roles.orchestrator.models");
         self.ready_worker(workers.first()?)
     }
 
-    /// `claude-code` or `claude-code/opus`, when that harness is ready.
-    fn ready_worker(&self, text: &str) -> Option<WorkerRef> {
-        let worker: WorkerRef = text.parse().ok()?;
+    /// `claude-code` or `claude-code/opus`, when that CLI is ready.
+    fn ready_worker(&self, text: &str) -> Option<ModelRef> {
+        let worker: ModelRef = text.parse().ok()?;
         self.ready()
-            .any(|agent| agent.id == worker.worker)
+            .any(|agent| agent.id == worker.agent)
             .then_some(worker)
     }
 
-    /// The one mode every checkpoint the setup sets has now, or `None` when they differ. A
-    /// checkpoint your file leaves out has its built-in mode, and the full auto switch puts
-    /// them all in full auto.
+    /// The one mode every approval the setup sets has now, or `None` when they are different. A
+    /// approval your file leaves out has its built-in mode, and the autopilot switch puts
+    /// them all in autopilot.
     fn current_approvals(&self) -> Option<ApprovalMode> {
         let switch = self.current_value("approvals.autopilot");
         if switch.and_then(toml::Value::as_bool) == Some(true) {
@@ -187,9 +190,9 @@ impl SetupView {
     pub(crate) fn can_ask(&self, step: &Step) -> bool {
         match step {
             Step::Agents
-            | Step::DefaultAgent
-            | Step::Preset
-            | Step::Coordinator
+            | Step::MainAgent
+            | Step::Workflow
+            | Step::Orchestrator
             | Step::WhoDoesWhat
             | Step::RoleAgent(_)
             | Step::RoleModel(_) => self.logins_known,
@@ -230,7 +233,7 @@ pub(crate) fn value_of(action: &AnswerAction) -> Option<String> {
     }
 }
 
-/// `None` when the step has nothing to ask, such as the default agent with none ready.
+/// `None` when the step has nothing to ask, such as the main agent with none ready.
 pub(crate) fn question(step: &Step, view: &SetupView, answers: &Answers) -> Option<Question> {
     match step {
         Step::Terms => Some(Question {
@@ -242,9 +245,9 @@ pub(crate) fn question(step: &Step, view: &SetupView, answers: &Answers) -> Opti
         Step::Agents => Some(agents_question(view)),
         Step::Servers => None,
         Step::Server(server) => Some(server_question(server, view)),
-        Step::DefaultAgent => main_agent_question(view),
-        Step::Preset => Some(preset_question(view)),
-        Step::Coordinator => coordinator_question(view, answers),
+        Step::MainAgent => main_agent_question(view),
+        Step::Workflow => Some(workflow_question(view)),
+        Step::Orchestrator => orchestrator_question(view, answers),
         Step::WhoDoesWhat => Some(roles::who_does_what(view, answers)),
         Step::RoleAgent(key) => roles::agent_question(view, answers, key),
         Step::RoleModel(key) => roles::model_question(view, answers, key),
@@ -296,7 +299,7 @@ fn agent_line(agent: &FoundAgent) -> String {
 }
 
 fn server_question(server: &LocalServer, view: &SetupView) -> Question {
-    let picked = view.current_list("roles.reviewer.workers");
+    let picked = view.current_list("roles.reviewer.models");
     let current = server
         .models
         .iter()
@@ -341,7 +344,7 @@ fn main_agent_question(view: &SetupView) -> Option<Question> {
     let current = view.current_main_agent();
     let first = current
         .as_ref()
-        .map(|worker| worker.worker.clone())
+        .map(|worker| worker.agent.clone())
         .or_else(|| recommended_agent(view));
     let answers = agent_answers(view, first.as_deref(), current.as_ref());
     if answers.is_empty() {
@@ -349,9 +352,9 @@ fn main_agent_question(view: &SetupView) -> Option<Question> {
     }
     Some(Question {
         kind: ChoiceKind::Init,
-        title: "Who you chat with".to_owned(),
+        title: "Who you talk to".to_owned(),
         body: vec![
-            "The agent you chat with, and the one that works alone on small changes.".to_owned(),
+            "The agent you talk to, and the one that works alone on small changes.".to_owned(),
         ],
         options: init_options(&answers),
     })
@@ -370,7 +373,7 @@ fn recommended_agent(view: &SetupView) -> Option<String> {
 pub(super) fn agent_answers(
     view: &SetupView,
     first: Option<&str>,
-    current: Option<&WorkerRef>,
+    current: Option<&ModelRef>,
 ) -> Vec<InitAnswer> {
     let mut ready: Vec<&FoundAgent> = view.ready().collect();
     ready.sort_by_key(|agent| Some(agent.id.as_str()) != first);
@@ -378,7 +381,7 @@ pub(super) fn agent_answers(
         .into_iter()
         .map(|agent| {
             let model = current
-                .filter(|worker| worker.worker == agent.id)
+                .filter(|worker| worker.agent == agent.id)
                 .and_then(|worker| worker.model.as_ref())
                 .map(|model| format!("model {model}"));
             let detail: Vec<String> = agent.version.iter().cloned().chain(model).collect();
@@ -391,38 +394,45 @@ pub(super) fn agent_answers(
         .collect()
 }
 
-/// The harness you picked, keeping the model your file sets when the harness is the same.
-pub(super) fn kept_or_new(current: Option<WorkerRef>, picked: &str) -> WorkerRef {
+/// The CLI you picked, keeping the model your file sets when the CLI is the same.
+pub(super) fn kept_or_new(current: Option<ModelRef>, picked: &str) -> ModelRef {
     current
-        .filter(|worker| worker.worker == picked)
-        .unwrap_or_else(|| WorkerRef::new(picked, None))
+        .filter(|worker| worker.agent == picked)
+        .unwrap_or_else(|| ModelRef::new(picked, None))
 }
 
-fn preset_question(view: &SetupView) -> Question {
+fn workflow_question(view: &SetupView) -> Question {
     let recommended = if view.ready().count() >= 2 {
-        PEER_CREW
+        COUNCIL
     } else {
-        SOLO
+        CAPTAIN
     };
+    // A name no workflow has, such as one an older file kept, runs the default, so it isn't
+    // offered back.
     let first = view
         .current_str("workflow")
+        .filter(|name| view.workflows.iter().any(|known| known == name))
         .unwrap_or(recommended)
         .to_owned();
     let mut answers = vec![
         described(
-            PEER_CREW,
+            COUNCIL,
             "Council",
             "No single planner: the agents propose, challenge, and review each other.",
         ),
         described(
-            COORDINATED_CREW,
+            ORCHESTRATOR,
             "Orchestrator",
             "One orchestrator you pick plans and delegates.",
         ),
-        described(SOLO, "Solo", "One agent at a time."),
+        described(
+            CAPTAIN,
+            "Captain",
+            "The CLI you talk to does the work itself; ask in your own words for a reviewer or a workflow.",
+        ),
     ];
     if !answers.iter().any(|answer| answer.value == first) {
-        answers.push(described(&first, &first, "Your workflow now."));
+        answers.push(described(&first, &shown_name(&first), "Your workflow now."));
     }
     answers.sort_by_key(|answer| answer.value != first);
     Question {
@@ -441,19 +451,19 @@ pub(super) fn described(value: &str, label: &str, detail: &str) -> InitAnswer {
     }
 }
 
-fn coordinator_question(view: &SetupView, answers: &Answers) -> Option<Question> {
-    let current = view.current_coordinator();
+fn orchestrator_question(view: &SetupView, answers: &Answers) -> Option<Question> {
+    let current = view.current_orchestrator();
     let first = current
         .as_ref()
         .or(answers.main_agent.as_ref())
-        .map(|worker| worker.worker.clone());
+        .map(|worker| worker.agent.clone());
     let choices = agent_answers(view, first.as_deref(), current.as_ref());
     if choices.is_empty() {
         return None;
     }
     Some(Question {
         kind: ChoiceKind::Init,
-        title: "Who coordinates".to_owned(),
+        title: "Who orchestrates".to_owned(),
         body: vec!["The orchestrator plans the work and hands it out.".to_owned()],
         options: init_options(&choices),
     })
@@ -491,7 +501,7 @@ fn approvals_question(view: &SetupView) -> Question {
         described(
             "auto_preview",
             "Auto preview",
-            "You approve, and Argonauts learns what it would have decided.",
+            "You approve, and Argonauts Code learns what it would have decided.",
         ),
     ];
     if now.is_none() {
@@ -531,7 +541,7 @@ fn telemetry_question(view: &SetupView) -> Question {
         kind: ChoiceKind::Init,
         title: "Usage counts".to_owned(),
         body: vec![
-            "Argonauts can send one anonymous event a day: its version, your system, the CLIs \
+            "Argonauts Code can send one anonymous event a day: its version, your system, the CLIs \
              and models you use with their tokens and value, and which features you use. Never \
              prompts, code, or names of files, folders, repositories, accounts or keys. \
              argonauts telemetry show prints it."
@@ -598,7 +608,7 @@ pub(crate) fn apply(step: &Step, value: &str, view: &SetupView, answers: &mut An
                 let names: Vec<String> = answers.crew.iter().map(|w| view.name_of(w)).collect();
                 format!("Your crew: {}.", names.join(", "))
             };
-            // The card closes on the answer, so the transcript keeps how to log back in.
+            // The question closes on the answer, so the transcript keeps how to log back in.
             let logged_out = view
                 .agents
                 .iter()
@@ -627,27 +637,27 @@ pub(crate) fn apply(step: &Step, value: &str, view: &SetupView, answers: &mut An
                 server.name()
             )
         }
-        Step::DefaultAgent => {
+        Step::MainAgent => {
             let agent = kept_or_new(view.current_main_agent(), value);
-            let line = format!("You chat with {}.", view.name_of(&agent));
+            let line = format!("You talk to {}.", view.name_of(&agent));
             answers.main_agent = Some(agent);
             line
         }
-        Step::Preset => {
+        Step::Workflow => {
             answers.workflow = value.to_owned();
             format!("Workflow: {value}.")
         }
-        Step::Coordinator => {
-            let agent = kept_or_new(view.current_coordinator(), value);
-            let line = format!("{} coordinates.", view.name_of(&agent));
-            answers.coordinator = Some(agent);
+        Step::Orchestrator => {
+            let agent = kept_or_new(view.current_orchestrator(), value);
+            let line = format!("{} orchestrates.", view.name_of(&agent));
+            answers.orchestrator = Some(agent);
             line
         }
         Step::WhoDoesWhat => roles::chose_row(value),
         Step::RoleAgent(key) => roles::chose_agent(view, answers, key, value),
         Step::RoleModel(key) => roles::chose_model(view, answers, key, value),
         Step::Approvals => {
-            // The question offers the four modes and, when they differ now, Keep.
+            // The question offers the four modes and, when they are different now, Keep.
             answers.approvals = approval_mode_from(value);
             match answers.approvals {
                 Some(_) => format!("Approvals: {value}."),
@@ -706,6 +716,9 @@ mod tests {
             newest_tested: None,
             unread: Vec::new(),
             builtins: Vec::new(),
+            problem: None,
+            lacks: Vec::new(),
+            check: Default::default(),
         }
     }
 
@@ -714,6 +727,10 @@ mod tests {
             agents,
             logins_known: true,
             servers: Some(Vec::new()),
+            workflows: argonauts_registry::workflow_choices()
+                .into_iter()
+                .map(|workflow| workflow.name)
+                .collect(),
             ..SetupView::default()
         }
     }
@@ -766,14 +783,64 @@ mod tests {
     }
 
     #[test]
-    fn solo_is_recommended_with_fewer_than_two_ready() {
+    fn captain_is_recommended_with_fewer_than_two_ready() {
         let one = view(vec![agent("codex", "Codex", AgentStatus::Tested)]);
-        assert_eq!(values(&preset_question(&one))[0], SOLO);
+        assert_eq!(values(&workflow_question(&one))[0], CAPTAIN);
         let two = view(vec![
             agent("codex", "Codex", AgentStatus::Tested),
             agent("claude-code", "Claude Code", AgentStatus::Tested),
         ]);
-        assert_eq!(values(&preset_question(&two))[0], PEER_CREW);
+        assert_eq!(values(&workflow_question(&two))[0], COUNCIL);
+    }
+
+    #[test]
+    fn captain_says_the_cli_you_talk_to_does_the_work_itself() {
+        let question = workflow_question(&view(Vec::new()));
+        let captain = question
+            .options
+            .iter()
+            .find(|option| value_of(&option.action).as_deref() == Some(CAPTAIN))
+            .unwrap();
+        assert_eq!(
+            captain.detail.as_deref(),
+            Some(
+                "The CLI you talk to does the work itself; ask in your own words for a reviewer \
+                 or a workflow."
+            )
+        );
+    }
+
+    #[test]
+    fn a_workflow_name_no_workflow_has_is_never_offered_or_recommended() {
+        let mut one = view(vec![agent("codex", "Codex", AgentStatus::Tested)]);
+        one.current = toml::from_str("workflow = \"retired-mode\"\n").unwrap();
+        let question = workflow_question(&one);
+        assert_eq!(values(&question), [CAPTAIN, COUNCIL, ORCHESTRATOR]);
+        assert!(question.options[0].recommended);
+        assert!(
+            question.options[1..]
+                .iter()
+                .all(|option| !option.recommended)
+        );
+
+        let mut two = view(vec![
+            agent("codex", "Codex", AgentStatus::Tested),
+            agent("claude-code", "Claude Code", AgentStatus::Tested),
+        ]);
+        two.current = one.current.clone();
+        assert_eq!(
+            values(&workflow_question(&two)),
+            [COUNCIL, ORCHESTRATOR, CAPTAIN]
+        );
+    }
+
+    #[test]
+    fn a_kept_workflow_is_named_as_the_screen_names_workflows() {
+        let mut view = view(vec![agent("codex", "Codex", AgentStatus::Tested)]);
+        view.current = toml::from_str("workflow = \"best-of-n\"\n").unwrap();
+        let question = workflow_question(&view);
+        assert_eq!(values(&question)[0], "best-of-n");
+        assert_eq!(question.options[0].label, "Best-of-n");
     }
 
     #[test]
@@ -782,25 +849,25 @@ mod tests {
             agent("claude-code", "Claude Code", AgentStatus::Tested),
             agent("codex", "Codex", AgentStatus::Tested),
         ]);
-        let mut file = "main_agent = \"codex\"\nworkflow = \"best-of-n\"\n".to_owned();
+        let mut file = "crew.main = \"codex\"\nworkflow = \"best-of-n\"\n".to_owned();
         for point in APPROVAL_POINTS {
             file.push_str(&format!("[approvals.{point}]\nmode = \"auto_preview\"\n"));
         }
         view.current = toml::from_str(&file).unwrap();
         assert_eq!(values(&main_agent_question(&view).unwrap())[0], "codex");
-        let presets = values(&preset_question(&view));
-        assert_eq!(presets[0], "best-of-n");
-        assert_eq!(presets.len(), 4);
+        let workflows = values(&workflow_question(&view));
+        assert_eq!(workflows[0], "best-of-n");
+        assert_eq!(workflows.len(), 4);
         assert_eq!(
             values(&approvals_question(&view)),
             vec!["auto_preview", "auto", "autopilot", "supervised"]
         );
     }
 
-    /// Full auto is one answer away: picking it makes every checkpoint a run opens full auto,
+    /// Autopilot is one answer away: picking it makes every approval a run opens autopilot,
     /// so the kinds without settings of their own follow too, and a rerun offers it first.
     #[test]
-    fn autopilot_is_one_answer_for_every_checkpoint() {
+    fn autopilot_is_one_answer_for_every_approval() {
         let mut view = view(Vec::new());
         let mut answers = Answers::default();
         let line = apply(&Step::Approvals, "autopilot", &view, &mut answers);
@@ -828,7 +895,7 @@ mod tests {
     fn mixed_approval_modes_offer_keep_first_and_keep_writes_nothing() {
         let mut view = view(Vec::new());
         view.current = toml::from_str(
-            "[approvals.goal]\nmode = \"auto\"\n[approvals.merge]\nmode = \"supervised\"\n",
+            "[approvals.understand]\nmode = \"auto\"\n[approvals.merge]\nmode = \"supervised\"\n",
         )
         .unwrap();
         let question = approvals_question(&view);
@@ -845,12 +912,12 @@ mod tests {
     }
 
     #[test]
-    fn a_checkpoint_left_out_counts_as_its_built_in_mode() {
+    fn an_approval_left_out_counts_as_its_built_in_mode() {
         let mut view = view(Vec::new());
         let question = approvals_question(&view);
         assert_eq!(values(&question)[0], "auto");
         assert_eq!(question.body, vec![AUTONOMY.to_owned()]);
-        view.current = toml::from_str("[approvals.goal]\nmode = \"supervised\"\n").unwrap();
+        view.current = toml::from_str("[approvals.understand]\nmode = \"supervised\"\n").unwrap();
         assert_eq!(values(&approvals_question(&view))[0], KEEP);
         let mut file = String::new();
         for point in APPROVAL_POINTS {
@@ -858,21 +925,21 @@ mod tests {
         }
         view.current = toml::from_str(&file).unwrap();
         assert_eq!(values(&approvals_question(&view))[0], "supervised");
-        view.current = toml::from_str("[approvals.goal]\nmode = \"auto_preview\"\n").unwrap();
+        view.current = toml::from_str("[approvals.understand]\nmode = \"auto_preview\"\n").unwrap();
         assert_eq!(values(&approvals_question(&view))[0], KEEP);
         view.current = toml::from_str("[approvals.merge]\nmode = \"sometimes\"\n").unwrap();
         assert_eq!(values(&approvals_question(&view))[0], KEEP);
     }
 
     #[test]
-    fn a_rerun_keeps_the_model_of_the_harness_you_keep() {
+    fn a_rerun_keeps_the_model_of_the_cli_you_keep() {
         let mut view = view(vec![
             agent("claude-code", "Claude Code", AgentStatus::Tested),
             agent("codex", "Codex", AgentStatus::Tested),
         ]);
         view.current = toml::from_str(
-            "main_agent = \"codex/gpt-5.6-luna\"\n\
-             [roles.orchestrator]\nworkers = [\"claude-code/opus\"]\n",
+            "crew.main = \"codex/gpt-5.6-luna\"\n\
+             [roles.orchestrator]\nmodels = [\"claude-code/opus\"]\n",
         )
         .unwrap();
         let question = main_agent_question(&view).unwrap();
@@ -882,26 +949,23 @@ mod tests {
             Some("1.0.0 · model gpt-5.6-luna")
         );
         let mut answers = Answers::default();
-        let line = apply(&Step::DefaultAgent, "codex", &view, &mut answers);
+        let line = apply(&Step::MainAgent, "codex", &view, &mut answers);
         assert_eq!(
             answers.main_agent.as_ref().map(ToString::to_string),
             Some("codex/gpt-5.6-luna".to_owned())
         );
-        assert_eq!(line, "You chat with Codex (gpt-5.6-luna).");
+        assert_eq!(line, "You talk to Codex (gpt-5.6-luna).");
 
-        let coordinator = coordinator_question(&view, &answers).unwrap();
-        assert_eq!(values(&coordinator)[0], "claude-code");
-        apply(&Step::Coordinator, "claude-code", &view, &mut answers);
+        let orchestrator = orchestrator_question(&view, &answers).unwrap();
+        assert_eq!(values(&orchestrator)[0], "claude-code");
+        apply(&Step::Orchestrator, "claude-code", &view, &mut answers);
         assert_eq!(
-            answers.coordinator.as_ref().map(ToString::to_string),
+            answers.orchestrator.as_ref().map(ToString::to_string),
             Some("claude-code/opus".to_owned())
         );
 
-        apply(&Step::DefaultAgent, "claude-code", &view, &mut answers);
-        assert_eq!(
-            answers.main_agent,
-            Some(WorkerRef::new("claude-code", None))
-        );
+        apply(&Step::MainAgent, "claude-code", &view, &mut answers);
+        assert_eq!(answers.main_agent, Some(ModelRef::new("claude-code", None)));
     }
 
     #[test]

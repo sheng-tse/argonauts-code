@@ -1,5 +1,5 @@
 //! A failed session or run in one plain line, such as "Codex refused the answer format
-//! Argonauts asked for". The CLI's or git's own text stays where it was, behind `r`.
+//! Argonauts Code asked for". The CLI's or git's own text stays where it was, behind `r`.
 
 use crate::ErrorCategory;
 use crate::events::session::EndReason;
@@ -11,7 +11,7 @@ impl EndReason {
     pub fn plain_line(&self, cli: &str) -> Option<String> {
         let line = match self {
             Self::Completed | Self::Paused | Self::Stopped => return None,
-            Self::VendorError { category, message } => vendor_error(cli, *category, message),
+            Self::CliError { category, message } => cli_error(cli, *category, message),
             Self::Auth { .. } => format!("{cli} got a sign-in error"),
             Self::RateLimited => format!("{cli} is rate limited"),
             Self::UsageLimit { .. } => format!("{cli} is out of plan usage until it resets"),
@@ -20,10 +20,10 @@ impl EndReason {
                 format!("{cli} can't run {}", display_name_from_id(model))
             }
             Self::ContextFull => format!("{cli}'s context window is full"),
-            Self::BudgetHit { .. } => "the session reached its limit".to_owned(),
+            Self::LimitHit { .. } => "the session reached its limit".to_owned(),
             Self::Stuck { .. } => format!("{cli} stopped responding"),
             Self::AdapterBroken { .. } => {
-                format!("{cli} wrote output this version of Argonauts can't read")
+                format!("{cli} wrote output this version of Argonauts Code can't read")
             }
             Self::IsolationBroken { .. } => {
                 format!("{cli} loaded your plugins into a session that must keep them out")
@@ -55,14 +55,14 @@ pub fn run_failure_line(detail: Option<&str>) -> String {
     }
 }
 
-fn vendor_error(cli: &str, category: ErrorCategory, message: &str) -> String {
+fn cli_error(cli: &str, category: ErrorCategory, message: &str) -> String {
     match category {
         ErrorCategory::InvalidRequest if about_the_answer_format(message) => {
-            format!("{cli} refused the answer format Argonauts asked for")
+            format!("{cli} refused the answer format Argonauts Code asked for")
         }
         ErrorCategory::InvalidRequest => format!("{cli}'s service rejected the request as invalid"),
         ErrorCategory::AnswerMissed => {
-            format!("{cli} didn't answer in the format Argonauts asked for")
+            format!("{cli} didn't answer in the format Argonauts Code asked for")
         }
         ErrorCategory::Auth => format!("{cli} got a sign-in error"),
         ErrorCategory::UsageLimit => format!("{cli} is out of plan usage until it resets"),
@@ -76,7 +76,7 @@ fn vendor_error(cli: &str, category: ErrorCategory, message: &str) -> String {
         ErrorCategory::ContextFull => format!("{cli}'s context window is full"),
         ErrorCategory::ModelUnavailable => format!("{cli}'s model isn't available"),
         ErrorCategory::Permission => format!("{cli} was refused permission for an action"),
-        ErrorCategory::Budget => format!("{cli} reached its own spend cap"),
+        ErrorCategory::Limit => format!("{cli} reached its own spend cap"),
         ErrorCategory::Interrupted => format!("{cli}'s answer was cut off"),
         ErrorCategory::Cli | ErrorCategory::Stalled | ErrorCategory::Unknown => {
             format!("{cli} gave an error")
@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn a_refused_format_is_said_in_words_and_never_retried() {
-        let refused = EndReason::VendorError {
+        let refused = EndReason::CliError {
             category: ErrorCategory::InvalidRequest,
             message: "Invalid schema for response_format 'codex_output_schema': 'schema.required' \
                       is required to include every key in properties. Missing 'summary'"
@@ -107,25 +107,25 @@ mod tests {
         };
         assert_eq!(
             refused.plain_line("Codex").as_deref(),
-            Some("Codex refused the answer format Argonauts asked for")
+            Some("Codex refused the answer format Argonauts Code asked for")
         );
         assert!(!refused.may_pass());
     }
 
     #[test]
     fn only_errors_that_may_pass_are_retried() {
-        let vendor = |category| EndReason::VendorError {
+        let agent_id = |category| EndReason::CliError {
             category,
             message: String::new(),
         };
         for passing in [
             EndReason::RateLimited,
-            vendor(ErrorCategory::RateLimit),
-            vendor(ErrorCategory::Overloaded),
-            vendor(ErrorCategory::Server),
-            vendor(ErrorCategory::Network),
-            vendor(ErrorCategory::Timeout),
-            vendor(ErrorCategory::AnswerMissed),
+            agent_id(ErrorCategory::RateLimit),
+            agent_id(ErrorCategory::Overloaded),
+            agent_id(ErrorCategory::Server),
+            agent_id(ErrorCategory::Network),
+            agent_id(ErrorCategory::Timeout),
+            agent_id(ErrorCategory::AnswerMissed),
             EndReason::Crashed {
                 message: String::new(),
             },
@@ -133,10 +133,10 @@ mod tests {
             assert!(passing.may_pass(), "{passing:?}");
         }
         for repeats in [
-            vendor(ErrorCategory::InvalidRequest),
-            vendor(ErrorCategory::Auth),
-            vendor(ErrorCategory::Permission),
-            vendor(ErrorCategory::Unknown),
+            agent_id(ErrorCategory::InvalidRequest),
+            agent_id(ErrorCategory::Auth),
+            agent_id(ErrorCategory::Permission),
+            agent_id(ErrorCategory::Unknown),
             EndReason::Auth {
                 message: String::new(),
             },

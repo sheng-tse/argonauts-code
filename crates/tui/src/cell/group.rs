@@ -81,7 +81,7 @@ impl CollapsedGroup {
             Span::styled(" · ", theme.style(Role::Dim)),
             Span::styled(
                 format!("{failed} failed"),
-                theme.style(Role::Error).add_modifier(Modifier::BOLD),
+                theme.style(Role::Danger).add_modifier(Modifier::BOLD),
             ),
         ]
     }
@@ -104,7 +104,7 @@ impl CollapsedGroup {
     fn summary_rows(
         &self,
         ctx: &RenderCtx<'_>,
-        lead: Vec<Span<'static>>,
+        opening: Vec<Span<'static>>,
         hang: usize,
     ) -> Vec<Line<'static>> {
         let theme = ctx.theme;
@@ -121,12 +121,12 @@ impl CollapsedGroup {
         if running {
             spans.push(Span::styled(theme.glyphs.ellipsis, style));
         } else if !ctx.expanded
-            && spans_width(&lead) + spans_width(&spans) + str_width(EXPAND_HINT) <= width
+            && spans_width(&opening) + spans_width(&spans) + str_width(EXPAND_HINT) <= width
         {
             // The hint rides on the summary's row, or stays out rather than wrap on its own.
             spans.push(Span::styled(EXPAND_HINT, dim));
         }
-        wrap_spans(&spans, width, &lead, &[indent(hang)])
+        wrap_spans(&spans, width, &opening, &[indent(hang)])
     }
 
     /// Inside a call's body, starting `indent_cols` columns in.
@@ -174,8 +174,8 @@ impl HistoryCell for CollapsedGroup {
         }
         match self.current_target() {
             Some(target) => {
-                let lead = vec![running_bullet(ctx), Span::raw(" ")];
-                rows = self.summary_rows(ctx, lead, TEXT_COL);
+                let opening = vec![running_bullet(ctx), Span::raw(" ")];
+                rows = self.summary_rows(ctx, opening, TEXT_COL);
                 let mut row = result_prefix(ctx.theme);
                 row.push(Span::styled(target, ctx.theme.style(Role::Dim)));
                 rows.push(Line::from(row));

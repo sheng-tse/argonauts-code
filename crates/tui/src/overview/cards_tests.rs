@@ -1,6 +1,7 @@
 use argonauts_core::api::{PlanUsage, UsageSummary};
 
 use super::*;
+use crate::kit::Level;
 use crate::overview::sample;
 use crate::stability;
 use crate::text::{plain_text, spans_width};
@@ -169,21 +170,15 @@ fn what_is_left_reads_as_the_rest_of_the_window() {
 fn spend_names_who_spent_what_and_tokens_what_they_were() {
     let usage = sample::usage();
     let spend = rows(&usage, UsageCard::Spend, Form::Full, 110);
-    assert!(
-        spend[1].ends_with("~$1.86 today · no limit set · 3 runs and this chat │"),
-        "{spend:#?}"
-    );
-    let legend = spend[3..].join("\n");
+    assert!(spend[1].starts_with(" │ ◆ spend  today "), "{spend:#?}");
+    assert!(spend[1].ends_with("~$1.86 · no limit set │"), "{spend:#?}");
+    let models = spend[5..].join("\n");
     for part in [
-        "on Claude Code",
-        "~$1.12",
-        "60%",
-        "$0.62",
-        "33%",
-        "on agy",
-        "~$0.12",
+        "■ Opus 5.5            Claude Code   ~$1.12   60%",
+        "■ GPT 5.6             Codex         $0.62    33%",
+        "■ Gemini 3.6 Flash    agy           ~$0.12   6%",
     ] {
-        assert!(legend.contains(part), "{part}: {legend}");
+        assert!(models.contains(part), "{part}: {models}");
     }
     let tokens = rows(&usage, UsageCard::Tokens, Form::Full, 60);
     assert!(tokens[1].ends_with("1.4M today │"), "{tokens:#?}");
@@ -247,7 +242,7 @@ fn a_cli_at_your_plan_limit_says_so_and_who_takes_its_tasks() {
         "{rows:#?}"
     );
 
-    // Nobody to take over, the limit still shows as reached.
+    // With no fallback, the limit still shows as reached.
     usage.plans[1].moved_to = None;
     let rows = self::rows(&usage, UsageCard::PlanUsage, Form::Compact, 160);
     assert!(

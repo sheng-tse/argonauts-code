@@ -66,7 +66,7 @@ impl NarratorHost {
             .narrator
             .model
             .clone()
-            .unwrap_or_else(|| settings.main_agent.clone());
+            .unwrap_or_else(|| settings.crew.main.clone());
         if before.mode != settings.ui.narrator {
             self.narrator.set_mode(settings.ui.narrator);
         }
@@ -84,8 +84,8 @@ impl NarratorHost {
         self.status().mode != NarratorMode::Off
     }
 
-    /// `s` in the status view. The line comes back as `RunUpdate::Narrator`, so a model call never holds up
-    /// the app.
+    /// `s` in the status view. The line comes back as `RunUpdate::Narrator`, so a model call never
+    /// holds up the app.
     pub(crate) fn summary(&self) {
         let narrator = Arc::clone(&self.narrator);
         self.reply(async move { narrator.summary().await }, "write a summary");
@@ -187,7 +187,7 @@ mod tests {
             run: RunId::new("run-001").ok(),
             kind: NarratorLineKind::Update,
             text: "Two workers are building.".to_owned(),
-            model: argonauts_core::names::WorkerRef::new("claude-code", None),
+            model: argonauts_core::names::ModelRef::new("claude-code", None),
             spend: Spend::default(),
         };
         append_line(&path, &line).expect("first");

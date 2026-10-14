@@ -330,7 +330,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "argonauts-cli"
+name = "argonauts-code"
 version = "0.0.1"
 dependencies = [
  "anyhow",
@@ -545,6 +545,7 @@ name = "argonauts-scenarios"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "argonauts-conductor",
  "argonauts-core",
  "argonauts-learning",
  "argonauts-testkit",

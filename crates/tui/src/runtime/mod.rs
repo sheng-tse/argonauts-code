@@ -5,7 +5,7 @@ mod editor;
 mod gone;
 mod keys;
 mod screen;
-mod takeover;
+mod take_over;
 
 use std::io::{self, BufWriter, Write};
 use std::time::Duration;
@@ -26,7 +26,7 @@ use crate::theme::ColorEnv;
 
 pub use editor::{EditorError, edit_in_editor, edit_with, editor_command};
 pub use gone::TerminalGone;
-pub use takeover::{
+pub use take_over::{
     ENDPOINT_REFUSAL, TakeOverPlan, TermEnv, plan_take_over, plan_take_over_in, run_in_tmux,
     write_spec_files,
 };

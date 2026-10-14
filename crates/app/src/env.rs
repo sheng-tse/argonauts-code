@@ -10,7 +10,7 @@ use argonauts_core::{Paths, RepoId, RunId};
 
 use crate::{git, hidden_git};
 
-/// Set in every agent session Argonauts starts.
+/// Set in every agent session Argonauts Code starts.
 pub(crate) const SESSION_ENV: &str = "ARGONAUTS_SESSION";
 
 /// Where a folder's history lives.
@@ -18,10 +18,10 @@ pub(crate) const SESSION_ENV: &str = "ARGONAUTS_SESSION";
 pub(crate) enum FolderGit {
     /// The folder is a git repository.
     Repository,
-    /// No `.git` in the folder. Argonauts keeps its history at this path under its own home.
+    /// No `.git` in the folder. Argonauts Code keeps its history at this path under its own home.
     Hidden(PathBuf),
-    /// No git at all. Chat and solo write your files directly, and the first workflow that
-    /// needs branches turns the hidden history on.
+    /// No git at all. The conversation and Captain write your files directly, and the first
+    /// workflow that needs branches turns the hidden history on.
     Off,
 }
 
@@ -66,7 +66,7 @@ impl AppEnv {
         Self::for_repo(paths, &root, interactive)
     }
 
-    /// From explicit paths, as tests and the supervisor build it.
+    /// From explicit paths, as tests and the run host build it.
     pub(crate) fn for_repo(
         paths: Paths,
         repo_root: &Path,
@@ -97,8 +97,8 @@ impl AppEnv {
         self.paths.run_dir(&self.repo_id, run)
     }
 
-    pub(crate) fn chat_dir(&self) -> PathBuf {
-        self.state_dir.join(repo_state::CHAT)
+    pub(crate) fn conversation_dir(&self) -> PathBuf {
+        self.state_dir.join(repo_state::CONVERSATION)
     }
 
     pub(crate) fn global_config(&self) -> PathBuf {
@@ -243,9 +243,9 @@ mod tests {
             env.state_dir.clone(),
             env.runs_dir(),
             env.run_dir(&run),
-            env.chat_dir(),
+            env.conversation_dir(),
             env.global_config(),
-            env.paths.global_presets(),
+            env.paths.global_workflows(),
         ] {
             assert!(path.starts_with(home.path()), "{}", path.display());
             assert!(!path.starts_with(&env.repo_root), "{}", path.display());

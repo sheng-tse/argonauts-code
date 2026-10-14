@@ -1,6 +1,6 @@
 //! Session drivers: code that speaks a two-way protocol with an agent, such as the Agent Client
 //! Protocol, where a line parser can't work because permission requests need answers while
-//! updates stream. The harness worker still spawns and sandboxes the process, and keeps its
+//! updates stream. The CLI runner still spawns and sandboxes the process, and keeps its
 //! refusal rules, meter, watchdogs, raw logs, file diffs, and stop plan.
 
 use std::path::PathBuf;
@@ -14,7 +14,7 @@ use crate::ErrorCategory;
 use crate::event::AgentEvent;
 use crate::events::session::Delivery;
 use crate::future::BoxFuture;
-use crate::worker::Access;
+use crate::session_runner::Access;
 
 pub trait SessionDriver: Send + Sync {
     /// Runs one session to its end. It returns when the agent's turn ends with nothing left to
@@ -22,13 +22,13 @@ pub trait SessionDriver: Send + Sync {
     fn run(&self, io: DriverIo, start: DriverStart) -> BoxFuture<'static, DriverEnd>;
 }
 
-/// The child's pipes and the worker's channels.
+/// The child's pipes and the runner's channels.
 pub struct DriverIo {
     pub stdin: Box<dyn AsyncWrite + Send + Unpin>,
     pub stdout: Box<dyn AsyncRead + Send + Unpin>,
-    /// Lines the worker has already logged.
+    /// Lines the runner has already logged.
     pub stderr_lines: mpsc::Receiver<String>,
-    /// Unbounded, so the driver never stops reading the agent's pipe while the worker's meter,
+    /// Unbounded, so the driver never stops reading the agent's pipe while the runner's meter,
     /// watchdogs, or journal are busy.
     pub events: mpsc::UnboundedSender<AgentEvent>,
     pub control: mpsc::Receiver<DriverControl>,
@@ -38,13 +38,13 @@ pub struct DriverIo {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DriverStart {
-    /// The card's worktree, or the run's base worktree for read-only sessions.
+    /// The task's worktree, or the run's base worktree for read-only sessions.
     pub cwd: PathBuf,
     pub prompt: String,
     pub model: Option<String>,
     pub effort: Option<String>,
     pub access: Access,
-    /// The vendor session to resume.
+    /// The CLI session to resume.
     pub resume: Option<String>,
     pub mcp_servers: Vec<McpServerSpec>,
     pub scope: PermissionScope,
@@ -53,7 +53,7 @@ pub struct DriverStart {
     /// Where the report tool writes the last valid report, `<session_dir>/report.json`.
     pub report_file: Option<PathBuf>,
     /// A direct turn that asks you: what the agent asks about, and the policy allows, goes to
-    /// the app as a card.
+    /// the app as a task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asking: Option<crate::asking::AskTarget>,
 }
@@ -73,8 +73,8 @@ pub enum DriverControl {
     Cancel,
 }
 
-/// What a session may touch, computed by the worker from the session's access, workdir, and
-/// sandbox, plus the paths no card may ever touch. The driver answers permission requests from
+/// What a session may touch, computed by the runner from the session's access, workdir, and
+/// sandbox, plus the paths no task may ever touch. The driver answers permission requests from
 /// it, and the OS sandbox enforces the same bounds for whatever the agent does without asking.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PermissionScope {
@@ -106,11 +106,11 @@ pub struct RawFrame {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DriverEnd {
     /// For resume and take-over.
-    pub vendor_session: Option<String>,
+    pub cli_session: Option<String>,
     pub stop: DriverStop,
 }
 
-/// Why the session ended. The worker turns it into an `EndReason`.
+/// Why the session ended. The runner turns it into an `EndReason`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "stop", rename_all = "snake_case")]
 pub enum DriverStop {

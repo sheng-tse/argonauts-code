@@ -1,4 +1,4 @@
-//! Harness agents, direct endpoints, the registry, and the MCP servers.
+//! CLI agents, direct endpoints, the registry, and the MCP servers.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::Span;
 use crate::{AuthMode, TokenPrice};
 
-/// One harness adapter's settings, `[agents.<id>]`.
+/// One CLI adapter's settings, `[agents.<id>]`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct AgentSettings {
@@ -21,7 +21,7 @@ pub struct AgentSettings {
     /// Token prices when the CLI reports only tokens.
     pub price: Option<TokenPrice>,
     pub binary: Option<PathBuf>,
-    /// The version you pinned; `doctor` warns when the installed one differs.
+    /// The version you pinned; `doctor` warns when the installed one is different.
     pub version_pin: Option<String>,
     pub extra_args: Vec<String>,
     /// Paths this agent must never see (removed from its worktrees with sparse checkout).
@@ -44,7 +44,7 @@ impl Default for AgentSettings {
     }
 }
 
-/// One OpenAI-compatible endpoint, `[endpoints.<id>]`. Built-in ids with preset URLs:
+/// One OpenAI-compatible endpoint, `[endpoints.<id>]`. Built-in ids with known URLs:
 /// `openrouter`, `ollama`, `lmstudio`; anything else needs `base_url`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -101,7 +101,7 @@ pub enum StructuredMode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct RegistrySettings {
-    /// Run discovery at `argonauts init` and `/config models`.
+    /// Run discovery at `argonauts setup` and `/config models`.
     pub discover: bool,
 }
 
@@ -118,16 +118,16 @@ pub struct McpSettings {
     /// Give crew sessions the read-only `argonauts_status` tool.
     pub status_tool: bool,
     pub start_runs: StartRuns,
-    /// Front ends may send guidance. It raises no autonomy.
+    /// Outside agents may send guidance. It raises no autonomy.
     pub guidance: bool,
-    /// Front ends may pause runs.
+    /// Outside agents may pause runs.
     pub pause: bool,
     /// How much of a run leaves the machine through the server. Never diffs, file contents,
     /// prompts, or raw logs.
     pub share: Share,
-    /// The time budget of each run a front end starts.
+    /// The time limit of each run an outside agent starts.
     pub run_limit: Span,
-    /// Runs front ends may start per day, across every repo.
+    /// Runs outside agents may start per day, across every repo.
     pub runs_per_day: u32,
 }
 
@@ -148,7 +148,7 @@ impl Default for McpSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum StartRuns {
-    /// Only in a repo set up with `argonauts init` whose settings you trusted.
+    /// Only in a repo set up with `argonauts setup` whose settings you trusted.
     TrustedRepos,
     Off,
 }

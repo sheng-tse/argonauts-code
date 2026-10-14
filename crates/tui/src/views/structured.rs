@@ -3,7 +3,7 @@
 //! words. The JSON itself stays in the raw log, behind `r`.
 
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use serde_json::{Map, Value};
@@ -107,15 +107,15 @@ struct Task {
 impl Plan {
     fn read(object: &Map<String, Value>, names: &DisplayNames) -> Option<Self> {
         let (items, key_field, title_field, asks_field, paths_field) =
-            match (object.get("cards"), object.get("pieces")) {
-                (Some(Value::Array(cards)), _) => (cards, "key", "title", "task", "owned_paths"),
+            match (object.get("tasks"), object.get("pieces")) {
+                (Some(Value::Array(tasks)), _) => (tasks, "key", "title", "task", "owned_paths"),
                 (None, Some(Value::Array(pieces))) => {
                     (pieces, "name", "description", "description", "paths")
                 }
                 _ => return None,
             };
         let assignments = object.get("assignments").and_then(Value::as_array);
-        let named = |worker: &str| match worker.parse::<WorkerRef>() {
+        let named = |worker: &str| match worker.parse::<ModelRef>() {
             Ok(worker) => sanitize_line(&names.worker(&worker)).trim().to_owned(),
             Err(_) => sanitize_line(worker).trim().to_owned(),
         };
@@ -125,7 +125,7 @@ impl Plan {
                 let key = text(item.get(key_field)?)?;
                 let assignment = assignments.and_then(|all| {
                     all.iter()
-                        .find(|a| a.get("card").and_then(Value::as_str) == Some(key.as_str()))
+                        .find(|a| a.get("task").and_then(Value::as_str) == Some(key.as_str()))
                 });
                 let reviewers: Vec<String> = strings(assignment.and_then(|a| a.get("reviewers")))
                     .iter()
@@ -134,7 +134,7 @@ impl Plan {
                 let title = item.get(title_field).and_then(text).unwrap_or_default();
                 Some(Task {
                     worker: assignment
-                        .and_then(|a| a.get("owner"))
+                        .and_then(|a| a.get("worker"))
                         .and_then(Value::as_str)
                         .map(named)
                         .unwrap_or_default(),
@@ -209,7 +209,7 @@ impl Plan {
         gives.push(Give::Cut { column: 1, min: 8 });
         columns::fit(&mut fitted, draw.width.saturating_sub(2), &gives);
 
-        let lead = || vec![Span::raw("  ")];
+        let opening = || vec![Span::raw("  ")];
         let noun = if self.tasks.len() == 1 {
             "task"
         } else {
@@ -217,10 +217,10 @@ impl Plan {
         };
         let mut lines = vec![
             head("Plan", &format!("{} {noun}", self.tasks.len()), theme),
-            columns::line(lead(), &fitted, &header, None, draw.width),
+            columns::line(opening(), &fitted, &header, None, draw.width),
         ];
         for (task, row) in self.tasks.iter().zip(&rows) {
-            lines.push(columns::line(lead(), &fitted, row, None, draw.width));
+            lines.push(columns::line(opening(), &fitted, row, None, draw.width));
             if draw.expanded {
                 lines.extend(indented(&task.asks, 4, Role::Dim, draw));
                 if !task.paths.is_empty() {
@@ -244,9 +244,15 @@ impl Plan {
             notes.push(panes::key_names(hint, theme));
         }
         if !notes.is_empty() {
-            let lead = [Span::styled(format!("  {}  ", theme.glyphs.result), dim)];
+            let opening = [Span::styled(format!("  {}  ", theme.glyphs.result), dim)];
             let rest = [Span::raw("     ")];
-            lines.extend(wrap_text(&notes.join(" · "), dim, draw.width, &lead, &rest));
+            lines.extend(wrap_text(
+                &notes.join(" · "),
+                dim,
+                draw.width,
+                &opening,
+                &rest,
+            ));
         }
         lines
     }
@@ -435,7 +441,7 @@ mod tests {
         json!({
             "plan": {"summary": "Add due dates in three tasks.", "approach": "", "pieces": [],
                      "choices": [], "risks": [], "test_strategy": "", "new_dependencies": []},
-            "cards": [
+            "tasks": [
                 {"key": "iface", "title": "Due-date stubs", "task": "Define the Due type.",
                  "kind": "interface", "owned_paths": ["src/due.rs"], "read_only_paths": [],
                  "depends_on": [], "criteria": []},
@@ -447,9 +453,9 @@ mod tests {
                  "depends_on": [], "criteria": []}
             ],
             "assignments": [
-                {"card": "iface", "owner": "claude-code", "reviewers": ["antigravity-cli/gemini"]},
-                {"card": "impl", "owner": "codex", "reviewers": ["antigravity-cli/gemini"]},
-                {"card": "tests", "owner": "claude-code", "reviewers": ["antigravity-cli/gemini"]}
+                {"task": "iface", "worker": "claude-code", "reviewers": ["antigravity-cli/gemini"]},
+                {"task": "impl", "worker": "codex", "reviewers": ["antigravity-cli/gemini"]},
+                {"task": "tests", "worker": "claude-code", "reviewers": ["antigravity-cli/gemini"]}
             ]
         })
     }

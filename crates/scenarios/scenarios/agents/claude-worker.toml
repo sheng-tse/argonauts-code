@@ -1,0 +1,19 @@
+# A Captain task owned by the fake Claude Code, which writes hello.txt and plays the recorded
+# build run that answered the same task. The reviewer is an endpoint, so no other fake runs.
+
+[version]
+claude = "2.1.284 (Claude Code)"
+codex = "codex-cli 0.158.0"
+agy = "1.2.13"
+
+[[rule]]
+argv0 = "claude"
+args_contain = ["-p", "--permission-mode", "acceptEdits"]
+stdin_prompt = "line"
+prompt_contains = "hello.txt"
+[[rule.step]]
+write = { path = "hello.txt", content = "hi\n" }
+[[rule.step]]
+emit_file = "../../../adapters/claude-code/fixtures/write.stdout.jsonl"
+[[rule.step]]
+exit = 0

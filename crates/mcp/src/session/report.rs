@@ -1,6 +1,6 @@
 //! `argonauts_report`: each call is checked against the step's schema, and its errors go back
 //! so the model can fix them, at most three times. The last valid report is written to
-//! `report.json`. The conductor validates it again, since the agent could write the file itself.
+//! `report.json`. Argonauts Code validates it again, since the agent could write the file itself.
 
 use std::fs::File;
 use std::io::Write as _;
@@ -121,7 +121,7 @@ impl ReportState {
 }
 
 /// Writes the report in place. The session sandbox lets the agent write only `report.json`, so
-/// a temp file beside it can't be made. The conductor validates the file again, which catches
+/// a temp file beside it can't be made. Argonauts Code validates the file again, which catches
 /// a torn write.
 fn write_report(path: &Path, report: &Value) -> Result<(), String> {
     let failed = |err: &dyn std::fmt::Display| format!("writing {}: {err}", path.display());

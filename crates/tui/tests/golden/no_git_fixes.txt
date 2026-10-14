@@ -1,0 +1,45 @@
+● This folder has no git, so this workflow keeps its history under ~/.argonauts. Your folder gets no .git, and
+  the finished work is written back into your files. /git changes that.
+  ⎿  Left out of what the agents see, and left alone in your folder:
+     secrets         .env              also .env.*, *.pem, *.key
+     packages        node_modules/     also .venv/
+     build output    none here         __pycache__/, .next/, .gradle/ and the rest of the built-in list
+     history.leave_out adds to the list or takes from it
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Write this run into your folder?
+  2 tasks · 4 files · +52 −6 · suite passed · every review approved
+
+  ❯ 1. Write it into my folder
+    2. Request changes on some tasks
+    3. Abandon the run
+    4. Show the diff
+
+  Enter to choose · Tab to add a note · Esc to set aside
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ You and the run both changed src/cli.js. Which version goes in?
+  src/cli.js: yours +3 −1 since the run began, the run's +24 −4 · its other 3 files go in either way
+  checks passed on the run's version · nothing is written into your folder until you choose
+
+  ❯ 1. Keep my version          your edit stays, and the run's change to src/cli.js is left out
+    2. Take the run's version   the run's src/cli.js goes in; yours stays in the history for /rewind
+    3. Show both                your src/cli.js beside the run's, then these choices again
+    4. Merge later              the run pauses here; /resume run-20261010-091503-3fa2 writes it in
+
+  Enter to choose · Tab to add a note · Esc to set aside
+
+ ╭ Phases ──────────┬ Merge · 2 steps ──────────────────────────────────────────────────────────────────────────────╮
+ │   ✔ Build    2/2 │  ✔ final check             npm test · 15 of 16 pass, as at the start                       7s │
+ │   ✔ Review   2/2 │  ✔ write into your folder  history kept by Argonauts · 2 tasks                             2s │
+ │   ✔ Sign-off 1/1 │                                                                                               │
+ │ ❯ ✔ Merge        │   no model writes a commit message here: only /rewind reads the history                       │
+ ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯
+
+● Written into your folder · 4 files +52 −6 · history kept by Argonauts
+  ⎿  Run finished · 6m20s · the run's copies removed: base, 2 tasks, merge
+
+Folder        ~/code/todo · no git, workflows keep a hidden history · history.git 18 MB · /git clean
+
+● Cleaned this folder's hidden history · 18 MB → 7 MB
+  ⎿  removed what 3 ended runs left behind and packed the rest · a paused run keeps its copies for /resume

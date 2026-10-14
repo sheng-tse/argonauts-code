@@ -1,5 +1,5 @@
 //! The evolution loop: the mutation rules, the paired comparison, the holdout, the canary,
-//! rollbacks, the stages of autonomy, and the monthly budget. Replays are synthetic results and
+//! rollbacks, the stages of autonomy, and the monthly limit. Replays are synthetic results and
 //! every repository is a temporary one.
 
 use std::path::{Path, PathBuf};
@@ -13,15 +13,17 @@ use argonauts_core::events::run::{Party, RunOutcome};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::evolution::EvolutionStage;
-use argonauts_core::steps::card::ProcessChange;
+use argonauts_core::steps::task::ProcessChange;
 use argonauts_core::workflow::{Step, StepKind, Workflow};
 use argonauts_learning::evolution::{
     Action, CandidateState, Evolution, Stage, Thresholds, Tripwire, check_evolvable,
     check_mutation, compare, holdout_ok, stage, tripwires,
 };
+use argonauts_learning::learned_workflows::{
+    self, ChangeClass, LearnedWorkflow, LoadedLearnedWorkflow,
+};
 use argonauts_learning::outcomes::{self, LogLine, Reversal};
-use argonauts_learning::recipes::{self, ChangeClass, LoadedRecipe, Recipe};
-use argonauts_learning::{RecipeRef, ReplayResult, RunRecord, Store, git};
+use argonauts_learning::{LearnedWorkflowRef, ReplayResult, RunRecord, Store, git};
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/learned")
@@ -31,7 +33,7 @@ fn start() -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp(1_790_000_000).unwrap()
 }
 
-/// A git repository with `api-feature` v1 committed, and the conductor's state beside it.
+/// A git repository with `api-feature` v1 committed, and Argonauts Code's state beside it.
 struct World {
     _dir: tempfile::TempDir,
     store: Store,
@@ -42,7 +44,7 @@ impl World {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         let store = Store::new(dir.path().join("state"), &repo);
-        let folder = store.recipes_dir().join("api-feature");
+        let folder = store.learned_workflows_dir().join("api-feature");
         std::fs::create_dir_all(&folder).unwrap();
         for entry in std::fs::read_dir(fixtures().join("api-feature")).unwrap() {
             let path = entry.unwrap().path();
@@ -62,11 +64,11 @@ impl World {
     }
 
     fn folder(&self) -> PathBuf {
-        self.store.recipes_dir().join("api-feature")
+        self.store.learned_workflows_dir().join("api-feature")
     }
 
-    fn parent(&self) -> LoadedRecipe {
-        recipes::load_file(&self.folder().join("v1.yaml")).unwrap()
+    fn parent(&self) -> LoadedLearnedWorkflow {
+        learned_workflows::load_file(&self.folder().join("v1.yaml")).unwrap()
     }
 }
 
@@ -93,22 +95,22 @@ fn settings() -> Settings {
     settings
 }
 
-fn api(version: u32) -> RecipeRef {
-    RecipeRef {
+fn api(version: u32) -> LearnedWorkflowRef {
+    LearnedWorkflowRef {
         name: "api-feature".to_owned(),
         version,
     }
 }
 
-fn run(n: u32, recipe: Option<RecipeRef>) -> RunRecord {
+fn run(n: u32, learned_workflow: Option<LearnedWorkflowRef>) -> RunRecord {
     RunRecord {
         run: RunId::at(start() + Duration::minutes(i64::from(n)), n as u16),
         at: start() + Duration::minutes(i64::from(n)),
         task_type: "backend".to_owned(),
-        recipe,
+        learned_workflow,
         workflow: Some(("review-loop".to_owned(), "f00d".to_owned())),
         outcome: RunOutcome::Merged,
-        escalations: 0,
+        stuck_tasks: 0,
         final_checks_passed: true,
         cost_usd: 10.0,
         minutes: 20.0,
@@ -124,26 +126,26 @@ fn proposal(setting: &str, value: &str) -> ProcessChange {
     }
 }
 
-/// Replays of `tasks`, each `(parent passes, child passes)` out of three attempts.
+/// Replays of `tasks`, each `(parent passes, child passes)` out of three tries.
 fn replays(
-    parent: &RecipeRef,
-    child: &RecipeRef,
+    parent: &LearnedWorkflowRef,
+    child: &LearnedWorkflowRef,
     tasks: &[(u32, u32)],
     costs: (f64, f64),
     holdout: bool,
 ) -> Vec<ReplayResult> {
     let mut results = Vec::new();
     for (i, (parent_passes, child_passes)) in tasks.iter().enumerate() {
-        for attempt in 1..=3 {
-            for (recipe, passes, cost) in [
+        for try_number in 1..=3 {
+            for (learned_workflow, passes, cost) in [
                 (parent, parent_passes, costs.0),
                 (child, child_passes, costs.1),
             ] {
                 results.push(ReplayResult {
                     task: format!("{}task-{i}", if holdout { "holdout-" } else { "" }),
-                    recipe: recipe.clone(),
-                    attempt,
-                    passed: attempt <= *passes,
+                    learned_workflow: learned_workflow.clone(),
+                    try_number,
+                    passed: try_number <= *passes,
                     cost_usd: cost,
                     minutes: 30.0,
                     holdout,
@@ -156,8 +158,8 @@ fn replays(
 
 /// Thirty tasks where the child solves `wins` more than the parent and `losses` fewer.
 fn tuning(
-    parent: &RecipeRef,
-    child: &RecipeRef,
+    parent: &LearnedWorkflowRef,
+    child: &LearnedWorkflowRef,
     wins: usize,
     losses: usize,
     costs: (f64, f64),
@@ -172,8 +174,8 @@ fn tuning(
 /// `results` with a holdout both versions pass and fail alike, so it shows no regression.
 fn and_level_holdout(
     mut results: Vec<ReplayResult>,
-    parent: &RecipeRef,
-    child: &RecipeRef,
+    parent: &LearnedWorkflowRef,
+    child: &LearnedWorkflowRef,
 ) -> Vec<ReplayResult> {
     results.extend(replays(
         parent,
@@ -231,30 +233,37 @@ fn awaiting_promotion(world: &World, settings: &Settings) -> Evolution {
 }
 
 /// The child the table checks: the parent changed by `edit`, written as v2 beside it.
-fn child_of(world: &World, name: &str, edit: impl FnOnce(&mut Recipe, &Path)) -> LoadedRecipe {
-    let folder = world.store.recipes_dir().join(format!("case-{name}"));
+fn child_of(
+    world: &World,
+    name: &str,
+    edit: impl FnOnce(&mut LearnedWorkflow, &Path),
+) -> LoadedLearnedWorkflow {
+    let folder = world
+        .store
+        .learned_workflows_dir()
+        .join(format!("case-{name}"));
     std::fs::create_dir_all(&folder).unwrap();
     for entry in std::fs::read_dir(world.folder()).unwrap() {
         let path = entry.unwrap().path();
         std::fs::copy(&path, folder.join(path.file_name().unwrap())).unwrap();
     }
-    let mut recipe = world.parent().recipe;
-    recipe.version = 2;
-    recipe.parent = Some(1);
-    edit(&mut recipe, &folder);
+    let mut learned_workflow = world.parent().learned_workflow;
+    learned_workflow.version = 2;
+    learned_workflow.parent = Some(1);
+    edit(&mut learned_workflow, &folder);
     let path = folder.join("v2.yaml");
-    std::fs::write(&path, recipes::render(&recipe).unwrap()).unwrap();
-    recipes::load_file(&path).unwrap()
+    std::fs::write(&path, learned_workflows::render(&learned_workflow).unwrap()).unwrap();
+    learned_workflows::load_file(&path).unwrap()
 }
 
-type Edit = Box<dyn FnOnce(&mut Recipe, &Path)>;
+type Edit = Box<dyn FnOnce(&mut LearnedWorkflow, &Path)>;
 
-fn edit(change: impl FnOnce(&mut Recipe, &Path) + 'static) -> Edit {
+fn edit(change: impl FnOnce(&mut LearnedWorkflow, &Path) + 'static) -> Edit {
     Box::new(change)
 }
 
-fn set(recipe: &mut Recipe, section: &str, key: &str, value: serde_json::Value) {
-    let table = recipe
+fn set(learned_workflow: &mut LearnedWorkflow, section: &str, key: &str, value: serde_json::Value) {
+    let table = learned_workflow
         .settings
         .entry(section.to_owned())
         .or_insert_with(|| serde_json::json!({}));
@@ -262,7 +271,11 @@ fn set(recipe: &mut Recipe, section: &str, key: &str, value: serde_json::Value) 
 }
 
 /// Writes the parent's workflow, changed by `edit`, beside the child.
-fn with_workflow(recipe: &mut Recipe, folder: &Path, edit: impl FnOnce(&mut Vec<Step>)) {
+fn with_workflow(
+    learned_workflow: &mut LearnedWorkflow,
+    folder: &Path,
+    edit: impl FnOnce(&mut Vec<Step>),
+) {
     let mut workflow: Workflow =
         serde_saphyr::from_str(&std::fs::read_to_string(folder.join("review-loop.yaml")).unwrap())
             .unwrap();
@@ -272,7 +285,7 @@ fn with_workflow(recipe: &mut Recipe, folder: &Path, edit: impl FnOnce(&mut Vec<
         serde_saphyr::to_string(&workflow).unwrap(),
     )
     .unwrap();
-    recipe.phases = Some("review-loop-v2.yaml".to_owned());
+    learned_workflow.phases = Some("review-loop-v2.yaml".to_owned());
 }
 
 #[test]
@@ -284,7 +297,7 @@ fn mutation_rules_table() {
         .evolution
         .evolvable
         .extend(["workflow".to_owned(), "crew".to_owned()]);
-    settings.limits.budget.spend_per_run = Some(20.0);
+    settings.limits.spend.spend_per_run = Some(20.0);
 
     let cases: Vec<(&str, Edit, Result<ChangeClass, &str>)> = vec![
         (
@@ -340,12 +353,12 @@ fn mutation_rules_table() {
         (
             "moves a limit within its ceiling",
             edit(|r, _| set(r, "limits", "per_task_usd", serde_json::json!(3))),
-            Ok(ChangeClass::TaskBudget),
+            Ok(ChangeClass::TaskLimit),
         ),
         (
             "removes a check",
-            edit(|r, f| with_workflow(r, f, |steps| steps.retain(|s| s.kind != StepKind::Gate))),
-            Err("removes a `gate` step"),
+            edit(|r, f| with_workflow(r, f, |steps| steps.retain(|s| s.kind != StepKind::Checks))),
+            Err("removes a `checks` step"),
         ),
         (
             "adds a reviewer",
@@ -362,8 +375,8 @@ fn mutation_rules_table() {
             "moves the checks after the reviews",
             edit(|r, f| {
                 with_workflow(r, f, |steps| {
-                    let gate = steps.remove(1);
-                    steps.push(gate);
+                    let check = steps.remove(1);
+                    steps.push(check);
                 })
             }),
             Ok(ChangeClass::StepGraph),
@@ -579,7 +592,7 @@ fn promotion_needs_the_paired_bootstrap_gain() {
 
     // Paired by task: a task only one version ran tells nothing.
     let mut unpaired = tuning(&api(1), &api(2), 6, 0, (10.0, 10.0));
-    unpaired.retain(|result| result.recipe == api(1) || result.task.ends_with('0'));
+    unpaired.retain(|result| result.learned_workflow == api(1) || result.task.ends_with('0'));
     let thin = verdict(&unpaired, &thresholds());
     assert!(!thin.passed);
 
@@ -760,11 +773,11 @@ fn canary_tripwires_roll_back() {
 
     // The tripwires themselves.
     assert!(tripwires(&[canary_run(1)], &baseline, 0, &settings).is_empty());
-    let mut escalated = canary_run(1);
-    escalated.escalations = 2;
+    let mut needs_you = canary_run(1);
+    needs_you.stuck_tasks = 2;
     assert_eq!(
-        tripwires(&[escalated.clone()], &baseline, 0, &settings),
-        [Tripwire::Escalations]
+        tripwires(&[needs_you.clone()], &baseline, 0, &settings),
+        [Tripwire::StuckTasks]
     );
     let mut failed = canary_run(1);
     failed.final_checks_passed = false;
@@ -788,19 +801,19 @@ fn canary_tripwires_roll_back() {
         tripwires(&[canary_run(1)], &baseline, 1, &settings),
         [Tripwire::Reverted]
     );
-    // A parent that escalated often makes one escalation unremarkable.
+    // A parent that often needed you makes one stuck task unremarkable.
     let rough: Vec<RunRecord> = baseline
         .iter()
         .cloned()
         .map(|mut run| {
-            run.escalations = 1;
+            run.stuck_tasks = 1;
             run
         })
         .collect();
-    assert!(tripwires(&[escalated.clone()], &rough, 0, &settings).is_empty());
+    assert!(tripwires(&[needs_you.clone()], &rough, 0, &settings).is_empty());
 
-    // In the loop: the parent's runs are in the outcome log, the canary escalates, and the
-    // recipe is back on v1 before the next run starts.
+    // In the loop: the parent's runs are in the outcome log, the canary needs you, and the
+    // learned workflow is back on v1 before the next run starts.
     let world = World::new();
     for record in &baseline {
         outcomes::append(&world.store, &record.run, &[LogLine::Run(record.clone())]).unwrap();
@@ -815,7 +828,7 @@ fn canary_tripwires_roll_back() {
             .running("api-feature")
             .unwrap()
             .unwrap()
-            .recipe
+            .learned_workflow
             .version,
         2
     );
@@ -830,7 +843,7 @@ fn canary_tripwires_roll_back() {
     ));
 
     let mut bad = canary_run(2);
-    bad.escalations = 3;
+    bad.stuck_tasks = 3;
     let actions = evolution.after_run(&settings, &bad, None).unwrap();
     let rolled = find(&actions, "rolled_back");
     assert_eq!(rolled.len(), 1, "{actions:?}");
@@ -857,7 +870,7 @@ fn canary_tripwires_roll_back() {
         &first.run,
         &[LogLine::Reversal(Reversal {
             run: first.run.clone(),
-            card: None,
+            task: None,
             what: "reverted the merge".to_owned(),
             at: start(),
         })],
@@ -887,14 +900,14 @@ fn canary_that_holds_is_promoted_on_a_branch() {
     let promoted = find(&actions, "promoted");
     assert_eq!(promoted.len(), 1, "{actions:?}");
     let Action::Promoted {
-        recipe,
+        learned_workflow,
         branch,
         pr_command,
     } = promoted[0]
     else {
         unreachable!()
     };
-    assert_eq!(*recipe, api(2));
+    assert_eq!(*learned_workflow, api(2));
     assert_eq!(branch, "argonauts/learned/api-feature-v2");
     assert_eq!(&pr_command[..3], ["gh", "pr", "create"]);
     assert!(pr_command.contains(branch));
@@ -930,7 +943,7 @@ fn canary_that_holds_is_promoted_on_a_branch() {
         ],
     )
     .unwrap();
-    let promoted = recipes::parse(Path::new("v2.yaml"), &text).unwrap();
+    let promoted = learned_workflows::parse(Path::new("v2.yaml"), &text).unwrap();
     assert_eq!(promoted.parent, Some(1));
     assert_eq!(promoted.settings["critique"]["rounds"], 2);
     let touched = git::run(world.repo(), &["diff", "--name-only", &head, branch]).unwrap();
@@ -939,7 +952,7 @@ fn canary_that_holds_is_promoted_on_a_branch() {
         "files the candidate shares with the checkout stay as they are"
     );
 
-    // The next proposal's evidence packet knows when this recipe last changed.
+    // The next proposal's evidence packet knows when this learned workflow last changed.
     evolution
         .after_run(
             &settings,
@@ -968,11 +981,15 @@ fn canary_that_holds_is_promoted_on_a_branch() {
 fn rollback_takes_effect_at_once() {
     let world = World::new();
     let folder = world.folder();
-    let mut v2 = world.parent().recipe;
+    let mut v2 = world.parent().learned_workflow;
     v2.version = 2;
     v2.parent = Some(1);
     v2.settings.insert("critique".to_owned(), serde_json::json!({ "rounds": 2, "critic": "rotate", "checklist": ["criteria", "testability"] }));
-    std::fs::write(folder.join("v2.yaml"), recipes::render(&v2).unwrap()).unwrap();
+    std::fs::write(
+        folder.join("v2.yaml"),
+        learned_workflows::render(&v2).unwrap(),
+    )
+    .unwrap();
     commit_all(world.repo(), "v2");
     let head = git::run(world.repo(), &["rev-parse", "HEAD"]).unwrap();
 
@@ -983,10 +1000,15 @@ fn rollback_takes_effect_at_once() {
         .unwrap();
     let rolled = find(&actions, "rolled_back");
     assert_eq!(rolled.len(), 1, "{actions:?}");
-    let Action::RolledBack { recipe, to, .. } = rolled[0] else {
+    let Action::RolledBack {
+        learned_workflow,
+        to,
+        ..
+    } = rolled[0]
+    else {
         unreachable!()
     };
-    assert_eq!((recipe.clone(), *to), (api(2), 1));
+    assert_eq!((learned_workflow.clone(), *to), (api(2), 1));
     assert_eq!(
         evolution.running_version("api-feature").unwrap(),
         Some(1),
@@ -997,7 +1019,7 @@ fn rollback_takes_effect_at_once() {
             .running("api-feature")
             .unwrap()
             .unwrap()
-            .recipe
+            .learned_workflow
             .version,
         1
     );
@@ -1099,7 +1121,7 @@ fn stages_of_autonomy_table() {
                 let actions = evolution
                     .after_replay(&settings, "api-feature-v2", &results, 10.0)
                     .unwrap();
-                // Both ask the checkpoint; your approval settings decide who answers.
+                // Both ask the approval; your approval settings decide who answers.
                 assert_eq!(find(&actions, "ask_promotion").len(), 1, "{actions:?}");
             }
         }
@@ -1120,7 +1142,7 @@ fn stages_of_autonomy_table() {
 }
 
 #[test]
-fn evolution_budget_queues_candidates() {
+fn evolution_limit_queues_candidates() {
     let world = World::new();
     let mut settings = settings();
     settings.limits.evolution_usd_per_month = Some(100.0);
@@ -1185,7 +1207,7 @@ fn evolution_budget_queues_candidates() {
         CandidateState::Replaying { .. }
     ));
 
-    // A budget of 0 spends nothing.
+    // A limit of 0 spends nothing.
     let world = World::new();
     settings.limits.evolution_usd_per_month = Some(0.0);
     let actions = world
@@ -1212,11 +1234,15 @@ fn stage_one_records_what_worked() {
     let actions = evolution.after_run(&settings, &worked, None).unwrap();
     let recorded = find(&actions, "recorded");
     assert_eq!(recorded.len(), 1, "{actions:?}");
-    let Action::Recorded { recipe, branch } = recorded[0] else {
+    let Action::Recorded {
+        learned_workflow,
+        branch,
+    } = recorded[0]
+    else {
         unreachable!()
     };
-    assert_eq!(recipe.name, "data-migration");
-    assert_eq!(recipe.version, 1);
+    assert_eq!(learned_workflow.name, "data-migration");
+    assert_eq!(learned_workflow.version, 1);
     assert_eq!(branch, "argonauts/learned/data-migration-v1");
 
     let text = git::run(
@@ -1227,8 +1253,8 @@ fn stage_one_records_what_worked() {
         ],
     )
     .unwrap();
-    let v1 = recipes::parse(Path::new("v1.yaml"), &text).unwrap();
-    assert!(recipes::validate(&v1).is_empty());
+    let v1 = learned_workflows::parse(Path::new("v1.yaml"), &text).unwrap();
+    assert!(learned_workflows::validate(&v1).is_empty());
     assert_eq!(v1.phases.as_deref(), Some("review-loop"));
     assert_eq!(v1.matches.task_types, ["Data Migration"]);
     assert_eq!(v1.parent, None);
@@ -1236,9 +1262,16 @@ fn stage_one_records_what_worked() {
         git::run(world.repo(), &["rev-parse", "HEAD"]).unwrap(),
         head
     );
-    assert!(!world.store.recipes_dir().join("data-migration").exists());
+    assert!(
+        !world
+            .store
+            .learned_workflows_dir()
+            .join("data-migration")
+            .exists()
+    );
 
-    // Once is enough, and only for runs that merged and passed first time without a recipe.
+    // Once is enough, and only for runs that merged and passed first time without a learned
+    // workflow.
     assert!(
         evolution
             .after_run(&settings, &worked, None)
@@ -1260,11 +1293,11 @@ fn stage_one_records_what_worked() {
             .after_run(&settings, &covered, None)
             .unwrap()
             .is_empty(),
-        "backend already has a recipe"
+        "backend already has a learned workflow"
     );
 }
 
-/// The engine asks the retro for a change only every `propose_every` runs, so the loop takes
+/// The engine asks the run review for a change only every `propose_every` runs, so the loop takes
 /// each proposal that arrives rather than counting runs a second time.
 #[test]
 fn every_proposal_that_arrives_is_due() {

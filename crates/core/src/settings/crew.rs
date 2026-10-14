@@ -1,5 +1,4 @@
-//! The crew, `[crew]`: who fills each of the five roles. The main agent is `main_agent`, which a
-//! settings file may also write as `crew.main`.
+//! The crew, `[crew]`: who fills each of the five roles, the main agent first.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -9,27 +8,29 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::names::{RoleName, WorkerRef};
+use crate::names::{ModelRef, RoleName};
 
-/// Each list is in order of preference: the first agent that's available takes the seat, and a
-/// step that wants several takes them from the front.
+/// Each list is in order of preference: the first agent that's available is the one asked, and
+/// a step that wants several takes them from the front.
 ///
-/// What isn't set follows what is: in a `[crew]` that names the orchestrator but
-/// no workers, the workers are the orchestrator's, and in one that names reviewers but no judge,
-/// the judge is the reviewers'. An empty list is how such a role is kept.
+/// What isn't set follows what is: in a `[crew]` that names the orchestrator but no
+/// `worker`, the workers are the orchestrator's, and in one that names a `reviewer` but no
+/// `judge`, the judge is the reviewers'. An empty list is how such a role is kept.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(from = "WrittenCrew")]
 pub struct CrewSettings {
+    /// The agent you talk to: conversation, the estimate, Captain work, and the last fallback.
+    pub main: ModelRef,
     /// Plans and delegates: `"main"`, or a model of its own.
     pub orchestrator: Orchestrator,
     /// Do the tasks. Empty follows the orchestrator.
-    pub workers: Vec<WorkerRef>,
+    pub worker: Vec<ModelRef>,
     /// Check a result, never one their own provider made.
-    pub reviewers: Vec<WorkerRef>,
+    pub reviewer: Vec<ModelRef>,
     /// Decides and signs off. Empty follows the reviewers.
-    pub judge: Vec<WorkerRef>,
+    pub judge: Vec<ModelRef>,
     /// The crew's agents may start workflows and background agents of their CLI's own, such as
-    /// Claude Code's Workflow tool. Off, since Argonauts already runs the crew, and a crew
+    /// Claude Code's Workflow tool. Off, since Argonauts Code already runs the crew, and a crew
     /// inside one agent can't be watched or merged.
     #[serde(default)]
     pub worker_workflows: bool,
@@ -37,43 +38,45 @@ pub struct CrewSettings {
     /// meanwhile, the checks after merging, and the commit message. Empty follows the
     /// orchestrator. Which files make up a change, and whether a task passed, stay with code.
     #[serde(default)]
-    pub merger: Vec<WorkerRef>,
+    pub merger: Vec<ModelRef>,
 }
 
 /// A `[crew]` table as written, where a role left out is told apart from one set.
 #[derive(Default, Deserialize, JsonSchema)]
 #[serde(default)]
 struct WrittenCrew {
+    main: Option<ModelRef>,
     orchestrator: Option<Orchestrator>,
     #[serde(deserialize_with = "some_one_or_many")]
-    #[schemars(with = "Vec<WorkerRef>")]
-    workers: Option<Vec<WorkerRef>>,
+    #[schemars(with = "Vec<ModelRef>")]
+    worker: Option<Vec<ModelRef>>,
     #[serde(deserialize_with = "some_one_or_many")]
-    #[schemars(with = "Vec<WorkerRef>")]
-    reviewers: Option<Vec<WorkerRef>>,
+    #[schemars(with = "Vec<ModelRef>")]
+    reviewer: Option<Vec<ModelRef>>,
     #[serde(deserialize_with = "some_one_or_many")]
-    #[schemars(with = "Vec<WorkerRef>")]
-    judge: Option<Vec<WorkerRef>>,
+    #[schemars(with = "Vec<ModelRef>")]
+    judge: Option<Vec<ModelRef>>,
     /// The crew's agents may start workflows and background agents of their CLI's own.
     worker_workflows: bool,
     #[serde(deserialize_with = "some_one_or_many")]
-    #[schemars(with = "Vec<WorkerRef>")]
-    merger: Option<Vec<WorkerRef>>,
+    #[schemars(with = "Vec<ModelRef>")]
+    merger: Option<Vec<ModelRef>>,
 }
 
 impl From<WrittenCrew> for CrewSettings {
     fn from(written: WrittenCrew) -> Self {
         let everyone = CrewSettings::default();
-        let follows = |set: Option<Vec<WorkerRef>>, leader_set: bool, default: Vec<WorkerRef>| {
-            set.unwrap_or(if leader_set { Vec::new() } else { default })
+        let follows = |set: Option<Vec<ModelRef>>, followed_set: bool, default: Vec<ModelRef>| {
+            set.unwrap_or(if followed_set { Vec::new() } else { default })
         };
         let orchestrator_set = written.orchestrator.is_some();
-        let reviewers_set = written.reviewers.is_some();
+        let reviewer_set = written.reviewer.is_some();
         Self {
+            main: written.main.unwrap_or(everyone.main),
             orchestrator: written.orchestrator.unwrap_or_default(),
-            workers: follows(written.workers, orchestrator_set, everyone.workers),
-            reviewers: written.reviewers.unwrap_or(everyone.reviewers),
-            judge: follows(written.judge, reviewers_set, everyone.judge),
+            worker: follows(written.worker, orchestrator_set, everyone.worker),
+            reviewer: written.reviewer.unwrap_or(everyone.reviewer),
+            judge: follows(written.judge, reviewer_set, everyone.judge),
             worker_workflows: written.worker_workflows,
             merger: written.merger.unwrap_or_default(),
         }
@@ -85,7 +88,7 @@ impl Default for CrewSettings {
         Self::of(
             ["claude-code", "codex", "antigravity-cli"]
                 .into_iter()
-                .map(|id| WorkerRef::new(id, None))
+                .map(|id| ModelRef::new(id, None))
                 .collect(),
         )
     }
@@ -94,29 +97,30 @@ impl Default for CrewSettings {
 impl CrewSettings {
     /// A crew where everyone listed may work, review and judge, and the main agent
     /// orchestrates.
-    pub fn of(everyone: Vec<WorkerRef>) -> Self {
+    pub fn of(everyone: Vec<ModelRef>) -> Self {
         Self {
+            main: ModelRef::new("claude-code", None),
             orchestrator: Orchestrator::Main,
-            workers: everyone.clone(),
-            reviewers: everyone.clone(),
+            worker: everyone.clone(),
+            reviewer: everyone.clone(),
             judge: everyone,
             worker_workflows: false,
             merger: Vec::new(),
         }
     }
 
-    /// Everyone with a seat besides the main agent, once each, in the order the roles list
+    /// Everyone a role names besides the main agent, once each, in the order the roles list
     /// them.
-    pub fn members(&self) -> Vec<WorkerRef> {
-        let mut members: Vec<WorkerRef> = Vec::new();
-        let orchestrators: &[WorkerRef] = match &self.orchestrator {
+    pub fn members(&self) -> Vec<ModelRef> {
+        let mut members: Vec<ModelRef> = Vec::new();
+        let orchestrators: &[ModelRef] = match &self.orchestrator {
             Orchestrator::Main => &[],
             Orchestrator::Models(models) => models,
         };
         let lists = [
             orchestrators,
-            self.workers.as_slice(),
-            self.reviewers.as_slice(),
+            self.worker.as_slice(),
+            self.reviewer.as_slice(),
             self.judge.as_slice(),
         ];
         for worker in lists.into_iter().flatten() {
@@ -127,81 +131,82 @@ impl CrewSettings {
         members
     }
 
-    /// Who may fill one of the five roles, in order. `main` is the agent you talk to, and
-    /// stays it. Workers with none of their own follow the orchestrator, and a judge with none
+    /// Who may fill one of the five roles, in order. The main agent stays the agent you talk
+    /// to. Workers with none of their own follow the orchestrator, and a judge with none
     /// follows the reviewers.
-    pub fn seats(&self, role: CrewRole, main: &WorkerRef) -> Vec<WorkerRef> {
+    pub fn models_for(&self, role: CrewRole) -> Vec<ModelRef> {
         match role {
-            CrewRole::Main => vec![main.clone()],
+            CrewRole::Main => vec![self.main.clone()],
             CrewRole::Orchestrator => match &self.orchestrator {
-                Orchestrator::Main => vec![main.clone()],
+                Orchestrator::Main => vec![self.main.clone()],
                 Orchestrator::Models(models) => models.clone(),
             },
-            CrewRole::Workers if self.workers.is_empty() => {
-                self.seats(CrewRole::Orchestrator, main)
-            }
-            CrewRole::Workers => self.workers.clone(),
-            CrewRole::Reviewers => self.reviewers.clone(),
-            CrewRole::Judge if self.judge.is_empty() => self.reviewers.clone(),
+            CrewRole::Worker if self.worker.is_empty() => self.models_for(CrewRole::Orchestrator),
+            CrewRole::Worker => self.worker.clone(),
+            CrewRole::Reviewer => self.reviewer.clone(),
+            CrewRole::Judge if self.judge.is_empty() => self.reviewer.clone(),
             CrewRole::Judge => self.judge.clone(),
         }
     }
 
-    /// The role whose seats `role` takes while it has none of its own.
+    /// The role whose models `role` takes while it has none of its own.
     pub fn followed(&self, role: CrewRole) -> Option<CrewRole> {
         match role {
-            CrewRole::Workers if self.workers.is_empty() => Some(CrewRole::Orchestrator),
-            CrewRole::Judge if self.judge.is_empty() => Some(CrewRole::Reviewers),
+            CrewRole::Worker if self.worker.is_empty() => Some(CrewRole::Orchestrator),
+            CrewRole::Judge if self.judge.is_empty() => Some(CrewRole::Reviewer),
             _ => None,
         }
     }
 
     /// Adds an agent to every list it isn't in, such as a CLI installed after setup.
-    pub fn add(&mut self, worker: WorkerRef) {
-        for list in [&mut self.workers, &mut self.reviewers, &mut self.judge] {
+    pub fn add(&mut self, worker: ModelRef) {
+        for list in [&mut self.worker, &mut self.reviewer, &mut self.judge] {
             if !list.contains(&worker) {
                 list.push(worker.clone());
             }
         }
     }
 
-    /// Leaves every seat to the main agent.
+    /// Leaves every role to the main agent.
     pub fn clear(&mut self) {
-        *self = Self::of(Vec::new());
+        *self = Self {
+            main: self.main.clone(),
+            ..Self::of(Vec::new())
+        };
     }
 
     pub fn is_empty(&self) -> bool {
         self.members().is_empty()
     }
 
-    pub fn contains(&self, worker: &WorkerRef) -> bool {
+    pub fn contains(&self, worker: &ModelRef) -> bool {
         self.members().contains(worker)
     }
 }
 
-impl From<Vec<WorkerRef>> for CrewSettings {
-    fn from(everyone: Vec<WorkerRef>) -> Self {
+impl From<Vec<ModelRef>> for CrewSettings {
+    fn from(everyone: Vec<ModelRef>) -> Self {
         Self::of(everyone)
     }
 }
 
-impl FromIterator<WorkerRef> for CrewSettings {
-    fn from_iter<I: IntoIterator<Item = WorkerRef>>(everyone: I) -> Self {
+impl FromIterator<ModelRef> for CrewSettings {
+    fn from_iter<I: IntoIterator<Item = ModelRef>>(everyone: I) -> Self {
         Self::of(everyone.into_iter().collect())
     }
 }
 
-/// The five roles a workflow's steps name.
+/// The crew's five roles, which a workflow's steps, `[crew]` and `[fallback.<role>]` name.
+/// `Main` is the agent you talk to. Every finer role follows one of them.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum CrewRole {
-    /// The agent you talk to.
     Main,
     Orchestrator,
-    Workers,
-    Reviewers,
+    Worker,
+    Reviewer,
     Judge,
 }
 
@@ -209,8 +214,8 @@ impl CrewRole {
     pub const ALL: [CrewRole; 5] = [
         CrewRole::Main,
         CrewRole::Orchestrator,
-        CrewRole::Workers,
-        CrewRole::Reviewers,
+        CrewRole::Worker,
+        CrewRole::Reviewer,
         CrewRole::Judge,
     ];
 
@@ -218,47 +223,61 @@ impl CrewRole {
         match self {
             CrewRole::Main => "main",
             CrewRole::Orchestrator => "orchestrator",
-            CrewRole::Workers => "workers",
-            CrewRole::Reviewers => "reviewers",
+            CrewRole::Worker => "worker",
+            CrewRole::Reviewer => "reviewer",
             CrewRole::Judge => "judge",
         }
     }
 
-    /// The role a fine role follows while `roles.<role>.workers` is unset.
+    /// The role's people in a phrase or a heading, as in "all the workers".
+    pub fn plural(self) -> &'static str {
+        match self {
+            CrewRole::Main => "main",
+            CrewRole::Orchestrator => "orchestrator",
+            CrewRole::Worker => "workers",
+            CrewRole::Reviewer => "reviewers",
+            CrewRole::Judge => "judge",
+        }
+    }
+
+    /// The reverse of [`Self::as_str`].
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|role| role.as_str() == name)
+    }
+
+    /// The role a fine role follows while `roles.<role>.models` is unset.
     pub fn followed_by(role: RoleName) -> Self {
         match role {
             RoleName::Main | RoleName::Narrator => CrewRole::Main,
             RoleName::Orchestrator => CrewRole::Orchestrator,
-            // The phase lead's hat goes round the workers, as it does in a council.
+            // The tie-breaker's hat goes round the workers, as it does in a council.
             RoleName::Worker
-            | RoleName::PhaseLead
-            | RoleName::Drafter
-            | RoleName::Restater
+            | RoleName::TieBreaker
+            | RoleName::Draft
+            | RoleName::Reader
             | RoleName::Critic
-            | RoleName::Spike
-            | RoleName::Consultant => CrewRole::Workers,
-            RoleName::Reviewer | RoleName::Differ | RoleName::Mapper => CrewRole::Reviewers,
-            RoleName::Judge | RoleName::Adjudicator | RoleName::Approver | RoleName::Retro => {
-                CrewRole::Judge
-            }
+            | RoleName::Experiment
+            | RoleName::Consultant => CrewRole::Worker,
+            RoleName::Reviewer | RoleName::Comparer | RoleName::Map => CrewRole::Reviewer,
+            RoleName::Judge | RoleName::RunReview => CrewRole::Judge,
         }
     }
 
     /// The fine role whose settings (effort, sandbox, fallback, instructions) an agent in this
-    /// seat runs under.
+    /// role runs under.
     pub fn fine_role(self) -> RoleName {
         match self {
             CrewRole::Main => RoleName::Main,
             CrewRole::Orchestrator => RoleName::Orchestrator,
-            CrewRole::Workers => RoleName::Worker,
-            CrewRole::Reviewers => RoleName::Reviewer,
+            CrewRole::Worker => RoleName::Worker,
+            CrewRole::Reviewer => RoleName::Reviewer,
             CrewRole::Judge => RoleName::Judge,
         }
     }
 
     /// Whether its agents change files. The others read.
     pub fn writes(self) -> bool {
-        matches!(self, CrewRole::Main | CrewRole::Workers)
+        matches!(self, CrewRole::Main | CrewRole::Worker)
     }
 }
 
@@ -269,22 +288,14 @@ impl fmt::Display for CrewRole {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("unknown role {0:?}: a step's role is main, orchestrator, workers, reviewers or judge")]
+#[error("unknown role {0:?}: a step's role is main, orchestrator, worker, reviewer or judge")]
 pub struct CrewRoleError(pub String);
 
 impl FromStr for CrewRole {
     type Err = CrewRoleError;
 
-    /// Takes the singular too, since a script may say `worker` where a file says `workers`.
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        match text {
-            "main" => Ok(CrewRole::Main),
-            "orchestrator" => Ok(CrewRole::Orchestrator),
-            "workers" | "worker" => Ok(CrewRole::Workers),
-            "reviewers" | "reviewer" => Ok(CrewRole::Reviewers),
-            "judge" | "judges" => Ok(CrewRole::Judge),
-            other => Err(CrewRoleError(other.to_owned())),
-        }
+        CrewRole::parse(text).ok_or_else(|| CrewRoleError(text.to_owned()))
     }
 }
 
@@ -295,7 +306,7 @@ pub enum Orchestrator {
     #[default]
     Main,
     /// In order of preference.
-    Models(Vec<WorkerRef>),
+    Models(Vec<ModelRef>),
 }
 
 const MAIN: &str = "main";
@@ -325,36 +336,34 @@ impl Serialize for Orchestrator {
 
 impl<'de> Deserialize<'de> for Orchestrator {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_any(Seats {
-            main_is_a_seat: true,
-        })
+        deserializer.deserialize_any(RoleModels { may_say_main: true })
     }
 }
 
 /// A role written as one model or a list of them, kept apart from a role left out.
 fn some_one_or_many<'de, D: Deserializer<'de>>(
     deserializer: D,
-) -> Result<Option<Vec<WorkerRef>>, D::Error> {
+) -> Result<Option<Vec<ModelRef>>, D::Error> {
     one_or_many(deserializer).map(Some)
 }
 
-/// A role's seats, written as one model or a list of them.
-fn one_or_many<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<WorkerRef>, D::Error> {
-    let seats = deserializer.deserialize_any(Seats {
-        main_is_a_seat: false,
+/// A role's models, written as one model or a list of them.
+fn one_or_many<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<ModelRef>, D::Error> {
+    let models = deserializer.deserialize_any(RoleModels {
+        may_say_main: false,
     })?;
-    match seats {
+    match models {
         Orchestrator::Models(models) => Ok(models),
         Orchestrator::Main => Ok(Vec::new()),
     }
 }
 
-struct Seats {
-    /// Only the orchestrator's seat may say `"main"`.
-    main_is_a_seat: bool,
+struct RoleModels {
+    /// Only the orchestrator may say `"main"`.
+    may_say_main: bool,
 }
 
-impl<'de> Visitor<'de> for Seats {
+impl<'de> Visitor<'de> for RoleModels {
     type Value = Orchestrator;
 
     // Serde's own words for a list, which the settings checker turns into plain ones.
@@ -363,16 +372,16 @@ impl<'de> Visitor<'de> for Seats {
     }
 
     fn visit_str<E: de::Error>(self, name: &str) -> Result<Self::Value, E> {
-        if self.main_is_a_seat && name == MAIN {
+        if self.may_say_main && name == MAIN {
             return Ok(Orchestrator::Main);
         }
-        let model = name.parse::<WorkerRef>().map_err(E::custom)?;
+        let model = name.parse::<ModelRef>().map_err(E::custom)?;
         Ok(Orchestrator::Models(vec![model]))
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
         let mut models = Vec::new();
-        while let Some(model) = seq.next_element::<WorkerRef>()? {
+        while let Some(model) = seq.next_element::<ModelRef>()? {
             models.push(model);
         }
         Ok(Orchestrator::Models(models))
@@ -388,36 +397,38 @@ mod tests {
         crew: CrewSettings,
     }
 
-    fn worker(name: &str) -> WorkerRef {
-        name.parse().expect("a worker")
+    fn worker(name: &str) -> ModelRef {
+        name.parse().expect("a model")
     }
 
-    /// Only the orchestrator and the reviewers are set.
+    /// Only the orchestrator and the reviewer are set.
     #[test]
     fn what_isnt_set_follows_what_is() {
         let file: File = toml::from_str(
-            "[crew]\norchestrator = \"claude-code/opus-5-5\"\nreviewers = [\"astra\"]\n",
+            "[crew]\nmain = \"codex\"\norchestrator = \"claude-code/opus-5-5\"\n\
+             reviewer = [\"astra\"]\n",
         )
         .expect("reads");
         let main = worker("codex");
+        assert_eq!(file.crew.main, main);
         assert_eq!(
-            file.crew.seats(CrewRole::Workers, &main),
+            file.crew.models_for(CrewRole::Worker),
             [worker("claude-code/opus-5-5")]
         );
-        assert_eq!(file.crew.seats(CrewRole::Judge, &main), [worker("astra")]);
+        assert_eq!(file.crew.models_for(CrewRole::Judge), [worker("astra")]);
         assert_eq!(
-            file.crew.seats(CrewRole::Main, &main),
+            file.crew.models_for(CrewRole::Main),
             std::slice::from_ref(&main)
         );
         assert_eq!(
-            file.crew.followed(CrewRole::Workers),
+            file.crew.followed(CrewRole::Worker),
             Some(CrewRole::Orchestrator)
         );
         assert_eq!(
             file.crew.followed(CrewRole::Judge),
-            Some(CrewRole::Reviewers)
+            Some(CrewRole::Reviewer)
         );
-        assert_eq!(file.crew.followed(CrewRole::Reviewers), None);
+        assert_eq!(file.crew.followed(CrewRole::Reviewer), None);
         // Written back and read again, the roles still follow.
         let again: File = toml::from_str(&toml::to_string(&file).unwrap()).unwrap();
         assert_eq!(again.crew, file.crew);
@@ -429,20 +440,20 @@ mod tests {
     #[test]
     fn a_role_reads_one_model_or_a_list_and_what_is_unset_keeps_its_default() {
         let file: File = toml::from_str(
-            "[crew]\norchestrator = \"main\"\nworkers = [\"codex/gpt-5.6\", \"claude-code\"]\n\
+            "[crew]\norchestrator = \"main\"\nworker = [\"codex/gpt-5.6\", \"claude-code\"]\n\
              judge = \"antigravity-cli/gemini-3.6-flash\"\n",
         )
         .expect("reads");
         assert_eq!(file.crew.orchestrator, Orchestrator::Main);
         assert_eq!(
-            file.crew.workers,
+            file.crew.worker,
             [worker("codex/gpt-5.6"), worker("claude-code")]
         );
         assert_eq!(
             file.crew.judge,
             [worker("antigravity-cli/gemini-3.6-flash")]
         );
-        assert_eq!(file.crew.reviewers, CrewSettings::default().reviewers);
+        assert_eq!(file.crew.reviewer, CrewSettings::default().reviewer);
         let written = toml::to_string(&file).expect("writes");
         assert!(written.contains("orchestrator = \"main\""), "{written}");
         assert!(
@@ -460,22 +471,23 @@ mod tests {
         );
         let main = worker("claude-code");
         assert_eq!(
-            file.crew.seats(CrewRole::Orchestrator, &main),
+            file.crew.models_for(CrewRole::Orchestrator),
             [worker("codex/gpt-5.6")]
         );
         assert_eq!(
-            CrewSettings::default().seats(CrewRole::Orchestrator, &main),
+            CrewSettings::default().models_for(CrewRole::Orchestrator),
             std::slice::from_ref(&main)
         );
-        assert!(toml::from_str::<File>("[crew]\nworkers = [\"a b\"]\n").is_err());
+        assert!(toml::from_str::<File>("[crew]\nworker = [\"a b\"]\n").is_err());
     }
 
     #[test]
-    fn members_are_everyone_with_a_seat_once() {
+    fn members_are_everyone_a_role_names_once() {
         let crew = CrewSettings {
+            main: worker("claude-code"),
             orchestrator: Orchestrator::Models(vec![worker("codex")]),
-            workers: vec![worker("codex"), worker("claude-code/sonnet")],
-            reviewers: vec![worker("antigravity-cli"), worker("codex")],
+            worker: vec![worker("codex"), worker("claude-code/sonnet")],
+            reviewer: vec![worker("antigravity-cli"), worker("codex")],
             judge: vec![worker("antigravity-cli")],
             worker_workflows: false,
             merger: Vec::new(),
@@ -492,24 +504,22 @@ mod tests {
 
     #[test]
     fn every_fine_role_follows_one_of_the_five() {
-        assert_eq!(CrewRole::followed_by(RoleName::Drafter), CrewRole::Workers);
-        assert_eq!(
-            CrewRole::followed_by(RoleName::Adjudicator),
-            CrewRole::Judge
-        );
+        assert_eq!(CrewRole::followed_by(RoleName::Draft), CrewRole::Worker);
+        assert_eq!(CrewRole::followed_by(RoleName::RunReview), CrewRole::Judge);
         assert_eq!(
             CrewRole::followed_by(RoleName::Reviewer),
-            CrewRole::Reviewers
+            CrewRole::Reviewer
         );
         assert_eq!(
-            CrewRole::followed_by(RoleName::PhaseLead),
-            CrewRole::Workers
+            CrewRole::followed_by(RoleName::TieBreaker),
+            CrewRole::Worker
         );
         for role in CrewRole::ALL {
             assert_eq!(CrewRole::followed_by(role.fine_role()), role);
             assert_eq!(role.as_str().parse::<CrewRole>(), Ok(role));
         }
-        assert_eq!("reviewer".parse::<CrewRole>(), Ok(CrewRole::Reviewers));
-        assert!("owner".parse::<CrewRole>().is_err());
+        assert_eq!("reviewer".parse::<CrewRole>(), Ok(CrewRole::Reviewer));
+        assert!("reviewers".parse::<CrewRole>().is_err());
+        assert!("workers".parse::<CrewRole>().is_err());
     }
 }

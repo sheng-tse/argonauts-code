@@ -1,5 +1,5 @@
-//! Argonauts' versions of the commands the agent CLIs share, such as `/compact` and `/rename`.
-//! They work whatever CLI the main agent is, so a CLI's own name for one runs it.
+//! Argonauts Code's versions of the commands the agent CLIs share, such as `/compact` and
+//! `/rename`. They work whatever CLI the main agent is, so a CLI's own name for one runs it.
 
 use std::path::PathBuf;
 
@@ -28,8 +28,8 @@ pub const SHARED_COMMANDS: &[SlashSpec] = &[
     SlashSpec { name: "output-style", args: "[style]", help: "How answers are written", handler: Handler::App, category: CommandCategory::Display },
     SlashSpec { name: "login", args: "[agent]", help: "Log in to an agent CLI", handler: Handler::App, category: CommandCategory::SetupAndHelp },
     SlashSpec { name: "logout", args: "[agent]", help: "Log out of an agent CLI", handler: Handler::App, category: CommandCategory::SetupAndHelp },
-    SlashSpec { name: "release-notes", args: "", help: "What's new in Argonauts", handler: Handler::App, category: CommandCategory::SetupAndHelp },
-    SlashSpec { name: "feedback", args: "[text]", help: "Send feedback about Argonauts", handler: Handler::App, category: CommandCategory::SetupAndHelp },
+    SlashSpec { name: "release-notes", args: "", help: "What's new in Argonauts Code", handler: Handler::App, category: CommandCategory::SetupAndHelp },
+    SlashSpec { name: "feedback", args: "[text]", help: "Send feedback about Argonauts Code", handler: Handler::App, category: CommandCategory::SetupAndHelp },
 ];
 
 /// `None` when `name` isn't one of them.
@@ -65,7 +65,7 @@ pub(super) fn parse(name: &str, args: &str) -> Option<Result<SlashCommand, Input
         "security-review" => Ok(SlashCommand::SecurityReview { target: text() }),
         "diff" => no_args(SlashCommand::Diff),
         "fast" => parse_fast(name, args),
-        "usage" => super::widgets::parse_usage(name, args),
+        "usage" => super::mods::parse_usage(name, args),
         "output-style" => Ok(SlashCommand::OutputStyle { style: text() }),
         "login" => word(name, args, "/login [agent]").map(|agent| SlashCommand::Login { agent }),
         "logout" => word(name, args, "/logout [agent]").map(|agent| SlashCommand::Logout { agent }),

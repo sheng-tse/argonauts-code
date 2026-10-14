@@ -1,6 +1,6 @@
-//! One table for every vendor's tool names, so a read looks the same from Claude Code, Codex,
+//! One table for every agent's tool names, so a read looks the same from Claude Code, Codex,
 //! agy, or an ACP agent, and each call says what it did (`Read 120 lines`, not `Read 1 file`).
-//! Names and input keys differ by vendor, so matching ignores case, `_`, and `-`.
+//! Names and input keys vary by agent, so matching ignores case, `_`, and `-`.
 
 use argonauts_core::artifacts;
 use argonauts_core::steps::summary_line;
@@ -15,7 +15,7 @@ const WRITE_PREVIEW: usize = 10;
 /// Longest args kept in a call's title, in characters.
 const ARGS_MAX: usize = 160;
 
-/// What a call does, whatever the vendor calls it.
+/// What a call does, whatever the CLI calls it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tool {
     Read,
@@ -39,7 +39,7 @@ enum Tool {
 impl Tool {
     fn named(name: &str) -> Self {
         let normal = normalize(name);
-        // However the vendor prefixes its server, as `mcp__argonauts__argonauts_report` or
+        // However the agent prefixes its server, as `mcp__argonauts__argonauts_report` or
         // OpenCode's `argonauts_argonauts_report`, it's the report.
         if normal.ends_with("argonautsreport") {
             return Tool::Report;
@@ -144,14 +144,14 @@ impl Tool {
     }
 }
 
-/// A running call's cell from its vendor, name, and input. `vendor` is the adapter id.
-pub fn start_call(vendor: &str, name: &str, input: &Value) -> ToolCall {
-    start_call_in(vendor, name, input, &Places::here())
+/// A running call's cell from its agent, name, and input. `agent` is the adapter id.
+pub fn start_call(agent_id: &str, name: &str, input: &Value) -> ToolCall {
+    start_call_in(agent_id, name, input, &Places::here())
 }
 
 /// [`start_call`] for a call made in `places.folder`, whose paths show relative to it.
-pub fn start_call_in(vendor: &str, name: &str, input: &Value, places: &Places) -> ToolCall {
-    let _ = vendor;
+pub fn start_call_in(agent_id: &str, name: &str, input: &Value, places: &Places) -> ToolCall {
+    let _ = agent_id;
     let mut tool = Tool::named(name);
     if normalize(name) == "filechange" {
         tool = file_change_tool(input);
@@ -183,8 +183,8 @@ fn held(waiting: &str, items: Vec<ToolItem>) -> Option<Box<Held>> {
 }
 
 /// The row of a call the model is still writing, by the name it will be shown with.
-pub fn writing_call(vendor: &str, name: &str) -> ToolCall {
-    let _ = vendor;
+pub fn writing_call(agent_id: &str, name: &str) -> ToolCall {
+    let _ = agent_id;
     let tool = Tool::named(name);
     ToolCall::writing(tool.kind(), label_of(tool, name))
 }
@@ -310,22 +310,22 @@ const MOVED_TO_BACKGROUND: &str = "Command was moved to the background";
 const MOVED_NOTE: &str =
     "Moved to the background so your message could reach Claude. It's still running.";
 
-/// Argonauts' own tools: the report, however the vendor sends it, and `argonauts_status`.
-/// They're how a session talks to Argonauts rather than work it does, so the transcript leaves
+/// Argonauts Code's own tools: the report, however the agent sends it, and `argonauts_status`.
+/// They're how a session talks to Argonauts Code rather than work it does, so the transcript leaves
 /// them out and only the Ctrl+O detail shows them.
 pub fn is_own(name: &str) -> bool {
     argonauts_core::steps::is_own_tool(name)
 }
 
 /// A lookup of the tools a CLI holds back until asked for, such as Claude Code's ToolSearch.
-/// Claude Code never shows one, and neither does Argonauts.
+/// Claude Code never shows one, and neither does Argonauts Code.
 pub fn is_tool_lookup(name: &str) -> bool {
     normalize(name) == "toolsearch"
 }
 
 /// The normalized kind, which decides folding into collapsed groups.
-pub fn kind_of(vendor: &str, name: &str) -> ToolKind {
-    let _ = vendor;
+pub fn kind_of(agent_id: &str, name: &str) -> ToolKind {
+    let _ = agent_id;
     Tool::named(name).kind()
 }
 
@@ -461,7 +461,7 @@ fn noun_for(found: &[&str]) -> (&'static str, &'static str) {
     }
 }
 
-/// Claude Code numbers what it reads as `    12→text`; other harnesses send the text as is.
+/// Claude Code numbers what it reads as `    12→text`; other CLIs send the text as is.
 fn read_lines(output: Option<&str>) -> usize {
     let body = output
         .map(|text| text.split("<system-reminder>").next().unwrap_or(text))
@@ -661,8 +661,8 @@ pub struct Places {
 }
 
 impl Places {
-    /// Your home alone, for a call whose folder isn't known here. A run's copy of the repo
-    /// still shows its paths from inside it.
+    /// Your home alone, for a call whose folder isn't known here. A run's worktree still
+    /// shows its paths from inside it.
     pub fn here() -> Self {
         Self {
             folder: None,
@@ -672,7 +672,7 @@ impl Places {
 
     /// The folder the conversation works in, as the startup header names it with `~` for
     /// your home.
-    pub fn of_chat(state: &AppState) -> Self {
+    pub fn of_conversation(state: &AppState) -> Self {
         let mut places = Self::here();
         places.folder = state.welcome.as_ref().map(|welcome| {
             match (welcome.repo.strip_prefix('~'), &places.home) {
@@ -721,8 +721,8 @@ fn under<'a>(path: &'a str, folder: &str) -> Option<&'a str> {
     rest.strip_prefix('/')
 }
 
-/// Worktrees sit at `<home>/worktrees/<repo>/<run>/<card>/`, and the block's header already
-/// names the card, so a path inside one starts after it.
+/// Worktrees sit at `<home>/worktrees/<repo>/<run>/<task>/`, and the block's header already
+/// names the task, so a path inside one starts after it.
 fn in_worktree(path: &str) -> Option<&str> {
     let at = path.find("/worktrees/")?;
     let mut parts = path[at + "/worktrees/".len()..].splitn(4, '/');
@@ -732,7 +732,7 @@ fn in_worktree(path: &str) -> Option<&str> {
     }
 }
 
-/// A path as a run's agent shows it: inside its copy of the repo, or from your home.
+/// A path as a run's agent shows it: inside its worktree of the repo, or from your home.
 pub(crate) fn short_path(path: &str) -> String {
     Places::here().show(path)
 }
@@ -775,9 +775,19 @@ pub fn take_patch(call: &mut ToolCall, path: &str, hunks: &str) {
 
 /// [`take_patch`] for a call [`start_call_in`] drew from the same places.
 pub fn take_patch_in(call: &mut ToolCall, path: &str, hunks: &str, places: &Places) {
-    let Ok(view) = DiffView::from_unified(hunks) else {
-        return;
-    };
+    if let Ok(view) = DiffView::from_unified(hunks) {
+        take_view(call, path, view, places);
+    }
+}
+
+/// [`take_patch_in`] for a patch that names no line numbers, which draws without them.
+pub fn take_unnumbered_patch_in(call: &mut ToolCall, path: &str, hunks: &str, places: &Places) {
+    if let Ok(view) = DiffView::from_unified(hunks) {
+        take_view(call, path, view.without_numbers(), places);
+    }
+}
+
+fn take_view(call: &mut ToolCall, path: &str, view: DiffView, places: &Places) {
     if view.is_empty() {
         return;
     }
@@ -904,7 +914,7 @@ fn string_field(input: &Value, keys: &[&str]) -> Option<String> {
         .filter(|text| !text.trim().is_empty())
 }
 
-/// The command as one line, whether the vendor sends a string or an argument list.
+/// The command as one line, whether the agent sends a string or an argument list.
 fn command_field(input: &Value) -> Option<String> {
     let object = input.as_object()?;
     let value = COMMAND_KEYS
@@ -924,8 +934,9 @@ fn command_field(input: &Value) -> Option<String> {
 }
 
 /// Whether a shell call only looks: every command in it searches, reads or lists, as
-/// Claude Code 2.1.295 decides which commands fold with the reads. Anything else, such as a
-/// test run, keeps its own row, and a call whose command isn't known yet does too.
+/// Claude Code 2.1.295 decides which commands fold with the reads, or asks git what is there.
+/// Anything else, such as a test run, keeps its own row, and a call whose command isn't known
+/// yet does too.
 pub fn only_looks(call: &ToolCall) -> bool {
     const SEARCH: &[&str] = &[
         "find", "grep", "rg", "ag", "ack", "locate", "which", "whereis",
@@ -936,18 +947,36 @@ pub fn only_looks(call: &ToolCall) -> bool {
     ];
     const LIST: &[&str] = &["ls", "tree", "du"];
     const SAYS: &[&str] = &["echo", "printf", "true", "false", ":"];
+    // The git subcommands that change nothing whatever follows them.
+    const GIT_READS: &[&str] = &[
+        "log",
+        "status",
+        "diff",
+        "show",
+        "blame",
+        "shortlog",
+        "describe",
+        "rev-parse",
+        "rev-list",
+        "merge-base",
+        "ls-files",
+        "ls-tree",
+        "cat-file",
+    ];
     let ToolTitle::Call { args, .. } = &call.title else {
         return false;
     };
     let mut looked = false;
     for part in args.split(['|', '&', ';', '\n']) {
-        let Some(word) = part.split_whitespace().next() else {
+        let mut words = part.split_whitespace();
+        let Some(word) = words.next() else {
             continue;
         };
         if SAYS.contains(&word) {
             continue;
         }
-        if !(SEARCH.contains(&word) || READ.contains(&word) || LIST.contains(&word)) {
+        let asks_git = word == "git" && words.next().is_some_and(|sub| GIT_READS.contains(&sub));
+        if !(asks_git || SEARCH.contains(&word) || READ.contains(&word) || LIST.contains(&word)) {
             return false;
         }
         looked = true;
@@ -1025,7 +1054,7 @@ mod tests {
             written_report(fenced),
             Some(("Done".to_owned(), Some("Created hello.txt.".to_owned())))
         );
-        let bare = r#"{"plan": [{"card": "a"}]}"#;
+        let bare = r#"{"plan": [{"task": "a"}]}"#;
         assert_eq!(written_report(bare), Some((String::new(), None)));
         let indented = "Here it is:\n  {\"summary\": \"ok\"}";
         assert_eq!(
@@ -1052,8 +1081,8 @@ mod tests {
         plain_text(&call.lines(&RenderCtx::new(width, &theme, Clock::still(Instant::now()))))
     }
 
-    fn done(vendor: &str, name: &str, input: Value, output: Option<&str>) -> ToolCall {
-        let mut call = start_call(vendor, name, &input);
+    fn done(agent_id: &str, name: &str, input: Value, output: Option<&str>) -> ToolCall {
+        let mut call = start_call(agent_id, name, &input);
         finish_call(&mut call, true, output);
         call
     }
@@ -1123,7 +1152,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_names_every_vendor() {
+    fn tool_names_every_agent() {
         let worktree = "/home/me/.argonauts/worktrees/repo-1/run-01/task-003";
         let cases = [
             // Claude Code
@@ -1498,19 +1527,19 @@ mod tests {
                 ToolKind::Other,
             ),
         ];
-        for (vendor, name, input, title, kind) in cases {
-            let call = start_call(vendor, name, &input);
-            assert_eq!(call.title.plain(), title, "{vendor} {name}");
-            assert_eq!(call.kind, kind, "{vendor} {name}");
+        for (agent_id, name, input, title, kind) in cases {
+            let call = start_call(agent_id, name, &input);
+            assert_eq!(call.title.plain(), title, "{agent_id} {name}");
+            assert_eq!(call.kind, kind, "{agent_id} {name}");
             if name != "file_change" {
-                assert_eq!(kind_of(vendor, name), kind, "{vendor} {name}");
+                assert_eq!(kind_of(agent_id, name), kind, "{agent_id} {name}");
             }
             assert_eq!(call.state, ToolState::Running);
         }
     }
 
     #[test]
-    fn argonauts_own_tools_are_known_by_every_vendor_name() {
+    fn argonauts_own_tools_are_known_by_every_agent_name() {
         let own = [
             "StructuredOutput",
             "structured_output",
@@ -1675,7 +1704,7 @@ mod tests {
             false,
             Some(
                 "Permission to use Bash has been denied because Claude Code is running in \
-                 don't ask mode. IMPORTANT: You *may* attempt to accomplish this action",
+                 don't ask mode. IMPORTANT: You *may* try to accomplish this action",
             ),
         );
         assert_eq!(call.state, ToolState::Refused);
@@ -1766,7 +1795,7 @@ mod tests {
         );
         let theme = theme();
         let lines = failed.lines(&RenderCtx::new(80, &theme, Clock::still(Instant::now())));
-        let error = theme.style(Role::Error).fg;
+        let error = theme.style(Role::Danger).fg;
         for row in &lines[1..7] {
             let text = row.spans.last().expect("text");
             assert_eq!(text.style.fg, error, "{row:?}");
@@ -1820,6 +1849,20 @@ mod tests {
     }
 
     #[test]
+    fn a_shell_call_that_only_asks_git_what_is_there_folds_with_the_reads() {
+        let looks = |command: &str| only_looks(&ToolCall::call(ToolKind::Shell, "Bash", command));
+        assert!(looks("git log --oneline -3 main && git status --short"));
+        assert!(looks("git diff HEAD~1 | head -40"));
+        assert!(looks("ls src; git show HEAD:Cargo.toml"));
+        // Anything git may change keeps its own row, and so does git with nothing after it.
+        assert!(!looks("git commit -m wip"));
+        assert!(!looks("git log && git push"));
+        assert!(!looks("git branch feature"));
+        assert!(!looks("git"));
+        assert!(!looks("cargo test"));
+    }
+
+    #[test]
     fn collapsed_group_phrases() {
         let calls = [
             ("claude-code", "Read", json!({"file_path": "a.rs"})),
@@ -1840,9 +1883,9 @@ mod tests {
             ("claude-code", "WebFetch", json!({"url": "https://x.dev"})),
         ];
         let mut group = CollapsedGroup::new();
-        for (vendor, name, input) in &calls {
-            let call = done(vendor, name, input.clone(), Some("ok"));
-            assert!(call.kind.is_quiet(), "{vendor} {name}");
+        for (agent_id, name, input) in &calls {
+            let call = done(agent_id, name, input.clone(), Some("ok"));
+            assert!(call.kind.is_quiet(), "{agent_id} {name}");
             group.push(call);
         }
         assert_eq!(

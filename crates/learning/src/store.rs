@@ -1,6 +1,6 @@
 //! Where learning keeps its files. Private state, such as the replay set and the hidden tests,
 //! lives in the repo's state folder outside every sandbox's read scope. What you review, such as
-//! recipes, skills, and notes, lives in the repo and changes only through commits.
+//! learned workflows, skills, and notes, lives in the repo and changes only through commits.
 
 use std::path::{Path, PathBuf};
 
@@ -13,7 +13,7 @@ pub struct Store {
     pub repo_root: PathBuf,
 }
 
-/// Exported skills, the folder most harnesses read.
+/// Exported skills, the folder most CLIs read.
 pub const SKILLS_DIR: &str = ".agents/skills";
 /// Where Claude Code reads project skills; each exported skill is linked here.
 pub const CLAUDE_SKILLS_DIR: &str = ".claude/skills";
@@ -28,7 +28,7 @@ impl Store {
         }
     }
 
-    /// `outcomes/<run>.jsonl`, written by the engine's retro.
+    /// `outcomes/<run>.jsonl`, written by the engine's run review.
     pub fn outcomes_dir(&self) -> PathBuf {
         self.state_dir.join(repo_state::OUTCOMES)
     }
@@ -49,8 +49,8 @@ impl Store {
         self.repo_root.join(".argonauts")
     }
 
-    pub fn recipes_dir(&self) -> PathBuf {
-        self.argonauts_dir().join(project_files::RECIPES)
+    pub fn learned_workflows_dir(&self) -> PathBuf {
+        self.argonauts_dir().join(project_files::LEARNED_WORKFLOWS)
     }
 
     /// Shared outcome logs, when `outcomes.share` is on.

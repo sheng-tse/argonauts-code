@@ -11,8 +11,8 @@ mod numbers;
 mod resets;
 
 pub use numbers::{
-    Formats, QuotaWords, TokenUnit, UNKNOWN, duration_slot, multiplier, percent, quota, stale,
-    tokens, tokens_as,
+    Formats, PlanUsageWords, TokenUnit, UNKNOWN, duration_slot, multiplier, percent, plan_usage,
+    stale, tokens, tokens_as,
 };
 pub use resets::{ClockStyle, ResetStyle, countdown, reset_time, resets};
 
@@ -40,9 +40,27 @@ pub fn duration_compact(elapsed: Duration) -> String {
     }
 }
 
-/// A cost in US dollars: `$0.21`, `$12.40`.
+/// A cost in US dollars, its thousands marked: `$0.21`, `$12.40`, `$12,356.88`.
 pub fn usd(cost: f64) -> String {
-    format!("${cost:.2}")
+    let plain = format!("{cost:.2}");
+    let dollars = plain.split_once('.').and_then(|(whole, cents)| {
+        let whole: u64 = whole.parse().ok()?;
+        Some(format!("{}.{cents}", thousands(whole)))
+    });
+    format!("${}", dollars.unwrap_or(plain))
+}
+
+/// A count with its thousands marked: `1,086`.
+pub fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && (digits.len() - at).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
 }
 
 /// What was spent, marked the same on every screen: `~$0.24` when estimated from token counts,
@@ -173,10 +191,10 @@ fn local_offset_at(at: OffsetDateTime) -> Option<UtcOffset> {
     UtcOffset::from_whole_seconds(offset).ok()
 }
 
-/// How a vendor is named in sentences, such as `Claude Code is back`, where the app's names
+/// How an agent is named in sentences, such as `Claude Code is back`, where the app's names
 /// aren't at hand. Unknown ids stay as they are.
-pub fn vendor_label(id: &str) -> String {
-    DisplayNames::default().harness(id)
+pub fn agent_label(id: &str) -> String {
+    DisplayNames::default().cli(id)
 }
 
 /// How a model list names `choice`: a CLI's default with the model it runs, and an alias
@@ -188,7 +206,7 @@ pub fn choice_words(choice: &ModelChoice) -> String {
         .map(str::trim)
         .filter(|runs| !runs.is_empty());
     if choice.worker.model.is_none() {
-        let default = format!("{}'s default", vendor_label(&choice.worker.worker));
+        let default = format!("{}'s default", agent_label(&choice.worker.agent));
         return match runs {
             Some(runs) => format!("{default} ({runs})"),
             None => default,
@@ -307,6 +325,24 @@ mod tests {
     }
 
     #[test]
+    fn money_and_counts_mark_their_thousands() {
+        assert_eq!(usd(12.4), "$12.40");
+        assert_eq!(usd(999.994), "$999.99");
+        assert_eq!(usd(999.995), "$1,000.00");
+        assert_eq!(usd(12_356.88), "$12,356.88");
+        assert_eq!(usd(1_234_567.0), "$1,234,567.00");
+        assert_eq!(thousands(812), "812");
+        assert_eq!(thousands(1_086), "1,086");
+        assert_eq!(thousands(1_000_000), "1,000,000");
+        let estimated = Spend {
+            cost_usd: 12_356.88,
+            cost_estimated: true,
+            ..Spend::default()
+        };
+        assert_eq!(spend(&estimated), "~$12,356.88");
+    }
+
+    #[test]
     fn a_pinned_clock_shows_times_in_its_own_zone() {
         let now = time::macros::datetime!(2026-09-30 10:58 -7);
         let clock = WallClock::pinned(now);
@@ -324,10 +360,10 @@ mod tests {
     }
 
     #[test]
-    fn vendors_and_values_read_as_words() {
-        assert_eq!(vendor_label("claude-code"), "Claude Code");
-        assert_eq!(vendor_label("antigravity-cli"), "Antigravity CLI");
-        assert_eq!(vendor_label("agy"), "agy");
+    fn agents_and_values_read_as_words() {
+        assert_eq!(agent_label("claude-code"), "Claude Code");
+        assert_eq!(agent_label("antigravity-cli"), "Antigravity CLI");
+        assert_eq!(agent_label("agy"), "agy");
         assert_eq!(setting_value("\"auto\""), "auto");
         assert_eq!(setting_value("'dark'"), "dark");
         assert_eq!(setting_value("3"), "3");

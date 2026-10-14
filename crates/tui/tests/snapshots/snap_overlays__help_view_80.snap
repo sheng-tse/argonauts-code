@@ -3,7 +3,7 @@ source: crates/tui/tests/snap_overlays.rs
 expression: "screen(&mut view, width, height, &state)"
 ---
 Help
-The keys in effect, and every command by category                    65 commands
+The keys in effect, and every command by category                    67 commands
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Keys                                                                         │
@@ -18,11 +18,11 @@ The keys in effect, and every command by category                    65 commands
 │ ctrl+o                        detailed transcript                            │
 │ ctrl+t                        workflow view                                  │
 │ ctrl+g / ctrl+x ctrl+e        edit the prompt in $EDITOR                     │
-│ left                          crew view, on an empty prompt                  │
+│ left                          agent panel, on an empty prompt                │
 │ down                          agent panel, on an empty prompt                │
 │ ctrl+r                        search prompt history                          │
 │ ?                             shortcuts, on an empty prompt                  │
 │ up                            take queued messages back                      │
 │ tab / up                      answer a waiting question                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ scroll · esc back                                               1-18 of 155 ↓
+↑↓ scroll · esc back                                               1-18 of 163 ↓

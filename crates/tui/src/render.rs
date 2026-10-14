@@ -14,7 +14,7 @@ pub struct RenderCtx<'a> {
     /// Drawing a live block, which redraws in place: code rows are cut with `…` rather than
     /// wrapped, so a preview stays short and readable.
     pub live: bool,
-    /// Vim keys are on, so letters they take aren't offered as a card's keys.
+    /// Vim keys are on, so letters they take aren't offered as a question's keys.
     pub vim: bool,
     pub clock: Clock,
 }

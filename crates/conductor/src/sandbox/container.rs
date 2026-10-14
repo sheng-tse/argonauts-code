@@ -1,9 +1,9 @@
-//! `sandbox.mode = "container"`, and every session of an untrusted repository: the harness runs in
+//! `sandbox.mode = "container"`, and every session of an untrusted repository: the CLI runs in
 //! docker or podman, in `sandbox.container_image`, with nothing of this machine inside but the
 //! profile's paths at their own places: the writable ones read-write, the readable ones
-//! read-only, and denied areas inside them covered. The conductor commits from outside.
+//! read-only, and denied areas inside them covered. Argonauts Code commits from outside.
 //!
-//! Without network the container gets `--network none`. Its harness still reaches the proxy on
+//! Without network the container gets `--network none`. Its CLI still reaches the proxy on
 //! Linux: the launcher on this side bridges a Unix socket to the proxy, and a copy of the
 //! launcher inside listens at the proxy's address and carries each connection over that socket.
 //! Docker Desktop on macOS can't pass a Unix socket into a container, so there a session without
@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use argonauts_core::CommandSpec;
-use argonauts_core::worker::{SandboxMode, SandboxProfile};
+use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
 
 use super::landlock::reachable_proxies;
 use super::launcher::{BRIDGE_DIR, bridge_args, relay_args};
@@ -285,8 +285,8 @@ struct Mounts {
 }
 
 /// What the container sees: the profile's paths and nothing else. A readable file inside a
-/// denied area comes through its folder, with the folder's other entries covered, since the
-/// conductor replaces some of those files by renaming a new one over them.
+/// denied area comes through its folder, with the folder's other entries covered, since
+/// Argonauts Code replaces some of those files by renaming a new one over them.
 fn plan_mounts(profile: &SandboxProfile, disk: &dyn Disk) -> Mounts {
     let rules = ordered_rules(profile);
     let mut mounts = Mounts::default();
@@ -384,7 +384,7 @@ fn plan_mounts(profile: &SandboxProfile, disk: &dyn Disk) -> Mounts {
 
 /// The profile without your temp folders, so the container keeps its own. Yours hold other
 /// programs' sockets, such as tmux's or an editor's, and on Linux one bound into a container
-/// still answers. Paths inside them that the profile names, such as a gate's home, still come in.
+/// still answers. Paths inside them that the profile names, such as a check's home, still come in.
 fn own_temp(profile: &SandboxProfile) -> SandboxProfile {
     let temp: Vec<PathBuf> = temp_dirs().iter().map(|path| resolve_path(path)).collect();
     let mut profile = profile.clone();
@@ -757,7 +757,7 @@ mod tests {
             .push(("ANTHROPIC_MODEL".to_owned(), "haiku".to_owned()));
         let both = std::slice::from_ref(&worktree);
         let profile = profile(both, both, &[]);
-        let wrapped = Container::with_runtime("/usr/bin/docker", "argonauts/harness:1")
+        let wrapped = Container::with_runtime("/usr/bin/docker", "argonauts/cli:1")
             .wrap(command, &profile)
             .unwrap();
         assert_eq!(wrapped.program, "/usr/bin/docker");
@@ -770,7 +770,7 @@ mod tests {
             &format!("--workdir {worktree}"),
             &format!("--mount type=bind,src={worktree},dst={worktree}"),
             "--env HOME --env ANTHROPIC_MODEL",
-            "argonauts/harness:1 claude -p hi",
+            "argonauts/cli:1 claude -p hi",
         ] {
             assert!(args.contains(part), "{part} not in {args}");
         }

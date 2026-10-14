@@ -203,7 +203,7 @@ fn new_step(steps: &ArrayOfTables) -> Table {
         .unwrap_or_default();
     let mut step = Table::new();
     step.insert("name", Item::Value(Value::from(name)));
-    step.insert("role", Item::Value(Value::from("workers")));
+    step.insert("role", Item::Value(Value::from("worker")));
     step
 }
 
@@ -322,7 +322,7 @@ mod tests {
     fn a_value_changes_and_the_comment_on_its_line_stays() {
         let changed = change(&file(), &step(0, "role", "judge")).unwrap();
         assert!(
-            changed.contains("role = \"judge\"    # orchestrator · workers · reviewers · judge"),
+            changed.contains("role = \"judge\"    # orchestrator · worker · reviewer · judge"),
             "{changed}"
         );
         // Every other line is as it was written.
@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn the_files_own_keys_change_and_settings_below_the_steps_stay() {
-        let text = format!("{}\n[crew]\nworkers = [\"codex/gpt-5.6\"]\n", file());
+        let text = format!("{}\n[crew]\nworker = [\"codex/gpt-5.6\"]\n", file());
         let changed = change(
             &text,
             &Change::File {
@@ -448,7 +448,7 @@ mod tests {
         let read = WorkflowFile::parse(&changed).unwrap().unwrap();
         assert_eq!(read.goal.as_deref(), Some("every test passes"));
         assert!(
-            changed.contains("[crew]\nworkers = [\"codex/gpt-5.6\"]"),
+            changed.contains("[crew]\nworker = [\"codex/gpt-5.6\"]"),
             "{changed}"
         );
         let adapted = change(

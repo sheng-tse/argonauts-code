@@ -228,7 +228,7 @@ pub fn truncate_spans(spans: &[Span<'_>], width: usize) -> Vec<Span<'static>> {
         return Vec::new();
     }
     let mark = cut_mark(width);
-    let budget = width - str_width(mark);
+    let limit = width - str_width(mark);
     let mut out: Vec<Span<'static>> = Vec::new();
     let mut used = 0;
     let mut last_style = Style::default();
@@ -237,7 +237,7 @@ pub fn truncate_spans(spans: &[Span<'_>], width: usize) -> Vec<Span<'static>> {
         let mut kept = String::new();
         for grapheme in span.content.graphemes(true) {
             let w = str_width(grapheme);
-            if used + w > budget {
+            if used + w > limit {
                 if !kept.is_empty() {
                     out.push(Span::styled(kept, span.style));
                 }
@@ -612,7 +612,7 @@ mod tests {
             vec![],
             vec![Span::raw("")],
             vec![Span::raw("   ")],
-            vec![Span::raw("  lead and trail  ")],
+            vec![Span::raw("  head and tail  ")],
             vec![Span::raw("a "), Span::raw(" "), Span::styled("b", bold)],
             vec![
                 Span::raw("same "),

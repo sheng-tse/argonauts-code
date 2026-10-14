@@ -1,21 +1,26 @@
-//! The Stats tab of the Overview, and `/stats`: what the crew did,
-//! per CLI and per model, side by side and summed. Tokens are the first measure; `u` turns
-//! the bars to tasks or spend. `m` shows one row per model, `r` one per role, `c` goes back
-//! to the CLIs, and Enter opens a CLI, a model or a role one level deeper. `,` opens the stats
-//! mod's page, which sets what all of these start as.
+//! The Stats tab of the usage panel, and `/stats`: what the crew did, by CLI, by model and by
+//! role, each built the same way: all of them together, a card for each, and a box that sets
+//! them side by side. Tokens are the first measure; `u` turns By CLI's bars and the charts to
+//! tasks or spend. Tab goes along the three views, `c` and `m` jump to the CLIs and the
+//! models, and Enter opens a CLI, a model or a role one level deeper. `,` opens the stats
+//! mod's page, which sets what all of these start as. The period's keys are the panel's.
 //!
 //! Every number comes from the crew stats the usage numbers carry, which the work ledger
-//! records beside the usage ledger. Each CLI draws in its own color and each of its models in
-//! its own shade of it.
+//! records beside the usage ledger. Each CLI draws in its own color, each of its models in
+//! its own shade of it, and each role in a color of its own.
 
 mod argonauts;
+mod by_model;
+mod by_role;
 mod cli;
 mod data;
 pub(super) mod draw;
+mod grid;
 mod opened;
+mod opened_model;
 pub mod pinned;
 mod settings;
-mod table;
+mod together;
 
 use argonauts_core::api::{UsagePeriod, UsageSummary};
 use argonauts_core::app::UiCommand;
@@ -27,29 +32,25 @@ use time::OffsetDateTime;
 
 pub use opened::Opened;
 pub use settings::SettingsPage;
-pub use table::{RoleSort, Sort};
 
 use self::cli::Stats;
 use self::data::Crew;
 use self::pinned::StatsCard;
 use self::settings::PageKey;
+use super::shades::shown_as;
 use super::subtabs::{self, Level};
+use crate::kit::{Drawn, Form, Frame, Kit};
 use crate::theme::Role;
-use crate::widgets::{Drawn, Form, Frame, Kit};
 
 /// How the tab shows the crew's stats, kept while it stays open.
 #[derive(Debug, Clone, Default)]
 pub struct StatsState {
     pub group: StatsGroup,
     pub measure: StatsMeasure,
-    pub sort: Sort,
-    pub role_sort: RoleSort,
-    /// The row the keys are on: a CLI's card and then a role by CLI, a model, or a role.
+    /// The card the keys are on: a CLI's and then a role by CLI, a model's, or a role's.
     pub picked: usize,
-    /// The card Enter opened by CLI: a CLI's or a role's.
+    /// What Enter opened one level deeper: a CLI, a model or a role.
     pub opened: Option<Opened>,
-    /// By model and by role the picked row stands opened under the rows; Enter closed it.
-    pub closed: bool,
     /// The group and measure of `mods/stats.toml` were taken, or a key changed them first.
     pub settled: bool,
     /// The stats mod's page, over the tab's cards while it's open.
@@ -175,14 +176,15 @@ impl StatsState {
         self.page.take().is_some() || wanted
     }
 
-    /// The tab's cards, and which of them holds the row the keys are on.
+    /// The tab's cards, and which of them holds the row the keys are on. `on_this_computer`
+    /// is the Overview's count of every token here over every day, when it's at hand.
     pub fn blocks(
         &self,
         kit: &Kit<'_>,
         usage: &UsageSummary,
-        names: &DisplayNames,
-        now: OffsetDateTime,
+        (names, now): (&DisplayNames, OffsetDateTime),
         width: usize,
+        on_this_computer: Option<u64>,
     ) -> (Vec<Drawn>, usize) {
         let Some(stats) = &usage.stats else {
             return (vec![note(kit, "Reading the crew's stats…")], 0);
@@ -208,6 +210,7 @@ impl StatsState {
             crew: &crew,
             usage,
             measure: self.measure,
+            on_this_computer,
         };
         let frame = Frame::view(width);
         // The row the keys are on shows only while they're in the cards.
@@ -223,14 +226,13 @@ impl StatsState {
                 }
                 let clis = crew.clis.len();
                 let on_cli = (picked < clis).then_some(picked);
-                let rows = look.cli_cards(kit, width, on_cli);
-                let per_row = clis.div_ceil(rows.len().max(1));
+                let (rows, layout) = look.cli_cards(kit, width, on_cli);
                 if let Some(picked) = on_cli {
-                    focus = blocks.len() + picked / per_row.max(1);
+                    focus = blocks.len() + layout.row_of(picked);
                 }
                 blocks.extend(rows);
                 let opened_cli = matches!(self.opened, Some(Opened::Cli(_)));
-                if opened_cli && let Some(card) = self.opened_card(kit, &look, frame, &crew) {
+                if opened_cli && let Some(card) = self.opened_card(kit, &look, frame) {
                     blocks.push(card);
                 }
                 let role = crew.roles().get(picked.saturating_sub(clis)).copied();
@@ -240,57 +242,61 @@ impl StatsState {
                 }
                 blocks.push(look.who_did_what(kit, frame, on_role));
                 if matches!(self.opened, Some(Opened::Role(_)))
-                    && let Some(card) = self.opened_card(kit, &look, frame, &crew)
+                    && let Some(card) = self.opened_card(kit, &look, frame)
                 {
                     blocks.push(card);
                     focus = blocks.len() - 1;
                 }
                 blocks.push(argonauts::card(kit, frame, usage.argonauts.as_ref()));
             }
-            StatsGroup::Model => {
-                focus = blocks.len();
-                blocks.push(look.by_model(kit, frame, self.sort, picked));
-                if let Some(card) = self.opened_card(kit, &look, frame, &crew) {
+            StatsGroup::Model | StatsGroup::Role => {
+                let by_model = self.group == StatsGroup::Model;
+                if stats.settings.total {
+                    blocks.push(if by_model {
+                        look.all_models(kit, frame)
+                    } else {
+                        look.all_roles(kit, frame)
+                    });
+                }
+                let on_card = (picked != usize::MAX).then_some(picked);
+                let (rows, layout) = if by_model {
+                    look.model_cards(kit, width, on_card)
+                } else {
+                    look.role_cards(kit, width, on_card)
+                };
+                if let Some(picked) = on_card {
+                    focus = blocks.len() + layout.row_of(picked);
+                }
+                blocks.extend(rows);
+                if let Some(card) = self.opened_card(kit, &look, frame) {
+                    focus = blocks.len();
                     blocks.push(card);
                 }
-            }
-            StatsGroup::Role => {
-                focus = blocks.len();
-                blocks.push(look.by_role(kit, frame, self.role_sort, picked));
-                if let Some(card) = self.opened_card(kit, &look, frame, &crew) {
-                    blocks.push(card);
-                }
+                blocks.extend(if by_model {
+                    look.same_job(kit, frame)
+                } else {
+                    look.caught_or_changed(kit, frame)
+                });
             }
         }
         (blocks, focus)
     }
 
-    fn opened_card(
-        &self,
-        kit: &Kit<'_>,
-        look: &Stats<'_>,
-        frame: Frame,
-        crew: &Crew,
-    ) -> Option<Drawn> {
-        let open = match self.group {
-            StatsGroup::Cli => self.opened.clone(),
-            _ if self.closed => None,
-            _ => self.at_pick(look.usage, crew),
-        };
-        look.opened(kit, frame, &open?)
+    fn opened_card(&self, kit: &Kit<'_>, look: &Stats<'_>, frame: Frame) -> Option<Drawn> {
+        look.opened(kit, frame, self.opened.as_ref()?)
     }
 
-    /// How many rows the keys move over.
+    /// How many cards the keys move over.
     fn picks(&self, crew: &Crew) -> usize {
         match self.group {
             StatsGroup::Cli => crew.clis.len() + crew.roles().len(),
             StatsGroup::Model => crew.models().count(),
-            StatsGroup::Role => crew.roles().len(),
+            StatsGroup::Role => crew.filled().len(),
         }
     }
 
-    /// What the row the keys are on opens.
-    fn at_pick(&self, usage: &UsageSummary, crew: &Crew) -> Option<Opened> {
+    /// What the card the keys are on opens.
+    fn at_pick(&self, crew: &Crew) -> Option<Opened> {
         let picked = self.picked.min(self.picks(crew).saturating_sub(1));
         match self.group {
             StatsGroup::Cli => match crew.clis.get(picked) {
@@ -300,26 +306,11 @@ impl StatsState {
                     .get(picked - crew.clis.len())
                     .map(|role| Opened::Role(*role)),
             },
-            StatsGroup::Model => {
-                let look = Stats {
-                    crew,
-                    usage,
-                    measure: self.measure,
-                };
-                look.sorted_models(self.sort)
-                    .get(picked)
-                    .map(|(_, model)| Opened::Model(model.agent.clone(), model.model.clone()))
-            }
-            StatsGroup::Role => {
-                let look = Stats {
-                    crew,
-                    usage,
-                    measure: self.measure,
-                };
-                look.sorted_roles(self.role_sort)
-                    .get(picked)
-                    .map(|role| Opened::Role(*role))
-            }
+            StatsGroup::Model => crew
+                .models()
+                .nth(picked)
+                .map(|(_, model)| Opened::Model(model.agent.clone(), model.model.clone())),
+            StatsGroup::Role => crew.filled().get(picked).map(|role| Opened::Role(*role)),
         }
     }
 
@@ -334,12 +325,7 @@ impl StatsState {
         now: OffsetDateTime,
     ) -> Option<StatsKey> {
         self.missing = None;
-        let period = |period| Some(StatsKey::Period(period));
         match code {
-            KeyCode::Char('1') => return period(UsagePeriod::Today),
-            KeyCode::Char('2') => return period(UsagePeriod::Week),
-            KeyCode::Char('3') => return period(UsagePeriod::Month),
-            KeyCode::Char('4') => return period(UsagePeriod::All),
             KeyCode::Char('c') => {
                 self.regroup(StatsGroup::Cli, Level::Cards);
                 return Some(StatsKey::Moved);
@@ -348,21 +334,9 @@ impl StatsState {
                 self.regroup(StatsGroup::Model, Level::Cards);
                 return Some(StatsKey::Moved);
             }
-            KeyCode::Char('r') => {
-                self.regroup(StatsGroup::Role, Level::Cards);
-                return Some(StatsKey::Moved);
-            }
             KeyCode::Char('u') => {
                 self.measure = self.measure.next();
                 self.settled = true;
-                return Some(StatsKey::Moved);
-            }
-            KeyCode::Char('s') if self.group == StatsGroup::Model => {
-                self.sort = self.sort.next();
-                return Some(StatsKey::Moved);
-            }
-            KeyCode::Char('s') if self.group == StatsGroup::Role => {
-                self.role_sort = self.role_sort.next();
                 return Some(StatsKey::Moved);
             }
             KeyCode::Char('p') => return Some(StatsKey::Pin),
@@ -402,11 +376,10 @@ impl StatsState {
             KeyCode::Down => self.picked = (self.picked + 1).min(last),
             KeyCode::Home => self.picked = 0,
             KeyCode::End => self.picked = last,
-            KeyCode::Enter if self.group == StatsGroup::Cli => {
-                let here = self.at_pick(usage, &crew);
+            KeyCode::Enter => {
+                let here = self.at_pick(&crew);
                 self.opened = if self.opened == here { None } else { here };
             }
-            KeyCode::Enter => self.closed = !self.closed,
             _ => return None,
         }
         Some(StatsKey::Moved)
@@ -417,20 +390,12 @@ impl StatsState {
         self.opened.take().is_some()
     }
 
-    /// The row under the tabs: what this view is, for `period`.
-    pub fn description(&self, period: UsagePeriod) -> String {
-        let span = match period {
-            UsagePeriod::Today => "Today",
-            UsagePeriod::Week => "This week",
-            UsagePeriod::Month => "This month",
-            UsagePeriod::All => "Every day so far",
-        };
+    /// The row under the tabs: what this view is.
+    pub fn description(&self) -> &'static str {
         match self.group {
-            StatsGroup::Cli => {
-                "What the crew did: every CLI together, then each one by itself".to_owned()
-            }
-            StatsGroup::Model => format!("{span}, one row per model, whichever CLI runs it"),
-            StatsGroup::Role => format!("{span}, one row per role, every model that filled it"),
+            StatsGroup::Cli => "What the crew did: every CLI together, then each one by itself",
+            StatsGroup::Model => "Every model the crew used: all together, then each one by itself",
+            StatsGroup::Role => "Every role in the crew: all together, then each one by itself",
         }
     }
 
@@ -451,12 +416,11 @@ impl StatsState {
         self.group = group;
         self.picked = 0;
         self.opened = None;
-        self.closed = false;
         self.settled = true;
         self.level = level;
     }
 
-    /// Opens `model` of `agent` in the by-model view, its row picked once the numbers show
+    /// Opens `model` of `agent` in the by-model view, its card picked once the numbers show
     /// where it is.
     pub fn open_model(&mut self, agent: String, model: Option<String>) {
         self.page = None;
@@ -465,8 +429,8 @@ impl StatsState {
         self.wanted = Some(Opened::Model(agent, model));
     }
 
-    /// Picks the row of the model asked for with [`open_model`](Self::open_model), now the
-    /// numbers are here. A model that did no crew work in the period stays unopened.
+    /// Picks and opens the card of the model asked for with [`open_model`](Self::open_model),
+    /// now the numbers are here. A model that did no crew work in the period stays unopened.
     pub fn pick_wanted(&mut self, usage: &UsageSummary, names: &DisplayNames, now: OffsetDateTime) {
         let Some(wanted) = self.wanted.take() else {
             return;
@@ -476,18 +440,23 @@ impl StatsState {
             return;
         };
         let crew = Crew::of(usage, stats, names, now.date());
-        let look = Stats {
-            crew: &crew,
-            usage,
-            measure: self.measure,
-        };
-        let at = look.sorted_models(self.sort).iter().position(|(_, model)| {
-            Opened::Model(model.agent.clone(), model.model.clone()) == wanted
-        });
-        match at {
-            Some(at) => self.picked = at,
+        // The Overview may spell the model another way than the crew's records.
+        let shown = |agent: &str, model: Option<&str>| shown_as(names, agent, model);
+        let found = crew
+            .models()
+            .enumerate()
+            .find(|(_, (_, model))| match &wanted {
+                Opened::Model(agent, wanted) => {
+                    shown(agent, wanted.as_deref()) == shown(&model.agent, model.model.as_deref())
+                }
+                _ => false,
+            });
+        match found {
+            Some((at, (_, model))) => {
+                self.picked = at;
+                self.opened = Some(Opened::Model(model.agent.clone(), model.model.clone()));
+            }
             None => {
-                self.closed = true;
                 if let Opened::Model(agent, model) = &wanted {
                     let span = match usage.period {
                         UsagePeriod::Today => "today",
@@ -504,42 +473,29 @@ impl StatsState {
         }
     }
 
-    /// The keys, in display order: on the tabs how to move on, in the cards what each
-    /// does there.
+    /// The keys, in display order, after the period's: on the tabs and the sub-tabs how to
+    /// move on, and in the cards what each key does there.
     pub fn keys(&self) -> Vec<&'static str> {
-        if self.level == Level::Tabs {
-            return vec![
+        const ALONG: &str = "tab By CLI, By model, By role";
+        const INTO: &str = "↓ into the cards";
+        const MEASURE: &str = "u tokens, tasks or spend";
+        const OPENS: &str = "enter opens or closes it";
+        match (self.level, self.group) {
+            (Level::Tabs, _) => vec![
                 "tab · ←→ tabs",
                 "↓ sub-tabs, then cards",
-                "1-4 period",
-                "u tokens, tasks or spend",
+                MEASURE,
                 "enter open",
                 "p pin",
-            ];
-        }
-        match self.group {
-            StatsGroup::Cli => vec![
-                "↑↓ card",
-                "enter opens or closes it",
-                "tab By CLI, By model, By role",
-                "1-4 period",
-                "u tokens, tasks or spend",
-                "p pin",
             ],
-            StatsGroup::Model => vec![
-                "↑↓ model",
-                "enter opens or closes it",
-                "tab By CLI, By model, By role",
-                "u tokens, tasks or spend",
-                "s sort",
-            ],
-            StatsGroup::Role => vec![
-                "↑↓ role",
-                "enter opens or closes it",
-                "tab By CLI, By model, By role",
-                "u tokens, tasks or spend",
-                "s sort",
-            ],
+            (Level::SubTabs, StatsGroup::Cli) => vec![ALONG, INTO, "↑ tabs"],
+            (Level::SubTabs, StatsGroup::Model) => vec![ALONG, INTO, "enter opens a model"],
+            (Level::SubTabs, StatsGroup::Role) => vec![ALONG, INTO, "enter opens a role"],
+            (Level::Cards, StatsGroup::Cli) => {
+                vec!["↑↓ card", OPENS, ALONG, MEASURE, "p pin"]
+            }
+            (Level::Cards, StatsGroup::Model) => vec!["↑↓ model", OPENS, ALONG, MEASURE],
+            (Level::Cards, StatsGroup::Role) => vec!["↑↓ role", OPENS, ALONG, MEASURE],
         }
     }
 }
@@ -551,14 +507,6 @@ const GROUPS: [(StatsGroup, &str); 3] = [
     (StatsGroup::Role, "By role"),
 ];
 
-/// The Stats tab's periods, as its row of tabs writes them, the same as every tab's.
-pub const PERIODS: [(UsagePeriod, &str); 4] = [
-    (UsagePeriod::Today, "Today"),
-    (UsagePeriod::Week, "Week"),
-    (UsagePeriod::Month, "Month"),
-    (UsagePeriod::All, "All"),
-];
-
 /// Each stats file that was left out, and why, in the warning colour.
 fn left_out(kit: &Kit<'_>, problems: &[String]) -> Option<Drawn> {
     if problems.is_empty() {
@@ -567,7 +515,7 @@ fn left_out(kit: &Kit<'_>, problems: &[String]) -> Option<Drawn> {
     let mut block = Drawn::new();
     for problem in problems {
         block.push(vec![
-            kit.span(format!(" {problem}"), Role::Warning),
+            kit.span(format!(" {problem}"), Role::Warn),
             kit.dim(" · left out until it reads"),
         ]);
     }
@@ -590,3 +538,6 @@ mod golden;
 #[cfg(test)]
 #[path = "golden_tests.rs"]
 mod golden_tests;
+
+#[cfg(test)]
+mod golden_by_model_and_role;

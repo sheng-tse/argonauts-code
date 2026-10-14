@@ -1,0 +1,20 @@
+---
+source: crates/tui/src/a11y/tests.rs
+expression: "question.lines().join(\"\\n\")"
+---
+needs you: plan, run-01
+  The plan
+  A JSON writer beside the CSV one
+  Acceptance tests
+  --json prints valid JSON
+  limit: tasks, $6.00
+  limit: review, $2.00
+  limit: total, $10.00
+  Estimated $7.00 to $9.50
+  0 tasks, estimated $7.00 to $9.50, limit $10.00
+  Approve this plan?
+  1. Approve the plan
+  2. Approve with edits
+  3. Abandon
+  4. Show the plan
+answer: type a number. To add a note, type it after a colon, as in 1: the note.

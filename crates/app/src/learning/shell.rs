@@ -1,4 +1,4 @@
-//! The shell's learning commands: `records`, `recipes`, `skills`, `sync`, `retro`, and
+//! The shell's learning commands: `records`, `learned`, `skills`, `sync`, `run-review`, and
 //! `mcp package`. Each gives plain text and the same as JSON, so read commands can print
 //! either. `--force` and promotions need you at a terminal, outside any agent's session.
 
@@ -11,13 +11,13 @@ use serde_json::{Value, json};
 use time::OffsetDateTime;
 
 use argonauts_core::RunId;
-use argonauts_core::events::shared::RetroEvent;
+use argonauts_core::events::shared::RunReviewEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::layout::run_files;
 use argonauts_core::views::LearningCommand;
+use argonauts_learning::learned_workflows;
 use argonauts_learning::outcomes::{self, LogLine};
 use argonauts_learning::predictions;
-use argonauts_learning::recipes;
 use argonauts_learning::records::Book;
 use argonauts_learning::replay::ReplayRunner;
 use argonauts_learning::skills;
@@ -39,27 +39,27 @@ pub enum LearningShell {
         as_of: Option<String>,
         rebuild: bool,
     },
-    RecipesList,
-    RecipesShow {
+    LearnedWorkflowsList,
+    LearnedWorkflowsShow {
         name: String,
     },
     /// Two versions' structural diff: the current against its parent unless named.
-    RecipesDiff {
+    LearnedWorkflowsDiff {
         name: String,
         from: Option<u32>,
         to: Option<u32>,
     },
-    /// Replays the oldest queued candidate now, within the month's budget.
-    RecipesReplay,
-    RecipesPromote {
+    /// Replays the oldest queued candidate now, within the month's limit.
+    LearnedWorkflowsReplay,
+    LearnedWorkflowsPromote {
         candidate: String,
     },
-    RecipesRollback {
+    LearnedWorkflowsRollback {
         name: String,
     },
     SkillsList,
     SkillsExport {
-        recipe: String,
+        learned_workflow: String,
     },
     SkillsImport {
         source: String,
@@ -68,7 +68,7 @@ pub enum LearningShell {
         check: bool,
         force: bool,
     },
-    Retro {
+    RunReview {
         run: String,
     },
     McpPackage {
@@ -124,8 +124,8 @@ pub async fn learning(
             };
             records(&store, &settings, as_of, rebuild)
         }
-        LearningShell::RecipesList => {
-            let sets = or_empty(recipes::load_all(&store))?;
+        LearningShell::LearnedWorkflowsList => {
+            let sets = or_empty(learned_workflows::load_all(&store))?;
             let evolution = argonauts_learning::evolution::Evolution::open(&store)?;
             let mut text = String::new();
             let mut rows = Vec::new();
@@ -133,7 +133,7 @@ pub async fn learning(
                 let running = running(&evolution, set)?;
                 let description = set
                     .version(running)
-                    .map(|loaded| loaded.recipe.description.clone())
+                    .map(|loaded| loaded.learned_workflow.description.clone())
                     .unwrap_or_default();
                 let _ = writeln!(
                     text,
@@ -144,7 +144,7 @@ pub async fn learning(
                 rows.push(json!({
                     "name": set.name,
                     "current": running,
-                    "versions": set.versions.iter().map(|v| v.recipe.version).collect::<Vec<_>>(),
+                    "versions": set.versions.iter().map(|v| v.learned_workflow.version).collect::<Vec<_>>(),
                     "description": description,
                 }));
             }
@@ -156,8 +156,8 @@ pub async fn learning(
                 json: json!({ "workflows": rows }),
             })
         }
-        LearningShell::RecipesShow { name } => {
-            let sets = or_empty(recipes::load_all(&store))?;
+        LearningShell::LearnedWorkflowsShow { name } => {
+            let sets = or_empty(learned_workflows::load_all(&store))?;
             let set = sets
                 .iter()
                 .find(|set| set.name == name)
@@ -169,28 +169,31 @@ pub async fn learning(
             Ok(ShellOutput {
                 text: current.text.clone(),
                 json: json!({
-                    "workflow": current.recipe,
+                    "workflow": current.learned_workflow,
                     "path": current.path,
                     "sha256": current.sha256,
                 }),
             })
         }
-        LearningShell::RecipesDiff { name, from, to } => {
-            let sets = recipes::load_all(&store)?;
+        LearningShell::LearnedWorkflowsDiff { name, from, to } => {
+            let sets = learned_workflows::load_all(&store)?;
             let set = sets
                 .iter()
                 .find(|set| set.name == name)
                 .ok_or_else(|| anyhow::anyhow!("no learned workflow is named {name}"))?;
             let to = to.unwrap_or(set.current);
             let from = from
-                .or_else(|| set.version(to).and_then(|loaded| loaded.recipe.parent))
+                .or_else(|| {
+                    set.version(to)
+                        .and_then(|loaded| loaded.learned_workflow.parent)
+                })
                 .ok_or_else(|| {
                     anyhow::anyhow!("{name} v{to} has no parent; name one with --from")
                 })?;
             let (Some(parent), Some(child)) = (set.version(from), set.version(to)) else {
                 anyhow::bail!("{name} has no v{from} or no v{to}");
             };
-            let changes = recipes::diff(parent, child)?;
+            let changes = learned_workflows::diff(parent, child)?;
             let mut text = format!("{name} v{from} → v{to}\n");
             for change in &changes {
                 let _ = writeln!(
@@ -213,14 +216,14 @@ pub async fn learning(
                 json: json!({ "from": from, "to": to, "changes": changes }),
             })
         }
-        LearningShell::RecipesReplay => {
+        LearningShell::LearnedWorkflowsReplay => {
             let launcher: Arc<dyn crate::client::Launcher> =
                 Arc::new(crate::client::ProcessLauncher::current()?);
             let runner: Arc<dyn ReplayRunner> = Arc::new(SupervisedReplays::new(&env, launcher));
-            let gates = argonauts_conductor::gate_runner(Arc::clone(&settings));
+            let checks = argonauts_conductor::check_runner(Arc::clone(&settings));
             let policy = crate::commands::policy_for(&env, Arc::clone(&settings));
             let turn =
-                replay::replay_next(&store, &settings, runner, gates, policy.as_ref()).await?;
+                replay::replay_next(&store, &settings, runner, checks, policy.as_ref()).await?;
             Ok(ShellOutput::said(match turn {
                 Turn::Idle(why) => format!("Nothing replayed: {why}."),
                 Turn::Replayed {
@@ -231,7 +234,7 @@ pub async fn learning(
                     let mut text = format!("Replayed {candidate}.");
                     for action in &actions {
                         text.push(' ');
-                        text.push_str(&argonauts_crew::retro::action_note(action).text);
+                        text.push_str(&argonauts_crew::run_review::action_note(action).text);
                     }
                     if let Some(promotion) = promotion {
                         text.push_str(&format!(" Promotion: {promotion:?}."));
@@ -240,7 +243,7 @@ pub async fn learning(
                 }
             }))
         }
-        LearningShell::RecipesPromote { candidate } => {
+        LearningShell::LearnedWorkflowsPromote { candidate } => {
             needs_you("promoting a learned workflow")?;
             let said = act::act(
                 &env,
@@ -250,11 +253,13 @@ pub async fn learning(
             )?;
             Ok(ShellOutput::said(said))
         }
-        LearningShell::RecipesRollback { name } => {
+        LearningShell::LearnedWorkflowsRollback { name } => {
             let said = act::act(
                 &env,
                 &settings,
-                &LearningCommand::Rollback { recipe: name },
+                &LearningCommand::Rollback {
+                    learned_workflow: name,
+                },
                 asker,
             )?;
             Ok(ShellOutput::said(said))
@@ -289,9 +294,11 @@ pub async fn learning(
                 json: json!({ "skills": rows }),
             })
         }
-        LearningShell::SkillsExport { recipe } => {
-            Ok(ShellOutput::said(act::export(&store, &settings, &recipe)?))
-        }
+        LearningShell::SkillsExport { learned_workflow } => Ok(ShellOutput::said(act::export(
+            &store,
+            &settings,
+            &learned_workflow,
+        )?)),
         LearningShell::SkillsImport { source } => {
             let report = skills::import(&store, &source)?;
             if !report.rejected.is_empty() {
@@ -333,7 +340,7 @@ pub async fn learning(
                 text,
             })
         }
-        LearningShell::Retro { run } => retro(&env, &store, &RunId::new(run)?),
+        LearningShell::RunReview { run } => run_review(&env, &store, &RunId::new(run)?),
         LearningShell::McpPackage { dir, repo } => package(&dir, &repo),
     }
 }
@@ -342,13 +349,13 @@ pub async fn learning(
 /// once, before its pointer change is merged.
 fn running(
     evolution: &argonauts_learning::evolution::Evolution,
-    set: &recipes::RecipeSet,
+    set: &learned_workflows::LearnedWorkflowSet,
 ) -> anyhow::Result<u32> {
     Ok(or_empty(evolution.running_version(&set.name))?.unwrap_or(set.current))
 }
 
-/// `argonauts mcp package <dir> --repo <repo>`: the folder other agents install to delegate
-/// to Argonauts, running this binary by its absolute path.
+/// `argonauts mcp package <dir> --repo <repo>`: the folder outside agents install to give work
+/// to Argonauts Code, running this binary by its absolute path.
 fn package(dir: &Path, repo: &Path) -> anyhow::Result<ShellOutput> {
     let binary = std::env::current_exe()?;
     let written = argonauts_learning::package::write(dir, repo, &binary)?;
@@ -357,7 +364,7 @@ fn package(dir: &Path, repo: &Path) -> anyhow::Result<ShellOutput> {
         .map(|path| path.display().to_string())
         .collect();
     Ok(ShellOutput {
-        text: format!("Wrote the delegation package:\n{}", names.join("\n")),
+        text: format!("Wrote the outside agent package:\n{}", names.join("\n")),
         json: json!({ "written": names }),
     })
 }
@@ -437,33 +444,33 @@ fn records(
     })
 }
 
-/// `argonauts retro <run>`: the run's outcome, its predictions against what happened, its
+/// `argonauts run review <run>`: the run's outcome, its predictions against what happened, its
 /// memory, its routing, and the change it proposed.
 #[derive(Debug, Clone, Default, Serialize)]
-struct RetroReport {
+struct RunReviewReport {
     run: String,
     outcome: Option<Value>,
-    cards: Vec<Value>,
+    tasks: Vec<Value>,
     predictions: Vec<Value>,
     draws: Vec<Value>,
     memory: Vec<Value>,
     change: Option<Value>,
 }
 
-fn retro(
+fn run_review(
     env: &AppEnv,
     store: &argonauts_learning::Store,
     run: &RunId,
 ) -> anyhow::Result<ShellOutput> {
     let lines = outcomes::read_run(store, run)?;
-    let mut report = RetroReport {
+    let mut report = RunReviewReport {
         run: run.to_string(),
-        ..RetroReport::default()
+        ..RunReviewReport::default()
     };
     for line in &lines {
         match line {
             LogLine::Run(record) => report.outcome = Some(serde_json::to_value(record)?),
-            LogLine::Outcome(outcome) => report.cards.push(serde_json::to_value(outcome)?),
+            LogLine::Outcome(outcome) => report.tasks.push(serde_json::to_value(outcome)?),
             LogLine::Prediction(prediction) => {
                 report.predictions.push(serde_json::to_value(prediction)?);
             }
@@ -472,11 +479,11 @@ fn retro(
         }
     }
     for event in run_events(&env.run_dir(run).join(run_files::EVENTS)) {
-        let RunEventKind::Retro(retro) = event.kind else {
+        let RunEventKind::RunReview(run_review) = event.kind else {
             continue;
         };
-        match retro {
-            RetroEvent::Memory {
+        match run_review {
+            RunReviewEvent::Memory {
                 from,
                 proposal,
                 accepted,
@@ -488,7 +495,9 @@ fn retro(
                 "accepted": accepted,
                 "reason": reason,
             })),
-            RetroEvent::Candidate(change) => report.change = Some(serde_json::to_value(change)?),
+            RunReviewEvent::Candidate(change) => {
+                report.change = Some(serde_json::to_value(change)?)
+            }
             _ => {}
         }
     }
@@ -510,19 +519,19 @@ fn retro(
             }
         );
     }
-    for card in &report.cards {
+    for task in &report.tasks {
         let _ = writeln!(
             text,
-            "{} by {}: {} first try, {} attempts{}",
-            card["card"].as_str().unwrap_or_default(),
-            card["worker"].as_str().unwrap_or_default(),
-            if card["first_try"].as_bool() == Some(true) {
+            "{} by {}: {} first try, {} tries{}",
+            task["task"].as_str().unwrap_or_default(),
+            task["worker"].as_str().unwrap_or_default(),
+            if task["first_try"].as_bool() == Some(true) {
                 "passed"
             } else {
                 "didn't pass"
             },
-            card["attempts"],
-            card["assigned"]
+            task["tries"],
+            task["assigned"]
                 .as_str()
                 .map(|why| format!(", routed by {why}"))
                 .unwrap_or_default()
@@ -533,8 +542,8 @@ fn retro(
             text,
             "{} predicted {} for {}",
             prediction["worker"].as_str().unwrap_or_default(),
-            prediction["p_pass_gates_first_try"],
-            prediction["card"].as_str().unwrap_or_default()
+            prediction["p_pass_checks_first_try"],
+            prediction["task"].as_str().unwrap_or_default()
         );
     }
     for note in &report.memory {
@@ -573,10 +582,10 @@ fn run_events(path: &Path) -> Vec<RunEvent> {
         .collect()
 }
 
-/// What learning keeps waiting for you, one line each, for `argonauts inbox`: candidates for
+/// What learning keeps waiting for you, one line each, for `argonauts approvals`: candidates for
 /// promotion, flagged notes, replay tasks under `accept_entries = "ask"`, and proposal branches
-/// for recipes, skills, imports, notes, and conventions.
-pub fn learning_inbox(repo: Option<&Path>) -> anyhow::Result<Vec<String>> {
+/// for learned workflows, skills, imports, notes, and conventions.
+pub fn learning_proposals(repo: Option<&Path>) -> anyhow::Result<Vec<String>> {
     let env = AppEnv::discover(repo)?;
     let store = store(&env);
     let mut lines = Vec::new();
@@ -589,14 +598,14 @@ pub fn learning_inbox(repo: Option<&Path>) -> anyhow::Result<Vec<String>> {
             ));
         }
     }
-    for (path, flagged) in argonauts_crew::retro::notes::flagged(&env.state_dir) {
+    for (path, flagged) in argonauts_crew::run_review::notes::flagged(&env.state_dir) {
         let id = path
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_default();
         lines.push(format!(
             "flagged note {id} from {} in {}: accept or drop it in /memory",
-            flagged.source.card, flagged.source.run
+            flagged.source.task, flagged.source.run
         ));
     }
     let replay = argonauts_learning::replay::ReplaySet::open(&store)?;

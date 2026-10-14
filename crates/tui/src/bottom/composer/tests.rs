@@ -937,7 +937,7 @@ fn the_shimmer_animates_until_shell_mode_or_the_word_goes() {
     assert!(row[1..].iter().all(|span| span.style.fg.is_none()));
 }
 
-/// The input's rule: the model alone, the workflow first when it isn't solo, and a purple
+/// The input's rule: the model alone, the workflow first when it isn't Captain, and a purple
 /// `ultracode` at the far right, two spaces after the name.
 #[test]
 fn the_rule_names_the_model_and_keeps_purple_for_ultracode() {

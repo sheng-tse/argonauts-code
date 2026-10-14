@@ -12,10 +12,10 @@ use time::{Date, Duration, OffsetDateTime, Time};
 
 use super::cards::cli_role;
 use crate::format;
+use crate::kit::bars;
+use crate::kit::{Drawn, Frame, Kit, Level, ljust, side_by_side, spread};
 use crate::text::{sanitize, str_width, truncate_spans, wrap_spans};
 use crate::theme::Role;
-use crate::widgets::bars;
-use crate::widgets::{Drawn, Frame, Kit, Level, ljust, side_by_side, spread};
 
 #[cfg(test)]
 #[path = "usage_tests.rs"]
@@ -86,11 +86,11 @@ impl UsageTab<'_> {
         (names, picked)
     }
 
-    /// `read live 8:12pm · r reads again`, or that a read is on its way.
+    /// `read live 8:12pm · ctrl+r reads again`, or that a read is on its way.
     pub fn read_words(&self) -> String {
         let plans = &self.usage.plans;
         if plans.iter().any(|plan| plan.reading) {
-            return "reading live… · r reads again".to_owned();
+            return "reading live… · ctrl+r reads again".to_owned();
         }
         let newest = plans
             .iter()
@@ -98,11 +98,11 @@ impl UsageTab<'_> {
             .map(|live| live.read_at)
             .max();
         let Some(at) = newest else {
-            return "r reads again".to_owned();
+            return "ctrl+r reads again".to_owned();
         };
         let clock = clock_words(at, self.now, true);
         let clock = clock.strip_prefix("today ").unwrap_or(&clock);
-        format!("read live {clock} · r reads again")
+        format!("read live {clock} · ctrl+r reads again")
     }
 
     /// How many stops ↑↓ have on the tab that lists every CLI.
@@ -333,7 +333,7 @@ impl UsageTab<'_> {
         if let Some(taker) = &plan.moved_to {
             body.push(Vec::new());
             body.push(vec![
-                kit.span(format!("its tasks go to {taker}"), Role::Warning),
+                kit.span(format!("its tasks go to {taker}"), Role::Warn),
             ]);
         }
         body

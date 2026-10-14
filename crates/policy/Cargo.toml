@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-policy"
-description = "Argonauts approvals and narrator: approval modes, hard limits, the approver model, spot checks, and the live narrator."
+description = "Argonauts Code approvals and narrator: approval modes, hard limits, the judge, spot checks, and the live narrator."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,4 +1,4 @@
-//! `argonauts mcp session`, started by a harness for one agent session: the read-only
+//! `argonauts mcp session`, started by a CLI for one agent session: the read-only
 //! `argonauts_status` tool, which returns the session's pre-filtered `status.json` and reads
 //! nothing else, plus `argonauts_report` for a step with an output schema. A direct turn's
 //! server also has `approve`, Claude Code's permission prompt tool, and the main session's own
@@ -70,7 +70,7 @@ impl SessionServer {
             tools.push(
                 Tool::new(
                     STATUS_TOOL,
-                    "The run's status as the conductor last wrote it for you: the goal, your \
+                    "The run's status as Argonauts Code last wrote it for you: the goal, your \
                      task, and what the other agents are doing. It takes no arguments and \
                      changes nothing.",
                     Arc::new(no_arguments),
@@ -143,7 +143,8 @@ async fn status(status_file: &Path, arguments: &Value) -> CallToolResult {
             result
         }
         Err(err) if err.kind() == ErrorKind::NotFound => error(
-            "There is no status yet. The conductor writes it once the run is under way.".to_owned(),
+            "There is no status yet. Argonauts Code writes it once the run is under way."
+                .to_owned(),
         ),
         Err(err) => error(format!("The status can't be read now: {err}")),
     }
@@ -153,7 +154,7 @@ fn error(message: String) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(message)])
 }
 
-/// Serves until the harness closes the stream.
+/// Serves until the CLI closes the stream.
 pub async fn serve_on<R, W>(
     status_file: Option<PathBuf>,
     report: Option<ReportTool>,
@@ -167,7 +168,7 @@ where
     serve(SessionServer::new(status_file, report), read, write).await
 }
 
-/// Serves `server` until the harness closes the stream.
+/// Serves `server` until the CLI closes the stream.
 pub async fn serve<R, W>(server: SessionServer, read: R, write: W) -> anyhow::Result<()>
 where
     R: AsyncRead + Send + Unpin + 'static,

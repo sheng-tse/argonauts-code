@@ -1,0 +1,63 @@
+{
+  "adapter": "claude-code",
+  "program": "claude",
+  "name": "readonly_estimate",
+  "args": [
+    "-p",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--permission-mode",
+    "dontAsk",
+    "--permission-prompts",
+    "none",
+    "--tools",
+    "Read,Glob,Grep",
+    "--strict-mcp-config",
+    "--setting-sources",
+    "user",
+    "--settings",
+    "<live>/claude-settings.json",
+    "--model",
+    "haiku",
+    "--effort",
+    "low",
+    "--max-budget-usd",
+    "0.15"
+  ],
+  "date": "2026-10-04T02:25:15.141817Z",
+  "duration_ms": 3629,
+  "exit_code": 0,
+  "sanitized": "absolute paths replaced with <workdir> (the throwaway repo) and <live> (its check folder), Claude Code's folder slug with <workdir-slug>, the home directory with ~, and email addresses with <email>",
+  "cli_version": "2.1.289",
+  "also_matches": [],
+  "model": "haiku",
+  "effort": "low",
+  "env_removed": [
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_PID",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN"
+  ],
+  "keep_input_open": true,
+  "role": "read-only",
+  "stdin": "{\"type\": \"user\", \"message\": {\"role\": \"user\", \"content\": \"Read notes.txt and say in one short sentence how you would change it so it says final instead of draft. Do not change anything yet.\"}}\n",
+  "files": [
+    {
+      "path": "<live>/claude-settings.json",
+      "contents": "{\"crossSessionInbound\":\"refuse\",\"attribution\":{\"commit\":\"\",\"pr\":\"\"}}\n"
+    }
+  ],
+  "note": "Turn 1: the estimate turn, started read-only with --tools Read,Glob,Grep. $0.0130."
+}

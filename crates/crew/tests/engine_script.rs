@@ -5,28 +5,30 @@
 mod support;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use anyhow::Context;
 use serde_json::{Value, json};
 
 use argonauts_core::engine::{EngineCommand, EngineExit};
-use argonauts_core::events::card::{CardEvent, CardState, ReviewEvent};
-use argonauts_core::events::checkpoint::{
-    AnswerAction, CheckpointEvent, CheckpointKind, CheckpointOpened, CheckpointPacket,
+use argonauts_core::events::approval::{
+    AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
 };
-use argonauts_core::events::run::{RunMode, RunOutcome};
-use argonauts_core::events::session::{SessionEvent, SubagentStatus, VendorAgentState};
+use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunOutcome, WaitReason};
+use argonauts_core::events::session::{CliAgentState, EndReason, SessionEvent, SubagentStatus};
+use argonauts_core::events::task::{ReviewEvent, TaskEvent, TaskState};
 use argonauts_core::events::workflow::{WorkflowEvent, WorkflowReport};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::RoleName;
+use argonauts_core::names::{RoleName, SessionKey};
+use argonauts_core::session_runner::SessionSpec;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::crew::{CrewSettings, Orchestrator};
 use argonauts_core::settings::sessions::{FanoutSwitch, NativeFanout};
 use argonauts_core::settings::workflows::AdaptWith;
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::judgment::ReviewVerdict;
-use argonauts_core::worker::SessionSpec;
-use argonauts_testkit::worker::{FakeSession, FakeWorker};
+use argonauts_crew::engine::shared::with_git_env;
+use argonauts_testkit::runner::{FakeRunner, FakeSession};
 
 use support::{Crew, Outcome, answer};
 
@@ -47,12 +49,12 @@ does = "Split the request into tasks: {request}"
 
 [[step]]
 name     = "Build"
-role     = "workers"
+role     = "worker"
 for_each = "task"
 
 [[step]]
 name         = "Review"
-role         = "reviewers"
+role         = "reviewer"
 for_each     = "task"
 send_back_to = "Build"
 
@@ -85,10 +87,10 @@ fn report(summary: &str, file: &str) -> Value {
 
 /// The main agent plans, Codex builds each task as a file of its own, and Antigravity CLI
 /// reviews and signs off. Its first review of the first task asks for a change.
-fn crew(workflow: &str) -> anyhow::Result<(Crew, Arc<FakeWorker>)> {
+fn crew(workflow: &str) -> anyhow::Result<(Crew, Arc<FakeRunner>)> {
     let mut crew = Crew::new()?;
     crew.settings.evolution.propose_every = 0;
-    let main = FakeWorker::harness(MAIN, "claude").respond_with(|_| {
+    let main = FakeRunner::cli(MAIN, "anthropic").respond_with(|_| {
         FakeSession::structured(json!({
             "summary": "Two tasks",
             "tasks": [
@@ -98,7 +100,7 @@ fn crew(workflow: &str) -> anyhow::Result<(Crew, Arc<FakeWorker>)> {
         }))
     });
     crew.services.workers.add(main);
-    let worker = FakeWorker::harness(WORKER, "gpt").respond_with(|spec| {
+    let worker = FakeRunner::cli(WORKER, "openai").respond_with(|spec| {
         assert_eq!(spec.step, Some(StepName::Build), "{}", prompt(spec));
         let asked = prompt(spec);
         let file = if asked.contains("Due docs") {
@@ -116,7 +118,7 @@ fn crew(workflow: &str) -> anyhow::Result<(Crew, Arc<FakeWorker>)> {
     });
     let worker = crew.services.workers.add(worker);
     let field_reviews = AtomicU32::new(0);
-    let reviewer = FakeWorker::harness(REVIEWER, "gemini").respond_with(move |spec| {
+    let reviewer = FakeRunner::cli(REVIEWER, "google").respond_with(move |spec| {
         if spec.json_schema.is_none() {
             return FakeSession::completed("Both tasks are done as asked.");
         }
@@ -129,11 +131,11 @@ fn crew(workflow: &str) -> anyhow::Result<(Crew, Arc<FakeWorker>)> {
         })
     });
     crew.services.workers.add(reviewer);
-    crew.settings.main_agent = MAIN.parse()?;
     crew.settings.crew = CrewSettings {
+        main: MAIN.parse()?,
         orchestrator: Orchestrator::Main,
-        workers: vec![WORKER.parse()?],
-        reviewers: vec![REVIEWER.parse()?],
+        worker: vec![WORKER.parse()?],
+        reviewer: vec![REVIEWER.parse()?],
         judge: vec![REVIEWER.parse()?],
         worker_workflows: false,
         merger: Vec::new(),
@@ -177,21 +179,21 @@ fn reports(events: &[RunEvent]) -> Vec<&WorkflowReport> {
         .collect()
 }
 
-fn card_states(events: &[RunEvent]) -> Vec<(String, CardState)> {
+fn task_states(events: &[RunEvent]) -> Vec<(String, TaskState)> {
     events
         .iter()
         .filter_map(|event| match &event.kind {
-            RunEventKind::Card(CardEvent::State { to, .. }) => {
-                Some((event.card_id.as_ref()?.to_string(), *to))
+            RunEventKind::Task(TaskEvent::State { to, .. }) => {
+                Some((event.task_id.as_ref()?.to_string(), *to))
             }
             _ => None,
         })
         .collect()
 }
 
-fn opened(events: &[RunEvent], kind: CheckpointKind) -> bool {
+fn opened(events: &[RunEvent], kind: ApprovalKind) -> bool {
     events.iter().any(|event| {
-        matches!(&event.kind, RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
+        matches!(&event.kind, RunEventKind::Approval(ApprovalEvent::Opened(opened))
             if opened.kind == kind)
     })
 }
@@ -246,17 +248,17 @@ async fn a_workflow_files_steps_run_as_written_and_what_they_accept_is_merged() 
     );
 
     // Every task was built in a worktree of its own, checked, and merged into the run.
-    let states = card_states(events);
-    for card in ["task-due-field", "task-due-docs"] {
+    let states = task_states(events);
+    for task in ["task-due-field", "task-due-docs"] {
         let last = states
             .iter()
             .rev()
-            .find(|(id, _)| id == card)
+            .find(|(id, _)| id == task)
             .map(|(_, state)| *state);
-        assert_eq!(last, Some(CardState::Integrated), "{card}: {states:?}");
+        assert_eq!(last, Some(TaskState::Merged), "{task}: {states:?}");
     }
     assert!(
-        opened(events, CheckpointKind::Merge),
+        opened(events, ApprovalKind::Merge),
         "the merge approval follows"
     );
     // Each verdict of the workflow's own review is a review of the task, under the name of
@@ -270,7 +272,7 @@ async fn a_workflow_files_steps_run_as_written_and_what_they_accept_is_merged() 
                 review,
                 ..
             }) => Some((
-                event.card_id.as_ref()?.to_string(),
+                event.task_id.as_ref()?.to_string(),
                 reviewer.to_string(),
                 *round,
                 review.verdict,
@@ -278,10 +280,10 @@ async fn a_workflow_files_steps_run_as_written_and_what_they_accept_is_merged() 
             _ => None,
         })
         .collect();
-    let of = |card: &str| -> Vec<(u32, ReviewVerdict)> {
+    let of = |task: &str| -> Vec<(u32, ReviewVerdict)> {
         reviewed
             .iter()
-            .filter(|(reviewed, reviewer, ..)| reviewed == card && reviewer == REVIEWER)
+            .filter(|(reviewed, reviewer, ..)| reviewed == task && reviewer == REVIEWER)
             .map(|(_, _, round, verdict)| (*round, *verdict))
             .collect()
     };
@@ -294,21 +296,21 @@ async fn a_workflow_files_steps_run_as_written_and_what_they_accept_is_merged() 
         "{reviewed:?}"
     );
     assert_eq!(of("task-due-docs"), [(1, ReviewVerdict::Approve)]);
-    let merge = approval(events, CheckpointKind::Merge).expect("the merge approval");
-    let CheckpointPacket::Merge(packet) = &merge.packet else {
+    let merge = approval(events, ApprovalKind::Merge).expect("the merge approval");
+    let ApprovalPacket::Merge(packet) = &merge.packet else {
         panic!("a merge approval: {:?}", merge.packet);
     };
     assert!(
         packet
             .rows
             .iter()
-            .filter(|row| row.owner.is_some())
+            .filter(|row| row.worker.is_some())
             .all(|row| row.review == Some(ReviewVerdict::Approve)),
         "every task shows as approved: {:?}",
         packet.rows
     );
     assert!(
-        !opened(events, CheckpointKind::Plan),
+        !opened(events, ApprovalKind::Plan),
         "the steps are the plan"
     );
     let last = outcomes.last().expect("an outcome");
@@ -343,7 +345,7 @@ async fn a_workflow_files_steps_run_as_written_and_what_they_accept_is_merged() 
         last.workflow
             .agents
             .iter()
-            .all(|agent| agent.state == VendorAgentState::Done)
+            .all(|agent| agent.state == CliAgentState::Done)
     );
     let build = &last.workflow.agents[1];
     assert_eq!(
@@ -376,10 +378,10 @@ async fn a_run_that_stops_mid_workflow_picks_its_script_up_without_running_anyth
     let (crew, worker) = crew("ship")?;
     write_workflow(&crew, "ship.toml", SHIP)?;
     let _env = crew.repo.env_guard();
-    // The run parks at the merge approval, with every step of the script behind it.
+    // The run waits at the merge approval, with every step of the script behind it.
     let first = crew.start(RunMode::Crew, REQUEST).await?;
     assert!(
-        matches!(first.exit, EngineExit::Parked(_)),
+        matches!(first.exit, EngineExit::Waiting(_)),
         "{:?}",
         first.exit
     );
@@ -403,7 +405,7 @@ async fn a_run_stopped_inside_its_workflow_answers_the_finished_calls_from_what_
     let (mut crew, worker) = crew("ship")?;
     write_workflow(&crew, "ship.toml", SHIP)?;
     // The judge's sign-off hangs until the run is stopped. Reopened, it answers.
-    let judge = FakeWorker::harness("claude-code/judge", "claude")
+    let judge = FakeRunner::cli("claude-code/judge", "anthropic")
         .then(FakeSession::until_stopped(Vec::new()))
         .then(FakeSession::completed("Signed off."));
     crew.services.workers.add(judge);
@@ -428,9 +430,9 @@ async fn a_run_stopped_inside_its_workflow_answers_the_finished_calls_from_what_
     let built = worker.specs().len();
     let sessions = started(&stopped).len();
     assert!(
-        card_states(&stopped)
+        task_states(&stopped)
             .iter()
-            .all(|(_, state)| *state != CardState::Integrated),
+            .all(|(_, state)| *state != TaskState::Merged),
         "nothing is merged before the workflow ends"
     );
 
@@ -442,16 +444,109 @@ async fn a_run_stopped_inside_its_workflow_answers_the_finished_calls_from_what_
     let after = started(&reopened.events);
     assert_eq!(after.len(), sessions + 1, "{after:#?}");
     assert_eq!(after[sessions].0, "sign-off", "the same row carries on");
-    let states = card_states(&reopened.events);
-    for card in ["task-due-field", "task-due-docs"] {
+    let states = task_states(&reopened.events);
+    for task in ["task-due-field", "task-due-docs"] {
         let last = states
             .iter()
             .rev()
-            .find(|(id, _)| id == card)
+            .find(|(id, _)| id == task)
             .map(|(_, state)| *state);
-        assert_eq!(last, Some(CardState::Integrated), "{card}: {states:?}");
+        assert_eq!(last, Some(TaskState::Merged), "{task}: {states:?}");
     }
-    assert!(opened(&reopened.events, CheckpointKind::Merge));
+    assert!(opened(&reopened.events, ApprovalKind::Merge));
+    Ok(())
+}
+
+/// An agent a script's own step called works no task, so nothing but the script waits for
+/// it. Asked to start over, its session is stopped and the same worker is asked again with
+/// the prompt it had, and the script takes the new answer, where a stop alone leaves the
+/// script without one.
+#[tokio::test]
+async fn an_agent_a_script_called_starts_over_and_the_script_takes_its_new_answer()
+-> anyhow::Result<()> {
+    let (mut crew, _worker) = crew("ship")?;
+    write_workflow(&crew, "ship.toml", SHIP)?;
+    // The judge's first sign-off hangs until it is stopped. Asked again, it answers.
+    let judge = FakeRunner::cli("claude-code/judge", "anthropic")
+        .then(FakeSession::until_stopped(Vec::new()))
+        .then(FakeSession::completed("Signed off."));
+    let judge = crew.services.workers.add(judge);
+    crew.settings.crew.judge = vec!["claude-code/judge".parse()?];
+    let _env = crew.repo.env_guard();
+    let run = crew.spawn(RunMode::Crew, REQUEST)?;
+    let sign_offs = |events: &[RunEvent]| -> Vec<argonauts_core::names::SessionKey> {
+        events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                RunEventKind::Session(SessionEvent::Started(started))
+                    if started.label.as_deref() == Some("sign-off") =>
+                {
+                    event.session.clone()
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let mut first = None;
+    for _ in 0..2_000 {
+        first = sign_offs(&run.sink.events()).into_iter().next();
+        if first.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let first = first.expect("the sign-off starts");
+
+    // A builder's session works a task, which starts over another way: it is refused, and
+    // goes on untouched.
+    let builder = run
+        .sink
+        .events()
+        .iter()
+        .find_map(|event| match &event.kind {
+            RunEventKind::Session(SessionEvent::Started(started))
+                if started.step == Some(StepName::Build) =>
+            {
+                event.session.clone()
+            }
+            _ => None,
+        })
+        .expect("a builder ran");
+    let restart = |session: argonauts_core::names::SessionKey| EngineCommand::StopSession {
+        session,
+        again: true,
+    };
+    run.commands.send(restart(builder)).await?;
+    run.commands.send(restart(first.clone())).await?;
+
+    // The script went on to the merge, which waits for you, with the second answer.
+    let exit = tokio::time::timeout(std::time::Duration::from_secs(30), run.exit).await??;
+    assert!(matches!(exit, EngineExit::Waiting(_)), "{exit:?}");
+    let events = run.sink.events();
+    assert!(opened(&events, ApprovalKind::Merge));
+    let asked = sign_offs(&events);
+    assert_eq!(asked.len(), 2, "{:?}", started(&events));
+    assert_eq!(asked[0], asked[1], "the same row carries on");
+    let specs = judge.specs();
+    assert_eq!(specs.len(), 2);
+    assert_eq!(
+        prompt(&specs[0]),
+        prompt(&specs[1]),
+        "with the prompt it had"
+    );
+    let ends: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Session(SessionEvent::Ended(end))
+                if event.session.as_ref() == Some(&first) =>
+            {
+                Some(end.reason.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    use argonauts_core::events::session::EndReason;
+    assert_eq!(ends, [EndReason::Stopped, EndReason::Completed]);
     Ok(())
 }
 
@@ -462,18 +557,18 @@ async fn a_built_in_workflow_runs_the_script_its_orchestrator_writes() -> anyhow
     let script = r#"export const meta = {
   name: 'due-dates',
   description: 'Add due dates',
-  phases: [{ title: 'Build', detail: 'one worker' }, { title: 'Check' }],
+  phases: [{ name: 'Build', detail: 'one worker' }, { name: 'Check' }],
 }
 const built = await agent('Add a due date to tasks: ' + args.request, {
-  role: 'workers', label: 'build:due-dates', phase: 'Build', task: 'due-dates',
+  role: 'worker', label: 'build:due-dates', phase: 'Build', task: 'due-dates',
 })
 const verdict = await agent('Review the change.', {
-  role: 'reviewers', label: 'check:due-dates', phase: 'Check', task: 'due-dates',
+  role: 'reviewer', label: 'check:due-dates', phase: 'Check', task: 'due-dates',
   schema: { type: 'object', properties: { accept: { type: 'boolean' } }, required: ['accept'] },
 })
 return { built, accepted: Boolean(verdict && verdict.accept) }
 "#;
-    let orchestrator = FakeWorker::harness("claude-code/fable", "claude")
+    let orchestrator = FakeRunner::cli("claude-code/fable", "anthropic")
         .respond_with(move |_| FakeSession::structured(json!({"script": script})));
     crew.services.workers.add(orchestrator);
     crew.settings.crew.orchestrator = Orchestrator::Models(vec!["claude-code/fable".parse()?]);
@@ -519,17 +614,17 @@ async fn a_script_sends_a_task_back_only_as_often_as_the_settings_allow() -> any
     let script = r#"export const meta = {
   name: 'due-dates',
   description: 'Add due dates',
-  phases: [{ title: 'Build', detail: 'one worker' }, { title: 'Check' }],
+  phases: [{ name: 'Build', detail: 'one worker' }, { name: 'Check' }],
 }
 let findings = []
 for (let round = 0; round < 5; round++) {
   const asked = findings.length ? 'Fix: ' + findings.join('; ') : 'Add due dates: ' + args.request
   const built = await agent(asked, {
-    role: 'workers', label: 'build:due-dates', phase: 'Build', task: 'due-dates',
+    role: 'worker', label: 'build:due-dates', phase: 'Build', task: 'due-dates',
   })
   if (!built) break
   const verdict = await agent('Review the change.', {
-    role: 'reviewers', label: 'check:due-dates', phase: 'Check', task: 'due-dates',
+    role: 'reviewer', label: 'check:due-dates', phase: 'Check', task: 'due-dates',
     schema: {
       type: 'object',
       properties: { accept: { type: 'boolean' }, findings: { type: 'array', items: { type: 'string' } } },
@@ -542,14 +637,14 @@ for (let round = 0; round < 5; round++) {
 return { done: true }
 "#;
     let orchestrator = crew.services.workers.add(
-        FakeWorker::harness("claude-code/fable", "claude")
+        FakeRunner::cli("claude-code/fable", "anthropic")
             .respond_with(move |_| FakeSession::structured(json!({"script": script}))),
     );
     crew.settings.crew.orchestrator = Orchestrator::Models(vec!["claude-code/fable".parse()?]);
     let strict = "antigravity-cli/strict";
     crew.services
         .workers
-        .add(FakeWorker::harness(strict, "gemini").respond_with(|spec| {
+        .add(FakeRunner::cli(strict, "google").respond_with(|spec| {
             if spec.json_schema.is_none() {
                 return FakeSession::completed("Not done.");
             }
@@ -557,7 +652,7 @@ return { done: true }
                 json!({"accept": false, "findings": ["a due date in the past is accepted"]}),
             )
         }));
-    crew.settings.crew.reviewers = vec![strict.parse()?];
+    crew.settings.crew.reviewer = vec![strict.parse()?];
     let _env = crew.repo.env_guard();
     let outcomes = crew.run_to_end(RunMode::Crew, REQUEST, 3).await?;
     let events = all_events(&outcomes);
@@ -567,20 +662,20 @@ return { done: true }
         .iter()
         .any(|spec| prompt(spec).contains("Send a task back to its worker at most 2 times"));
     assert!(told, "the script's writer knows the limit");
-    let escalated = events
+    let needs_you = events
         .iter()
         .position(|event| {
-            matches!(&event.kind, RunEventKind::Card(CardEvent::State { to, .. })
-                if *to == CardState::Escalated)
+            matches!(&event.kind, RunEventKind::Task(TaskEvent::State { to, .. })
+                if *to == TaskState::NeedsYou)
         })
         .expect("the task came to you");
-    let builds = started(&events[..escalated])
+    let builds = started(&events[..needs_you])
         .iter()
         .filter(|(_, role, _)| *role == RoleName::Worker)
         .count();
     assert_eq!(builds, 3, "the first build and two rounds of fixes");
-    let RunEventKind::Card(CardEvent::State { reason, .. }) = &events[escalated].kind else {
-        unreachable!("found as a card's state");
+    let RunEventKind::Task(TaskEvent::State { reason, .. }) = &events[needs_you].kind else {
+        unreachable!("found as a task's state");
     };
     assert!(reason.contains("after 2 rounds of fixes"), "{reason}");
     assert!(
@@ -595,11 +690,11 @@ return { done: true }
 #[tokio::test]
 async fn the_sign_off_reads_every_tasks_checks() -> anyhow::Result<()> {
     use argonauts_core::events::session::InputPartKind;
-    use argonauts_core::settings::protocol::GateCommand;
+    use argonauts_core::settings::protocol::CheckCommand;
 
     let (mut crew, _worker) = crew("ship")?;
     write_workflow(&crew, "ship.toml", SHIP)?;
-    let judge = FakeWorker::harness("antigravity-cli/judge", "gemini").respond_with(|spec| {
+    let judge = FakeRunner::cli("antigravity-cli/judge", "google").respond_with(|spec| {
         if spec.json_schema.is_none() {
             FakeSession::completed("Both tasks are done as asked.")
         } else {
@@ -608,7 +703,7 @@ async fn the_sign_off_reads_every_tasks_checks() -> anyhow::Result<()> {
     });
     let judge = crew.services.workers.add(judge);
     crew.settings.crew.judge = vec!["antigravity-cli/judge".parse()?];
-    crew.settings.checks.run = vec![GateCommand {
+    crew.settings.checks.run = vec![CheckCommand {
         name: "tests".into(),
         command: vec!["node".into(), "--test".into()],
     }];
@@ -622,7 +717,7 @@ async fn the_sign_off_reads_every_tasks_checks() -> anyhow::Result<()> {
     let checks = asked
         .prompt
         .iter()
-        .find(|part| part.kind == InputPartKind::GateOutput)
+        .find(|part| part.kind == InputPartKind::CheckOutput)
         .unwrap_or_else(|| panic!("no checks in the sign-off: {}", prompt(asked)));
     for task in ["due-field", "due-docs"] {
         assert!(
@@ -652,8 +747,8 @@ fn builds_and_reviews(spec: &SessionSpec) -> FakeSession {
 /// to judge it, so its session may run the checks and nothing else.
 #[tokio::test]
 async fn a_worker_that_reviews_a_task_may_run_only_the_checks() -> anyhow::Result<()> {
-    use argonauts_core::settings::protocol::GateCommand;
-    use argonauts_core::worker::SessionShell;
+    use argonauts_core::session_runner::SessionShell;
+    use argonauts_core::settings::protocol::CheckCommand;
 
     const CROSS: &str = r#"
 name  = "cross"
@@ -667,19 +762,19 @@ does = "Split the request into tasks: {request}"
 
 [[step]]
 name     = "Build"
-role     = "workers"
+role     = "worker"
 for_each = "task"
 
 [[step]]
 name           = "Cross-review"
-role           = "workers"
+role           = "worker"
 for_each       = "task"
 not_the_author = true
 send_back_to   = "Build"
 "#;
     let mut crew = Crew::new()?;
     crew.settings.evolution.propose_every = 0;
-    let main = FakeWorker::harness(MAIN, "claude").respond_with(|_| {
+    let main = FakeRunner::cli(MAIN, "anthropic").respond_with(|_| {
         FakeSession::structured(json!({
             "summary": "One task",
             "tasks": [{"title": "Due field", "done_when": ["a task has a due date"]}],
@@ -689,23 +784,23 @@ send_back_to   = "Build"
     let codex = crew
         .services
         .workers
-        .add(FakeWorker::harness(WORKER, "gpt").respond_with(builds_and_reviews));
+        .add(FakeRunner::cli(WORKER, "openai").respond_with(builds_and_reviews));
     let agy = crew
         .services
         .workers
-        .add(FakeWorker::harness(REVIEWER, "gemini").respond_with(builds_and_reviews));
-    crew.settings.main_agent = MAIN.parse()?;
+        .add(FakeRunner::cli(REVIEWER, "google").respond_with(builds_and_reviews));
     crew.settings.crew = CrewSettings {
+        main: MAIN.parse()?,
         orchestrator: Orchestrator::Main,
-        workers: vec![WORKER.parse()?, REVIEWER.parse()?],
-        reviewers: vec![REVIEWER.parse()?],
+        worker: vec![WORKER.parse()?, REVIEWER.parse()?],
+        reviewer: vec![REVIEWER.parse()?],
         judge: vec![REVIEWER.parse()?],
         worker_workflows: false,
         merger: Vec::new(),
     };
     crew.settings.workflow = "cross".to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;
-    crew.settings.checks.run = vec![GateCommand {
+    crew.settings.checks.run = vec![CheckCommand {
         name: "tests".into(),
         command: vec!["node".into(), "--test".into()],
     }];
@@ -738,13 +833,13 @@ send_back_to   = "Build"
 async fn the_orchestrator_keeps_to_the_size_the_request_asked_for() -> anyhow::Result<()> {
     let (mut crew, _worker) = crew("maker-checker")?;
     let script = r#"export const meta = { name: 'due-dates', description: 'Add due dates',
-  phases: [{ title: 'Build' }] }
+  phases: [{ name: 'Build' }] }
 const built = await agent('Add a due date to tasks: ' + args.request, {
-  role: 'workers', label: 'build:due-dates', phase: 'Build', task: 'due-dates',
+  role: 'worker', label: 'build:due-dates', phase: 'Build', task: 'due-dates',
 })
 return { built }
 "#;
-    let orchestrator = FakeWorker::harness("claude-code/fable", "claude")
+    let orchestrator = FakeRunner::cli("claude-code/fable", "anthropic")
         .respond_with(move |_| FakeSession::structured(json!({"script": script})));
     let orchestrator = crew.services.workers.add(orchestrator);
     crew.settings.crew.orchestrator = Orchestrator::Models(vec!["claude-code/fable".parse()?]);
@@ -775,17 +870,17 @@ return { built }
 }
 
 /// The newest approval of `kind` the run opened.
-fn approval(events: &[RunEvent], kind: CheckpointKind) -> Option<&CheckpointOpened> {
+fn approval(events: &[RunEvent], kind: ApprovalKind) -> Option<&ApprovalOpened> {
     events.iter().rev().find_map(|event| match &event.kind {
-        RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) if opened.kind == kind => {
-            let opened: &CheckpointOpened = opened;
+        RunEventKind::Approval(ApprovalEvent::Opened(opened)) if opened.kind == kind => {
+            let opened: &ApprovalOpened = opened;
             Some(opened)
         }
         _ => None,
     })
 }
 
-fn keys(opened: &CheckpointOpened) -> String {
+fn keys(opened: &ApprovalOpened) -> String {
     opened.options.iter().map(|option| option.key).collect()
 }
 
@@ -797,15 +892,15 @@ async fn in_supervised_mode_the_steps_wait_for_you_before_any_agent_starts() -> 
     let _env = crew.repo.env_guard();
     let first = crew.start(RunMode::Crew, REQUEST).await?;
     assert!(
-        matches!(first.exit, EngineExit::Parked(_)),
+        matches!(first.exit, EngineExit::Waiting(_)),
         "{:?}",
         first.exit
     );
     assert!(started(&first.events).is_empty(), "nothing ran yet");
-    let plan = approval(&first.events, CheckpointKind::Plan).expect("the plan approval");
+    let plan = approval(&first.events, ApprovalKind::Plan).expect("the plan approval");
     // Steps written in a file can't be written again, so there is nothing to send back.
     assert_eq!(keys(plan), "ysxd");
-    let CheckpointPacket::Plan(packet) = &plan.packet else {
+    let ApprovalPacket::Plan(packet) = &plan.packet else {
         panic!("a plan approval: {:?}", plan.packet);
     };
     assert_eq!(packet.summary, "The steps of ship run as written");
@@ -830,19 +925,19 @@ async fn in_supervised_mode_the_steps_wait_for_you_before_any_agent_starts() -> 
     // Approved, the run picks up the same approval and the steps run to the merge approval.
     let (approve, _reply) = answer(
         &first.events,
-        CheckpointKind::Plan,
+        ApprovalKind::Plan,
         AnswerAction::Approve,
         None,
     )?;
     let after = crew.resume(first.events.clone(), vec![approve]).await?;
     assert!(!worker.specs().is_empty(), "the tasks were built");
-    assert!(opened(&after.events, CheckpointKind::Merge));
+    assert!(opened(&after.events, ApprovalKind::Merge));
     let plans = after
         .events
         .iter()
         .filter(|event| {
-            matches!(&event.kind, RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
-                if opened.kind == CheckpointKind::Plan)
+            matches!(&event.kind, RunEventKind::Approval(ApprovalEvent::Opened(opened))
+                if opened.kind == ApprovalKind::Plan)
         })
         .count();
     assert_eq!(plans, 1, "the plan was asked about once");
@@ -856,15 +951,15 @@ async fn steps_you_send_back_are_written_again_with_your_note() -> anyhow::Resul
     let script = |name: &str| {
         format!(
             "export const meta = {{ name: '{name}', description: 'Add due dates', \
-             phases: [{{ title: 'Build' }}] }}\n\
+             phases: [{{ name: 'Build' }}] }}\n\
              return await agent('Add a due date: ' + args.request, \
-             {{ role: 'workers', label: 'build:due', phase: 'Build', task: 'due' }})\n"
+             {{ role: 'worker', label: 'build:due', phase: 'Build', task: 'due' }})\n"
         )
     };
     let (first_try, second_try) = (script("due-dates"), script("due-dates-with-tests"));
     let again = second_try.clone();
     let orchestrator =
-        FakeWorker::harness("claude-code/fable", "claude").respond_with(move |spec| {
+        FakeRunner::cli("claude-code/fable", "anthropic").respond_with(move |spec| {
             let asked = prompt(spec);
             let source = if asked.contains("sent it back") {
                 &again
@@ -878,9 +973,9 @@ async fn steps_you_send_back_are_written_again_with_your_note() -> anyhow::Resul
     let _env = crew.repo.env_guard();
 
     let first = crew.start(RunMode::Crew, REQUEST).await?;
-    let plan = approval(&first.events, CheckpointKind::Plan).expect("the plan approval");
+    let plan = approval(&first.events, ApprovalKind::Plan).expect("the plan approval");
     assert_eq!(keys(plan), "ybsxd", "the orchestrator can write them again");
-    let CheckpointPacket::Plan(packet) = &plan.packet else {
+    let ApprovalPacket::Plan(packet) = &plan.packet else {
         panic!("a plan approval: {:?}", plan.packet);
     };
     assert_eq!(
@@ -897,7 +992,7 @@ async fn steps_you_send_back_are_written_again_with_your_note() -> anyhow::Resul
 
     let (send_back, _reply) = answer(
         &first.events,
-        CheckpointKind::Plan,
+        ApprovalKind::Plan,
         AnswerAction::SendBack,
         Some("write the tests first"),
     )?;
@@ -910,8 +1005,8 @@ async fn steps_you_send_back_are_written_again_with_your_note() -> anyhow::Resul
         "it reads the script it wrote last: {}",
         asked[1]
     );
-    let plan = approval(&second.events, CheckpointKind::Plan).expect("the plan approval");
-    let CheckpointPacket::Plan(packet) = &plan.packet else {
+    let plan = approval(&second.events, ApprovalKind::Plan).expect("the plan approval");
+    let ApprovalPacket::Plan(packet) = &plan.packet else {
         panic!("a plan approval: {:?}", plan.packet);
     };
     assert_eq!(
@@ -932,7 +1027,7 @@ async fn steps_you_send_back_are_written_again_with_your_note() -> anyhow::Resul
     // Approved, a run that picks up again runs the steps you approved and asks nobody again.
     let (approve, _reply) = answer(
         &second.events,
-        CheckpointKind::Plan,
+        ApprovalKind::Plan,
         AnswerAction::Approve,
         None,
     )?;
@@ -947,7 +1042,7 @@ async fn steps_you_send_back_are_written_again_with_your_note() -> anyhow::Resul
         reports.last().map(|report| report.workflow.name.as_str()),
         Some("due-dates-with-tests")
     );
-    assert!(opened(&third.events, CheckpointKind::Merge));
+    assert!(opened(&third.events, ApprovalKind::Merge));
     Ok(())
 }
 
@@ -960,7 +1055,7 @@ async fn abandoning_at_the_plan_approval_ends_the_run_with_nothing_built() -> an
     let first = crew.start(RunMode::Crew, REQUEST).await?;
     let (abandon, _reply) = answer(
         &first.events,
-        CheckpointKind::Plan,
+        ApprovalKind::Plan,
         AnswerAction::Abandon,
         None,
     )?;
@@ -974,9 +1069,9 @@ async fn abandoning_at_the_plan_approval_ends_the_run_with_nothing_built() -> an
 fn build_then_sign_off(name: &str, role: &str) -> String {
     format!(
         "export const meta = {{ name: '{name}', description: 'Add due dates', \
-         phases: [{{ title: 'Build' }}, {{ title: 'Check' }}] }}\n\
+         phases: [{{ name: 'Build' }}, {{ name: 'Check' }}] }}\n\
          await agent('Add a due date: ' + args.request, \
-         {{ role: 'workers', label: 'build:due', phase: 'Build', task: 'due' }})\n\
+         {{ role: 'worker', label: 'build:due', phase: 'Build', task: 'due' }})\n\
          return await agent('Is it done?', {{ role: '{role}', label: 'check:due', \
          phase: 'Check', task: 'due' }})\n"
     )
@@ -986,13 +1081,13 @@ fn build_then_sign_off(name: &str, role: &str) -> String {
 async fn a_script_that_throws_when_rehearsed_is_sent_back_with_what_it_threw() -> anyhow::Result<()>
 {
     let (mut crew, worker) = crew("maker-checker")?;
-    // Maker-checker has workers and reviewers. The first script asks a judge to sign off.
+    // Maker-checker has a worker and a reviewer step. The first script asks a judge to sign off.
     let (wrong, right) = (
         build_then_sign_off("with-a-judge", "judge"),
-        build_then_sign_off("with-a-reviewer", "reviewers"),
+        build_then_sign_off("with-a-reviewer", "reviewer"),
     );
     let orchestrator =
-        FakeWorker::harness("claude-code/fable", "claude").respond_with(move |spec| {
+        FakeRunner::cli("claude-code/fable", "anthropic").respond_with(move |spec| {
             let source = if prompt(spec).contains("couldn't be used") {
                 &right
             } else {
@@ -1010,9 +1105,9 @@ async fn a_script_that_throws_when_rehearsed_is_sent_back_with_what_it_threw() -
     assert_eq!(asked.len(), 2, "asked once more");
     assert!(
         asked[1].contains(
-            "Your last script couldn't be used: rehearsed with stand-in answers, it threw: \
-             Error: agent(): this workflow's file has no judge step; its roles are workers, \
-             reviewers"
+            "Your last script couldn't be used: rehearsed with placeholder answers, it threw: \
+             Error: agent(): this workflow's file has no judge step; its roles are worker, \
+             reviewer"
         ),
         "{}",
         asked[1]
@@ -1023,7 +1118,7 @@ async fn a_script_that_throws_when_rehearsed_is_sent_back_with_what_it_threw() -
         reports.last().map(|report| report.workflow.name.as_str()),
         Some("with-a-reviewer")
     );
-    assert!(opened(events, CheckpointKind::Merge));
+    assert!(opened(events, ApprovalKind::Merge));
     Ok(())
 }
 
@@ -1035,20 +1130,20 @@ async fn a_script_without_a_step_you_require_is_sent_back_once_to_place_it() -> 
     write_workflow(
         &crew,
         "always.toml",
-        "[[step]]\nname = \"Benchmark\"\nrole = \"workers\"\ndoes = \"Run the benchmarks.\"\n",
+        "[[step]]\nname = \"Benchmark\"\nrole = \"worker\"\ndoes = \"Run the benchmarks.\"\n",
     )?;
-    let without = build_then_sign_off("without-a-benchmark", "reviewers");
+    let without = build_then_sign_off("without-a-benchmark", "reviewer");
     let with = "export const meta = { name: 'with-a-benchmark', description: 'Add due dates', \
-         phases: [{ title: 'Build' }, { title: 'Benchmark' }, { title: 'Check' }] }\n\
+         phases: [{ name: 'Build' }, { name: 'Benchmark' }, { name: 'Check' }] }\n\
          await agent('Add a due date: ' + args.request, \
-         { role: 'workers', label: 'build:due', phase: 'Build', task: 'due' })\n\
+         { role: 'worker', label: 'build:due', phase: 'Build', task: 'due' })\n\
          await agent('Run the benchmarks.', \
-         { role: 'workers', label: 'benchmark:due', phase: 'Benchmark', task: 'due' })\n\
-         return await agent('Is it done?', { role: 'reviewers', label: 'check:due', \
+         { role: 'worker', label: 'benchmark:due', phase: 'Benchmark', task: 'due' })\n\
+         return await agent('Is it done?', { role: 'reviewer', label: 'check:due', \
          phase: 'Check', task: 'due' })\n"
         .to_owned();
     let orchestrator =
-        FakeWorker::harness("claude-code/fable", "claude").respond_with(move |spec| {
+        FakeRunner::cli("claude-code/fable", "anthropic").respond_with(move |spec| {
             let source = if prompt(spec).contains("doesn't have every step the user requires") {
                 &with
             } else {
@@ -1091,7 +1186,7 @@ async fn a_script_without_a_step_you_require_is_sent_back_once_to_place_it() -> 
 async fn when_no_script_can_be_used_the_files_own_steps_run_and_nobody_is_asked_again()
 -> anyhow::Result<()> {
     let (mut crew, _worker) = crew("maker-checker")?;
-    let orchestrator = FakeWorker::harness("claude-code/fable", "claude")
+    let orchestrator = FakeRunner::cli("claude-code/fable", "anthropic")
         .respond_with(|_| FakeSession::structured(json!({"script": "const steps = []"})));
     let orchestrator = crew.services.workers.add(orchestrator);
     crew.settings.crew.orchestrator = Orchestrator::Models(vec!["claude-code/fable".parse()?]);
@@ -1128,10 +1223,10 @@ async fn when_no_script_can_be_used_the_files_own_steps_run_and_nobody_is_asked_
 const SHIP_WITH_DOCS: &str = r#"export const meta = {
   name: 'ship-with-docs',
   description: 'Build the field, then run the docs workflow',
-  phases: [{ title: 'Build' }],
+  phases: [{ name: 'Build' }],
 }
 await agent('Build the due field: ' + args.request, {
-  role: 'workers', label: 'build:due-field', phase: 'Build', task: 'due-field',
+  role: 'worker', label: 'build:due-field', phase: 'Build', task: 'due-field',
 })
 return await workflow('docs', { request: args.request, crew: args.crew })
 "#;
@@ -1143,7 +1238,7 @@ adapt = false
 
 [[step]]
 name = "Write"
-role = "workers"
+role = "worker"
 does = "Due docs: document {request}"
 
 [[step]]
@@ -1161,11 +1256,11 @@ async fn a_workflow_run_as_a_step_shows_under_its_own_name_and_is_not_run_twice(
     let _env = crew.repo.env_guard();
     let first = crew.start(RunMode::Crew, REQUEST).await?;
     assert!(
-        matches!(first.exit, EngineExit::Parked(_)),
+        matches!(first.exit, EngineExit::Waiting(_)),
         "{:?}",
         first.exit
     );
-    assert!(opened(&first.events, CheckpointKind::Merge));
+    assert!(opened(&first.events, ApprovalKind::Merge));
     let labels: Vec<String> = started(&first.events)
         .into_iter()
         .map(|(label, ..)| label)
@@ -1270,8 +1365,8 @@ async fn with_nesting_off_a_script_cannot_run_another_workflow() -> anyhow::Resu
 async fn a_step_can_let_its_workers_run_a_workflow_of_their_own() -> anyhow::Result<()> {
     let (crew, worker) = crew("ship")?;
     let free = SHIP.replace(
-        "role     = \"workers\"\nfor_each = \"task\"\n",
-        "role     = \"workers\"\nfor_each = \"task\"\nown_workflow = true\n",
+        "role     = \"worker\"\nfor_each = \"task\"\n",
+        "role     = \"worker\"\nfor_each = \"task\"\nown_workflow = true\n",
     );
     assert_ne!(free, SHIP);
     write_workflow(&crew, "ship.toml", &free)?;
@@ -1366,5 +1461,298 @@ async fn a_files_goal_is_checked_as_every_goal_is() -> anyhow::Result<()> {
             .any(|run| run.name == "true" && run.by == CheckedBy::Command && run.passed),
         "{first:?}"
     );
+    Ok(())
+}
+
+/// Every worker proposes side by side without writing, then the judge is told how many
+/// proposals came in.
+const PANEL: &str = r#"export const meta = {
+  name: 'panel',
+  description: 'Everyone proposes, the judge decides',
+  phases: [{ name: 'Propose' }, { name: 'Decide' }],
+}
+const asked = [0, 1, 2].map((n) => () => agent('Propose how to do it: ' + args.request, {
+  role: 'worker', access: 'read', model: n, label: 'propose:w' + n, phase: 'Propose',
+}))
+const proposals = (await parallel(asked)).filter(Boolean)
+const picked = await agent('Pick the strongest of ' + proposals.length + ' proposals.', {
+  role: 'judge', label: 'decide', phase: 'Decide',
+})
+return { proposals: proposals.length, picked }
+"#;
+
+/// How each session with this label ended, in the order they started. One still running has
+/// no end.
+fn ends_of(events: &[RunEvent], label: &str) -> Vec<Option<EndReason>> {
+    let mut sessions: Vec<(&SessionKey, Option<EndReason>)> = Vec::new();
+    for event in events {
+        let (RunEventKind::Session(session), Some(key)) = (&event.kind, &event.session) else {
+            continue;
+        };
+        match session {
+            SessionEvent::Started(started) if started.label.as_deref() == Some(label) => {
+                sessions.push((key, None));
+            }
+            SessionEvent::Ended(end) => {
+                if let Some(last) = sessions.iter_mut().rev().find(|(held, _)| *held == key) {
+                    last.1 = Some(end.reason.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    sessions.into_iter().map(|(_, end)| end).collect()
+}
+
+/// Three workers propose side by side and two of them can't sign in, so nobody may take their
+/// places and the run waits. The third was still writing: the wait cut its session short,
+/// nothing of its own did, so it goes again each time the run wakes, and once the others are
+/// back all three proposals are in.
+#[tokio::test]
+async fn an_agent_cut_short_by_a_wait_for_others_goes_again_when_the_run_wakes()
+-> anyhow::Result<()> {
+    let mut crew = Crew::new()?;
+    crew.settings.evolution.propose_every = 0;
+    let writing = Arc::new(AtomicBool::new(true));
+    let main = FakeRunner::cli(MAIN, "anthropic").respond_with(move |spec| {
+        if spec.role == RoleName::Orchestrator {
+            return FakeSession::structured(json!({"script": PANEL}));
+        }
+        if spec.role == RoleName::Worker {
+            if writing.swap(false, Ordering::SeqCst) {
+                return FakeSession::until_stopped(Vec::new());
+            }
+            return FakeSession::completed("Keep the due date beside the title.");
+        }
+        support::smallest_answer(spec)
+    });
+    let main = crew.services.workers.add(main);
+    let signed_in = Arc::new(AtomicBool::new(false));
+    for (worker, provider) in [(WORKER, "openai"), (REVIEWER, "google")] {
+        let signed_in = signed_in.clone();
+        let fake = FakeRunner::cli(worker, provider).respond_with(move |_| {
+            if signed_in.load(Ordering::SeqCst) {
+                return FakeSession::completed("Store it as a date of its own.");
+            }
+            FakeSession::ended(EndReason::Auth {
+                message: "authentication required".to_owned(),
+            })
+        });
+        crew.services.workers.add(fake);
+    }
+    crew.settings.crew = CrewSettings {
+        main: MAIN.parse()?,
+        orchestrator: Orchestrator::Main,
+        worker: vec![MAIN.parse()?, WORKER.parse()?, REVIEWER.parse()?],
+        reviewer: vec![MAIN.parse()?],
+        judge: vec![MAIN.parse()?],
+        worker_workflows: false,
+        merger: Vec::new(),
+    };
+    crew.settings.workflow = "council".to_owned();
+    crew.settings.workflows.adapt_with = AdaptWith::Script;
+    let _env = crew.repo.env_guard();
+
+    let first = crew.start(RunMode::Crew, REQUEST).await?;
+    let waits = |exit: &EngineExit| {
+        matches!(exit, EngineExit::Waiting(WaitReason::NoFallback { detail, .. })
+            if detail == "nobody to fall back to as the task's worker")
+    };
+    assert!(waits(&first.exit), "{:?}", first.exit);
+    assert_eq!(
+        ends_of(&first.events, "propose:w0"),
+        [Some(EndReason::Paused)],
+        "the wait cut it short, so it goes on later"
+    );
+
+    // The run wakes with the others still signed out: the one that can work is asked again
+    // and the run waits once more.
+    let again = crew.resume(first.events.clone(), Vec::new()).await?;
+    assert!(waits(&again.exit), "{:?}", again.exit);
+    assert_eq!(proposals_asked(&main), 2, "it went again");
+
+    // With the others back, their proposals join the one already written.
+    signed_in.store(true, Ordering::SeqCst);
+    let back = crew.resume(again.events.clone(), Vec::new()).await?;
+    let mine = ends_of(&back.events, "propose:w0");
+    assert_eq!(mine.last(), Some(&Some(EndReason::Completed)), "{mine:?}");
+    assert!(!mine.contains(&Some(EndReason::Stopped)), "{mine:?}");
+    let said_nothing = back.events.iter().any(|event| {
+        matches!(&event.kind, RunEventKind::Note(note)
+            if note.text.starts_with("propose:w0 gave no answer"))
+    });
+    assert!(!said_nothing, "its stop was never read as its answer");
+    let decides: Vec<String> = main
+        .specs()
+        .iter()
+        .filter(|spec| spec.role == RoleName::Judge)
+        .map(prompt)
+        .collect();
+    assert_eq!(decides.len(), 1, "{:?}", started(&back.events));
+    assert!(
+        decides[0].contains("Pick the strongest of 3 proposals."),
+        "{}",
+        decides[0]
+    );
+    Ok(())
+}
+
+/// How many times this agent was put to its proposal, a session that carries on counted too.
+fn proposals_asked(agent: &FakeRunner) -> usize {
+    agent
+        .specs()
+        .iter()
+        .filter(|spec| spec.role == RoleName::Worker)
+        .count()
+}
+
+/// Runs the request on autopilot with the real approval policy, until the run waits or finishes.
+async fn on_autopilot(crew: &Crew) -> anyhow::Result<Outcome> {
+    let started = crew.run_started(RunMode::Crew, REQUEST)?;
+    let autopilot = RunEvent {
+        seq: 1,
+        kind: RunEventKind::Run(RunLifecycle::ApprovalModeChanged {
+            mode: ApprovalMode::Autopilot,
+            by: Party::User,
+        }),
+        ..started.clone()
+    };
+    let (mut context, sink, _commands) = crew.context(vec![started, autopilot])?;
+    let repo = crew.repo_context()?;
+    let state = repo
+        .run_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .context("the run folder is under the repo's state folder")?;
+    std::fs::create_dir_all(state)?;
+    context.services.policy = argonauts_policy::approval_policy_with_models(
+        context.settings.clone(),
+        Arc::new(|| None),
+        state,
+        crew.services.workers.clone(),
+        crew.services.registry.clone(),
+        crew.services.steps.clone(),
+    );
+    let engine = argonauts_crew::engine_for(&crew.settings, RunMode::Crew).run(context);
+    let exit = with_git_env(crew.git_env(), engine).await;
+    Ok(Outcome {
+        exit,
+        events: sink.events(),
+    })
+}
+
+/// A judge's approval that cites the default rules.
+fn approves() -> FakeSession {
+    FakeSession::structured(json!({
+        "verdict": "approve",
+        "reasons": ["the evidence meets the rules"],
+        "rules_cited": ["R7"]
+    }))
+}
+
+/// A workflow of your own, exactly as `/workflow new` writes it, on autopilot with a crew of
+/// three CLIs: the main agent splits the request, another CLI builds the task, and a third
+/// reviews it. The run goes from the request to the merge with nothing left to you: every
+/// session ends well, and no approval is yours or still open.
+#[tokio::test]
+async fn on_autopilot_a_new_workflow_file_goes_from_request_to_merge() -> anyhow::Result<()> {
+    use argonauts_core::settings::protocol::CheckCommand;
+
+    let mut crew = Crew::new()?;
+    crew.settings.evolution.propose_every = 0;
+    let main = FakeRunner::cli(MAIN, "anthropic").respond_with(|spec| match spec.step {
+        Some(StepName::ModelJudge) => approves(),
+        _ if spec.role == RoleName::Orchestrator => FakeSession::structured(json!({
+            "summary": "One task",
+            "tasks": [{"title": "Due field", "done_when": ["a task has a due date"]}],
+        })),
+        _ => support::smallest_answer(spec),
+    });
+    crew.services.workers.add(main);
+    let worker = FakeRunner::cli(WORKER, "openai").respond_with(|spec| match spec.step {
+        Some(StepName::Build) => {
+            std::fs::write(spec.workdir.join("due.rs"), "due\n").expect("writes its file");
+            FakeSession::structured(report("Wrote due.rs", "due.rs"))
+        }
+        Some(StepName::ModelJudge) => approves(),
+        _ => support::smallest_answer(spec),
+    });
+    crew.services.workers.add(worker);
+    let reviewer = FakeRunner::cli(REVIEWER, "google").respond_with(|spec| match spec.step {
+        Some(StepName::ModelJudge) => approves(),
+        _ if spec.json_schema.is_some() => {
+            FakeSession::structured(json!({"accept": true, "findings": []}))
+        }
+        _ => FakeSession::completed("The task is done as asked."),
+    });
+    crew.services.workers.add(reviewer);
+    crew.settings.crew = CrewSettings {
+        main: MAIN.parse()?,
+        orchestrator: Orchestrator::Main,
+        worker: vec![WORKER.parse()?],
+        reviewer: vec![REVIEWER.parse()?],
+        judge: vec![REVIEWER.parse()?],
+        worker_workflows: false,
+        merger: Vec::new(),
+    };
+    crew.settings.workflow = "spec-first".to_owned();
+    crew.settings.workflows.adapt_with = AdaptWith::Script;
+    // The repository has tests, which autopilot wants to see pass before it merges.
+    let passing = |name: &str| CheckCommand {
+        name: name.to_owned(),
+        command: vec!["true".to_owned()],
+    };
+    crew.settings.checks.run = vec![passing("tests")];
+    crew.settings.checks.full_suite = vec![passing("suite")];
+    let written = argonauts_runner::template("spec-first", ".argonauts/workflows");
+    write_workflow(&crew, "spec-first.toml", &written)?;
+    let _env = crew.repo.env_guard();
+
+    let outcome = on_autopilot(&crew).await?;
+    let events = &outcome.events;
+    let said: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Note(note) => Some(note.text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        outcome.exit,
+        EngineExit::Finished(RunOutcome::Merged),
+        "{said:#?}"
+    );
+    assert!(crew.repo.root().join("due.rs").exists(), "the work is in");
+
+    // The file's three steps ran as written, each on the CLI its role names.
+    let shown: Vec<String> = started(events)
+        .iter()
+        .map(|(label, role, worker)| format!("{label} {} {worker}", role.as_str()))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            format!("plan orchestrator {MAIN}"),
+            format!("build:due-field worker {WORKER}"),
+            format!("review:due-field reviewer {REVIEWER}"),
+        ]
+    );
+
+    // Nothing waited for you, and no row is red.
+    let mut open = Vec::new();
+    for event in events {
+        match &event.kind {
+            RunEventKind::Approval(ApprovalEvent::Opened(opened)) => open.push(opened.id.clone()),
+            RunEventKind::Approval(ApprovalEvent::Decided(decided)) => {
+                assert_ne!(decided.by, Party::User, "{decided:?}");
+                open.retain(|id| *id != decided.id);
+            }
+            RunEventKind::Session(SessionEvent::Ended(end)) => {
+                assert_eq!(end.reason, EndReason::Completed, "{:?}", event.session);
+            }
+            _ => {}
+        }
+    }
+    assert!(open.is_empty(), "left open: {open:?}");
     Ok(())
 }

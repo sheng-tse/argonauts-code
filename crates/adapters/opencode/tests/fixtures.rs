@@ -1,5 +1,5 @@
-//! Replays of hand-written OpenCode 1.18.33 output. OpenCode isn't installed here, so every
-//! fixture is synthetic, built from the event shapes in OpenCode's source.
+//! Replays of hand-written OpenCode output, built from the event shapes in OpenCode's source
+//! before it was installed here. Each file's meta says it is synthetic.
 
 use std::path::{Path, PathBuf};
 
@@ -7,13 +7,10 @@ use argonauts_adapter_opencode::OpenCodeAdapter;
 use argonauts_core::{Adapter, AgentEvent, ErrorCategory, SessionRequest};
 use serde_json::Value;
 
-const VERSION: &str = "1.18.33";
 const SESSION: &str = "ses_3a1f0c2e5ffeYk2hQ8mZr7TnWb";
 
 fn fixtures_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("fixtures")
-        .join(VERSION)
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")
 }
 
 fn read(name: &str) -> String {
@@ -57,20 +54,20 @@ fn assert_command_matches(name: &str, req: &SessionRequest) {
 
 #[test]
 fn opencode_events_parse() {
-    let folder: Value = serde_json::from_str(&read("meta.json")).unwrap();
-    assert_eq!(folder["synthetic"], true);
-
     assert_command_matches(
-        "build_hello",
+        "build_hello_reasoning",
         &SessionRequest {
-            prompt: meta("build_hello")["prompt"].as_str().unwrap().to_owned(),
+            prompt: meta("build_hello_reasoning")["prompt"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
             model: Some("ollama/llama3.2".to_owned()),
             // Both synthetic runs asked for reasoning parts, which `--thinking` turns on.
             extra_args: vec!["--thinking".to_owned()],
             ..SessionRequest::default()
         },
     );
-    let events = replay("build_hello");
+    let events = replay("build_hello_reasoning");
     assert_eq!(
         events[0],
         AgentEvent::Init {

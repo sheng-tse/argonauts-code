@@ -6,11 +6,11 @@ use std::collections::BTreeSet;
 use argonauts_core::app::SettingRow;
 use argonauts_core::input::{PERMISSION_KEYS, ROLE_SANDBOX_KEYS};
 use argonauts_core::names::RoleName;
-use argonauts_core::settings::budget::BudgetSettings;
-use argonauts_core::settings::handoff::CrewRole;
+use argonauts_core::settings::crew::CrewRole;
+use argonauts_core::settings::limit::SpendLimits;
 use argonauts_core::settings::{SettingMeta, SettingScope, Settings};
-use argonauts_registry::harnesses::agents_turned_on;
-use argonauts_registry::{builtin_harnesses, setting_meta, settings_catalog};
+use argonauts_registry::clis::agents_turned_on;
+use argonauts_registry::{builtin_clis, setting_meta, settings_catalog};
 
 use crate::app_settings::AppSettings;
 
@@ -18,25 +18,23 @@ use crate::app_settings::AppSettings;
 pub(crate) const ROLES: &[RoleName] = &[
     RoleName::Main,
     RoleName::Orchestrator,
-    RoleName::PhaseLead,
-    RoleName::Restater,
-    RoleName::Differ,
-    RoleName::Drafter,
-    RoleName::Mapper,
+    RoleName::TieBreaker,
+    RoleName::Reader,
+    RoleName::Comparer,
+    RoleName::Draft,
+    RoleName::Map,
     RoleName::Critic,
-    RoleName::Spike,
+    RoleName::Experiment,
     RoleName::Judge,
     RoleName::Worker,
     RoleName::Consultant,
     RoleName::Reviewer,
-    RoleName::Adjudicator,
-    RoleName::Retro,
-    RoleName::Approver,
+    RoleName::RunReview,
     RoleName::Narrator,
 ];
 
-/// The roles whose model has a key of its own rather than `roles.<role>.workers`.
-const OWN_MODEL_KEY: &[RoleName] = &[RoleName::Main, RoleName::Approver, RoleName::Narrator];
+/// The roles whose model has a key of its own rather than `roles.<role>.models`.
+const OWN_MODEL_KEY: &[RoleName] = &[RoleName::Main, RoleName::Narrator];
 
 const AGENT_KEYS: &[&str] = &["enabled", "model", "effort", "auth", "binary"];
 const NARRATOR_KEYS: &[&str] = &[
@@ -48,7 +46,7 @@ const NARRATOR_KEYS: &[&str] = &[
 const THEME_KEYS: &[&str] = &["ui.theme", "ui.accent", "ui.color", "ui.motion"];
 
 /// Rows for `command` (such as `effort`), or for `/config`'s `section` (a dotted key prefix).
-/// `/preset` and `/workflows` list names rather than keys, so their rows are built elsewhere.
+/// `/workflow` and `/workflows` list names rather than keys, so their rows are built elsewhere.
 pub(crate) fn rows(
     settings: &AppSettings,
     command: Option<&str>,
@@ -63,14 +61,14 @@ pub(crate) fn rows(
         // The run and task limits. The hard limits beside them in `[limits]` are /permissions'.
         "limits" => catalog_keys(settings, &[])
             .into_iter()
-            .filter(|key| BudgetSettings::owns(key))
+            .filter(|key| SpendLimits::owns(key))
             .collect(),
         "fallback" => {
             let keys: Vec<String> = catalog_keys(settings, &[])
                 .into_iter()
                 .filter(|key| in_section(key, "fallback"))
                 .collect();
-            with_handoff_options(keys)
+            with_fallback_options(keys)
                 .into_iter()
                 .filter(|key| !is_summarizer(key) || summarizer_wanted(settings, key))
                 .collect()
@@ -92,8 +90,8 @@ pub(crate) fn rows(
 
 /// One row for `key`, with its catalog entry, its value in effect, and where it came from.
 pub(crate) fn row(settings: &AppSettings, key: String, default_scope: SettingScope) -> SettingRow {
-    // The catalog lists the top-level handoff options bare, so these words come first.
-    let meta = handoff_option(&key)
+    // The catalog lists the top-level fallback options bare, so these words come first.
+    let meta = fallback_option(&key)
         .or_else(|| setting_meta(&key))
         .unwrap_or_else(|| blank_meta(&key));
     SettingRow {
@@ -101,7 +99,7 @@ pub(crate) fn row(settings: &AppSettings, key: String, default_scope: SettingSco
             .entry(&key)
             .map(|entry| entry.value.clone())
             .unwrap_or_default(),
-        preset_from: settings.preset_from(&settings.layer(&key)),
+        workflow_from: settings.workflow_from(&settings.layer(&key)),
         layer: settings.layer(&key),
         default_scope,
         safety: meta.safety,
@@ -120,7 +118,7 @@ pub(crate) fn default_scope(command: &str, key: &str) -> SettingScope {
             "approvals.decides" => Project,
             _ => ProjectLocal,
         },
-        "workflow" | "phases" | "approvals" | "limits" | "fallback" | "permissions" => {
+        "workflow" | "approvals" | "limits" | "fallback" | "permissions" => {
             if key == "limits.spend_per_day" {
                 Global
             } else {
@@ -149,41 +147,40 @@ pub(crate) fn in_section(key: &str, section: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('.'))
 }
 
-/// `main_agent`, each role's workers, then the narrator's and the approver's model. The
-/// setup's "Who does what" lists the same.
+/// `crew.main`, each role's workers, then the narrator's model. The setup's "Who does what"
+/// lists the same.
 pub(crate) fn model_keys() -> Vec<String> {
-    let mut keys = vec!["main_agent".to_owned()];
+    let mut keys = vec!["crew.main".to_owned()];
     keys.extend(
         ROLES
             .iter()
             .filter(|role| !OWN_MODEL_KEY.contains(role))
-            .map(|role| format!("roles.{}.workers", role.as_str())),
+            .map(|role| format!("roles.{}.models", role.as_str())),
     );
     keys.push("narrator.model".to_owned());
-    keys.push("approvals.decides".to_owned());
     keys
 }
 
-/// `roles.<role>.<leaf>` for the default agent and every role with a worker list.
+/// `roles.<role>.<leaf>` for the main agent and every role with a worker list.
 fn role_keys(leaf: &str) -> Vec<String> {
     ROLES
         .iter()
-        .filter(|role| !matches!(role, RoleName::Approver | RoleName::Narrator))
+        .filter(|role| **role != RoleName::Narrator)
         .map(|role| format!("roles.{}.{leaf}", role.as_str()))
         .collect()
 }
 
-/// The crew's four seats, each harness's enabled, model, effort, auth, and binary, and every
+/// The crew's four roles, each CLI's enabled, model, effort, auth, and binary, and every
 /// endpoint key.
 /// Each agent's keys: the ones your settings name, then the built-in profiles in play, such as
 /// OpenCode's over ACP and Hermes once you turn it on.
 fn agents_keys(app: &AppSettings) -> Vec<String> {
     let settings = app.settings();
-    let mut keys: Vec<String> = ["workers", "reviewers", "judge", "orchestrator"]
+    let mut keys: Vec<String> = ["worker", "reviewer", "judge", "orchestrator"]
         .iter()
-        .map(|seat| format!("crew.{seat}"))
+        .map(|role| format!("crew.{role}"))
         .collect();
-    let profiles = builtin_harnesses(&agents_turned_on(app.resolved()));
+    let profiles = builtin_clis(&agents_turned_on(app.resolved()));
     let ids = settings
         .agents
         .keys()
@@ -227,15 +224,15 @@ fn under(keys: Vec<String>, section: &str) -> Vec<String> {
         .collect()
 }
 
-/// A key in a role's own table, such as `fallback.workers.mode`.
-fn is_role_handoff(key: &str) -> bool {
+/// A key in a role's own table, such as `fallback.worker.mode`.
+fn is_role_fallback(key: &str) -> bool {
     matches!(
         key.split('.').collect::<Vec<_>>().as_slice(),
-        ["fallback", role, ..] if CrewRole::named(role).is_some()
+        ["fallback", role, ..] if CrewRole::parse(role).is_some()
     )
 }
 
-/// `handoff.summarizer`, or a role's.
+/// `fallback.summarizer`, or a role's.
 fn is_summarizer(key: &str) -> bool {
     matches!(
         key.split('.').collect::<Vec<_>>().as_slice(),
@@ -243,9 +240,9 @@ fn is_summarizer(key: &str) -> bool {
     )
 }
 
-/// Whether `/handoff` lists a summarizer: it's set, so you can change or reset it, or a
-/// handoff it would serve is told `note+summary`. The top-level one serves every role without
-/// its own, so any handoff context counts for it; a role's serves that role, whose handoffs
+/// Whether `/fallback` lists a summarizer: it's set, so you can change or reset it, or a
+/// fallback it would serve is told `note+summary`. The top-level one serves every role without
+/// its own, so any fallback context counts for it; a role's serves that role, whose fallbacks
 /// may also follow the top-level context.
 fn summarizer_wanted(settings: &AppSettings, key: &str) -> bool {
     let section = key.strip_suffix(".summarizer").unwrap_or(key);
@@ -256,7 +253,7 @@ fn summarizer_wanted(settings: &AppSettings, key: &str) -> bool {
         let serves = if section == "fallback" {
             in_section(&entry.key, "fallback")
         } else {
-            in_section(&entry.key, section) || !is_role_handoff(&entry.key)
+            in_section(&entry.key, section) || !is_role_fallback(&entry.key)
         };
         let serves = serves && in_section(&entry.key, "fallback");
         serves && entry.key.ends_with(".context") && entry.value == NOTE_AND_SUMMARY
@@ -272,7 +269,7 @@ pub(crate) fn role_named(name: &str) -> Option<RoleName> {
 
 /// Every key `/config` shows: the catalog with each `*` filled in from the settings, then any
 /// key the settings hold that the catalog doesn't name. `extra_roles` fill `roles.*` beyond the
-/// default agent and the roles your settings configure.
+/// main agent and the roles your settings configure.
 fn catalog_keys(settings: &AppSettings, extra_roles: &[RoleName]) -> Vec<String> {
     let resolved = settings.settings();
     let mut roles: Vec<RoleName> = vec![RoleName::Main];
@@ -340,23 +337,23 @@ fn map_keys(settings: &Settings, prefix: &str, roles: &[RoleName]) -> Vec<String
         .collect()
 }
 
-/// The handoff options unset by default, which the catalog doesn't list: each with what it
+/// The fallback options unset by default, which the catalog doesn't list: each with what it
 /// does and the values it takes.
-const HANDOFF_OPTIONS: &[(&str, &str, &[&str])] = &[
+const FALLBACK_OPTIONS: &[(&str, &str, &[&str])] = &[
     (
         "strategy",
-        "Who takes over a stopped agent's tasks, one fallback each: the first, or spread",
+        "Which fallback gets each of a stopped agent's tasks: the first, or spread among them",
         &["first", "spread"],
     ),
     (
         "pick",
-        "How results combine when several fallbacks take over at once",
+        "How results combine when several fallbacks work at once",
         &["first_passing", "judge", "merge"],
     ),
     (
         "on_return",
         "What happens when the original agent comes back",
-        &["ask", "keep", "review", "hand_back", "redo"],
+        &["ask", "keep", "review", "give_back", "redo"],
     ),
     ("checkpoint", "Tag the task's state at every fallback", &[]),
     (
@@ -374,16 +371,36 @@ const HANDOFF_OPTIONS: &[(&str, &str, &[&str])] = &[
         "Fallbacks per task before it comes to you",
         &[],
     ),
+    (
+        "same_cli",
+        "Keep every fallback on the CLI that stopped, or wait for it",
+        &["true", "false"],
+    ),
+    (
+        "retry.tries",
+        "Times the same model tries again before any fallback",
+        &[],
+    ),
+    (
+        "retry.wait",
+        "The wait before the same model tries again",
+        &[],
+    ),
+    (
+        "retry.backoff",
+        "How that wait grows between tries",
+        &["fixed", "double"],
+    ),
 ];
 
-/// Adds the handoff options each handoff section in `keys` lacks, after its own keys.
-fn with_handoff_options(keys: Vec<String>) -> Vec<String> {
+/// Adds the fallback options each fallback section in `keys` lacks, after its own keys.
+fn with_fallback_options(keys: Vec<String>) -> Vec<String> {
     let sections: Vec<String> = dedup(
         keys.iter()
             .filter_map(|key| {
                 let mut segments = key.split('.');
                 let (top, role) = (segments.next()?, segments.next()?);
-                (top == "fallback").then(|| match CrewRole::named(role) {
+                (top == "fallback").then(|| match CrewRole::parse(role) {
                     Some(role) => format!("fallback.{}", role.as_str()),
                     None => "fallback".to_owned(),
                 })
@@ -392,19 +409,19 @@ fn with_handoff_options(keys: Vec<String>) -> Vec<String> {
     );
     let mut keys = keys;
     for section in sections {
-        for (name, ..) in HANDOFF_OPTIONS {
+        for (name, ..) in FALLBACK_OPTIONS {
             keys.push(format!("{section}.{name}"));
         }
     }
     dedup(keys)
 }
 
-fn handoff_option(key: &str) -> Option<SettingMeta> {
+fn fallback_option(key: &str) -> Option<SettingMeta> {
     let (section, name) = key.rsplit_once('.')?;
-    if section != "fallback" && !is_role_handoff(&format!("{section}.")) {
+    if section != "fallback" && !is_role_fallback(&format!("{section}.")) {
         return None;
     }
-    let (_, description, words) = HANDOFF_OPTIONS.iter().find(|(known, ..)| *known == name)?;
+    let (_, description, words) = FALLBACK_OPTIONS.iter().find(|(known, ..)| *known == name)?;
     let allowed = if name == "checkpoint" {
         vec!["true".to_owned(), "false".to_owned()]
     } else {
@@ -437,17 +454,16 @@ mod tests {
     fn each_command_saves_where_the_table_says() {
         use SettingScope::*;
         let cases = [
-            ("model", "roles.reviewer.workers", ProjectLocal),
-            ("model", "main_agent", ProjectLocal),
+            ("model", "roles.reviewer.models", ProjectLocal),
+            ("model", "crew.main", ProjectLocal),
             ("model", "narrator.model", Global),
             ("model", "approvals.decides", Project),
             ("effort", "roles.main.effort", ProjectLocal),
             ("workflow", "workflow", Project),
-            ("workflow", "roles.orchestrator.workers", Project),
-            ("phases", "phases", Project),
+            ("workflow", "roles.orchestrator.models", Project),
             ("approvals", "approvals.merge.mode", Project),
             ("limits", "limits.spend_per_run", Project),
-            ("fallback", "fallback.workers.mode", Project),
+            ("fallback", "fallback.worker.mode", Project),
             ("permissions", "sandbox.network", Project),
             ("permissions", "limits.spend_per_day", Global),
             ("agents", "agents.codex.model", Project),
@@ -467,12 +483,12 @@ mod tests {
     }
 
     #[test]
-    fn the_handoff_options_take_the_values_their_types_do() {
-        use argonauts_core::settings::handoff::{
-            HandoffStrategy, MergeRule, OnReturn, UnknownTier,
+    fn the_fallback_options_take_the_values_their_types_do() {
+        use argonauts_core::settings::fallback::{
+            FallbackStrategy, MergeRule, OnReturn, UnknownTier,
         };
         fn parses<T: serde::de::DeserializeOwned>(key: &str) {
-            let meta = handoff_option(key).unwrap();
+            let meta = fallback_option(key).unwrap();
             for value in meta.allowed {
                 let text = format!("value = {value}");
                 let table: toml::Table = text.parse().unwrap();
@@ -480,29 +496,29 @@ mod tests {
                 assert!(parsed.is_ok(), "{key} = {value}");
             }
         }
-        parses::<HandoffStrategy>("fallback.strategy");
-        parses::<OnReturn>("fallback.workers.on_return");
+        parses::<FallbackStrategy>("fallback.strategy");
+        parses::<OnReturn>("fallback.worker.on_return");
         parses::<MergeRule>("fallback.merge_rule");
         parses::<UnknownTier>("fallback.unknown_tier");
         parses::<bool>("fallback.checkpoint");
-        assert!(handoff_option("limits.strategy").is_none());
-        let keys = with_handoff_options(vec!["fallback.workers.mode".to_owned()]);
-        assert!(keys.contains(&"fallback.workers.max_fallbacks".to_owned()));
+        assert!(fallback_option("limits.strategy").is_none());
+        let keys = with_fallback_options(vec!["fallback.worker.mode".to_owned()]);
+        assert!(keys.contains(&"fallback.worker.max_fallbacks".to_owned()));
     }
 
     #[test]
-    fn only_the_handoff_summarizers_count_as_summarizers() {
-        use argonauts_core::settings::handoff::HandoffContext;
+    fn only_the_fallback_summarizers_count_as_summarizers() {
+        use argonauts_core::settings::fallback::FallbackContext;
         assert!(is_summarizer("fallback.summarizer"));
-        assert!(is_summarizer("fallback.workers.summarizer"));
+        assert!(is_summarizer("fallback.worker.summarizer"));
         assert!(!is_summarizer("fallback.context"));
         assert!(!is_summarizer("narrator.summarizer"));
         assert!(!is_summarizer("roles.worker.summarizer"));
         assert!(!is_summarizer("fallback.replace.codex.summarizer"));
         let text = format!("value = {NOTE_AND_SUMMARY}");
         let table: toml::Table = text.parse().unwrap();
-        let context: HandoffContext = table["value"].clone().try_into().unwrap();
-        assert_eq!(context, HandoffContext::NoteAndSummary);
+        let context: FallbackContext = table["value"].clone().try_into().unwrap();
+        assert_eq!(context, FallbackContext::NoteAndSummary);
     }
 
     #[test]
@@ -513,8 +529,8 @@ mod tests {
             .insert("ollama".to_owned(), Default::default());
         let keys = expand("endpoints.*.base_url", &settings, &[]);
         assert_eq!(keys, vec!["endpoints.ollama.base_url".to_owned()]);
-        let keys = expand("roles.*.effort", &settings, &[RoleName::PhaseLead]);
-        assert_eq!(keys, vec!["roles.phase-lead.effort".to_owned()]);
+        let keys = expand("roles.*.effort", &settings, &[RoleName::TieBreaker]);
+        assert_eq!(keys, vec!["roles.tie-breaker.effort".to_owned()]);
         assert!(in_section("limits.spend_per_run", "limits"));
         assert!(!in_section("limitss.x", "limits"));
     }

@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-conductor"
-description = "Argonauts conductor: supervises agent sessions, worktrees, gates, and merges."
+description = "Argonauts Code conductor: runs agent sessions, worktrees, checks, and merges."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

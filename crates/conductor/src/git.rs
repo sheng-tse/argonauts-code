@@ -1,4 +1,4 @@
-//! The git operations the conductor runs, through the git CLI with hooks, fsmonitor, and commit
+//! The git operations Argonauts Code runs, through the git CLI with hooks, fsmonitor, and commit
 //! signing turned off so nothing in the repository runs code as a side effect.
 
 use std::ffi::OsString;
@@ -33,11 +33,11 @@ const REPOSITORY_ENV: &[&str] = &[
     "GIT_EXTERNAL_DIFF",
 ];
 
-/// Identity used for conductor commits when the user has none configured.
+/// Identity used for Argonauts Code's commits when the user has none configured.
 const FALLBACK_IDENTITY: [(&str, &str); 4] = [
-    ("GIT_AUTHOR_NAME", "Argonauts"),
+    ("GIT_AUTHOR_NAME", "Argonauts Code"),
     ("GIT_AUTHOR_EMAIL", "argonauts@localhost"),
-    ("GIT_COMMITTER_NAME", "Argonauts"),
+    ("GIT_COMMITTER_NAME", "Argonauts Code"),
     ("GIT_COMMITTER_EMAIL", "argonauts@localhost"),
 ];
 
@@ -435,13 +435,13 @@ mod tests {
         let repo = TestRepo::new();
         let git = git();
         let base = git.head_commit(&repo.root).await.unwrap().unwrap();
-        let tree = repo.dir.path().join("trees/run/card");
-        git.add_worktree(&repo.root, &tree, "argonauts/run/card", &base)
+        let tree = repo.dir.path().join("trees/run/task");
+        git.add_worktree(&repo.root, &tree, "argonauts/run/task", &base)
             .await
             .unwrap();
         assert_eq!(
             git.current_branch(&tree).await.unwrap().as_deref(),
-            Some("argonauts/run/card")
+            Some("argonauts/run/task")
         );
         assert_eq!(git.commit_all(&tree, "nothing").await.unwrap(), None);
 
@@ -469,7 +469,7 @@ mod tests {
 
         git.remove_worktree(&repo.root, &tree).await.unwrap();
         assert!(!tree.exists());
-        git.delete_branch(&repo.root, "argonauts/run/card")
+        git.delete_branch(&repo.root, "argonauts/run/task")
             .await
             .unwrap();
         assert!(repo.git(&["branch", "--list", "argonauts/*"]).is_empty());
@@ -481,7 +481,7 @@ mod tests {
         let git = git();
         let base = git.head_commit(&repo.root).await.unwrap().unwrap();
         let tree = repo.dir.path().join("tree");
-        git.add_worktree(&repo.root, &tree, "card", &base)
+        git.add_worktree(&repo.root, &tree, "task", &base)
             .await
             .unwrap();
         std::fs::write(tree.join("README.md"), "theirs\n").unwrap();
@@ -490,7 +490,7 @@ mod tests {
         repo.git(&["commit", "--quiet", "-am", "ours"]);
 
         let err = git
-            .merge(&repo.root, "card", "Merge task")
+            .merge(&repo.root, "task", "Merge task")
             .await
             .unwrap_err();
         assert!(matches!(err, GitError::Failed { .. }));
@@ -528,7 +528,7 @@ mod tests {
         let sha = git().commit_all(&repo.root, "x").await.unwrap().unwrap();
         assert_eq!(
             repo.git(&["log", "-1", "--format=%an <%ae>", &sha]),
-            "Argonauts <argonauts@localhost>"
+            "Argonauts Code <argonauts@localhost>"
         );
     }
 
@@ -538,7 +538,7 @@ mod tests {
         let git = git();
         let base = git.head_commit(&repo.root).await.unwrap().unwrap();
         let tree = repo.dir.path().join("tree");
-        git.add_worktree(&repo.root, &tree, "card", &base)
+        git.add_worktree(&repo.root, &tree, "task", &base)
             .await
             .unwrap();
         let git_dir = git.absolute_git_dir(&tree).await.unwrap();
@@ -553,7 +553,7 @@ mod tests {
         let fake = tree.join(".fake");
         std::fs::create_dir_all(fake.join("objects")).unwrap();
         std::fs::create_dir_all(fake.join("refs/heads")).unwrap();
-        std::fs::write(fake.join("HEAD"), "ref: refs/heads/card\n").unwrap();
+        std::fs::write(fake.join("HEAD"), "ref: refs/heads/task\n").unwrap();
         std::fs::write(
             fake.join("config"),
             format!(
@@ -568,11 +568,11 @@ mod tests {
 
         assert_eq!(
             bound.current_branch(&tree).await.unwrap().as_deref(),
-            Some("card")
+            Some("task")
         );
         let sha = bound.commit_all(&tree, "hello").await.unwrap().unwrap();
         assert!(!marker.exists(), "the fake repository's filter ran");
-        assert_eq!(git.resolve(&repo.root, "card").await.unwrap(), sha);
+        assert_eq!(git.resolve(&repo.root, "task").await.unwrap(), sha);
     }
 
     #[tokio::test]

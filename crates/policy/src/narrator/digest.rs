@@ -1,19 +1,19 @@
-//! Digest lines, built by code from run events: phase and card changes, plans and who drafted
-//! them, tool call names with short results, gate results, message excerpts, vendor outages,
+//! Digest lines, built by code from run events: phase and task changes, plans and who drafted
+//! them, tool call names with short results, check results, message excerpts, agent outages,
 //! and spend. Never transcripts, file contents, prompts, diffs, long tool output, or
 //! credentials.
 
 use argonauts_core::PhaseStatus;
-use argonauts_core::events::checkpoint::CheckpointEvent;
+use argonauts_core::events::agent_status::{AgentStatusEvent, FallbackEvent};
+use argonauts_core::events::approval::ApprovalEvent;
 use argonauts_core::events::goal::GoalEvent;
 use argonauts_core::events::plan::{DesignDecision, JudgingResult, PlanEvent};
 use argonauts_core::events::run::{Party, RunLifecycle, RunPhase};
 use argonauts_core::events::shared::{BlackboardEvent, BlackboardKind};
-use argonauts_core::events::vendor::{HandoffEvent, VendorEvent};
 use argonauts_core::events::{
-    BudgetEvent, CardEvent, IntegrationEvent, ReviewEvent, RunEvent, RunEventKind,
+    MergeEvent, ReviewEvent, RunEvent, RunEventKind, SpendEvent, TaskEvent,
 };
-use argonauts_core::limits::{HealthState, QuotaStatus};
+use argonauts_core::limits::{HealthState, ModelState, PlanUsageStatus};
 use argonauts_core::{AgentEvent, ErrorCategory};
 use serde::Serialize;
 
@@ -41,21 +41,21 @@ pub fn line(event: &RunEvent) -> Option<String> {
         }
         RunEventKind::Goal(goal) => goal_line(goal)?,
         RunEventKind::Plan(plan) => plan_line(plan)?,
-        RunEventKind::Card(card) => card_line(event, card)?,
+        RunEventKind::Task(task) => task_line(event, task)?,
         RunEventKind::Agent(agent) => agent_line(event, agent)?,
-        RunEventKind::Gate(gate) => format!(
+        RunEventKind::Check(check) => format!(
             "{}: check {} {}: {}",
             who(event),
-            short(&gate.name, SHORT_MAX),
-            if gate.passed { "passed" } else { "failed" },
-            short(&gate.summary, SHORT_MAX)
+            short(&check.name, SHORT_MAX),
+            if check.passed { "passed" } else { "failed" },
+            short(&check.summary, SHORT_MAX)
         ),
         RunEventKind::Review(review) => review_line(event, review)?,
-        RunEventKind::Integration(integration) => integration_line(integration)?,
-        RunEventKind::Checkpoint(checkpoint) => checkpoint_line(checkpoint)?,
-        RunEventKind::Handoff(handoff) => handoff_line(handoff)?,
-        RunEventKind::Vendor(vendor) => vendor_line(vendor)?,
-        RunEventKind::Budget(budget) => budget_line(budget)?,
+        RunEventKind::Merge(merge) => merge_line(merge)?,
+        RunEventKind::Approval(approval) => approval_line(approval)?,
+        RunEventKind::Fallback(fallback) => fallback_line(fallback)?,
+        RunEventKind::AgentStatus(agent_id) => agent_status_line(agent_id)?,
+        RunEventKind::Spend(limit) => limit_line(limit)?,
         RunEventKind::Blackboard(BlackboardEvent::Posted(message)) => format!(
             "{} from {}: \"{}\"",
             name(&message.kind),
@@ -70,11 +70,11 @@ pub fn line(event: &RunEvent) -> Option<String> {
 
 /// A running total that replaces the last one rather than adding a line.
 pub fn is_spend(event: &RunEvent) -> bool {
-    matches!(event.kind, RunEventKind::Budget(BudgetEvent::Run(_)))
+    matches!(event.kind, RunEventKind::Spend(SpendEvent::Run(_)))
 }
 
 /// The narrator's goal: what you asked for when the run started, until a crew run approves
-/// a goal, whose summary replaces it. A solo run never has one.
+/// a goal, whose summary replaces it. A Captain run never has one.
 pub fn goal(event: &RunEvent) -> Option<String> {
     match &event.kind {
         RunEventKind::Run(RunLifecycle::Started(started)) => {
@@ -87,12 +87,12 @@ pub fn goal(event: &RunEvent) -> Option<String> {
     }
 }
 
-/// A decision record: the plan's design decisions, your answers at checkpoints, and decisions
+/// A decision record: the plan's design decisions, your answers at approvals, and decisions
 /// posted to the blackboard.
 pub fn decision(event: &RunEvent) -> Option<String> {
     match &event.kind {
         RunEventKind::Plan(PlanEvent::Decided(decided)) => Some(design_decision(decided)),
-        RunEventKind::Checkpoint(CheckpointEvent::Decided(decided)) => Some(format!(
+        RunEventKind::Approval(ApprovalEvent::Decided(decided)) => Some(format!(
             "{}: {} by {}",
             decided.id,
             name(&decided.action),
@@ -134,7 +134,7 @@ fn run_line(lifecycle: &RunLifecycle) -> Option<String> {
         RunLifecycle::ApprovalModeChanged { mode, .. } => {
             format!("approval mode is now {}", name(mode))
         }
-        RunLifecycle::Parked { reason, .. } => format!("the run is waiting: {}", name(reason)),
+        RunLifecycle::Waiting { reason, .. } => format!("the run is waiting: {}", name(reason)),
         RunLifecycle::Finished { outcome, .. } => format!("the run finished: {}", name(outcome)),
         RunLifecycle::PauseCancelled
         | RunLifecycle::Snapshot(_)
@@ -144,7 +144,7 @@ fn run_line(lifecycle: &RunLifecycle) -> Option<String> {
 
 fn goal_line(goal: &GoalEvent) -> Option<String> {
     Some(match goal {
-        GoalEvent::Restated { worker, .. } => format!("{worker} restated the goal"),
+        GoalEvent::Read { worker, .. } => format!("{worker} read the request back"),
         GoalEvent::Settled { questions, .. } => {
             format!("the goal settled with {} open questions", questions.len())
         }
@@ -180,15 +180,15 @@ fn plan_line(plan: &PlanEvent) -> Option<String> {
         }
         PlanEvent::Judged(judged) => judged_line(judged),
         PlanEvent::Decided(decided) => format!("decided {}", design_decision(decided)),
-        PlanEvent::Coordinated {
-            coordinator,
+        PlanEvent::Orchestrated {
+            orchestrator,
             rejection: None,
-        } => format!("{coordinator}'s plan was accepted"),
-        PlanEvent::Coordinated {
-            coordinator,
+        } => format!("{orchestrator}'s plan was accepted"),
+        PlanEvent::Orchestrated {
+            orchestrator,
             rejection: Some(rule),
         } => format!(
-            "{coordinator}'s plan was rejected: {}",
+            "{orchestrator}'s plan was rejected: {}",
             short(rule, SHORT_MAX)
         ),
         _ => return None,
@@ -223,13 +223,13 @@ fn design_decision(decided: &DesignDecision) -> String {
     )
 }
 
-fn card_line(event: &RunEvent, card: &CardEvent) -> Option<String> {
+fn task_line(event: &RunEvent, task: &TaskEvent) -> Option<String> {
     let who = who(event);
-    Some(match card {
-        CardEvent::Created(spec) => {
+    Some(match task {
+        TaskEvent::Created(spec) => {
             format!("{} created: {}", spec.id, short(&spec.title, SHORT_MAX))
         }
-        CardEvent::State { from, to, reason } => {
+        TaskEvent::State { from, to, reason } => {
             let mut text = match from {
                 Some(from) => format!("{who}: {} → {}", name(from), name(to)),
                 None => format!("{who}: {}", name(to)),
@@ -239,27 +239,27 @@ fn card_line(event: &RunEvent, card: &CardEvent) -> Option<String> {
             }
             text
         }
-        CardEvent::Attempt {
-            attempt,
+        TaskEvent::Try {
+            try_number,
             worker,
             cause,
-        } => format!("{who}: attempt {attempt} by {worker} ({})", name(cause)),
-        CardEvent::Reported(_) => format!("{who} reported"),
-        CardEvent::Reassigned { to, by, .. } => {
+        } => format!("{who}: try {try_number} by {worker} ({})", name(cause)),
+        TaskEvent::Reported(_) => format!("{who} reported"),
+        TaskEvent::Reassigned { to, by, .. } => {
             format!("{who} reassigned to {to} by {}", party(by))
         }
-        CardEvent::CheckpointTagged {
+        TaskEvent::CheckpointTagged {
             from, to, reason, ..
         } => {
             let to: Vec<String> = to.iter().map(ToString::to_string).collect();
             format!(
-                "{who} handed off from {from} to {}: {}",
+                "{who} fell back from {from} to {}: {}",
                 to.join(", "),
                 short(reason, SHORT_MAX)
             )
         }
-        CardEvent::TakenOver { .. } => format!("{who} taken over by you"),
-        CardEvent::Reverted { to, .. } => format!("{who} reverted to checkpoint {to}"),
+        TaskEvent::TakenOver { .. } => format!("{who} taken over by you"),
+        TaskEvent::Rewound { to, .. } => format!("{who} rewound to checkpoint {to}"),
         _ => return None,
     })
 }
@@ -309,41 +309,38 @@ fn review_line(event: &RunEvent, review: &ReviewEvent) -> Option<String> {
             "{who}: {reviewer} reviewed (round {round}): {}",
             name(&review.verdict)
         ),
-        ReviewEvent::Adjudicated {
-            adjudicator,
-            ruling,
-        } => {
-            format!("{who}: {adjudicator} ruled {}", name(&ruling.verdict))
+        ReviewEvent::Settled { judge, ruling } => {
+            format!("{who}: {judge} ruled {}", name(&ruling.verdict))
         }
         ReviewEvent::TestsWritten {
-            reviewer, for_card, ..
-        } => format!("{reviewer} wrote acceptance tests for {for_card}"),
+            reviewer, for_task, ..
+        } => format!("{reviewer} wrote acceptance tests for {for_task}"),
     })
 }
 
-fn integration_line(integration: &IntegrationEvent) -> Option<String> {
-    Some(match integration {
-        IntegrationEvent::Merged { card, .. } => {
-            format!("{card} merged into the integration branch")
+fn merge_line(merge: &MergeEvent) -> Option<String> {
+    Some(match merge {
+        MergeEvent::Merged { task, .. } => {
+            format!("{task} merged into the run branch")
         }
-        IntegrationEvent::Conflict {
-            card,
+        MergeEvent::Conflict {
+            task,
             files,
             assigned_to,
         } => format!(
-            "{card} conflicts in {} files, assigned to {assigned_to}",
+            "{task} conflicts in {} files, assigned to {assigned_to}",
             files.len()
         ),
-        IntegrationEvent::MainMoved { commits, .. } => {
+        MergeEvent::MainMoved { commits, .. } => {
             format!("main moved {commits} commits since the run started")
         }
         _ => return None,
     })
 }
 
-fn checkpoint_line(checkpoint: &CheckpointEvent) -> Option<String> {
-    Some(match checkpoint {
-        CheckpointEvent::Opened(opened) => {
+fn approval_line(approval: &ApprovalEvent) -> Option<String> {
+    Some(match approval {
+        ApprovalEvent::Opened(opened) => {
             let waits = if opened.needs_you {
                 ", waiting for you"
             } else {
@@ -355,97 +352,127 @@ fn checkpoint_line(checkpoint: &CheckpointEvent) -> Option<String> {
                 opened.id
             )
         }
-        CheckpointEvent::Checked(check) => match (&check.verdict, check.violations.len()) {
+        ApprovalEvent::Checked(check) => match (&check.verdict, check.violations.len()) {
             (_, n) if n > 0 => format!("{}: {n} hard limits failed, so it asks you", check.id),
             (Some(verdict), _) => format!("{}: auto would {}", check.id, name(verdict)),
             (None, _) => return None,
         },
-        CheckpointEvent::Decided(decided) => format!(
+        ApprovalEvent::Decided(decided) => format!(
             "{}: {} by {}",
             decided.id,
             name(&decided.action),
             party(&decided.by)
         ),
-        CheckpointEvent::Withdrawn { id, reason } => {
+        ApprovalEvent::Withdrawn { id, reason } => {
             format!("{id} withdrawn: {}", short(reason, SHORT_MAX))
         }
-        CheckpointEvent::SpotCheckQueued { id } => format!("{id} joined your spot checks"),
+        ApprovalEvent::SpotCheckQueued { id } => format!("{id} joined your spot checks"),
     })
 }
 
-fn handoff_line(handoff: &HandoffEvent) -> Option<String> {
-    Some(match handoff {
-        HandoffEvent::Needed(plan) => format!(
+fn fallback_line(fallback: &FallbackEvent) -> Option<String> {
+    Some(match fallback {
+        FallbackEvent::Needed(plan) => format!(
             "{}: {} stopped ({}), so it needs a fallback",
-            plan.card,
+            plan.task,
             plan.stopped,
             short(&plan.reason, SHORT_MAX)
         ),
-        HandoffEvent::HandedOff { card, to, by, .. } => {
-            format!("{card} handed off to {to} by {}", party(by))
+        FallbackEvent::FellBack { task, to, by, .. } => {
+            format!("{task} fell back to {to} by {}", party(by))
         }
-        HandoffEvent::Waiting { card, vendor, .. } => format!("{card} waits for {vendor}"),
-        HandoffEvent::Packet { .. } => return None,
+        FallbackEvent::Waiting { task, agent_id, .. } => format!("{task} waits for {agent_id}"),
+        FallbackEvent::JobWaiting(wait) => format!(
+            "{}: its {} waits for {}",
+            short(&wait.title, SHORT_MAX),
+            wait.job.role.as_str(),
+            wait.stopped.agent_id()
+        ),
+        FallbackEvent::JobFreed { job, to, by } => {
+            let role = job.role.as_str();
+            match to {
+                Some(to) => format!("a waiting {role} job goes to {to} by {}", party(by)),
+                None => format!("a waiting {role} job may leave its CLI by {}", party(by)),
+            }
+        }
+        FallbackEvent::Note { .. } => return None,
     })
 }
 
-/// Outages and quota trouble. Readings that say all is well are routine.
-fn vendor_line(vendor: &VendorEvent) -> Option<String> {
-    Some(match vendor {
-        VendorEvent::Quota(reading) => {
+/// Outages and plan usage trouble. Readings that say all is well are routine.
+fn agent_status_line(agent_id: &AgentStatusEvent) -> Option<String> {
+    Some(match agent_id {
+        AgentStatusEvent::PlanUsage(reading) => {
             let used = reading
                 .used
                 .map(|used| format!(", {:.0}% used", used * 100.0))
                 .unwrap_or_default();
             match reading.status {
-                QuotaStatus::Warning => format!("{} is low on plan usage{used}", reading.vendor),
-                QuotaStatus::Rejected => format!("{} is out of plan usage{used}", reading.vendor),
-                QuotaStatus::Allowed | QuotaStatus::Unknown => return None,
+                PlanUsageStatus::Warning => {
+                    format!("{} is low on plan usage{used}", reading.agent_id)
+                }
+                PlanUsageStatus::Rejected => {
+                    format!("{} is out of plan usage{used}", reading.agent_id)
+                }
+                PlanUsageStatus::Allowed | PlanUsageStatus::Unknown => return None,
             }
         }
-        VendorEvent::Health(health) => {
+        AgentStatusEvent::Health(health) => {
             let reason = health
                 .reason
                 .as_deref()
                 .map(|reason| format!(": {}", short(reason, SHORT_MAX)))
                 .unwrap_or_default();
             match health.state {
-                HealthState::Down => format!("{} is down{reason}", health.vendor),
-                HealthState::Degraded => format!("{} is degraded{reason}", health.vendor),
-                HealthState::Testing => format!("{} gets one test task", health.vendor),
-                HealthState::Healthy => format!("{} is healthy again", health.vendor),
+                HealthState::Down => format!("{} is down{reason}", health.agent_id),
+                HealthState::Degraded => format!("{} is degraded{reason}", health.agent_id),
+                HealthState::Testing => format!("{} gets one test task", health.agent_id),
+                HealthState::Healthy => format!("{} is healthy again", health.agent_id),
             }
         }
-        VendorEvent::Disabled { vendor, reason } => format!(
-            "{vendor} is disabled for new tasks: {}",
+        AgentStatusEvent::Disabled { agent_id, reason } => format!(
+            "{agent_id} is disabled for new tasks: {}",
             short(reason, SHORT_MAX)
         ),
+        AgentStatusEvent::Model(health) => {
+            let reason = health
+                .reason
+                .as_deref()
+                .map(|reason| format!(": {}", short(reason, SHORT_MAX)))
+                .unwrap_or_default();
+            match health.state {
+                ModelState::Out => format!("{} is out{reason}", health.model),
+                ModelState::Degraded => format!("{} is degraded{reason}", health.model),
+                ModelState::Testing => format!("{} gets one test task", health.model),
+                ModelState::Healthy => format!("{} is healthy again", health.model),
+            }
+        }
     })
 }
 
-fn budget_line(budget: &BudgetEvent) -> Option<String> {
-    Some(match budget {
-        BudgetEvent::Run(run) => format!(
+fn limit_line(limit: &SpendEvent) -> Option<String> {
+    Some(match limit {
+        SpendEvent::Run(run) => format!(
             "spent so far: ${:.2}, {} tokens",
             run.spent.cost_usd,
             run.spent.total_tokens()
         ),
-        BudgetEvent::Hit {
-            card, dimension, ..
-        } => format!("{card} hit its {} limit", name(dimension)),
-        BudgetEvent::Extended { card, by, .. } => {
-            format!("{card} got more limit from {}", party(by))
+        SpendEvent::Hit {
+            task, dimension, ..
+        } => format!("{task} hit its {} limit", name(dimension)),
+        SpendEvent::Extended { task, by, .. } => {
+            format!("{task}'s limit went up, by {}", party(by))
         }
-        BudgetEvent::Deferred { cards } => {
-            format!("{} tasks wait for limit", cards.len())
+        SpendEvent::Deferred { tasks } => {
+            format!("{} tasks wait for the spend limit", tasks.len())
         }
     })
 }
 
-/// The card, else the session, else the source.
+/// The task, else the session, else the source.
 fn who(event: &RunEvent) -> String {
-    match (&event.card_id, &event.session) {
-        (Some(card), _) => card.to_string(),
+    match (&event.task_id, &event.session) {
+        (Some(task), _) => task.to_string(),
         (None, Some(session)) => session.to_string(),
         (None, None) => short(&event.source, SHORT_MAX),
     }
@@ -455,14 +482,16 @@ fn party(party: &Party) -> String {
     match party {
         Party::User | Party::Declined => "you".to_owned(),
         Party::Rules => "your rules".to_owned(),
-        Party::Approver { model } => format!("the approver {model}"),
+        Party::Judge { model } => format!("the judge {model}"),
         Party::Config => "a setting".to_owned(),
         Party::Autopilot => "autopilot".to_owned(),
-        Party::Conductor => "the conductor".to_owned(),
+        Party::ArgonautsCode => "Argonauts Code".to_owned(),
         Party::Agent { worker, .. } => worker.to_string(),
-        // The name is the client's own, so code says it's a front end: a client calling
+        // The name is the client's own, so code says it's an outside agent: a client calling
         // itself "you" must not read as you.
-        Party::FrontEnd { client } => format!("the front end \"{}\"", short(client, SHORT_MAX)),
+        Party::OutsideAgent { client } => {
+            format!("the outside agent \"{}\"", short(client, SHORT_MAX))
+        }
     }
 }
 
@@ -488,16 +517,16 @@ fn short(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::events::GateOutcome;
-    use argonauts_core::events::card::GateKind;
+    use argonauts_core::events::CheckOutcome;
     use argonauts_core::events::plan::PlanTally;
     use argonauts_core::events::run::{PhaseChange, RunStarted};
     use argonauts_core::events::session::{EndReason, SessionEvent};
-    use argonauts_core::limits::{QuotaReading, QuotaSource, VendorHealth};
-    use argonauts_core::names::{DecisionId, DraftId, VendorId};
-    use argonauts_core::settings::handoff::HandoffMode;
+    use argonauts_core::events::task::CheckKind;
+    use argonauts_core::limits::{AgentHealth, PlanUsageReading, PlanUsageSource};
+    use argonauts_core::names::{AgentId, DecisionId, DraftId};
+    use argonauts_core::settings::fallback::FallbackMode;
     use argonauts_core::settings::protocol::JudgingMethod;
-    use argonauts_core::{CardId, RunId};
+    use argonauts_core::{RunId, TaskId};
     use serde_json::json;
     use std::path::PathBuf;
     use time::OffsetDateTime;
@@ -507,7 +536,7 @@ mod tests {
             seq: 0,
             ts: OffsetDateTime::UNIX_EPOCH,
             run_id: RunId::new("run-01").unwrap(),
-            card_id: Some(CardId::numbered(1)),
+            task_id: Some(TaskId::numbered(1)),
             session: None,
             source: "claude-code".to_owned(),
             kind,
@@ -576,21 +605,21 @@ mod tests {
                 parent: None,
             }),
             event(RunEventKind::Session(SessionEvent::Ended(Box::new(
-                argonauts_testkit::worker::session_end(
+                argonauts_testkit::runner::session_end(
                     EndReason::Completed,
                     Some("SESSION-TRANSCRIPT"),
                     None,
                 ),
             )))),
-            event(RunEventKind::Gate(GateOutcome {
+            event(RunEventKind::Check(CheckOutcome {
                 name: "tests".to_owned(),
-                kind: GateKind::Command,
+                kind: CheckKind::Command,
                 passed: false,
                 command: Some(vec!["cargo".to_owned(), "test".to_owned()]),
                 exit_code: Some(101),
                 duration_ms: 10,
                 summary: "41 passed, 1 failed".to_owned(),
-                output_tail: "GATE-OUTPUT-TAIL".to_owned(),
+                output_tail: "CHECK-OUTPUT-TAIL".to_owned(),
                 violations: Vec::new(),
                 sandboxed: true,
                 skipped: false,
@@ -607,7 +636,7 @@ mod tests {
             "FINAL-RESULT",
             "END-OF-LONG-MESSAGE",
             "SESSION-TRANSCRIPT",
-            "GATE-OUTPUT-TAIL",
+            "CHECK-OUTPUT-TAIL",
             key.as_str(),
             "\u{1b}",
         ] {
@@ -685,59 +714,63 @@ mod tests {
     }
 
     #[test]
-    fn vendor_trouble_and_handoffs_are_lines_and_good_news_is_routine() {
-        let vendor = VendorId("codex".to_owned());
+    fn agent_trouble_and_fallbacks_are_lines_and_good_news_is_routine() {
+        let agent_id = AgentId("codex".to_owned());
         let health = |state| {
-            event(RunEventKind::Vendor(VendorEvent::Health(VendorHealth {
-                vendor: vendor.clone(),
-                state,
-                since: OffsetDateTime::UNIX_EPOCH,
-                reason: Some("3 errors in a row".to_owned()),
-                next_test_at: None,
-                disabled: None,
-            })))
+            event(RunEventKind::AgentStatus(AgentStatusEvent::Health(
+                AgentHealth {
+                    agent_id: agent_id.clone(),
+                    state,
+                    since: OffsetDateTime::UNIX_EPOCH,
+                    reason: Some("3 errors in a row".to_owned()),
+                    next_test_at: None,
+                    disabled: None,
+                },
+            )))
         };
         assert_eq!(
             line(&health(HealthState::Down)).as_deref(),
             Some("codex is down: 3 errors in a row")
         );
-        let quota = |status| {
-            event(RunEventKind::Vendor(VendorEvent::Quota(QuotaReading {
-                vendor: vendor.clone(),
-                status,
-                used: Some(0.92),
-                resets_at: None,
-                window: None,
-                source: QuotaSource::RateLimitEvent,
-                observed_at: OffsetDateTime::UNIX_EPOCH,
-                detail: None,
-                wrap_up: false,
-            })))
+        let plan_usage = |status| {
+            event(RunEventKind::AgentStatus(AgentStatusEvent::PlanUsage(
+                PlanUsageReading {
+                    agent_id: agent_id.clone(),
+                    status,
+                    used: Some(0.92),
+                    resets_at: None,
+                    window: None,
+                    source: PlanUsageSource::RateLimitEvent,
+                    observed_at: OffsetDateTime::UNIX_EPOCH,
+                    detail: None,
+                    wrap_up: false,
+                },
+            )))
         };
         assert_eq!(
-            line(&quota(QuotaStatus::Warning)).as_deref(),
+            line(&plan_usage(PlanUsageStatus::Warning)).as_deref(),
             Some("codex is low on plan usage, 92% used")
         );
-        assert_eq!(line(&quota(QuotaStatus::Allowed)), None);
-        let handed = event(RunEventKind::Handoff(HandoffEvent::HandedOff {
-            card: CardId::numbered(2),
+        assert_eq!(line(&plan_usage(PlanUsageStatus::Allowed)), None);
+        let handed = event(RunEventKind::Fallback(FallbackEvent::FellBack {
+            task: TaskId::numbered(2),
             to: "claude-code/haiku".parse().unwrap(),
-            mode: HandoffMode::Auto,
+            mode: FallbackMode::Auto,
             by: Party::Rules,
             context: None,
         }));
         assert_eq!(
             line(&handed).as_deref(),
-            Some("task-002 handed off to claude-code/haiku by your rules")
+            Some("task-002 fell back to claude-code/haiku by your rules")
         );
     }
 
     #[test]
-    fn a_solo_run_has_its_request_as_the_goal() {
+    fn a_captain_run_has_its_request_as_the_goal() {
         let started: RunStarted = serde_json::from_value(json!({
             "request": format!("Fix the flaky login test {}", "please ".repeat(100)),
             "title": "Fix login test",
-            "mode": "solo",
+            "mode": "captain",
             "forced": false,
             "workflow": "default",
             "repo_root": "/repo",
@@ -747,7 +780,7 @@ mod tests {
             "settings_sha256": "",
             "settings": {},
             "overrides": [],
-            "harness_versions": {},
+            "cli_versions": {},
             "version": "0.0.1",
         }))
         .unwrap();
@@ -758,17 +791,17 @@ mod tests {
     }
 
     #[test]
-    fn a_front_end_never_reads_as_you() {
+    fn a_outside_agent_never_reads_as_you() {
         for client in ["you", "your rules", "OpenClaw"] {
             let paused = event(RunEventKind::Run(RunLifecycle::PauseRequested {
-                by: Party::FrontEnd {
+                by: Party::OutsideAgent {
                     client: client.to_owned(),
                 },
                 now: false,
             }));
             assert_eq!(
                 line(&paused),
-                Some(format!("the front end \"{client}\" asked to pause"))
+                Some(format!("the outside agent \"{client}\" asked to pause"))
             );
         }
     }

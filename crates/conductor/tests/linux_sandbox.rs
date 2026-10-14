@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use argonauts_conductor::sandbox::landlock::Landlock;
 use argonauts_conductor::sandbox::{SandboxError, SandboxWrap, self_test};
 use argonauts_core::CommandSpec;
-use argonauts_core::worker::{SandboxMode, SandboxProfile};
+use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
 
 const LAUNCHER: &str = env!("CARGO_BIN_EXE_argonauts-sandbox");
 
@@ -190,7 +190,7 @@ fn writes_stay_in_the_worktree_and_denied_files_stay_unread() {
 }
 
 /// The session starts inside its worktree, which sits inside the denied `~/.argonauts`. A
-/// folder handle from before the covers went up would lead back out through `..`.
+/// folder handle from before the covers went up would reach back out through `..`.
 #[test]
 fn a_worktree_inside_a_denied_folder_cant_climb_out() {
     if expect_no_userns() {
@@ -228,7 +228,7 @@ fn a_worktree_inside_a_denied_folder_cant_climb_out() {
     );
 }
 
-/// The conductor replaces the status file by renaming a new one over it, and the session must
+/// Argonauts Code replaces the status file by renaming a new one over it, and the session must
 /// see each new one. Its raw log, beside it, stays unreadable, and its report file can be
 /// written though it wasn't there at launch.
 #[test]
@@ -299,8 +299,8 @@ fn session_files_stay_current_and_private_ones_hidden() {
     assert!(!session.join("planted").exists());
 }
 
-/// A harness's config sits inside its writable state, and stays read-only so a session can't
-/// plant a hook that runs outside any sandbox the next time you start the harness.
+/// A CLI's config sits inside its writable state, and stays read-only so a session can't
+/// plant a hook that runs outside any sandbox the next time you start the CLI.
 #[test]
 fn config_inside_writable_state_stays_read_only() {
     if expect_no_userns() {
@@ -350,7 +350,7 @@ fn config_inside_writable_state_stays_read_only() {
     assert_eq!(std::fs::read_to_string(&settings).unwrap(), "{}");
 }
 
-/// Answers each line with `proxy: <line>`, as a stand-in for the conductor's proxy.
+/// Answers each line with `proxy: <line>`, in place of Argonauts Code's proxy.
 fn echo_server(name: &'static str) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -466,7 +466,7 @@ fn http_ok_server() -> u16 {
     port
 }
 
-/// The Argonauts proxy itself, as a session's profile names it: a tunnel opens to a listed
+/// The Argonauts Code proxy itself, as a session's profile names it: a tunnel opens to a listed
 /// host, and nothing opens to an unlisted one or around the proxy.
 #[test]
 fn a_proxied_session_reaches_only_its_hosts_through_the_proxy() {
@@ -701,10 +701,10 @@ fn a_session_sees_and_signals_only_its_own_processes() {
     assert!(processes < 10, "{stdout}");
 }
 
-/// The launcher stays outside the namespace and ends the way the harness did, by its exit code
-/// or its signal, and whatever the harness left running ends with it.
+/// The launcher stays outside the namespace and ends the way the CLI did, by its exit code
+/// or its signal, and whatever the CLI left running ends with it.
 #[test]
-fn the_launcher_ends_as_the_harness_did_and_takes_its_leftovers() {
+fn the_launcher_ends_as_the_cli_did_and_takes_its_leftovers() {
     if expect_no_userns() {
         return;
     }
@@ -831,11 +831,11 @@ async fn the_self_test_fails_closed_where_user_namespaces_are_blocked() {
     );
 }
 
-/// Claude Code, Codex, and agy, played by the fake vendor CLI, each run a session in the sandbox
+/// Claude Code, Codex, and agy, played by the fake CLI, each run a session in the sandbox
 /// without network: it writes its worktree and reaches the proxy it is pointed at, nothing else.
 #[test]
-fn fake_vendor_sessions_run_in_the_sandbox() {
-    use argonauts_testkit::FakeVendors;
+fn fake_cli_sessions_run_in_the_sandbox() {
+    use argonauts_testkit::FakeClis;
     use argonauts_testkit::scenario::{FakeRule, FakeScenario, FakeStep};
 
     if expect_no_userns() {
@@ -863,14 +863,16 @@ fn fake_vendor_sessions_run_in_the_sandbox() {
     }
     let scenario_path = fakes.join("scenario.toml");
     scenario.save(&scenario_path).unwrap();
-    let vendors = FakeVendors::install(&fakes, &scenario_path).unwrap();
+    let agent_ids = FakeClis::install(&fakes, &scenario_path).unwrap();
     let profile = profile(&[&worktree, &fakes], &[&worktree], &[&state], false);
 
     for program in ["claude", "codex", "agy"] {
-        let mut command =
-            CommandSpec::new(vendors.bin_dir().join(program).to_string_lossy(), &worktree)
-                .args(["-p", "hello"]);
-        for (name, value) in vendors.envs() {
+        let mut command = CommandSpec::new(
+            agent_ids.bin_dir().join(program).to_string_lossy(),
+            &worktree,
+        )
+        .args(["-p", "hello"]);
+        for (name, value) in agent_ids.envs() {
             command
                 .env_set
                 .push((name, value.to_string_lossy().into_owned()));
@@ -897,7 +899,7 @@ fn fake_vendor_sessions_run_in_the_sandbox() {
             "written in the sandbox\n"
         );
     }
-    let invocations = vendors.invocations().unwrap();
+    let invocations = agent_ids.invocations().unwrap();
     assert_eq!(invocations.len(), 3);
     for invocation in &invocations {
         assert!(invocation.env.iter().any(|name| name == "HTTPS_PROXY"));

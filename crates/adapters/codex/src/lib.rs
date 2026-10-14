@@ -1,4 +1,4 @@
-//! Codex adapter for Argonauts.
+//! Codex adapter for Argonauts Code.
 
 mod adapter;
 mod classify;

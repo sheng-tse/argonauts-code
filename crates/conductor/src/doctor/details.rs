@@ -1,19 +1,19 @@
 //! What `argonauts doctor` reports beyond versions, kept apart from the frozen `DoctorReport`
-//! so its readers keep compiling: per harness the login state, flag probes, effective
+//! so its readers keep compiling: per CLI the login state, flag probes, effective
 //! compaction and fan-out per role, the user-hooks effect, whether the status tool works per
-//! run, and the quota probe; then the sandbox self-test and any always-on agents. It never makes
-//! a model call.
+//! run, and the plan usage probe; then the sandbox self-test and any always-on agents. It never
+//! makes a model call.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use argonauts_core::adapter::Transport;
-use argonauts_core::limits::QuotaReading;
+use argonauts_core::limits::PlanUsageReading;
+use argonauts_core::session_runner::SandboxMode;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::agents::AgentSettings;
 use argonauts_core::settings::approvals::UserHooks;
-use argonauts_core::worker::SandboxMode;
 use argonauts_core::{Adapter, AuthMode, TweakEffect};
 use serde::Serialize;
 
@@ -22,8 +22,8 @@ use super::command::ask;
 use super::roles::{RoleCheck, role_checks};
 use super::versions::{FlagProbe, VersionFit, probe_flags, tested_range_label, version_fit};
 use super::{VERSION_TIMEOUT, read_version, resolve_binary};
-use crate::harness_worker::capabilities::ANTIGRAVITY;
-use crate::quota::{PROBE_TIMEOUT, Prober, run_probe};
+use crate::cli_runner::capabilities::ANTIGRAVITY;
+use crate::plan_usage::{PROBE_TIMEOUT, Prober, run_probe};
 use crate::sandbox;
 use crate::sandbox::policy::user_hooks;
 use crate::sandbox::selftest::self_test_once;
@@ -37,7 +37,7 @@ pub const AGY_RUN_PROJECT: &str =
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DoctorDetails {
-    pub harnesses: Vec<HarnessDetails>,
+    pub clis: Vec<CliDetails>,
     pub sandbox: SandboxCheck,
     pub always_on: Vec<AlwaysOnAgent>,
     /// Each shown after a `!`, such as a long-lived role whose compaction is off.
@@ -45,7 +45,7 @@ pub struct DoctorDetails {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct HarnessDetails {
+pub struct CliDetails {
     pub id: String,
     /// The binary doctor ran: `agents.<id>.binary` when set, else the adapter's on `PATH`.
     pub binary: Option<PathBuf>,
@@ -71,10 +71,10 @@ pub struct HarnessDetails {
     pub status_tool_per_run: bool,
     /// [`STATUS_TOOL_PER_RUN`] or [`STATUS_TOOL_NOT_PER_RUN`].
     pub status_tool: String,
-    /// How the harness keeps runs apart, where Argonauts passes it a project: [`AGY_RUN_PROJECT`].
+    /// How the CLI keeps runs apart, where Argonauts Code passes it a project: [`AGY_RUN_PROJECT`].
     pub project: Option<String>,
     /// Codex: whether `codex app-server` answered the rate-limit read, and why not.
-    pub quota_probe: Option<ProbeCheck>,
+    pub plan_usage_probe: Option<ProbeCheck>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -91,11 +91,10 @@ pub struct SandboxCheck {
 }
 
 pub async fn doctor_details(adapters: &[Arc<dyn Adapter>], settings: &Settings) -> DoctorDetails {
-    let harnesses =
-        futures::future::join_all(adapters.iter().map(|a| harness_details(a, settings)));
+    let clis = futures::future::join_all(adapters.iter().map(|a| cli_details(a, settings)));
     let wrap = sandbox::for_settings(&settings.sandbox);
-    let (harnesses, test, always_on) =
-        tokio::join!(harnesses, self_test_once(wrap.as_ref()), always_on_agents());
+    let (clis, test, always_on) =
+        tokio::join!(clis, self_test_once(wrap.as_ref()), always_on_agents());
     let sandbox = SandboxCheck {
         ok: test.ok,
         detail: test.detail,
@@ -103,9 +102,9 @@ pub async fn doctor_details(adapters: &[Arc<dyn Adapter>], settings: &Settings) 
     };
 
     let mut warnings = Vec::new();
-    let mut checked = Vec::with_capacity(harnesses.len());
-    for (details, harness_warnings) in harnesses {
-        warnings.extend(harness_warnings);
+    let mut checked = Vec::with_capacity(clis.len());
+    for (details, cli_warnings) in clis {
+        warnings.extend(cli_warnings);
         checked.push(details);
     }
     if !sandbox.ok {
@@ -125,31 +124,28 @@ pub async fn doctor_details(adapters: &[Arc<dyn Adapter>], settings: &Settings) 
     if !always_on.is_empty() {
         let names: Vec<&str> = always_on.iter().map(|a| a.name.as_str()).collect();
         warnings.push(format!(
-            "Always-on agents are running: {}. They run as you, outside Argonauts' sandbox, and \
+            "Always-on agents are running: {}. They run as you, outside Argonauts Code's sandbox, and \
              could reach your approval commands. Run them as another OS user or on another \
              machine.",
             names.join(", ")
         ));
     }
     DoctorDetails {
-        harnesses: checked,
+        clis: checked,
         sandbox,
         always_on,
         warnings,
     }
 }
 
-/// One harness's details, and the warnings they raise.
-async fn harness_details(
-    adapter: &Arc<dyn Adapter>,
-    settings: &Settings,
-) -> (HarnessDetails, Vec<String>) {
+/// One CLI's details, and the warnings they raise.
+async fn cli_details(adapter: &Arc<dyn Adapter>, settings: &Settings) -> (CliDetails, Vec<String>) {
     let id = adapter.id();
     let agent = settings.agents.get(id);
     let status_tool_per_run = id == "claude-code" || adapter.transport() == Transport::Acp;
     let roles = role_checks(adapter.as_ref(), settings);
     let mut warnings: Vec<String> = roles.iter().filter_map(|r| r.warning.clone()).collect();
-    let mut details = HarnessDetails {
+    let mut details = CliDetails {
         id: id.to_owned(),
         binary: None,
         problem: None,
@@ -171,13 +167,13 @@ async fn harness_details(
         }
         .to_owned(),
         project: (id == ANTIGRAVITY).then(|| AGY_RUN_PROJECT.to_owned()),
-        quota_probe: None,
+        plan_usage_probe: None,
     };
     let path = match resolve_binary(adapter.as_ref(), agent.and_then(|a| a.binary.as_deref())) {
         Ok(path) => path,
         Err(problem) => {
             if id == "codex" {
-                details.quota_probe = Some(ProbeCheck {
+                details.plan_usage_probe = Some(ProbeCheck {
                     ok: false,
                     detail: problem.clone(),
                 });
@@ -211,7 +207,7 @@ async fn harness_details(
     }
     if !flags.missing.is_empty() {
         warnings.push(format!(
-            "{id} --help lacks flags Argonauts passes: {}. Update {id}, or expect its sessions \
+            "{id} --help lacks flags Argonauts Code passes: {}. Update {id}, or expect its sessions \
              to fail.",
             flags.missing.join(", ")
         ));
@@ -228,7 +224,7 @@ async fn harness_details(
     details.logged_in = logged_in;
     details.login_detail = login_detail;
     if id == "codex" && agent.is_none_or(|a| a.enabled) {
-        details.quota_probe = Some(codex_quota_probe(adapter, &path).await);
+        details.plan_usage_probe = Some(codex_plan_usage_probe(adapter, &path).await);
     }
     details.binary = Some(path);
     (details, warnings)
@@ -260,9 +256,9 @@ async fn login_state(
 }
 
 /// Codex's rate-limit read over `codex app-server`, which spends nothing.
-async fn codex_quota_probe(adapter: &Arc<dyn Adapter>, binary: &Path) -> ProbeCheck {
+async fn codex_plan_usage_probe(adapter: &Arc<dyn Adapter>, binary: &Path) -> ProbeCheck {
     let workdir = std::env::temp_dir();
-    if adapter.quota_probe(&workdir, None).is_none() {
+    if adapter.plan_usage_probe(&workdir, None).is_none() {
         return ProbeCheck {
             ok: false,
             detail: "this Codex adapter has no plan usage probe".to_owned(),
@@ -290,7 +286,7 @@ async fn codex_quota_probe(adapter: &Arc<dyn Adapter>, binary: &Path) -> ProbeCh
     }
 }
 
-fn describe(reading: &QuotaReading) -> String {
+fn describe(reading: &PlanUsageReading) -> String {
     let status = serde_json::to_value(reading.status)
         .ok()
         .and_then(|value| value.as_str().map(|s| s.replace('_', " ")))
@@ -309,11 +305,11 @@ fn effect_note(effect: &TweakEffect) -> Option<String> {
         TweakEffect::Exact => None,
         TweakEffect::Approximated { note } => Some(format!("approximated: {note}")),
         TweakEffect::NotPossible { note } => Some(format!("not possible: {note}")),
-        TweakEffect::EnforcedByConductor => Some("enforced by Argonauts".to_owned()),
+        TweakEffect::EnforcedByConductor => Some("enforced by Argonauts Code".to_owned()),
     }
 }
 
-impl fmt::Display for HarnessDetails {
+impl fmt::Display for CliDetails {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.binary {
             Some(binary) => writeln!(f, "{}  {}", self.id, binary.display())?,
@@ -358,11 +354,11 @@ impl fmt::Display for HarnessDetails {
         }
         let hooks = match (self.user_hooks_setting, effect_note(&self.user_hooks)) {
             (UserHooks::Inherit, _) => "your hooks run".to_owned(),
-            (UserHooks::Disable, None) => "off for Argonauts sessions".to_owned(),
+            (UserHooks::Disable, None) => "off for Argonauts Code sessions".to_owned(),
             (UserHooks::Disable, Some(note)) => format!("still run, off is {note}"),
         };
         writeln!(f, "  user hooks   {hooks}")?;
-        if let Some(probe) = &self.quota_probe {
+        if let Some(probe) = &self.plan_usage_probe {
             let mark = if probe.ok { "ok" } else { "failed" };
             writeln!(f, "  plan usage probe  {mark}, {}", probe.detail)?;
         }
@@ -395,8 +391,8 @@ impl fmt::Display for HarnessDetails {
 
 impl fmt::Display for DoctorDetails {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for harness in &self.harnesses {
-            write!(f, "{harness}")?;
+        for cli in &self.clis {
+            write!(f, "{cli}")?;
         }
         let verdict = if self.sandbox.ok { "ok" } else { "failed" };
         writeln!(f, "sandbox  {verdict}, {}", self.sandbox.detail)?;
@@ -417,21 +413,21 @@ impl fmt::Display for DoctorDetails {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doctor::tests::FakeHarness;
-    use argonauts_core::names::{RoleName, WorkerRef};
+    use crate::doctor::tests::FakeCli;
+    use argonauts_core::names::{ModelRef, RoleName};
     use argonauts_core::settings::roles::RoleSettings;
     use argonauts_core::settings::sessions::{Compaction, SessionLifetime};
 
     #[tokio::test]
     async fn agy_status_tool_unavailable_reported() {
         let adapters: Vec<Arc<dyn Adapter>> = vec![
-            Arc::new(FakeHarness::named("antigravity-cli")),
-            Arc::new(FakeHarness::named("claude-code")),
-            Arc::new(FakeHarness::named("some-acp-agent").acp()),
+            Arc::new(FakeCli::named("antigravity-cli")),
+            Arc::new(FakeCli::named("claude-code")),
+            Arc::new(FakeCli::named("some-acp-agent").acp()),
         ];
         let details = doctor_details(&adapters, &Settings::default()).await;
         let status: Vec<(&str, &str)> = details
-            .harnesses
+            .clis
             .iter()
             .map(|h| (h.id.as_str(), h.status_tool.as_str()))
             .collect();
@@ -443,12 +439,9 @@ mod tests {
                 ("some-acp-agent", "status tool: per run"),
             ]
         );
-        assert!(!details.harnesses[0].status_tool_per_run);
-        let projects: Vec<Option<&str>> = details
-            .harnesses
-            .iter()
-            .map(|h| h.project.as_deref())
-            .collect();
+        assert!(!details.clis[0].status_tool_per_run);
+        let projects: Vec<Option<&str>> =
+            details.clis.iter().map(|h| h.project.as_deref()).collect();
         assert_eq!(projects, [Some(AGY_RUN_PROJECT), None, None]);
         let text = details.to_string();
         assert!(text.contains("antigravity-cli  not found\n"), "{text}");
@@ -463,20 +456,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn details_for_an_installed_harness() {
+    async fn details_for_an_installed_cli() {
         let dir = tempfile::tempdir().unwrap();
         let script = r#"case "$*" in
   --version) echo "codex-cli 0.158.2" ;;
   "login status") echo "Logged in"; exit 0 ;;
   *) echo "  --json  --model  --sandbox" ;;
 esac"#;
-        let codex = FakeHarness::script("codex", dir.path(), script, &["0.158.0"])
+        let codex = FakeCli::script("codex", dir.path(), script, &["0.158.0"])
             .with_login_check(&["login", "status"]);
         let mut settings = Settings::default();
         settings.roles.insert(
             RoleName::Consultant,
             RoleSettings {
-                workers: vec![WorkerRef::new("codex", None)],
+                models: vec![ModelRef::new("codex", None)],
                 lifetime: Some(SessionLifetime::Project),
                 compaction: Some(Compaction::Off),
                 ..RoleSettings::default()
@@ -484,7 +477,7 @@ esac"#;
         );
         let adapters: Vec<Arc<dyn Adapter>> = vec![Arc::new(codex)];
         let details = doctor_details(&adapters, &settings).await;
-        let codex = &details.harnesses[0];
+        let codex = &details.clis[0];
         assert_eq!(codex.version.as_deref(), Some("0.158.2"));
         assert_eq!(codex.in_tested_range, Some(true));
         assert_eq!(codex.logged_in, Some(true));
@@ -498,7 +491,7 @@ esac"#;
             "{:?}",
             details.warnings
         );
-        let probe = codex.quota_probe.as_ref().unwrap();
+        let probe = codex.plan_usage_probe.as_ref().unwrap();
         assert!(!probe.ok);
         assert_eq!(probe.detail, "this Codex adapter has no plan usage probe");
         // The fake's default compaction can't turn off, so the consultant isn't warned about.
@@ -524,7 +517,7 @@ esac"#;
 esac"#,
             asked.display()
         );
-        let codex = FakeHarness::script("codex", dir.path(), &script, &["0.158.0"])
+        let codex = FakeCli::script("codex", dir.path(), &script, &["0.158.0"])
             .with_login_check(&["login", "status"]);
         let mut settings = Settings::default();
         settings.agents.insert(
@@ -536,14 +529,14 @@ esac"#,
         );
         let adapters: Vec<Arc<dyn Adapter>> = vec![Arc::new(codex)];
         let details = doctor_details(&adapters, &settings).await;
-        let codex = &details.harnesses[0];
+        let codex = &details.clis[0];
         assert_eq!(codex.version.as_deref(), Some("0.158.2"));
         assert_eq!(codex.logged_in, None);
         assert_eq!(
             codex.login_detail.as_deref(),
             Some("off, so its login isn't checked")
         );
-        assert!(codex.quota_probe.is_none());
+        assert!(codex.plan_usage_probe.is_none());
         assert!(!asked.exists());
 
         let report = crate::doctor::doctor(&adapters, &settings).await;
@@ -553,7 +546,7 @@ esac"#,
 
     #[tokio::test]
     async fn doctor_warns_about_long_lived_roles_without_compaction() {
-        let claude = FakeHarness::named("claude-code").with_compaction(|_| Default::default());
+        let claude = FakeCli::named("claude-code").with_compaction(|_| Default::default());
         let mut settings = Settings::default();
         settings.roles.insert(
             RoleName::Consultant,

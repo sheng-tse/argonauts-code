@@ -3,31 +3,31 @@
 
 use std::cmp::Ordering;
 
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
+use argonauts_core::session_runner::RunnerEvent;
 use argonauts_core::settings::Settings;
-use argonauts_core::worker::WorkerEvent;
-use argonauts_core::{AgentEvent, BudgetLimit, BudgetMeter, Spend, TokenPrice, builtin_price};
+use argonauts_core::{AgentEvent, MeterLimit, Spend, SpendMeter, TokenPrice, builtin_price};
 
 pub struct CallTally {
-    meter: BudgetMeter,
+    meter: SpendMeter,
 }
 
 impl CallTally {
     /// `price` estimates dollars for usage that comes without a cost.
     pub fn new(price: Option<TokenPrice>) -> Self {
         Self {
-            meter: BudgetMeter::new(BudgetLimit::None, 1.0).with_price(price),
+            meter: SpendMeter::new(MeterLimit::None, 1.0).with_price(price),
         }
     }
 
-    pub fn observe(&mut self, event: &WorkerEvent) {
+    pub fn observe(&mut self, event: &RunnerEvent) {
         match event {
-            WorkerEvent::Agent(usage @ AgentEvent::Usage { .. }) => {
+            RunnerEvent::Agent(usage @ AgentEvent::Usage { .. }) => {
                 self.meter.observe(usage);
             }
             // A schema retry is another session whose cumulative totals start over. Counting a
             // resumed conversation twice overstates the spend, which is the safe side for a cap.
-            WorkerEvent::Agent(AgentEvent::Result { .. }) => self.meter.start_new_session(),
+            RunnerEvent::Agent(AgentEvent::Result { .. }) => self.meter.start_new_session(),
             _ => {}
         }
     }
@@ -39,8 +39,8 @@ impl CallTally {
 
 /// The narrator model's price: the one configured for its agent, else the built-in one for its
 /// model, else nothing for a local endpoint, which costs no dollars.
-pub fn price_of(settings: &Settings, model: &WorkerRef) -> Option<TokenPrice> {
-    let agent = settings.agents.get(&model.worker);
+pub fn price_of(settings: &Settings, model: &ModelRef) -> Option<TokenPrice> {
+    let agent = settings.agents.get(&model.agent);
     let model_id = model
         .model
         .as_deref()
@@ -51,7 +51,7 @@ pub fn price_of(settings: &Settings, model: &WorkerRef) -> Option<TokenPrice> {
         .or_else(|| {
             settings
                 .endpoints
-                .get(&model.worker)
+                .get(&model.agent)
                 .filter(|endpoint| endpoint.local)
                 .map(|_| TokenPrice {
                     input_per_mtok: 0.0,
@@ -92,8 +92,8 @@ pub fn is_nothing(spend: &Spend) -> bool {
 mod tests {
     use super::*;
 
-    fn usage(input: u64, output: u64, cost: Option<f64>, cumulative: bool) -> WorkerEvent {
-        WorkerEvent::Agent(AgentEvent::Usage {
+    fn usage(input: u64, output: u64, cost: Option<f64>, cumulative: bool) -> RunnerEvent {
+        RunnerEvent::Agent(AgentEvent::Usage {
             input_tokens: input,
             output_tokens: output,
             cached_tokens: 0,
@@ -102,8 +102,8 @@ mod tests {
         })
     }
 
-    fn result() -> WorkerEvent {
-        WorkerEvent::Agent(AgentEvent::Result {
+    fn result() -> RunnerEvent {
+        RunnerEvent::Agent(AgentEvent::Result {
             text: None,
             structured: None,
             is_error: false,
@@ -152,11 +152,11 @@ mod tests {
     #[test]
     fn prices_come_from_settings_then_the_table_then_local_endpoints() {
         let mut settings = Settings::default();
-        let haiku: WorkerRef = "claude-code/haiku".parse().unwrap();
+        let haiku: ModelRef = "claude-code/haiku".parse().unwrap();
         assert!(price_of(&settings, &haiku).is_some());
-        let unknown: WorkerRef = "openrouter/some-model".parse().unwrap();
+        let unknown: ModelRef = "openrouter/some-model".parse().unwrap();
         assert_eq!(price_of(&settings, &unknown), None);
-        let local: WorkerRef = "ollama/llama3.2".parse().unwrap();
+        let local: ModelRef = "ollama/llama3.2".parse().unwrap();
         settings
             .endpoints
             .entry("ollama".to_owned())

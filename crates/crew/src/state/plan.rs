@@ -1,8 +1,8 @@
-//! Planning: sealed drafts, maps, critiques, spikes, scores, the judged result, decision
-//! records, and a coordinator's plan.
+//! Planning: sealed drafts, maps, critiques, experiments, scores, the judged result, decision
+//! records, and an orchestrator's plan.
 //!
 //! A planning round ends once it's settled: judged, merged on the fast path, or the
-//! coordinator's plan accepted. A draft or a coordinator answer that arrives after that can only
+//! orchestrator's plan accepted. A draft or an orchestrator answer that arrives after that can only
 //! come from a plan you sent back, so it starts the next planning round. The earlier rounds stay
 //! as history, and every query here reads only the current one.
 
@@ -10,16 +10,16 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::RunEvent;
-use argonauts_core::events::checkpoint::{AnswerAction, CheckpointKind};
+use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
 use argonauts_core::events::plan::{DesignDecision, JudgingResult, MappedTopic, PlanEvent};
-use argonauts_core::names::{DraftId, PlanLabel, SessionKey, WorkerRef};
-use argonauts_core::steps::plan::{CritiquePoint, SpikeProposal, SpikeReport};
+use argonauts_core::names::{DraftId, ModelRef, PlanLabel, SessionKey};
+use argonauts_core::steps::plan::{CritiquePoint, ExperimentProposal, ExperimentReport};
 
 use super::RunState;
 
-/// The label of the plan merged on the fast path. Judges and the mapper never see it, since
+/// The label of the plan merged on the fast path. Judges and the mapping agent never see it, since
 /// they only see labels 1 to N.
 pub const MERGED_LABEL: PlanLabel = 0;
 
@@ -28,19 +28,19 @@ pub struct PlanState {
     pub drafts: Vec<SealedDraft>,
     pub maps: Vec<MapRecord>,
     pub critiques: Vec<CritiqueRecord>,
-    pub spikes: Vec<SpikeRecord>,
-    pub spike_reports: Vec<SpikeResult>,
+    pub experiments: Vec<ExperimentRecord>,
+    pub experiment_reports: Vec<ExperimentResult>,
     pub scores: Vec<ScoreRecord>,
-    pub fast_path: Option<WorkerRef>,
+    pub fast_path: Option<ModelRef>,
     pub judged: Option<JudgingResult>,
     pub decisions: Vec<DesignDecision>,
-    pub coordinated: Vec<CoordinatedRecord>,
+    pub orchestrated: Vec<OrchestratedRecord>,
     /// The first draft round of the current planning round.
     #[serde(default)]
     pub first_round: u8,
-    /// Where the current planning round's records start in `coordinated`.
+    /// Where the current planning round's records start in `orchestrated`.
     #[serde(default)]
-    pub coordinated_from: usize,
+    pub orchestrated_from: usize,
     /// The seq of the event that settled the current planning round.
     #[serde(default)]
     pub settled_at: Option<u64>,
@@ -50,25 +50,25 @@ pub struct PlanState {
 pub struct SealedDraft {
     pub draft: DraftId,
     pub label: PlanLabel,
-    pub worker: WorkerRef,
+    pub worker: ModelRef,
     pub round: u8,
     pub summary: String,
     pub path: PathBuf,
     pub sha256: String,
-    /// The drafter's session, which it resumes to revise.
+    /// The drafting agent's session, which it resumes to revise.
     pub session: Option<SessionKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MapRecord {
     pub round: u8,
-    pub worker: WorkerRef,
+    pub worker: ModelRef,
     pub topics: Vec<MappedTopic>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CritiqueRecord {
-    pub critic: WorkerRef,
+    pub critic: ModelRef,
     pub designated: bool,
     pub points: Vec<CritiquePoint>,
     /// The draft round it critiqued.
@@ -76,21 +76,21 @@ pub struct CritiqueRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SpikeRecord {
-    pub proposal: SpikeProposal,
-    pub fits_budget: bool,
+pub struct ExperimentRecord {
+    pub proposal: ExperimentProposal,
+    pub fits_limit: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SpikeResult {
-    pub card: CardId,
-    pub report: SpikeReport,
+pub struct ExperimentResult {
+    pub task: TaskId,
+    pub report: ExperimentReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScoreRecord {
-    pub judge: WorkerRef,
-    pub judge_family: String,
+    pub judge: ModelRef,
+    pub judge_provider: String,
     pub plan: PlanLabel,
     pub order: u8,
     pub scores: Vec<f64>,
@@ -98,16 +98,16 @@ pub struct ScoreRecord {
     pub flagged: bool,
     /// The draft round it scored.
     pub round: u8,
-    /// The judge's session, which says whose seat a stand-in judged in.
+    /// The judge's session, which says in whose place a fallback judged.
     #[serde(default)]
     pub session: Option<SessionKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CoordinatedRecord {
-    pub coordinator: WorkerRef,
+pub struct OrchestratedRecord {
+    pub orchestrator: ModelRef,
     pub rejection: Option<String>,
-    /// The coordinator's run-lifetime session.
+    /// The orchestrator's run-lifetime session.
     pub session: Option<SessionKey>,
     /// The seq of its event, which tells answers given before a send-back from the ones after.
     #[serde(default)]
@@ -118,7 +118,7 @@ impl PlanState {
     pub fn apply(&mut self, event: &PlanEvent, envelope: &RunEvent) {
         let replans = match event {
             PlanEvent::Sealed { label, .. } => *label != MERGED_LABEL,
-            PlanEvent::Coordinated { .. } => true,
+            PlanEvent::Orchestrated { .. } => true,
             _ => false,
         };
         if replans && self.settled_at.is_some() {
@@ -175,20 +175,22 @@ impl PlanState {
                 points: points.clone(),
                 round,
             }),
-            PlanEvent::SpikeProposed {
+            PlanEvent::ExperimentProposed {
                 proposal,
-                fits_budget,
-            } => self.spikes.push(SpikeRecord {
+                fits_limit,
+            } => self.experiments.push(ExperimentRecord {
                 proposal: proposal.clone(),
-                fits_budget: *fits_budget,
+                fits_limit: *fits_limit,
             }),
-            PlanEvent::SpikeFinished { card, report } => self.spike_reports.push(SpikeResult {
-                card: card.clone(),
-                report: report.clone(),
-            }),
+            PlanEvent::ExperimentFinished { task, report } => {
+                self.experiment_reports.push(ExperimentResult {
+                    task: task.clone(),
+                    report: report.clone(),
+                })
+            }
             PlanEvent::Scored {
                 judge,
-                judge_family,
+                judge_provider,
                 plan,
                 order,
                 scores,
@@ -196,7 +198,7 @@ impl PlanState {
                 flagged,
             } => self.scores.push(ScoreRecord {
                 judge: judge.clone(),
-                judge_family: judge_family.clone(),
+                judge_provider: judge_provider.clone(),
                 plan: *plan,
                 order: *order,
                 scores: scores.clone(),
@@ -213,15 +215,15 @@ impl PlanState {
                 self.decisions.retain(|known| known.id != decision.id);
                 self.decisions.push(decision.clone());
             }
-            PlanEvent::Coordinated {
-                coordinator,
+            PlanEvent::Orchestrated {
+                orchestrator,
                 rejection,
             } => {
                 if rejection.is_none() {
                     self.settled_at = Some(envelope.seq);
                 }
-                self.coordinated.push(CoordinatedRecord {
-                    coordinator: coordinator.clone(),
+                self.orchestrated.push(OrchestratedRecord {
+                    orchestrator: orchestrator.clone(),
                     rejection: rejection.clone(),
                     session: envelope.session.clone(),
                     seq: envelope.seq,
@@ -236,7 +238,7 @@ impl PlanState {
         self.first_round = self.current_round().saturating_add(1);
         self.judged = None;
         self.fast_path = None;
-        self.coordinated_from = self.coordinated.len();
+        self.orchestrated_from = self.orchestrated.len();
         self.settled_at = None;
     }
 
@@ -262,10 +264,10 @@ impl PlanState {
             .find(|draft| draft.label == MERGED_LABEL && self.in_this_round(draft.round))
     }
 
-    /// This planning round's coordinator records.
-    pub fn coordinated_now(&self) -> &[CoordinatedRecord] {
-        self.coordinated
-            .get(self.coordinated_from..)
+    /// This planning round's orchestrator records.
+    pub fn orchestrated_now(&self) -> &[OrchestratedRecord] {
+        self.orchestrated
+            .get(self.orchestrated_from..)
             .unwrap_or_default()
     }
 
@@ -283,7 +285,7 @@ impl PlanState {
         if self.fast_path.is_some() {
             return self.merged().or_else(|| self.only());
         }
-        if self.coordinated_plan_chosen() {
+        if self.orchestrated_plan_chosen() {
             return self
                 .drafts
                 .iter()
@@ -293,9 +295,9 @@ impl PlanState {
         None
     }
 
-    /// Whether the chosen draft is the coordinator's, which comes with its cards and assignments.
-    pub fn coordinated_plan_chosen(&self) -> bool {
-        self.judged.is_none() && self.fast_path.is_none() && self.coordinator_accepted()
+    /// Whether the chosen draft is the orchestrator's, which comes with its tasks and assignments.
+    pub fn orchestrated_plan_chosen(&self) -> bool {
+        self.judged.is_none() && self.fast_path.is_none() && self.orchestrator_accepted()
     }
 
     /// The newest draft of each label in this planning round, merged plans left out, by label.
@@ -347,7 +349,7 @@ impl PlanState {
             .unwrap_or_default()
     }
 
-    /// Topics of the newest map with a quote code couldn't find, for the plan checkpoint.
+    /// Topics of the newest map with a quote code couldn't find, for the plan approval.
     pub fn unverified_topics(&self) -> Vec<String> {
         self.latest_map()
             .map(|map| {
@@ -373,17 +375,17 @@ impl PlanState {
         labels
     }
 
-    /// Every spike that fit its budget has a report on its topic.
+    /// Every experiment that fit its limit has a report on its topic.
     pub fn disputes_settled(&self) -> bool {
-        self.spikes
+        self.experiments
             .iter()
-            .filter(|spike| spike.fits_budget)
-            .all(|spike| {
-                self.spike_reports.iter().any(|result| {
+            .filter(|experiment| experiment.fits_limit)
+            .all(|experiment| {
+                self.experiment_reports.iter().any(|result| {
                     result
                         .report
                         .topic
-                        .eq_ignore_ascii_case(&spike.proposal.topic)
+                        .eq_ignore_ascii_case(&experiment.proposal.topic)
                 })
             })
     }
@@ -407,25 +409,25 @@ impl PlanState {
         rounds.len() as u32
     }
 
-    pub fn coordinator_accepted(&self) -> bool {
-        self.coordinated_now()
+    pub fn orchestrator_accepted(&self) -> bool {
+        self.orchestrated_now()
             .iter()
             .any(|record| record.rejection.is_none())
     }
 
-    pub fn coordinator_rejections(&self) -> Vec<&str> {
-        self.coordinated_now()
+    pub fn orchestrator_rejections(&self) -> Vec<&str> {
+        self.orchestrated_now()
             .iter()
             .filter_map(|record| record.rejection.as_deref())
             .collect()
     }
 }
 
-/// Your note, when you sent the settled plan back at the plan checkpoint and no new planning
+/// Your note, when you sent the settled plan back at the plan approval and no new planning
 /// round has started yet. Empty when you gave none.
 pub fn sent_back(state: &RunState) -> Option<String> {
     let settled_at = state.plan.settled_at?;
-    let record = state.checkpoints.last_decided(CheckpointKind::Plan, None)?;
+    let record = state.approvals.last_decided(ApprovalKind::Plan, None)?;
     let decided = record.decided.as_ref()?;
     (record.since > settled_at && decided.action == AnswerAction::SendBack)
         .then(|| decided.text.clone().unwrap_or_default())
@@ -434,10 +436,10 @@ pub fn sent_back(state: &RunState) -> Option<String> {
 /// Your note from the newest plan you sent back, for every step that re-plans after it.
 pub fn replan_note(state: &RunState) -> Option<String> {
     state
-        .checkpoints
+        .approvals
         .by_id
         .values()
-        .filter(|record| record.opened.kind == CheckpointKind::Plan && record.withdrawn.is_none())
+        .filter(|record| record.opened.kind == ApprovalKind::Plan && record.withdrawn.is_none())
         .filter_map(|record| {
             let decided = record.decided.as_ref()?;
             (decided.action == AnswerAction::SendBack).then_some((record.since, decided))
@@ -451,7 +453,7 @@ mod tests {
     use argonauts_core::events::RunEventKind;
     use argonauts_core::events::plan::MappedPosition;
     use argonauts_core::settings::protocol::JudgingMethod;
-    use argonauts_core::{CardId, RunId};
+    use argonauts_core::{RunId, TaskId};
     use time::OffsetDateTime;
 
     use super::*;
@@ -461,9 +463,9 @@ mod tests {
             seq,
             ts: OffsetDateTime::UNIX_EPOCH,
             run_id: RunId::new("run-01").unwrap(),
-            card_id: None::<CardId>,
+            task_id: None::<TaskId>,
             session: session.map(|s| SessionKey::parse(s).unwrap()),
-            source: "conductor".to_owned(),
+            source: "argonauts-code".to_owned(),
             kind: RunEventKind::Plan(event),
         }
     }
@@ -562,7 +564,7 @@ mod tests {
             sealed(3, 1, "claude-code", 2),
             PlanEvent::Scored {
                 judge: "codex".parse().unwrap(),
-                judge_family: "gpt".to_owned(),
+                judge_provider: "openai".to_owned(),
                 plan: 1,
                 order: 0,
                 scores: vec![7.0; 5],
@@ -605,26 +607,26 @@ mod tests {
     }
 
     #[test]
-    fn an_accepted_coordinator_plan_is_chosen() {
+    fn an_accepted_orchestrator_plan_is_chosen() {
         let state = fold(vec![
-            PlanEvent::Coordinated {
-                coordinator: "claude-code".parse().unwrap(),
+            PlanEvent::Orchestrated {
+                orchestrator: "claude-code".parse().unwrap(),
                 rejection: Some("task api owns a protected path".to_owned()),
             },
             sealed(1, 1, "claude-code", 1),
-            PlanEvent::Coordinated {
-                coordinator: "claude-code".parse().unwrap(),
+            PlanEvent::Orchestrated {
+                orchestrator: "claude-code".parse().unwrap(),
                 rejection: None,
             },
         ]);
-        assert_eq!(state.coordinator_rejections().len(), 1);
+        assert_eq!(state.orchestrator_rejections().len(), 1);
         assert_eq!(state.chosen().unwrap().draft, DraftId::numbered(1));
-        assert!(state.coordinated_plan_chosen());
+        assert!(state.orchestrated_plan_chosen());
         assert_eq!(
-            state.coordinated[0].session,
+            state.orchestrated[0].session,
             Some(SessionKey::parse("s-001").unwrap())
         );
-        assert_eq!(state.coordinated[1].seq, 2);
+        assert_eq!(state.orchestrated[1].seq, 2);
     }
 
     #[test]
@@ -644,7 +646,7 @@ mod tests {
         assert_eq!(first.blind_round(true), 2);
         assert!(first.settled_at.is_some());
 
-        // Your send back: every drafter drafts again in round 2.
+        // Your send back: every drafting agent drafts again in round 2.
         events.push(sealed(3, 2, "codex", 2));
         let replanning = fold(events.clone());
         assert_eq!(replanning.judged, None);
@@ -662,19 +664,19 @@ mod tests {
     }
 
     #[test]
-    fn a_coordinator_answer_after_acceptance_starts_a_new_planning_round() {
-        let coordinated = |rejection: Option<&str>| PlanEvent::Coordinated {
-            coordinator: "claude-code".parse().unwrap(),
+    fn an_orchestrator_answer_after_acceptance_starts_a_new_planning_round() {
+        let orchestrated = |rejection: Option<&str>| PlanEvent::Orchestrated {
+            orchestrator: "claude-code".parse().unwrap(),
             rejection: rejection.map(str::to_owned),
         };
         let state = fold(vec![
             sealed(1, 1, "claude-code", 1),
-            coordinated(None),
-            coordinated(Some("task api owns a protected path")),
+            orchestrated(None),
+            orchestrated(Some("task api owns a protected path")),
         ]);
-        assert!(!state.coordinator_accepted());
-        assert_eq!(state.coordinated_now().len(), 1);
-        assert_eq!(state.coordinated.len(), 2);
+        assert!(!state.orchestrator_accepted());
+        assert_eq!(state.orchestrated_now().len(), 1);
+        assert_eq!(state.orchestrated.len(), 2);
         assert_eq!(state.chosen(), None);
         assert_eq!(state.blind_round(false), 2);
     }

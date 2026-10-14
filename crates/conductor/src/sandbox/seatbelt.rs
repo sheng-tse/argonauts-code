@@ -5,13 +5,13 @@
 //! applies the last rule that matches, so rules go out shallowest path first and an exception
 //! beats its parent.
 //!
-//! macOS refuses to start a Seatbelt inside a restrictive one, so a harness's own sandbox can't
+//! macOS refuses to start a Seatbelt inside a restrictive one, so a CLI's own sandbox can't
 //! run in this wrap.
 
 use std::path::Path;
 
 use argonauts_core::CommandSpec;
-use argonauts_core::worker::{SandboxMode, SandboxProfile};
+use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
 
 use super::profile::{PathRule, RuleKind, check_profile, ordered_rules};
 use super::{SandboxError, SandboxWrap, describe_network};
@@ -19,7 +19,7 @@ use crate::process::resolve_program;
 
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
-/// Devices any program writes: output sinks, its terminal, and ptys for harnesses that start
+/// Devices any program writes: output sinks, its terminal, and ptys for CLIs that start
 /// commands in one. A session may open only the ptys it made itself, which carry the pty
 /// extension. Any other `/dev/ttys*` is one of your terminals, and raw escape sequences written
 /// there could set titles, fill the clipboard, or type into your shell.
@@ -51,7 +51,7 @@ const LAUNCHERS: &str = r#"(deny process-exec
 
 /// Services that act for you outside the sandbox: LaunchServices opens apps and URLs, Apple
 /// Events drive other apps, the pasteboard is your clipboard, and the window server takes
-/// synthetic keystrokes. No harness needs them, and the vendors' own sandboxes close them too.
+/// synthetic keystrokes. No CLI needs them, and the agents' own sandboxes close them too.
 const OUTSIDE_SERVICES: &str = r#"(deny mach-lookup
     (global-name "com.apple.coreservices.launchservicesd")
     (global-name "com.apple.coreservices.appleevents")
@@ -60,7 +60,7 @@ const OUTSIDE_SERVICES: &str = r#"(deny mach-lookup
 "#;
 
 /// Signals reach only the session's own processes, never your shell, your editor, or the
-/// supervisor. Node opens its debugger on SIGUSR1, so a signal could hand a session another
+/// run host. Node opens its debugger on SIGUSR1, so a signal could hand a session another
 /// program to drive.
 const SIGNALS: &str = "(deny signal)\n(allow signal (target same-sandbox))\n";
 
@@ -70,7 +70,7 @@ const NETWORK_OFF: &str = r#"(deny network*)
 (allow network-bind network-inbound (local ip "localhost:*"))
 "#;
 
-/// For gates: test suites start local servers and connect to them.
+/// For checks: test suites start local servers and connect to them.
 const LOOPBACK: &str = "(allow network-outbound (remote ip \"localhost:*\"))\n";
 
 #[derive(Debug, Clone)]
@@ -128,8 +128,8 @@ fn push_rule(sbpl: &mut String, rule: &PathRule, network: bool) {
         RuleKind::Read => (&["allow file-read*"], "subpath"),
         RuleKind::ReadOnly => (&["allow file-read*", "deny file-write*"], "subpath"),
     };
-    // Seatbelt matches the resolved path. The path as given is kept too, in case the two differ
-    // only because the file isn't there yet.
+    // Seatbelt matches the resolved path. The path as given is kept too, in case the two are
+    // different only because the file isn't there yet.
     let mut paths = vec![rule.resolved.as_path()];
     if rule.path != rule.resolved {
         paths.push(&rule.path);
@@ -234,7 +234,7 @@ mod tests {
     use std::path::PathBuf;
 
     use argonauts_core::SpecFile;
-    use argonauts_core::worker::Access;
+    use argonauts_core::session_runner::Access;
 
     use super::super::profile::{ProfileInput, launch_paths, session_profile};
     use super::*;
@@ -300,7 +300,7 @@ mod tests {
 
         let (_temp, root) = scratch();
         let profile = strict(Vec::new(), Vec::new());
-        // A terminal made outside the sandbox, standing in for yours.
+        // A terminal made outside the sandbox, in place of yours.
         let mut yours = std::process::Command::new("/usr/bin/script")
             .args(["-q", "/dev/null", "/bin/sh", "-c", "tty; sleep 10"])
             .stdin(std::process::Stdio::null())
@@ -357,7 +357,7 @@ mod tests {
         let (_temp, root) = scratch();
         let home = root.join("home");
         let argonauts = home.join(".argonauts");
-        let session = argonauts.join("state/repo/chats/chat-1/turn-1");
+        let session = argonauts.join("state/repo/conversations/conversation-1/turn-1");
         let checkout = root.join("checkout");
         std::fs::create_dir_all(&session).unwrap();
         for dir in [
@@ -374,7 +374,7 @@ mod tests {
         for commits in [true, false] {
             let input = ProfileInput {
                 access: Access::Direct,
-                vendor: "claude-code",
+                agent_id: "claude-code",
                 workdir: &checkout,
                 session_dir: &session,
                 argonauts_home: &argonauts,
@@ -382,7 +382,7 @@ mod tests {
                 base_worktree: None,
                 status_file: None,
                 extra_writable: &[],
-                sees_other_copies: false,
+                sees_other_worktrees: false,
                 commits,
             };
             let profile = SandboxProfile {
@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn a_replacement_reads_the_transcript_its_handoff_wrote() {
+    fn a_fallback_reads_the_transcript_written_for_it() {
         let (_temp, root) = scratch();
         let home = root.join("home");
         let argonauts = home.join(".argonauts");
@@ -420,16 +420,16 @@ mod tests {
         let session = run_dir.join("sessions/s-2");
         let tree = argonauts.join("worktrees/repo/run-1/task-003");
         let transcript = tree.join(".argonauts/fallback/1/transcript.md");
-        let kept = run_dir.join("cards/task-003/fallback-1/transcript.md");
+        let kept = run_dir.join("tasks/task-003/fallback-1/transcript.md");
         std::fs::create_dir_all(&session).unwrap();
         for path in [&transcript, &kept] {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, "# task-003").unwrap();
         }
-        for vendor in ["claude-code", "codex", "antigravity-cli", "opencode"] {
+        for agent_id in ["claude-code", "codex", "antigravity-cli", "opencode"] {
             let input = ProfileInput {
                 access: Access::Build,
-                vendor,
+                agent_id,
                 workdir: &tree,
                 session_dir: &session,
                 argonauts_home: &argonauts,
@@ -437,7 +437,7 @@ mod tests {
                 base_worktree: None,
                 status_file: None,
                 extra_writable: &[],
-                sees_other_copies: false,
+                sees_other_worktrees: false,
                 commits: false,
             };
             let profile = SandboxProfile {
@@ -602,7 +602,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         let (_temp, root) = scratch();
         let home = root.join("home");
         let argonauts = home.join(".argonauts");
-        let session = argonauts.join("state/repo/chats/chat-1/turn-1");
+        let session = argonauts.join("state/repo/conversations/conversation-1/turn-1");
         let checkout = root.join("checkout");
         std::fs::create_dir_all(&session).unwrap();
         std::fs::create_dir_all(checkout.join("src")).unwrap();
@@ -619,7 +619,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         git(&["config", "core.hooksPath", ".husky"]);
         let input = ProfileInput {
             access: Access::Direct,
-            vendor: "opencode",
+            agent_id: "opencode",
             workdir: &checkout,
             session_dir: &session,
             argonauts_home: &argonauts,
@@ -627,7 +627,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
             base_worktree: None,
             status_file: None,
             extra_writable: &[],
-            sees_other_copies: false,
+            sees_other_worktrees: false,
             commits: true,
         };
         let profile = SandboxProfile {
@@ -658,16 +658,16 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
     }
 
     #[test]
-    fn a_gate_with_loopback_open_gets_no_tunnel() {
+    fn a_check_with_loopback_open_gets_no_tunnel() {
         use crate::sandbox::proxy::{self, Allowlist, Proxy, Why};
 
         let upstream = ok_server();
         let proxy =
             Proxy::with_resolver(proxy::tests::to_loopback(upstream, Default::default())).unwrap();
-        // A session's list exists, but the gate has no key for it.
+        // A session's list exists, but the check has no key for it.
         let allow = Allowlist::parse([format!("api.example.test:{upstream}").as_str()]).unwrap();
         proxy.session_url(&allow);
-        let gate = strict(super::super::profile::temp_dirs(), Vec::new());
+        let check = strict(super::super::profile::temp_dirs(), Vec::new());
         let script = format!(
             r#"
             /usr/bin/curl -sp -x http://127.0.0.1:{} --max-time 5 "http://api.example.test:$1/" || printf no-tunnel; echo
@@ -676,7 +676,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
             proxy.port()
         );
         assert_eq!(
-            run_with_env(&gate, &script, upstream, &[]),
+            run_with_env(&check, &script, upstream, &[]),
             "no-tunnel\nok\n"
         );
         assert_eq!(proxy.refusals()[0].why, Why::NoKey);
@@ -745,7 +745,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         std::fs::write(other.join("hidden.rs"), "secret").unwrap();
         let input = ProfileInput {
             access: Access::Build,
-            vendor: "codex",
+            agent_id: "codex",
             workdir: &tree,
             session_dir: &session,
             argonauts_home: &argonauts,
@@ -753,7 +753,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
             base_worktree: None,
             status_file: None,
             extra_writable: &[],
-            sees_other_copies: false,
+            sees_other_worktrees: false,
             commits: false,
         };
         git(&tree, &["init", "-q", "."]);
@@ -765,11 +765,11 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         let out = run(&profile, &tree, script, &[&other.join("hidden.rs")]);
         assert_eq!(out, "?? f\nother-blocked\n");
 
-        // With `sandbox.agents_see_other_worktrees` on, the other copy reads but never changes.
+        // With `sandbox.agents_see_other_worktrees` on, the other worktree reads but never changes.
         let open = session_profile(
             &SandboxProfile::default(),
             &ProfileInput {
-                sees_other_copies: true,
+                sees_other_worktrees: true,
                 ..input
             },
         );
@@ -780,7 +780,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         assert_eq!(std::fs::read_to_string(&other_file).unwrap(), "secret");
     }
 
-    /// Runs git outside the sandbox, as the conductor does.
+    /// Runs git outside the sandbox, as Argonauts Code does.
     fn git(dir: &Path, args: &[&str]) {
         let status = std::process::Command::new("git")
             .args([
@@ -820,7 +820,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
     ) -> ProfileInput<'a> {
         ProfileInput {
             access: Access::Build,
-            vendor: "claude-code",
+            agent_id: "claude-code",
             workdir: tree,
             session_dir: session,
             argonauts_home: argonauts,
@@ -828,7 +828,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
             base_worktree: None,
             status_file: None,
             extra_writable: &[],
-            sees_other_copies: false,
+            sees_other_worktrees: false,
             commits: false,
         }
     }
@@ -847,7 +847,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
             std::fs::create_dir_all(dir).unwrap();
         }
         let input = ProfileInput {
-            vendor: "antigravity-cli",
+            agent_id: "antigravity-cli",
             ..build_input(&tree, &session, &argonauts, &home)
         };
         let profile = session_profile(&SandboxProfile::default(), &input);
@@ -891,7 +891,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         );
     }
 
-    /// A card's worktree is linked to your repository, whose git folder holds the hooks, config,
+    /// A task's worktree is linked to your repository, whose git folder holds the hooks, config,
     /// and refs every checkout shares. Here the repository sits in temp, which a session may write.
     #[test]
     fn a_linked_worktree_cannot_change_the_repository_behind_it() {
@@ -929,7 +929,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         );
     }
 
-    /// With `sandbox.agents_commit` on, an agent commits on its card's branch with git as you
+    /// With `sandbox.agents_commit` on, an agent commits on its task's branch with git as you
     /// would, and still can't plant a hook, change config, move another branch, point `HEAD`
     /// elsewhere, or touch the packs that hold your history.
     #[test]
@@ -947,7 +947,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         std::fs::write(repo.join("lib.rs"), "fn main() {}\n").unwrap();
         git(&repo, &["add", "lib.rs"]);
         git(&repo, &["commit", "-qm", "base"]);
-        git(&repo, &["branch", "argonauts/run-1/integration"]);
+        git(&repo, &["branch", "argonauts/run-1/merged"]);
         git(&repo, &["gc", "-q"]);
         let tree_arg = tree.to_string_lossy().into_owned();
         let branch = "argonauts/run-1/task-a";
@@ -975,7 +975,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
             if (printf 'exit 0\n' > "$1/hooks/pre-commit") 2>/dev/null; then echo hook-planted; else echo hook-blocked; fi
             if (printf '[core]\n' >> "$1/config") 2>/dev/null; then echo config-changed; else echo config-blocked; fi
             if git update-ref refs/heads/main HEAD 2>/dev/null; then echo main-moved; else echo main-blocked; fi
-            if git update-ref refs/heads/argonauts/run-1/integration HEAD 2>/dev/null; then echo integration-moved; else echo integration-blocked; fi
+            if git update-ref refs/heads/argonauts/run-1/merged HEAD 2>/dev/null; then echo merge-moved; else echo merge-blocked; fi
             if git symbolic-ref HEAD refs/heads/main 2>/dev/null; then echo head-moved; else echo head-blocked; fi
             if (: > "$1/objects/pack/planted") 2>/dev/null; then echo pack-planted; else echo pack-blocked; fi
             if (printf '/tmp\n' > "$1/worktrees/task-a/commondir") 2>/dev/null; then echo commondir-changed; else echo commondir-blocked; fi
@@ -984,16 +984,16 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         assert_eq!(
             out,
             "edited\nadded\ncommitted\nhook-blocked\nconfig-blocked\nmain-blocked\n\
-             integration-blocked\nhead-blocked\npack-blocked\ncommondir-blocked\n"
+             merge-blocked\nhead-blocked\npack-blocked\ncommondir-blocked\n"
         );
-        let card = head_of(branch);
-        assert_ne!(card, base);
-        assert_eq!(head_of(&format!("{card}^")), base);
+        let task = head_of(branch);
+        assert_ne!(task, base);
+        assert_eq!(head_of(&format!("{task}^")), base);
         assert_eq!(head_of("main"), base);
-        assert_eq!(head_of("argonauts/run-1/integration"), base);
+        assert_eq!(head_of("argonauts/run-1/merged"), base);
         assert!(!common.join("hooks/pre-commit").exists());
 
-        // With the switch off, the same commit is refused and the conductor commits instead.
+        // With the switch off, the same commit is refused and Argonauts Code commits instead.
         let off = session_profile(
             &SandboxProfile::default(),
             &build_input(&tree, &session, &argonauts, &home),
@@ -1001,7 +1001,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         std::fs::write(tree.join("more.rs"), "\n").unwrap();
         let out = run(&off, &tree, GIT_STEPS, &[&common]);
         assert_eq!(out, GIT_BLOCKED);
-        assert_eq!(head_of(branch), card);
+        assert_eq!(head_of(branch), task);
     }
 
     /// Prints `connected` or `blocked` for the socket at `$1`.
@@ -1115,7 +1115,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         assert_eq!(out, "outside-blocked\nown-stopped\n");
     }
 
-    /// Each harness's launch shape: Claude Code's settings and MCP config, Codex's output
+    /// Each CLI's launch shape: Claude Code's settings and MCP config, Codex's output
     /// schema, and a read-only agy session's agent folder, all in the denied session folder.
     #[test]
     fn a_session_reads_the_files_its_launch_names() {
@@ -1167,8 +1167,8 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
                 Vec::new(),
             ),
         ];
-        // Opens every absolute path argument as the harness would: files read, folders listed.
-        let harness = r#"
+        // Opens every absolute path argument as the CLI would: files read, folders listed.
+        let cli = r#"
             for arg; do
               case "$arg" in
                 /*) if [ -d "$arg" ]; then find "$arg" -type f -exec cat {} + >/dev/null 2>&1 && echo ok || echo "blocked $arg"
@@ -1177,11 +1177,11 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
             done
             cat "$RAW" >/dev/null 2>&1 && echo "read raw" || true
         "#;
-        for (vendor, args, files) in launches {
+        for (agent_id, args, files) in launches {
             for file in &files {
                 std::fs::write(&file.path, &file.contents).unwrap();
             }
-            let mut command = CommandSpec::new("/bin/sh", &tree).args(["-c", harness, "sh"]);
+            let mut command = CommandSpec::new("/bin/sh", &tree).args(["-c", cli, "sh"]);
             command.args.extend(args);
             command.files = files;
             command
@@ -1189,7 +1189,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
                 .push(("RAW".into(), raw.display().to_string()));
             let input = ProfileInput {
                 access: Access::ReadOnly,
-                vendor,
+                agent_id,
                 workdir: &tree,
                 session_dir: &session,
                 argonauts_home: &argonauts,
@@ -1197,7 +1197,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
                 base_worktree: None,
                 status_file: None,
                 extra_writable: &[],
-                sees_other_copies: false,
+                sees_other_worktrees: false,
                 commits: false,
             };
             let mut profile = session_profile(&SandboxProfile::default(), &input);
@@ -1210,10 +1210,10 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
                 .output()
                 .unwrap();
             let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(!stdout.is_empty(), "{vendor}: {output:?}");
+            assert!(!stdout.is_empty(), "{agent_id}: {output:?}");
             assert!(
                 stdout.lines().all(|line| line == "ok"),
-                "{vendor}: {stdout}"
+                "{agent_id}: {stdout}"
             );
         }
     }

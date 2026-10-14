@@ -1,17 +1,17 @@
-//! Where a question goes: the owner of the piece it concerns, the consultant when addressed, or
-//! you as a `Question` checkpoint.
+//! Where a question goes: the worker of the piece it concerns, the consultant when addressed, or
+//! you as a `Question` approval.
 
-use argonauts_core::events::card::CardState;
 use argonauts_core::events::shared::Recipient;
+use argonauts_core::events::task::TaskState;
 use argonauts_core::names::RoleName;
 
 use crate::blackboard::refs;
 use crate::state::RunState;
-use crate::state::cards::CardRecord;
+use crate::state::tasks::TaskEntry;
 
-/// The recipient for a question about these paths or cards, `Recipient::User` when no owner
-/// fits. A card it names outright wins; otherwise the card owning most of the cited paths, ties
-/// going to the lower card id.
+/// The recipient for a question about these paths or tasks, `Recipient::User` when no worker
+/// fits. A task it names outright wins; otherwise the task owning most of the cited paths, ties
+/// going to the lower task id.
 pub fn question(state: &RunState, text: &str, refs: &[String]) -> Recipient {
     if addresses_consultant(text) {
         return Recipient::Role {
@@ -20,13 +20,13 @@ pub fn question(state: &RunState, text: &str, refs: &[String]) -> Recipient {
     }
     let named = refs
         .iter()
-        .filter_map(|reference| refs::card_in(reference))
-        .find(|card| state.cards.get(card).is_some_and(still_working));
-    if let Some(card) = named {
-        return Recipient::Card { card };
+        .filter_map(|reference| refs::task_in(reference))
+        .find(|task| state.tasks.get(task).is_some_and(still_working));
+    if let Some(task) = named {
+        return Recipient::Task { task };
     }
     let mut best = None;
-    for (card, record) in &state.cards.by_id {
+    for (task, record) in &state.tasks.by_id {
         if !still_working(record) {
             continue;
         }
@@ -41,11 +41,11 @@ pub fn question(state: &RunState, text: &str, refs: &[String]) -> Recipient {
             })
             .count();
         if owned > 0 && best.as_ref().is_none_or(|(most, _)| owned > *most) {
-            best = Some((owned, card.clone()));
+            best = Some((owned, task.clone()));
         }
     }
     match best {
-        Some((_, card)) => Recipient::Card { card },
+        Some((_, task)) => Recipient::Task { task },
         None => Recipient::User,
     }
 }
@@ -56,7 +56,7 @@ pub fn addresses_consultant(text: &str) -> bool {
     text.starts_with("consultant:") || text.contains("@consultant")
 }
 
-/// A card whose owner can still answer: it has a session to come.
-pub fn still_working(record: &CardRecord) -> bool {
-    !matches!(record.state, CardState::Integrated | CardState::Cancelled)
+/// A task whose worker can still answer: it has a session to come.
+pub fn still_working(record: &TaskEntry) -> bool {
+    !matches!(record.state, TaskState::Merged | TaskState::Cancelled)
 }

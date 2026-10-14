@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn a_table_value_names_each_safety_key_inside_it() {
-        let value = "{ base_url = \"http://x\", api = \"chat\" }";
+        let value = "{ base_url = \"http://x\", api = \"responses\" }";
         assert_eq!(
             value_at("endpoints.ollama", value, "endpoints.ollama.base_url").as_deref(),
             Some("\"http://x\"")

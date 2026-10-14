@@ -14,12 +14,12 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 
 use super::{key, state, tab};
+use crate::kit::Kit;
 use crate::overview::OverviewView;
 use crate::overview::home::sample;
 use crate::state::AppState;
 use crate::theme::{ColorLevel, Glyphs, Role, Theme};
 use crate::views::{View, ViewCtx};
-use crate::widgets::Kit;
 
 const OVERVIEW_TEXT: &str = include_str!("../pictures/ours_overview.txt");
 const OVERVIEW_COLOURS: &str = include_str!("../pictures/ours_overview.html");
@@ -120,7 +120,7 @@ fn colour(theme: &Theme, value: &str) -> Color {
         "--term-fg" => return Color::Reset,
         "--term-dim" => Role::Dim,
         "--term-faint" => Role::Faint,
-        "--term-acc" => Role::Card,
+        "--term-acc" => Role::Question,
         "--term-org" => Role::AgentOrange,
         "--term-bg" => Role::BadgeText,
         "--term-band" => Role::UserBand,
@@ -169,18 +169,26 @@ fn solid(text: &str) -> String {
     text.replace(['░', '▒', '▓'], "█")
 }
 
-/// What one screen should differ from its picture by, and why.
+/// How one screen should be different from its picture, and why.
 struct Screen<'a> {
     text: &'a str,
     colours: &'a str,
     /// Picture rows of the year of days, whose glyphs are drawn solid in the picture.
     days: std::ops::RangeInclusive<usize>,
+    /// Picture rows compared by their characters here, whose colours a test of their own
+    /// compares.
+    colours_elsewhere: std::ops::Range<usize>,
     /// Picture rows this screen draws otherwise: the row, what it draws, and why.
     instead: &'a [(usize, &'a str, &'a str)],
 }
 
 impl Screen<'_> {
     fn compare(&self, name: &str, buf: &Buffer) {
+        self.compare_rows(name, buf, 0..usize::MAX);
+    }
+
+    /// [`Screen::compare`] for the picture's `rows` alone.
+    fn compare_rows(&self, name: &str, buf: &Buffer, rows: std::ops::Range<usize>) {
         let theme = theme();
         let picture: Vec<&str> = self.text.lines().collect();
         let width = picture
@@ -193,6 +201,9 @@ impl Screen<'_> {
         let cells = painted(self.colours);
         let mut differences = Vec::new();
         for (row, line) in picture.iter().enumerate() {
+            if !rows.contains(&row) {
+                continue;
+            }
             let y = row + 1;
             if !buf[(0, y as u16)].symbol().trim().is_empty() {
                 differences.push(format!("row {row}: drawn in the panel's inset"));
@@ -213,7 +224,7 @@ impl Screen<'_> {
                 ));
                 continue;
             }
-            if instead.is_some() {
+            if instead.is_some() || self.colours_elsewhere.contains(&row) {
                 continue;
             }
             for (x, cell) in cells[row].iter().enumerate() {
@@ -251,7 +262,7 @@ impl Screen<'_> {
             }
         }
         assert!(differences.is_empty(), "{}", differences.join("\n"));
-        for (row, ours, why) in self.instead {
+        for (row, ours, why) in self.instead.iter().filter(|(row, ..)| rows.contains(row)) {
             assert_ne!(
                 picture[*row].trim_end(),
                 *ours,
@@ -261,32 +272,90 @@ impl Screen<'_> {
     }
 }
 
+/// The numbers under the year are the numbers picture's rows, whose colours
+/// [`the_numbers_match_their_picture`] compares.
 #[test]
 fn the_overview_sub_tab_matches_its_picture() {
     let state = state();
-    let mut view = tab(sample::overview());
+    let mut view = tab(sample::numbers());
     key(&mut view, &state, crossterm::event::KeyCode::Down);
     let buf = render(&mut view, &state, HEIGHT);
     Screen {
         text: OVERVIEW_TEXT,
         colours: OVERVIEW_COLOURS,
         days: 5..=11,
+        colours_elsewhere: 17..25,
         instead: &[
             (
                 26,
-                "Your input and output are ~42051x the tokens in Animal Farm",
-                "the picture's ~920x of A Game of Thrones can't come from 1.2b in and 0.4b out \
-                 (that is ~4304x), and the fact is picked by the day, as Claude Code picks one \
-                 at random",
+                "Your input and output are ~7087x the tokens in Animal Farm",
+                "the picture's ~920x of A Game of Thrones can't come from 69.1M in and 207.3M \
+                 out, and the fact is picked by the day, as Claude Code picks one at random",
             ),
             (
-                27,
-                "93% of your input came from cache; 64% of your tokens ran in subagents",
-                "110.0b read of 118.0b input, cache writes included, is 93%, not the picture's 97%",
+                28,
+                "Stats from the last 147 days · imported: Claude Code since Oct 2025, Codex since \
+                 Feb, agy since Jun",
+                "the numbers above it count 147 days, where the picture's last row was drawn \
+                 for 365",
             ),
         ],
     }
     .compare("ours_overview", &buf);
+}
+
+/// The three groups and the two bars from the numbers picture's example, at its 116 cells,
+/// every cell with its colour. The page names the kinds of tokens by its faint, blue and
+/// orange, which here are the tokens' own colours. The picture writes the app's name in full,
+/// which it was first drawn without: the Tokens group's values and notes and the whole Days
+/// group stand three cells further right for it, and Sessions where it was.
+#[test]
+fn the_numbers_match_their_picture() {
+    use crate::overview::golden::{self, Picture, Region};
+    use crate::overview::home::numbers::Numbers;
+
+    let picture = Picture::load("overview_numbers")
+        .standing_for("--term-faint", Role::TokensCached)
+        .standing_for("--term-blu", Role::TokensInput)
+        .standing_for("--term-org", Role::TokensOutput);
+    let theme = golden::theme();
+    let names = crate::overview::sample::names();
+    let data = sample::numbers();
+    let numbers = Numbers {
+        data: &data,
+        names: &names,
+    };
+    let drawn = numbers.block(&Kit::new(&theme), picture.width());
+    assert_eq!(drawn.lines.len(), picture.rows.len());
+    let area = Rect::new(0, 0, picture.width() as u16, drawn.lines.len() as u16);
+    let mut buf = Buffer::empty(area);
+    for (y, line) in drawn.lines.iter().enumerate() {
+        buf.set_line(0, y as u16, line, area.width);
+    }
+    golden::assert_matches(&picture, &buf, &Region::whole(&picture, (0, 0)), &theme);
+}
+
+/// A font that draws a square or a bar wider than its cell runs it into whatever touches it,
+/// so at every width a blank stands between each of them and the words beside it.
+#[test]
+fn no_word_touches_a_bar_or_a_square_of_the_numbers() {
+    use crate::kit::bars::touching_bar;
+    use crate::overview::home::numbers::Numbers;
+
+    let theme = theme();
+    let names = crate::overview::sample::names();
+    let data = sample::numbers();
+    let numbers = Numbers {
+        data: &data,
+        names: &names,
+    };
+    for width in [116, 100, 80, 60, 40, 24] {
+        let drawn = numbers.block(&Kit::new(&theme), width);
+        for row in crate::text::plain_text(&drawn.lines).lines() {
+            assert_eq!(touching_bar(row), None, "{width}: {row:?}");
+            assert!(crate::text::str_width(row) <= width, "{width}: {row:?}");
+        }
+    }
 }
 
 #[test]
@@ -300,6 +369,7 @@ fn the_models_sub_tab_matches_its_picture() {
         text: MODELS_TEXT,
         colours: MODELS_COLOURS,
         days: 0..=0,
+        colours_elsewhere: 0..0,
         instead: &[(
             16,
             "       Aug 18          Sep 3            Sep 20           Oct 7",
@@ -308,4 +378,43 @@ fn the_models_sub_tab_matches_its_picture() {
         )],
     }
     .compare("ours_models", &buf);
+}
+
+/// Tab moves the sub-tabs from the models too, so with the keys there Models stays filled as
+/// the picture has it, and Tab takes the fill along to Overview and back.
+#[test]
+fn in_the_models_the_chosen_sub_tab_stays_filled() {
+    use crate::overview::subtabs::Level;
+    use crossterm::event::KeyCode;
+
+    let state = state();
+    let mut view = tab(sample::models());
+    for code in [KeyCode::Down, KeyCode::Right, KeyCode::Down] {
+        key(&mut view, &state, code);
+    }
+    assert_eq!(view.level(), Level::Cards);
+    let head = Screen {
+        text: MODELS_TEXT,
+        colours: MODELS_COLOURS,
+        days: 0..=0,
+        colours_elsewhere: 0..0,
+        instead: &[],
+    };
+    head.compare_rows(
+        "ours_models_in_the_cards",
+        &render(&mut view, &state, HEIGHT),
+        0..3,
+    );
+    key(&mut view, &state, KeyCode::Tab);
+    key(&mut view, &state, KeyCode::BackTab);
+    assert_eq!(
+        view.level(),
+        Level::Cards,
+        "Tab leaves the keys in the models"
+    );
+    head.compare_rows(
+        "ours_models_after_tab",
+        &render(&mut view, &state, HEIGHT),
+        0..3,
+    );
 }

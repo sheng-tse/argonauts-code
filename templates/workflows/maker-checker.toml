@@ -1,0 +1,57 @@
+# Maker-checker: one builds, another checks. Also called evaluator-optimizer.
+name  = "maker-checker"
+about = "A worker builds, a reviewer sends it back until it holds"
+adapt = true
+
+[[step]]
+name = "Build"
+role = "worker"
+
+[[step]]
+name         = "Review"
+role         = "reviewer"
+send_back_to = "Build"      # until the reviewer accepts
+
+[captain_or_crew]
+force = "captain"
+
+[captain]
+review = true
+
+# Its phases, which run in place of the steps above when workflows.adapt_with = "phases".
+[[phases]]
+name     = "Understand"
+detail   = "your prompt is the goal, unless captain.understand_first asks the agent to read it back"
+standard = "understand"
+
+  [[phases.steps]]
+  kind  = "read"
+  name  = "reading"
+  role  = "main"
+  label = "read:{provider}"
+
+  [[phases.steps]]
+  kind     = "approval"
+  approval = "understand"
+  when     = "understand_first"
+
+[[phases]]
+name     = "Build"
+detail   = "the main agent builds the task in its own worktree, its checks, then a review from another provider"
+standard = "do"
+
+  [[phases.steps]]
+  kind                    = "build"
+  role                    = "worker"
+  input                   = "goal"
+  different_provider_from = "author"
+  label                   = "build:{item}"
+
+[[phases]]
+name     = "Merge"
+detail   = "the final check, then the merge into your branch"
+standard = "decide"
+
+  [[phases.steps]]
+  kind  = "merge"
+  label = "merge:{branch}"

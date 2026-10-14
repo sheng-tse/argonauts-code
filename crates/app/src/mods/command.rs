@@ -9,9 +9,9 @@ use std::time::Duration;
 use argonauts_conductor::sandbox::selftest::self_test_once;
 use argonauts_conductor::sandbox::{ProfileInput, SandboxWrap, session_profile};
 use argonauts_core::CommandSpec;
+use argonauts_core::session_runner::{Access, SandboxMode, SandboxProfile};
 use argonauts_core::settings::approvals::SandboxSettings;
 use argonauts_core::settings::mods::{ModReading, span_words};
-use argonauts_core::worker::{Access, SandboxMode, SandboxProfile};
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use tokio::io::AsyncReadExt as _;
@@ -74,7 +74,7 @@ fn argv(command: &[String], place: &Place<'_>) -> Result<Vec<String>, String> {
     Ok(argv)
 }
 
-/// What a command sees of Argonauts' own variables: the allowlist, and its scratch folder as
+/// What a command sees of Argonauts Code's own variables: the allowlist, and its scratch folder as
 /// the place for temporary files.
 fn kept_env(vars: impl Iterator<Item = (String, String)>, scratch: &Path) -> Vec<(String, String)> {
     vars.filter(|(name, _)| ENV.contains(&name.as_str()) || name.starts_with("LC_"))
@@ -91,7 +91,7 @@ fn profile(
 ) -> SandboxProfile {
     let input = ProfileInput {
         access: Access::ReadOnly,
-        vendor: "",
+        agent_id: "",
         workdir: place.repo,
         session_dir: place.scratch,
         argonauts_home: place.argonauts_home,
@@ -99,7 +99,7 @@ fn profile(
         base_worktree: None,
         status_file: None,
         extra_writable: &[],
-        sees_other_copies: false,
+        sees_other_worktrees: false,
         commits: false,
     };
     // A read-only session's profile: it writes temporary folders, which a shell needs even for

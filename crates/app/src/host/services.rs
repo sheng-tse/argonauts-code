@@ -1,5 +1,5 @@
-//! Every worker kind joined in one `WorkerDirectory`, and the `Services` the engine gets. The
-//! app builds the same directory for its chat, triage, and narrator sessions.
+//! Every worker kind joined in one `RunnerDirectory`, and the `Services` the engine gets. The
+//! app builds the same directory for its conversation, estimate, and narrator sessions.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -7,30 +7,28 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use anyhow::Context as _;
 use argonauts_adapter_opencode::{LocalUrls, OpenCodeAdapter};
-use argonauts_conductor::harness_worker::capabilities;
-use argonauts_conductor::{
-    HarnessWorker, boards_with, gate_runner, handoff_planner, limits_service,
-};
+use argonauts_conductor::cli_runner::capabilities;
+use argonauts_conductor::{CliRunner, boards_with, check_runner, fallback_planner, limits_service};
 use argonauts_core::clock::SystemClock;
 use argonauts_core::engine::{RepoContext, Services};
 use argonauts_core::future::BoxFuture;
-use argonauts_core::limits::{CostEstimate, HealthBoard, QuotaBoard, TrackRecords};
+use argonauts_core::limits::{CostEstimate, HealthBoard, PlanUsageBoard, TrackRecords};
 use argonauts_core::model_catalog::ModelCatalog;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::paths::create_private_dir_all;
 use argonauts_core::registry::{ModelEntry, ModelRegistry, RegistryKind};
+use argonauts_core::session_runner::{RunnerDirectory, RunnerError, SessionRunner};
 use argonauts_core::settings::Settings;
 use argonauts_core::steps::SchemaStepRunner;
-use argonauts_core::worker::{Worker, WorkerDirectory, WorkerError};
 use argonauts_core::{Adapter, Paths};
-use argonauts_endpoints::EndpointWorker;
+use argonauts_endpoints::EndpointRunner;
 use argonauts_learning::records::LiveRecords;
 use argonauts_policy::{SettingsReloader, approval_policy};
 use argonauts_registry::models::{builtin_endpoint, endpoint_settings};
 use time::OffsetDateTime;
 use tokio::sync::watch;
 
-use super::harnesses::{self, HarnessAdapters, RepoModels};
+use super::clis::{self, CliAdapters, RepoModels};
 use crate::adapters::builtin_adapters;
 use crate::app_settings::AppSettings;
 
@@ -80,14 +78,14 @@ impl SettingsSource {
     }
 }
 
-/// Harness workers for each enabled adapter (the built-ins, OpenCode, and the manifest and ACP
-/// profiles), and an endpoint worker per endpoint, each with its family from the registry.
+/// CLI workers for each enabled adapter (the built-ins, OpenCode, and the manifest and ACP
+/// profiles), and an endpoint worker per endpoint, each with its provider from the registry.
 pub(crate) struct Directory {
     settings: SettingsSource,
     home: Paths,
     repo: Option<RepoModels>,
     registry: Arc<dyn ModelRegistry>,
-    quota: Arc<dyn QuotaBoard>,
+    plan_usage: Arc<dyn PlanUsageBoard>,
     health: Arc<dyn HealthBoard>,
     builtins: Vec<Arc<dyn Adapter>>,
     built: Mutex<Built>,
@@ -98,18 +96,14 @@ pub(crate) struct Directory {
 struct Built {
     settings: Arc<Settings>,
     adapters: Vec<Arc<dyn Adapter>>,
-    harnesses: HarnessAdapters,
-    workers: HashMap<WorkerRef, Arc<dyn Worker>>,
+    clis: CliAdapters,
+    workers: HashMap<ModelRef, Arc<dyn SessionRunner>>,
 }
 
 impl Directory {
-    /// The built-ins, then every `[[harness]]` entry that counts under these settings.
-    fn adapters(
-        &self,
-        settings: &Settings,
-        harnesses: &mut HarnessAdapters,
-    ) -> Vec<Arc<dyn Adapter>> {
-        let manifests = harnesses::manifests(
+    /// The built-ins, then every `[[cli]]` entry that counts under these settings.
+    fn adapters(&self, settings: &Settings, clis: &mut CliAdapters) -> Vec<Arc<dyn Adapter>> {
+        let manifests = clis::manifests(
             settings,
             &self.home,
             self.repo.as_ref(),
@@ -125,33 +119,33 @@ impl Directory {
                 _ => adapter.clone(),
             })
             .collect();
-        adapters.extend(harnesses.adapters(manifests, &self.builtins, &self.home));
+        adapters.extend(clis.adapters(manifests, &self.builtins, &self.home));
         adapters
     }
 
     /// The adapters and workers for the settings in effect now. A worker keeps the settings it
-    /// was built with, such as its binary and whether it's on, and the harness list hangs on
+    /// was built with, such as its binary and whether it's on, and the CLI list hangs on
     /// them too, so a change means building each again.
     fn current(&self) -> MutexGuard<'_, Built> {
         let settings = self.settings.current();
         let mut built = self.built.lock().unwrap_or_else(PoisonError::into_inner);
         if !Arc::ptr_eq(&built.settings, &settings) {
             let built = &mut *built;
-            built.adapters = self.adapters(&settings, &mut built.harnesses);
+            built.adapters = self.adapters(&settings, &mut built.clis);
             built.settings = settings;
             built.workers.clear();
         }
         built
     }
 
-    /// The registry's family, or the adapter's own when the registry doesn't know the model.
-    fn family(&self, worker: &WorkerRef, adapter: Option<&Arc<dyn Adapter>>) -> String {
-        let family = self.registry.family(worker);
+    /// The registry's provider, or the adapter's own when the registry doesn't know the model.
+    fn provider(&self, worker: &ModelRef, adapter: Option<&Arc<dyn Adapter>>) -> String {
+        let provider = self.registry.provider(worker);
         match adapter {
-            Some(adapter) if family.is_empty() || family == "unknown" => {
-                adapter.default_family().to_owned()
+            Some(adapter) if provider.is_empty() || provider == "unknown" => {
+                adapter.default_provider().to_owned()
             }
-            _ => family,
+            _ => provider,
         }
     }
 
@@ -159,46 +153,43 @@ impl Directory {
         &self,
         settings: &Arc<Settings>,
         adapters: &[Arc<dyn Adapter>],
-        worker: &WorkerRef,
-    ) -> Result<Arc<dyn Worker>, WorkerError> {
-        if let Some(adapter) = adapters
-            .iter()
-            .find(|adapter| adapter.id() == worker.worker)
-        {
-            if !enabled(settings, &worker.worker) {
-                return Err(WorkerError::Disabled {
-                    worker: worker.clone(),
-                    reason: format!("agents.{}.enabled is false", worker.worker),
+        worker: &ModelRef,
+    ) -> Result<Arc<dyn SessionRunner>, RunnerError> {
+        if let Some(adapter) = adapters.iter().find(|adapter| adapter.id() == worker.agent) {
+            if !enabled(settings, &worker.agent) {
+                return Err(RunnerError::Disabled {
+                    model: worker.clone(),
+                    reason: format!("agents.{}.enabled is false", worker.agent),
                 });
             }
-            let family = self.family(worker, Some(adapter));
-            let harness = HarnessWorker::new(
+            let provider = self.provider(worker, Some(adapter));
+            let cli = CliRunner::new(
                 adapter.clone(),
                 worker.clone(),
-                family,
+                provider,
                 settings.clone(),
-                self.quota.clone(),
+                self.plan_usage.clone(),
                 self.health.clone(),
             )
             .with_registry(self.registry.clone())
-            // Its quota probes and concurrency slots belong in this home, not the process's.
+            // Its plan usage probes and concurrency slots belong in this home, not the process's.
             .with_home(self.home.clone());
-            return Ok(Arc::new(harness));
+            return Ok(Arc::new(cli));
         }
-        // Your table over the preset of the same name, so `ollama` works with no table at all.
-        if let Some(endpoint) = endpoint_settings(settings, &worker.worker) {
-            let family = self.family(worker, None);
-            return Ok(Arc::new(EndpointWorker::new(
-                &worker.worker,
+        // Your table over the workflow of the same name, so `ollama` works with no table at all.
+        if let Some(endpoint) = endpoint_settings(settings, &worker.agent) {
+            let provider = self.provider(worker, None);
+            return Ok(Arc::new(EndpointRunner::new(
+                &worker.agent,
                 &endpoint,
                 worker.clone(),
-                family,
+                provider,
                 self.registry.clone(),
-                self.quota.clone(),
+                self.plan_usage.clone(),
                 self.health.clone(),
             )));
         }
-        Err(WorkerError::Unknown(worker.clone()))
+        Err(RunnerError::Unknown(worker.clone()))
     }
 }
 
@@ -218,8 +209,8 @@ pub(crate) fn installed(settings: &Settings, adapter: &Arc<dyn Adapter>) -> bool
     }
 }
 
-impl WorkerDirectory for Directory {
-    fn get(&self, worker: &WorkerRef) -> Result<Arc<dyn Worker>, WorkerError> {
+impl RunnerDirectory for Directory {
+    fn get(&self, worker: &ModelRef) -> Result<Arc<dyn SessionRunner>, RunnerError> {
         let mut built = self.current();
         if let Some(found) = built.workers.get(worker) {
             return Ok(found.clone());
@@ -229,20 +220,20 @@ impl WorkerDirectory for Directory {
         Ok(made)
     }
 
-    fn available(&self) -> Vec<WorkerRef> {
+    fn available(&self) -> Vec<ModelRef> {
         let (settings, adapters) = {
             let built = self.current();
             (Arc::clone(&built.settings), built.adapters.clone())
         };
-        let harnesses = adapters
+        let clis = adapters
             .iter()
             .filter(|adapter| enabled(&settings, adapter.id()) && installed(&settings, adapter))
-            .map(|adapter| WorkerRef::new(adapter.id(), None));
+            .map(|adapter| ModelRef::new(adapter.id(), None));
         let known = self.registry.list();
-        // Yours, then a preset such as `ollama` once the registry knows a model of it.
+        // Yours, then a workflow such as `ollama` once the registry knows a model of it.
         let mut endpoint_ids: Vec<&str> = settings.endpoints.keys().map(String::as_str).collect();
         for entry in &known {
-            let id = entry.id.worker.as_str();
+            let id = entry.id.agent.as_str();
             if entry.kind == RegistryKind::Endpoint
                 && builtin_endpoint(id).is_some()
                 && !endpoint_ids.contains(&id)
@@ -251,46 +242,46 @@ impl WorkerDirectory for Directory {
             }
         }
         let endpoints = endpoint_ids.into_iter().flat_map(|id| {
-            let models: Vec<WorkerRef> = known
+            let models: Vec<ModelRef> = known
                 .iter()
-                .filter(|entry| entry.kind == RegistryKind::Endpoint && entry.id.worker == id)
+                .filter(|entry| entry.kind == RegistryKind::Endpoint && entry.id.agent == id)
                 .map(|entry| entry.id.clone())
                 .collect();
             if models.is_empty() {
-                vec![WorkerRef::new(id, None)]
+                vec![ModelRef::new(id, None)]
             } else {
                 models
             }
         });
-        harnesses.chain(endpoints).collect()
+        clis.chain(endpoints).collect()
     }
 
-    fn enforces_read_only(&self, worker: &WorkerRef) -> bool {
+    fn enforces_read_only(&self, worker: &ModelRef) -> bool {
         self.current()
             .adapters
             .iter()
-            .find(|adapter| adapter.id() == worker.worker)
+            .find(|adapter| adapter.id() == worker.agent)
             .is_some_and(|adapter| adapter.capabilities().enforces_read_only)
     }
 
-    fn takes_session_tools(&self, worker: &WorkerRef) -> bool {
+    fn takes_session_tools(&self, worker: &ModelRef) -> bool {
         self.current()
             .adapters
             .iter()
-            .find(|adapter| adapter.id() == worker.worker)
+            .find(|adapter| adapter.id() == worker.agent)
             .is_some_and(|adapter| capabilities::takes_session_tools(adapter.as_ref()))
     }
 
-    fn isolates(&self, worker: &WorkerRef) -> bool {
+    fn isolates(&self, worker: &ModelRef) -> bool {
         let built = self.current();
         match built
             .adapters
             .iter()
-            .find(|adapter| adapter.id() == worker.worker)
+            .find(|adapter| adapter.id() == worker.agent)
         {
             Some(adapter) => adapter.capabilities().isolates,
             // An endpoint answers with no tools, so nothing of yours reaches it.
-            None => endpoint_settings(&built.settings, &worker.worker).is_some(),
+            None => endpoint_settings(&built.settings, &worker.agent).is_some(),
         }
     }
 }
@@ -312,7 +303,7 @@ impl LiveRegistry {
         cache: Option<PathBuf>,
     ) -> Self {
         let now = Arc::clone(&settings.borrow());
-        let registry = harnesses::registry(&now, repo.as_ref(), cache.as_deref());
+        let registry = clis::registry(&now, repo.as_ref(), cache.as_deref());
         Self {
             settings,
             repo,
@@ -326,8 +317,7 @@ impl LiveRegistry {
         let settings = Arc::clone(&self.settings.borrow());
         let mut current = self.current.lock().unwrap_or_else(PoisonError::into_inner);
         if !Arc::ptr_eq(&current.0, &settings) {
-            let registry =
-                harnesses::registry(&settings, self.repo.as_ref(), self.cache.as_deref());
+            let registry = clis::registry(&settings, self.repo.as_ref(), self.cache.as_deref());
             *current = (settings, registry);
         }
         Arc::clone(&current.1)
@@ -335,19 +325,19 @@ impl LiveRegistry {
 }
 
 impl ModelRegistry for LiveRegistry {
-    fn get(&self, worker: &WorkerRef) -> Option<ModelEntry> {
+    fn get(&self, worker: &ModelRef) -> Option<ModelEntry> {
         self.registry().get(worker)
     }
 
-    fn family(&self, worker: &WorkerRef) -> String {
-        self.registry().family(worker)
+    fn provider(&self, worker: &ModelRef) -> String {
+        self.registry().provider(worker)
     }
 
     fn list(&self) -> Vec<ModelEntry> {
         self.registry().list()
     }
 
-    fn estimate(&self, worker: &WorkerRef, input_tokens: u64, output_tokens: u64) -> CostEstimate {
+    fn estimate(&self, worker: &ModelRef, input_tokens: u64, output_tokens: u64) -> CostEstimate {
         self.registry()
             .estimate(worker, input_tokens, output_tokens)
     }
@@ -359,8 +349,7 @@ impl ModelRegistry for LiveRegistry {
             // Settings that changed meanwhile built their registry from the older cache.
             let mut current = self.current.lock().unwrap_or_else(PoisonError::into_inner);
             if !Arc::ptr_eq(&current.1, &registry) {
-                current.1 =
-                    harnesses::registry(&current.0, self.repo.as_ref(), self.cache.as_deref());
+                current.1 = clis::registry(&current.0, self.repo.as_ref(), self.cache.as_deref());
             }
             found
         })
@@ -374,8 +363,8 @@ impl ModelRegistry for LiveRegistry {
         self.registry().catalog()
     }
 
-    fn models_reported(&self, harness: &str, models: &[argonauts_core::ReportedModel]) {
-        self.registry().models_reported(harness, models);
+    fn models_reported(&self, cli: &str, models: &[argonauts_core::ReportedModel]) {
+        self.registry().models_reported(cli, models);
     }
 }
 
@@ -401,29 +390,29 @@ fn opencode_local_urls(settings: &Settings) -> LocalUrls {
         })
 }
 
-/// The directory for these settings. `repo` adds the repo's `models.toml` harness entries once
+/// The directory for these settings. `repo` adds the repo's `models.toml` CLI entries once
 /// you trust that file.
 pub(crate) fn directory(
     settings: SettingsSource,
     home: &Paths,
     repo: Option<&RepoModels>,
     registry: Arc<dyn ModelRegistry>,
-    quota: Arc<dyn QuotaBoard>,
+    plan_usage: Arc<dyn PlanUsageBoard>,
     health: Arc<dyn HealthBoard>,
-) -> Arc<dyn WorkerDirectory> {
+) -> Arc<dyn RunnerDirectory> {
     Arc::new(Directory {
         settings,
         home: home.clone(),
         repo: repo.cloned(),
         registry,
-        quota,
+        plan_usage,
         health,
         builtins: builtin_adapters(),
         // Settings no source hands out, so the first use builds from the ones in effect then.
         built: Mutex::new(Built {
             settings: Arc::new(Settings::default()),
             adapters: Vec::new(),
-            harnesses: HarnessAdapters::default(),
+            clis: CliAdapters::default(),
             workers: HashMap::new(),
         }),
     })
@@ -438,20 +427,20 @@ pub(crate) fn services(
     repo: &RepoContext,
     reload: SettingsReloader,
 ) -> anyhow::Result<Services> {
-    // The policy keeps its shadow records and spot checks here, and asks at every point when
+    // The policy keeps its auto preview records and spot checks here, and asks at every point when
     // the folder is missing, since a record it couldn't keep could raise autonomy.
     let state_dir = home.state_dir(&repo.id);
     create_private_dir_all(&state_dir)
         .with_context(|| format!("creating {}", state_dir.display()))?;
     let repo_models = RepoModels::new(&repo.root, &state_dir);
-    let registry = harnesses::registry(&settings, Some(&repo_models), Some(&home.models_cache()));
-    let (quota, health) = boards_with(home, &settings.health);
+    let registry = clis::registry(&settings, Some(&repo_models), Some(&home.models_cache()));
+    let (plan_usage, health) = boards_with(home, &settings.health, registry.clone());
     let workers = directory(
         SettingsSource::fixed(settings.clone(), turned_on),
         home,
         Some(&repo_models),
         registry.clone(),
-        quota.clone(),
+        plan_usage.clone(),
         health.clone(),
     );
     let steps = Arc::new(SchemaStepRunner);
@@ -467,10 +456,11 @@ pub(crate) fn services(
         repo.root.clone(),
         settings.clone(),
     ));
-    let handoff = handoff_planner(
+    let fallback = fallback_planner(
         settings.clone(),
         registry.clone(),
-        quota.clone(),
+        workers.clone(),
+        plan_usage.clone(),
         health.clone(),
         track_records.clone(),
         Some(repo.run_dir.clone()),
@@ -479,19 +469,19 @@ pub(crate) fn services(
         settings.clone(),
         registry.clone(),
         workers.clone(),
-        quota.clone(),
+        plan_usage.clone(),
         health.clone(),
-        handoff.clone(),
+        fallback.clone(),
     );
     Ok(Services {
         workers,
         steps,
         policy,
         limits,
-        handoff,
-        quota,
+        fallback,
+        plan_usage,
         health,
-        gates: gate_runner(settings),
+        checks: check_runner(settings),
         registry,
         track_records,
         clock: Arc::new(SystemClock),
@@ -502,31 +492,31 @@ pub(crate) fn services(
 mod tests {
     use argonauts_core::RepoId;
     use argonauts_core::layout::project_files;
+    use argonauts_core::session_runner::RunnerKind;
     use argonauts_core::settings::agents::EndpointSettings;
-    use argonauts_core::worker::WorkerKind;
 
     use super::*;
     use crate::trust::TrustStore;
 
-    const HARNESSES: &str = r#"
-[[harness]]
+    const CLIS: &str = r#"
+[[cli]]
 id = "lines-agent"
 display_name = "Lines Agent"
 binary = "/opt/lines-agent/bin/lines-agent"
-family = "lines"
+provider = "lines"
 read_only_args = ["--read-only"]
 build_args = []
 
-[[harness]]
+[[cli]]
 id = "acp-agent"
 display_name = "ACP Agent"
 binary = "/opt/acp-agent/bin/acp-agent"
-family = "acp"
+provider = "acp"
 read_only_args = []
 build_args = []
 transport = "acp"
 
-[harness.acp]
+[cli.acp]
 modes = { read_only = "plan", build = "default" }
 model = "legacy-set-model"
 effort = "none"
@@ -534,13 +524,13 @@ report = "final-prompt"
 resume = "load"
 steer = "input"
 usage = ["end-turn"]
-quota = "none"
+plan_usage = "none"
 
-[[harness]]
+[[cli]]
 id = "codex"
 display_name = "Not Codex"
 binary = "/opt/fake/codex"
-family = "fake"
+provider = "fake"
 read_only_args = []
 build_args = []
 "#;
@@ -549,7 +539,7 @@ build_args = []
         settings: Settings,
         home: &Paths,
         repo: Option<&RepoModels>,
-    ) -> Arc<dyn WorkerDirectory> {
+    ) -> Arc<dyn RunnerDirectory> {
         directory_turned_on(settings, Vec::new(), home, repo)
     }
 
@@ -558,16 +548,16 @@ build_args = []
         turned_on: Vec<String>,
         home: &Paths,
         repo: Option<&RepoModels>,
-    ) -> Arc<dyn WorkerDirectory> {
+    ) -> Arc<dyn RunnerDirectory> {
         let settings = Arc::new(settings);
-        let registry = harnesses::registry(&settings, repo, None);
-        let (quota, health) = boards_with(home, &settings.health);
+        let registry = clis::registry(&settings, repo, None);
+        let (plan_usage, health) = boards_with(home, &settings.health, registry.clone());
         directory(
             SettingsSource::fixed(settings, turned_on),
             home,
             repo,
             registry,
-            quota,
+            plan_usage,
             health,
         )
     }
@@ -584,7 +574,7 @@ build_args = []
             .endpoints
             .insert("local".to_owned(), EndpointSettings::default());
         let workers = directory_for(settings, &home, None);
-        let isolates = |id: &str| workers.isolates(&WorkerRef::new(id, None));
+        let isolates = |id: &str| workers.isolates(&ModelRef::new(id, None));
         assert!(isolates("claude-code"));
         assert!(isolates("local"));
         for id in ["codex", "antigravity-cli", "opencode", "unknown-agent"] {
@@ -597,7 +587,7 @@ build_args = []
         let dir = tempfile::tempdir().unwrap();
         let home = Paths::new(dir.path().join("home"));
         std::fs::create_dir_all(home.home()).unwrap();
-        std::fs::write(home.global_models(), HARNESSES).unwrap();
+        std::fs::write(home.global_models(), CLIS).unwrap();
         let mut settings = Settings::default();
         settings
             .endpoints
@@ -606,49 +596,47 @@ build_args = []
         let workers = directory_for(settings, &home, None);
 
         let claude = workers
-            .get(&WorkerRef::new("claude-code", Some("haiku".to_owned())))
+            .get(&ModelRef::new("claude-code", Some("haiku".to_owned())))
             .unwrap();
-        assert_eq!(claude.kind(), WorkerKind::Harness);
-        assert_eq!(claude.worker_ref().model.as_deref(), Some("haiku"));
+        assert_eq!(claude.kind(), RunnerKind::Cli);
+        assert_eq!(claude.model_ref().model.as_deref(), Some("haiku"));
         assert!(Arc::ptr_eq(
             &claude,
             &workers
-                .get(&WorkerRef::new("claude-code", Some("haiku".to_owned())))
+                .get(&ModelRef::new("claude-code", Some("haiku".to_owned())))
                 .unwrap()
         ));
         assert_eq!(
             workers
-                .get(&WorkerRef::new("lines-agent", None))
+                .get(&ModelRef::new("lines-agent", None))
                 .unwrap()
-                .family(),
+                .provider(),
             "lines"
         );
         assert_eq!(
             workers
-                .get(&WorkerRef::new("acp-agent", None))
+                .get(&ModelRef::new("acp-agent", None))
                 .unwrap()
-                .family(),
+                .provider(),
             "acp"
         );
         let endpoint = workers
-            .get(&WorkerRef::new("local", Some("llama3.2".to_owned())))
+            .get(&ModelRef::new("local", Some("llama3.2".to_owned())))
             .unwrap();
-        assert_eq!(endpoint.kind(), WorkerKind::Endpoint);
+        assert_eq!(endpoint.kind(), RunnerKind::Endpoint);
         assert!(matches!(
-            workers.get(&WorkerRef::new("codex", None)),
-            Err(WorkerError::Disabled { .. })
+            workers.get(&ModelRef::new("codex", None)),
+            Err(RunnerError::Disabled { .. })
         ));
         assert!(matches!(
-            workers.get(&WorkerRef::new("nobody", None)),
-            Err(WorkerError::Unknown(_))
+            workers.get(&ModelRef::new("nobody", None)),
+            Err(RunnerError::Unknown(_))
         ));
         let available = workers.available();
-        assert!(available.contains(&WorkerRef::new("local", None)));
-        assert!(!available.iter().any(|worker| worker.worker == "codex"));
+        assert!(available.contains(&ModelRef::new("local", None)));
+        assert!(!available.iter().any(|worker| worker.agent == "codex"));
         assert!(
-            !available
-                .iter()
-                .any(|worker| worker.worker == "lines-agent"),
+            !available.iter().any(|worker| worker.agent == "lines-agent"),
             "its binary isn't installed"
         );
     }
@@ -662,7 +650,7 @@ build_args = []
         let (live, follow) = watch::channel(Arc::new(before.clone()));
         let registry: Arc<dyn ModelRegistry> =
             Arc::new(LiveRegistry::new(follow.clone(), None, None));
-        let (quota, health) = boards_with(&home, &before.health);
+        let (plan_usage, health) = boards_with(&home, &before.health, registry.clone());
         let (turn_on, turned_on) = watch::channel(Vec::new());
         let workers = directory(
             SettingsSource::Live {
@@ -672,32 +660,32 @@ build_args = []
             &home,
             None,
             registry,
-            quota,
+            plan_usage,
             health,
         );
-        let codex = WorkerRef::new("codex", None);
-        let local = WorkerRef::new("local", None);
-        let claude = WorkerRef::new("claude-code", None);
+        let codex = ModelRef::new("codex", None);
+        let local = ModelRef::new("local", None);
+        let claude = ModelRef::new("claude-code", None);
         let first_claude = workers.get(&claude).unwrap();
         assert!(matches!(
             workers.get(&codex),
-            Err(WorkerError::Disabled { .. })
+            Err(RunnerError::Disabled { .. })
         ));
-        assert!(matches!(workers.get(&local), Err(WorkerError::Unknown(_))));
+        assert!(matches!(workers.get(&local), Err(RunnerError::Unknown(_))));
 
         let mut after = before;
         after.agents.get_mut("codex").unwrap().enabled = true;
         after
             .endpoints
             .insert("local".to_owned(), EndpointSettings::default());
-        let hermes = WorkerRef::new("hermes", None);
-        assert!(matches!(workers.get(&hermes), Err(WorkerError::Unknown(_))));
+        let hermes = ModelRef::new("hermes", None);
+        assert!(matches!(workers.get(&hermes), Err(RunnerError::Unknown(_))));
         turn_on.send_replace(vec!["hermes".to_owned()]);
         live.send_replace(Arc::new(after));
 
         assert!(workers.get(&codex).is_ok());
-        assert_eq!(workers.get(&hermes).unwrap().kind(), WorkerKind::Harness);
-        assert_eq!(workers.get(&local).unwrap().kind(), WorkerKind::Endpoint);
+        assert_eq!(workers.get(&hermes).unwrap().kind(), RunnerKind::Cli);
+        assert_eq!(workers.get(&local).unwrap().kind(), RunnerKind::Endpoint);
         assert!(workers.available().contains(&local));
         assert!(
             !Arc::ptr_eq(&first_claude, &workers.get(&claude).unwrap()),
@@ -706,7 +694,7 @@ build_args = []
     }
 
     #[test]
-    fn the_repos_state_folder_exists_before_the_first_checkpoint() {
+    fn the_repos_state_folder_exists_before_the_first_approval() {
         let dir = tempfile::tempdir().unwrap();
         let home = Paths::new(dir.path().join("home"));
         let root = dir.path().join("repo");
@@ -739,15 +727,15 @@ build_args = []
     }
 
     #[test]
-    fn repo_harnesses_need_trust_and_an_outside_binary() {
+    fn repo_clis_need_trust_and_an_outside_binary() {
         let dir = tempfile::tempdir().unwrap();
         let home = Paths::new(dir.path().join("home"));
         let repo = dir.path().join("repo");
         std::fs::create_dir_all(repo.join(".argonauts")).unwrap();
         let inside = repo.join("tool");
         let models = format!(
-            "[[harness]]\nid = \"outside\"\ndisplay_name = \"Outside\"\nbinary = \"/opt/outside\"\nfamily = \"o\"\nread_only_args = []\nbuild_args = []\n\n\
-             [[harness]]\nid = \"inside\"\ndisplay_name = \"Inside\"\nbinary = \"{}\"\nfamily = \"i\"\nread_only_args = []\nbuild_args = []\n",
+            "[[cli]]\nid = \"outside\"\ndisplay_name = \"Outside\"\nbinary = \"/opt/outside\"\nprovider = \"o\"\nread_only_args = []\nbuild_args = []\n\n\
+             [[cli]]\nid = \"inside\"\ndisplay_name = \"Inside\"\nbinary = \"{}\"\nprovider = \"i\"\nread_only_args = []\nbuild_args = []\n",
             inside.display()
         );
         let path = repo.join(".argonauts").join(project_files::MODELS);
@@ -756,22 +744,22 @@ build_args = []
         let state_dir = home.state_dir(&RepoId::for_repo(&repo).unwrap());
         let models = RepoModels::new(&repo, &state_dir);
         let untrusted = directory_for(Settings::default(), &home, Some(&models));
-        assert!(untrusted.get(&WorkerRef::new("outside", None)).is_err());
+        assert!(untrusted.get(&ModelRef::new("outside", None)).is_err());
 
         std::fs::create_dir_all(&state_dir).unwrap();
         TrustStore::load(&state_dir).trust(&path).unwrap();
         let trusted = directory_for(Settings::default(), &home, Some(&models));
-        assert!(trusted.get(&WorkerRef::new("outside", None)).is_ok());
-        assert!(trusted.get(&WorkerRef::new("inside", None)).is_err());
+        assert!(trusted.get(&ModelRef::new("outside", None)).is_ok());
+        assert!(trusted.get(&ModelRef::new("inside", None)).is_err());
     }
     #[test]
     fn a_built_in_endpoint_needs_no_table_and_yours_moves_it() {
         let dir = tempfile::tempdir().unwrap();
         let home = Paths::new(dir.path().join("home"));
-        let ollama = WorkerRef::new("ollama", Some("llama3.2".to_owned()));
-        let preset = directory_for(Settings::default(), &home, None);
-        let worker = preset.get(&ollama).unwrap();
-        assert_eq!(worker.kind(), WorkerKind::Endpoint);
+        let ollama = ModelRef::new("ollama", Some("llama3.2".to_owned()));
+        let workflow = directory_for(Settings::default(), &home, None);
+        let worker = workflow.get(&ollama).unwrap();
+        assert_eq!(worker.kind(), RunnerKind::Endpoint);
 
         let mut moved = Settings::default();
         moved.endpoints.insert(
@@ -801,15 +789,15 @@ build_args = []
     fn hermes_runs_only_once_a_layer_turns_it_on() {
         let dir = tempfile::tempdir().unwrap();
         let home = Paths::new(dir.path().join("home"));
-        let hermes = WorkerRef::new("hermes", None);
+        let hermes = ModelRef::new("hermes", None);
         let off = directory_for(Settings::default(), &home, None);
-        assert!(matches!(off.get(&hermes), Err(WorkerError::Unknown(_))));
+        assert!(matches!(off.get(&hermes), Err(RunnerError::Unknown(_))));
 
         let on = directory_turned_on(Settings::default(), vec!["hermes".to_owned()], &home, None);
-        assert_eq!(on.get(&hermes).unwrap().kind(), WorkerKind::Harness);
+        assert_eq!(on.get(&hermes).unwrap().kind(), RunnerKind::Cli);
         let template = home
             .home()
-            .join(argonauts_core::layout::user_files::HARNESSES)
+            .join(argonauts_core::layout::user_files::CLIS)
             .join("hermes");
         assert!(
             template.join("config.yaml").is_file(),

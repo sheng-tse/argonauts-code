@@ -399,7 +399,7 @@ fn a_spinner_step_writes_a_few_cells() {
     term.draw(5, paint(&frame_with("✳"))).unwrap();
     let step = String::from_utf8(term.writer()[before..].to_vec()).unwrap();
     // The synchronized update markers, a move, a color, the glyph, a reset, and the cursor
-    // parked back in the composer.
+    // resting back in the composer.
     assert!(step.len() < 64, "{step:?}");
     assert_eq!(step.matches("\x1b[").count(), 6, "{step:?}");
     assert!(step.ends_with("\x1b[19;3H\x1b[?2026l"), "{step:?}");
@@ -486,11 +486,11 @@ fn a_view_before_the_first_frame_still_starts_on_a_clean_screen() {
 #[test]
 fn the_title_is_written_once_per_change() {
     let mut term = InlineTerminal::new(Vec::new(), Size::new(WIDTH, 5), Position::new(0, 0));
-    term.set_title("✳ chat").unwrap();
-    term.set_title("✳ chat").unwrap();
-    term.set_title("◐ chat\x07").unwrap();
+    term.set_title("✳ conversation").unwrap();
+    term.set_title("✳ conversation").unwrap();
+    term.set_title("◐ conversation\x07").unwrap();
     let out = String::from_utf8(term.writer().clone()).unwrap();
-    assert_eq!(out, "\x1b]0;✳ chat\x07\x1b]0;◐ chat\x07");
+    assert_eq!(out, "\x1b]0;✳ conversation\x07\x1b]0;◐ conversation\x07");
 }
 
 #[test]
@@ -520,7 +520,7 @@ fn resize_follows_the_cursor_of_a_rewrapping_terminal() {
     })
     .unwrap();
     // The terminal grew, pulled two rows back from scrollback, and says the cursor is two rows
-    // lower than where it was parked.
+    // lower than where it rested.
     term.resize(Size::new(WIDTH, 10), Some(Position::new(2, 9)))
         .unwrap();
     assert_eq!(term.history_end(), 4);
@@ -541,7 +541,7 @@ fn a_burst_of_resizes_adds_up_the_cursor_moves() {
         frame.set_cursor(2, 1);
     })
     .unwrap();
-    // Parked on row 9. Each resize moves the cursor a row up before any frame.
+    // Resting on row 9. Each resize moves the cursor a row up before any frame.
     term.resize(Size::new(WIDTH, 10), Some(Position::new(2, 8)))
         .unwrap();
     term.resize(Size::new(WIDTH, 10), Some(Position::new(2, 7)))

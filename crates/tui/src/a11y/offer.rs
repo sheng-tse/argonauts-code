@@ -2,10 +2,10 @@
 //! `/rewind`'s checkpoints by number, `s` after `/status` for the narrator's summary, `l` after
 //! a workflow for the library, and the library's files by number, with `c`, `C`, or `d` before
 //! it to copy one, copy it to the repo, or diff it with the built-in. `a` after the default
-//! agent's `/effort` flips All hands, which the slider does with Tab. Any other line drops the
+//! agent's `/effort` flips Ultracode, which the slider does with Tab. Any other line drops the
 //! offer and means what it always does.
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::app::{UiCommand, ViewData, ViewRequest};
 use argonauts_core::input::{SlashCommand, WorkflowAction};
 use argonauts_core::views::WorkflowFile;
@@ -14,12 +14,12 @@ use crate::text::sanitize_line;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Offer {
-    Checkpoints(Vec<(CardId, u32)>),
+    Checkpoints(Vec<(TaskId, u32)>),
     Summary,
     /// The run's workflow was read out; `l` reads the library.
     Workflow,
     Library(Vec<WorkflowFile>),
-    /// The default agent's effort was read out with All hands, which is on when `true`.
+    /// The main agent's effort was read out with Ultracode, which is on when `true`.
     Ultracode(bool),
 }
 
@@ -37,7 +37,7 @@ impl Offer {
                 Some(Self::Checkpoints(
                     checkpoints
                         .iter()
-                        .map(|row| (row.card.clone(), row.n))
+                        .map(|row| (row.task.clone(), row.n))
                         .collect(),
                 ))
             }
@@ -96,9 +96,9 @@ impl Offer {
                 ..Taken::default()
             }),
             Self::Checkpoints(rows) => {
-                let (card, checkpoint) = rows.get(number(line)?.checked_sub(1)?)?.clone();
+                let (task, checkpoint) = rows.get(number(line)?.checked_sub(1)?)?.clone();
                 Some(Taken {
-                    command: Some(UiCommand::Rewind { card, checkpoint }),
+                    command: Some(UiCommand::Rewind { task, checkpoint }),
                     ..Taken::default()
                 })
             }
@@ -145,7 +145,7 @@ fn number(text: &str) -> Option<usize> {
 mod tests {
     use argonauts_core::RunId;
     use argonauts_core::api::StatusSummary;
-    use argonauts_core::names::WorkerRef;
+    use argonauts_core::names::ModelRef;
     use argonauts_core::views::{CheckpointRow, WorkflowOrigin};
     use time::OffsetDateTime;
 
@@ -153,18 +153,18 @@ mod tests {
 
     fn checkpoints() -> ViewData {
         let row = |n| CheckpointRow {
-            card: CardId::new("task-001").unwrap(),
+            task: TaskId::new("task-001").unwrap(),
             n,
             at: OffsetDateTime::UNIX_EPOCH,
             commit: "0123456".to_owned(),
-            from: WorkerRef::new("claude-code", None),
-            to: vec![WorkerRef::new("codex", None)],
+            from: ModelRef::new("claude-code", None),
+            to: vec![ModelRef::new("codex", None)],
             reason: "usage limit".to_owned(),
-            reverted_here: false,
+            rewound_here: false,
         };
         ViewData::Checkpoints {
             run: RunId::new("run-01").unwrap(),
-            card: None,
+            task: None,
             checkpoints: vec![row(1), row(2)],
         }
     }
@@ -182,14 +182,14 @@ mod tests {
         }
     }
 
-    /// The default agent's effort offers All hands by `a`, which asks to flip it, where the
+    /// The main agent's effort offers Ultracode by `a`, which asks to flip it, where the
     /// slider would take Tab.
     #[test]
     fn a_after_the_effort_flips_ultracode() {
         use argonauts_core::model_picker::EffortSlider;
 
         let view = |on: bool| {
-            let worker: WorkerRef = "claude-code/haiku".parse().unwrap();
+            let worker: ModelRef = "claude-code/haiku".parse().unwrap();
             let slider = EffortSlider::without_levels(None, worker, "Haiku 4.5");
             ViewData::Effort {
                 slider: slider.with_ultracode(on),
@@ -216,7 +216,7 @@ mod tests {
                 assert!(offer.take(other).is_none(), "{other}");
             }
         }
-        let worker: WorkerRef = "claude-code/haiku".parse().unwrap();
+        let worker: ModelRef = "claude-code/haiku".parse().unwrap();
         let without = ViewData::Effort {
             slider: EffortSlider::without_levels(
                 Some(argonauts_core::names::RoleName::Reviewer),
@@ -245,11 +245,11 @@ mod tests {
     #[test]
     fn the_library_reads_copies_and_diffs_by_number() {
         let file = WorkflowFile {
-            name: "solo".to_owned(),
+            name: "captain".to_owned(),
             origin: WorkflowOrigin::BuiltIn,
             source: "built in".to_owned(),
             description: String::new(),
-            text: "name: solo\nphases: []".to_owned(),
+            text: "name: captain\nphases: []".to_owned(),
             edited: None,
             in_use: true,
             problem: None,
@@ -261,7 +261,10 @@ mod tests {
         .unwrap();
         assert_eq!(
             offer.take("1").unwrap().lines,
-            ["workflow solo: name: solo", "workflow solo: phases: []"]
+            [
+                "workflow captain: name: captain",
+                "workflow captain: phases: []"
+            ]
         );
         let copy = |line: &str| match offer.take(line).and_then(|taken| taken.command) {
             Some(UiCommand::WorkflowFile { action, .. }) => Some(action),

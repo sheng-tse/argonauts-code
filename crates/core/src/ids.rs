@@ -1,4 +1,4 @@
-//! Ids for runs, cards, and repos. They end up in file paths and git branch names, so each one
+//! Ids for runs, tasks, and repos. They end up in file paths and git branch names, so each one
 //! is checked when it is created or deserialized.
 
 use std::fmt;
@@ -114,7 +114,7 @@ id_type!(
 
 id_type!(
     /// Unique within a run, such as `task-001`.
-    CardId,
+    TaskId,
     "task"
 );
 
@@ -146,7 +146,7 @@ impl RunId {
     }
 }
 
-impl CardId {
+impl TaskId {
     pub fn numbered(n: u32) -> Self {
         Self(format!("task-{n:03}"))
     }
@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn accepts_typical_ids() {
         for ok in ["run-01", "task-001", "api-3f9a1c2b4d5e", "a", "v1.2_x"] {
-            assert!(CardId::new(ok).is_ok(), "{ok}");
+            assert!(TaskId::new(ok).is_ok(), "{ok}");
         }
     }
 
@@ -205,7 +205,7 @@ mod tests {
         let too_long = "a".repeat(MAX_ID_LEN + 1);
         for bad in [
             "",
-            "-lead",
+            "-main-agent",
             ".hidden",
             "a/b",
             "a..b",
@@ -221,16 +221,16 @@ mod tests {
 
     #[test]
     fn error_names_the_kind() {
-        let err = CardId::new("a/b").unwrap_err();
+        let err = TaskId::new("a/b").unwrap_err();
         assert!(err.to_string().contains("task id"));
     }
 
     #[test]
     fn serde_validates_on_the_way_in() {
-        let id: CardId = serde_json::from_str("\"task-002\"").unwrap();
+        let id: TaskId = serde_json::from_str("\"task-002\"").unwrap();
         assert_eq!(id.as_str(), "task-002");
         assert_eq!(serde_json::to_string(&id).unwrap(), "\"task-002\"");
-        assert!(serde_json::from_str::<CardId>("\"../etc\"").is_err());
+        assert!(serde_json::from_str::<TaskId>("\"../etc\"").is_err());
     }
 
     #[test]
@@ -242,9 +242,9 @@ mod tests {
     }
 
     #[test]
-    fn card_numbering() {
-        assert_eq!(CardId::numbered(1).as_str(), "task-001");
-        assert_eq!(CardId::numbered(1234).as_str(), "task-1234");
+    fn task_numbering() {
+        assert_eq!(TaskId::numbered(1).as_str(), "task-001");
+        assert_eq!(TaskId::numbered(1234).as_str(), "task-1234");
     }
 
     #[test]

@@ -1,5 +1,5 @@
-//! Crew runs through the real binary with fake vendors: WORKFLOW 12's rate-limiting example end
-//! to end, its goal question card, and your answers at the goal, plan, and merge checkpoints.
+//! Crew runs through the real binary with fake agents: WORKFLOW 12's rate-limiting example end
+//! to end, its goal question, and your answers at the understand, plan, and merge approvals.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -9,29 +9,28 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
 
-use argonauts_core::CardId;
-use argonauts_core::events::card::{CardEvent, CardState, IntegrationEvent};
-use argonauts_core::events::checkpoint::{AnswerAction, CheckpointEvent, CheckpointKind};
+use argonauts_core::TaskId;
+use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind};
 use argonauts_core::events::goal::GoalEvent;
 use argonauts_core::events::plan::{DivideEvent, PlanEvent};
-use argonauts_core::events::run::{ParkReason, Party, RunLifecycle, RunOutcome};
+use argonauts_core::events::run::{Party, RunLifecycle, RunOutcome, WaitReason};
 use argonauts_core::events::session::SessionEvent;
+use argonauts_core::events::task::{MergeEvent, TaskEvent, TaskState};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::worker::Access;
-use argonauts_scenarios::{Scenario, WAIT, past_the_card_guard, scenario_file};
+use argonauts_core::session_runner::Access;
+use argonauts_scenarios::{Scenario, WAIT, past_the_question_guard, scenario_file};
 use argonauts_testkit::{FakeScenario, Key, Pty};
 
 const REQUEST: &str = "add per-key rate limiting to the public API";
 
-/// A crew run takes many steps; each wait covers the steps up to the next checkpoint.
+/// A crew run takes many steps; each wait covers the steps up to the next approval.
 const STEPS_WAIT: Duration = Duration::from_secs(180);
 
-/// A global config means no guided setup; it names the example's crew. The goal, plan, and
-/// merge checkpoints wait for you, since these runs are about your answers there. The fakes
+/// A global config means no guided setup; it names the example's crew. The understand, plan, and
+/// merge approvals wait for you, since these runs are about your answers there. The fakes
 /// answer the fixed phases, so the workflow runs those. A request typed as plain text ends
 /// with the verdict, which a CLI that takes no tools keeps.
-const CREW_CONFIG: &str = r#"main_agent = "claude-code"
-crew = ["claude-code", "codex", "antigravity-cli"]
+const CREW_CONFIG: &str = r#"crew = ["claude-code", "codex", "antigravity-cli"]
 
 [main_session]
 tools = false
@@ -39,7 +38,7 @@ tools = false
 [ui]
 theme = "dark"
 
-[approvals.goal]
+[approvals.understand]
 mode = "supervised"
 
 [approvals.plan]
@@ -62,7 +61,7 @@ name = "acceptance"
 command = ["sh", "scripts/acceptance.sh"]
 "#;
 
-/// Stands in for npm, offline: the conductor's install of the plan's new dependency adds it to
+/// Stands in for npm, offline: Argonauts Code's install of the plan's new dependency adds it to
 /// the manifest and the lockfile.
 const NPM: &str = r#"#!/bin/sh
 for arg in "$@"; do
@@ -109,14 +108,15 @@ fn crew_scenario() -> anyhow::Result<Scenario> {
     scenario.repo.write("src/api/auth.ts", AUTH)?;
     scenario.repo.write("scripts/acceptance.sh", ACCEPTANCE)?;
     scenario.repo.commit_all("the public API")?;
-    let npm = scenario.vendors.bin_dir().join("npm");
+    let npm = scenario.clis.bin_dir().join("npm");
     fs::write(&npm, NPM)?;
     fs::set_permissions(&npm, fs::Permissions::from_mode(0o755))?;
     Ok(scenario)
 }
 
-/// `argonauts run --crew` with the request: the same engine and cards as the app, for scripts.
-/// Without a chat there's no estimate for triage to read, so the example's crew is asked for.
+/// `argonauts run --crew` with the request: the same engine and tasks as the app, for scripts.
+/// Without a conversation there's no estimate for the Captain-or-crew rules to read, so the
+/// example's crew is asked for.
 fn run(scenario: &Scenario) -> anyhow::Result<Pty> {
     scenario.launch(&["run", "--crew", REQUEST])
 }
@@ -141,9 +141,9 @@ fn wait_for_event<T>(
     }
 }
 
-fn opened(event: &RunEvent, kind: CheckpointKind) -> Option<u64> {
+fn opened(event: &RunEvent, kind: ApprovalKind) -> Option<u64> {
     match &event.kind {
-        RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) if opened.kind == kind => {
+        RunEventKind::Approval(ApprovalEvent::Opened(opened)) if opened.kind == kind => {
             Some(event.seq)
         }
         _ => None,
@@ -160,7 +160,7 @@ fn finished(event: &RunEvent) -> Option<RunOutcome> {
 /// The goal question: `1` picks the recommended answer, per API key.
 fn answer_goal_question(pty: &mut Pty) -> anyhow::Result<()> {
     pty.wait_for(r"◆ What should the goal say\?", STEPS_WAIT)?;
-    past_the_card_guard();
+    past_the_question_guard();
     pty.press(Key::Up)?;
     pty.press(Key::Char('1'))?;
     pty.wait_for(r"◆ Goal question answered · (?i:per API key)", WAIT)?;
@@ -169,7 +169,7 @@ fn answer_goal_question(pty: &mut Pty) -> anyhow::Result<()> {
 
 fn approve_plan(pty: &mut Pty) -> anyhow::Result<()> {
     pty.wait_for(r"◆ Approve this plan\?", STEPS_WAIT)?;
-    past_the_card_guard();
+    past_the_question_guard();
     pty.press(Key::Up)?;
     pty.press(Key::Char('1'))?;
     Ok(())
@@ -178,7 +178,7 @@ fn approve_plan(pty: &mut Pty) -> anyhow::Result<()> {
 /// Merge waits for Enter after its number.
 fn merge(pty: &mut Pty) -> anyhow::Result<()> {
     pty.wait_for(r"◆ Merge", STEPS_WAIT)?;
-    past_the_card_guard();
+    past_the_question_guard();
     pty.press(Key::Up)?;
     pty.press(Key::Char('1'))?;
     pty.wait_for("Enter to merge", WAIT)?;
@@ -186,21 +186,19 @@ fn merge(pty: &mut Pty) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// When the first checkpoint of this kind was decided, and how.
-fn decided(events: &[RunEvent], kind: CheckpointKind) -> Option<(u64, AnswerAction)> {
+/// When the first approval of this kind was decided, and how.
+fn decided(events: &[RunEvent], kind: ApprovalKind) -> Option<(u64, AnswerAction)> {
     let ids: Vec<_> = events
         .iter()
         .filter_map(|event| match &event.kind {
-            RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) if opened.kind == kind => {
+            RunEventKind::Approval(ApprovalEvent::Opened(opened)) if opened.kind == kind => {
                 Some(opened.id.clone())
             }
             _ => None,
         })
         .collect();
     events.iter().find_map(|event| match &event.kind {
-        RunEventKind::Checkpoint(CheckpointEvent::Decided(decided))
-            if ids.contains(&decided.id) =>
-        {
+        RunEventKind::Approval(ApprovalEvent::Decided(decided)) if ids.contains(&decided.id) => {
             Some((event.seq, decided.action.clone()))
         }
         _ => None,
@@ -241,13 +239,13 @@ fn crew_rate_limit_example_end_to_end() -> anyhow::Result<()> {
     scenario.shot(&pty, "crew-rate-limit-merged")?;
     let events = scenario.latest_run_events()?;
 
-    // The goal: three restatements, two differs, one scope question you answered, and the
+    // The goal: three readings, two comparers, one scope question you answered, and the
     // Retry-After detail adopted as an assumption.
-    let restated = events
+    let readings = events
         .iter()
-        .filter(|event| matches!(event.kind, RunEventKind::Goal(GoalEvent::Restated { .. })))
+        .filter(|event| matches!(event.kind, RunEventKind::Goal(GoalEvent::Read { .. })))
         .count();
-    assert_eq!(restated, 3);
+    assert_eq!(readings, 3);
     let compared = events
         .iter()
         .filter(|event| matches!(event.kind, RunEventKind::Goal(GoalEvent::Compared { .. })))
@@ -284,7 +282,7 @@ fn crew_rate_limit_example_end_to_end() -> anyhow::Result<()> {
             .any(|answer| answer.contains("Per API key"))
     );
 
-    // Planning: blind drafts, a map, a critique round, revisions, a spike per option, and a
+    // Planning: blind drafts, a map, a critique round, revisions, an experiment per option, and a
     // judged winner that you approved.
     let sealed: Vec<u8> = events
         .iter()
@@ -306,18 +304,18 @@ fn crew_rate_limit_example_end_to_end() -> anyhow::Result<()> {
     )));
     assert!(has(|kind| matches!(
         kind,
-        RunEventKind::Plan(PlanEvent::SpikeProposed { .. })
+        RunEventKind::Plan(PlanEvent::ExperimentProposed { .. })
     )));
-    let spikes = events
+    let experiments = events
         .iter()
         .filter(|event| {
             matches!(
                 event.kind,
-                RunEventKind::Plan(PlanEvent::SpikeFinished { .. })
+                RunEventKind::Plan(PlanEvent::ExperimentFinished { .. })
             )
         })
         .count();
-    assert_eq!(spikes, 2);
+    assert_eq!(experiments, 2);
     let winner = events.iter().find_map(|event| match &event.kind {
         RunEventKind::Plan(PlanEvent::Judged(result)) => result.winner,
         _ => None,
@@ -325,7 +323,7 @@ fn crew_rate_limit_example_end_to_end() -> anyhow::Result<()> {
     assert_eq!(winner, Some(2));
 
     // Nothing builds before you approve the goal and the plan.
-    let plan_decided = decided(&events, CheckpointKind::Plan)
+    let plan_decided = decided(&events, ApprovalKind::Plan)
         .filter(|(_, action)| *action == AnswerAction::Approve)
         .map(|(seq, _)| seq)
         .context("you approved the plan")?;
@@ -336,8 +334,8 @@ fn crew_rate_limit_example_end_to_end() -> anyhow::Result<()> {
     .context("tasks were built")?;
     assert!(first_build > plan_decided);
 
-    // Five cards from the plan, each merged; ioredis added by the conductor; the final check
-    // passed; the run landed on main.
+    // Five tasks from the plan, each merged; ioredis added by Argonauts Code; the final check
+    // passed; the run merged on main.
     let graph = events
         .iter()
         .find_map(|event| match &event.kind {
@@ -346,9 +344,9 @@ fn crew_rate_limit_example_end_to_end() -> anyhow::Result<()> {
         })
         .context("the task graph")?;
     let built: BTreeSet<String> = graph
-        .cards
+        .tasks
         .iter()
-        .flat_map(|card| card.owned_paths.clone())
+        .flat_map(|question| question.owned_paths.clone())
         .collect();
     for path in [
         "src/limiter/index.ts",
@@ -358,31 +356,31 @@ fn crew_rate_limit_example_end_to_end() -> anyhow::Result<()> {
     ] {
         assert!(built.contains(path), "{path} is some task's");
     }
-    let merged: BTreeSet<CardId> = events
+    let merged: BTreeSet<TaskId> = events
         .iter()
         .filter_map(|event| match &event.kind {
-            RunEventKind::Integration(IntegrationEvent::Merged { card, .. }) => Some(card.clone()),
+            RunEventKind::Merge(MergeEvent::Merged { task, .. }) => Some(task.clone()),
             _ => None,
         })
         .collect();
     assert!(merged.len() >= 5, "{merged:?}");
     assert!(events.iter().any(|event| matches!(&event.kind,
-        RunEventKind::Integration(IntegrationEvent::DependenciesAdded { packages, .. })
+        RunEventKind::Merge(MergeEvent::DependenciesAdded { packages, .. })
             if packages.iter().any(|package| package == "ioredis"))));
     assert!(events.iter().any(|event| matches!(
         event.kind,
-        RunEventKind::Integration(IntegrationEvent::FinalCheck { passed: true })
+        RunEventKind::Merge(MergeEvent::FinalCheck { passed: true })
     )));
     assert!(events.iter().any(|event| matches!(
         event.kind,
-        RunEventKind::Integration(IntegrationEvent::Landed { .. })
+        RunEventKind::Merge(MergeEvent::RunMerged { .. })
     )));
     let store = scenario.repo.git(&["show", "main:src/limiter/store.ts"])?;
     assert!(store.contains("RedisStore"));
 
-    // A crew of three vendors did it.
+    // A crew of three agents did it.
     let called: BTreeSet<String> = scenario
-        .vendors
+        .clis
         .invocations()?
         .into_iter()
         .map(|invocation| invocation.argv0)
@@ -394,15 +392,15 @@ fn crew_rate_limit_example_end_to_end() -> anyhow::Result<()> {
 }
 
 #[test]
-fn crew_example_question_card() -> anyhow::Result<()> {
+fn crew_example_question() -> anyhow::Result<()> {
     let scenario = crew_scenario()?;
     let mut pty = scenario.launch(&[])?;
     pty.wait_for(r"(?m)^  ǁ supervised mode on|⏵⏵ supervised", WAIT)?;
     pty.send(REQUEST)?;
     pty.press(Key::Enter)?;
 
-    // The model-independent lines for a bigger task: three restaters and two differs, the
-    // detail adopted as an assumption, then the question. No Triage row comes first.
+    // The model-independent lines for a bigger task: three readers and two comparers, the
+    // detail adopted as an assumption, then the question. No row of the run's own comes first.
     pty.wait_for(
         r"(?m)^[●⏺] 3 agents started.*\n(?:\s+[├└] read:\S+ · .*\n){3}",
         STEPS_WAIT,
@@ -412,33 +410,30 @@ fn crew_example_question_card() -> anyhow::Result<()> {
         STEPS_WAIT,
     )?;
     pty.wait_for(r"Assumed\W+Retry-After format: seconds", WAIT)?;
-    let card = pty.wait_for(r"(?m)^◆ What should the goal say\?", STEPS_WAIT)?;
-    let text = card.visible_text();
+    let question = pty.wait_for(r"(?m)^◆ What should the goal say\?", STEPS_WAIT)?;
+    let text = question.visible_text();
     assert!(text.contains("per API key"), "{text}");
     assert!(text.contains("Per API key (recommended)"), "{text}");
-    assert!(
-        text.contains("2 of 3 restatements read it this way"),
-        "{text}"
-    );
-    // Choose-only: the last answer hands this and the rest to the lead.
+    assert!(text.contains("2 of 3 readings read it this way"), "{text}");
+    // Choose-only: the last answer hands this and the rest to the main agent.
     assert!(
         text.contains("Let the main agent decide this and the rest"),
         "{text}"
     );
     assert!(!text.contains("Type my own answer"), "{text}");
-    scenario.shot(&pty, "crew-question-card")?;
+    scenario.shot(&pty, "crew-question")?;
 
-    // No agent works while the card waits, so the run parks until you answer.
-    let parked = wait_for_event(&scenario, WAIT, |event| match &event.kind {
-        RunEventKind::Run(RunLifecycle::Parked {
-            reason: ParkReason::Checkpoint,
+    // No agent works while the question waits, so the run waits until you answer.
+    let waiting = wait_for_event(&scenario, WAIT, |event| match &event.kind {
+        RunEventKind::Run(RunLifecycle::Waiting {
+            reason: WaitReason::Approval,
             waiting_on,
         }) => Some(waiting_on.len()),
         _ => None,
     })?;
-    assert_eq!(parked, 1);
+    assert_eq!(waiting, 1);
 
-    past_the_card_guard();
+    past_the_question_guard();
     pty.press(Key::Up)?;
     pty.press(Key::Char('1'))?;
     pty.wait_for(r"◆ Goal question answered · (?i:per API key)", STEPS_WAIT)?;
@@ -464,12 +459,12 @@ fn crew_goal_answer_approves() -> anyhow::Result<()> {
     })?;
     let events = scenario.latest_run_events()?;
 
-    // Your answer to the last question approved the goal: no second card asked for it.
-    let goal_cards = events
+    // Your answer to the last question approved the goal: no second question asked for it.
+    let goal_questions = events
         .iter()
-        .filter(|event| opened(event, CheckpointKind::Goal).is_some())
+        .filter(|event| opened(event, ApprovalKind::Understand).is_some())
         .count();
-    assert_eq!(goal_cards, 1);
+    assert_eq!(goal_questions, 1);
     let (file, by) = events
         .iter()
         .find_map(|event| match &event.kind {
@@ -508,8 +503,8 @@ fn crew_plan_send_back_replans() -> anyhow::Result<()> {
 
     // Send back is the third option; Tab adds your note to it.
     pty.wait_for(r"◆ Approve this plan\?", STEPS_WAIT)?;
-    let first = wait_for_event(&scenario, WAIT, |event| opened(event, CheckpointKind::Plan))?;
-    past_the_card_guard();
+    let first = wait_for_event(&scenario, WAIT, |event| opened(event, ApprovalKind::Plan))?;
+    past_the_question_guard();
     pty.press(Key::Up)?;
     pty.press(Key::Down)?;
     pty.press(Key::Down)?;
@@ -518,7 +513,7 @@ fn crew_plan_send_back_replans() -> anyhow::Result<()> {
     pty.press(Key::Enter)?;
 
     let sent_back = wait_for_event(&scenario, WAIT, |event| match &event.kind {
-        RunEventKind::Checkpoint(CheckpointEvent::Decided(decided))
+        RunEventKind::Approval(ApprovalEvent::Decided(decided))
             if decided.action == AnswerAction::SendBack =>
         {
             Some((event.seq, decided.text.clone()))
@@ -529,7 +524,7 @@ fn crew_plan_send_back_replans() -> anyhow::Result<()> {
 
     // Planning runs again, with your note in the new drafts' prompts, and asks you again.
     let second = wait_for_event(&scenario, STEPS_WAIT, |event| {
-        opened(event, CheckpointKind::Plan).filter(|seq| *seq > first)
+        opened(event, ApprovalKind::Plan).filter(|seq| *seq > first)
     })?;
     let events = scenario.latest_run_events()?;
     let redrafted = events
@@ -537,7 +532,7 @@ fn crew_plan_send_back_replans() -> anyhow::Result<()> {
         .filter(|event| event.seq > sent_back.0 && event.seq < second)
         .filter(|event| matches!(event.kind, RunEventKind::Plan(PlanEvent::Sealed { .. })))
         .count();
-    assert!(redrafted >= 3, "every drafter drafts again");
+    assert!(redrafted >= 3, "every drafting agent drafts again");
     let noted = events
         .iter()
         .filter(|event| event.seq > sent_back.0)
@@ -559,37 +554,35 @@ fn crew_merge_request_changes() -> anyhow::Result<()> {
     answer_goal_question(&mut pty)?;
     approve_plan(&mut pty)?;
 
-    // Request changes on some cards: the merge rows become a checklist. Pick the second card
+    // Request changes on some tasks: the merge rows become a checklist. Pick the second task
     // only.
     pty.wait_for(r"◆ Merge", STEPS_WAIT)?;
-    let first = wait_for_event(&scenario, WAIT, |event| {
-        opened(event, CheckpointKind::Merge)
-    })?;
-    past_the_card_guard();
+    let first = wait_for_event(&scenario, WAIT, |event| opened(event, ApprovalKind::Merge))?;
+    past_the_question_guard();
     pty.press(Key::Up)?;
-    // Request changes on some cards, the third option.
+    // Request changes on some tasks, the third option.
     pty.press(Key::Char('3'))?;
     pty.press(Key::Down)?;
     pty.press(Key::Char(' '))?;
-    // Enter opens the note on the ticked cards, and Enter again sends them without one.
+    // Enter opens the note on the ticked tasks, and Enter again sends them without one.
     pty.press(Key::Enter)?;
     pty.wait_for("Enter to send · Esc to go back", WAIT)?;
     pty.press(Key::Enter)?;
 
     let (decided_at, picked) = wait_for_event(&scenario, WAIT, |event| match &event.kind {
-        RunEventKind::Checkpoint(CheckpointEvent::Decided(decided))
+        RunEventKind::Approval(ApprovalEvent::Decided(decided))
             if decided.action == AnswerAction::RequestChanges =>
         {
-            Some((event.seq, decided.cards.clone()))
+            Some((event.seq, decided.tasks.clone()))
         }
         _ => None,
     })?;
     assert_eq!(picked.len(), 1, "one task picked: {picked:?}");
     let returned = picked[0].clone();
 
-    // Only the picked card goes back to its owner; the others stay as they were.
+    // Only the picked task goes back to its worker; the others stay as they were.
     let again = wait_for_event(&scenario, STEPS_WAIT, |event| {
-        opened(event, CheckpointKind::Merge).filter(|seq| *seq > first)
+        opened(event, ApprovalKind::Merge).filter(|seq| *seq > first)
     })?;
     let events = scenario.latest_run_events()?;
     let between = || {
@@ -597,30 +590,30 @@ fn crew_merge_request_changes() -> anyhow::Result<()> {
             .iter()
             .filter(|event| event.seq > decided_at && event.seq < again)
     };
-    let moved: BTreeSet<CardId> = between()
+    let moved: BTreeSet<TaskId> = between()
         .filter_map(|event| match &event.kind {
-            RunEventKind::Card(CardEvent::State { .. }) => event.card_id.clone(),
+            RunEventKind::Task(TaskEvent::State { .. }) => event.task_id.clone(),
             _ => None,
         })
         .collect();
     assert_eq!(moved, BTreeSet::from([returned.clone()]));
-    let rebuilt: BTreeSet<CardId> = between()
+    let rebuilt: BTreeSet<TaskId> = between()
         .filter_map(|event| match &event.kind {
             RunEventKind::Session(SessionEvent::Started(started))
                 if started.access == Access::Build =>
             {
-                event.card_id.clone()
+                event.task_id.clone()
             }
             _ => None,
         })
         .collect();
     assert_eq!(rebuilt, BTreeSet::from([returned.clone()]));
     assert!(
-        between().any(|event| event.card_id.as_ref() == Some(&returned)
+        between().any(|event| event.task_id.as_ref() == Some(&returned)
             && matches!(
                 &event.kind,
-                RunEventKind::Card(CardEvent::State {
-                    to: CardState::Integrated,
+                RunEventKind::Task(TaskEvent::State {
+                    to: TaskState::Merged,
                     ..
                 })
             ))
@@ -629,11 +622,11 @@ fn crew_merge_request_changes() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Full auto through the binary: every checkpoint auto, your rules deciding, and a budget
-/// that fits the plan. The example's scope question, which `goal.always_ask` keeps yours
-/// in auto, is the lead's to answer, and the run goes from request to merge without a card.
+/// Autopilot through the binary: every approval auto, your rules deciding, and a limit that fits
+/// the plan. The example's scope question, which `understand.always_ask` keeps yours in auto, is
+/// the main agent's to answer, and the run goes from request to merge without a question.
 #[test]
-fn crew_autopilot_runs_to_merge_without_a_card() -> anyhow::Result<()> {
+fn crew_autopilot_runs_to_merge_without_a_question() -> anyhow::Result<()> {
     let scenario = crew_scenario()?;
     let mut config = CREW_CONFIG.replace(
         "mode = \"supervised\"",
@@ -650,23 +643,23 @@ fn crew_autopilot_runs_to_merge_without_a_card() -> anyhow::Result<()> {
     assert_eq!(outcome, RunOutcome::Merged);
     let events = scenario.latest_run_events()?;
 
-    // Nothing waited for you: every checkpoint was decided by your rules, none by you.
+    // Nothing waited for you: every approval was decided by your rules, none by you.
     let by: Vec<_> = events
         .iter()
         .filter_map(|event| match &event.kind {
-            RunEventKind::Checkpoint(CheckpointEvent::Decided(decided)) => Some(decided.by.clone()),
+            RunEventKind::Approval(ApprovalEvent::Decided(decided)) => Some(decided.by.clone()),
             _ => None,
         })
         .collect();
     assert!(!by.is_empty());
     assert!(by.iter().all(|by| *by == Party::Rules), "{by:?}");
     let asked = events.iter().any(|event| {
-        matches!(&event.kind, RunEventKind::Checkpoint(CheckpointEvent::Checked(check))
-            if !check.shadow && check.verdict.is_none())
+        matches!(&event.kind, RunEventKind::Approval(ApprovalEvent::Checked(check))
+            if !check.auto_preview && check.verdict.is_none())
     });
     assert!(!asked, "an approval asked you");
 
-    // The scope question is the lead's assumption, which the goal carries for you to review.
+    // The scope question is the main agent's assumption, which the goal carries for you to review.
     let goal = events
         .iter()
         .find_map(|event| match &event.kind {
@@ -675,9 +668,9 @@ fn crew_autopilot_runs_to_merge_without_a_card() -> anyhow::Result<()> {
         })
         .context("the goal was approved")?;
     assert!(
-        goal.assumptions
-            .iter()
-            .any(|assumption| assumption.by_lead() && assumption.text.ends_with("Per API key")),
+        goal.assumptions.iter().any(
+            |assumption| assumption.by_main_agent() && assumption.text.ends_with("Per API key")
+        ),
         "{:?}",
         goal.assumptions
     );

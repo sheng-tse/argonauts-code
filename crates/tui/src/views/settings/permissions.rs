@@ -1,5 +1,5 @@
 //! `/permissions` in plain words: whose rules guard the agents, their internet, whether they
-//! see each other's copies and make their own commits, the rest of the sandbox, and the
+//! see each other's worktrees and make their own commits, the rest of the sandbox, and the
 //! limits, for every agent; then each role, whose own keys win for its agents.
 
 use argonauts_core::app::SettingRow;
@@ -34,15 +34,15 @@ pub fn label(key: &str) -> Option<&'static str> {
     })
 }
 
-/// A value as `/permissions` says it, such as `Argonauts' (OS sandbox)` for `sandbox.mode =
+/// A value as `/permissions` says it, such as `Argonauts Code's (OS sandbox)` for `sandbox.mode =
 /// "os"`. Values without words of their own read as they do everywhere else.
 pub fn value_in_words(key: &str, toml: &str) -> String {
     let words = value_words(toml);
     let plain = match (sandbox_leaf(key), words.as_str()) {
         // An empty image refuses container sessions.
         (Some(_), "") => "none",
-        (Some("mode"), "os") => "Argonauts' (OS sandbox)",
-        (Some("mode"), "container") => "Argonauts' (container)",
+        (Some("mode"), "os") => "Argonauts Code's (OS sandbox)",
+        (Some("mode"), "container") => "Argonauts Code's (container)",
         (Some("mode"), "tool") => "each AI tool's own",
         (Some("mode"), "none") => "none",
         (Some("network"), "true") => "on",
@@ -57,12 +57,12 @@ pub fn value_in_words(key: &str, toml: &str) -> String {
 /// One line on what a sandbox value does, for its row among the values.
 pub fn value_note(leaf: &str, value: &str) -> &'static str {
     match (leaf, value) {
-        ("mode", "os") => "Argonauts' rules, kept by your OS's own sandbox",
+        ("mode", "os") => "Argonauts Code's rules, kept by your OS's own sandbox",
         ("mode", "container") => {
-            "Argonauts' rules, in a container that holds only the agent's worktree"
+            "Argonauts Code's rules, in a container that holds only the agent's worktree"
         }
-        ("mode", "tool") => "Each AI tool's own sandbox and approvals, with Argonauts' off",
-        ("mode", "none") => "No protection at all, neither Argonauts' nor the tool's",
+        ("mode", "tool") => "Each AI tool's own sandbox and approvals, with Argonauts Code's off",
+        ("mode", "none") => "No protection at all, neither Argonauts Code's nor the tool's",
         ("network", "true") => "Commands agents run can reach the internet",
         ("network", "false") => "Only each AI tool's own service and the hosts you allow",
         ("agents_see_other_worktrees", "true") => {
@@ -71,7 +71,7 @@ pub fn value_note(leaf: &str, value: &str) -> &'static str {
         ("agents_see_other_worktrees", "false") => "Each agent sees only its own worktree",
         ("agents_commit", "true") => "Agents commit their own work",
         ("agents_commit", "false") => {
-            "Git stays read-only to agents, and Argonauts commits for them"
+            "Git stays read-only to agents, and Argonauts Code commits for them"
         }
         ("fail_closed", "true") => "A session that can't be sandboxed doesn't start",
         ("fail_closed", "false") => "It starts anyway, unguarded",
@@ -83,7 +83,7 @@ pub fn value_note(leaf: &str, value: &str) -> &'static str {
     }
 }
 
-/// `mode` for `sandbox.mode` and for `roles.owner.sandbox.mode`.
+/// `mode` for `sandbox.mode` and for `roles.worker.sandbox.mode`.
 pub fn sandbox_leaf(key: &str) -> Option<&str> {
     if let Some(leaf) = key.strip_prefix("sandbox.") {
         return Some(leaf);
@@ -92,7 +92,7 @@ pub fn sandbox_leaf(key: &str) -> Option<&str> {
     rest.strip_prefix("sandbox.")
 }
 
-/// `owner` for `roles.owner.sandbox.mode`.
+/// `worker` for `roles.worker.sandbox.mode`.
 fn role_of(key: &str) -> Option<&str> {
     let (role, rest) = key.strip_prefix("roles.")?.split_once('.')?;
     rest.starts_with("sandbox.").then_some(role)
@@ -136,7 +136,7 @@ pub fn list(picker: &mut Picker) {
     show(picker, rows, actions);
 }
 
-/// One role's keys under `prefix`, such as `roles.owner.sandbox`. A key the role leaves unset
+/// One role's keys under `prefix`, such as `roles.worker.sandbox`. A key the role leaves unset
 /// says what every agent has.
 pub fn role_list(picker: &mut Picker, prefix: &str) {
     let settings = &picker.flow.settings;
@@ -191,7 +191,7 @@ fn row_label(key: &str) -> String {
     label(key).map_or_else(|| key.to_owned(), str::to_owned)
 }
 
-/// `Default agent` for `default`, else the role's own name.
+/// `Main agent` for `default`, else the role's own name.
 fn role_name(role: &str) -> String {
     match parse_role(role) {
         Some(role) => role_words(Some(role)),
@@ -199,7 +199,7 @@ fn role_name(role: &str) -> String {
     }
 }
 
-/// `Argonauts' (OS sandbox) · built-in`: the value, then where it comes from.
+/// `Argonauts Code's (OS sandbox) · built-in`: the value, then where it comes from.
 fn every_agent_note(row: &SettingRow) -> String {
     format!(
         "{} · {}",
@@ -246,9 +246,9 @@ fn role_note(settings: &[SettingRow], prefix: &str) -> String {
                 Some("mode") => format!("rules {value}"),
                 Some("network") => format!("internet {value}"),
                 Some("agents_see_other_worktrees") if yes => "sees other worktrees".to_owned(),
-                Some("agents_see_other_worktrees") => "sees only its copy".to_owned(),
+                Some("agents_see_other_worktrees") => "sees only its worktree".to_owned(),
                 Some("agents_commit") if yes => "commits its work".to_owned(),
-                Some("agents_commit") => "Argonauts commits".to_owned(),
+                Some("agents_commit") => "Argonauts Code commits".to_owned(),
                 _ => value,
             }
         })
@@ -273,10 +273,10 @@ mod tests {
         );
         assert_eq!(label("limits.spend_per_day"), Some("Daily spend cap"));
         assert_eq!(label("limits.auto_merges_per_day"), None);
-        assert_eq!(label("fallback.workers.mode"), None);
+        assert_eq!(label("fallback.worker.mode"), None);
         assert_eq!(
             value_in_words("sandbox.mode", "\"os\""),
-            "Argonauts' (OS sandbox)"
+            "Argonauts Code's (OS sandbox)"
         );
         assert_eq!(
             value_in_words("roles.worker.sandbox.mode", "\"tool\""),
@@ -293,12 +293,12 @@ mod tests {
     #[test]
     fn only_sandbox_keys_have_a_role() {
         assert_eq!(role_of("roles.worker.sandbox.mode"), Some("worker"));
-        assert_eq!(role_of("fallback.workers.mode"), None);
+        assert_eq!(role_of("fallback.worker.mode"), None);
         assert_eq!(role_of("sandbox.mode"), None);
         assert_eq!(
-            sandbox_leaf("roles.phase-lead.sandbox.network"),
+            sandbox_leaf("roles.tie-breaker.sandbox.network"),
             Some("network")
         );
-        assert_eq!(sandbox_leaf("fallback.workers.mode"), None);
+        assert_eq!(sandbox_leaf("fallback.worker.mode"), None);
     }
 }

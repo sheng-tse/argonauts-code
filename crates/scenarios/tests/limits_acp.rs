@@ -1,30 +1,30 @@
-//! A generic ACP agent owning a card: the fake agent installed as `hermes` speaks ACP, and the
-//! harness worker answers its permission requests, delivers your messages, and stops it after
+//! A generic ACP agent owning a task: the fake agent installed as `hermes` speaks ACP, and the
+//! CLI runner answers its permission requests, delivers your messages, and stops it after
 //! its running tool call.
 
 mod limits_support;
 
-use argonauts_core::events::checkpoint::CheckpointKind;
+use argonauts_core::events::approval::ApprovalKind;
 use argonauts_scenarios::WAIT;
 use limits_support::*;
 use serde_json::Value;
 
 /// Hermes is an experimental profile, off until you turn it on.
-const HERMES_OWNS: &str = "main_agent = \"hermes\"\n\n[agents.hermes]\nenabled = true\n";
+const HERMES_OWNS: &str = "crew.main = \"hermes\"\n\n[agents.hermes]\nenabled = true\n";
 
-/// Merging is automatic by default, so the merge card needs supervised.
+/// Merging is automatic by default, so the merge question needs supervised.
 const SUPERVISED_MERGE: &str = "\n[approvals.merge]\nmode = \"supervised\"\n";
 
 #[test]
-fn limits_acp_agent_owns_card() -> anyhow::Result<()> {
+fn limits_acp_agent_owns_task() -> anyhow::Result<()> {
     let limits = setup(
-        "acp-agent-owns-card",
+        "acp-agent-owns-task",
         &format!("{HERMES_OWNS}{SUPERVISED_MERGE}"),
     )?;
     let pty = limits.start()?;
     limits.wait_for(
         "the agent to finish the task",
-        CARD_WAIT,
+        LONG_WAIT,
         completed_by("hermes"),
     )?;
 
@@ -41,8 +41,8 @@ fn limits_acp_agent_owns_card() -> anyhow::Result<()> {
         "{:?}",
         limits.wrong_picks()?
     );
-    limits.wait_for_card(&pty, CheckpointKind::Merge)?;
-    limits.shot(&pty, "limits_acp_agent_owns_card")
+    limits.wait_for_question(&pty, ApprovalKind::Merge)?;
+    limits.shot(&pty, "limits_acp_agent_owns_task")
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn limits_acp_denies_forbidden_path() -> anyhow::Result<()> {
     let _pty = limits.start()?;
     limits.wait_for(
         "the agent to finish the task",
-        CARD_WAIT,
+        LONG_WAIT,
         completed_by("hermes"),
     )?;
 
@@ -82,22 +82,22 @@ fn limits_acp_denies_forbidden_path() -> anyhow::Result<()> {
 fn limits_acp_steer_then_stop_after_tool() -> anyhow::Result<()> {
     let limits = setup("acp-steer-then-stop", HERMES_OWNS)?;
     let mut pty = limits.start()?;
-    limits.wait_for_frame("t1 done", CARD_WAIT, |frame| {
+    limits.wait_for_frame("t1 done", LONG_WAIT, |frame| {
         tool_update(frame, "t1", "completed")
     })?;
 
     let steer = "also list the files you changed";
     pty.send(&format!("@hermes {steer}\r"))?;
-    limits.wait_for_frame("your message", CARD_WAIT, |frame| {
+    limits.wait_for_frame("your message", LONG_WAIT, |frame| {
         client_call(frame, "session/prompt") && frame.text().contains(steer)
     })?;
 
-    let running = limits.wait_for_frame("t2 running", CARD_WAIT, |frame| {
+    let running = limits.wait_for_frame("t2 running", LONG_WAIT, |frame| {
         tool_update(frame, "t2", "in_progress") || is_tool_call(frame, "t2")
     })?;
     // A pause stops each session after its running tool call.
     argonauts_scenarios::pause_run(&mut pty)?;
-    let cancel = limits.wait_for_frame("the cancel after t2", CARD_WAIT, |frame| {
+    let cancel = limits.wait_for_frame("the cancel after t2", LONG_WAIT, |frame| {
         client_call(frame, "session/cancel") && frame.index > running.index
     })?;
     let finished = limits

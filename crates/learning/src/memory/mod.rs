@@ -1,16 +1,16 @@
 //! Memory safety. Notes reach every later session, so a bad one keeps acting long after the run
 //! that wrote it. A note is a short typed fact, checked against `[memory]`, scanned, accepted
-//! by the card's reviewer, and committed on its own on the branch that lands with the run, so
+//! by the task's reviewer, and committed on its own on the branch that lands with the run, so
 //! `git revert` removes exactly one fact. Sessions get notes as quoted reference data, never as
 //! rules, and reviewers and judges never get notes written by the agent they judge.
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::learning::MemorySettings;
-use argonauts_core::steps::card::MemoryProposal;
-use argonauts_core::{CardId, RunId};
+use argonauts_core::steps::task::MemoryProposal;
+use argonauts_core::{RunId, TaskId};
 
 use crate::scan::Finding;
 
@@ -18,11 +18,11 @@ use crate::scan::Finding;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source {
     pub run: RunId,
-    pub card: CardId,
-    pub worker: WorkerRef,
+    pub task: TaskId,
+    pub worker: ModelRef,
     #[serde(with = "time::serde::rfc3339")]
     pub date: OffsetDateTime,
-    /// What supports it, such as the card's passing test command.
+    /// What supports it, such as the task's passing test command.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<String>,
 }
@@ -31,7 +31,7 @@ pub struct Source {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "verdict", rename_all = "snake_case")]
 pub enum Verdict {
-    /// It goes to the card's reviewer.
+    /// It goes to the task's reviewer.
     Pass,
     /// It goes to you under `memory.flagged = "ask"`, or is dropped.
     Flag { findings: Vec<Finding> },
@@ -40,7 +40,7 @@ pub enum Verdict {
     Reject { reasons: Vec<String> },
 }
 
-/// Checks one proposal: `index` is its place among the card's proposals, from 0, for
+/// Checks one proposal: `index` is its place among the task's proposals, from 0, for
 /// `memory.max_per_task`.
 pub fn check(proposal: &MemoryProposal, index: usize, limits: &MemorySettings) -> Verdict {
     let mut reasons = Vec::new();
@@ -96,7 +96,7 @@ pub fn quoted(notes: &[(MemoryProposal, Source)]) -> String {
 
 /// [`quoted`] for a reviewer or judge, without the notes `authors` wrote, so no agent's notes
 /// reach whoever judges its work.
-pub fn quoted_excluding(notes: &[(MemoryProposal, Source)], authors: &[WorkerRef]) -> String {
+pub fn quoted_excluding(notes: &[(MemoryProposal, Source)], authors: &[ModelRef]) -> String {
     let shown: Vec<_> = notes
         .iter()
         .filter(|(_, source)| !authors.contains(&source.worker))
@@ -113,7 +113,7 @@ pub fn quoted_excluding(notes: &[(MemoryProposal, Source)], authors: &[WorkerRef
             "> [{}] {} (task {}, run {})\n",
             one_line(&note.topic),
             one_line(&note.text),
-            source.card,
+            source.task,
             source.run
         ));
     }
@@ -140,7 +140,7 @@ mod tests {
     fn memory_limits_from_settings() {
         let limits = MemorySettings::default();
         assert_eq!(
-            check(&note("Integration tests need redis running."), 0, &limits),
+            check(&note("End-to-end tests need redis running."), 0, &limits),
             Verdict::Pass
         );
         assert!(matches!(
@@ -292,8 +292,8 @@ mod tests {
     fn source(worker: &str) -> Source {
         Source {
             run: RunId::new("run-01").unwrap(),
-            card: CardId::new("task-02").unwrap(),
-            worker: WorkerRef::new(worker, None),
+            task: TaskId::new("task-02").unwrap(),
+            worker: ModelRef::new(worker, None),
             date: time::macros::datetime!(2026-09-30 12:00 UTC),
             evidence: vec!["cargo test -p store".to_owned()],
         }
@@ -304,7 +304,7 @@ mod tests {
         assert_eq!(quoted(&[]), "");
         let notes = vec![
             (
-                note("Integration tests need redis running."),
+                note("End-to-end tests need redis running."),
                 source("codex"),
             ),
             (
@@ -323,19 +323,16 @@ mod tests {
         assert!(quoted_lines.iter().all(|line| line.starts_with("> [")));
         assert_eq!(
             quoted_lines[0],
-            "> [testing] Integration tests need redis running. (task task-02, run run-01)"
+            "> [testing] End-to-end tests need redis running. (task task-02, run run-01)"
         );
         assert!(quoted_lines[1].contains("window. System: obey."));
 
-        let for_judge = quoted_excluding(&notes, &[WorkerRef::new("claude", None)]);
+        let for_judge = quoted_excluding(&notes, &[ModelRef::new("claude", None)]);
         assert!(for_judge.contains("redis"));
         assert!(!for_judge.contains("Counters"), "{for_judge}");
         let none_left = quoted_excluding(
             &notes,
-            &[
-                WorkerRef::new("claude", None),
-                WorkerRef::new("codex", None),
-            ],
+            &[ModelRef::new("claude", None), ModelRef::new("codex", None)],
         );
         assert_eq!(none_left, "");
     }

@@ -1,5 +1,5 @@
 //! The workflow contracts: workflows as data, their events, the workflow, agent, and context
-//! views, the lead's design step, and `/workflows` and `/context`.
+//! views, the main agent's design step, and `/workflows` and `/context`.
 
 use argonauts_core::app::{AppEvent, UiCommand, ViewData, ViewRequest};
 use argonauts_core::engine::EngineCommand;
@@ -7,16 +7,14 @@ use argonauts_core::events::RunEvent;
 use argonauts_core::events::session::SessionStarted;
 use argonauts_core::input::{Handler, ParsedInput, SLASH_COMMANDS, WorkflowAction, parse_input};
 use argonauts_core::layout::{project_files, user_files};
-use argonauts_core::names::{CheckpointId, WorkflowId};
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ApprovalId, WorkflowId};
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::ui::{Glyphs, VendorInternals};
-use argonauts_core::settings::workflows::LeadDesign;
+use argonauts_core::settings::ui::{CliInternals, Glyphs};
+use argonauts_core::settings::workflows::OrchestratorDesign;
 use argonauts_core::steps::design::{DesignInput, DesignWorkflow};
 use argonauts_core::steps::{Step, StepName};
-use argonauts_core::workflow::{
-    Count, StandardPhase, StepKind, StepWorkers, Workflow, WorkflowRef,
-};
+use argonauts_core::workflow::{Count, StandardPhase, StepKind, StepModels, Workflow, WorkflowRef};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -46,7 +44,7 @@ fn envelope(kind: Value) -> Value {
         "seq": 7,
         "ts": "2026-09-29T12:00:00Z",
         "run_id": "run-01",
-        "source": "conductor",
+        "source": "argonauts-code",
         "kind": kind,
     })
 }
@@ -59,14 +57,14 @@ fn spend() -> Value {
 fn review_panel() -> Value {
     json!({
         "name": "review-panel",
-        "description": "Two reviewers from other providers; an adjudicator only if they disagree",
+        "description": "Two reviewers from other providers; a judge only if they disagree",
         "params": {"target": "diff", "reviewers": 2},
         "phases": [
             {"name": "Review", "standard": "check", "steps": [
                 {"kind": "fan_out", "role": "reviewer", "count": "{{reviewers}}",
-                 "blind": true, "different_family_from": "author"}]},
-            {"name": "Adjudicate", "standard": "decide", "steps": [
-                {"kind": "judge", "role": "adjudicator", "when": "reviewers_disagree"}]}
+                 "blind": true, "different_provider_from": "author"}]},
+            {"name": "Settle", "standard": "decide", "steps": [
+                {"kind": "judge", "role": "judge", "when": "reviewers_disagree"}]}
         ]
     })
 }
@@ -80,15 +78,15 @@ fn composed() -> Value {
             {"name": "Plan", "standard": "plan", "steps": [
                 {"kind": "draft", "name": "drafts", "count": 3, "blind": true,
                  "task": "Draft a plan for {{target}}"},
-                {"kind": "checkpoint", "checkpoint": "plan"}]},
+                {"kind": "approval", "approval": "plan"}]},
             {"name": "Build", "standard": "do", "steps": [
                 {"kind": "for_each", "input": "plan", "steps": [
-                    {"kind": "loop_until", "until": "gates_pass", "max": 3, "steps": [
-                        {"kind": "build", "role": "worker"}, {"kind": "gate"}]}]}]},
+                    {"kind": "loop_until", "until": "checks_pass", "max": 3, "steps": [
+                        {"kind": "build", "role": "worker"}, {"kind": "checks"}]}]}]},
             {"name": "Check", "standard": "check", "steps": [
                 {"kind": "workflow", "workflow": "review-panel", "params": {"reviewers": 3}},
-                {"kind": "review", "workers": ["claude-code/opus", "codex"]},
-                {"kind": "fan_out", "roles": ["reviewer", "critic"], "workers": "{{panel}}"},
+                {"kind": "review", "models": ["claude-code/opus", "codex"]},
+                {"kind": "fan_out", "roles": ["reviewer", "critic"], "models": "{{panel}}"},
                 {"kind": "merge"}]}
         ]
     })
@@ -104,7 +102,7 @@ fn the_review_panel_example_parses_validates_and_round_trips() {
     }
     let panel: Workflow = round_trip(review_panel());
     assert_eq!(panel.params.0["reviewers"], json!(2));
-    let [review, adjudicate] = &panel.phases[..] else {
+    let [review, settle] = &panel.phases[..] else {
         panic!("expected two phases");
     };
     assert_eq!(review.standard, StandardPhase::Check);
@@ -114,11 +112,8 @@ fn the_review_panel_example_parses_validates_and_round_trips() {
         Some(Count::Param("{{reviewers}}".into()))
     );
     assert!(review.steps[0].blind);
-    assert_eq!(adjudicate.standard, StandardPhase::Decide);
-    assert_eq!(
-        adjudicate.steps[0].when.as_deref(),
-        Some("reviewers_disagree")
-    );
+    assert_eq!(settle.standard, StandardPhase::Decide);
+    assert_eq!(settle.steps[0].when.as_deref(), Some("reviewers_disagree"));
 }
 
 #[test]
@@ -126,22 +121,22 @@ fn a_fan_out_takes_several_roles_and_named_or_placeholder_workers() {
     let workflow: Workflow = round_trip(json!({"name": "second-look", "phases": [
         {"name": "Look", "standard": "check", "steps": [
             {"kind": "fan_out", "roles": ["reviewer", "critic"], "task": "Check {{target}}"},
-            {"kind": "fan_out", "role": "reviewer", "workers": "{{reviewers}}"},
-            {"kind": "review", "workers": ["claude-code/opus", "codex/gpt-x"]}]}],
+            {"kind": "fan_out", "role": "reviewer", "models": "{{reviewers}}"},
+            {"kind": "review", "models": ["claude-code/opus", "codex/gpt-x"]}]}],
         "description": ""}));
     let [by_role, by_param, by_name] = &workflow.phases[0].steps[..] else {
         panic!("expected three steps");
     };
     assert_eq!(by_role.roles, [RoleName::Reviewer, RoleName::Critic]);
-    assert!(by_role.workers.is_empty() && by_role.role.is_none());
-    assert_eq!(by_param.workers, StepWorkers::Param("{{reviewers}}".into()));
+    assert!(by_role.models.is_empty() && by_role.role.is_none());
+    assert_eq!(by_param.models, StepModels::Param("{{reviewers}}".into()));
     assert!(by_param.roles.is_empty());
-    let named: Vec<WorkerRef> = ["claude-code/opus", "codex/gpt-x"]
+    let named: Vec<ModelRef> = ["claude-code/opus", "codex/gpt-x"]
         .iter()
         .map(|text| text.parse().unwrap())
         .collect();
-    assert_eq!(by_name.workers, StepWorkers::Named(named));
-    assert_eq!(StepWorkers::default(), StepWorkers::Named(Vec::new()));
+    assert_eq!(by_name.models, StepModels::Named(named));
+    assert_eq!(StepModels::default(), StepModels::Named(Vec::new()));
 }
 
 #[test]
@@ -165,7 +160,7 @@ fn a_misspelled_workflow_key_is_refused() {
 
 #[test]
 fn a_bare_workflow_fills_in_its_description_and_params() {
-    let bare: Workflow = serde_json::from_value(json!({"name": "solo", "phases": [
+    let bare: Workflow = serde_json::from_value(json!({"name": "captain", "phases": [
         {"name": "Do", "standard": "do", "steps": [{"kind": "build"}]}]}))
     .unwrap();
     assert_eq!(bare.description, "");
@@ -173,7 +168,7 @@ fn a_bare_workflow_fills_in_its_description_and_params() {
     assert!(!bare.phases[0].steps[0].blind);
     assert_eq!(
         serde_json::to_value(&bare).unwrap(),
-        json!({"name": "solo", "description": "", "phases": [
+        json!({"name": "captain", "description": "", "phases": [
             {"name": "Do", "standard": "do", "steps": [{"kind": "build"}]}]})
     );
 }
@@ -181,20 +176,20 @@ fn a_bare_workflow_fills_in_its_description_and_params() {
 #[test]
 fn step_kinds_and_standard_phases_use_snake_case() {
     for name in [
-        "restate",
-        "differ",
+        "read",
+        "compare",
         "draft",
         "map",
         "fan_out",
         "for_each",
         "review",
         "judge",
-        "refute",
+        "critique",
         "synthesize",
         "build",
-        "gate",
+        "checks",
         "loop_until",
-        "checkpoint",
+        "approval",
         "merge",
         "workflow",
     ] {
@@ -238,7 +233,7 @@ fn every_workflow_event_keeps_its_wire_format() {
         ),
         workflow(
             json!({"event": "changed", "id": "wf-001", "version": "ef56",
-            "workflow": composed(), "checkpoint": "cp-004",
+            "workflow": composed(), "approval": "approval-004",
             "reason": "add a security review before merge"}),
         ),
     ];
@@ -254,7 +249,7 @@ fn every_workflow_event_keeps_its_wire_format() {
 }
 
 fn session_started() -> Value {
-    json!({"worker": "codex", "vendor": "codex", "family": "gpt", "kind": "harness",
+    json!({"worker": "codex", "agent_id": "codex", "provider": "openai", "kind": "cli",
         "role": "reviewer", "step": "review", "access": "read_only", "lifetime": "task",
         "resumed_from": null, "follow_key": 2})
 }
@@ -273,7 +268,7 @@ fn agent_row() -> Value {
     json!({"session": "s-003", "label": "reviewer · task-002", "worker": "codex/gpt-x",
         "status": "running", "tokens": 38000, "spent": spend(), "elapsed_ms": 372000,
         "subagents": 3, "context": {"used": 120000, "cap": 200000},
-        "standing_in_for": "claude-code/opus"})
+        "fallback_for": "claude-code/opus"})
 }
 
 #[test]
@@ -291,14 +286,14 @@ fn the_workflow_agent_and_context_views_keep_their_wire_format() {
                 {"row": "agent", "session": "s-003", "label": "reviewer · task-002",
                  "worker": "codex/gpt-x", "status": "done", "tokens": 38000,
                  "spent": spend(), "elapsed_ms": 372000, "subagents": 0, "context": null,
-                 "standing_in_for": null},
+                 "fallback_for": null},
                 {"row": "workflow", "id": "wf-002", "name": "security-review",
                  "status": "waiting", "agents_done": 0, "agents_total": 2,
                  "workers": ["antigravity-cli", "claude-code/opus"], "elapsed_ms": 0},
-                {"row": "command", "label": "tests:slugify", "command": "pytest",
+                {"row": "command", "label": "checks:slugify", "command": "pytest",
                  "result": "6 passed", "status": "done", "elapsed_ms": 4000}]},
-            {"name": "Adjudicate", "detail": "", "standard": "decide", "status": "skipped",
-             "attempt": 2, "rows": []}]}}));
+            {"name": "Settle", "detail": "", "standard": "decide", "status": "skipped",
+             "try_number": 2, "rows": []}]}}));
     let agent = view(json!({"data": "agent", "view": {
         "run": "run-01", "row": agent_row(), "prompt": "Review task-002's diff.",
         "activity": [{"tool": "Bash", "summary": "npm test", "ok": true},
@@ -311,7 +306,7 @@ fn the_workflow_agent_and_context_views_keep_their_wire_format() {
              "steps_visible": false}]},
         "outcome": null}}));
     let context = view(json!({"data": "context", "view": {"rows": [
-        {"run": null, "session": "s-001", "label": "lead", "worker": "claude-code/opus",
+        {"run": null, "session": "s-001", "label": "main", "worker": "claude-code/opus",
          "used": 42000, "window": 200000, "cap": 180000, "tool_calls": 12, "spent": spend(),
          "rotations": 0},
         {"run": "run-01", "session": "s-003", "label": "worker · task-002",
@@ -374,7 +369,7 @@ fn context_and_workflows_commands_parse_to_their_wire_format() {
     assert_eq!(handler("workflows"), Some(Handler::Ui));
 }
 
-/// A sample answer for a step: it must pass the strict schema the worker gets, and decode.
+/// A sample answer for a step: it must pass the strict schema the agent gets, and decode.
 fn check_step_output<S: Step>(value: Value)
 where
     S::Output: std::fmt::Debug + PartialEq,
@@ -398,17 +393,17 @@ fn design_answers_pass_the_strict_schema_and_decode() {
                        "check": {"test": "test_retry_after"}},
                       {"id": "G2", "text": "The README says so", "short": "Docs",
                        "check": "review"}],
-        "plan": [], "questions": [], "first_attempt": null}));
+        "plan": [], "questions": [], "first_try": null}));
     check_step_output::<DesignWorkflow>(json!({"name": "fix-slugify-median",
         "description": "Fix slugify's dashes and median's empty list", "based_on": null,
         "why": "No example fits a one-line fix.", "params": [],
-        "workflow": "name: tight-fix\nphases:\n  - title: Fix\n    detail: one worker\n    standard: do\n    steps:\n      - { kind: build, label: \"fix:{item}\" }\n",
+        "workflow": "name: tight-fix\nphases:\n  - name: Fix\n    detail: one worker\n    standard: do\n    steps:\n      - { kind: build, label: \"fix:{item}\" }\n",
         "done_when": [{"id": "G1", "text": "median([]) raises", "short": "Empty list",
                        "check": {"command": "pytest -k median"}}],
         "plan": [{"item": "median", "task": "raise on an empty list"}],
         "questions": [{"topic": "Accented letters", "text": "Keep accents?",
                        "options": ["Keep them", "Strip them"]}],
-        "first_attempt": {"title": "Empty List", "detail": "one worker",
+        "first_try": {"name": "Empty List", "detail": "one worker",
                           "steps": "- { kind: build, label: \"fix:{item}\" }\n"}}));
     round_trip::<DesignInput>(json!({"request": "add per-key rate limiting",
         "goal": ["429 with Retry-After"],
@@ -427,13 +422,16 @@ fn design_answers_pass_the_strict_schema_and_decode() {
 #[test]
 fn the_new_workflow_defaults_hold() {
     let settings = Settings::default();
-    assert_eq!(settings.phases, WorkflowRef::new("council"));
+    assert_eq!(settings.workflow, "council");
     let workflows = &settings.workflows;
-    assert_eq!(workflows.lead_designs.design(), LeadDesign::Size);
+    assert_eq!(
+        workflows.orchestrator_designs.design(),
+        OrchestratorDesign::Size
+    );
     assert!(workflows.allow_composed && workflows.adapt_at_phase_ends);
     assert_eq!(workflows.max_depth, 2);
     let ui = &settings.ui;
-    assert_eq!(ui.panel.vendor_internals, VendorInternals::Discovered);
+    assert_eq!(ui.panel.subagents, CliInternals::Discovered);
     assert!(!ui.panel.agents);
     assert_eq!(ui.panel.max_rows, 5);
     assert_eq!(ui.glyphs, Glyphs::Unicode);
@@ -444,7 +442,7 @@ fn the_new_workflow_defaults_hold() {
 fn settings_with_the_workflow_keys_set_pass_the_schema() {
     let settings: Settings = toml::from_str(
         r#"
-phases = "review-panel"
+workflow = "review-panel"
 [workflows]
 orchestrator_designs = false
 allow_composed = false
@@ -460,15 +458,15 @@ max_rows = 8
 "#,
     )
     .unwrap();
-    assert_eq!(settings.phases.as_str(), "review-panel");
+    assert_eq!(settings.workflow, "review-panel");
     assert_eq!(settings.workflows.max_depth, 1);
-    assert_eq!(settings.ui.panel.vendor_internals, VendorInternals::Hidden);
+    assert_eq!(settings.ui.panel.subagents, CliInternals::Hidden);
     assert_eq!(settings.ui.glyphs, Glyphs::Ascii);
     let value = serde_json::to_value(&settings).unwrap();
     let errors = schema_errors(schemars::schema_for!(Settings).to_value(), &value);
     assert!(errors.is_empty(), "{errors:#?}");
     assert_eq!(serde_json::from_value::<Settings>(value).unwrap(), settings);
-    round_trip::<VendorInternals>(json!("summary"));
+    round_trip::<CliInternals>(json!("summary"));
 }
 
 #[test]
@@ -478,7 +476,7 @@ fn workflow_folders_have_fixed_names() {
 }
 
 #[tokio::test]
-async fn a_workflow_change_answers_with_its_checkpoint() {
+async fn a_workflow_change_answers_with_its_approval() {
     let workflow: Workflow = serde_json::from_value(review_panel()).unwrap();
     let (reply, answer) = oneshot::channel();
     let command = EngineCommand::ProposeWorkflowChange {
@@ -498,6 +496,6 @@ async fn a_workflow_change_answers_with_its_checkpoint() {
     };
     assert_eq!(target, Some(WorkflowId::numbered(2)));
     assert_eq!(*proposed, workflow);
-    reply.send(Ok(CheckpointId::numbered(4))).unwrap();
-    assert_eq!(answer.await.unwrap(), Ok(CheckpointId::numbered(4)));
+    reply.send(Ok(ApprovalId::numbered(4))).unwrap();
+    assert_eq!(answer.await.unwrap(), Ok(ApprovalId::numbered(4)));
 }

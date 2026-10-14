@@ -2,5 +2,6 @@
 
 ● Starting a workflow: Orchestrator, with GPT 5.6 Luna on Codex reviewing as you asked; Haiku 5.5 on Claude Code plans and builds.
 
-● Workflow(fix-money-and-add-tax) · Orchestrator · ctrl+t to open
-  ⎿  ◐ Build · Review · Merge        reviewers: GPT 5.6 Luna on Codex (you asked)
+● Workflow(fix-money-and-add-tax · orchestrator workflow)
+  ⎿  Running in background · /workflows to monitor and save
+     reviewers: GPT 5.6 Luna on Codex (you asked)

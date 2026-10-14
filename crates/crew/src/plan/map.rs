@@ -1,13 +1,13 @@
-//! The quote check: a mapper's quote must appear word for word in its draft once runs of
-//! whitespace are collapsed. Failing positions are marked, the mapper runs once more, and
-//! topics still failing are flagged at the plan checkpoint.
+//! The quote check: a mapping agent's quote must appear word for word in its draft once runs of
+//! whitespace are collapsed. Failing positions are marked, the mapping agent runs once more, and
+//! topics still failing are flagged at the plan approval.
 
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::plan::{MappedPosition, MappedTopic, PlanEvent};
 use argonauts_core::events::session::InputPartKind;
 use argonauts_core::names::{RoleName, SessionKey};
+use argonauts_core::session_runner::Access;
 use argonauts_core::steps::plan::{LabeledPlan, Map, MapInput, MapOutput, MapPosition, MapTopic};
-use argonauts_core::worker::Access;
 use argonauts_core::{Note, NoteLevel};
 
 use crate::engine::host::{Ask, Host};
@@ -28,7 +28,7 @@ fn collapse(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The mapper's topics with every quote checked against its plan's sealed text. A position
+/// The mapping agent's topics with every quote checked against its plan's sealed text. A position
 /// naming a plan that isn't there fails too.
 pub fn check_quotes(output: &MapOutput, plans: &[LabeledPlan]) -> Vec<MappedTopic> {
     output
@@ -54,7 +54,7 @@ pub fn check_quotes(output: &MapOutput, plans: &[LabeledPlan]) -> Vec<MappedTopi
         .collect()
 }
 
-/// One line per failing quote, for the mapper's second run.
+/// One line per failing quote, for the mapping agent's second run.
 pub fn failures(topics: &[MappedTopic]) -> Vec<String> {
     topics
         .iter()
@@ -73,7 +73,7 @@ pub fn failures(topics: &[MappedTopic]) -> Vec<String> {
         .collect()
 }
 
-/// Back to the step shape, for critics and the spike proposer.
+/// Back to the step shape, for critics and the experiment proposer.
 pub fn to_step_topic(topic: &MappedTopic) -> MapTopic {
     MapTopic {
         name: topic.name.clone(),
@@ -90,8 +90,9 @@ pub fn to_step_topic(topic: &MappedTopic) -> MapTopic {
     }
 }
 
-/// `map`: a fresh mapper over the newest sealed drafts under their labels. Failing quotes get
-/// the mapper once more with each failure named; what still fails is recorded unverified.
+/// `map`: a fresh mapping agent over the newest sealed drafts under their labels. Failing quotes
+/// get the mapping agent once more with each failure named; what still fails is recorded
+/// unverified.
 pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     let (latest, round, first, mapped) = host.read(|state| {
         let round = state.plan.current_round();
@@ -112,11 +113,11 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     if round > first && !settings.mapping.remap_after_revision {
         return Ok(StepDone::skipped("Remapping after revision is off"));
     }
-    let Some(mapper) = workers_for(call, settings, RoleName::Mapper, Some(1))
+    let Some(mapping_agent) = workers_for(call, settings, RoleName::Map, Some(1))
         .into_iter()
         .next()
     else {
-        return Ok(StepDone::skipped("No mapper is available"));
+        return Ok(StepDone::skipped("No mapping agent is available"));
     };
     let plans = drafts::labeled(&latest.iter().collect::<Vec<_>>())?;
     let mut mapped: Option<(Vec<MappedTopic>, SessionKey)> = None;
@@ -124,8 +125,8 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     for slot in 0..2u32 {
         let mut ask = Ask::new(
             Some(call.at.clone()),
-            RoleName::Mapper,
-            mapper.clone(),
+            RoleName::Map,
+            mapping_agent.clone(),
             MAP,
             MapInput {
                 plans: plans.clone(),
@@ -162,7 +163,7 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
                     RunEventKind::Note(Note {
                         level: NoteLevel::Warn,
                         text: format!(
-                            "The mapper's second run failed, so the first map stands: {error}"
+                            "The mapping agent's second run failed, so the first map stands: {error}"
                         ),
                     }),
                 )?;
@@ -170,7 +171,9 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         }
     }
     let Some((topics, session)) = mapped else {
-        return Err(EngineError::Refused("the mapper gave no map".to_owned()));
+        return Err(EngineError::Refused(
+            "the mapping agent gave no map".to_owned(),
+        ));
     };
     let summary = summary(&topics);
     host.record(
@@ -178,7 +181,7 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         Some(&session),
         RunEventKind::Plan(PlanEvent::Mapped {
             round,
-            worker: mapper,
+            worker: mapping_agent,
             topics,
         }),
     )?;

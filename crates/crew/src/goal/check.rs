@@ -12,25 +12,25 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::card::GateOutcome;
 use argonauts_core::events::goal::{
     CheckRun, CheckedBy, Criterion, CriterionState, CriterionVerdict, GoalChecked, GoalEvent,
     GoalVerdict,
 };
+use argonauts_core::events::task::CheckOutcome;
 use argonauts_core::goal::{CheckWith, GoalSpec, THE_JUDGE, YOUR_CHECKS, argv};
-use argonauts_core::limits::GateRequest;
-use argonauts_core::names::{RoleName, WorkerRef};
-use argonauts_core::settings::protocol::GateCommand;
+use argonauts_core::limits::CheckRequest;
+use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::session_runner::Access;
+use argonauts_core::settings::protocol::CheckCommand;
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::pursue::{CheckGoal, CheckGoalInput, GoalCheck};
-use argonauts_core::worker::Access;
 
 use crate::engine::host::{Ask, Host};
 use crate::error::{EngineError, EngineResult};
-use crate::integrate::final_check::{FinalCheck, run_base};
-use crate::integrate::{diff, merge, merge_packet};
+use crate::merge::final_check::{FinalCheck, run_base};
+use crate::merge::{diff, merge_packet, step};
 use crate::prompts::goal::CHECK;
 use crate::roles;
 use crate::state::RunState;
@@ -40,7 +40,7 @@ use super::pursue;
 
 /// What the check reads of the diff: enough for a few files, and the judge can read the rest.
 const DIFF_BYTES: usize = 60_000;
-const GATE_BYTES: usize = 4_000;
+const CHECK_BYTES: usize = 4_000;
 /// What a check's run keeps of a command's output, where what failed is named.
 const OUTPUT_BYTES: usize = 2_000;
 /// Used when `checks.timeout` doesn't parse or says `none`.
@@ -57,47 +57,50 @@ pub struct Place {
     /// and it reads the files.
     pub base: Option<String>,
     /// The task whose goal it is. `None` for a run's or a workflow's.
-    pub task: Option<CardId>,
+    pub task: Option<TaskId>,
     /// The step that asked, which places the judge's session in the workflow view.
     pub at: Option<StepAt>,
     /// The try this check follows, from 1.
-    pub attempt: u32,
+    pub try_number: u32,
     /// Who wrote the work, so the judge is someone else.
-    pub authors: Vec<WorkerRef>,
+    pub authors: Vec<ModelRef>,
     /// The project's own checks, when they already ran here: they aren't run twice, and the
     /// goal doesn't hold while they fail.
     pub project: Option<FinalCheck>,
 }
 
 impl Place {
-    /// A check of try `attempt` in `dir`, with nothing taken as given.
-    pub fn new(dir: impl Into<PathBuf>, attempt: u32) -> Self {
+    /// A check of try `try_number` in `dir`, with nothing taken as given.
+    pub fn new(dir: impl Into<PathBuf>, try_number: u32) -> Self {
         Self {
             dir: dir.into(),
             base: None,
             task: None,
             at: None,
-            attempt,
+            try_number,
             authors: Vec::new(),
             project: None,
         }
     }
 }
 
-/// What a check needs from wherever it runs: the engine inside a run, or the chat when the
+/// What a check needs from wherever it runs: the engine inside a run, or the conversation when the
 /// main agent works alone.
 pub trait Means: Sync {
     /// The project's own check commands, `checks.run`.
-    fn project_commands(&self) -> Vec<GateCommand>;
+    fn project_commands(&self) -> Vec<CheckCommand>;
     /// Runs one command in the place and says how it ended.
-    fn run(&self, command: &GateCommand) -> impl Future<Output = EngineResult<GateOutcome>> + Send;
+    fn run(
+        &self,
+        command: &CheckCommand,
+    ) -> impl Future<Output = EngineResult<CheckOutcome>> + Send;
     /// What the work changed, for the judge. Empty when nothing can say.
     fn diff(&self) -> impl Future<Output = String> + Send;
     /// Asks the judge about the lines in `input`, and says who judged.
     fn judge(
         &self,
         input: CheckGoalInput,
-    ) -> impl Future<Output = EngineResult<(GoalCheck, WorkerRef)>> + Send;
+    ) -> impl Future<Output = EngineResult<(GoalCheck, ModelRef)>> + Send;
 }
 
 /// Checks `goal` in `place`, inside a run: every command that checks a line runs once, then the
@@ -161,11 +164,11 @@ pub async fn with<M: Means>(
     let failed_project = place.project.as_ref().filter(|project| !project.passed);
     let reason = match (&impossible, failed_project) {
         (Some(why), _) => why.clone(),
-        (None, Some(project)) => failed_gates(project),
+        (None, Some(project)) => failed_checks(project),
         (None, None) => still_fails(&goal.lines, &verdicts),
     };
     Ok(GoalChecked {
-        attempt: place.attempt,
+        try_number: place.try_number,
         verdicts,
         overall,
         reason,
@@ -228,7 +231,7 @@ async fn project_checks<M: Means>(
         .map(|line| line.id.clone())
         .collect();
     let outcomes = match &place.project {
-        Some(project) => project.gates.clone(),
+        Some(project) => project.checks.clone(),
         None if lines.is_empty() => Vec::new(),
         None => {
             let mut outcomes = Vec::new();
@@ -279,7 +282,7 @@ async fn own_commands<M: Means>(means: &M, goal: &GoalSpec, found: &mut Found) -
         };
         let outcome = match argv(command) {
             Ok(words) => {
-                let named = GateCommand {
+                let named = CheckCommand {
                     name: command.to_owned(),
                     command: words,
                 };
@@ -331,18 +334,18 @@ async fn ask_the_judge<M: Means>(
         goal: goal.condition.clone(),
         criteria: lines.to_vec(),
         diff: means.diff().await,
-        gate_output: commands_output(&found.runs, place.project.as_ref()),
+        check_output: commands_output(&found.runs, place.project.as_ref()),
     };
     let started = std::time::Instant::now();
     let answered = means.judge(input).await;
     let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let (decided, agent) = match answered {
-        Ok((answer, judge)) => (decide(place.attempt, lines, &answer, true), Some(judge)),
+        Ok((answer, judge)) => (decide(place.try_number, lines, &answer, true), Some(judge)),
         Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
         // A judge that couldn't read proves nothing, so nothing it was asked is met yet.
         Err(err) => (
             unchecked(
-                place.attempt,
+                place.try_number,
                 lines,
                 &format!("the judge couldn't read it: {err}"),
             ),
@@ -387,24 +390,24 @@ struct InRun<'a> {
 }
 
 impl Means for InRun<'_> {
-    fn project_commands(&self) -> Vec<GateCommand> {
+    fn project_commands(&self) -> Vec<CheckCommand> {
         self.host.settings().checks.run.clone()
     }
 
     /// One command in the place, inside the sandbox a build has there. Its outcome stays out
     /// of the task's own checks: a goal's line failing is no failed check of the task.
-    async fn run(&self, command: &GateCommand) -> EngineResult<GateOutcome> {
+    async fn run(&self, command: &CheckCommand) -> EngineResult<CheckOutcome> {
         let (host, place) = (self.host, self.place);
         let settings = host.settings();
         let scope = match &place.task {
             Some(task) => task.clone(),
-            None => CardId::new(GOAL_SCOPE).map_err(|err| EngineError::Refused(err.to_string()))?,
+            None => TaskId::new(GOAL_SCOPE).map_err(|err| EngineError::Refused(err.to_string()))?,
         };
         let temp = host.repo().run_dir.join("tmp").join(scope.as_str());
         std::fs::create_dir_all(&temp)?;
-        let request = GateRequest {
+        let request = CheckRequest {
             run: host.run_id().clone(),
-            card: scope,
+            task: scope,
             name: command.name.clone(),
             command: command.command.clone(),
             workdir: place.dir.clone(),
@@ -418,7 +421,7 @@ impl Means for InRun<'_> {
                 .unwrap_or(DEFAULT_TIMEOUT),
             setup: false,
         };
-        Ok(host.services().gates.run(request).await)
+        Ok(host.services().checks.run(request).await)
     }
 
     async fn diff(&self) -> String {
@@ -433,14 +436,14 @@ impl Means for InRun<'_> {
             .unwrap_or_default()
     }
 
-    async fn judge(&self, input: CheckGoalInput) -> EngineResult<(GoalCheck, WorkerRef)> {
+    async fn judge(&self, input: CheckGoalInput) -> EngineResult<(GoalCheck, ModelRef)> {
         let place = self.place;
         let answered = self
             .host
             .ask::<CheckGoal>(Ask {
                 workdir: Some(place.dir.clone()),
                 blind: true,
-                card: place.task.clone(),
+                task: place.task.clone(),
                 slot: self
                     .host
                     .read(|state| fresh_slot(state, place.task.as_ref())),
@@ -461,23 +464,23 @@ impl Means for InRun<'_> {
 /// A slot no judge of this goal has sat in. The work changes between two checks of one goal,
 /// whether they follow two tries or you asked for one in between, so a judge always reads it
 /// afresh and never answers with what an earlier one found.
-fn fresh_slot(state: &RunState, task: Option<&CardId>) -> u32 {
+fn fresh_slot(state: &RunState, task: Option<&TaskId>) -> u32 {
     let judged = state
         .sessions
         .in_order()
         .into_iter()
         .filter(|session| {
-            session.card.as_ref() == task && session.started.step == Some(StepName::CheckGoal)
+            session.task.as_ref() == task && session.started.step == Some(StepName::CheckGoal)
         })
         .count();
     u32::try_from(judged).unwrap_or(u32::MAX)
 }
 
 /// A command that can't be run, as a failed check that says why.
-fn unrunnable(command: &str, problem: &str) -> GateOutcome {
-    GateOutcome {
+fn unrunnable(command: &str, problem: &str) -> CheckOutcome {
+    CheckOutcome {
         name: command.to_owned(),
-        kind: argonauts_core::events::card::GateKind::Command,
+        kind: argonauts_core::events::task::CheckKind::Command,
         passed: false,
         command: None,
         exit_code: None,
@@ -490,7 +493,7 @@ fn unrunnable(command: &str, problem: &str) -> GateOutcome {
     }
 }
 
-fn check_run(name: String, lines: &[String], outcome: &GateOutcome) -> CheckRun {
+fn check_run(name: String, lines: &[String], outcome: &CheckOutcome) -> CheckRun {
     let (failed, total) = counts(&outcome.summary);
     CheckRun {
         name,
@@ -532,7 +535,7 @@ pub fn counts(summary: &str) -> (Option<u32>, Option<u32>) {
 }
 
 /// `cargo test overdue: 1 of 12 fails`, or the command's own summary when it counts nothing.
-fn what_failed(name: &str, outcome: &GateOutcome) -> String {
+fn what_failed(name: &str, outcome: &CheckOutcome) -> String {
     if outcome.passed {
         return String::new();
     }
@@ -590,7 +593,7 @@ fn commands_output(runs: &[CheckRun], project: Option<&FinalCheck>) -> String {
     if text.is_empty() {
         text.push_str("No check commands ran.\n");
     }
-    diff::cut(text, GATE_BYTES)
+    diff::cut(text, CHECK_BYTES)
 }
 
 /// The end of `text`, cut at a line start.
@@ -614,25 +617,25 @@ fn tail(text: &str, bytes: usize) -> String {
 pub async fn judge(
     host: &Host,
     call: &StepCall,
-    attempt: u32,
+    try_number: u32,
     goal: &GoalSpec,
 ) -> EngineResult<GoalChecked> {
-    let project = merge::checked(host).await?;
+    let project = step::checked(host).await?;
     let (_, worktree) = merge_packet::landing_branch(host).await?;
     let place = Place {
         base: run_base(host),
         at: Some(call.at.clone()),
-        authors: host.read(|state| authors(state, attempt)),
+        authors: host.read(|state| authors(state, try_number)),
         project: Some(project),
-        ..Place::new(worktree, attempt)
+        ..Place::new(worktree, try_number)
     };
     self::goal(host, goal, &place).await
 }
 
 /// Every criterion can't-tell, for `reason`.
-fn unchecked(attempt: u32, criteria: &[Criterion], reason: &str) -> GoalChecked {
+fn unchecked(try_number: u32, criteria: &[Criterion], reason: &str) -> GoalChecked {
     GoalChecked {
-        attempt,
+        try_number,
         verdicts: criteria
             .iter()
             .map(|criterion| CriterionVerdict {
@@ -650,12 +653,12 @@ fn unchecked(attempt: u32, criteria: &[Criterion], reason: &str) -> GoalChecked 
 }
 
 /// What code decides from the check's answers. A criterion the check left out can't be told,
-/// so it isn't met; only every criterion met, with the gates passing, is "met".
+/// so it isn't met; only every criterion met, with the checks passing, is "met".
 pub fn decide(
-    attempt: u32,
+    try_number: u32,
     criteria: &[Criterion],
     check: &GoalCheck,
-    gates_passed: bool,
+    checks_passed: bool,
 ) -> GoalChecked {
     let verdicts: Vec<CriterionVerdict> = criteria
         .iter()
@@ -673,7 +676,7 @@ pub fn decide(
                 })
         })
         .collect();
-    let met = gates_passed
+    let met = checks_passed
         && verdicts
             .iter()
             .all(|verdict| verdict.verdict == CriterionState::Met);
@@ -689,7 +692,7 @@ pub fn decide(
         reason => reason.to_owned(),
     };
     GoalChecked {
-        attempt,
+        try_number,
         verdicts,
         overall,
         reason,
@@ -730,11 +733,10 @@ pub fn unmet(verdicts: &[CriterionVerdict]) -> impl Iterator<Item = &str> {
 
 /// The judge, always in a fresh session: `goal.checker` when it names one of the crew, else a
 /// crew member that wrote none of the work, from another provider than its authors and than
-/// the main agent where there is one, else from another provider than its authors, else from
-/// any. Only when everyone wrote some does the main agent's own CLI judge. Agents
-/// outside the crew and the reviewer role are never picked: they may not be set up to run
-/// here.
-pub fn checker(host: &Host, authors: &[WorkerRef]) -> WorkerRef {
+/// the phase's tie-breaker where there is one, else from another provider than its authors, else
+/// from any. Only when everyone wrote some does the tie-breaker's own CLI judge. Agents outside
+/// the crew and the reviewer role are never picked: they may not be set up to run here.
+pub fn checker(host: &Host, authors: &[ModelRef]) -> ModelRef {
     let settings = host.settings();
     let mut pool = settings.crew.members();
     for worker in roles::candidates(settings, RoleName::Reviewer) {
@@ -743,7 +745,7 @@ pub fn checker(host: &Host, authors: &[WorkerRef]) -> WorkerRef {
         }
     }
     let available = host.services().workers.available();
-    pool.retain(|worker| available.iter().any(|ready| ready.worker == worker.worker));
+    pool.retain(|worker| available.iter().any(|ready| ready.agent == worker.agent));
     if settings.goal.checker != "other_provider"
         && let Some(named) = pool
             .iter()
@@ -751,39 +753,39 @@ pub fn checker(host: &Host, authors: &[WorkerRef]) -> WorkerRef {
     {
         return named.clone();
     }
-    let lead = change::lead(host);
+    let tie_breaker = change::tie_breaker(host);
     let wrote: Vec<String> = authors
         .iter()
-        .map(|author| roles::family(host, author))
+        .map(|author| roles::provider(host, author))
         .collect();
-    let leads = roles::family(host, &lead);
-    let fresh = |worker: &&WorkerRef| !authors.contains(worker);
-    let apart = |worker: &&WorkerRef| !wrote.contains(&roles::family(host, worker));
-    let outside = |worker: &&WorkerRef| roles::family(host, worker) != leads;
+    let its_provider = roles::provider(host, &tie_breaker);
+    let fresh = |worker: &&ModelRef| !authors.contains(worker);
+    let apart = |worker: &&ModelRef| !wrote.contains(&roles::provider(host, worker));
+    let outside = |worker: &&ModelRef| roles::provider(host, worker) != its_provider;
     pool.iter()
         .find(|worker| fresh(worker) && apart(worker) && outside(worker))
         .or_else(|| pool.iter().find(|worker| fresh(worker) && apart(worker)))
         .or_else(|| pool.iter().find(fresh))
         .cloned()
-        .unwrap_or(lead)
+        .unwrap_or(tie_breaker)
 }
 
-/// Who wrote the code a check reads: a goal attempt's card and its copies, or in a workflow
-/// every card. Each owner counts, the first and any that took over, and every session that
-/// built it.
-pub(super) fn authors(state: &RunState, attempt: u32) -> Vec<WorkerRef> {
-    let attempt_card = pursue::attempt_card_id(attempt);
-    let copies = format!("{attempt_card}-");
-    let of_attempt = |card: &CardId| card == &attempt_card || card.as_str().starts_with(&copies);
-    let checks_an_attempt = state.cards.by_id.keys().any(&of_attempt);
-    let checked = |card: &CardId| !checks_an_attempt || of_attempt(card);
-    let mut authors: Vec<WorkerRef> = Vec::new();
-    let owners = state
-        .cards
+/// Who wrote the code a check reads: a goal try's task and its best-of-n tries, or in a
+/// workflow every task. Each worker counts, the first and any it fell back to, and every
+/// session that built it.
+pub(super) fn authors(state: &RunState, try_number: u32) -> Vec<ModelRef> {
+    let try_task = pursue::try_task_id(try_number);
+    let its_tries = format!("{try_task}-");
+    let of_try = |task: &TaskId| task == &try_task || task.as_str().starts_with(&its_tries);
+    let checks_a_try = state.tasks.by_id.keys().any(&of_try);
+    let checked = |task: &TaskId| !checks_a_try || of_try(task);
+    let mut authors: Vec<ModelRef> = Vec::new();
+    let workers = state
+        .tasks
         .by_id
         .values()
         .filter(|record| checked(&record.spec.id))
-        .flat_map(|record| [record.owner.clone(), record.spec.owner.clone()])
+        .flat_map(|record| [record.worker.clone(), record.spec.worker.clone()])
         .flatten();
     let builders = state
         .sessions
@@ -791,28 +793,28 @@ pub(super) fn authors(state: &RunState, attempt: u32) -> Vec<WorkerRef> {
         .into_iter()
         .filter(|session| {
             session.started.step == Some(StepName::Build)
-                && session.card.as_ref().is_some_and(&checked)
+                && session.task.as_ref().is_some_and(&checked)
         })
         .map(|session| session.started.worker.clone());
-    for worker in owners.chain(builders) {
-        if !authors.contains(&worker) {
-            authors.push(worker);
+    for model in workers.chain(builders) {
+        if !authors.contains(&model) {
+            authors.push(model);
         }
     }
     authors
 }
 
-fn failed_gates(gates: &FinalCheck) -> String {
-    if let Some(problem) = &gates.problem {
+fn failed_checks(checks: &FinalCheck) -> String {
+    if let Some(problem) = &checks.problem {
         return problem.clone();
     }
-    let failed: Vec<String> = gates
-        .gates
+    let failed: Vec<String> = checks
+        .checks
         .iter()
-        .filter(|gate| !gate.passed)
-        .map(|gate| match gate.summary.trim() {
-            "" => format!("{} failed", gate.name),
-            summary => format!("{} failed: {summary}", gate.name),
+        .filter(|check| !check.passed)
+        .map(|check| match check.summary.trim() {
+            "" => format!("{} failed", check.name),
+            summary => format!("{} failed: {summary}", check.name),
         })
         .collect();
     match failed.as_slice() {
@@ -850,7 +852,7 @@ mod tests {
     }
 
     #[test]
-    fn only_every_criterion_met_with_the_gates_passing_is_met() {
+    fn only_every_criterion_met_with_the_checks_passing_is_met() {
         let all = vec![
             verdict("G1", CriterionState::Met),
             verdict("G2", CriterionState::Met),
@@ -862,8 +864,8 @@ mod tests {
             true,
         );
         assert_eq!(met.overall, GoalVerdict::Met);
-        let gates_failed = decide(1, &criteria(), &check(all, GoalVerdict::Met), false);
-        assert_eq!(gates_failed.overall, GoalVerdict::NotYet);
+        let checks_failed = decide(1, &criteria(), &check(all, GoalVerdict::Met), false);
+        assert_eq!(checks_failed.overall, GoalVerdict::NotYet);
     }
 
     #[test]

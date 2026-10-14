@@ -11,7 +11,7 @@ use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::journal::{Journal, JournalError};
 use argonauts_core::names::SessionKey;
 use argonauts_core::redact::{redact_json, redact_secrets};
-use argonauts_core::{CardId, Paths, RunId};
+use argonauts_core::{Paths, RunId, TaskId};
 use tokio::sync::broadcast;
 
 use crate::live_registry;
@@ -41,7 +41,7 @@ impl JournalSink {
         }
     }
 
-    /// Counts sessions into this supervisor's `registry.json` entry. The count is written on
+    /// Counts sessions into this run host's `registry.json` entry. The count is written on
     /// its own thread, since that takes a file lock and scans processes.
     pub(crate) fn counting_sessions(mut self, home: Paths, pid: u32) -> Self {
         let (changes, received) = mpsc::channel();
@@ -91,7 +91,7 @@ impl JournalSink {
 impl EventSink for JournalSink {
     fn record(
         &self,
-        card: Option<&CardId>,
+        task: Option<&TaskId>,
         session: Option<&SessionKey>,
         source: &str,
         kind: RunEventKind,
@@ -101,7 +101,7 @@ impl EventSink for JournalSink {
         // Appending and broadcasting under one lock keeps the broadcast in `seq` order, which
         // subscribers rely on: they drop anything below the next `seq` they expect.
         let mut journal = self.journal.lock().unwrap_or_else(PoisonError::into_inner);
-        let event = journal.append(&self.run, card, session, &source, kind)?;
+        let event = journal.append(&self.run, task, session, &source, kind)?;
         // No subscriber is fine: the journal already has it.
         let _ = self.events.send(event.clone());
         self.count(&event);
@@ -152,7 +152,7 @@ mod tests {
             level: NoteLevel::Info,
             text: format!("the agent printed OPENAI_API_KEY={key} in its output"),
         });
-        let recorded = sink.record(None, None, "conductor", kind).unwrap();
+        let recorded = sink.record(None, None, "argonauts-code", kind).unwrap();
 
         let on_disk = std::fs::read_to_string(&path).unwrap();
         assert!(!on_disk.contains(key), "{on_disk}");
@@ -186,11 +186,15 @@ mod tests {
             })
         };
         assert_eq!(
-            sink.record(None, None, "conductor", note("a")).unwrap().seq,
+            sink.record(None, None, "argonauts-code", note("a"))
+                .unwrap()
+                .seq,
             0
         );
         assert_eq!(
-            sink.record(None, None, "conductor", note("b")).unwrap().seq,
+            sink.record(None, None, "argonauts-code", note("b"))
+                .unwrap()
+                .seq,
             1
         );
     }
@@ -215,7 +219,7 @@ mod tests {
                             level: NoteLevel::Info,
                             text: format!("thread {thread} note {n}"),
                         });
-                        sink.record(None, None, "conductor", kind).unwrap();
+                        sink.record(None, None, "argonauts-code", kind).unwrap();
                     }
                 })
             })

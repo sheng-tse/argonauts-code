@@ -1,4 +1,4 @@
-/// Shown once in `argonauts init`. It names no vendor on purpose.
+/// Shown once in `argonauts setup`. It names no agent on purpose.
 pub const TERMS_NOTE: &str =
     "Automated use may be subject to your plan's terms; API keys work with every adapter.";
 
@@ -10,7 +10,7 @@ mod tests {
     fn terms_note_text_is_neutral() {
         assert_eq!(TERMS_NOTE.matches('.').count(), 1);
         assert!(TERMS_NOTE.ends_with('.'));
-        for vendor in [
+        for agent_id in [
             "Claude",
             "Anthropic",
             "OpenAI",
@@ -22,7 +22,7 @@ mod tests {
             "OpenCode",
             "OpenRouter",
         ] {
-            assert!(!TERMS_NOTE.contains(vendor), "{vendor}");
+            assert!(!TERMS_NOTE.contains(agent_id), "{agent_id}");
         }
     }
 }

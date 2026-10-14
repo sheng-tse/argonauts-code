@@ -15,7 +15,7 @@
     "usage": [
       "usage-update"
     ],
-    "quota": "none",
+    "plan_usage": "none",
     "mcp_servers": true
   },
   "errors": [],

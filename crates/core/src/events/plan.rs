@@ -4,13 +4,13 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::card::CardSpec;
-use crate::CardId;
-use crate::names::{DecisionId, DraftId, PlanLabel, WorkerRef};
-use crate::settings::budget::{BudgetAmount, BudgetLineKind, BudgetUnit};
+use super::task::TaskSpec;
+use crate::TaskId;
+use crate::names::{DecisionId, DraftId, ModelRef, PlanLabel};
+use crate::settings::limit::{LimitAmount, LimitLineKind, LimitUnit};
 use crate::settings::protocol::{JudgingMethod, RoutingAlgorithm};
-use crate::steps::card::Predictions;
-use crate::steps::plan::{CritiquePoint, SpikeProposal, SpikeReport};
+use crate::steps::plan::{CritiquePoint, ExperimentProposal, ExperimentReport};
+use crate::steps::task::Predictions;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -21,7 +21,7 @@ pub enum PlanEvent {
         draft: DraftId,
         label: PlanLabel,
         /// Hidden from judges.
-        worker: WorkerRef,
+        worker: ModelRef,
         /// 1 for the first draft, 2 after revision.
         round: u8,
         /// The plan's one-paragraph summary, for the collapsed step.
@@ -33,33 +33,31 @@ pub enum PlanEvent {
     Mapped {
         /// 1 for the drafts, 2 for the revisions.
         round: u8,
-        worker: WorkerRef,
+        worker: ModelRef,
         topics: Vec<MappedTopic>,
     },
     /// No disputed topics: one agent merged the drafts, a judge checked completeness.
-    FastPath {
-        merged_by: WorkerRef,
-    },
+    FastPath { merged_by: ModelRef },
     Critiqued {
-        critic: WorkerRef,
+        critic: ModelRef,
         /// Whether it's the run's designated critic.
         designated: bool,
         points: Vec<CritiquePoint>,
     },
-    SpikeProposed {
-        proposal: SpikeProposal,
+    ExperimentProposed {
+        proposal: ExperimentProposal,
         /// Code's check against `experiments.limit_usd`.
-        fits_budget: bool,
+        fits_limit: bool,
     },
-    SpikeFinished {
-        card: CardId,
-        report: SpikeReport,
+    ExperimentFinished {
+        task: TaskId,
+        report: ExperimentReport,
     },
     /// One judge's scores for one plan.
     Scored {
-        judge: WorkerRef,
-        /// Its model family, which must differ from the plan author's.
-        judge_family: String,
+        judge: ModelRef,
+        /// Its model provider, which must not be the plan author's.
+        judge_provider: String,
         plan: PlanLabel,
         /// 0 or 1: the order the plan was shown in, since plans are judged in both orders.
         order: u8,
@@ -73,9 +71,9 @@ pub enum PlanEvent {
     Judged(JudgingResult),
     /// A decision record, also written to `decisions/` in the repo's state directory.
     Decided(DesignDecision),
-    /// The coordinator's plan was accepted or rejected by code (`orchestrator`).
-    Coordinated {
-        coordinator: WorkerRef,
+    /// The orchestrator's plan was accepted or rejected by code (`orchestrator`).
+    Orchestrated {
+        orchestrator: ModelRef,
         /// Accepted, or the rule it broke.
         rejection: Option<String>,
     },
@@ -105,7 +103,7 @@ pub struct JudgingResult {
     /// The winner, when the scoring rule finds a clear one.
     pub winner: Option<PlanLabel>,
     pub margin: f64,
-    /// A near tie goes to you at the plan checkpoint.
+    /// A near tie goes to you at the plan approval.
     pub near_tie: bool,
 }
 
@@ -113,13 +111,13 @@ pub struct JudgingResult {
 pub struct PlanTally {
     pub label: PlanLabel,
     /// Shown to you only.
-    pub author: WorkerRef,
+    pub author: ModelRef,
     /// Mean score over counted judges.
     pub mean: f64,
     /// Largest difference between one judge's two orders.
     pub spread: f64,
     pub counted: u32,
-    /// Scores dropped, such as a same-family judge's.
+    /// Scores dropped, such as a same-provider judge's.
     pub dropped: u32,
 }
 
@@ -139,54 +137,54 @@ pub struct DesignDecision {
 pub enum DivideEvent {
     /// The task graph built from the plan and checked by code.
     Graph(TaskGraph),
-    Owner {
-        card: CardId,
-        worker: WorkerRef,
+    Worker {
+        task: TaskId,
+        worker: ModelRef,
         algorithm: RoutingAlgorithm,
         /// Whether this was an exploration pick.
         explored: bool,
-        /// One line, such as "9 of 11 similar cards passed, 38% quota used".
+        /// One line, such as "9 of 11 similar tasks passed, 38% plan usage used".
         reason: String,
     },
-    /// A card's reviewers, from other model families.
+    /// A task's reviewers, from other model providers.
     Reviewers {
-        card: CardId,
-        reviewers: Vec<WorkerRef>,
+        task: TaskId,
+        reviewers: Vec<ModelRef>,
         /// Whether they're blind to each other.
         blind: bool,
     },
     Predicted {
-        card: CardId,
+        task: TaskId,
         predictions: Predictions,
     },
-    Budget(BudgetPlan),
+    Limit(LimitPlan),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskGraph {
-    /// Every card, contracts and test cards included.
-    pub cards: Vec<CardSpec>,
-    /// The longest chain, which the phase lead's card sits on.
-    pub critical_path: Vec<CardId>,
+    /// Every task, contracts and test tasks included.
+    pub tasks: Vec<TaskSpec>,
+    /// The longest chain, which the tie-breaker's task sits on.
+    pub critical_path: Vec<TaskId>,
 }
 
-/// The run budget split by line. The lines add up to the total.
+/// The run limit split by line. The lines add up to the total.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct BudgetPlan {
-    pub lines: Vec<BudgetLine>,
-    pub total: BudgetAmount,
-    /// An estimate range for the plan checkpoint, such as $9 to $12.
+pub struct LimitPlan {
+    pub lines: Vec<LimitLine>,
+    pub total: LimitAmount,
+    /// An estimate range for the plan approval, such as $9 to $12.
     pub estimate_low: f64,
     pub estimate_high: f64,
 }
 
-impl BudgetPlan {
+impl LimitPlan {
     /// The plan of a run with no limit: no lines, and nothing to add up.
     pub fn unlimited() -> Self {
         Self {
             lines: Vec::new(),
-            total: BudgetAmount {
-                unit: BudgetUnit::Usd,
+            total: LimitAmount {
+                unit: LimitUnit::Usd,
                 amount: 0.0,
             },
             estimate_low: 0.0,
@@ -201,7 +199,7 @@ impl BudgetPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct BudgetLine {
-    pub line: BudgetLineKind,
-    pub amount: BudgetAmount,
+pub struct LimitLine {
+    pub line: LimitLineKind,
+    pub amount: LimitAmount,
 }

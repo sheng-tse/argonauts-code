@@ -10,13 +10,13 @@ use serde_json::Value;
 #[test]
 fn app_helpers_read_settings_files() {
     let text = "\
-# The main agent.
-main_agent = \"claude-code\"
+# Every request through a workflow.
+ultracode = false
 crew = [
   \"claude-code\",
   \"codex\", # the second
 ]
-workflow = \"solo\"
+workflow = \"captain\"
 
 # Approvals
 [approvals.merge]
@@ -32,7 +32,7 @@ theme = \"dark\" # trailing
     assert_eq!(
         keys,
         [
-            "main_agent",
+            "ultracode",
             "crew",
             "workflow",
             "approvals.merge.mode",
@@ -54,8 +54,8 @@ theme = \"dark\" # trailing
 }
 
 #[test]
-fn app_helpers_load_the_vendor_scenario() {
-    let scenario = FakeScenario::load(&scenario_file(VENDORS)).unwrap();
+fn app_helpers_load_the_agent_scenario() {
+    let scenario = FakeScenario::load(&scenario_file(AGENTS)).unwrap();
     assert_eq!(scenario.version.len(), 3);
     for program in ["claude", "codex", "agy"] {
         assert!(

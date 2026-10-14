@@ -8,7 +8,9 @@ Every setting and the layer it comes from. ! marks a safety key                 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ general                                                                                                              │
 │ ❯   workflow               council           this project              How the crew works together                   │
-│     main_agent             claude-code/opus  everywhere (global)       Chat, triage, and solo work                   │
+│                                                                                                                      │
+│ crew                                                                                                                 │
+│     crew.main              claude-code/opus  everywhere (global)       Conversation, the estimate, and Captain work  │
 │                                                                                                                      │
 │ ui                                                                                                                   │
 │     ui.theme               dark              everywhere (global)       Light or dark colors, or follow the terminal  │
@@ -23,8 +25,6 @@ Every setting and the layer it comes from. ! marks a safety key                 
 │                                                                                                                      │
 │ roles                                                                                                                │
 │     roles.reviewer.effort  high              workflow                  How hard the reviewer thinks                  │
-│                                                                                                                      │
-│                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │

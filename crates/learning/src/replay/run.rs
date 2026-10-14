@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use argonauts_core::AuthMode;
 use argonauts_core::future::BoxFuture;
-use argonauts_core::limits::GateRunner;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::limits::CheckRunner;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::Settings;
 use argonauts_core::sha256_hex;
 use argonauts_core::workflow::StandardPhase;
@@ -22,21 +22,21 @@ use super::stopping::{StoppingRule, Verdict};
 use super::{Entry, ReplayReport, ReplayRequest, ReplayRunner, ReplaySet};
 use crate::error::{LearningError, Result};
 use crate::evolution::Thresholds;
-use crate::recipes::LoadedRecipe;
-use crate::types::{RecipeRef, ReplayResult};
+use crate::learned_workflows::LoadedLearnedWorkflow;
+use crate::types::{LearnedWorkflowRef, ReplayResult};
 
 /// How far a not-worse class may fall behind its parent, as a fraction.
 const NOT_WORSE_MARGIN: f64 = -0.05;
 
 /// A replay in progress. Everything that decides it is fixed here before the first run, and
-/// it outlives a month whose budget ran out.
+/// it outlives a month whose limit is spent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Progress {
-    parent: RecipeRef,
-    child: RecipeRef,
+    parent: LearnedWorkflowRef,
+    child: LearnedWorkflowRef,
     rule: StoppingRule,
     from_phase: Option<StandardPhase>,
-    workers: Vec<WorkerRef>,
+    workers: Vec<ModelRef>,
     tuning: Vec<String>,
     /// Fixed when the holdout starts.
     holdout: Option<Vec<String>>,
@@ -45,42 +45,48 @@ struct Progress {
 }
 
 impl Progress {
-    fn has(&self, task: &str, recipe: &RecipeRef, attempt: u32, holdout: bool) -> bool {
+    fn has(
+        &self,
+        task: &str,
+        learned_workflow: &LearnedWorkflowRef,
+        try_number: u32,
+        holdout: bool,
+    ) -> bool {
         self.results.iter().any(|result| {
             result.task == task
-                && &result.recipe == recipe
-                && result.attempt == attempt
+                && &result.learned_workflow == learned_workflow
+                && result.try_number == try_number
                 && result.holdout == holdout
         })
     }
 
-    fn report(&self, stopped_early: bool, out_of_budget: bool) -> ReplayReport {
+    fn report(&self, stopped_early: bool, at_limit: bool) -> ReplayReport {
         ReplayReport {
             results: self.results.clone(),
             spent_usd: self.spent_usd,
             stopped_early,
-            out_of_budget,
+            at_limit,
         }
     }
 }
 
 /// Replays a candidate against its parent: paired runs on the tuning set, then the holdout,
-/// at equal budgets, stopping early when the result is clear, within `budget_left_usd`. The
+/// at equal limits, stopping early when the result is clear, within `limit_left_usd`. The
 /// stopping rule's margin comes from the candidate's `thresholds`, frozen when it was queued.
 ///
-/// Each pair runs the parent, then the child, on the same task with the same budget. After the
+/// Each pair runs the parent, then the child, on the same task with the same limit. After the
 /// first pair of every task, tasks both versions passed or both failed are dropped. The holdout
 /// runs one pair per task only once the tuning set passes, and then counts the candidate toward
-/// its retirement. Every run's spend goes in the month's ledger as it happens. When the budget
-/// runs out the replay stops with `out_of_budget`, and calling it again for the same two
+/// its retirement. Every run's spend goes in the month's ledger as it happens. When the limit
+/// runs out the replay stops with `at_limit`, and calling it again for the same two
 /// versions carries on where it stopped, under the rule it started with.
 pub fn replay<'a>(
     set: &'a ReplaySet,
     versions: Versions<'a>,
     settings: &'a Settings,
-    budget_left_usd: f64,
+    limit_left_usd: f64,
     runner: Arc<dyn ReplayRunner>,
-    gates: Arc<dyn GateRunner>,
+    checks: Arc<dyn CheckRunner>,
 ) -> BoxFuture<'a, Result<ReplayReport>> {
     Box::pin(async move {
         let replayer = Replayer {
@@ -89,10 +95,10 @@ pub fn replay<'a>(
             child: versions.child,
             thresholds: versions.thresholds,
             settings,
-            budget_left_usd,
+            limit_left_usd,
             spent_now: 0.0,
             runner,
-            gates,
+            checks,
         };
         replayer.run().await
     })
@@ -102,28 +108,28 @@ pub fn replay<'a>(
 /// the candidate was queued.
 #[derive(Debug, Clone, Copy)]
 pub struct Versions<'a> {
-    pub parent: &'a LoadedRecipe,
-    pub child: &'a LoadedRecipe,
+    pub parent: &'a LoadedLearnedWorkflow,
+    pub child: &'a LoadedLearnedWorkflow,
     pub thresholds: &'a Thresholds,
 }
 
 struct Replayer<'a> {
     set: &'a ReplaySet,
-    parent: &'a LoadedRecipe,
-    child: &'a LoadedRecipe,
+    parent: &'a LoadedLearnedWorkflow,
+    child: &'a LoadedLearnedWorkflow,
     thresholds: &'a Thresholds,
     settings: &'a Settings,
-    budget_left_usd: f64,
-    /// Spent in this call, which `budget_left_usd` bounds.
+    limit_left_usd: f64,
+    /// Spent in this call, which `limit_left_usd` bounds.
     spent_now: f64,
     runner: Arc<dyn ReplayRunner>,
-    gates: Arc<dyn GateRunner>,
+    checks: Arc<dyn CheckRunner>,
 }
 
-/// Whether a run went ahead or the budget stopped it.
+/// Whether a run went ahead or the limit stopped it.
 enum Step {
     Ran,
-    OutOfBudget,
+    AtLimit,
 }
 
 impl Replayer<'_> {
@@ -166,15 +172,15 @@ impl Replayer<'_> {
         let rule = progress.rule;
         let runs = rule.runs_per_task.max(1);
         let mut stopped_early = false;
-        'tuning: for attempt in 1..=runs {
+        'tuning: for try_number in 1..=runs {
             for entry in &tuning {
-                if attempt > 1
+                if try_number > 1
                     && StoppingRule::dropped(&entry.id, &progress.results, &parent, &child)
                 {
                     continue;
                 }
-                if let Step::OutOfBudget = self
-                    .pair(&mut progress, &path, entry, attempt, false)
+                if let Step::AtLimit = self
+                    .pair(&mut progress, &path, entry, try_number, false)
                     .await?
                 {
                     return Ok(progress.report(false, true));
@@ -210,7 +216,7 @@ impl Replayer<'_> {
             };
             let holdout = self.load(&ids)?;
             for entry in &holdout {
-                if let Step::OutOfBudget = self.pair(&mut progress, &path, entry, 1, true).await? {
+                if let Step::AtLimit = self.pair(&mut progress, &path, entry, 1, true).await? {
                     return Ok(progress.report(stopped_early, true));
                 }
             }
@@ -223,7 +229,7 @@ impl Replayer<'_> {
     }
 
     /// Fixes the rule, the phase, the workers, and the tasks before the first run.
-    fn start(&self, workers: Vec<WorkerRef>) -> Result<Progress> {
+    fn start(&self, workers: Vec<ModelRef>) -> Result<Progress> {
         let replay = &self.settings.evolution.replay;
         let tuning: Vec<String> = self
             .set
@@ -273,31 +279,38 @@ impl Replayer<'_> {
         Ok(entries)
     }
 
-    /// The parent's run and the child's on one task. The budget for both is checked before the
+    /// The parent's run and the child's on one task. The limit for both is checked before the
     /// first, so a pair is never split by the month running out.
     async fn pair(
         &mut self,
         progress: &mut Progress,
         path: &Path,
         entry: &Entry,
-        attempt: u32,
+        try_number: u32,
         holdout: bool,
     ) -> Result<Step> {
         let versions = [self.parent, self.child];
-        let pending: Vec<&LoadedRecipe> = versions
+        let pending: Vec<&LoadedLearnedWorkflow> = versions
             .into_iter()
-            .filter(|recipe| !progress.has(&entry.id, &recipe.reference(), attempt, holdout))
+            .filter(|learned_workflow| {
+                !progress.has(
+                    &entry.id,
+                    &learned_workflow.reference(),
+                    try_number,
+                    holdout,
+                )
+            })
             .collect();
-        let needed = entry.budget_usd * pending.len() as f64;
-        if self.spent_now + needed > self.budget_left_usd {
-            return Ok(Step::OutOfBudget);
+        let needed = entry.limit_usd * pending.len() as f64;
+        if self.spent_now + needed > self.limit_left_usd {
+            return Ok(Step::AtLimit);
         }
-        for recipe in pending {
-            if self.spent_now + entry.budget_usd > self.budget_left_usd {
-                return Ok(Step::OutOfBudget);
+        for learned_workflow in pending {
+            if self.spent_now + entry.limit_usd > self.limit_left_usd {
+                return Ok(Step::AtLimit);
             }
             let result = self
-                .run_one(progress, entry, recipe, attempt, holdout)
+                .run_one(progress, entry, learned_workflow, try_number, holdout)
                 .await?;
             progress.spent_usd += result.cost_usd;
             progress.results.push(result);
@@ -310,14 +323,14 @@ impl Replayer<'_> {
         &mut self,
         progress: &Progress,
         entry: &Entry,
-        recipe: &LoadedRecipe,
-        attempt: u32,
+        learned_workflow: &LoadedLearnedWorkflow,
+        try_number: u32,
         holdout: bool,
     ) -> Result<ReplayResult> {
         let into = self.set.repos_dir().join(format!(
-            "{}-v{}-{attempt}-{}",
+            "{}-v{}-{try_number}-{}",
             entry.id,
-            recipe.recipe.version,
+            learned_workflow.learned_workflow.version,
             nonce()
         ));
         let repo = Scratch(isolated_repo(
@@ -331,9 +344,9 @@ impl Replayer<'_> {
                 holdout: false,
                 ..entry.clone()
             },
-            recipe: recipe.clone(),
+            learned_workflow: learned_workflow.clone(),
             repo: repo.0.clone(),
-            budget_usd: entry.budget_usd,
+            limit_usd: entry.limit_usd,
             from_phase: progress.from_phase,
             workers: progress.workers.clone(),
             hidden_paths: self.set.hidden_paths(entry),
@@ -341,15 +354,15 @@ impl Replayer<'_> {
         let run = self.runner.run(&request).await?;
         self.spent_now += run.cost_usd;
         self.set
-            .record_spend(&entry.id, &recipe.reference(), run.cost_usd)?;
+            .record_spend(&entry.id, &learned_workflow.reference(), run.cost_usd)?;
         let passed = match &run.head {
-            Some(head) => score(entry, &repo.0, head, self.gates.clone()).await?,
+            Some(head) => score(entry, &repo.0, head, self.checks.clone()).await?,
             None => false,
         };
         Ok(ReplayResult {
             task: entry.id.clone(),
-            recipe: recipe.reference(),
-            attempt,
+            learned_workflow: learned_workflow.reference(),
+            try_number,
             passed,
             cost_usd: run.cost_usd,
             minutes: run.minutes,
@@ -358,13 +371,13 @@ impl Replayer<'_> {
     }
 }
 
-/// Tuning pairs still planned: every attempt of a live task, the first of a dropped one.
+/// Tuning pairs still planned: every try of a live task, the first of a dropped one.
 fn planned_left(
     progress: &Progress,
     tuning: &[Entry],
     runs: u32,
-    parent: &RecipeRef,
-    child: &RecipeRef,
+    parent: &LearnedWorkflowRef,
+    child: &LearnedWorkflowRef,
 ) -> u32 {
     tuning
         .iter()
@@ -375,16 +388,16 @@ fn planned_left(
                 runs
             };
             (1..=planned)
-                .filter(|&attempt| {
-                    !(progress.has(&entry.id, parent, attempt, false)
-                        && progress.has(&entry.id, child, attempt, false))
+                .filter(|&try_number| {
+                    !(progress.has(&entry.id, parent, try_number, false)
+                        && progress.has(&entry.id, child, try_number, false))
                 })
                 .count() as u32
         })
         .sum()
 }
 
-fn progress_key(parent: &LoadedRecipe, child: &LoadedRecipe) -> String {
+fn progress_key(parent: &LoadedLearnedWorkflow, child: &LoadedLearnedWorkflow) -> String {
     let both = format!(
         "{}\n{}\n{}\n{}",
         parent.reference(),
@@ -396,7 +409,7 @@ fn progress_key(parent: &LoadedRecipe, child: &LoadedRecipe) -> String {
 }
 
 /// Applies the entry's hidden tests to `head` in the isolated repo and runs them through the
-/// gate runner, sandboxed like any gate.
+/// check runner, sandboxed like any check.
 ///
 /// `head` is checked out fresh beside the hidden tests in the replay folder, the tests are
 /// copied in, and the checkout is deleted once they've run. The tests never touch `repo`, its
@@ -405,7 +418,7 @@ pub fn score<'a>(
     entry: &'a Entry,
     repo: &'a Path,
     head: &'a str,
-    gates: Arc<dyn GateRunner>,
+    checks: Arc<dyn CheckRunner>,
 ) -> BoxFuture<'a, Result<bool>> {
     Box::pin(async move {
         let root = hidden_root(entry)?;
@@ -423,34 +436,34 @@ pub fn score<'a>(
                 .join("work")
                 .join(format!("score-{}-{}", entry.id, nonce())),
         )?);
-        let tests = run_tests(&gates, entry, &checkout.0, &scoring, &replay_dir).await?;
+        let tests = run_tests(&checks, entry, &checkout.0, &scoring, &replay_dir).await?;
         Ok(tests.ran && tests.passed)
     })
 }
 
-/// The workers replays may use, from your crew and default agent: agents on an API key, and
+/// The workers replays may use, from your crew and main agent: agents on an API key, and
 /// endpoints you allowed with `allow_api_billing` or that run locally, unless
 /// `evolution.replay.use_subscriptions` is on. A worker without a model gets the one its
 /// agent settings pin.
-pub fn replay_workers(settings: &Settings) -> Vec<WorkerRef> {
+pub fn replay_workers(settings: &Settings) -> Vec<ModelRef> {
     let use_subscriptions = settings.evolution.replay.use_subscriptions;
-    let mut workers: Vec<WorkerRef> = Vec::new();
+    let mut workers: Vec<ModelRef> = Vec::new();
     let members = settings.crew.members();
-    let candidates = members.iter().chain(std::iter::once(&settings.main_agent));
+    let candidates = members.iter().chain(std::iter::once(&settings.crew.main));
     for worker in candidates {
-        let pinned = if let Some(endpoint) = settings.endpoints.get(&worker.worker) {
-            // A local endpoint spends neither money nor anyone's quota.
+        let pinned = if let Some(endpoint) = settings.endpoints.get(&worker.agent) {
+            // A local endpoint spends neither money nor anyone's plan usage.
             (use_subscriptions || endpoint.allow_api_billing || endpoint.local)
                 .then(|| worker.clone())
         } else {
             let agent = settings
                 .agents
-                .get(&worker.worker)
+                .get(&worker.agent)
                 .cloned()
                 .unwrap_or_default();
             (agent.enabled && (use_subscriptions || agent.auth == AuthMode::ApiKey)).then(|| {
-                WorkerRef::new(
-                    worker.worker.clone(),
+                ModelRef::new(
+                    worker.agent.clone(),
                     worker.model.clone().or(agent.model.clone()),
                 )
             })
@@ -465,9 +478,12 @@ pub fn replay_workers(settings: &Settings) -> Vec<WorkerRef> {
 }
 
 /// The phase a replay of `child` starts from, reusing the parent run's recorded phases before
-/// it. Critique, checklist, and drafting changes start at planning; card splits, budgets, and
+/// it. Critique, checklist, and drafting changes start at planning; task splits, limits, and
 /// the build prompt at doing. Anything else, or a mix of phases, replays the whole run.
-pub fn start_phase(parent: &LoadedRecipe, child: &LoadedRecipe) -> Option<StandardPhase> {
+pub fn start_phase(
+    parent: &LoadedLearnedWorkflow,
+    child: &LoadedLearnedWorkflow,
+) -> Option<StandardPhase> {
     let keys = changed_keys(parent, child);
     let mut phases = keys.iter().map(|key| phase_of(key));
     let first = phases.next()??;
@@ -487,16 +503,17 @@ fn phase_of(key: &str) -> Option<StandardPhase> {
     }
 }
 
-/// Dotted settings keys, `prompts.<name>`, and the recipe's own fields that differ.
-fn changed_keys(parent: &LoadedRecipe, child: &LoadedRecipe) -> Vec<String> {
-    let (a, b) = (&parent.recipe, &child.recipe);
+/// Dotted settings keys, `prompts.<name>`, and the learned workflow's own fields that are
+/// different.
+fn changed_keys(parent: &LoadedLearnedWorkflow, child: &LoadedLearnedWorkflow) -> Vec<String> {
+    let (a, b) = (&parent.learned_workflow, &child.learned_workflow);
     let mut keys = Vec::new();
-    let settings = |recipe: &crate::recipes::Recipe| {
+    let settings = |learned_workflow: &crate::learned_workflows::LearnedWorkflow| {
         let mut flat = BTreeMap::new();
-        for (key, value) in &recipe.settings {
+        for (key, value) in &learned_workflow.settings {
             flatten(key, value, &mut flat);
         }
-        for (name, file) in &recipe.prompts {
+        for (name, file) in &learned_workflow.prompts {
             flat.insert(
                 format!("prompts.{name}"),
                 serde_json::Value::String(file.clone()),
@@ -510,13 +527,13 @@ fn changed_keys(parent: &LoadedRecipe, child: &LoadedRecipe) -> Vec<String> {
             keys.push(key.clone());
         }
     }
-    for (field, differs) in [
+    for (field, changed) in [
         ("phases", a.phases != b.phases),
         ("workflow", a.workflow != b.workflow),
         ("mode", a.mode != b.mode),
         ("match", a.matches != b.matches),
     ] {
-        if differs {
+        if changed {
             keys.push(field.to_owned());
         }
     }

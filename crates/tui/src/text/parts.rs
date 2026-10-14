@@ -1,4 +1,4 @@
-//! Rows built from parts that give way whole when the row is too narrow, so a status line never
+//! Rows built from parts that give way whole when the row is too narrow, so the bottom line never
 //! ends in half a word.
 
 use ratatui::text::{Line, Span};
@@ -99,12 +99,12 @@ pub fn join_parts(parts: &[Part], shown: &[bool]) -> Vec<Span<'static>> {
     spans
 }
 
-/// `parts` in one row of `width` columns, after `lead`: whole parts give way by rank, and only
+/// `parts` in one row of `width` columns, after `opening`: whole parts give way by rank, and only
 /// if the parts that never give way are still too wide is the row cut with `…`.
-pub fn fit_parts(lead: Vec<Span<'static>>, parts: &[Part], width: usize) -> Line<'static> {
-    let room = width.saturating_sub(spans_width(&lead));
+pub fn fit_parts(opening: Vec<Span<'static>>, parts: &[Part], width: usize) -> Line<'static> {
+    let room = width.saturating_sub(spans_width(&opening));
     let shown = parts_that_fit(parts, room);
-    let mut spans = lead;
+    let mut spans = opening;
     spans.extend(join_parts(parts, &shown));
     truncate_line(&Line::from(spans), width)
 }

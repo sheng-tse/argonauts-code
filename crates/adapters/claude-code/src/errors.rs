@@ -58,7 +58,7 @@ pub(crate) fn retry_reason(event: &Value) -> RetryReason {
 
 pub(crate) fn from_result(result: &Value, message: &str) -> ErrorCategory {
     match str_at(result, "subtype") {
-        Some("error_max_budget_usd" | "error_max_turns") => return ErrorCategory::Budget,
+        Some("error_max_budget_usd" | "error_max_turns") => return ErrorCategory::Limit,
         Some("error_max_structured_output_retries") => return ErrorCategory::AnswerMissed,
         _ => {}
     }
@@ -94,7 +94,7 @@ fn from_terminal_reason(reason: &str) -> Option<ErrorCategory> {
     match reason {
         "prompt_too_long" => Some(ErrorCategory::ContextFull),
         "aborted_streaming" | "aborted_tools" => Some(ErrorCategory::Interrupted),
-        "budget_exhausted" | "max_turns" => Some(ErrorCategory::Budget),
+        "budget_exhausted" | "max_turns" => Some(ErrorCategory::Limit),
         "structured_output_retry_exhausted" => Some(ErrorCategory::AnswerMissed),
         _ => None,
     }
@@ -263,11 +263,11 @@ mod tests {
         let category = |v: Value| from_result(&v, "");
         assert_eq!(
             category(json!({"subtype": "error_max_budget_usd"})),
-            ErrorCategory::Budget
+            ErrorCategory::Limit
         );
         assert_eq!(
             category(json!({"subtype": "error_max_turns"})),
-            ErrorCategory::Budget
+            ErrorCategory::Limit
         );
         assert_eq!(
             category(
@@ -318,14 +318,14 @@ mod tests {
             })),
             ErrorCategory::AnswerMissed
         );
-        let missed = argonauts_core::events::session::EndReason::VendorError {
+        let missed = argonauts_core::events::session::EndReason::CliError {
             category: ErrorCategory::AnswerMissed,
             message: String::new(),
         };
         assert!(missed.may_pass());
         assert_eq!(
             missed.plain_line("Claude Code").as_deref(),
-            Some("Claude Code didn't answer in the format Argonauts asked for")
+            Some("Claude Code didn't answer in the format Argonauts Code asked for")
         );
     }
 
@@ -408,6 +408,6 @@ mod tests {
         assert!(retryable(ErrorCategory::RateLimit));
         assert!(retryable(ErrorCategory::UsageLimit));
         assert!(!retryable(ErrorCategory::Auth));
-        assert!(!retryable(ErrorCategory::Budget));
+        assert!(!retryable(ErrorCategory::Limit));
     }
 }

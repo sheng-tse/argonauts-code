@@ -1,4 +1,4 @@
-//! What an owner answers in its report. The report schema has no field for replies, so an owner
+//! What a worker answers in its report. The report schema has no field for replies, so a worker
 //! writes each on its own line of `summary` or `concerns`, as the delivered message asks:
 //! `answer m-004: <answer>`, `accept m-007: <why>`, or `reject m-007: <why>`.
 
@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use argonauts_core::names::MessageId;
-use argonauts_core::steps::card::CardReport;
+use argonauts_core::steps::task::TaskReport;
 
 static REPLY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -22,7 +22,7 @@ pub enum Reply {
         to: MessageId,
         text: String,
     },
-    /// One owner's vote on a change request.
+    /// One worker's vote on a change request.
     Vote {
         on: MessageId,
         accept: bool,
@@ -31,7 +31,7 @@ pub enum Reply {
 }
 
 /// The replies in a report, in order, the first per message only.
-pub fn in_report(report: &CardReport) -> Vec<Reply> {
+pub fn in_report(report: &TaskReport) -> Vec<Reply> {
     let lines = report
         .summary
         .lines()
@@ -80,13 +80,13 @@ fn about(reply: &Reply) -> &MessageId {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::steps::card::ReportStatus;
+    use argonauts_core::steps::task::ReportStatus;
 
     use super::*;
 
     #[test]
     fn replies_are_read_from_summary_and_concerns() {
-        let report = CardReport {
+        let report = TaskReport {
             status: ReportStatus::Done,
             summary: "Built the store.\nanswer m-004: Seconds, as an integer.".to_owned(),
             files_changed: Vec::new(),

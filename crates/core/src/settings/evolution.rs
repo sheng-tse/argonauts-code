@@ -1,13 +1,15 @@
-//! The evolution loop's settings. They're safety keys: only you change them, never a preset, a
-//! recipe, or the loop itself, since a loop that could move its own threshold would learn to
-//! game it.
+//! The evolution loop's settings. They're safety keys: only you change them, never a workflow, a
+//! learned workflow, or the loop itself, since a loop that could move its own threshold would learn
+//! to game it.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::Span;
+
 /// Keys evolution never changes, whatever `evolution.evolvable` lists, because they score or
 /// constrain it: the loop's own rules, memory safety, the outcome log, who judges and reviews
-/// and what they see, and the differs. Safety keys are fixed core too. A listed key under one
+/// and what they see, and the comparers. Safety keys are fixed core too. A listed key under one
 /// of these is a config error.
 pub const FIXED_CORE_KEYS: &[&str] = &[
     "evolution.*",
@@ -31,6 +33,10 @@ pub struct EvolutionSettings {
     pub evolvable: Vec<String>,
     /// Runs between proposals; 0 means only when you ask.
     pub propose_every: u32,
+    /// How long the run review's agent may take over a proposal. The run's end waits on it, so
+    /// past this the agent is stopped and the run ends with no proposal. `"none"` waits for it
+    /// however long it takes.
+    pub propose_timeout: Span,
     /// Pass-rate points a candidate must gain, fixed before any replay.
     pub min_gain_points: f64,
     /// Largest cost increase allowed, as a fraction: 0.10 is 10%.
@@ -40,7 +46,7 @@ pub struct EvolutionSettings {
     pub replay: ReplaySettings,
     /// Runs a promoted change is watched for before it becomes current.
     pub canary_runs: u32,
-    /// Whether a canary run's merge opens a pull request instead of landing.
+    /// Whether a canary run's merge opens a pull request instead of merging.
     pub canary_pull_requests: bool,
     /// A tripwire fires when chance would explain a canary run this much worse less often than
     /// this, such as 0.05 for 1 time in 20.
@@ -63,6 +69,7 @@ impl Default for EvolutionSettings {
             .map(str::to_owned)
             .to_vec(),
             propose_every: 1,
+            propose_timeout: Span::new("2m"),
             min_gain_points: 10.0,
             max_cost_increase: 0.10,
             not_worse_classes: Vec::new(),
@@ -83,7 +90,7 @@ pub enum EvolutionStage {
     Record,
     /// Also proposes one change every `propose_every` runs, for you to apply.
     Suggest,
-    /// Also tests each proposal by replay within the evolution budget. Promotion then follows
+    /// Also tests each proposal by replay within the evolution limit. Promotion then follows
     /// `approvals.workflow_promotion`.
     #[default]
     Evolve,

@@ -1,6 +1,6 @@
-//! Making sure no agent process outlives its session or its supervisor: killing a recorded
+//! Making sure no agent process outlives its session or its run host: killing a recorded
 //! group only while it's still the same agent's, sweeping the processes that left the group, and
-//! guarding against the supervisor's own death.
+//! guarding against the run host's own death.
 
 mod procs;
 mod table;
@@ -26,18 +26,18 @@ pub const LAUNCH_MARKER: &str = "ARGONAUTS_LAUNCH";
 pub type TreeSnapshot = HashMap<u32, u64>;
 
 /// Kills what's left of `record`'s agent: its session, group, and descendants. Returns whether
-/// anything was left. A dead leader's group and session are still swept while they have members,
-/// since neither id can be reused until they're empty. A pid reused by another process is never
-/// hit.
+/// anything was left. After the head dies, its group and session are still swept while they have
+/// members, since neither id can be reused until they're empty. A pid reused by another process
+/// is never hit.
 pub fn kill_recorded_group(record: &AgentGroup) -> io::Result<bool> {
-    let leader_lives = match liveness::start_time(record.pid) {
+    let head_lives = match liveness::start_time(record.pid) {
         Some(started) if started == record.start_time => true,
         // The pid was free to reuse, so the old group and session were empty.
         Some(_) => return Ok(false),
         None => false,
     };
     let swept = sweep_recorded(record)?;
-    Ok(leader_lives || swept.in_group + swept.outside_group > 0)
+    Ok(head_lives || swept.in_group + swept.outside_group > 0)
 }
 
 /// Kills processes whose environment carries `ARGONAUTS_LAUNCH=<launch>`, such as a shell that
@@ -62,17 +62,17 @@ pub fn kill_launch_leftovers(launch: &str) -> io::Result<usize> {
     }
 }
 
-/// Kills the recorded group together with what left it: processes still in the leader's session,
-/// and the leader's descendants in sessions of their own. Returns how many it killed outside the
-/// group. Call it before killing the group, since a dead leader's children are adopted by init
-/// and can no longer be traced to it. Blocks for a moment.
+/// Kills the recorded group together with what left it: processes still in the head's session,
+/// and the head's descendants in sessions of their own. Returns how many it killed outside the
+/// group. Call it before killing the group, since the children of a head that died are adopted
+/// by init and can no longer be traced to it. Blocks for a moment.
 pub fn kill_process_tree(record: &AgentGroup) -> io::Result<usize> {
     Ok(sweep_recorded(record)?.outside_group)
 }
 
 /// The processes of `record`'s tree now, for [`kill_noted`] to find after their parents die: a
 /// process that started a session of its own is adopted by init once its parent is killed with
-/// the group, and can no longer be traced to the leader. Empty when the leader's pid belongs to
+/// the group, and can no longer be traced to the head. Empty when the head's pid belongs to
 /// another process. Blocks while it reads the process table.
 pub fn snapshot_tree(record: &AgentGroup) -> io::Result<TreeSnapshot> {
     if liveness::start_time(record.pid).is_some_and(|started| started != record.start_time) {
@@ -122,7 +122,7 @@ struct Swept {
 
 fn sweep_recorded(record: &AgentGroup) -> io::Result<Swept> {
     if liveness::start_time(record.pid).is_some_and(|started| started != record.start_time) {
-        // The leader's pid, and with it the session and group ids, belong to someone else now.
+        // The head's pid, and with it the session and group ids, belong to someone else now.
         return Ok(Swept::default());
     }
     let me = raw_pid(std::process::id())?;
@@ -135,12 +135,12 @@ fn sweep_recorded(record: &AgentGroup) -> io::Result<Swept> {
     )
 }
 
-/// Kills the leader's tree outside the group, and the `noted` processes (pid and start time)
-/// that are still the same with their descendants, then the group. A leader or group of 0 is
+/// Kills the head's tree outside the group, and the `noted` processes (pid and start time)
+/// that are still the same with their descendants, then the group. A head or group of 0 is
 /// skipped. `spare` is never killed. System calls only, for the exit watcher's sake.
 fn sweep_tree(
     table: &mut Table,
-    leader: i32,
+    head: i32,
     pgid: i32,
     noted: &[(i32, u64)],
     spare: i32,
@@ -148,7 +148,7 @@ fn sweep_tree(
     let read = table.read();
     let mut swept = Swept::default();
     if read.is_ok() {
-        table.mark_tree(leader, pgid);
+        table.mark_tree(head, pgid);
         table.mark_noted(noted);
         for proc in table.doomed() {
             if proc.pgid == pgid {
@@ -195,8 +195,8 @@ fn raw_pid(pid: u32) -> io::Result<i32> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "process id out of range"))
 }
 
-/// Kills the agent's whole tree when the supervisor dies. A forked watcher waits for the
-/// supervisor's exit (kqueue on macOS, a pidfd on Linux), then sweeps as a release would: the
+/// Kills the agent's whole tree when the run host dies. A forked watcher waits for the
+/// run host's exit (kqueue on macOS, a pidfd on Linux), then sweeps as a release would: the
 /// session, the group, the descendants, every process it noted in the tree while it watched, and
 /// on Linux the launch's marker. Dropping it stops the watch.
 #[derive(Debug)]
@@ -225,9 +225,9 @@ pub fn guard_group(record: &AgentGroup, launch: &str) -> io::Result<ExitGuard> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn watch_for_exit(supervisor: u32, record: &AgentGroup, launch: &str) -> io::Result<ExitGuard> {
+fn watch_for_exit(run_host: u32, record: &AgentGroup, launch: &str) -> io::Result<ExitGuard> {
     let entry = launch_entry(launch).unwrap_or_default();
-    let watcher = watch::start(supervisor, record, entry.as_bytes())?;
+    let watcher = watch::start(run_host, record, entry.as_bytes())?;
     Ok(ExitGuard {
         pgid: record.pgid,
         watcher,
@@ -235,10 +235,10 @@ fn watch_for_exit(supervisor: u32, record: &AgentGroup, launch: &str) -> io::Res
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn watch_for_exit(_supervisor: u32, _record: &AgentGroup, _launch: &str) -> io::Result<ExitGuard> {
+fn watch_for_exit(_run_host: u32, _record: &AgentGroup, _launch: &str) -> io::Result<ExitGuard> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "guarding agents against the supervisor's exit works on Linux and macOS only",
+        "guarding agents against the run host's exit works on Linux and macOS only",
     ))
 }
 
@@ -291,8 +291,8 @@ mod tests {
         AgentProcess::spawn(&spec).unwrap()
     }
 
-    /// A stand-in supervisor, since a test can't let its own process die.
-    fn stand_in_supervisor() -> tokio::process::Child {
+    /// A fake run host, since a test can't let its own process die.
+    fn fake_run_host() -> tokio::process::Child {
         tokio::process::Command::new("sleep")
             .arg("30")
             .spawn()
@@ -323,7 +323,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dead_leaders_group_killed_while_it_has_members() {
+    async fn a_dead_heads_group_is_killed_while_it_has_members() {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = waiting_agent(dir.path(), "sleep 30 & echo $!");
         let record = agent.record().unwrap();
@@ -337,7 +337,7 @@ mod tests {
         assert!(!kill_recorded_group(&record).unwrap());
     }
 
-    /// An agent whose shell put a `sleep` in a group of its own, as a harness's shell might.
+    /// An agent whose shell put a `sleep` in a group of its own, as a CLI's shell might.
     /// Returns the agent, its record, and the leftover's pid.
     async fn agent_with_a_leftover(dir: &std::path::Path) -> (AgentProcess, AgentGroup, i32) {
         let mut agent =
@@ -359,7 +359,7 @@ mod tests {
             .spawn()
             .unwrap();
 
-        // With the leader gone, only the marker or the session id still leads to the leftover.
+        // With the head gone, only the marker or the session id still reaches the leftover.
         signal_group(agent.id(), StopSignal::Kill).unwrap();
         wait_until_gone(agent.id() as i32).await;
         assert_alive(leftover);
@@ -379,7 +379,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_tree_swept_while_leader_lives() {
+    async fn process_tree_swept_while_head_lives() {
         let dir = tempfile::tempdir().unwrap();
         let (agent, record, leftover) = agent_with_a_leftover(dir.path()).await;
         assert_eq!(kill_process_tree(&record).unwrap(), 1);
@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(
             sid.as_raw(),
             detached,
-            "the grandchild leads a session of its own"
+            "the grandchild heads a session of its own"
         );
         (agent, detached)
     }
@@ -416,7 +416,7 @@ mod tests {
         let seen = snapshot_tree(&record).unwrap();
         assert!(seen.contains_key(&(detached as u32)), "{seen:?}");
 
-        // Killing the group orphans the grandchild, so only the snapshot still leads to it.
+        // Killing the group orphans the grandchild, so only the snapshot still reaches it.
         signal_group(agent.id(), StopSignal::Kill).unwrap();
         wait_until_group_gone(agent.id()).await;
         assert_alive(detached);
@@ -424,7 +424,7 @@ mod tests {
         wait_until_gone(detached).await;
 
         // A snapshot entry whose pid now has another start time is someone else's.
-        let mut other = stand_in_supervisor();
+        let mut other = fake_run_host();
         let stale = TreeSnapshot::from([(other.id().unwrap(), 1)]);
         assert_eq!(kill_noted(&stale, &record).unwrap(), 0);
         assert!(other.try_wait().unwrap().is_none());
@@ -432,7 +432,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_reused_leader_pid_is_never_signalled() {
+    async fn a_reused_head_pid_is_never_signalled() {
         let dir = tempfile::tempdir().unwrap();
         let agent = AgentProcess::spawn(&sh_spec(dir.path(), "sleep 30")).unwrap();
         let record = agent.record().unwrap();
@@ -449,17 +449,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exit_guard_kills_the_tree_when_supervisor_dies() {
+    async fn exit_guard_kills_the_tree_when_run_host_dies() {
         let dir = tempfile::tempdir().unwrap();
-        let mut supervisor = stand_in_supervisor();
+        let mut run_host = fake_run_host();
         // A grandchild that stays in the group, and one in a group of its own.
         let mut agent = waiting_agent(dir.path(), "sleep 30 & echo $!; set -m; sleep 30 & echo $!");
         let record = agent.record().unwrap();
         let pids = printed_pids(&mut agent, 2).await;
-        let guard = watch_for_exit(supervisor.id().unwrap(), &record, agent.launch_id()).unwrap();
+        let guard = watch_for_exit(run_host.id().unwrap(), &record, agent.launch_id()).unwrap();
         assert_eq!(guard.pgid(), agent.id());
 
-        supervisor.kill().await.unwrap();
+        run_host.kill().await.unwrap();
         // Zombies count as gone, since a container without init never reaps orphans.
         wait_until_gone(agent.id() as i32).await;
         for pid in pids {
@@ -469,20 +469,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exit_guard_outlives_the_leader_while_its_group_runs() {
+    async fn exit_guard_outlives_the_head_while_its_group_runs() {
         let dir = tempfile::tempdir().unwrap();
-        let mut supervisor = stand_in_supervisor();
+        let mut run_host = fake_run_host();
         let mut agent = waiting_agent(dir.path(), "sleep 30 & echo $!");
         let record = agent.record().unwrap();
         let member = printed_pids(&mut agent, 1).await[0];
-        let guard = watch_for_exit(supervisor.id().unwrap(), &record, agent.launch_id()).unwrap();
+        let guard = watch_for_exit(run_host.id().unwrap(), &record, agent.launch_id()).unwrap();
         agent.close_input();
         wait_until_gone(agent.id() as i32).await;
         // Past a few of the watcher's checks for members.
         tokio::time::sleep(Duration::from_millis(600)).await;
         assert_alive(member);
 
-        supervisor.kill().await.unwrap();
+        run_host.kill().await.unwrap();
         wait_until_gone(member).await;
         drop(guard);
     }
@@ -490,12 +490,12 @@ mod tests {
     #[tokio::test]
     async fn exit_guard_kills_a_noted_process_that_lost_its_parent() {
         let dir = tempfile::tempdir().unwrap();
-        let mut supervisor = stand_in_supervisor();
+        let mut run_host = fake_run_host();
         let (agent, detached) = agent_with_a_detached_grandchild(dir.path()).await;
         let record = agent.record().unwrap();
-        let guard = watch_for_exit(supervisor.id().unwrap(), &record, agent.launch_id()).unwrap();
+        let guard = watch_for_exit(run_host.id().unwrap(), &record, agent.launch_id()).unwrap();
 
-        // Once the group dies, nothing but the watcher's notes leads to the grandchild.
+        // Once the group dies, nothing but the watcher's notes reaches the grandchild.
         signal_group(agent.id(), StopSignal::Kill).unwrap();
         wait_until_group_gone(agent.id()).await;
         // Past a few of the watcher's checks, which keep it watching for the grandchild.
@@ -506,7 +506,7 @@ mod tests {
                 .unwrap();
         assert_eq!(watching, nix::sys::wait::WaitStatus::StillAlive);
 
-        supervisor.kill().await.unwrap();
+        run_host.kill().await.unwrap();
         wait_until_gone(detached).await;
         drop(guard);
     }
@@ -514,10 +514,10 @@ mod tests {
     #[tokio::test]
     async fn exit_guard_ends_once_the_group_is_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let mut supervisor = stand_in_supervisor();
+        let mut run_host = fake_run_host();
         let mut agent = waiting_agent(dir.path(), "true");
         let record = agent.record().unwrap();
-        let guard = watch_for_exit(supervisor.id().unwrap(), &record, agent.launch_id()).unwrap();
+        let guard = watch_for_exit(run_host.id().unwrap(), &record, agent.launch_id()).unwrap();
         agent.close_input();
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -530,18 +530,18 @@ mod tests {
             assert!(Instant::now() < deadline, "the watcher is still running");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        supervisor.kill().await.unwrap();
+        run_host.kill().await.unwrap();
     }
 
     #[tokio::test]
     async fn dropped_exit_guard_stops_watching() {
         let dir = tempfile::tempdir().unwrap();
-        let mut supervisor = stand_in_supervisor();
+        let mut run_host = fake_run_host();
         let agent = AgentProcess::spawn(&sh_spec(dir.path(), "sleep 30")).unwrap();
         let record = agent.record().unwrap();
-        let guard = watch_for_exit(supervisor.id().unwrap(), &record, agent.launch_id()).unwrap();
+        let guard = watch_for_exit(run_host.id().unwrap(), &record, agent.launch_id()).unwrap();
         drop(guard);
-        supervisor.kill().await.unwrap();
+        run_host.kill().await.unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(group_alive(agent.id()));
     }
@@ -557,23 +557,23 @@ mod tests {
     }
 
     /// A process in a session of its own whose parent exited: nothing but its launch's marker
-    /// still leads to it.
+    /// still reaches it.
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn exit_guard_finds_orphans_by_launch_marker() {
         let dir = tempfile::tempdir().unwrap();
-        let mut supervisor = stand_in_supervisor();
+        let mut run_host = fake_run_host();
         let mut agent = waiting_agent(dir.path(), "sleep 30 & echo $!; setsid sleep 30 & echo $!");
         let record = agent.record().unwrap();
         let pids = printed_pids(&mut agent, 2).await;
         let (member, orphan) = (pids[0], pids[1]);
-        let guard = watch_for_exit(supervisor.id().unwrap(), &record, agent.launch_id()).unwrap();
+        let guard = watch_for_exit(run_host.id().unwrap(), &record, agent.launch_id()).unwrap();
         agent.close_input();
         wait_until_gone(agent.id() as i32).await;
         let orphan_session = nix::unistd::getsid(Some(Pid::from_raw(orphan))).unwrap();
         assert_ne!(orphan_session.as_raw() as u32, agent.id());
 
-        supervisor.kill().await.unwrap();
+        run_host.kill().await.unwrap();
         wait_until_gone(member).await;
         wait_until_gone(orphan).await;
         drop(guard);
@@ -582,8 +582,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn agents_die_with_the_thread_that_spawned_them() {
-        // PR_SET_PDEATHSIG follows the spawning thread, so a thread that exits stands in for a
-        // supervisor that dies.
+        // PR_SET_PDEATHSIG follows the spawning thread, so a thread that exits plays the part of a
+        // run host that dies.
         let dir = tempfile::tempdir().unwrap();
         let spec = sh_spec(dir.path(), "sleep 30");
         let pid = std::thread::spawn(move || {

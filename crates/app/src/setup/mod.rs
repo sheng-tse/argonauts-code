@@ -1,10 +1,11 @@
-//! The guided setup (`argonauts init`, `/setup`, and the first start): the terms note, your
-//! agents, a local model server, who you chat with, how the crew works, approvals, and this
+//! The guided setup (`argonauts setup`, `/setup`, and the first start): the terms note, your
+//! agents, a local model server, who you talk to, how the crew works, approvals, and this
 //! folder. Every answer is written at the end, so a setup cut off leaves no file.
 
 mod finish;
 pub(crate) mod probe;
 mod questions;
+pub(crate) mod reference;
 mod roles;
 mod steps;
 mod templates;
@@ -15,10 +16,10 @@ use anyhow::bail;
 use argonauts_conductor::{DoctorReport, doctor};
 use argonauts_core::NoteLevel;
 use argonauts_core::app::AppEvent;
-use argonauts_core::events::checkpoint::AnswerAction;
+use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::layout::user_files;
 use argonauts_core::model_catalog::display_name_from_id;
-use argonauts_core::names::{ChoiceId, WorkerRef};
+use argonauts_core::names::{ChoiceId, ModelRef};
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
 
 use crate::builtin_adapters;
@@ -36,9 +37,10 @@ pub(crate) use templates::guide;
 #[cfg(test)]
 pub(crate) use templates::guide_topics;
 
-/// What Esc on a setup card leaves in the chat, so you know how to get back to the questions.
+/// What Esc on a setup question leaves in the conversation, so you know how to get back to the
+/// questions.
 const TOOK_THE_RECOMMENDED: &str =
-    "Took the recommended answers. /setup (or argonauts init) walks through the setup again.";
+    "Took the recommended answers. /setup (or argonauts setup) walks through the setup again.";
 
 pub(crate) struct Setup {
     open: Option<ChoiceId>,
@@ -46,8 +48,8 @@ pub(crate) struct Setup {
     answers: Answers,
     /// The steps still to go, the open one first.
     steps: VecDeque<Step>,
-    /// So a new default agent starts a fresh chat.
-    agent_before: WorkerRef,
+    /// So a new main agent starts a fresh conversation.
+    agent_before: ModelRef,
     header: Header,
     done: bool,
 }
@@ -104,6 +106,10 @@ impl Setup {
             project_dir_exists: finish::project_dir(&ctx.env).is_dir(),
             role_keys: crate::controller::settings::model_keys(),
             models: models_by_agent(ctx),
+            workflows: crate::controller::settings::workflow_list(ctx)
+                .into_iter()
+                .map(|workflow| workflow.name)
+                .collect(),
         };
         let mut steps = VecDeque::new();
         if !terms_shown(ctx) {
@@ -112,8 +118,8 @@ impl Setup {
         steps.extend([
             Step::Agents,
             Step::Servers,
-            Step::DefaultAgent,
-            Step::Preset,
+            Step::MainAgent,
+            Step::Workflow,
             Step::Approvals,
             Step::Telemetry,
             Step::Trust,
@@ -124,7 +130,7 @@ impl Setup {
             view,
             answers: Answers::default(),
             steps,
-            agent_before: ctx.settings().main_agent.clone(),
+            agent_before: ctx.settings().crew.main.clone(),
             header,
             done: false,
         };
@@ -246,7 +252,7 @@ impl Setup {
                 self.expand_servers();
                 continue;
             }
-            // Nothing to ask, such as who you chat with when no agent is ready.
+            // Nothing to ask, such as who you talk to when no agent is ready.
             let Some(question) = questions::question(&step, &self.view, &self.answers) else {
                 self.steps.pop_front();
                 continue;
@@ -285,17 +291,17 @@ impl Setup {
                     ctx.error(&err);
                 }
             }
-            Step::Preset => {
-                // A crew's roles come after who coordinates it.
-                if self.answers.workflow != steps::SOLO {
+            Step::Workflow => {
+                // A crew's roles come after who orchestrates it.
+                if self.answers.workflow != steps::CAPTAIN {
                     self.steps.push_front(Step::WhoDoesWhat);
                 }
-                if self.answers.workflow == steps::COORDINATED_CREW {
-                    self.steps.push_front(Step::Coordinator);
+                if self.answers.workflow == steps::ORCHESTRATOR {
+                    self.steps.push_front(Step::Orchestrator);
                 }
             }
-            Step::Coordinator => {
-                let key = roles::COORDINATOR_KEY.to_owned();
+            Step::Orchestrator => {
+                let key = roles::ORCHESTRATOR_KEY.to_owned();
                 self.steps.push_front(Step::RoleModel(key));
             }
             // The list comes back after each role you change, until you keep them all.
@@ -338,8 +344,8 @@ impl Setup {
         self.finish(ctx)
     }
 
-    /// Writes everything at once and hands back to the chat. A failure is a notice, and the
-    /// chat opens anyway.
+    /// Writes everything at once and hands back to the conversation. A failure is a notice, and the
+    /// conversation opens anyway.
     fn finish(&mut self, ctx: &mut Ctx) -> anyhow::Result<Vec<Effect>> {
         self.done = true;
         let env = std::sync::Arc::clone(&ctx.env);
@@ -353,7 +359,7 @@ impl Setup {
                 format!("Couldn't save your answers, so the setup runs again next time: {err:#}"),
             ));
         }
-        notices.extend(finish::write_presets(&env.paths.global_presets()));
+        notices.extend(finish::write_workflows(&env.paths.global_workflows()));
         if self.answers.trust_folder {
             // `trusted.json` lives in this repo's state folder, which a first start hasn't made.
             if let Err(err) = create_private_dir_all(&env.state_dir) {
@@ -388,7 +394,7 @@ impl Setup {
             notices.push((NoteLevel::Error, format!("{err:#}")));
         }
         // The header printed before you answered, so it changes in place to the new agent and
-        // preset, followed by the warnings about the settings now in effect.
+        // workflow, followed by the warnings about the settings now in effect.
         ctx.send(welcome_from(ctx, &self.header.report, self.header.runs));
         notices.splice(0..0, settings_warnings(&ctx.settings.resolved().warnings));
         for (level, text) in notices {
@@ -416,8 +422,8 @@ impl Setup {
                 keys: keys.into_iter().map(|(key, _)| key).collect(),
             });
         }
-        if ctx.settings().main_agent != self.agent_before {
-            effects.push(Effect::FreshChat);
+        if ctx.settings().crew.main != self.agent_before {
+            effects.push(Effect::FreshConversation);
         }
         effects.push(Effect::SetupDone);
         Ok(effects)
@@ -438,7 +444,7 @@ fn models_by_agent(ctx: &Ctx) -> BTreeMap<String, Vec<roles::ModelOption>> {
             Some(_) => choice.name.clone(),
         };
         models
-            .entry(choice.worker.worker.clone())
+            .entry(choice.worker.agent.clone())
             .or_default()
             .push(roles::ModelOption {
                 model: choice.worker.model.clone(),

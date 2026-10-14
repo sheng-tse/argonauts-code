@@ -9,37 +9,39 @@ use anyhow::Context;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use argonauts_core::api::CheckpointAnswer;
+use argonauts_core::api::ApprovalAnswer;
 use argonauts_core::engine::RepoContext;
-use argonauts_core::events::card::CardKind;
-use argonauts_core::events::checkpoint::{
-    AnswerAction, CheckpointEvent, CheckpointKind, CheckpointOpened, CheckpointPacket, PlanPacket,
+use argonauts_core::events::approval::{
+    AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket, PlanPacket,
 };
 use argonauts_core::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
 use argonauts_core::events::plan::{DivideEvent, JudgingResult, PlanEvent};
 use argonauts_core::events::run::{Party, PhaseChange, RunLifecycle, RunPhase};
 use argonauts_core::events::session::{EndReason, SessionEvent};
+use argonauts_core::events::task::TaskKind;
 use argonauts_core::events::workflow::StepEnd;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::limits::HealthState;
-use argonauts_core::names::{PlanLabel, RoleName, WorkerRef, WorkflowId};
+use argonauts_core::names::{ModelRef, PlanLabel, RoleName, WorkflowId};
+use argonauts_core::session_runner::{Access, SessionSpec};
+use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{Answerer, ApprovalMode};
-use argonauts_core::settings::handoff::CrewRole;
+use argonauts_core::settings::crew::CrewRole;
+use argonauts_core::settings::crew::CrewSettings;
+use argonauts_core::settings::fallback::Retry;
 use argonauts_core::settings::protocol::RoutingAlgorithm;
-use argonauts_core::settings::{Settings, Span};
 use argonauts_core::steps::StepName;
-use argonauts_core::steps::plan::{CoordinateInput, JudgeInput, LabeledPlan, MapInput};
-use argonauts_core::worker::{Access, SessionSpec};
+use argonauts_core::steps::plan::{JudgeInput, LabeledPlan, MapInput, OrchestrateInput};
 use argonauts_core::workflow::{StandardPhase, Step, StepRef};
 use argonauts_core::{PhaseStatus, RepoId, RunId, sha256_hex};
 use argonauts_crew::engine::host::Host;
 use argonauts_crew::engine::shared::Shared;
 use argonauts_crew::state::RunState;
 use argonauts_crew::workflow::{Flow, StepAt, StepCall, StepDone, runner, yaml};
-use argonauts_crew::{checkpoints, coordinated, divide, lead, plan};
+use argonauts_crew::{approvals, divide, orchestrated, plan, tie_breaker};
 use argonauts_testkit::repo::TempRepo;
+use argonauts_testkit::runner::{FakeRunner, FakeSession};
 use argonauts_testkit::services::{FakeServices, MemorySink, engine_context_in};
-use argonauts_testkit::worker::{FakeSession, FakeWorker};
 
 const CLAUDE: &str = "claude-code/claude-opus";
 const CODEX: &str = "codex/gpt-5";
@@ -55,14 +57,16 @@ struct Bench {
 
 impl Bench {
     fn new(
-        workers: Vec<FakeWorker>,
+        workers: Vec<FakeRunner>,
         settings: impl FnOnce(&mut Settings),
         history: Vec<RunEvent>,
     ) -> anyhow::Result<Self> {
         let services = FakeServices::new();
         let mut all = Settings {
-            main_agent: CLAUDE.parse()?,
-            crew: Vec::new().into(),
+            crew: CrewSettings {
+                main: CLAUDE.parse()?,
+                ..CrewSettings::of(Vec::new())
+            },
             ..Settings::default()
         };
         for worker in workers {
@@ -104,7 +108,7 @@ impl Bench {
         Ok(match kind {
             "draft" => plan::draft_step(host, &call).await?,
             "map" => plan::map_step(host, &call).await?,
-            "refute" => plan::refute_step(host, &call).await?,
+            "critique" => plan::critique_step(host, &call).await?,
             "synthesize" => plan::synthesize_step(host, &call).await?,
             "judge" => plan::judge_step(host, &call).await?,
             other => anyhow::bail!("no step kind {other}"),
@@ -145,21 +149,21 @@ impl Bench {
             .collect()
     }
 
-    /// Starts the plan checkpoint step and waits for the checkpoint it opens.
-    async fn plan_checkpoint(&self) -> anyhow::Result<(PlanStep, CheckpointOpened)> {
-        let opened_before = plan_checkpoints(&self.sink.events()).len();
+    /// Starts the plan approval step and waits for the approval it opens.
+    async fn plan_approval(&self) -> anyhow::Result<(PlanStep, ApprovalOpened)> {
+        let opened_before = plan_approvals(&self.sink.events()).len();
         let host = self.host.clone();
         let call = call(
-            "checkpoint",
+            "approval",
             "orchestrator",
-            json!({ "checkpoint": "plan" }),
+            json!({ "approval": "plan" }),
             self.steps_run(),
         )?;
         let mut step: PlanStep =
-            tokio::spawn(async move { Ok(divide::plan_checkpoint_step(&host, &call).await?) });
+            tokio::spawn(async move { Ok(divide::plan_approval_step(&host, &call).await?) });
         let opened = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
-                if let Some(opened) = plan_checkpoints(&self.sink.events())
+                if let Some(opened) = plan_approvals(&self.sink.events())
                     .into_iter()
                     .nth(opened_before)
                 {
@@ -178,18 +182,18 @@ impl Bench {
 
     fn answer(
         &self,
-        opened: &CheckpointOpened,
+        opened: &ApprovalOpened,
         action: AnswerAction,
         text: Option<&str>,
     ) -> anyhow::Result<()> {
-        checkpoints::answer(
+        approvals::answer(
             &self.host,
-            CheckpointAnswer {
+            ApprovalAnswer {
                 id: opened.id.clone(),
                 action,
                 text: text.map(str::to_owned),
                 evidence_sha256: opened.evidence_sha256.clone(),
-                cards: Vec::new(),
+                tasks: Vec::new(),
             },
         )
         .map_err(anyhow::Error::msg)
@@ -209,12 +213,12 @@ impl Bench {
 
 type PlanStep = tokio::task::JoinHandle<anyhow::Result<StepDone>>;
 
-fn plan_checkpoints(events: &[RunEvent]) -> Vec<CheckpointOpened> {
+fn plan_approvals(events: &[RunEvent]) -> Vec<ApprovalOpened> {
     events
         .iter()
         .filter_map(|event| match &event.kind {
-            RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
-                if opened.kind == CheckpointKind::Plan =>
+            RunEventKind::Approval(ApprovalEvent::Opened(opened))
+                if opened.kind == ApprovalKind::Plan =>
             {
                 Some((**opened).clone())
             }
@@ -223,16 +227,16 @@ fn plan_checkpoints(events: &[RunEvent]) -> Vec<CheckpointOpened> {
         .collect()
 }
 
-fn plan_packet(opened: &CheckpointOpened) -> anyhow::Result<&PlanPacket> {
+fn plan_packet(opened: &ApprovalOpened) -> anyhow::Result<&PlanPacket> {
     match &opened.packet {
-        CheckpointPacket::Plan(packet) => Ok(packet),
+        ApprovalPacket::Plan(packet) => Ok(packet),
         other => anyhow::bail!("not a plan packet: {other:?}"),
     }
 }
 
-fn added_ref(worker: &FakeWorker) -> WorkerRef {
-    use argonauts_core::worker::Worker;
-    worker.worker_ref().clone()
+fn added_ref(worker: &FakeRunner) -> ModelRef {
+    use argonauts_core::session_runner::SessionRunner;
+    worker.model_ref().clone()
 }
 
 /// A step call at its own place in a workflow, so asks of different steps never share an
@@ -260,7 +264,7 @@ fn call(kind: &str, role: &str, extra: Value, index: u32) -> anyhow::Result<Step
 }
 
 /// The first prompt part that parses as `T`: the step's input, as JSON.
-/// The run's first event, as the supervisor writes it, based on the repo's first commit.
+/// The run's first event, as the run host writes it, based on the repo's first commit.
 fn started(repo: &TempRepo) -> anyhow::Result<RunEvent> {
     let head = repo.git(&["rev-parse", "HEAD"])?;
     let started: argonauts_core::events::run::RunStarted = serde_json::from_value(json!({
@@ -270,8 +274,8 @@ fn started(repo: &TempRepo) -> anyhow::Result<RunEvent> {
         "forced": true,
         "workflow": "council",
         "estimate": null,
-        "triage": null,
-        "chat_turn": null,
+        "captain_or_crew": null,
+        "conversation_turn": null,
         "continues": null,
         "repo_root": repo.root(),
         "base_branch": "main",
@@ -281,16 +285,16 @@ fn started(repo: &TempRepo) -> anyhow::Result<RunEvent> {
         "settings_sha256": "",
         "settings": {},
         "overrides": [],
-        "harness_versions": {},
+        "cli_versions": {},
         "version": "0.0.1"
     }))?;
     Ok(RunEvent {
         seq: 0,
         ts: time::OffsetDateTime::UNIX_EPOCH,
         run_id: RunId::new("run-01")?,
-        card_id: None,
+        task_id: None,
         session: None,
-        source: "supervisor".to_owned(),
+        source: "run-host".to_owned(),
         kind: RunEventKind::Run(argonauts_core::events::run::RunLifecycle::Started(
             Box::new(started),
         )),
@@ -342,7 +346,7 @@ fn marker(text: &str) -> &str {
         .unwrap_or("NONE")
 }
 
-/// A mapper answer: one disputed topic when `disputed`, quoting each plan's own choice.
+/// A mapping agent answer: one disputed topic when `disputed`, quoting each plan's own choice.
 fn map_json(plans: &[LabeledPlan], disputed: bool, good_quotes: bool) -> Value {
     let positions: Vec<Value> = plans
         .iter()
@@ -387,13 +391,13 @@ fn judge_json(input: &JudgeInput, scores: &[(&str, f64)]) -> Value {
 /// A worker that drafts with `marker`, maps, critiques, judges, and revises, by step.
 fn crew_worker(
     name: &str,
-    family: &str,
+    provider: &str,
     marker: &'static str,
     counters: &'static str,
     disputed: bool,
     scores: &'static [(&'static str, f64)],
-) -> FakeWorker {
-    FakeWorker::harness(name, family).respond_with(answers(marker, counters, disputed, scores))
+) -> FakeRunner {
+    FakeRunner::cli(name, provider).respond_with(answers(marker, counters, disputed, scores))
 }
 
 /// A crew worker's answers, as [`crew_worker`] gives them.
@@ -405,7 +409,7 @@ fn answers(
 ) -> impl Fn(&SessionSpec) -> FakeSession + Send + Sync + 'static {
     move |spec| {
         let value = match spec.step {
-            Some(StepName::Draft) if spec.role == RoleName::PhaseLead => {
+            Some(StepName::Draft) if spec.role == RoleName::TieBreaker => {
                 plan_json("MERGED", counters)
             }
             Some(StepName::Draft) => plan_json(marker, counters),
@@ -424,17 +428,17 @@ fn answers(
                 Some(input) => judge_json(&input, scores),
                 None => json!({ "scores": [] }),
             },
-            Some(StepName::ProposeSpike) => json!({ "proposals": [] }),
-            Some(StepName::SpikeReport) => spike_report(spec),
-            Some(StepName::PlanToCards) => cards_json(),
+            Some(StepName::ProposeExperiment) => json!({ "proposals": [] }),
+            Some(StepName::ExperimentReport) => experiment_report(spec),
+            Some(StepName::PlanToTasks) => tasks_json(),
             Some(StepName::Predict) => json!({
-                "p_pass_gates_first_try": 0.7,
+                "p_pass_checks_first_try": 0.7,
                 "p_within_time_cap": 0.8,
-                "p_at_most_two_attempts": 0.9,
+                "p_at_most_two_tries": 0.9,
             }),
             _ => json!({}),
         };
-        FakeSession::structured(value).with_vendor_session(&format!("{marker}-session"))
+        FakeSession::structured(value).with_cli_session(&format!("{marker}-session"))
     }
 }
 
@@ -461,13 +465,13 @@ fn failing_first(
     }
 }
 
-/// The run in full auto, as Shift+Tab sets it.
+/// The run in autopilot, as Shift+Tab sets it.
 fn autopilot() -> RunEvent {
     RunEvent {
         seq: 0,
         ts: time::OffsetDateTime::UNIX_EPOCH,
         run_id: RunId::new("run-01").expect("the run id"),
-        card_id: None,
+        task_id: None,
         session: None,
         source: "app".to_owned(),
         kind: RunEventKind::Run(RunLifecycle::ApprovalModeChanged {
@@ -477,9 +481,9 @@ fn autopilot() -> RunEvent {
     }
 }
 
-/// Two cards: the interface contracts first needs, and the limiter.
-fn cards_json() -> Value {
-    let card = |key: &str, kind: &str, owned: &str, depends: &[&str]| {
+/// Two tasks: the interface contracts first needs, and the limiter.
+fn tasks_json() -> Value {
+    let task = |key: &str, kind: &str, owned: &str, depends: &[&str]| {
         json!({
             "key": key,
             "title": key,
@@ -491,13 +495,13 @@ fn cards_json() -> Value {
             "criteria": ["G1"],
         })
     };
-    json!({ "cards": [
-        card("api", "interface", "src/limit/api.rs", &[]),
-        card("limiter", "build", "src/limit/bucket/**", &["api"]),
+    json!({ "tasks": [
+        task("api", "interface", "src/limit/api.rs", &[]),
+        task("limiter", "build", "src/limit/bucket/**", &["api"]),
     ]})
 }
 
-fn spike_report(spec: &SessionSpec) -> Value {
+fn experiment_report(spec: &SessionSpec) -> Value {
     let option = if prompt_text(spec).contains("a Redis counter") {
         "Redis"
     } else {
@@ -510,11 +514,11 @@ fn spike_report(spec: &SessionSpec) -> Value {
 
 const CLAUDE_WINS: &[(&str, f64)] = &[("CLAUDE", 9.0), ("CODEX", 5.0), ("AGY", 5.0)];
 
-fn three(disputed: bool, scores: &'static [(&'static str, f64)]) -> Vec<FakeWorker> {
+fn three(disputed: bool, scores: &'static [(&'static str, f64)]) -> Vec<FakeRunner> {
     vec![
-        crew_worker(CLAUDE, "claude", "CLAUDE", "Redis", disputed, scores),
-        crew_worker(CODEX, "gpt", "CODEX", "memory", disputed, scores),
-        crew_worker(AGY, "gemini", "AGY", "Redis", disputed, scores),
+        crew_worker(CLAUDE, "anthropic", "CLAUDE", "Redis", disputed, scores),
+        crew_worker(CODEX, "openai", "CODEX", "memory", disputed, scores),
+        crew_worker(AGY, "google", "AGY", "Redis", disputed, scores),
     ]
 }
 
@@ -528,7 +532,7 @@ fn approved_goal() -> anyhow::Result<RunEvent> {
         out_of_scope: Vec::new(),
         assumptions: Vec::new(),
         answers: Vec::new(),
-        source: GoalSource::Restatements,
+        source: GoalSource::Readings,
         path: ".argonauts/goal.md".into(),
         sha256: sha256_hex(b"goal"),
     };
@@ -536,9 +540,9 @@ fn approved_goal() -> anyhow::Result<RunEvent> {
         seq: 0,
         ts: time::OffsetDateTime::UNIX_EPOCH,
         run_id: RunId::new("run-01")?,
-        card_id: None,
+        task_id: None,
         session: None,
-        source: "conductor".to_owned(),
+        source: "argonauts-code".to_owned(),
         kind: RunEventKind::Goal(GoalEvent::Approved {
             file,
             by: Party::User,
@@ -546,7 +550,7 @@ fn approved_goal() -> anyhow::Result<RunEvent> {
     })
 }
 
-fn sealed_labels(events: &[PlanEvent]) -> Vec<(PlanLabel, WorkerRef, u8)> {
+fn sealed_labels(events: &[PlanEvent]) -> Vec<(PlanLabel, ModelRef, u8)> {
     events
         .iter()
         .filter_map(|event| match event {
@@ -565,7 +569,7 @@ fn sealed_labels(events: &[PlanEvent]) -> Vec<(PlanLabel, WorkerRef, u8)> {
 async fn plan_drafts_blind_and_sealed() -> anyhow::Result<()> {
     let bench = Bench::new(three(true, CLAUDE_WINS), |_| {}, Vec::new())?;
     let done = bench
-        .step("draft", "drafter", json!({ "blind": true }))
+        .step("draft", "draft", json!({ "blind": true }))
         .await?;
     assert_eq!(done.end, StepEnd::Done);
 
@@ -584,7 +588,7 @@ async fn plan_drafts_blind_and_sealed() -> anyhow::Result<()> {
         assert!(!text.contains(CLAUDE) && !text.contains(CODEX), "{text}");
     }
 
-    // Each drafter ran fresh and read-only, and saw no other draft.
+    // Each drafting agent ran fresh and read-only, and saw no other draft.
     for (worker, own) in [(CLAUDE, "CLAUDE"), (CODEX, "CODEX"), (AGY, "AGY")] {
         let specs = bench.specs_of(worker, StepName::Draft);
         assert_eq!(specs.len(), 1, "{worker}");
@@ -600,16 +604,16 @@ async fn plan_drafts_blind_and_sealed() -> anyhow::Result<()> {
     }
 
     // Running the step again seals nothing new.
-    bench.step("draft", "drafter", json!({})).await?;
+    bench.step("draft", "draft", json!({})).await?;
     assert_eq!(sealed_labels(&bench.plan_events()).len(), 3);
     Ok(())
 }
 
 #[tokio::test]
 async fn plan_quote_check() -> anyhow::Result<()> {
-    // The mapper misquotes once, then quotes exactly.
+    // The mapping agent misquotes once, then quotes exactly.
     let answers = std::sync::Mutex::new(0u32);
-    let mapper = FakeWorker::harness("opencode/llama", "llama").respond_with(move |spec| {
+    let mapping_agent = FakeRunner::cli("opencode/llama", "meta").respond_with(move |spec| {
         let input: MapInput = input_of(spec).unwrap_or(MapInput { plans: Vec::new() });
         let mut n = answers
             .lock()
@@ -618,17 +622,13 @@ async fn plan_quote_check() -> anyhow::Result<()> {
         FakeSession::structured(map_json(&input.plans, true, *n > 1))
     });
     let mut workers = three(true, CLAUDE_WINS);
-    workers.push(mapper);
+    workers.push(mapping_agent);
     let bench = Bench::new(workers, |_| {}, Vec::new())?;
     bench
-        .step(
-            "draft",
-            "drafter",
-            json!({ "workers": [CLAUDE, CODEX, AGY] }),
-        )
+        .step("draft", "draft", json!({ "models": [CLAUDE, CODEX, AGY] }))
         .await?;
     let done = bench
-        .step("map", "mapper", json!({ "workers": ["opencode/llama"] }))
+        .step("map", "map", json!({ "models": ["opencode/llama"] }))
         .await?;
     assert!(done.summary.unwrap_or_default().contains("1 disputed"));
 
@@ -644,22 +644,18 @@ async fn plan_quote_check() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn plan_quote_check_flags_what_still_fails() -> anyhow::Result<()> {
-    let mapper = FakeWorker::harness("opencode/llama", "llama").respond_with(|spec| {
+    let mapping_agent = FakeRunner::cli("opencode/llama", "meta").respond_with(|spec| {
         let input: MapInput = input_of(spec).unwrap_or(MapInput { plans: Vec::new() });
         FakeSession::structured(map_json(&input.plans, true, false))
     });
     let mut workers = three(true, CLAUDE_WINS);
-    workers.push(mapper);
+    workers.push(mapping_agent);
     let bench = Bench::new(workers, |_| {}, Vec::new())?;
     bench
-        .step(
-            "draft",
-            "drafter",
-            json!({ "workers": [CLAUDE, CODEX, AGY] }),
-        )
+        .step("draft", "draft", json!({ "models": [CLAUDE, CODEX, AGY] }))
         .await?;
     bench
-        .step("map", "mapper", json!({ "workers": ["opencode/llama"] }))
+        .step("map", "map", json!({ "models": ["opencode/llama"] }))
         .await?;
     assert_eq!(bench.specs_of("opencode/llama", StepName::Map).len(), 2);
     assert_eq!(bench.state().plan.unverified_topics(), ["counters"]);
@@ -669,14 +665,12 @@ async fn plan_quote_check_flags_what_still_fails() -> anyhow::Result<()> {
 #[tokio::test]
 async fn plan_critique_and_revision() -> anyhow::Result<()> {
     let bench = Bench::new(three(true, CLAUDE_WINS), |_| {}, Vec::new())?;
-    bench.step("draft", "drafter", json!({})).await?;
-    bench
-        .step("map", "mapper", json!({ "workers": [AGY] }))
-        .await?;
-    let done = bench.step("refute", "critic", json!({})).await?;
+    bench.step("draft", "draft", json!({})).await?;
+    bench.step("map", "map", json!({ "models": [AGY] })).await?;
+    let done = bench.step("critique", "critic", json!({})).await?;
     assert_eq!(done.end, StepEnd::Done);
 
-    let critiques: Vec<(WorkerRef, bool)> = bench
+    let critiques: Vec<(ModelRef, bool)> = bench
         .plan_events()
         .into_iter()
         .filter_map(|event| match event {
@@ -705,8 +699,8 @@ async fn plan_critique_and_revision() -> anyhow::Result<()> {
         assert!(prompt.contains(item), "{item}");
     }
 
-    // Revision: each drafter resumes its own session.
-    let done = bench.step("draft", "drafter", json!({})).await?;
+    // Revision: each drafting agent resumes its own session.
+    let done = bench.step("draft", "draft", json!({})).await?;
     assert_eq!(done.end, StepEnd::Done);
     let rounds: Vec<u8> = sealed_labels(&bench.plan_events())
         .iter()
@@ -732,13 +726,11 @@ async fn ablation_no_critique_skips_round() -> anyhow::Result<()> {
         |settings| settings.critique.rounds = 0,
         Vec::new(),
     )?;
-    bench.step("draft", "drafter", json!({})).await?;
-    bench
-        .step("map", "mapper", json!({ "workers": [AGY] }))
-        .await?;
-    let refute = bench.step("refute", "critic", json!({})).await?;
-    assert_eq!(refute.end, StepEnd::Skipped);
-    let revise = bench.step("draft", "drafter", json!({})).await?;
+    bench.step("draft", "draft", json!({})).await?;
+    bench.step("map", "map", json!({ "models": [AGY] })).await?;
+    let critique = bench.step("critique", "critic", json!({})).await?;
+    assert_eq!(critique.end, StepEnd::Skipped);
+    let revise = bench.step("draft", "draft", json!({})).await?;
     assert_eq!(revise.end, StepEnd::Skipped);
     let events = bench.plan_events();
     assert!(
@@ -758,15 +750,13 @@ async fn ablation_no_critique_skips_round() -> anyhow::Result<()> {
 async fn plan_fast_path_merges_undisputed_drafts() -> anyhow::Result<()> {
     const COMPLETE: &[(&str, f64)] = &[("MERGED", 9.0)];
     let bench = Bench::new(three(false, COMPLETE), |_| {}, Vec::new())?;
-    bench.step("draft", "drafter", json!({})).await?;
-    bench
-        .step("map", "mapper", json!({ "workers": [AGY] }))
-        .await?;
+    bench.step("draft", "draft", json!({})).await?;
+    bench.step("map", "map", json!({ "models": [AGY] })).await?;
     assert_eq!(
-        bench.step("refute", "critic", json!({})).await?.end,
+        bench.step("critique", "critic", json!({})).await?.end,
         StepEnd::Skipped
     );
-    let done = bench.step("synthesize", "phase-lead", json!({})).await?;
+    let done = bench.step("synthesize", "tie-breaker", json!({})).await?;
     assert_eq!(done.end, StepEnd::Done);
     assert_eq!(
         bench.step("judge", "judge", json!({})).await?.end,
@@ -782,11 +772,11 @@ async fn plan_fast_path_merges_undisputed_drafts() -> anyhow::Result<()> {
     let chosen = state.plan.chosen().expect("the merged plan");
     assert_eq!(chosen.label, argonauts_crew::state::plan::MERGED_LABEL);
     assert!(std::fs::read_to_string(&chosen.path)?.contains("MERGED rate limits"));
-    // The phase lead merged once, and a judge of another family checked it.
+    // The tie-breaker merged once, and a judge of another provider checked it.
     let merges: Vec<SessionSpec> = bench
         .specs_of(CLAUDE, StepName::Draft)
         .into_iter()
-        .filter(|spec| spec.role == RoleName::PhaseLead)
+        .filter(|spec| spec.role == RoleName::TieBreaker)
         .collect();
     assert_eq!(merges.len(), 1);
     let checks =
@@ -796,24 +786,24 @@ async fn plan_fast_path_merges_undisputed_drafts() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Drafts, a map by `mapper` with the topic disputed, then the judge step.
-async fn judged(bench: &Bench, mapper: &str) -> anyhow::Result<StepDone> {
-    bench.step("draft", "drafter", json!({})).await?;
+/// Drafts, a map by `mapping_agent` with the topic disputed, then the judge step.
+async fn judged(bench: &Bench, mapping_agent: &str) -> anyhow::Result<StepDone> {
+    bench.step("draft", "draft", json!({})).await?;
     bench
-        .step("map", "mapper", json!({ "workers": [mapper] }))
+        .step("map", "map", json!({ "models": [mapping_agent] }))
         .await?;
     bench.step("judge", "judge", json!({})).await
 }
 
 #[tokio::test]
-async fn plan_cross_judging_excludes_self_and_family() -> anyhow::Result<()> {
-    // Two gpt-family drafters: neither may score the other's plan.
+async fn plan_cross_judging_excludes_self_and_provider() -> anyhow::Result<()> {
+    // Two drafting agents of one provider: neither may score the other's plan.
     let workers = vec![
-        crew_worker(CLAUDE, "claude", "CLAUDE", "Redis", true, CLAUDE_WINS),
-        crew_worker(CODEX, "gpt", "CODEX", "memory", true, CLAUDE_WINS),
+        crew_worker(CLAUDE, "anthropic", "CLAUDE", "Redis", true, CLAUDE_WINS),
+        crew_worker(CODEX, "openai", "CODEX", "memory", true, CLAUDE_WINS),
         crew_worker(
             "opencode/gpt-oss",
-            "gpt",
+            "openai",
             "OTHER",
             "memory",
             true,
@@ -824,8 +814,8 @@ async fn plan_cross_judging_excludes_self_and_family() -> anyhow::Result<()> {
     judged(&bench, CLAUDE).await?;
 
     let events = bench.plan_events();
-    let authors: Vec<(PlanLabel, WorkerRef, u8)> = sealed_labels(&events);
-    let family = |w: &WorkerRef| {
+    let authors: Vec<(PlanLabel, ModelRef, u8)> = sealed_labels(&events);
+    let provider = |w: &ModelRef| {
         if w.to_string().starts_with("claude") {
             "claude"
         } else {
@@ -836,7 +826,7 @@ async fn plan_cross_judging_excludes_self_and_family() -> anyhow::Result<()> {
     for event in &events {
         let PlanEvent::Scored {
             judge,
-            judge_family,
+            judge_provider,
             plan,
             ..
         } = event
@@ -847,8 +837,8 @@ async fn plan_cross_judging_excludes_self_and_family() -> anyhow::Result<()> {
         let (_, author, _) = authors.iter().find(|a| a.0 == *plan).expect("author");
         assert_ne!(judge, author, "a judge scored its own plan");
         assert_ne!(
-            judge_family,
-            family(author),
+            judge_provider,
+            provider(author),
             "{judge} scored its own provider"
         );
     }
@@ -880,7 +870,7 @@ async fn plan_cross_judging_excludes_self_and_family() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn plan_near_tie_goes_to_checkpoint() -> anyhow::Result<()> {
+async fn plan_near_tie_goes_to_approval() -> anyhow::Result<()> {
     const EVEN: &[(&str, f64)] = &[("CLAUDE", 7.0), ("CODEX", 7.2), ("AGY", 6.9)];
     let bench = Bench::new(three(true, EVEN), |_| {}, Vec::new())?;
     let done = judged(&bench, AGY).await?;
@@ -948,13 +938,13 @@ async fn plan_decision_records() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn reserved_judge_seat_non_drafting_family() -> anyhow::Result<()> {
-    let seat = |reserve: bool| async move {
+async fn reserved_judge_from_a_non_drafting_provider() -> anyhow::Result<()> {
+    let reserved = |reserve: bool| async move {
         let mut workers = three(true, CLAUDE_WINS);
-        // Another family that drafts nothing, and a second gpt model that drafts nothing.
+        // Another provider that drafts nothing, and a second gpt model that drafts nothing.
         workers.push(crew_worker(
             "opencode/llama",
-            "llama",
+            "meta",
             "OTHER",
             "Redis",
             true,
@@ -962,7 +952,7 @@ async fn reserved_judge_seat_non_drafting_family() -> anyhow::Result<()> {
         ));
         workers.push(crew_worker(
             "codex/gpt-mini",
-            "gpt",
+            "openai",
             "OTHER",
             "Redis",
             true,
@@ -970,35 +960,29 @@ async fn reserved_judge_seat_non_drafting_family() -> anyhow::Result<()> {
         ));
         let bench = Bench::new(
             workers,
-            |settings| settings.judging.reserve_non_drafting_seat = reserve,
+            |settings| settings.judging.reserve_non_drafting_judge = reserve,
             Vec::new(),
         )?;
         bench
-            .step(
-                "draft",
-                "drafter",
-                json!({ "workers": [CLAUDE, CODEX, AGY] }),
-            )
+            .step("draft", "draft", json!({ "models": [CLAUDE, CODEX, AGY] }))
             .await?;
-        bench
-            .step("map", "mapper", json!({ "workers": [AGY] }))
-            .await?;
+        bench.step("map", "map", json!({ "models": [AGY] })).await?;
         bench.step("judge", "judge", json!({})).await?;
         let llama = bench.specs_of("opencode/llama", StepName::Judge).len();
         let mini = bench.specs_of("codex/gpt-mini", StepName::Judge).len();
         anyhow::Ok((llama, mini))
     };
     assert_eq!(
-        seat(true).await?,
+        reserved(true).await?,
         (2, 0),
-        "the seat goes to the non-drafting provider"
+        "the reserved judge is of the non-drafting provider"
     );
-    assert_eq!(seat(false).await?, (0, 0));
+    assert_eq!(reserved(false).await?, (0, 0));
     Ok(())
 }
 
 #[tokio::test]
-async fn plan_spike_within_budget() -> anyhow::Result<()> {
+async fn plan_experiment_within_limit() -> anyhow::Result<()> {
     let proposals = json!({ "proposals": [
         { "topic": "counters", "question": "Redis or memory?",
           "options": [{ "label": "Redis", "build": "a Redis counter" },
@@ -1010,10 +994,10 @@ async fn plan_spike_within_budget() -> anyhow::Result<()> {
           "measure": "p99", "decides_by": "lower p99",
           "est_minutes": 60.0, "est_cost_usd": 5.0 }
     ]});
-    let lead = FakeWorker::harness(CLAUDE, "claude").respond_with(move |spec| {
+    let main_agent = FakeRunner::cli(CLAUDE, "anthropic").respond_with(move |spec| {
         let value = match spec.step {
-            Some(StepName::ProposeSpike) => proposals.clone(),
-            Some(StepName::SpikeReport) => spike_report(spec),
+            Some(StepName::ProposeExperiment) => proposals.clone(),
+            Some(StepName::ExperimentReport) => experiment_report(spec),
             Some(StepName::Draft) => plan_json("CLAUDE", "Redis"),
             Some(StepName::Judge) => match input_of::<JudgeInput>(spec) {
                 Some(input) => judge_json(&input, CLAUDE_WINS),
@@ -1024,9 +1008,9 @@ async fn plan_spike_within_budget() -> anyhow::Result<()> {
         FakeSession::structured(value)
     });
     let workers = vec![
-        lead,
-        crew_worker(CODEX, "gpt", "CODEX", "memory", true, CLAUDE_WINS),
-        crew_worker(AGY, "gemini", "AGY", "Redis", true, CLAUDE_WINS),
+        main_agent,
+        crew_worker(CODEX, "openai", "CODEX", "memory", true, CLAUDE_WINS),
+        crew_worker(AGY, "google", "AGY", "Redis", true, CLAUDE_WINS),
     ];
     let bench = Bench::new(workers, |_| {}, vec![approved_goal()?])?;
     judged(&bench, AGY).await?;
@@ -1035,7 +1019,7 @@ async fn plan_spike_within_budget() -> anyhow::Result<()> {
     let fits: Vec<bool> = events
         .iter()
         .filter_map(|e| match e {
-            PlanEvent::SpikeProposed { fits_budget, .. } => Some(*fits_budget),
+            PlanEvent::ExperimentProposed { fits_limit, .. } => Some(*fits_limit),
             _ => None,
         })
         .collect();
@@ -1043,37 +1027,45 @@ async fn plan_spike_within_budget() -> anyhow::Result<()> {
     let finished: Vec<String> = events
         .iter()
         .filter_map(|e| match e {
-            PlanEvent::SpikeFinished { card, .. } => Some(card.to_string()),
+            PlanEvent::ExperimentFinished { task, .. } => Some(task.to_string()),
             _ => None,
         })
         .collect();
     assert_eq!(finished.len(), 2);
-    assert!(finished.contains(&"spike-001".to_owned()));
-    assert!(finished.contains(&"spike-002".to_owned()));
-    let spikes = bench.specs_of(CLAUDE, StepName::SpikeReport);
-    let spikes: Vec<_> = spikes
+    assert!(finished.contains(&"experiment-001".to_owned()));
+    assert!(finished.contains(&"experiment-002".to_owned()));
+    let experiments = bench.specs_of(CLAUDE, StepName::ExperimentReport);
+    let experiments: Vec<_> = experiments
         .into_iter()
-        .chain(bench.specs_of(CODEX, StepName::SpikeReport))
-        .chain(bench.specs_of(AGY, StepName::SpikeReport))
+        .chain(bench.specs_of(CODEX, StepName::ExperimentReport))
+        .chain(bench.specs_of(AGY, StepName::ExperimentReport))
         .collect();
-    assert_eq!(spikes.len(), 2);
-    assert!(spikes.iter().all(|spec| spec.access == Access::Spike));
+    assert_eq!(experiments.len(), 2);
+    assert!(
+        experiments
+            .iter()
+            .all(|spec| spec.access == Access::Experiment)
+    );
     for spec in bench.specs_of(CLAUDE, StepName::Judge) {
         let input: JudgeInput = input_of(&spec).expect("judge input");
-        assert_eq!(input.spikes.len(), 2, "judges see the experiment reports");
+        assert_eq!(
+            input.experiments.len(),
+            2,
+            "judges see the experiment reports"
+        );
     }
 
-    // No spike branch is merged anywhere.
+    // No experiment branch is merged anywhere.
     let merged = bench.sink.events().into_iter().any(|e| {
         matches!(
             &e.kind,
-            RunEventKind::Integration(argonauts_core::events::card::IntegrationEvent::Merged {
-                card, ..
-            }) if card.as_str().starts_with("spike-")
+            RunEventKind::Merge(argonauts_core::events::task::MergeEvent::Merged {
+                task, ..
+            }) if task.as_str().starts_with("experiment-")
         )
     });
     assert!(!merged);
-    // Whatever a spike committed stays on its own branch.
+    // Whatever an experiment committed stays on its own branch.
     let branches = bench.repo.git(&[
         "branch",
         "--list",
@@ -1082,34 +1074,36 @@ async fn plan_spike_within_budget() -> anyhow::Result<()> {
     ])?;
     let targets: Vec<&str> = branches
         .lines()
-        .filter(|b| !b.contains("spike-"))
+        .filter(|b| !b.contains("experiment-"))
         .chain(["main"])
         .collect();
-    let integration = "argonauts/run-01/integration";
-    let base = if branches.lines().any(|b| b == integration) {
-        integration
+    let run_branch = "argonauts/run-01/merged";
+    let base = if branches.lines().any(|b| b == run_branch) {
+        run_branch
     } else {
         "main"
     };
-    for spike in branches.lines().filter(|b| b.contains("spike-")) {
-        let own = bench.repo.git(&["rev-list", &format!("{base}..{spike}")])?;
+    for experiment in branches.lines().filter(|b| b.contains("experiment-")) {
+        let own = bench
+            .repo
+            .git(&["rev-list", &format!("{base}..{experiment}")])?;
         for commit in own.lines() {
             for target in &targets {
                 let merged = bench
                     .repo
                     .git(&["merge-base", "--is-ancestor", commit, target])
                     .is_ok();
-                assert!(!merged, "{spike}'s {commit} reached {target}");
+                assert!(!merged, "{experiment}'s {commit} reached {target}");
             }
         }
     }
     Ok(())
 }
 
-/// A spike whose session ends on a 401 goes again on its own session, and after a second 401
-/// another agent runs it, in full auto, so both spikes still report.
+/// An experiment whose session ends on a 401 goes again on its own session, and after a second 401
+/// another agent runs it, in autopilot, so both experiments still report.
 #[tokio::test]
-async fn a_401_on_a_spike_goes_again_then_to_another_agent() -> anyhow::Result<()> {
+async fn a_401_on_an_experiment_goes_again_then_to_another_agent() -> anyhow::Result<()> {
     for failures in [1, 2] {
         let proposals = json!({ "proposals": [
             { "topic": "counters", "question": "Redis or memory?",
@@ -1118,10 +1112,10 @@ async fn a_401_on_a_spike_goes_again_then_to_another_agent() -> anyhow::Result<(
               "measure": "p50 latency", "decides_by": "lower p50",
               "est_minutes": 10.0, "est_cost_usd": 1.0 }
         ]});
-        let lead = move |spec: &SessionSpec| {
+        let main_agent = move |spec: &SessionSpec| {
             let value = match spec.step {
-                Some(StepName::ProposeSpike) => proposals.clone(),
-                Some(StepName::SpikeReport) => spike_report(spec),
+                Some(StepName::ProposeExperiment) => proposals.clone(),
+                Some(StepName::ExperimentReport) => experiment_report(spec),
                 Some(StepName::Draft) => plan_json("CLAUDE", "Redis"),
                 Some(StepName::Judge) => match input_of::<JudgeInput>(spec) {
                     Some(input) => judge_json(&input, CLAUDE_WINS),
@@ -1131,22 +1125,24 @@ async fn a_401_on_a_spike_goes_again_then_to_another_agent() -> anyhow::Result<(
             };
             FakeSession::structured(value)
         };
-        // The Redis option's spike sessions fail, the first `failures` times whoever runs them.
+        // The Redis option's experiment sessions fail, the first `failures` times whoever runs
+        // them.
         let redis = |spec: &SessionSpec| prompt_text(spec).contains("a Redis counter");
         let failed = Arc::default();
-        let spike = StepName::SpikeReport;
+        let experiment = StepName::ExperimentReport;
         let workers = vec![
-            FakeWorker::harness(CLAUDE, "claude")
-                .respond_with(failing_first(spike, failures, &failed, redis, lead)),
-            FakeWorker::harness(CODEX, "gpt").respond_with(failing_first(
-                spike,
+            FakeRunner::cli(CLAUDE, "anthropic").respond_with(failing_first(
+                experiment, failures, &failed, redis, main_agent,
+            )),
+            FakeRunner::cli(CODEX, "openai").respond_with(failing_first(
+                experiment,
                 failures,
                 &failed,
                 redis,
                 answers("CODEX", "memory", true, CLAUDE_WINS),
             )),
-            FakeWorker::harness(AGY, "gemini").respond_with(failing_first(
-                spike,
+            FakeRunner::cli(AGY, "google").respond_with(failing_first(
+                experiment,
                 failures,
                 &failed,
                 redis,
@@ -1155,7 +1151,7 @@ async fn a_401_on_a_spike_goes_again_then_to_another_agent() -> anyhow::Result<(
         ];
         let bench = Bench::new(
             workers,
-            |settings| settings.supervisor.retry_wait = Span::new("0s"),
+            |settings| settings.fallback.retry = Some(Retry::without_wait()),
             vec![approved_goal()?, autopilot()],
         )?;
         judged(&bench, AGY).await?;
@@ -1164,19 +1160,19 @@ async fn a_401_on_a_spike_goes_again_then_to_another_agent() -> anyhow::Result<(
             .plan_events()
             .iter()
             .filter_map(|e| match e {
-                PlanEvent::SpikeFinished { report, .. } => Some(report.option.clone()),
+                PlanEvent::ExperimentFinished { report, .. } => Some(report.option.clone()),
                 _ => None,
             })
             .collect();
         assert_eq!(finished.len(), 2, "after {failures} 401s: {finished:?}");
         assert!(finished.contains(&"Redis".to_owned()), "{finished:?}");
-        let redis_spikes: Vec<(String, String)> = bench
+        let redis_experiments: Vec<(String, String)> = bench
             .sink
             .events()
             .iter()
             .filter_map(|event| match &event.kind {
                 RunEventKind::Session(SessionEvent::Started(started))
-                    if started.step == Some(StepName::SpikeReport) =>
+                    if started.step == Some(StepName::ExperimentReport) =>
                 {
                     Some((
                         event
@@ -1192,26 +1188,29 @@ async fn a_401_on_a_spike_goes_again_then_to_another_agent() -> anyhow::Result<(
             .collect();
         // Both options' sessions, the Redis one started again on its own key.
         let keys: std::collections::BTreeSet<&String> =
-            redis_spikes.iter().map(|(key, _)| key).collect();
-        assert_eq!(keys.len(), 2, "{redis_spikes:?}");
+            redis_experiments.iter().map(|(key, _)| key).collect();
+        assert_eq!(keys.len(), 2, "{redis_experiments:?}");
         let workers: std::collections::BTreeSet<&String> =
-            redis_spikes.iter().map(|(_, worker)| worker).collect();
+            redis_experiments.iter().map(|(_, worker)| worker).collect();
         if failures == 2 {
-            assert!(workers.len() >= 2, "another agent ran it: {redis_spikes:?}");
+            assert!(
+                workers.len() >= 2,
+                "another agent ran it: {redis_experiments:?}"
+            );
         }
     }
     Ok(())
 }
 
-/// A judge's seat goes only to an agent from outside the companies of the plans it's shown,
-/// and the stand-in's scores go under its own name and family. With none, the seat's scores
-/// are dropped rather than given by a plan's own company.
+/// A judge's place goes only to an agent from outside the providers of the plans it's shown,
+/// and the fallback's scores go under its own name and provider. With none, the judge's scores
+/// are dropped rather than given by a plan's own provider.
 #[tokio::test]
-async fn a_judges_stand_in_comes_from_outside_the_companies_it_judges() -> anyhow::Result<()> {
+async fn a_judges_fallback_comes_from_outside_the_providers_it_judges() -> anyhow::Result<()> {
     const GPT_OSS: &str = "opencode/gpt-oss";
     const QWEN: &str = "opencode/qwen3-coder";
     for with_qwen in [false, true] {
-        let claude = FakeWorker::harness(CLAUDE, "claude").respond_with(failing_first(
+        let claude = FakeRunner::cli(CLAUDE, "anthropic").respond_with(failing_first(
             StepName::Judge,
             usize::MAX,
             &Arc::default(),
@@ -1220,33 +1219,33 @@ async fn a_judges_stand_in_comes_from_outside_the_companies_it_judges() -> anyho
         ));
         let mut workers = vec![
             claude,
-            crew_worker(CODEX, "gpt", "CODEX", "memory", false, CLAUDE_WINS),
-            crew_worker(AGY, "gemini", "AGY", "Redis", false, CLAUDE_WINS),
-            crew_worker(GPT_OSS, "gpt", "OSS", "memory", false, CLAUDE_WINS),
+            crew_worker(CODEX, "openai", "CODEX", "memory", false, CLAUDE_WINS),
+            crew_worker(AGY, "google", "AGY", "Redis", false, CLAUDE_WINS),
+            crew_worker(GPT_OSS, "openai", "OSS", "memory", false, CLAUDE_WINS),
         ];
         if with_qwen {
             workers.push(crew_worker(
                 QWEN,
-                "qwen",
+                "alibaba",
                 "QWEN",
                 "memory",
                 false,
                 CLAUDE_WINS,
             ));
         }
-        let drafters: Vec<WorkerRef> = [CLAUDE, CODEX, AGY]
+        let drafting_agents: Vec<ModelRef> = [CLAUDE, CODEX, AGY]
             .iter()
             .map(|worker| worker.parse())
             .collect::<Result<_, _>>()?;
         let bench = Bench::new(
             workers,
             move |settings| {
-                settings.supervisor.retry_wait = Span::new("0s");
-                settings.roles.entry(RoleName::Drafter).or_default().workers = drafters;
+                settings.fallback.retry = Some(Retry::without_wait());
+                settings.roles.entry(RoleName::Draft).or_default().models = drafting_agents;
             },
             vec![approved_goal()?, autopilot()],
         )?;
-        // A judge is blind, so its stand-in's CLI must keep your plugins out, as OpenCode's
+        // A judge is blind, so its fallback's CLI must keep your plugins out, as OpenCode's
         // does here.
         bench.services.workers.isolating("opencode");
         judged(&bench, AGY).await?;
@@ -1257,9 +1256,9 @@ async fn a_judges_stand_in_comes_from_outside_the_companies_it_judges() -> anyho
             .filter_map(|e| match e {
                 PlanEvent::Scored {
                     judge,
-                    judge_family,
+                    judge_provider,
                     ..
-                } => Some((judge.to_string(), judge_family.clone())),
+                } => Some((judge.to_string(), judge_provider.clone())),
                 _ => None,
             })
             .collect();
@@ -1272,7 +1271,7 @@ async fn a_judges_stand_in_comes_from_outside_the_companies_it_judges() -> anyho
         assert!(bench.specs_of(GPT_OSS, StepName::Judge).is_empty());
         if with_qwen {
             assert!(
-                scored.contains(&(QWEN.to_owned(), "qwen".to_owned())),
+                scored.contains(&(QWEN.to_owned(), "alibaba".to_owned())),
                 "{scored:?}"
             );
         } else {
@@ -1286,12 +1285,12 @@ async fn a_judges_stand_in_comes_from_outside_the_companies_it_judges() -> anyho
     Ok(())
 }
 
-/// A drafter's seat goes to an agent that isn't drafting already, and the plan it seals goes
-/// under its own name, in the drafter's place.
+/// A drafting agent's place goes to an agent that isn't drafting already, and the plan it seals
+/// goes under its own name, in the drafting agent's place.
 #[tokio::test]
-async fn a_drafters_stand_in_seals_the_plan_under_its_own_name() -> anyhow::Result<()> {
+async fn a_drafting_agents_fallback_seals_the_plan_under_its_own_name() -> anyhow::Result<()> {
     const QWEN: &str = "opencode/qwen3-coder";
-    let claude = FakeWorker::harness(CLAUDE, "claude").respond_with(failing_first(
+    let claude = FakeRunner::cli(CLAUDE, "anthropic").respond_with(failing_first(
         StepName::Draft,
         usize::MAX,
         &Arc::default(),
@@ -1300,26 +1299,26 @@ async fn a_drafters_stand_in_seals_the_plan_under_its_own_name() -> anyhow::Resu
     ));
     let workers = vec![
         claude,
-        crew_worker(CODEX, "gpt", "CODEX", "memory", false, CLAUDE_WINS),
-        crew_worker(AGY, "gemini", "AGY", "Redis", false, CLAUDE_WINS),
-        crew_worker(QWEN, "qwen", "QWEN", "memory", false, CLAUDE_WINS),
+        crew_worker(CODEX, "openai", "CODEX", "memory", false, CLAUDE_WINS),
+        crew_worker(AGY, "google", "AGY", "Redis", false, CLAUDE_WINS),
+        crew_worker(QWEN, "alibaba", "QWEN", "memory", false, CLAUDE_WINS),
     ];
-    let drafters: Vec<WorkerRef> = [CLAUDE, CODEX, AGY]
+    let drafting_agents: Vec<ModelRef> = [CLAUDE, CODEX, AGY]
         .iter()
         .map(|worker| worker.parse())
         .collect::<Result<_, _>>()?;
     let bench = Bench::new(
         workers,
         move |settings| {
-            settings.supervisor.retry_wait = Span::new("0s");
-            settings.roles.entry(RoleName::Drafter).or_default().workers = drafters;
+            settings.fallback.retry = Some(Retry::without_wait());
+            settings.roles.entry(RoleName::Draft).or_default().models = drafting_agents;
         },
         vec![approved_goal()?, autopilot()],
     )?;
-    // Drafts are blind, so the stand-in's CLI must keep your plugins out, as OpenCode's does
+    // Drafts are blind, so the fallback's CLI must keep your plugins out, as OpenCode's does
     // here.
     bench.services.workers.isolating("opencode");
-    bench.step("draft", "drafter", json!({})).await?;
+    bench.step("draft", "draft", json!({})).await?;
 
     let sealed: Vec<String> = bench
         .plan_events()
@@ -1345,32 +1344,28 @@ const GPT_OSS: &str = "opencode/gpt-oss";
 const OSS_WINS: &[(&str, f64)] = &[("OSS", 9.0), ("QWEN", 4.0)];
 
 /// Claude, Codex and Antigravity draft, with Qwen and GPT OSS as the fallbacks that may take a
-/// drafter's seat, two at once. Claude answers its draft sessions as `claude` says.
+/// drafting agent's place, two at once. Claude answers its draft sessions as `claude` says.
 fn bench_with_two_fallbacks(
     claude: impl Fn(&SessionSpec) -> FakeSession + Send + Sync + 'static,
 ) -> anyhow::Result<Bench> {
     let workers = vec![
-        FakeWorker::harness(CLAUDE, "claude").respond_with(claude),
-        crew_worker(CODEX, "gpt", "CODEX", "memory", false, OSS_WINS),
-        crew_worker(AGY, "gemini", "AGY", "Redis", false, OSS_WINS),
-        crew_worker(QWEN, "qwen", "QWEN", "memory", false, OSS_WINS),
-        crew_worker(GPT_OSS, "gpt", "OSS", "Redis", false, OSS_WINS),
+        FakeRunner::cli(CLAUDE, "anthropic").respond_with(claude),
+        crew_worker(CODEX, "openai", "CODEX", "memory", false, OSS_WINS),
+        crew_worker(AGY, "google", "AGY", "Redis", false, OSS_WINS),
+        crew_worker(QWEN, "alibaba", "QWEN", "memory", false, OSS_WINS),
+        crew_worker(GPT_OSS, "openai", "OSS", "Redis", false, OSS_WINS),
     ];
-    let drafters: Vec<WorkerRef> = [CLAUDE, CODEX, AGY]
+    let drafting_agents: Vec<ModelRef> = [CLAUDE, CODEX, AGY]
         .iter()
         .map(|worker| worker.parse())
         .collect::<Result<_, _>>()?;
     let bench = Bench::new(
         workers,
         move |settings| {
-            settings.supervisor.retry_wait = Span::new("0s");
-            settings.roles.entry(RoleName::Drafter).or_default().workers = drafters;
-            // The drafters follow the workers' fallback table.
-            let table = settings
-                .fallback
-                .roles
-                .entry(CrewRole::Workers)
-                .or_default();
+            settings.fallback.retry = Some(Retry::without_wait());
+            settings.roles.entry(RoleName::Draft).or_default().models = drafting_agents;
+            // The drafting agents follow the workers' fallback table.
+            let table = settings.fallback.roles.entry(CrewRole::Worker).or_default();
             table.together = Some(2);
         },
         vec![approved_goal()?, autopilot()],
@@ -1402,21 +1397,22 @@ fn sealed_and_said(bench: &Bench) -> (Vec<String>, Vec<String>) {
     (sealed, said)
 }
 
-/// With `together = 2`, a drafter that's out as its draft starts has two fallbacks draft in
+/// With `together = 2`, a drafting agent that's out as its draft starts has two fallbacks draft in
 /// its place at once. A judge from another provider than both picks one, numbered and
-/// unnamed, and that draft is the seat's plan.
+/// unnamed, and that draft is the drafting agent's plan.
 #[tokio::test]
-async fn two_fallbacks_draft_at_once_and_a_judge_picks_the_seats_plan() -> anyhow::Result<()> {
+async fn two_fallbacks_draft_at_once_and_a_judge_picks_the_drafting_agents_plan()
+-> anyhow::Result<()> {
     let bench = bench_with_two_fallbacks(answers("CLAUDE", "Redis", false, OSS_WINS))?;
-    let claude_code = argonauts_core::names::VendorId("claude-code".to_owned());
+    let claude_code = argonauts_core::names::AgentId("claude-code".to_owned());
     bench
         .services
         .health
         .set(&claude_code, HealthState::Down, Some("server errors"));
-    bench.step("draft", "drafter", json!({})).await?;
+    bench.step("draft", "draft", json!({})).await?;
 
     let (sealed, said) = sealed_and_said(&bench);
-    assert_eq!(sealed.len(), 3, "one plan a seat: {sealed:?}");
+    assert_eq!(sealed.len(), 3, "one plan a drafting agent: {sealed:?}");
     assert!(sealed.contains(&GPT_OSS.to_owned()), "{sealed:?} {said:?}");
     assert!(!sealed.contains(&QWEN.to_owned()), "{sealed:?}");
     assert!(bench.specs_of(CLAUDE, StepName::Draft).is_empty());
@@ -1449,10 +1445,11 @@ async fn two_fallbacks_draft_at_once_and_a_judge_picks_the_seats_plan() -> anyho
     Ok(())
 }
 
-/// A drafter that stops midway hands its seat to one fallback as ever, and with `together = 2`
-/// a second joins it, so the judge still picks between two drafts.
+/// A drafting agent that stops midway hands its place to one fallback as ever, and with
+/// `together = 2` a second joins it, so the judge still picks between two drafts.
 #[tokio::test]
-async fn a_second_fallback_joins_the_one_that_took_a_drafters_seat_midway() -> anyhow::Result<()> {
+async fn a_second_fallback_joins_the_one_that_took_a_drafting_agents_place_midway()
+-> anyhow::Result<()> {
     let bench = bench_with_two_fallbacks(failing_first(
         StepName::Draft,
         usize::MAX,
@@ -1460,7 +1457,7 @@ async fn a_second_fallback_joins_the_one_that_took_a_drafters_seat_midway() -> a
         |_| true,
         answers("CLAUDE", "Redis", false, OSS_WINS),
     ))?;
-    bench.step("draft", "drafter", json!({})).await?;
+    bench.step("draft", "draft", json!({})).await?;
 
     let (sealed, said) = sealed_and_said(&bench);
     assert_eq!(sealed.len(), 3, "{sealed:?}");
@@ -1487,13 +1484,13 @@ async fn a_second_fallback_joins_the_one_that_took_a_drafters_seat_midway() -> a
 async fn with_no_judge_to_ask_the_first_fallbacks_draft_is_kept() -> anyhow::Result<()> {
     let bench = bench_with_two_fallbacks(answers("CLAUDE", "Redis", false, OSS_WINS))?;
     for out in ["claude-code", "codex", "antigravity-cli"] {
-        let vendor = argonauts_core::names::VendorId(out.to_owned());
+        let agent_id = argonauts_core::names::AgentId(out.to_owned());
         bench
             .services
             .health
-            .set(&vendor, HealthState::Down, Some("server errors"));
+            .set(&agent_id, HealthState::Down, Some("server errors"));
     }
-    bench.step("draft", "drafter", json!({})).await?;
+    bench.step("draft", "draft", json!({})).await?;
 
     let (sealed, said) = sealed_and_said(&bench);
     assert!(
@@ -1512,11 +1509,11 @@ async fn with_no_judge_to_ask_the_first_fallbacks_draft_is_kept() -> anyhow::Res
 }
 
 #[tokio::test]
-async fn phase_lead_rotates_by_phase() -> anyhow::Result<()> {
-    use argonauts_core::events::card::{CardBudget, CardKind, CardSpec, CardState};
-    use lead::CardView;
+async fn tie_breaker_rotates_by_phase() -> anyhow::Result<()> {
+    use argonauts_core::events::task::{TaskKind, TaskLimit, TaskSpec, TaskState};
+    use tie_breaker::TaskView;
 
-    let spec = |id: &str, kind: CardKind, deps: &[&str]| CardSpec {
+    let spec = |id: &str, kind: TaskKind, deps: &[&str]| TaskSpec {
         id: id.parse().expect("task id"),
         title: id.to_owned(),
         task: String::new(),
@@ -1527,55 +1524,55 @@ async fn phase_lead_rotates_by_phase() -> anyhow::Result<()> {
         hidden_paths: Vec::new(),
         depends_on: deps.iter().map(|d| d.parse().expect("task id")).collect(),
         criteria: Vec::new(),
-        owner: None,
+        worker: None,
         reviewers: Vec::new(),
-        budget: CardBudget::default(),
+        limit: TaskLimit::default(),
         predictions: None,
         item: None,
     };
     let specs = [
-        spec("task-001", CardKind::Interface, &[]),
-        spec("task-002", CardKind::Build, &["task-001"]),
-        spec("task-003", CardKind::Build, &["task-002"]),
-        spec("task-004", CardKind::Build, &["task-001"]),
-        spec("task-005", CardKind::Chore, &[]),
+        spec("task-001", TaskKind::Interface, &[]),
+        spec("task-002", TaskKind::Build, &["task-001"]),
+        spec("task-003", TaskKind::Build, &["task-002"]),
+        spec("task-004", TaskKind::Build, &["task-001"]),
+        spec("task-005", TaskKind::Chore, &[]),
     ];
-    let owners: Vec<WorkerRef> = [CLAUDE, CODEX, AGY, CLAUDE, AGY]
+    let workers: Vec<ModelRef> = [CLAUDE, CODEX, AGY, CLAUDE, AGY]
         .iter()
         .map(|w| w.parse())
         .collect::<Result<_, _>>()?;
     let states = [
-        CardState::Integrated,
-        CardState::Running,
-        CardState::Waiting,
-        CardState::Running,
-        CardState::Waiting,
+        TaskState::Merged,
+        TaskState::Running,
+        TaskState::Waiting,
+        TaskState::Running,
+        TaskState::Waiting,
     ];
-    let cards: Vec<CardView<'_>> = specs
+    let tasks: Vec<TaskView<'_>> = specs
         .iter()
-        .zip(&owners)
+        .zip(&workers)
         .zip(states)
-        .map(|((spec, owner), state)| CardView {
+        .map(|((spec, worker), state)| TaskView {
             spec,
             state,
-            owner: Some(owner),
+            worker: Some(worker),
         })
         .collect();
-    let default: WorkerRef = CLAUDE.parse()?;
-    let lead_in = |phase| lead::lead_for(phase, &cards, None, &default).to_string();
-    assert_eq!(lead_in(RunPhase::Goal), CLAUDE);
-    assert_eq!(lead_in(RunPhase::Planning), CLAUDE);
-    // The critical path is card-001, card-002, card-003; card-002 is the first not in yet.
-    assert_eq!(lead_in(RunPhase::Build), CODEX);
-    assert_eq!(lead_in(RunPhase::FinalCheck), AGY);
-    assert_eq!(lead_in(RunPhase::Merge), AGY);
+    let default: ModelRef = CLAUDE.parse()?;
+    let tie_breaker_in = |phase| tie_breaker::for_phase(phase, &tasks, None, &default).to_string();
+    assert_eq!(tie_breaker_in(RunPhase::Understand), CLAUDE);
+    assert_eq!(tie_breaker_in(RunPhase::Planning), CLAUDE);
+    // The critical path is task-001, task-002, task-003; task-002 is the first not in yet.
+    assert_eq!(tie_breaker_in(RunPhase::Build), CODEX);
+    assert_eq!(tie_breaker_in(RunPhase::FinalCheck), AGY);
+    assert_eq!(tie_breaker_in(RunPhase::Merge), AGY);
     Ok(())
 }
 
 #[tokio::test]
-async fn planning_phase_names_its_lead() -> anyhow::Result<()> {
+async fn planning_phase_names_its_main_agent() -> anyhow::Result<()> {
     let bench = Bench::new(three(true, CLAUDE_WINS), |_| {}, Vec::new())?;
-    bench.step("draft", "drafter", json!({})).await?;
+    bench.step("draft", "draft", json!({})).await?;
     let started = bench.sink.events().into_iter().find_map(|e| match e.kind {
         RunEventKind::Phase(PhaseChange {
             phase: RunPhase::Planning,
@@ -1588,10 +1585,10 @@ async fn planning_phase_names_its_lead() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn coordinator_output(api_reviewers: &[&str]) -> Value {
+fn orchestrator_output(api_reviewers: &[&str]) -> Value {
     json!({
-        "plan": plan_json("COORD", "Redis"),
-        "cards": [
+        "plan": plan_json("ORCH", "Redis"),
+        "tasks": [
             { "key": "store", "title": "Counter store", "task": "Build the store.", "kind": "build",
               "owned_paths": ["src/store/"], "read_only_paths": [], "depends_on": [],
               "criteria": ["G1"] },
@@ -1603,31 +1600,31 @@ fn coordinator_output(api_reviewers: &[&str]) -> Value {
               "depends_on": [], "criteria": [] }
         ],
         "assignments": [
-            { "card": "store", "owner": CLAUDE, "reviewers": [CODEX, AGY] },
-            { "card": "api", "owner": CODEX, "reviewers": api_reviewers },
-            { "card": "contract", "owner": AGY, "reviewers": [CLAUDE, CODEX] }
+            { "task": "store", "worker": CLAUDE, "reviewers": [CODEX, AGY] },
+            { "task": "api", "worker": CODEX, "reviewers": api_reviewers },
+            { "task": "contract", "worker": AGY, "reviewers": [CLAUDE, CODEX] }
         ]
     })
 }
 
-fn coordinator(answers: Vec<Value>) -> FakeWorker {
+fn orchestrator(answers: Vec<Value>) -> FakeRunner {
     let answers = std::sync::Mutex::new(answers.into_iter());
-    FakeWorker::harness(CLAUDE, "claude").respond_with(move |_| {
+    FakeRunner::cli(CLAUDE, "anthropic").respond_with(move |_| {
         let mut answers = answers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let value = answers.next().unwrap_or_else(|| json!({}));
-        FakeSession::structured(value).with_vendor_session("coordinator-session")
+        FakeSession::structured(value).with_cli_session("orchestrator-session")
     })
 }
 
-fn coordinated_bench(answers: Vec<Value>) -> anyhow::Result<Bench> {
+fn orchestrated_bench(answers: Vec<Value>) -> anyhow::Result<Bench> {
     Bench::new(
         vec![
-            coordinator(answers),
-            FakeWorker::harness(CODEX, "gpt"),
-            FakeWorker::harness(AGY, "gemini"),
-            FakeWorker::harness("opencode/gpt-oss", "gpt"),
+            orchestrator(answers),
+            FakeRunner::cli(CODEX, "openai"),
+            FakeRunner::cli(AGY, "google"),
+            FakeRunner::cli("opencode/gpt-oss", "openai"),
         ],
         |settings| {
             settings.review.per_task = 2;
@@ -1638,17 +1635,17 @@ fn coordinated_bench(answers: Vec<Value>) -> anyhow::Result<Bench> {
 }
 
 #[tokio::test]
-async fn coordinated_crew_structured_delegation() -> anyhow::Result<()> {
-    let bench = coordinated_bench(vec![coordinator_output(&[CLAUDE, AGY])])?;
+async fn orchestrator_assigns_tasks_in_its_answer() -> anyhow::Result<()> {
+    let bench = orchestrated_bench(vec![orchestrator_output(&[CLAUDE, AGY])])?;
     let done = bench
-        .step("draft", "orchestrator", json!({ "workers": [CLAUDE] }))
+        .step("draft", "orchestrator", json!({ "models": [CLAUDE] }))
         .await?;
     assert!(done.summary.unwrap_or_default().contains("3 tasks"));
 
     let events = bench.plan_events();
     assert!(events.iter().any(|e| matches!(
         e,
-        PlanEvent::Coordinated {
+        PlanEvent::Orchestrated {
             rejection: None,
             ..
         }
@@ -1656,12 +1653,12 @@ async fn coordinated_crew_structured_delegation() -> anyhow::Result<()> {
     let state = bench.state();
     let chosen = state.plan.chosen().expect("the orchestrator's plan");
     assert_eq!(chosen.worker.to_string(), CLAUDE);
-    let cards = coordinated::load_cards(chosen)?;
-    assert_eq!(cards.cards.len(), 3);
-    assert_eq!(cards.assignments[1].owner, CODEX);
+    let tasks = orchestrated::load_tasks(chosen)?;
+    assert_eq!(tasks.tasks.len(), 3);
+    assert_eq!(tasks.assignments[1].worker, CODEX);
 
-    let spec = &bench.specs_of(CLAUDE, StepName::Coordinate)[0];
-    let input: CoordinateInput = input_of(spec).expect("coordinate input");
+    let spec = &bench.specs_of(CLAUDE, StepName::Orchestrate)[0];
+    let input: OrchestrateInput = input_of(spec).expect("orchestrate input");
     assert!(input.rules.iter().any(|r| r.contains("another provider")));
     assert!(
         input
@@ -1673,24 +1670,24 @@ async fn coordinated_crew_structured_delegation() -> anyhow::Result<()> {
     );
     assert_eq!(input.rejection, None);
 
-    // Dividing the work takes the coordinator's cards, owners, and reviewers as they are.
-    let (step, opened) = bench.plan_checkpoint().await?;
+    // Dividing the work takes the orchestrator's tasks, workers, and reviewers as they are.
+    let (step, opened) = bench.plan_approval().await?;
     let graph = &plan_packet(&opened)?.graph;
     let owned = |id: &str| -> anyhow::Result<(String, Vec<String>)> {
-        let card = graph
-            .cards
+        let task = graph
+            .tasks
             .iter()
-            .find(|card| card.id.as_str() == id)
+            .find(|task| task.id.as_str() == id)
             .ok_or_else(|| anyhow::anyhow!("no task {id}"))?;
         Ok((
-            card.owner
+            task.worker
                 .as_ref()
                 .map(ToString::to_string)
                 .unwrap_or_default(),
-            card.reviewers.iter().map(ToString::to_string).collect(),
+            task.reviewers.iter().map(ToString::to_string).collect(),
         ))
     };
-    assert_eq!(graph.cards.len(), 5, "three tasks and two test tasks");
+    assert_eq!(graph.tasks.len(), 5, "three tasks and two test tasks");
     assert_eq!(
         owned("task-001")?,
         (CLAUDE.to_owned(), vec![CODEX.to_owned(), AGY.to_owned()])
@@ -1701,12 +1698,12 @@ async fn coordinated_crew_structured_delegation() -> anyhow::Result<()> {
     );
     assert_eq!(owned("task-003")?.0, AGY);
     let tests: Vec<(String, String)> = graph
-        .cards
+        .tasks
         .iter()
-        .filter_map(|card| match &card.kind {
-            CardKind::AcceptanceTests { for_card } => Some((
-                for_card.to_string(),
-                card.owner
+        .filter_map(|task| match &task.kind {
+            TaskKind::AcceptanceTests { for_task } => Some((
+                for_task.to_string(),
+                task.worker
                     .as_ref()
                     .map(ToString::to_string)
                     .unwrap_or_default(),
@@ -1726,14 +1723,14 @@ async fn coordinated_crew_structured_delegation() -> anyhow::Result<()> {
         .divide_events()
         .into_iter()
         .filter_map(|event| match event {
-            DivideEvent::Owner { algorithm, .. } => Some(algorithm),
+            DivideEvent::Worker { algorithm, .. } => Some(algorithm),
             _ => None,
         })
         .collect();
     assert_eq!(algorithms, [RoutingAlgorithm::Orchestrator; 5]);
     for worker in [CLAUDE, CODEX, AGY] {
         assert!(
-            bench.specs_of(worker, StepName::PlanToCards).is_empty(),
+            bench.specs_of(worker, StepName::PlanToTasks).is_empty(),
             "nobody turns the orchestrator's plan into tasks again"
         );
     }
@@ -1742,19 +1739,18 @@ async fn coordinated_crew_structured_delegation() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// "Codex coordinates and Gemini reviews": the settings the request layer sets for it (the
-/// app's tests resolve the same keys from those words). Codex alone coordinates, Antigravity
+/// "Codex orchestrates and Gemini reviews": the settings the request layer sets for it (the
+/// app's tests resolve the same keys from those words). Codex alone orchestrates, Antigravity
 /// CLI alone reviews, and a plan that gives the review to anyone else has it moved to
 /// Antigravity CLI by code, with one note, instead of going back to Codex.
 #[tokio::test]
-async fn codex_coordinates_and_gemini_reviews_with_exactly_those_roles() -> anyhow::Result<()> {
+async fn codex_orchestrates_and_gemini_reviews_with_exactly_those_roles() -> anyhow::Result<()> {
     use argonauts_core::settings::protocol::{JudgingMethod, PlanningBy, ReviewAssignment};
-    use argonauts_core::workflow::WorkflowRef;
 
     let output = |reviewer: &str| {
         json!({
             "plan": plan_json("CODEX", "Redis"),
-            "cards": [
+            "tasks": [
                 { "key": "store", "title": "Counter store", "task": "Build the store.",
                   "kind": "build", "owned_paths": ["src/store/"], "read_only_paths": [],
                   "depends_on": [], "criteria": ["G1"] },
@@ -1763,30 +1759,30 @@ async fn codex_coordinates_and_gemini_reviews_with_exactly_those_roles() -> anyh
                   "depends_on": ["store"], "criteria": ["G1"] }
             ],
             "assignments": [
-                { "card": "store", "owner": CLAUDE, "reviewers": [reviewer] },
-                { "card": "api", "owner": CODEX, "reviewers": [AGY] }
+                { "task": "store", "worker": CLAUDE, "reviewers": [reviewer] },
+                { "task": "api", "worker": CODEX, "reviewers": [AGY] }
             ]
         })
     };
     let answers = std::sync::Mutex::new(vec![output(CODEX), output(AGY)].into_iter());
-    let coordinator = FakeWorker::harness(CODEX, "gpt").respond_with(move |_| {
+    let orchestrator = FakeRunner::cli(CODEX, "openai").respond_with(move |_| {
         let value = answers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .next()
             .unwrap_or_else(|| json!({}));
-        FakeSession::structured(value).with_vendor_session("codex-coordinator")
+        FakeSession::structured(value).with_cli_session("codex-orchestrator")
     });
     let bench = Bench::new(
         vec![
-            FakeWorker::harness(CLAUDE, "claude"),
-            coordinator,
-            FakeWorker::harness(AGY, "gemini"),
+            FakeRunner::cli(CLAUDE, "anthropic"),
+            orchestrator,
+            FakeRunner::cli(AGY, "google"),
         ],
         |settings| {
-            let worker = |text: &str| text.parse::<WorkerRef>().unwrap();
-            settings.main_agent = worker(CODEX);
-            settings.phases = WorkflowRef::new("orchestrator");
+            let worker = |text: &str| text.parse::<ModelRef>().unwrap();
+            settings.crew.main = worker(CODEX);
+            settings.workflow = "orchestrator".to_owned();
             settings.drafting.by = PlanningBy::Orchestrator;
             settings.judging.method = JudgingMethod::Orchestrator;
             settings.routing.algorithm = RoutingAlgorithm::Orchestrator;
@@ -1795,18 +1791,17 @@ async fn codex_coordinates_and_gemini_reviews_with_exactly_those_roles() -> anyh
             settings.divide.contracts_first = false;
             settings.divide.predictions = false;
             let roles = &mut settings.roles;
-            roles.entry(RoleName::Orchestrator).or_default().workers = vec![worker(CODEX)];
-            roles.entry(RoleName::Reviewer).or_default().workers = vec![worker(AGY)];
-            roles.entry(RoleName::Worker).or_default().workers =
-                vec![worker(CLAUDE), worker(CODEX)];
+            roles.entry(RoleName::Orchestrator).or_default().models = vec![worker(CODEX)];
+            roles.entry(RoleName::Reviewer).or_default().models = vec![worker(AGY)];
+            roles.entry(RoleName::Worker).or_default().models = vec![worker(CLAUDE), worker(CODEX)];
         },
         Vec::new(),
     )?;
     bench.step("draft", "orchestrator", json!({})).await?;
 
-    assert_eq!(bench.specs_of(CODEX, StepName::Coordinate).len(), 1);
-    let input: CoordinateInput =
-        input_of(&bench.specs_of(CODEX, StepName::Coordinate)[0]).expect("coordinate input");
+    assert_eq!(bench.specs_of(CODEX, StepName::Orchestrate).len(), 1);
+    let input: OrchestrateInput =
+        input_of(&bench.specs_of(CODEX, StepName::Orchestrate)[0]).expect("orchestrate input");
     assert!(
         input
             .crew
@@ -1818,7 +1813,7 @@ async fn codex_coordinates_and_gemini_reviews_with_exactly_those_roles() -> anyh
     );
     for other in [CLAUDE, AGY] {
         assert!(
-            bench.specs_of(other, StepName::Coordinate).is_empty(),
+            bench.specs_of(other, StepName::Orchestrate).is_empty(),
             "{other}"
         );
     }
@@ -1826,7 +1821,7 @@ async fn codex_coordinates_and_gemini_reviews_with_exactly_those_roles() -> anyh
         .plan_events()
         .into_iter()
         .filter_map(|e| match e {
-            PlanEvent::Coordinated { rejection, .. } => Some(rejection),
+            PlanEvent::Orchestrated { rejection, .. } => Some(rejection),
             _ => None,
         })
         .collect();
@@ -1850,65 +1845,64 @@ async fn codex_coordinates_and_gemini_reviews_with_exactly_those_roles() -> anyh
         "{moved:?}"
     );
 
-    let (step, opened) = bench.plan_checkpoint().await?;
+    let (step, opened) = bench.plan_approval().await?;
     let graph = &plan_packet(&opened)?.graph;
-    assert_eq!(graph.cards.len(), 2);
-    for card in &graph.cards {
-        let reviewers: Vec<String> = card.reviewers.iter().map(ToString::to_string).collect();
-        assert_eq!(reviewers, [AGY], "{}", card.id);
-        let owner = card
-            .owner
+    assert_eq!(graph.tasks.len(), 2);
+    for task in &graph.tasks {
+        let reviewers: Vec<String> = task.reviewers.iter().map(ToString::to_string).collect();
+        assert_eq!(reviewers, [AGY], "{}", task.id);
+        let worker = task
+            .worker
             .as_ref()
             .map(ToString::to_string)
             .unwrap_or_default();
-        assert!([CLAUDE, CODEX].contains(&owner.as_str()), "{owner}");
+        assert!([CLAUDE, CODEX].contains(&worker.as_str()), "{worker}");
     }
     bench.answer(&opened, AnswerAction::Abandon, None)?;
     step.await??;
     Ok(())
 }
 
-/// The sample repo's plan with contracts first, as its preset has it: the coordinator wrote
-/// families where models go and rotated every agent through every role. Code moves each card
-/// to an owner and a reviewer the rules allow, the reviewer writes each build card's tests, and
-/// those tests are reviewed by a builder other than the tested card's owner, since the only
-/// reviewer allowed wrote them. Supervised, the plan checkpoint still asks you.
+/// The sample repo's plan with contracts first, as its workflow has it: the orchestrator wrote
+/// providers where models go and rotated every agent through every role. Code moves each task
+/// to a worker and a reviewer the rules allow, the reviewer writes each build task's tests, and
+/// those tests are reviewed by a builder other than the tested task's worker, since the only
+/// reviewer allowed wrote them. Supervised, the plan approval still asks you.
 #[tokio::test]
-async fn the_trial_plan_with_contracts_first_keeps_every_card_reviewed() -> anyhow::Result<()> {
+async fn the_trial_plan_with_contracts_first_keeps_every_task_reviewed() -> anyhow::Result<()> {
     use argonauts_core::settings::protocol::{JudgingMethod, PlanningBy, ReviewAssignment};
-    use argonauts_core::workflow::WorkflowRef;
 
-    let card = |key: &str, kind: &str, path: &str| {
+    let task = |key: &str, kind: &str, path: &str| {
         json!({ "key": key, "title": key, "task": format!("Write {path}."), "kind": kind,
                 "owned_paths": [path], "read_only_paths": [], "depends_on": [],
                 "criteria": ["G1"] })
     };
     let output = json!({
         "plan": plan_json("CODEX", "Redis"),
-        "cards": [
-            card("iface", "interface", "src/types.js"),
-            card("impl", "build", "src/store.js"),
-            card("cli", "build", "src/cli.js"),
+        "tasks": [
+            task("iface", "interface", "src/types.js"),
+            task("impl", "build", "src/store.js"),
+            task("cli", "build", "src/cli.js"),
         ],
         "assignments": [
-            { "card": "iface", "owner": "codex/gpt", "reviewers": ["claude-code/claude"] },
-            { "card": "impl", "owner": "claude-code/claude", "reviewers": ["antigravity-cli/gemini"] },
-            { "card": "cli", "owner": "antigravity-cli/gemini", "reviewers": ["codex/gpt"] }
+            { "task": "iface", "worker": "codex/gpt", "reviewers": ["claude-code/claude"] },
+            { "task": "impl", "worker": "claude-code/claude", "reviewers": ["antigravity-cli/gemini"] },
+            { "task": "cli", "worker": "antigravity-cli/gemini", "reviewers": ["codex/gpt"] }
         ]
     });
-    let coordinator = FakeWorker::harness(CODEX, "gpt").respond_with(move |_| {
-        FakeSession::structured(output.clone()).with_vendor_session("codex-coordinator")
+    let orchestrator = FakeRunner::cli(CODEX, "openai").respond_with(move |_| {
+        FakeSession::structured(output.clone()).with_cli_session("codex-orchestrator")
     });
     let bench = Bench::new(
         vec![
-            FakeWorker::harness(CLAUDE, "claude"),
-            coordinator,
-            FakeWorker::harness(AGY, "gemini"),
+            FakeRunner::cli(CLAUDE, "anthropic"),
+            orchestrator,
+            FakeRunner::cli(AGY, "google"),
         ],
         |settings| {
-            let worker = |text: &str| text.parse::<WorkerRef>().unwrap();
-            settings.main_agent = worker(CODEX);
-            settings.phases = WorkflowRef::new("orchestrator");
+            let worker = |text: &str| text.parse::<ModelRef>().unwrap();
+            settings.crew.main = worker(CODEX);
+            settings.workflow = "orchestrator".to_owned();
             settings.drafting.by = PlanningBy::Orchestrator;
             settings.judging.method = JudgingMethod::Orchestrator;
             settings.routing.algorithm = RoutingAlgorithm::Orchestrator;
@@ -1917,49 +1911,48 @@ async fn the_trial_plan_with_contracts_first_keeps_every_card_reviewed() -> anyh
             settings.divide.contracts_first = true;
             settings.divide.predictions = false;
             let roles = &mut settings.roles;
-            roles.entry(RoleName::Orchestrator).or_default().workers = vec![worker(CODEX)];
-            roles.entry(RoleName::Reviewer).or_default().workers = vec![worker(AGY)];
-            roles.entry(RoleName::Worker).or_default().workers =
-                vec![worker(CLAUDE), worker(CODEX)];
+            roles.entry(RoleName::Orchestrator).or_default().models = vec![worker(CODEX)];
+            roles.entry(RoleName::Reviewer).or_default().models = vec![worker(AGY)];
+            roles.entry(RoleName::Worker).or_default().models = vec![worker(CLAUDE), worker(CODEX)];
         },
         Vec::new(),
     )?;
     bench.step("draft", "orchestrator", json!({})).await?;
-    assert_eq!(bench.specs_of(CODEX, StepName::Coordinate).len(), 1);
+    assert_eq!(bench.specs_of(CODEX, StepName::Orchestrate).len(), 1);
 
-    let (step, opened) = bench.plan_checkpoint().await?;
+    let (step, opened) = bench.plan_approval().await?;
     let packet = plan_packet(&opened)?;
-    let name = |worker: Option<&WorkerRef>| worker.map(ToString::to_string).unwrap_or_default();
-    let owner_of = |id: &argonauts_core::CardId| {
+    let name = |model: Option<&ModelRef>| model.map(ToString::to_string).unwrap_or_default();
+    let worker_of = |id: &argonauts_core::TaskId| {
         packet
             .graph
-            .cards
+            .tasks
             .iter()
-            .find(|card| &card.id == id)
-            .and_then(|card| card.owner.clone())
+            .find(|task| &task.id == id)
+            .and_then(|task| task.worker.clone())
     };
-    assert_eq!(packet.graph.cards.len(), 5, "{:#?}", packet.graph.cards);
-    for card in &packet.graph.cards {
-        let owner = name(card.owner.as_ref());
-        let reviewers: Vec<String> = card.reviewers.iter().map(ToString::to_string).collect();
-        match &card.kind {
-            CardKind::AcceptanceTests { for_card } => {
-                assert_eq!(owner, AGY, "{}", card.id);
-                let tested = name(owner_of(for_card).as_ref());
-                assert_eq!(reviewers.len(), 1, "{}", card.id);
+    assert_eq!(packet.graph.tasks.len(), 5, "{:#?}", packet.graph.tasks);
+    for task in &packet.graph.tasks {
+        let worker = name(task.worker.as_ref());
+        let reviewers: Vec<String> = task.reviewers.iter().map(ToString::to_string).collect();
+        match &task.kind {
+            TaskKind::AcceptanceTests { for_task } => {
+                assert_eq!(worker, AGY, "{}", task.id);
+                let tested = name(worker_of(for_task).as_ref());
+                assert_eq!(reviewers.len(), 1, "{}", task.id);
                 assert!(
                     [CLAUDE, CODEX].contains(&reviewers[0].as_str()) && reviewers[0] != tested,
                     "{}: {reviewers:?}, tested {tested}",
-                    card.id
+                    task.id
                 );
             }
             _ => {
                 assert!(
-                    [CLAUDE, CODEX].contains(&owner.as_str()),
-                    "{}: {owner}",
-                    card.id
+                    [CLAUDE, CODEX].contains(&worker.as_str()),
+                    "{}: {worker}",
+                    task.id
                 );
-                assert_eq!(reviewers, [AGY], "{}", card.id);
+                assert_eq!(reviewers, [AGY], "{}", task.id);
             }
         }
     }
@@ -1974,28 +1967,28 @@ async fn the_trial_plan_with_contracts_first_keeps_every_card_reviewed() -> anyh
 }
 
 #[tokio::test]
-async fn coordinator_output_rejected_and_retried() -> anyhow::Result<()> {
-    // Cards that break the rules go back to the coordinator, whoever they went to.
+async fn orchestrator_output_rejected_and_retried() -> anyhow::Result<()> {
+    // Tasks that break the rules go back to the orchestrator, whoever they went to.
     let overlapping = || {
-        let mut output = coordinator_output(&[CLAUDE, AGY]);
-        output["cards"][1]["owned_paths"] = json!(["src/store/redis.rs"]);
+        let mut output = orchestrator_output(&[CLAUDE, AGY]);
+        output["tasks"][1]["owned_paths"] = json!(["src/store/redis.rs"]);
         output
     };
     let dangling = || {
-        let mut output = coordinator_output(&[CLAUDE, AGY]);
-        output["cards"][1]["depends_on"] = json!(["ghost"]);
+        let mut output = orchestrator_output(&[CLAUDE, AGY]);
+        output["tasks"][1]["depends_on"] = json!(["ghost"]);
         output
     };
-    // First answer: two cards own one path. Second answer keeps the rules.
-    let bench = coordinated_bench(vec![overlapping(), coordinator_output(&[CLAUDE, AGY])])?;
+    // First answer: two tasks own one path. Second answer keeps the rules.
+    let bench = orchestrated_bench(vec![overlapping(), orchestrator_output(&[CLAUDE, AGY])])?;
     bench
-        .step("draft", "orchestrator", json!({ "workers": [CLAUDE] }))
+        .step("draft", "orchestrator", json!({ "models": [CLAUDE] }))
         .await?;
     let rejections: Vec<Option<String>> = bench
         .plan_events()
         .into_iter()
         .filter_map(|e| match e {
-            PlanEvent::Coordinated { rejection, .. } => Some(rejection),
+            PlanEvent::Orchestrated { rejection, .. } => Some(rejection),
             _ => None,
         })
         .collect();
@@ -2008,30 +2001,30 @@ async fn coordinator_output_rejected_and_retried() -> anyhow::Result<()> {
         "{rejections:?}"
     );
     assert_eq!(rejections[1], None);
-    let specs = bench.specs_of(CLAUDE, StepName::Coordinate);
+    let specs = bench.specs_of(CLAUDE, StepName::Orchestrate);
     assert_eq!(specs.len(), 2);
-    let retry: CoordinateInput = input_of(&specs[1]).expect("coordinate input");
+    let retry: OrchestrateInput = input_of(&specs[1]).expect("orchestrate input");
     assert!(retry.rejection.unwrap_or_default().contains("both own"));
     assert!(
         specs[1].resume.is_some(),
         "the retry continues the orchestrator's session"
     );
 
-    // Broken twice: the plan checkpoint asks you, with nothing to approve.
-    let bench = coordinated_bench(vec![
+    // Broken twice: the plan approval asks you, with nothing to approve.
+    let bench = orchestrated_bench(vec![
         overlapping(),
         dangling(),
-        coordinator_output(&[CLAUDE, AGY]),
+        orchestrator_output(&[CLAUDE, AGY]),
     ])?;
     let done = bench
-        .step("draft", "orchestrator", json!({ "workers": [CLAUDE] }))
+        .step("draft", "orchestrator", json!({ "models": [CLAUDE] }))
         .await?;
     assert!(done.summary.unwrap_or_default().contains("asks you"));
     let state = bench.state();
-    assert_eq!(state.plan.coordinator_rejections().len(), 2);
+    assert_eq!(state.plan.orchestrator_rejections().len(), 2);
     assert_eq!(state.plan.chosen(), None);
 
-    let (step, opened) = bench.plan_checkpoint().await?;
+    let (step, opened) = bench.plan_approval().await?;
     let flags = &plan_packet(&opened)?.flags;
     assert!(
         flags.iter().any(|f| f.contains("broke the rules twice")),
@@ -2065,7 +2058,7 @@ async fn coordinator_output_rejected_and_retried() -> anyhow::Result<()> {
     );
     assert!(bench.divide_events().is_empty());
 
-    // Sent back with a note, the coordinator gets two new tries and reads the note.
+    // Sent back with a note, the orchestrator gets two new tries and reads the note.
     bench.answer(
         &opened,
         AnswerAction::SendBack,
@@ -2073,12 +2066,12 @@ async fn coordinator_output_rejected_and_retried() -> anyhow::Result<()> {
     )?;
     step.await??;
     let done = bench
-        .step("draft", "orchestrator", json!({ "workers": [CLAUDE] }))
+        .step("draft", "orchestrator", json!({ "models": [CLAUDE] }))
         .await?;
     assert!(done.summary.unwrap_or_default().contains("3 tasks"));
-    let specs = bench.specs_of(CLAUDE, StepName::Coordinate);
+    let specs = bench.specs_of(CLAUDE, StepName::Orchestrate);
     assert_eq!(specs.len(), 3);
-    let again: CoordinateInput = input_of(&specs[2]).expect("coordinate input");
+    let again: OrchestrateInput = input_of(&specs[2]).expect("orchestrate input");
     assert!(
         again
             .rejection
@@ -2089,7 +2082,7 @@ async fn coordinator_output_rejected_and_retried() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Planning as a crew workflow runs it: drafts, a map, judging, and the plan checkpoint, until
+/// Planning as a crew workflow runs it: drafts, a map, judging, and the plan approval, until
 /// the plan is decided.
 const PLAN_AND_DIVIDE: &str = r#"
 name: plan-and-divide
@@ -2105,20 +2098,20 @@ phases:
         steps:
           - kind: draft
             name: drafts
-            role: drafter
+            role: draft
             blind: true
             input: goal
           - kind: map
             name: map
-            role: mapper
+            role: map
             input: drafts
           - kind: judge
             name: scores
             role: judge
             blind: true
             input: drafts
-          - kind: checkpoint
-            checkpoint: plan
+          - kind: approval
+            approval: plan
 "#;
 
 type Running = tokio::task::JoinHandle<anyhow::Result<Flow>>;
@@ -2132,14 +2125,14 @@ fn run_planning(bench: &Bench) -> anyhow::Result<Running> {
     ))
 }
 
-fn plan_cards(bench: &Bench) -> Vec<CheckpointOpened> {
+fn plan_approvals_of(bench: &Bench) -> Vec<ApprovalOpened> {
     bench
         .sink
         .events()
         .into_iter()
         .filter_map(|event| match event.kind {
-            RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
-                if opened.kind == CheckpointKind::Plan =>
+            RunEventKind::Approval(ApprovalEvent::Opened(opened))
+                if opened.kind == ApprovalKind::Plan =>
             {
                 Some(*opened)
             }
@@ -2148,17 +2141,17 @@ fn plan_cards(bench: &Bench) -> Vec<CheckpointOpened> {
         .collect()
 }
 
-/// Waits for the plan card numbered `n` (from 1), the pick card included, and answers it.
+/// Waits for the plan question numbered `n` (from 1), the pick question included, and answers it.
 async fn answer_plan(
     bench: &Bench,
     running: &mut Running,
     n: usize,
-    action: impl FnOnce(&CheckpointOpened) -> AnswerAction,
+    action: impl FnOnce(&ApprovalOpened) -> AnswerAction,
     text: Option<&str>,
-) -> anyhow::Result<CheckpointOpened> {
+) -> anyhow::Result<ApprovalOpened> {
     let opened = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            if let Some(opened) = plan_cards(bench).into_iter().nth(n - 1) {
+            if let Some(opened) = plan_approvals_of(bench).into_iter().nth(n - 1) {
                 return Ok(opened);
             }
             if running.is_finished() {
@@ -2170,23 +2163,23 @@ async fn answer_plan(
     })
     .await
     .map_err(|_| anyhow::anyhow!("plan approval {n} never opened"))??;
-    checkpoints::answer(
+    approvals::answer(
         &bench.host,
-        CheckpointAnswer {
+        ApprovalAnswer {
             id: opened.id.clone(),
             action: action(&opened),
             text: text.map(str::to_owned),
             evidence_sha256: opened.evidence_sha256.clone(),
-            cards: Vec::new(),
+            tasks: Vec::new(),
         },
     )
     .map_err(anyhow::Error::msg)?;
     Ok(opened)
 }
 
-fn packet(opened: &CheckpointOpened) -> anyhow::Result<&PlanPacket> {
+fn packet(opened: &ApprovalOpened) -> anyhow::Result<&PlanPacket> {
     match &opened.packet {
-        CheckpointPacket::Plan(packet) => Ok(packet),
+        ApprovalPacket::Plan(packet) => Ok(packet),
         other => anyhow::bail!("not a plan packet: {other:?}"),
     }
 }
@@ -2214,7 +2207,7 @@ async fn a_near_tie_is_yours_to_pick_before_dividing() -> anyhow::Result<()> {
         &mut running,
         1,
         |opened| {
-            // Not the leader, so the pick is yours and not the scores'.
+            // Not the top plan, so the pick is yours and not the scores'.
             let option = &opened.options[1];
             picked = Some(option.label.clone());
             option.action.clone()
@@ -2229,14 +2222,14 @@ async fn a_near_tie_is_yours_to_pick_before_dividing() -> anyhow::Result<()> {
     assert!(pick.options.iter().all(|option| option.detail.is_some()));
     assert!(packet(&pick)?.near_tie);
 
-    let checkpoint = answer_plan(&bench, &mut running, 2, |_| AnswerAction::Approve, None).await?;
-    assert_eq!(checkpoint.title, "Approve this plan?");
+    let approval = answer_plan(&bench, &mut running, 2, |_| AnswerAction::Approve, None).await?;
+    assert_eq!(approval.title, "Approve this plan?");
     assert_eq!(running.await??, Flow::Continue);
 
     let state = bench.state();
     let chosen = state.plan.chosen().expect("your pick");
     assert_eq!(Some(format!("Plan {}", chosen.label)), picked);
-    let judging = packet(&checkpoint)?.judging.clone().expect("judged");
+    let judging = packet(&approval)?.judging.clone().expect("judged");
     assert_eq!(judging.winner, Some(chosen.label));
     assert!(judging.near_tie);
     assert!(
@@ -2245,26 +2238,26 @@ async fn a_near_tie_is_yours_to_pick_before_dividing() -> anyhow::Result<()> {
             .iter()
             .any(|event| matches!(event, PlanEvent::Decided(_)))
     );
-    assert_eq!(state.cards.by_id.len(), 3);
+    assert_eq!(state.tasks.by_id.len(), 3);
     Ok(())
 }
 
 const EVEN: &[(&str, f64)] = &[("CLAUDE", 7.0), ("CODEX", 7.2), ("AGY", 6.9)];
 
-/// In auto the lead answers the crew's questions, so a near tie goes to the plan the judges
+/// In auto the main agent answers the crew's questions, so a near tie goes to the plan the judges
 /// scored highest, and only the plan approval after it remains.
 #[tokio::test]
 async fn in_auto_a_near_tie_goes_to_the_top_scored_plan() -> anyhow::Result<()> {
     let bench = Bench::new(three(true, EVEN), |_| {}, vec![approved_goal()?])?;
     let mut running = run_planning(&bench)?;
-    let checkpoint = answer_plan(&bench, &mut running, 1, |_| AnswerAction::Approve, None).await?;
-    assert_eq!(checkpoint.title, "Approve this plan?");
+    let approval = answer_plan(&bench, &mut running, 1, |_| AnswerAction::Approve, None).await?;
+    assert_eq!(approval.title, "Approve this plan?");
     assert_eq!(running.await??, Flow::Continue);
 
     let state = bench.state();
     let chosen = state.plan.chosen().expect("the top-scored plan");
     assert_eq!(chosen.worker, CODEX.parse()?);
-    let judging = packet(&checkpoint)?.judging.clone().expect("judged");
+    let judging = packet(&approval)?.judging.clone().expect("judged");
     assert_eq!(judging.winner, Some(chosen.label));
     let noted = bench.sink.events().into_iter().any(|event| {
         matches!(&event.kind, RunEventKind::Note(note)
@@ -2281,13 +2274,13 @@ async fn in_auto_a_near_tie_goes_to_the_top_scored_plan() -> anyhow::Result<()> 
 #[tokio::test]
 async fn in_auto_a_plan_the_judge_turns_down_goes_another_round_without_asking()
 -> anyhow::Result<()> {
-    use argonauts_core::policy::{PolicyOutcome, ShadowRecord, Verdict};
+    use argonauts_core::policy::{AutoPreviewRecord, PolicyOutcome, Verdict};
     use argonauts_core::settings::approvals::DecideWith;
 
     let bench = Bench::new(three(true, CLAUDE_WINS), |_| {}, vec![approved_goal()?])?;
     bench.services.policy.decide_next(PolicyOutcome::AskUser {
         violations: Vec::new(),
-        shadow: Some(ShadowRecord {
+        auto_preview: Some(AutoPreviewRecord {
             would: Verdict::Reject,
             by: DecideWith::RulesAndModel,
             reasons: vec!["two tasks edit the same file".to_owned()],
@@ -2298,15 +2291,13 @@ async fn in_auto_a_plan_the_judge_turns_down_goes_another_round_without_asking()
     answer_plan(&bench, &mut running, 2, |_| AnswerAction::Approve, None).await?;
     assert_eq!(running.await??, Flow::Continue);
 
-    let first = plan_cards(&bench).remove(0);
+    let first = plan_approvals_of(&bench).remove(0);
     let decided = bench
         .sink
         .events()
         .into_iter()
         .find_map(|event| match event.kind {
-            RunEventKind::Checkpoint(CheckpointEvent::Decided(decided))
-                if decided.id == first.id =>
-            {
+            RunEventKind::Approval(ApprovalEvent::Decided(decided)) if decided.id == first.id => {
                 Some(decided)
             }
             _ => None,
@@ -2349,14 +2340,14 @@ async fn a_plan_sent_back_is_drafted_and_judged_again() -> anyhow::Result<()> {
     assert_eq!(rounds, [1, 1, 1, 2, 2, 2], "{sealed:?}");
     assert_eq!(judged_results(&bench).len(), 2);
 
-    // The second round's drafters, and the second division, get your note.
+    // The second round's drafting agents, and the second division, get your note.
     let drafts = bench.specs_of(CODEX, StepName::Draft);
     assert_eq!(drafts.len(), 2);
     assert!(!prompt_text(&drafts[0]).contains(note));
     assert!(prompt_text(&drafts[1]).contains(note));
     let divided: Vec<SessionSpec> = [CLAUDE, CODEX, AGY]
         .iter()
-        .flat_map(|worker| bench.specs_of(worker, StepName::PlanToCards))
+        .flat_map(|worker| bench.specs_of(worker, StepName::PlanToTasks))
         .collect();
     assert_eq!(divided.len(), 2);
     assert_eq!(
@@ -2370,6 +2361,6 @@ async fn a_plan_sent_back_is_drafted_and_judged_again() -> anyhow::Result<()> {
     let state = bench.state();
     let chosen = state.plan.chosen().expect("the second round's winner");
     assert_eq!(chosen.round, 2);
-    assert_eq!(state.cards.by_id.len(), 3);
+    assert_eq!(state.tasks.by_id.len(), 3);
     Ok(())
 }

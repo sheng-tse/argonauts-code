@@ -1,6 +1,6 @@
 //! `ConductorApi` and `Approvals` over the file system and each run's control socket. A control
-//! call to a run with no live supervisor goes to `pending-answers.jsonl` under the run lock, and
-//! a new supervisor picks it up.
+//! call to a run with no live run host goes to `pending-answers.jsonl` under the run lock, and
+//! a new run host picks it up.
 
 mod approvals;
 mod control;
@@ -27,24 +27,24 @@ use argonauts_core::events::goal::GoalAction;
 use argonauts_core::events::session::QueuedMessage;
 use argonauts_core::future::BoxFuture;
 use argonauts_core::input::MentionTarget;
-use argonauts_core::names::{CheckpointId, MessageId, SessionKey, WorkerRef};
-use argonauts_core::{CardId, Paths, RunId};
+use argonauts_core::names::{ApprovalId, MessageId, ModelRef, SessionKey};
+use argonauts_core::{Paths, RunId, TaskId};
 
 use crate::env::AppEnv;
 
 pub(crate) use approvals::AppApprovals;
 pub(crate) use journal_ends::last_event;
 pub(crate) use launch::{Launcher, ProcessLauncher};
-pub(crate) use list::summarize;
-pub(crate) use start::{resolve_settings, start_resolved};
-pub(crate) use stream::supervisor_crashed;
+pub(crate) use list::{cant_be_resumed, day, from_another_build_line, summarize};
+pub(crate) use start::{resolve_settings, run_host_last_words, start_resolved};
+pub(crate) use stream::run_host_crashed;
 
 pub(crate) struct Client {
     pub(crate) env: Arc<AppEnv>,
     pub(crate) launcher: Arc<dyn Launcher>,
     /// A person at a terminal vetted this client's overrides. False for the CLI and MCP.
     pub(crate) interactive: bool,
-    /// What `Hello` tells the supervisor this client is.
+    /// What `Hello` tells the run host this client is.
     pub(crate) kind: ClientKind,
 }
 
@@ -95,7 +95,7 @@ pub(crate) fn for_app(env: Arc<AppEnv>) -> anyhow::Result<AppClient> {
 
 impl ConductorApi for Client {
     /// Not cancel-safe: a caller that drops it midway leaves a run directory that `list` shows
-    /// as crashed, and `/resume` recovers it.
+    /// as crashed, and `/resume` carries it on.
     fn start(&self, request: StartRun) -> BoxFuture<'_, Result<RunHandle, ApiError>> {
         Box::pin(start::start(self, request))
     }
@@ -145,12 +145,12 @@ impl ConductorApi for Client {
         let run = run.clone();
         let request = ControlRequest::Guidance {
             text,
-            front_end: None,
+            outside_agent: None,
         };
         Box::pin(async move { control::call(self, &run, request).await?.queued() })
     }
 
-    fn guidance_from_front_end(
+    fn guidance_from_outside_agent(
         &self,
         run: &RunId,
         text: String,
@@ -159,7 +159,7 @@ impl ConductorApi for Client {
         let run = run.clone();
         let request = ControlRequest::Guidance {
             text,
-            front_end: Some(client),
+            outside_agent: Some(client),
         };
         Box::pin(async move { control::call(self, &run, request).await?.queued() })
     }
@@ -178,12 +178,12 @@ impl ConductorApi for Client {
         let run = run.clone();
         let request = ControlRequest::Pause {
             now,
-            front_end: None,
+            outside_agent: None,
         };
         Box::pin(async move { control::call(self, &run, request).await?.ok() })
     }
 
-    fn pause_from_front_end(
+    fn pause_from_outside_agent(
         &self,
         run: &RunId,
         now: bool,
@@ -192,7 +192,7 @@ impl ConductorApi for Client {
         let run = run.clone();
         let request = ControlRequest::Pause {
             now,
-            front_end: Some(client),
+            outside_agent: Some(client),
         };
         Box::pin(async move { control::call(self, &run, request).await?.ok() })
     }
@@ -224,6 +224,20 @@ impl ConductorApi for Client {
         let run = run.clone();
         let request = ControlRequest::StopSession {
             session: session.clone(),
+            again: false,
+        };
+        Box::pin(async move { control::call(self, &run, request).await?.ok() })
+    }
+
+    fn restart_session(
+        &self,
+        run: &RunId,
+        session: &SessionKey,
+    ) -> BoxFuture<'_, Result<(), ApiError>> {
+        let run = run.clone();
+        let request = ControlRequest::StopSession {
+            session: session.clone(),
+            again: true,
         };
         Box::pin(async move { control::call(self, &run, request).await?.ok() })
     }
@@ -231,12 +245,12 @@ impl ConductorApi for Client {
     fn reassign(
         &self,
         run: &RunId,
-        card: &CardId,
-        to: WorkerRef,
+        task: &TaskId,
+        to: ModelRef,
     ) -> BoxFuture<'_, Result<(), ApiError>> {
         let run = run.clone();
         let request = ControlRequest::Reassign {
-            card: card.clone(),
+            task: task.clone(),
             to,
             rule_override: None,
             token: None,
@@ -265,12 +279,12 @@ impl ConductorApi for Client {
     fn diff(
         &self,
         run: &RunId,
-        card: &CardId,
+        task: &TaskId,
         scope: DiffScope,
     ) -> BoxFuture<'_, Result<DiffView, ApiError>> {
         let run = run.clone();
-        let card = card.clone();
-        Box::pin(async move { control::diff(self, &run, &card, scope).await })
+        let task = task.clone();
+        Box::pin(async move { control::diff(self, &run, &task, scope).await })
     }
 
     fn raw(&self, run: &RunId, session: &SessionKey) -> BoxFuture<'_, Result<RawView, ApiError>> {
@@ -279,15 +293,15 @@ impl ConductorApi for Client {
         Box::pin(async move { control::raw(self, &run, &session).await })
     }
 
-    fn revert(
+    fn rewind(
         &self,
         run: &RunId,
-        card: &CardId,
+        task: &TaskId,
         checkpoint: u32,
     ) -> BoxFuture<'_, Result<(), ApiError>> {
         let run = run.clone();
-        let request = ControlRequest::Revert {
-            card: card.clone(),
+        let request = ControlRequest::Rewind {
+            task: task.clone(),
             checkpoint,
         };
         Box::pin(async move { control::call(self, &run, request).await?.ok() })
@@ -296,7 +310,7 @@ impl ConductorApi for Client {
     fn spot_check(
         &self,
         run: &RunId,
-        id: &CheckpointId,
+        id: &ApprovalId,
         correct: bool,
     ) -> BoxFuture<'_, Result<(), ApiError>> {
         let run = run.clone();

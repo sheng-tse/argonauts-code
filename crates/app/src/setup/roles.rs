@@ -1,23 +1,22 @@
 //! Who does what: every role with who fills it now, the same rows as `/model`. Enter keeps them
 //! all. Choosing a row asks which agent fills it, then which of that agent's models, and comes
-//! back to the list. The coordinator's question ends with the same model question.
+//! back to the list. The orchestrator's question ends with the same model question.
 
 use argonauts_core::app::ChoiceKind;
 use argonauts_core::model_catalog::display_name_from_id;
-use argonauts_core::names::WorkerRef;
-use argonauts_core::settings::approvals::Decides;
+use argonauts_core::names::ModelRef;
 
 use super::questions::{Question, SetupView, agent_answers, described, kept_or_new};
-use super::steps::{Answers, COORDINATED_CREW};
+use super::steps::{Answers, ORCHESTRATOR};
 use crate::choices::{InitAnswer, init_options};
 
 /// Keeps every role, or one role, as it is.
 pub(crate) const KEEP: &str = "keep";
 /// The model an agent's CLI runs when none is named.
 const CLI_DEFAULT: &str = "cli-default";
-pub(crate) const COORDINATOR_KEY: &str = "roles.orchestrator.workers";
-pub(crate) const REVIEWER_KEY: &str = "roles.reviewer.workers";
-const DEFAULT_AGENT_KEY: &str = "main_agent";
+pub(crate) const ORCHESTRATOR_KEY: &str = "roles.orchestrator.models";
+pub(crate) const REVIEWER_KEY: &str = "roles.reviewer.models";
+const MAIN_AGENT_KEY: &str = "crew.main";
 
 /// One of an agent's models, as the setup offers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,7 +69,7 @@ pub(crate) fn agent_question(view: &SetupView, answers: &Answers, key: &str) -> 
 /// Which model of the agent just chosen for `key`. `None` when it offers only its default.
 pub(crate) fn model_question(view: &SetupView, answers: &Answers, key: &str) -> Option<Question> {
     let worker = worker_for(view, answers, key)?;
-    let models = view.models.get(&worker.worker)?;
+    let models = view.models.get(&worker.agent)?;
     if models.len() < 2 {
         return None;
     }
@@ -90,7 +89,7 @@ pub(crate) fn model_question(view: &SetupView, answers: &Answers, key: &str) -> 
     Some(Question {
         kind: ChoiceKind::Init,
         title: format!("{}'s model", subject(key)),
-        body: vec![format!("It runs on {}.", view.agent_name(&worker.worker))],
+        body: vec![format!("It runs on {}.", view.agent_name(&worker.agent))],
         options: init_options(&rows),
     })
 }
@@ -129,7 +128,7 @@ pub(crate) fn chose_model(
         return String::new();
     };
     let model = (value != CLI_DEFAULT).then(|| value.to_owned());
-    let worker = WorkerRef::new(worker.worker, model);
+    let worker = ModelRef::new(worker.agent, model);
     let line = format!("{} runs {}.", subject(key), worker_words(view, &worker));
     set_worker(answers, key, worker);
     line
@@ -138,18 +137,16 @@ pub(crate) fn chose_model(
 /// Who fills the role at `key`: what you chose in this setup, the later choice first, else
 /// what your file names. A local server's model you picked to review is the reviewer until
 /// you choose another here.
-pub(crate) fn worker_for(view: &SetupView, answers: &Answers, key: &str) -> Option<WorkerRef> {
+pub(crate) fn worker_for(view: &SetupView, answers: &Answers, key: &str) -> Option<ModelRef> {
     match key {
-        DEFAULT_AGENT_KEY => {
+        MAIN_AGENT_KEY => {
             return answers
                 .main_agent
                 .clone()
                 .or_else(|| view.current_str(key)?.parse().ok());
         }
-        COORDINATOR_KEY
-            if answers.workflow == COORDINATED_CREW && answers.coordinator.is_some() =>
-        {
-            return answers.coordinator.clone();
+        ORCHESTRATOR_KEY if answers.workflow == ORCHESTRATOR && answers.orchestrator.is_some() => {
+            return answers.orchestrator.clone();
         }
         _ => {}
     }
@@ -159,7 +156,7 @@ pub(crate) fn worker_for(view: &SetupView, answers: &Answers, key: &str) -> Opti
     if key == REVIEWER_KEY
         && let Some(pick) = answers.reviewers.first()
     {
-        return Some(WorkerRef::new(
+        return Some(ModelRef::new(
             pick.endpoint.clone(),
             Some(pick.model.clone()),
         ));
@@ -168,20 +165,13 @@ pub(crate) fn worker_for(view: &SetupView, answers: &Answers, key: &str) -> Opti
         Some(one) => Some(one.to_owned()),
         None => view.current_list(key).into_iter().next(),
     };
-    let named = named?;
-    // Left to the judge, the row names nobody.
-    if key == "approvals.decides" && named.trim().eq_ignore_ascii_case(Decides::JUDGE) {
-        return None;
-    }
-    named.parse().ok()
+    named?.parse().ok()
 }
 
-fn set_worker(answers: &mut Answers, key: &str, worker: WorkerRef) {
+fn set_worker(answers: &mut Answers, key: &str, worker: ModelRef) {
     match key {
-        DEFAULT_AGENT_KEY => answers.main_agent = Some(worker),
-        COORDINATOR_KEY if answers.workflow == COORDINATED_CREW => {
-            answers.coordinator = Some(worker)
-        }
+        MAIN_AGENT_KEY => answers.main_agent = Some(worker),
+        ORCHESTRATOR_KEY if answers.workflow == ORCHESTRATOR => answers.orchestrator = Some(worker),
         _ => {
             answers.roles.insert(key.to_owned(), worker);
         }
@@ -194,20 +184,19 @@ fn now_words(view: &SetupView, answers: &Answers, key: &str) -> String {
         Some(worker) => worker_words(view, &worker),
         None => match key {
             "narrator.model" => "your main agent".to_owned(),
-            "approvals.decides" => "the cheapest model from another provider".to_owned(),
             _ => "anyone in your crew".to_owned(),
         },
     }
 }
 
-fn worker_words(view: &SetupView, worker: &WorkerRef) -> String {
-    let agent = view.agent_name(&worker.worker);
+fn worker_words(view: &SetupView, worker: &ModelRef) -> String {
+    let agent = view.agent_name(&worker.agent);
     match &worker.model {
         None => agent,
         Some(model) => {
             let name = view
                 .models
-                .get(&worker.worker)
+                .get(&worker.agent)
                 .and_then(|models| {
                     models
                         .iter()
@@ -222,29 +211,28 @@ fn worker_words(view: &SetupView, worker: &WorkerRef) -> String {
 /// The row's name, as `/model` writes it.
 fn label(key: &str) -> String {
     match key {
-        DEFAULT_AGENT_KEY => "Main agent".to_owned(),
+        MAIN_AGENT_KEY => "Main agent".to_owned(),
         "narrator.model" => "narrator".to_owned(),
-        "approvals.decides" => "approver".to_owned(),
         _ => key
             .strip_prefix("roles.")
-            .and_then(|rest| rest.strip_suffix(".workers"))
+            .and_then(|rest| rest.strip_suffix(".models"))
             .unwrap_or(key)
             .to_owned(),
     }
 }
 
-/// `The reviewer`, or `Your default agent`, to start a sentence.
+/// `The reviewer`, or `Your main agent`, to start a sentence.
 fn subject(key: &str) -> String {
     match key {
-        DEFAULT_AGENT_KEY => "Your main agent".to_owned(),
+        MAIN_AGENT_KEY => "Your main agent".to_owned(),
         _ => format!("The {}", label(key)),
     }
 }
 
-/// The TOML value the role's key takes: a list for a role's workers, else one worker.
-pub(crate) fn toml_value(key: &str, worker: &WorkerRef) -> String {
+/// The TOML value the role's key takes: a list for a role's models, else one model.
+pub(crate) fn toml_value(key: &str, worker: &ModelRef) -> String {
     let one = toml::Value::String(worker.to_string());
-    if key.ends_with(".workers") {
+    if key.ends_with(".models") {
         toml::Value::Array(vec![one]).to_string()
     } else {
         one.to_string()
@@ -273,6 +261,9 @@ mod tests {
             newest_tested: None,
             unread: Vec::new(),
             builtins: Vec::new(),
+            problem: None,
+            lacks: Vec::new(),
+            check: Default::default(),
         };
         let mut view = SetupView {
             agents: vec![codex],
@@ -298,14 +289,14 @@ mod tests {
     }
 
     #[test]
-    fn the_coordinators_model_is_one_of_its_agents_and_sets_it() {
+    fn the_orchestrators_model_is_one_of_its_agents_and_sets_it() {
         let view = codex_view();
         let mut answers = Answers {
-            workflow: COORDINATED_CREW.to_owned(),
-            coordinator: Some(WorkerRef::new("codex", None)),
+            workflow: ORCHESTRATOR.to_owned(),
+            orchestrator: Some(ModelRef::new("codex", None)),
             ..Answers::default()
         };
-        let question = model_question(&view, &answers, COORDINATOR_KEY).unwrap();
+        let question = model_question(&view, &answers, ORCHESTRATOR_KEY).unwrap();
         assert_eq!(question.title, "The orchestrator's model");
         let values: Vec<String> = question
             .options
@@ -313,14 +304,14 @@ mod tests {
             .filter_map(|option| value_of(&option.action))
             .collect();
         assert_eq!(values, [CLI_DEFAULT, "gpt-5.6-luna"]);
-        let line = chose_model(&view, &mut answers, COORDINATOR_KEY, "gpt-5.6-luna");
+        let line = chose_model(&view, &mut answers, ORCHESTRATOR_KEY, "gpt-5.6-luna");
         assert_eq!(line, "The orchestrator runs GPT-5.6 Luna on Codex.");
         assert_eq!(
-            answers.coordinator,
-            Some(WorkerRef::new("codex", Some("gpt-5.6-luna".to_owned())))
+            answers.orchestrator,
+            Some(ModelRef::new("codex", Some("gpt-5.6-luna".to_owned())))
         );
         // Asked again, the model it runs now comes first.
-        let again = model_question(&view, &answers, COORDINATOR_KEY).unwrap();
+        let again = model_question(&view, &answers, ORCHESTRATOR_KEY).unwrap();
         assert_eq!(
             value_of(&again.options[0].action).as_deref(),
             Some("gpt-5.6-luna")
@@ -333,13 +324,13 @@ mod tests {
         view.models.get_mut("codex").unwrap().truncate(1);
         let answers = Answers {
             roles: [(
-                "roles.reviewer.workers".to_owned(),
-                WorkerRef::new("codex", None),
+                "roles.reviewer.models".to_owned(),
+                ModelRef::new("codex", None),
             )]
             .into(),
             ..Answers::default()
         };
-        assert!(model_question(&view, &answers, "roles.reviewer.workers").is_none());
+        assert!(model_question(&view, &answers, "roles.reviewer.models").is_none());
     }
 
     #[test]
@@ -357,7 +348,7 @@ mod tests {
         // The Servers step's pick is the reviewer's "now", not your file's.
         assert_eq!(
             worker_for(&view, &answers, REVIEWER_KEY),
-            Some(WorkerRef::new("ollama", Some("qwen3-coder".to_owned())))
+            Some(ModelRef::new("ollama", Some("qwen3-coder".to_owned())))
         );
         // Choosing another reviewer afterwards is what gets written, once.
         chose_agent(&view, &mut answers, REVIEWER_KEY, "codex");
@@ -371,39 +362,20 @@ mod tests {
         );
     }
 
-    /// The settings template writes `decides = "judge"`, which names nobody: the approver's
-    /// row reads as the judge the policy picks, never as a CLI called judge.
-    #[test]
-    fn an_approver_left_to_the_judge_names_nobody() {
-        const KEY: &str = "approvals.decides";
-        let mut view = codex_view();
-        let answers = Answers::default();
-        view.current = toml::from_str("[approvals]\ndecides = \"judge\"\n").unwrap();
-        assert_eq!(worker_for(&view, &answers, KEY), None);
-        assert_eq!(
-            now_words(&view, &answers, KEY),
-            "the cheapest model from another provider"
-        );
-        view.current = toml::from_str("[approvals]\ndecides = \"codex/gpt-5.6-luna\"\n").unwrap();
-        let luna = WorkerRef::new("codex", Some("gpt-5.6-luna".to_owned()));
-        assert_eq!(worker_for(&view, &answers, KEY), Some(luna));
-        assert_eq!(now_words(&view, &answers, KEY), "GPT-5.6 Luna on Codex");
-    }
-
     #[test]
     fn rows_read_as_model_names_them() {
-        assert_eq!(label("main_agent"), "Main agent");
-        assert_eq!(label("roles.reviewer.workers"), "reviewer");
-        assert_eq!(label("approvals.decides"), "approver");
-        assert_eq!(subject("roles.phase-lead.workers"), "The phase-lead");
-        assert_eq!(subject("main_agent"), "Your main agent");
+        assert_eq!(label("crew.main"), "Main agent");
+        assert_eq!(label("roles.reviewer.models"), "reviewer");
+        assert_eq!(label("roles.judge.models"), "judge");
+        assert_eq!(subject("roles.tie-breaker.models"), "The tie-breaker");
+        assert_eq!(subject("crew.main"), "Your main agent");
     }
 
     #[test]
     fn a_roles_key_takes_a_list_and_the_others_one_worker() {
-        let worker = WorkerRef::new("codex", Some("gpt-5.6".to_owned()));
+        let worker = ModelRef::new("codex", Some("gpt-5.6".to_owned()));
         assert_eq!(
-            toml_value("roles.reviewer.workers", &worker),
+            toml_value("roles.reviewer.models", &worker),
             r#"["codex/gpt-5.6"]"#
         );
         assert_eq!(toml_value("narrator.model", &worker), r#""codex/gpt-5.6""#);

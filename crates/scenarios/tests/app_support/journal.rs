@@ -1,4 +1,4 @@
-//! Runs read back from the journal, and a parked run written by hand for commands that only
+//! Runs read back from the journal, and a waiting run written by hand for commands that only
 //! read journals.
 
 use std::collections::BTreeMap;
@@ -7,16 +7,16 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
-use argonauts_core::events::checkpoint::{
-    AnswerAction, AnswerOption, CheckpointEvent, CheckpointKind, CheckpointOpened,
-    CheckpointPacket, FreeText, QuestionPacket,
+use argonauts_core::events::approval::{
+    AnswerAction, AnswerOption, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
+    FreeText, QuestionPacket,
 };
-use argonauts_core::events::run::{ParkReason, RunLifecycle, RunMode, RunStarted};
+use argonauts_core::events::run::{RunLifecycle, RunMode, RunStarted, WaitReason};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::layout::run_files;
-use argonauts_core::names::{CheckpointId, WorkerRef};
+use argonauts_core::names::{ApprovalId, ModelRef};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
-use argonauts_core::{CardId, Paths, RepoId, RunId};
+use argonauts_core::{Paths, RepoId, RunId, TaskId};
 use argonauts_scenarios::Scenario;
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -32,33 +32,33 @@ pub fn run_settings(run_dir: &Path) -> anyhow::Result<Value> {
     serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
-pub struct ParkedRun {
+pub struct WaitingRun {
     pub run: RunId,
     pub dir: PathBuf,
-    pub checkpoint: CheckpointId,
+    pub approval: ApprovalId,
 }
 
-/// A solo run that parked at an agent's question `days_parked` days ago and has no
-/// supervisor, as a run looks after its supervisor exited past the park grace.
-pub fn fabricate_parked_run(scenario: &Scenario, days_parked: i64) -> anyhow::Result<ParkedRun> {
-    let parked_at = OffsetDateTime::now_utc() - time::Duration::days(days_parked);
-    let run = RunId::at(parked_at, 0x0a11);
+/// A Captain run that stopped at an agent's question `days_waiting` days ago and has no
+/// run host, as a run looks after its run host exited past the wait grace.
+pub fn fabricate_waiting_run(scenario: &Scenario, days_waiting: i64) -> anyhow::Result<WaitingRun> {
+    let waiting_at = OffsetDateTime::now_utc() - time::Duration::days(days_waiting);
+    let run = RunId::at(waiting_at, 0x0a11);
     let repo = RepoId::for_repo(scenario.repo.root()).context("naming the test repo")?;
     let dir = Paths::new(scenario.repo.home()).run_dir(&repo, &run);
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let card = CardId::numbered(1);
-    let checkpoint = CheckpointId::numbered(1);
-    let owner = WorkerRef::new("claude-code", None);
+    let task = TaskId::numbered(1);
+    let approval = ApprovalId::numbered(1);
+    let worker = ModelRef::new("claude-code", None);
 
     let started = RunStarted {
         request: "rename the config loader everywhere".to_owned(),
         title: "Rename the config loader".to_owned(),
-        mode: RunMode::Solo,
+        mode: RunMode::Captain,
         forced: true,
-        workflow: "solo".to_owned(),
+        workflow: "captain".to_owned(),
         estimate: None,
-        triage: None,
-        chat_turn: None,
+        captain_or_crew: None,
+        conversation_turn: None,
         continues: None,
         repo_root: scenario.repo.root().to_owned(),
         base_branch: Some("main".to_owned()),
@@ -68,20 +68,20 @@ pub fn fabricate_parked_run(scenario: &Scenario, days_parked: i64) -> anyhow::Re
         settings_sha256: "0".repeat(64),
         settings: serde_json::json!({}),
         overrides: Vec::new(),
-        harness_versions: BTreeMap::new(),
+        cli_versions: BTreeMap::new(),
         version: "0.1.0".to_owned(),
-        front_end: None,
+        outside_agent: None,
         instructions: Vec::new(),
         required_steps: Vec::new(),
     };
-    let opened = CheckpointOpened {
-        id: checkpoint.clone(),
-        kind: CheckpointKind::Question,
+    let opened = ApprovalOpened {
+        id: approval.clone(),
+        kind: ApprovalKind::Question,
         title: "Question from claude-code · task-001".to_owned(),
-        card: Some(card.clone()),
-        packet: CheckpointPacket::Question(QuestionPacket {
-            from: owner,
-            card: card.clone(),
+        task: Some(task.clone()),
+        packet: ApprovalPacket::Question(QuestionPacket {
+            from: worker,
+            task: task.clone(),
             text: "Keep the old name as an alias?".to_owned(),
             options: vec!["Yes".to_owned(), "No".to_owned()],
         }),
@@ -117,37 +117,33 @@ pub fn fabricate_parked_run(scenario: &Scenario, days_parked: i64) -> anyhow::Re
             RunEventKind::Run(RunLifecycle::Started(Box::new(started))),
         ),
         (
-            Some(card.clone()),
-            RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(opened))),
+            Some(task.clone()),
+            RunEventKind::Approval(ApprovalEvent::Opened(Box::new(opened))),
         ),
         (
             None,
-            RunEventKind::Run(RunLifecycle::Parked {
-                reason: ParkReason::Checkpoint,
-                waiting_on: vec![checkpoint.clone()],
+            RunEventKind::Run(RunLifecycle::Waiting {
+                reason: WaitReason::Approval,
+                waiting_on: vec![approval.clone()],
             }),
         ),
     ];
     let path = dir.join(run_files::EVENTS);
     let mut file =
         fs::File::create(&path).with_context(|| format!("creating {}", path.display()))?;
-    for (seq, (card_id, kind)) in kinds.into_iter().enumerate() {
+    for (seq, (task_id, kind)) in kinds.into_iter().enumerate() {
         let event = RunEvent {
             seq: seq as u64,
-            ts: parked_at,
+            ts: waiting_at,
             run_id: run.clone(),
-            card_id,
+            task_id,
             session: None,
-            source: "conductor".to_owned(),
+            source: "argonauts-code".to_owned(),
             kind,
         };
         writeln!(file, "{}", serde_json::to_string(&event)?)?;
     }
-    Ok(ParkedRun {
-        run,
-        dir,
-        checkpoint,
-    })
+    Ok(WaitingRun { run, dir, approval })
 }
 
 /// Polls the run's journal until an event matches.
@@ -184,7 +180,7 @@ pub fn run_id(run_dir: &Path) -> anyhow::Result<RunId> {
     Ok(RunId::new(name.to_string_lossy())?)
 }
 
-/// Branches the run made, such as its card branches.
+/// Branches the run made, such as its task branches.
 pub fn run_branches(scenario: &Scenario, run: &RunId) -> anyhow::Result<Vec<String>> {
     let listed = scenario.repo.git(&[
         "branch",

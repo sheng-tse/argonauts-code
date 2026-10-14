@@ -1,5 +1,5 @@
 //! Agent sessions on the main screen: live blocks, what reaches scrollback at each verbosity,
-//! and every vendor's calls saying what they did. Events are built by hand from the shapes the
+//! and every agent's calls saying what they did. Events are built by hand from the shapes the
 //! adapters' recorded fixtures produce.
 
 mod common;
@@ -8,20 +8,20 @@ use std::collections::BTreeMap;
 
 use argonauts_core::app::AppEvent;
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::card::{CardEvent, CardState};
 use argonauts_core::events::session::{
     EndReason, FileDiff, SessionEnd, SessionEvent, SessionStarted, SubagentKind, SubagentStatus,
     SubagentUpdate,
 };
+use argonauts_core::events::task::{TaskEvent, TaskState};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::model_catalog::{CatalogEntry, ModelCatalog};
-use argonauts_core::names::{RoleName, SessionKey, VendorId, WorkerRef};
+use argonauts_core::names::{AgentId, ModelRef, RoleName, SessionKey};
+use argonauts_core::session_runner::{Access, RunnerKind};
 use argonauts_core::settings::sessions::SessionLifetime;
-use argonauts_core::settings::ui::{AgentsInChat, UiSettings};
+use argonauts_core::settings::ui::{AgentsInConversation, UiSettings};
 use argonauts_core::steps::StepName;
-use argonauts_core::worker::{Access, WorkerKind};
 use argonauts_core::{
-    AgentEvent, CardId, ErrorCategory, ModOutputKind, RetryReason, RunId, Spend, TodoItem,
+    AgentEvent, ErrorCategory, PluginOutputKind, RetryReason, RunId, Spend, TaskId, TodoItem,
     TodoStatus, Verbosity,
 };
 use argonauts_tui::HistoryCell;
@@ -31,7 +31,7 @@ use argonauts_tui::model::ViewModel;
 use argonauts_tui::render::{Clock, RenderCtx};
 use argonauts_tui::stability::{self, samples};
 use argonauts_tui::state::{
-    AppState, CardRow, Doing, Replay, RunState, SessionState, SessionStatus,
+    AppState, Doing, Replay, RunState, SessionState, SessionStatus, TaskRow,
 };
 use argonauts_tui::theme::Role;
 use common::{assert_fits, at, style_of, t0, text, theme};
@@ -68,7 +68,7 @@ impl Crew {
         // Most of these draw the live block, which agents have when they show as they work.
         let settings = UiSettings {
             verbosity,
-            agents_in_chat: AgentsInChat::AsTheyWork,
+            agents_in_conversation: AgentsInConversation::AsTheyWork,
             ..UiSettings::default()
         };
         Self {
@@ -87,24 +87,24 @@ impl Crew {
         self.state.runs.get_mut(&self.run).expect("the run")
     }
 
-    fn card(&mut self, n: u32, title: &str, state: Option<CardState>) {
-        let id = CardId::numbered(n);
-        self.run_state().cards.insert(
+    fn task(&mut self, n: u32, title: &str, state: Option<TaskState>) {
+        let id = TaskId::numbered(n);
+        self.run_state().tasks.insert(
             id.clone(),
-            CardRow {
+            TaskRow {
                 id,
                 title: title.to_owned(),
                 state,
-                owner: None,
-                attempt: 1,
+                worker: None,
+                try_number: 1,
                 diff: None,
-                standing_in_for: None,
+                fallback_for: None,
                 debt: Vec::new(),
                 checkpoints: 0,
                 rotations: 0,
-                last_gate: None,
+                last_check: None,
                 reviews: 0,
-                waiting_on_vendor: None,
+                waiting_on_agent: None,
                 item: None,
             },
         );
@@ -115,13 +115,13 @@ impl Crew {
         self
     }
 
-    fn send(&mut self, session: &str, card: Option<u32>, kind: RunEventKind) {
+    fn send(&mut self, session: &str, task: Option<u32>, kind: RunEventKind) {
         self.seq += 1;
         let event = RunEvent {
             seq: self.seq,
             ts: START + time::Duration::seconds_f64(self.now),
             run_id: self.run.clone(),
-            card_id: card.map(CardId::numbered),
+            task_id: task.map(TaskId::numbered),
             session: SessionKey::parse(session),
             source: "test".to_owned(),
             kind,
@@ -145,30 +145,30 @@ impl Crew {
     }
 
     /// The app's state gets the session first, as `AppState::apply` does before the parts run.
-    fn start(&mut self, session: &str, worker: &str, card: Option<u32>) {
-        self.start_step(session, worker, card, None);
+    fn start(&mut self, session: &str, worker: &str, task: Option<u32>) {
+        self.start_step(session, worker, task, None);
     }
 
     fn start_step(
         &mut self,
         session: &str,
         worker: &str,
-        card: Option<u32>,
+        task: Option<u32>,
         step: Option<StepName>,
     ) {
-        let worker: WorkerRef = worker.parse().expect("a worker");
+        let worker: ModelRef = worker.parse().expect("a model");
         let key = SessionKey::parse(session).expect("a key");
         let ts = START + time::Duration::seconds_f64(self.now);
-        let mut state = session_state(&key, &worker, card.map(CardId::numbered), ts);
+        let mut state = session_state(&key, &worker, task.map(TaskId::numbered), ts);
         state.step = step;
         let run = self.run_state();
         run.sessions.insert(key.clone(), state);
         run.session_order.push(key);
         let started = SessionStarted {
-            vendor: VendorId(worker.worker.clone()),
+            agent_id: AgentId(worker.agent.clone()),
             worker,
-            family: "test".to_owned(),
-            kind: WorkerKind::Harness,
+            provider: "test".to_owned(),
+            kind: RunnerKind::Cli,
             role: RoleName::Worker,
             step,
             access: Access::Build,
@@ -181,14 +181,14 @@ impl Crew {
         };
         self.send(
             session,
-            card,
+            task,
             RunEventKind::Session(SessionEvent::Started(Box::new(started))),
         );
     }
 
-    /// A reviewer asked through Argonauts' tool: tied to no task and no step of its own.
+    /// A reviewer asked through Argonauts Code's tool: tied to no task and no step of its own.
     fn start_asked(&mut self, session: &str, worker: &str) {
-        let worker: WorkerRef = worker.parse().expect("a worker");
+        let worker: ModelRef = worker.parse().expect("a model");
         let key = SessionKey::parse(session).expect("a key");
         let ts = START + time::Duration::seconds_f64(self.now);
         let mut state = session_state(&key, &worker, None, ts);
@@ -197,10 +197,10 @@ impl Crew {
         run.sessions.insert(key.clone(), state);
         run.session_order.push(key);
         let started = SessionStarted {
-            vendor: VendorId(worker.worker.clone()),
+            agent_id: AgentId(worker.agent.clone()),
             worker,
-            family: "test".to_owned(),
-            kind: WorkerKind::Harness,
+            provider: "test".to_owned(),
+            kind: RunnerKind::Cli,
             role: RoleName::Reviewer,
             step: None,
             access: Access::ReadOnly,
@@ -266,7 +266,7 @@ impl Crew {
 
     fn end(&mut self, session: &str, reason: EndReason, seconds: u64, tokens: u64) {
         let end = SessionEnd {
-            vendor_session: None,
+            cli_session: None,
             exit_code: Some(0),
             signal: None,
             duration_ms: seconds * 1000,
@@ -320,8 +320,8 @@ impl Crew {
 
 fn session_state(
     key: &SessionKey,
-    worker: &WorkerRef,
-    card: Option<CardId>,
+    worker: &ModelRef,
+    task: Option<TaskId>,
     at: OffsetDateTime,
 ) -> SessionState {
     SessionState {
@@ -329,10 +329,10 @@ fn session_state(
         follow: None,
         worker: worker.clone(),
         model_assumed: false,
-        vendor: worker.worker.clone(),
+        agent_id: worker.agent.clone(),
         role: RoleName::Worker,
         step: None,
-        card,
+        task,
         workflow_step: None,
         label: None,
         status: SessionStatus::Working,
@@ -355,12 +355,12 @@ fn session_state(
         inputs: Vec::new(),
         queued: Vec::new(),
         retry: None,
-        standing_in_for: None,
+        fallback_for: None,
         end: None,
         unknown: Vec::new(),
         doing: Doing::Nothing,
         stalled: false,
-        vendor_session: None,
+        cli_session: None,
         workflows: Vec::new(),
     }
 }
@@ -404,7 +404,7 @@ fn claude_calls(crew: &mut Crew) {
 #[test]
 fn tool_calls_read_update_bash_search_write() {
     let mut crew = Crew::new(Verbosity::Full);
-    crew.card(3, "Middleware", Some(CardState::Running));
+    crew.task(3, "Middleware", Some(TaskState::Running));
     crew.start("s-001", "claude-code/opus", Some(3));
     claude_calls(&mut crew);
     crew.message("s-001", "The prompt draws under the header now.");
@@ -426,14 +426,14 @@ fn tool_calls_read_update_bash_search_write() {
     let lines = crew.printed(80);
     assert_eq!(
         style_of(&lines, "Exit code 101").and_then(|s| s.fg),
-        theme().style(Role::Error).fg
+        theme().style(Role::Danger).fg
     );
 }
 
 #[test]
 fn live_block_all_parts() {
     let mut crew = Crew::new(Verbosity::Full);
-    crew.card(3, "Middleware", Some(CardState::Running));
+    crew.task(3, "Middleware", Some(TaskState::Running));
     crew.start("s-001", "claude-code/opus", Some(3));
     claude_calls(&mut crew);
     crew.at(200.0).send(
@@ -487,7 +487,7 @@ fn live_block_all_parts() {
     let wide = text(&crew.live(140));
     assert!(
         wide.starts_with(
-            "● Opus on Claude Code · worker · task-003 (Middleware) · 4m12s · ↓ 18.1k · retrying in 12s (attempt 2)"
+            "● Opus on Claude Code · worker · task-003 (Middleware) · 4m12s · ↓ 18.1k · retrying in 12s (try 2)"
         ),
         "{wide}"
     );
@@ -501,7 +501,7 @@ fn live_block_all_parts() {
     let lines = crew.live(140);
     assert_eq!(
         style_of(&lines, "retrying").and_then(|s| s.fg),
-        theme().style(Role::Warning).fg
+        theme().style(Role::Warn).fg
     );
 
     // Any progress clears the retry, and nothing of the block went to scrollback line by line.
@@ -511,12 +511,12 @@ fn live_block_all_parts() {
     assert!(!text(&crew.printed(140)).contains("Next I'll add"));
 }
 
-/// Claude Code reports each edit's patch, which its call draws. The change Argonauts sees in the
-/// file after it is the same edit, so the live block draws it once.
+/// Claude Code reports each edit's patch, which its call draws. The change Argonauts Code sees in
+/// the file after it is the same edit, so the live block draws it once.
 #[test]
 fn an_edit_its_call_drew_is_not_drawn_again_under_the_calls() {
     let mut crew = Crew::new(Verbosity::Full);
-    crew.card(3, "Middleware", Some(CardState::Running));
+    crew.task(3, "Middleware", Some(TaskState::Running));
     crew.start("s-001", "claude-code/opus", Some(3));
     let file = format!("{WORKTREE}/src/config.js");
     crew.at(10.0).tool(
@@ -603,7 +603,7 @@ fn a_stall_reads_dim_and_an_error_red() {
     );
     assert_eq!(
         style_of(&lines, "the stream broke").and_then(|s| s.fg),
-        theme().style(Role::Error).fg
+        theme().style(Role::Danger).fg
     );
 }
 
@@ -611,7 +611,7 @@ fn a_stall_reads_dim_and_an_error_red() {
 const CODEX_SCHEMA_ERROR: &str = r#"{"type":"error","message":"{\"error\":{\"message\":\"Invalid schema for response_format 'codex_output_schema': Missing 'summary'.\",\"type\":\"invalid_request_error\",\"code\":\"invalid_json_schema\"}}"}"#;
 
 /// An agent's error and the failed end that follows say it once, in words, with `r` for the
-/// CLI's own text; its JSON never reaches the chat.
+/// CLI's own text; its JSON never reaches the conversation.
 #[test]
 fn an_agent_error_then_its_failed_end_say_it_once_in_words() {
     for width in WIDTHS {
@@ -625,7 +625,7 @@ fn an_agent_error_then_its_failed_end_say_it_once_in_words() {
                 retryable: false,
             },
         );
-        let reason = EndReason::VendorError {
+        let reason = EndReason::CliError {
             category: ErrorCategory::InvalidRequest,
             message: CODEX_SCHEMA_ERROR.to_owned(),
         };
@@ -634,7 +634,7 @@ fn an_agent_error_then_its_failed_end_say_it_once_in_words() {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
-        let said = "Codex refused the answer format Argonauts asked for";
+        let said = "Codex refused the answer format Argonauts Code asked for";
         assert_eq!(printed.matches(said).count(), 1, "{width}: {printed}");
         assert_eq!(
             printed.matches("r shows the raw error").count(),
@@ -656,7 +656,7 @@ fn an_agent_error_then_its_failed_end_say_it_once_in_words() {
 #[test]
 fn a_block_that_doesnt_fit_keeps_its_header_todo_and_text() {
     let mut crew = Crew::new(Verbosity::Full);
-    crew.card(3, "Middleware", None);
+    crew.task(3, "Middleware", None);
     crew.start("s-001", "claude-code/opus", Some(3));
     claude_calls(&mut crew);
     crew.agent(
@@ -689,7 +689,7 @@ fn a_block_that_doesnt_fit_keeps_its_header_todo_and_text() {
 #[test]
 fn codex_block_draws_its_thread_without_a_note() {
     let mut crew = Crew::new(Verbosity::Full);
-    crew.card(2, "Redis store", Some(CardState::Running));
+    crew.task(2, "Redis store", Some(TaskState::Running));
     crew.start("s-002", "codex/gpt-5.6", Some(2));
     crew.at(5.0)
         .tool(
@@ -749,11 +749,11 @@ fn codex_block_draws_its_thread_without_a_note() {
     );
 }
 
-/// A step that ends in a structured result, as each vendor sends it: Codex's last message
+/// A step that ends in a structured result, as each agent sends it: Codex's last message
 /// (which its adapter turns into a report call), Claude Code's `StructuredOutput`, agy's `finish`.
 fn reporting_session(worker: &str, report_call: &str) -> Crew {
     let mut crew = Crew::new(Verbosity::Full);
-    crew.card(2, "Hello file", Some(CardState::Running));
+    crew.task(2, "Hello file", Some(TaskState::Running));
     crew.start("s-002", worker, Some(2));
     crew.at(4.0)
         .message("s-002", "Creating hello.txt now.")
@@ -846,7 +846,7 @@ fn a_report_written_out_and_called_shows_once() {
     });
     let pretty = serde_json::to_string_pretty(&report).unwrap();
     let mut crew = Crew::new(Verbosity::Normal);
-    crew.card(2, "Hello file", Some(CardState::Running));
+    crew.task(2, "Hello file", Some(TaskState::Running));
     crew.start("s-002", "claude-code/opus", Some(2));
     crew.at(4.0)
         .message("s-002", &format!("Done\n\n```json\n{pretty}\n```"))
@@ -872,7 +872,7 @@ fn one_session(verbosity: Verbosity) -> Crew {
 }
 
 fn one_session_with(mut crew: Crew) -> Crew {
-    crew.card(3, "Middleware", Some(CardState::InReview));
+    crew.task(3, "Middleware", Some(TaskState::InReview));
     crew.start("s-001", "claude-code/opus", Some(3));
     crew.at(12.0)
         .tool("s-001", "t1", "Read", json!({"file_path": "src/app.rs"}))
@@ -936,22 +936,27 @@ fn verbosity_full_normal_quiet() {
 /// agent's block, dim but for a warning, never on the notice line or with the bell. A mod that
 /// says the same again shows it once.
 #[test]
-fn a_crew_sessions_mod_pushes_stay_in_its_block() {
-    let push = |kind, plugin: &str, text: &str| AgentEvent::ModOutput {
+fn a_crew_sessions_plugin_output_stays_in_its_block() {
+    let push = |kind, plugin: &str, text: &str| AgentEvent::PluginOutput {
         kind,
         plugin: Some(plugin.to_owned()),
         text: Some(text.to_owned()),
         timeout_ms: None,
     };
     let mut crew = Crew::new(Verbosity::Full);
-    crew.card(3, "Middleware", Some(CardState::Running));
+    crew.task(3, "Middleware", Some(TaskState::Running));
     crew.start("s-001", "claude-code/opus", Some(3));
     for _ in 0..3 {
-        crew.at(5.0)
-            .agent("s-001", push(ModOutputKind::Toast, "jokes", "Knock knock"));
+        crew.at(5.0).agent(
+            "s-001",
+            push(PluginOutputKind::Toast, "jokes", "Knock knock"),
+        );
     }
-    crew.agent("s-001", push(ModOutputKind::Urgent, "pager", "Build broke"));
-    crew.agent("s-001", push(ModOutputKind::Status, "pager", "2 open"));
+    crew.agent(
+        "s-001",
+        push(PluginOutputKind::Urgent, "pager", "Build broke"),
+    );
+    crew.agent("s-001", push(PluginOutputKind::Status, "pager", "2 open"));
     assert!(crew.model.bottom.mode.notice.is_none());
     assert!(!crew.rang);
     let shown = text(&crew.live(100));
@@ -963,9 +968,9 @@ fn a_crew_sessions_mod_pushes_stay_in_its_block() {
 #[test]
 fn agents_started_rows() {
     let mut crew = Crew::new(Verbosity::Full);
-    crew.card(2, "Redis store", None);
-    crew.card(3, "Middleware", None);
-    crew.card(4, "Docs", None);
+    crew.task(2, "Redis store", None);
+    crew.task(3, "Middleware", None);
+    crew.task(4, "Docs", None);
     crew.start("s-001", "codex/gpt-5.6", Some(2));
     crew.start("s-002", "claude-code/opus", Some(3));
     crew.at(1.0)
@@ -986,29 +991,29 @@ fn agents_started_rows() {
     assert_eq!(crew.model.history.active_cells().count(), 3);
 
     // One agent on its own gets only its live block.
-    let mut solo = Crew::new(Verbosity::Full);
-    solo.start("s-001", "codex/gpt-5.6", None);
-    solo.at(3.0).message("s-001", "hi");
-    assert!(!text(&solo.printed(80)).contains("started"));
+    let mut captain = Crew::new(Verbosity::Full);
+    captain.start("s-001", "codex/gpt-5.6", None);
+    captain.at(3.0).message("s-001", "hi");
+    assert!(!text(&captain.printed(80)).contains("started"));
 }
 
 #[test]
-fn agents_started_between_card_events() {
-    // A conductor that makes each card and then starts its agent.
+fn agents_started_between_task_events() {
+    // Argonauts Code that makes each task and then starts its agent.
     let mut crew = Crew::new(Verbosity::Full);
-    let cards = [
+    let tasks = [
         (2, "Redis store", "s-001", "codex/gpt-5.6"),
         (3, "Middleware", "s-002", "claude-code/opus"),
         (4, "Docs", "s-003", "antigravity-cli/gemini-3.6-flash"),
     ];
-    for (n, title, session, worker) in cards {
-        crew.card(n, title, None);
-        let made = CardEvent::State {
+    for (n, title, session, worker) in tasks {
+        crew.task(n, title, None);
+        let made = TaskEvent::State {
             from: None,
-            to: CardState::Ready,
+            to: TaskState::Ready,
             reason: String::new(),
         };
-        crew.send("", Some(n), RunEventKind::Card(made));
+        crew.send("", Some(n), RunEventKind::Task(made));
         crew.start(session, worker, Some(n));
     }
     crew.at(3.0)
@@ -1019,12 +1024,12 @@ fn agents_started_between_card_events() {
     );
 }
 
-/// Owners forecast their cards before you approve the plan, and that mustn't read as building.
+/// Workers forecast their tasks before you approve the plan, and that mustn't read as building.
 #[test]
-fn an_owner_forecasting_its_card_is_an_estimator() {
+fn a_worker_forecasting_its_task_is_an_estimator() {
     let mut crew = Crew::new(Verbosity::Full);
-    crew.card(1, "Limiter interface", None);
-    crew.card(2, "Redis store", None);
+    crew.task(1, "Limiter interface", None);
+    crew.task(2, "Redis store", None);
     crew.start_step("s-001", "codex/gpt-5.6", Some(1), Some(StepName::Predict));
     crew.start_step(
         "s-002",
@@ -1051,7 +1056,7 @@ fn an_owner_forecasting_its_card_is_an_estimator() {
 #[test]
 fn stopped_agent_prints_one_line() {
     let mut crew = Crew::new(Verbosity::Full);
-    crew.card(3, "Middleware", None);
+    crew.task(3, "Middleware", None);
     crew.start("s-001", "claude-code/opus", Some(3));
     crew.at(20.0)
         .tool("s-001", "t1", "Read", json!({"file_path": "a.rs"}))
@@ -1091,7 +1096,7 @@ fn an_agent_is_named_from_the_catalog() {
         },
         ..DisplayNames::default()
     };
-    crew.card(3, "Middleware", None);
+    crew.task(3, "Middleware", None);
     crew.start("s-001", "claude-code/opus", Some(3));
     crew.at(123.0)
         .end("s-001", EndReason::Completed, 123, 12_000);
@@ -1111,8 +1116,8 @@ fn an_agent_keeps_one_name_from_its_start() {
         configured: BTreeMap::from([("codex".to_owned(), "gpt-5.6-luna".to_owned())]),
         ..DisplayNames::default()
     };
-    crew.card(2, "Redis store", None);
-    crew.card(3, "Middleware", None);
+    crew.task(2, "Redis store", None);
+    crew.task(3, "Middleware", None);
     crew.start("s-001", "codex", Some(2));
     crew.start("s-002", "claude-code", Some(3));
     // Claude Code runs its own default and says which at its start; the app's state takes it
@@ -1159,8 +1164,8 @@ fn an_agent_on_its_clis_default_is_named_by_it_from_its_start() {
         defaults: BTreeMap::from([("claude-code".to_owned(), "claude-opus-5-5".to_owned())]),
         ..DisplayNames::default()
     };
-    crew.card(2, "Redis store", None);
-    crew.card(3, "Middleware", None);
+    crew.task(2, "Redis store", None);
+    crew.task(3, "Middleware", None);
     crew.start("s-001", "codex/gpt-5.6", Some(2));
     crew.start("s-002", "claude-code", Some(3));
     crew.at(3.0)
@@ -1217,7 +1222,7 @@ fn unknown_event_line() {
 fn agent_text_is_sanitized() {
     let evil = "\u{1b}[31mred\u{1b}[0m \u{1b}]0;owned\u{7} \u{1b}[2Jclear\r\u{8}";
     let mut crew = Crew::new(Verbosity::Full);
-    crew.card(3, evil, None);
+    crew.task(3, evil, None);
     crew.start("s-001", "claude-code/opus", Some(3));
     crew.at(2.0)
         .tool(
@@ -1274,7 +1279,7 @@ fn agent_text_is_sanitized() {
 }
 
 #[test]
-fn quiet_harnesses_say_how_long_they_have_been_quiet() {
+fn quiet_clis_say_how_long_they_have_been_quiet() {
     let mut crew = Crew::new(Verbosity::Full);
     crew.start("s-001", "antigravity-cli/gemini-3.6-flash", None);
     crew.at(5.0).tool(
@@ -1300,7 +1305,7 @@ fn quiet_harnesses_say_how_long_they_have_been_quiet() {
     assert!(text(&lines).contains("· quiet 3m · may be waiting on a limit"));
     assert_eq!(
         style_of(&lines, "quiet").and_then(|s| s.fg),
-        theme().style(Role::Warning).fg
+        theme().style(Role::Warn).fg
     );
 
     // Claude Code says when it retries, so it never gets the hint.
@@ -1316,8 +1321,8 @@ fn replay_keeps_finished_sessions_for_the_overlay() {
     crew.state.replay = Replay::Replaying {
         run: crew.run.clone(),
     };
-    crew.card(2, "Redis store", None);
-    crew.card(3, "Middleware", None);
+    crew.task(2, "Redis store", None);
+    crew.task(3, "Middleware", None);
     crew.start("s-001", "codex/gpt-5.6", Some(2));
     crew.start("s-002", "claude-code/opus", Some(3));
     crew.at(30.0)
@@ -1350,8 +1355,8 @@ fn replay_keeps_finished_sessions_for_the_overlay() {
 #[test]
 fn stays_in_shape_at_every_width() {
     let mut crew = Crew::new(Verbosity::Full);
-    crew.card(3, samples::CJK, Some(CardState::Running));
-    crew.card(4, samples::EMOJI, None);
+    crew.task(3, samples::CJK, Some(TaskState::Running));
+    crew.task(4, samples::EMOJI, None);
     crew.start("s-001", "claude-code/opus", Some(3));
     crew.start("s-002", "codex/gpt-5.6", Some(4));
     let long_word = samples::long_word();
@@ -1417,10 +1422,10 @@ fn stays_in_shape_at_every_width() {
 #[test]
 fn a_session_known_only_from_state_still_gets_a_block() {
     let mut crew = Crew::new(Verbosity::Full);
-    crew.card(3, "Middleware", None);
+    crew.task(3, "Middleware", None);
     let key = SessionKey::parse("s-004").expect("a key");
-    let worker: WorkerRef = "codex/gpt-5.6".parse().expect("a worker");
-    let state = session_state(&key, &worker, Some(CardId::numbered(3)), START);
+    let worker: ModelRef = "codex/gpt-5.6".parse().expect("a model");
+    let state = session_state(&key, &worker, Some(TaskId::numbered(3)), START);
     crew.run_state().sessions.insert(key, state);
     crew.at(30.0)
         .tool("s-004", "t1", "command_execution", json!({"command": "ls"}));
@@ -1452,7 +1457,7 @@ fn a_session_known_only_from_state_still_gets_a_block() {
 fn argonauts_own_calls_stay_in_the_overlay() {
     for level in [Verbosity::Full, Verbosity::Normal] {
         let mut crew = Crew::new(level);
-        crew.card(3, "Middleware", Some(CardState::InReview));
+        crew.task(3, "Middleware", Some(TaskState::InReview));
         crew.start("s-001", "claude-code/opus", Some(3));
         crew.at(12.0)
             .tool("s-001", "t1", "Read", json!({"file_path": "src/app.rs"}))
@@ -1498,21 +1503,21 @@ fn argonauts_own_calls_stay_in_the_overlay() {
     }
 }
 
-/// A reviewer that Claude Code's own workflow asks through Argonauts answers inside the
-/// workflow's row and view: it gets no block of its own and prints nothing in the chat.
+/// A reviewer that Claude Code's own workflow asks through Argonauts Code answers inside the
+/// workflow's row and view: it gets no block of its own and prints nothing in the conversation.
 #[test]
 fn a_reviewer_asked_inside_a_cli_workflow_prints_nothing_of_its_own() {
-    use argonauts_core::events::session::{VendorPhase, VendorWorkflow};
+    use argonauts_core::events::session::{CliPhase, CliWorkflowRun};
     let mut crew = Crew::new(Verbosity::Full);
     crew.start("s-001", "claude-code/haiku", Some(1));
     let key = SessionKey::parse("s-001").expect("a key");
     if let Some(host) = crew.run_state().sessions.get_mut(&key) {
-        host.workflows.push(VendorWorkflow {
+        host.workflows.push(CliWorkflowRun {
             id: "wf_1".into(),
             call: None,
             name: "add-due-dates".into(),
             description: String::new(),
-            phases: vec![VendorPhase {
+            phases: vec![CliPhase {
                 index: 1,
                 title: "Review".into(),
                 detail: String::new(),
@@ -1541,8 +1546,8 @@ fn a_reviewer_asked_inside_a_cli_workflow_prints_nothing_of_its_own() {
 /// until the workflow ends, then prints once with its final phases.
 #[test]
 fn a_workflow_row_stays_live_until_its_workflow_ends() {
-    use argonauts_core::events::session::{VendorPhase, VendorWorkflow};
-    let workflow = |status| VendorWorkflow {
+    use argonauts_core::events::session::{CliPhase, CliWorkflowRun};
+    let workflow = |status| CliWorkflowRun {
         id: "wf_1".into(),
         call: Some("toolu_w".into()),
         name: "add-due-dates".into(),
@@ -1550,7 +1555,7 @@ fn a_workflow_row_stays_live_until_its_workflow_ends() {
         phases: ["Build", "Review"]
             .iter()
             .zip(1..)
-            .map(|(title, index)| VendorPhase {
+            .map(|(title, index)| CliPhase {
                 index,
                 title: (*title).to_owned(),
                 detail: String::new(),
@@ -1604,14 +1609,14 @@ fn a_workflow_row_stays_live_until_its_workflow_ends() {
     );
 }
 
-/// By default an agent at work stays out of the chat, which the list under the input covers,
-/// and lands there once, when it finishes, as it would have printed going along.
+/// By default an agent at work stays out of the conversation, which the list under the input
+/// covers, and lands there once, when it finishes, as it would have printed going along.
 #[test]
-fn an_agent_at_work_lands_in_the_chat_once_when_it_finishes() {
+fn an_agent_at_work_lands_in_the_conversation_once_when_it_finishes() {
     for level in [Verbosity::Full, Verbosity::Normal] {
         let mut crew = Crew::new(level);
-        crew.settings.agents_in_chat = AgentsInChat::WhenDone;
-        crew.card(3, "Middleware", Some(CardState::InReview));
+        crew.settings.agents_in_conversation = AgentsInConversation::WhenDone;
+        crew.task(3, "Middleware", Some(TaskState::InReview));
         crew.start("s-001", "claude-code/opus", Some(3));
         crew.at(12.0)
             .tool("s-001", "t1", "Read", json!({"file_path": "src/app.rs"}))
@@ -1627,7 +1632,10 @@ fn an_agent_at_work_lands_in_the_chat_once_when_it_finishes() {
             .done("s-001", &id, true, Some("ok"));
         }
         crew.message("s-001", "Halfway there.");
-        assert!(crew.live(100).is_empty(), "no live block in the chat");
+        assert!(
+            crew.live(100).is_empty(),
+            "no live block in the conversation"
+        );
         assert!(
             crew.printed(100).is_empty(),
             "nothing printed while it works"
@@ -1652,7 +1660,7 @@ fn an_agent_at_work_lands_in_the_chat_once_when_it_finishes() {
 fn landing_once_reads_as_printing_along_did() {
     for level in [Verbosity::Full, Verbosity::Normal, Verbosity::Quiet] {
         let mut when_done = Crew::new(level);
-        when_done.settings.agents_in_chat = AgentsInChat::WhenDone;
+        when_done.settings.agents_in_conversation = AgentsInConversation::WhenDone;
         let when_done = one_session_with(when_done);
         let along = one_session(level);
         assert_eq!(
@@ -1668,7 +1676,7 @@ fn landing_once_reads_as_printing_along_did() {
 #[test]
 fn a_call_shows_in_the_block_as_its_model_starts_writing_it() {
     let mut crew = Crew::new(Verbosity::Full);
-    crew.card(3, "Middleware", Some(CardState::Running));
+    crew.task(3, "Middleware", Some(TaskState::Running));
     crew.start("s-001", "claude-code/opus", Some(3));
     let pending = |id: &str, name: &str| AgentEvent::ToolPending {
         id: id.to_owned(),
@@ -1707,8 +1715,8 @@ fn a_call_shows_in_the_block_as_its_model_starts_writing_it() {
     assert!(!live.contains("ToolSearch"), "{live}");
 }
 
-/// An agent at work stays out of the chat while its calls are written, filled in or dropped,
-/// and lands once with only the calls that ran.
+/// An agent at work stays out of the conversation while its calls are written, filled in or
+/// dropped, and lands once with only the calls that ran.
 #[test]
 fn an_agent_at_work_lands_without_a_call_it_never_finished() {
     let pending = |id: &str, name: &str| AgentEvent::ToolPending {
@@ -1717,8 +1725,8 @@ fn an_agent_at_work_lands_without_a_call_it_never_finished() {
         parent: None,
     };
     let mut crew = Crew::new(Verbosity::Full);
-    crew.settings.agents_in_chat = AgentsInChat::WhenDone;
-    crew.card(3, "Middleware", Some(CardState::Running));
+    crew.settings.agents_in_conversation = AgentsInConversation::WhenDone;
+    crew.task(3, "Middleware", Some(TaskState::Running));
     crew.start("s-001", "claude-code/opus", Some(3));
     crew.at(10.0).agent("s-001", pending("t1", "Edit"));
     crew.agent("s-001", pending("t2", "Write"));
@@ -1736,7 +1744,10 @@ fn an_agent_at_work_lands_without_a_call_it_never_finished() {
             parent: None,
         },
     );
-    assert!(crew.live(100).is_empty(), "no live block in the chat");
+    assert!(
+        crew.live(100).is_empty(),
+        "no live block in the conversation"
+    );
     assert!(
         crew.printed(100).is_empty(),
         "nothing printed while it works"

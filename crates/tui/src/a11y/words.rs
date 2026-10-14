@@ -15,7 +15,7 @@ const SPOKEN_FIELDS: [&str; 7] = [
 ];
 
 /// An enum value as words: `branch_left` becomes `branch left`. Values with data give their
-/// tag, such as `{"reason": "vendor_down", ...}` giving `vendor down`.
+/// tag, such as `{"reason": "agent_down", ...}` giving `agent down`.
 pub fn word<T: Serialize>(value: &T) -> String {
     match serde_json::to_value(value) {
         Ok(value) => value_word(&value),
@@ -41,7 +41,7 @@ fn value_word(value: &Value) -> String {
 }
 
 /// A run event read from its serialized form: its kind, what happened, and the first few text
-/// fields, such as `plan: sealed, 5 cards`. For the events that have no wording of their own.
+/// fields, such as `plan: sealed, 5 tasks`. For the events that have no wording of their own.
 pub fn event_words<T: Serialize>(kind: &T) -> String {
     let Ok(value) = serde_json::to_value(kind) else {
         return String::new();
@@ -73,7 +73,7 @@ pub fn event_words<T: Serialize>(kind: &T) -> String {
     format!("{what}: {}", parts.join(", "))
 }
 
-/// Who a run event is from: `claude-code, owner, card-002` for a session, else its source.
+/// Who a run event is from: `claude-code, worker, task-002` for a session, else its source.
 pub fn speaker(
     state: &AppState,
     run: &RunId,
@@ -83,9 +83,9 @@ pub fn speaker(
     let known = session.and_then(|key| state.session(run, key));
     match known {
         Some(session) => {
-            let mut parts = vec![session.vendor.clone(), session.role.as_str().to_owned()];
-            if let Some(card) = &session.card {
-                parts.push(card.to_string());
+            let mut parts = vec![session.agent_id.clone(), session.role.as_str().to_owned()];
+            if let Some(task) = &session.task {
+                parts.push(task.to_string());
             }
             parts.join(", ")
         }

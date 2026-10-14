@@ -204,7 +204,7 @@ fn rendering_restarts_at_the_newest_block() {
     }
     stream.push("Last.\n");
     stream.take_stable(&ctx);
-    let region = stream.clean.len() - stream.checkpoint.at;
+    let region = stream.clean.len() - stream.restart.at;
     assert!(region < 80, "the region spans {region} bytes");
 }
 
@@ -218,8 +218,8 @@ fn a_code_block_streams_one_line_at_a_time() {
         stream.push(&format!("x_{i} = \"value {i}\"  # note\n"));
         stream.take_stable(&ctx);
     }
-    assert!(stream.checkpoint.fence.is_some());
-    let region = stream.clean.len() - stream.checkpoint.at;
+    assert!(stream.restart.fence.is_some());
+    let region = stream.clean.len() - stream.restart.at;
     assert!(region < 80, "the region spans {region} bytes");
     stream.push("```\nAfter.\n");
     let mut rows = stream.take_stable(&ctx);

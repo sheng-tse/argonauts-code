@@ -1,43 +1,44 @@
-//! The run engine: a workflow runner. A run is a workflow of typed steps (goal alignment,
-//! planning, dividing, cards, integration) done by a crew of agents. Agents think inside their
+//! The run engine: a workflow runner. A run is a workflow of typed steps (Understand,
+//! planning, dividing, tasks, merge) done by a crew of agents. Agents think inside their
 //! sessions; code decides what runs next, who does it, and whether it passed.
 
 use argonauts_core::engine::RunEngine;
 use argonauts_core::events::run::RunMode;
 use argonauts_core::settings::Settings;
 
+pub mod approvals;
 pub mod blackboard;
-pub mod card;
+pub mod captain;
+pub mod captain_or_crew;
 pub mod change;
-pub mod checkpoints;
 pub mod claude_codes;
 pub mod closing;
 pub mod consultant;
-pub mod coordinated;
 pub mod divide;
 pub mod engine;
 pub mod error;
+pub mod fallback;
 pub mod git;
 pub mod goal;
-pub mod handoff;
 pub mod idempotency;
-pub mod integrate;
 pub mod labels;
-pub mod lead;
 pub mod lifetime;
+pub mod merge;
+pub mod orchestrated;
 pub mod plan;
 pub mod prompts;
 pub mod replay_terms;
-pub mod retro;
 pub mod review;
 pub mod roles;
+pub mod run_review;
 pub mod script;
-pub mod solo;
 pub mod spec;
 pub mod state;
 pub mod status;
-pub mod triage;
+pub mod task;
+pub mod tie_breaker;
 pub mod ultra;
+pub mod understand;
 pub mod workflow;
 pub mod workflow_size;
 

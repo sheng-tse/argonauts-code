@@ -1,24 +1,24 @@
-//! Tests for deciding checkpoints, over fake hard limits, a fake approver, and fake autonomy
+//! Tests for deciding approvals, over fake hard limits, a fake judge, and fake autonomy
 //! records, so they don't wait for the real parts.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use argonauts_core::RunId;
-use argonauts_core::events::card::CardSpec;
-use argonauts_core::events::checkpoint::{AnswerAction, CheckpointKind};
+use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
+use argonauts_core::events::task::TaskSpec;
 use argonauts_core::future::BoxFuture;
-use argonauts_core::names::{CheckpointId, WorkerRef};
+use argonauts_core::names::{ApprovalId, ModelRef};
 use argonauts_core::policy::{
-    ApprovalPolicy, ApprovalsView, DecisionPoint, EvidenceFacts, EvidencePacket, HardLimit,
-    HardLimits, PolicyOutcome, ShadowRecord, UserDecision, Verdict, Violation,
+    ApprovalPolicy, ApprovalsView, AutoPreviewRecord, DecisionPoint, EvidenceFacts, EvidencePacket,
+    HardLimit, HardLimits, PolicyOutcome, UserDecision, Verdict, Violation,
 };
+use argonauts_core::session_runner::SessionSpec;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{
-    Answerer, ApprovalMode, CheckpointSettings, DecideWith, Decides, GoalChanges, Otherwise,
+    Answerer, ApprovalMode, ApprovalPointSettings, DecideWith, Decides, GoalChanges, Otherwise,
     Presence, SandboxChoice,
 };
-use argonauts_core::worker::SessionSpec;
 use argonauts_testkit::FakeClock;
 use tokio::sync::Notify;
 
@@ -37,7 +37,7 @@ impl HardLimits for FakeLimits {
         self.violations.clone()
     }
 
-    fn check_card_diff(&self, _: &CardSpec, _: &str) -> Vec<Violation> {
+    fn check_task_diff(&self, _: &TaskSpec, _: &str) -> Vec<Violation> {
         Vec::new()
     }
 
@@ -46,19 +46,19 @@ impl HardLimits for FakeLimits {
     }
 }
 
-struct FakeApprover {
+struct FakeJudge {
     answer: Mutex<ModelVerdict>,
     calls: AtomicUsize,
     /// When set, the verdict waits for it, like a model still thinking.
-    gate: Option<Arc<Notify>>,
+    check: Option<Arc<Notify>>,
 }
 
-impl FakeApprover {
+impl FakeJudge {
     fn answering(verdict: Verdict) -> Self {
         Self {
             answer: Mutex::new(model_says(verdict)),
             calls: AtomicUsize::new(0),
-            gate: None,
+            check: None,
         }
     }
 
@@ -67,7 +67,7 @@ impl FakeApprover {
     }
 }
 
-impl Approve for FakeApprover {
+impl Approve for FakeJudge {
     fn verdict<'a>(
         &'a self,
         _: &'a DecisionPoint,
@@ -76,22 +76,22 @@ impl Approve for FakeApprover {
     ) -> BoxFuture<'a, ModelVerdict> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            if let Some(gate) = &self.gate {
-                gate.notified().await;
+            if let Some(check) = &self.check {
+                check.notified().await;
             }
             self.answer.lock().unwrap().clone()
         })
     }
 }
 
-fn approver_model() -> WorkerRef {
-    WorkerRef::new("codex", Some("gpt-5.6-luna".to_owned()))
+fn judge_model() -> ModelRef {
+    ModelRef::new("codex", Some("gpt-5.6-luna".to_owned()))
 }
 
 fn model_says(verdict: Verdict) -> ModelVerdict {
     ModelVerdict {
         verdict,
-        approver: Some(approver_model()),
+        judge: Some(judge_model()),
         reasons: vec![format!("the model says {verdict:?}")],
     }
 }
@@ -103,8 +103,8 @@ struct FakeAutonomy {
     paused: Mutex<Option<String>>,
     refusal: Mutex<Option<Refusal>>,
     spot_check: bool,
-    answered: Mutex<Vec<CheckpointId>>,
-    shadows: Mutex<Vec<ShadowRecord>>,
+    answered: Mutex<Vec<ApprovalId>>,
+    auto_previews: Mutex<Vec<AutoPreviewRecord>>,
     log: Mutex<Vec<&'static str>>,
 }
 
@@ -113,8 +113,8 @@ impl FakeAutonomy {
         self.log.lock().unwrap().clone()
     }
 
-    fn shadows(&self) -> Vec<ShadowRecord> {
-        self.shadows.lock().unwrap().clone()
+    fn auto_previews(&self) -> Vec<AutoPreviewRecord> {
+        self.auto_previews.lock().unwrap().clone()
     }
 }
 
@@ -134,7 +134,7 @@ impl Autonomy for FakeAutonomy {
         _: &Settings,
     ) -> Result<Reservation, Refusal> {
         self.log.lock().unwrap().push("reserve");
-        if self.answered.lock().unwrap().contains(&point.checkpoint) {
+        if self.answered.lock().unwrap().contains(&point.approval) {
             return Err(Refusal::AlreadyDecided);
         }
         match self.refusal.lock().unwrap().clone() {
@@ -145,15 +145,18 @@ impl Autonomy for FakeAutonomy {
         }
     }
 
-    fn note_shadow(
+    fn note_auto_preview(
         &self,
         _: &DecisionPoint,
-        shadow: &ShadowRecord,
+        auto_preview: &AutoPreviewRecord,
         _: &EvidencePacket,
         _: &Settings,
     ) {
-        self.log.lock().unwrap().push("note_shadow");
-        self.shadows.lock().unwrap().push(shadow.clone());
+        self.log.lock().unwrap().push("note_auto_preview");
+        self.auto_previews
+            .lock()
+            .unwrap()
+            .push(auto_preview.clone());
     }
 
     fn user_decided(&self, decision: &UserDecision, _: &Settings) {
@@ -161,7 +164,7 @@ impl Autonomy for FakeAutonomy {
         self.answered
             .lock()
             .unwrap()
-            .push(decision.point.checkpoint.clone());
+            .push(decision.point.approval.clone());
     }
 
     fn spot_checked(&self, _: &DecisionPoint, _: bool, _: &Settings) {}
@@ -173,15 +176,15 @@ impl Autonomy for FakeAutonomy {
     }
 }
 
-struct Harness {
+struct TestDriver {
     policy: ApprovalsPolicy,
-    approver: Arc<FakeApprover>,
+    judge: Arc<FakeJudge>,
     autonomy: Arc<FakeAutonomy>,
 }
 
 struct Fakes {
     violations: Vec<Violation>,
-    approver: FakeApprover,
+    judge: FakeJudge,
     autonomy: FakeAutonomy,
     reload: SettingsReloader,
 }
@@ -190,49 +193,49 @@ impl Default for Fakes {
     fn default() -> Self {
         Self {
             violations: Vec::new(),
-            approver: FakeApprover::answering(Verdict::Approve),
+            judge: FakeJudge::answering(Verdict::Approve),
             autonomy: FakeAutonomy::default(),
             reload: Arc::new(|| None),
         }
     }
 }
 
-fn harness(settings: Settings) -> Harness {
-    harness_with(settings, Fakes::default())
+fn driver(settings: Settings) -> TestDriver {
+    driver_with(settings, Fakes::default())
 }
 
-fn harness_with(settings: Settings, fakes: Fakes) -> Harness {
-    let approver = Arc::new(fakes.approver);
+fn driver_with(settings: Settings, fakes: Fakes) -> TestDriver {
+    let judge = Arc::new(fakes.judge);
     let autonomy = Arc::new(fakes.autonomy);
     let policy = ApprovalsPolicy::from_parts(PolicyParts {
         source: SettingsSource::new(Arc::new(settings), fakes.reload),
         limits: Arc::new(FakeLimits {
             violations: fakes.violations,
         }),
-        approver: approver.clone(),
+        judge: judge.clone(),
         autonomy: autonomy.clone(),
         clock: Arc::new(FakeClock::default()),
     });
-    Harness {
+    TestDriver {
         policy,
-        approver,
+        judge,
         autonomy,
     }
 }
 
-fn point(kind: CheckpointKind) -> DecisionPoint {
+fn point(kind: ApprovalKind) -> DecisionPoint {
     DecisionPoint {
         run: RunId::new("run-01").unwrap(),
-        checkpoint: CheckpointId::numbered(1),
+        approval: ApprovalId::numbered(1),
         kind,
-        recipe: None,
+        learned_workflow: None,
         authors: Vec::new(),
         mode_override: None,
-        lead: None,
+        main_agent: None,
     }
 }
 
-fn evidence(kind: CheckpointKind, facts: EvidenceFacts) -> EvidencePacket {
+fn evidence(kind: ApprovalKind, facts: EvidenceFacts) -> EvidencePacket {
     EvidencePacket {
         kind,
         goal: None,
@@ -245,7 +248,7 @@ fn evidence(kind: CheckpointKind, facts: EvidenceFacts) -> EvidencePacket {
 /// Merge facts on which the default merge rules give `verdict`.
 fn merge_facts(verdict: Verdict) -> EvidenceFacts {
     let passing = EvidenceFacts {
-        gates_passed: Some(true),
+        checks_passed: Some(true),
         reviews_approved: Some(true),
         reviewed_by_other_provider: Some(true),
         acceptance_tests_valid: Some(true),
@@ -259,18 +262,18 @@ fn merge_facts(verdict: Verdict) -> EvidenceFacts {
     match verdict {
         Verdict::Approve => passing,
         Verdict::Reject => EvidenceFacts {
-            gates_passed: Some(false),
+            checks_passed: Some(false),
             ..passing
         },
-        Verdict::Escalate => EvidenceFacts {
-            gates_passed: None,
+        Verdict::AskYou => EvidenceFacts {
+            checks_passed: None,
             ..passing
         },
     }
 }
 
 fn merge(verdict: Verdict) -> EvidencePacket {
-    evidence(CheckpointKind::Merge, merge_facts(verdict))
+    evidence(ApprovalKind::Merge, merge_facts(verdict))
 }
 
 fn merge_settings(mode: ApprovalMode, decide_with: DecideWith, otherwise: Otherwise) -> Settings {
@@ -288,7 +291,7 @@ fn auto_merge() -> Settings {
 fn asks() -> PolicyOutcome {
     PolicyOutcome::AskUser {
         violations: Vec::new(),
-        shadow: None,
+        auto_preview: None,
     }
 }
 
@@ -315,7 +318,7 @@ fn assert_outcome(outcome: &PolicyOutcome, expect: Expect, case: &str) {
             Expect::Would(would),
             PolicyOutcome::AskUser {
                 violations,
-                shadow: Some(record),
+                auto_preview: Some(record),
             },
         ) => {
             assert!(violations.is_empty(), "{case}");
@@ -331,7 +334,7 @@ fn assert_outcome(outcome: &PolicyOutcome, expect: Expect, case: &str) {
 fn last_reason(outcome: &PolicyOutcome) -> Option<String> {
     match outcome {
         PolicyOutcome::AskUser {
-            shadow: Some(record),
+            auto_preview: Some(record),
             ..
         } => record.reasons.last().cloned(),
         _ => None,
@@ -341,19 +344,14 @@ fn last_reason(outcome: &PolicyOutcome) -> Option<String> {
 #[tokio::test]
 async fn policy_modes_table() {
     use ApprovalMode::{Auto, AutoPreview, Supervised};
-    use Verdict::{Approve, Escalate, Reject};
+    use Verdict::{Approve, AskYou, Reject};
     let cases = [
         (Supervised, Approve, Otherwise::Ask, Expect::Ask),
         (Supervised, Reject, Otherwise::Stop, Expect::Ask),
-        (Supervised, Escalate, Otherwise::Ask, Expect::Ask),
+        (Supervised, AskYou, Otherwise::Ask, Expect::Ask),
         (AutoPreview, Approve, Otherwise::Ask, Expect::Would(Approve)),
         (AutoPreview, Reject, Otherwise::Stop, Expect::Would(Reject)),
-        (
-            AutoPreview,
-            Escalate,
-            Otherwise::Ask,
-            Expect::Would(Escalate),
-        ),
+        (AutoPreview, AskYou, Otherwise::Ask, Expect::Would(AskYou)),
         (Auto, Approve, Otherwise::Ask, Expect::Decided(Approve)),
         (Auto, Approve, Otherwise::Stop, Expect::Decided(Approve)),
         (Auto, Reject, Otherwise::Ask, Expect::Would(Reject)),
@@ -365,22 +363,22 @@ async fn policy_modes_table() {
             Otherwise::OpenPullRequest,
             Expect::Decided(Reject),
         ),
-        (Auto, Escalate, Otherwise::Ask, Expect::Would(Escalate)),
-        (Auto, Escalate, Otherwise::Stop, Expect::Would(Escalate)),
+        (Auto, AskYou, Otherwise::Ask, Expect::Would(AskYou)),
+        (Auto, AskYou, Otherwise::Stop, Expect::Would(AskYou)),
     ];
     for (mode, rules, otherwise, expect) in cases {
         let case = format!("{mode:?} with rules {rules:?} and otherwise {otherwise:?}");
-        let h = harness(merge_settings(mode, DecideWith::Rules, otherwise));
+        let h = driver(merge_settings(mode, DecideWith::Rules, otherwise));
         let outcome = h
             .policy
-            .evaluate(&point(CheckpointKind::Merge), &merge(rules))
+            .evaluate(&point(ApprovalKind::Merge), &merge(rules))
             .await;
         assert_outcome(&outcome, expect, &case);
-        assert_eq!(h.approver.calls(), 0, "{case}");
-        let shadows = usize::from(mode == AutoPreview);
-        assert_eq!(h.autonomy.shadows().len(), shadows, "{case}");
-        if let PolicyOutcome::Decided { by, approver, .. } = &outcome {
-            assert_eq!((*by, approver), (DecideWith::Rules, &None), "{case}");
+        assert_eq!(h.judge.calls(), 0, "{case}");
+        let auto_previews = usize::from(mode == AutoPreview);
+        assert_eq!(h.autonomy.auto_previews().len(), auto_previews, "{case}");
+        if let PolicyOutcome::Decided { by, judge, .. } = &outcome {
+            assert_eq!((*by, judge), (DecideWith::Rules, &None), "{case}");
         }
     }
 
@@ -392,11 +390,11 @@ async fn policy_modes_table() {
         flagged_plans: Some(1),
         ..EvidenceFacts::default()
     };
-    let outcome = harness(settings)
+    let outcome = driver(settings)
         .policy
         .evaluate(
-            &point(CheckpointKind::Plan),
-            &evidence(CheckpointKind::Plan, flagged),
+            &point(ApprovalKind::Plan),
+            &evidence(ApprovalKind::Plan, flagged),
         )
         .await;
     assert_outcome(&outcome, Expect::Would(Verdict::Reject), "plan");
@@ -411,10 +409,10 @@ async fn auto_approval_reports_the_spot_check_and_asks_when_it_cannot_reserve() 
         },
         ..Fakes::default()
     };
-    let h = harness_with(auto_merge(), fakes);
+    let h = driver_with(auto_merge(), fakes);
     let outcome = h
         .policy
-        .evaluate(&point(CheckpointKind::Merge), &merge(Verdict::Approve))
+        .evaluate(&point(ApprovalKind::Merge), &merge(Verdict::Approve))
         .await;
     assert!(matches!(
         outcome,
@@ -431,15 +429,15 @@ async fn auto_approval_reports_the_spot_check_and_asks_when_it_cannot_reserve() 
         paths: Vec::new(),
     }];
     // Each ask carries what auto decided and why it asks anyway.
-    let h = harness(auto_merge());
+    let h = driver(auto_merge());
     *h.autonomy.refusal.lock().unwrap() = Some(Refusal::Capped(capped.clone()));
     let outcome = h
         .policy
-        .evaluate(&point(CheckpointKind::Merge), &merge(Verdict::Approve))
+        .evaluate(&point(ApprovalKind::Merge), &merge(Verdict::Approve))
         .await;
     let PolicyOutcome::AskUser {
         violations,
-        shadow: Some(record),
+        auto_preview: Some(record),
     } = outcome
     else {
         panic!("{outcome:?}");
@@ -448,36 +446,39 @@ async fn auto_approval_reports_the_spot_check_and_asks_when_it_cannot_reserve() 
     assert_eq!(record.would, Verdict::Approve);
     assert!(!record.reasons.is_empty());
 
-    // Auto would approve but can't right now: the verdict is a shadow record that says why.
+    // Auto would approve but can't right now: the verdict is an auto preview record that says why.
     let refusals = [
         (Refusal::Unavailable("locked".to_owned()), "locked"),
         (Refusal::Paused("demoted".to_owned()), "demoted"),
     ];
     for (refusal, reason) in refusals {
-        let h = harness(auto_merge());
+        let h = driver(auto_merge());
         *h.autonomy.refusal.lock().unwrap() = Some(refusal);
         let outcome = h
             .policy
-            .evaluate(&point(CheckpointKind::Merge), &merge(Verdict::Approve))
+            .evaluate(&point(ApprovalKind::Merge), &merge(Verdict::Approve))
             .await;
         let PolicyOutcome::AskUser {
             violations,
-            shadow: Some(shadow),
+            auto_preview: Some(auto_preview),
         } = outcome
         else {
             panic!("asks with an auto preview record: {outcome:?}");
         };
         assert!(violations.is_empty());
-        assert_eq!(shadow.would, Verdict::Approve);
-        assert_eq!(shadow.reasons.last().map(String::as_str), Some(reason));
-        assert_eq!(h.autonomy.log(), ["reserve", "note_shadow"]);
+        assert_eq!(auto_preview.would, Verdict::Approve);
+        assert_eq!(
+            auto_preview.reasons.last().map(String::as_str),
+            Some(reason)
+        );
+        assert_eq!(h.autonomy.log(), ["reserve", "note_auto_preview"]);
     }
 
-    let h = harness(auto_merge());
+    let h = driver(auto_merge());
     *h.autonomy.paused.lock().unwrap() = Some("5 spot checks waiting".to_owned());
     let outcome = h
         .policy
-        .evaluate(&point(CheckpointKind::Merge), &merge(Verdict::Approve))
+        .evaluate(&point(ApprovalKind::Merge), &merge(Verdict::Approve))
         .await;
     assert_outcome(&outcome, Expect::Would(Verdict::Approve), "paused");
     assert_eq!(
@@ -486,20 +487,20 @@ async fn auto_approval_reports_the_spot_check_and_asks_when_it_cannot_reserve() 
     );
     assert_eq!(
         h.autonomy.log(),
-        ["note_shadow"],
+        ["note_auto_preview"],
         "a paused auto reserves nothing"
     );
 }
 
-/// Nobody answers spot checks in full auto, so neither waiting ones nor a kind demoted to
-/// shadow stop an approval there; `auto-off` still does, and a plan or merge you keep for
+/// Nobody answers spot checks in autopilot, so neither waiting ones nor a kind demoted to
+/// auto preview stop an approval there; `auto-off` still does, and a plan or merge you keep for
 /// yourself with `presence = required` says so.
 #[tokio::test]
 async fn autopilot_goes_on_where_auto_would_pause_or_be_demoted() {
-    let mut autopilot = point(CheckpointKind::Merge);
+    let mut autopilot = point(ApprovalKind::Merge);
     autopilot.mode_override = Some(ApprovalMode::Autopilot);
 
-    let h = harness(auto_merge());
+    let h = driver(auto_merge());
     *h.autonomy.paused.lock().unwrap() = Some("5 spot checks waiting".to_owned());
     let outcome = h
         .policy
@@ -508,7 +509,7 @@ async fn autopilot_goes_on_where_auto_would_pause_or_be_demoted() {
     assert_outcome(&outcome, Expect::Decided(Verdict::Approve), "paused");
     assert_eq!(h.autonomy.log(), ["reserve"]);
 
-    let h = harness(auto_merge());
+    let h = driver(auto_merge());
     *h.autonomy.effective.lock().unwrap() = Some(ApprovalMode::AutoPreview);
     let outcome = h
         .policy
@@ -516,22 +517,22 @@ async fn autopilot_goes_on_where_auto_would_pause_or_be_demoted() {
         .await;
     assert_outcome(&outcome, Expect::Decided(Verdict::Approve), "demoted");
 
-    let h = harness(auto_merge());
+    let h = driver(auto_merge());
     *h.autonomy.effective.lock().unwrap() = Some(ApprovalMode::Supervised);
     *h.autonomy.paused.lock().unwrap() = Some("auto is off".to_owned());
     let outcome = h
         .policy
         .evaluate(&autopilot, &merge(Verdict::Approve))
         .await;
-    assert_outcome(&outcome, Expect::Would(Verdict::Escalate), "auto-off");
+    assert_outcome(&outcome, Expect::Would(Verdict::AskYou), "auto-off");
 
     let mut settings = auto_merge();
     settings.approvals.presence = Presence::Required;
-    let outcome = harness(settings)
+    let outcome = driver(settings)
         .policy
         .evaluate(&autopilot, &merge(Verdict::Approve))
         .await;
-    assert_outcome(&outcome, Expect::Would(Verdict::Escalate), "presence");
+    assert_outcome(&outcome, Expect::Would(Verdict::AskYou), "presence");
     assert_eq!(
         last_reason(&outcome),
         Some("your /approvals settings keep it for you at the terminal".to_owned())
@@ -541,29 +542,29 @@ async fn autopilot_goes_on_where_auto_would_pause_or_be_demoted() {
 #[tokio::test]
 async fn the_mode_comes_from_the_override_and_is_only_ever_lowered() {
     let supervised = merge_settings(ApprovalMode::Supervised, DecideWith::Rules, Otherwise::Ask);
-    let mut shift_tab = point(CheckpointKind::Merge);
+    let mut shift_tab = point(ApprovalKind::Merge);
     shift_tab.mode_override = Some(ApprovalMode::Auto);
-    let outcome = harness(supervised.clone())
+    let outcome = driver(supervised.clone())
         .policy
         .evaluate(&shift_tab, &merge(Verdict::Approve))
         .await;
     assert_outcome(&outcome, Expect::Decided(Verdict::Approve), "override");
 
-    // Autonomy records that lost auto for this kind lower it to shadow.
-    let h = harness(auto_merge());
+    // Autonomy records that lost auto for this kind lower it to auto preview.
+    let h = driver(auto_merge());
     *h.autonomy.effective.lock().unwrap() = Some(ApprovalMode::AutoPreview);
     let outcome = h
         .policy
-        .evaluate(&point(CheckpointKind::Merge), &merge(Verdict::Approve))
+        .evaluate(&point(ApprovalKind::Merge), &merge(Verdict::Approve))
         .await;
     assert_outcome(&outcome, Expect::Would(Verdict::Approve), "lowered");
 
     // Records that try to raise the mode don't.
-    let h = harness(supervised);
+    let h = driver(supervised);
     *h.autonomy.effective.lock().unwrap() = Some(ApprovalMode::Auto);
     let outcome = h
         .policy
-        .evaluate(&point(CheckpointKind::Merge), &merge(Verdict::Approve))
+        .evaluate(&point(ApprovalKind::Merge), &merge(Verdict::Approve))
         .await;
     assert_eq!(outcome, asks());
 }
@@ -571,40 +572,40 @@ async fn the_mode_comes_from_the_override_and_is_only_ever_lowered() {
 #[tokio::test]
 async fn kinds_without_a_table_and_required_presence_always_ask() {
     for kind in [
-        CheckpointKind::Handoff,
-        CheckpointKind::VendorDown,
-        CheckpointKind::TakeOverReturn,
-        CheckpointKind::Question,
-        CheckpointKind::OriginalReturned,
+        ApprovalKind::Fallback,
+        ApprovalKind::AgentDown,
+        ApprovalKind::TakeOverReturn,
+        ApprovalKind::Question,
+        ApprovalKind::OriginalReturned,
     ] {
         let mut auto = point(kind);
         auto.mode_override = Some(ApprovalMode::Auto);
-        let h = harness(Settings::default());
+        let h = driver(Settings::default());
         let outcome = h
             .policy
             .evaluate(&auto, &evidence(kind, EvidenceFacts::default()))
             .await;
         assert_eq!(outcome, asks(), "{kind:?}");
-        assert_eq!(h.approver.calls(), 0, "{kind:?}");
+        assert_eq!(h.judge.calls(), 0, "{kind:?}");
     }
 
     let mut settings = auto_merge();
     settings.approvals.presence = Presence::Required;
-    let outcome = harness(settings)
+    let outcome = driver(settings)
         .policy
-        .evaluate(&point(CheckpointKind::Merge), &merge(Verdict::Approve))
+        .evaluate(&point(ApprovalKind::Merge), &merge(Verdict::Approve))
         .await;
     assert_eq!(outcome, asks());
 }
 
 #[tokio::test]
 async fn goal_changes_follow_the_setting() {
-    let goal_change = point(CheckpointKind::GoalChange);
-    let packet = evidence(CheckpointKind::GoalChange, EvidenceFacts::default());
+    let goal_change = point(ApprovalKind::GoalChange);
+    let packet = evidence(ApprovalKind::GoalChange, EvidenceFacts::default());
     let with = |goal_changes| {
         let mut settings = Settings::default();
         settings.approvals.goal_changes = goal_changes;
-        harness(settings)
+        driver(settings)
     };
 
     let outcome = with(GoalChanges::Ask)
@@ -630,7 +631,7 @@ async fn goal_changes_follow_the_setting() {
         .policy
         .evaluate(&goal_change, &packet)
         .await;
-    assert_outcome(&outcome, Expect::Would(Verdict::Escalate), "clarification");
+    assert_outcome(&outcome, Expect::Would(Verdict::AskYou), "clarification");
 
     let mut supervised = goal_change.clone();
     supervised.mode_override = Some(ApprovalMode::Supervised);
@@ -644,7 +645,7 @@ async fn goal_changes_follow_the_setting() {
 #[tokio::test]
 async fn policy_decide_with_combinations() {
     use DecideWith::{Model, Rules, RulesAndModel, RulesOrModel};
-    use Verdict::{Approve as A, Escalate as E, Reject as R};
+    use Verdict::{Approve as A, AskYou as E, Reject as R};
     // (decide_with, rules, model, expected, model asked)
     let cases = [
         (Rules, A, R, A, false),
@@ -673,10 +674,10 @@ async fn policy_decide_with_combinations() {
     let settings = Settings::default();
     for (decide_with, rules, model, expected, model_asked) in cases {
         let case = format!("{decide_with:?} with rules {rules:?} and model {model:?}");
-        let approver = FakeApprover::answering(model);
+        let judge = FakeJudge::answering(model);
         let decision = decide(
-            &approver,
-            &point(CheckpointKind::Merge),
+            &judge,
+            &point(ApprovalKind::Merge),
             &merge(rules),
             &settings,
             decide_with,
@@ -685,28 +686,25 @@ async fn policy_decide_with_combinations() {
         .await;
         assert_eq!(decision.verdict, expected, "{case}");
         assert_eq!(decision.by, decide_with, "{case}");
-        assert_eq!(approver.calls(), usize::from(model_asked), "{case}");
-        let approver_named = decision.approver == Some(approver_model());
-        assert_eq!(approver_named, model_asked, "{case}");
+        assert_eq!(judge.calls(), usize::from(model_asked), "{case}");
+        let judge_named = decision.judge == Some(judge_model());
+        assert_eq!(judge_named, model_asked, "{case}");
         let model_reason = decision.reasons.iter().any(|r| r.starts_with("the model"));
         assert_eq!(model_reason, model_asked, "{case}");
     }
 
     let settings = merge_settings(ApprovalMode::Auto, RulesAndModel, Otherwise::Ask);
-    let h = harness(settings);
+    let h = driver(settings);
     let outcome = h
         .policy
-        .evaluate(&point(CheckpointKind::Merge), &merge(A))
+        .evaluate(&point(ApprovalKind::Merge), &merge(A))
         .await;
     match outcome {
         PolicyOutcome::Decided {
-            verdict,
-            by,
-            approver,
-            ..
+            verdict, by, judge, ..
         } => assert_eq!(
-            (verdict, by, approver),
-            (A, RulesAndModel, Some(approver_model()))
+            (verdict, by, judge),
+            (A, RulesAndModel, Some(judge_model()))
         ),
         other => panic!("{other:?}"),
     }
@@ -724,17 +722,17 @@ async fn hard_limits_checked_first() {
             ..Fakes::default()
         };
         let settings = merge_settings(mode, DecideWith::Model, Otherwise::Stop);
-        let h = harness_with(settings, fakes);
+        let h = driver_with(settings, fakes);
         let outcome = h
             .policy
-            .evaluate(&point(CheckpointKind::Merge), &merge(Verdict::Approve))
+            .evaluate(&point(ApprovalKind::Merge), &merge(Verdict::Approve))
             .await;
         let want = PolicyOutcome::AskUser {
             violations: vec![violation()],
-            shadow: None,
+            auto_preview: None,
         };
         assert_eq!(outcome, want, "{mode:?}");
-        assert_eq!(h.approver.calls(), 0, "{mode:?}");
+        assert_eq!(h.judge.calls(), 0, "{mode:?}");
         assert!(h.autonomy.log().is_empty(), "{mode:?}");
     }
 
@@ -745,10 +743,10 @@ async fn hard_limits_checked_first() {
         violations: vec![violation()],
         ..Fakes::default()
     };
-    let packet = evidence(CheckpointKind::GoalChange, EvidenceFacts::default());
-    let outcome = harness_with(settings, fakes)
+    let packet = evidence(ApprovalKind::GoalChange, EvidenceFacts::default());
+    let outcome = driver_with(settings, fakes)
         .policy
-        .evaluate(&point(CheckpointKind::GoalChange), &packet)
+        .evaluate(&point(ApprovalKind::GoalChange), &packet)
         .await;
     assert!(matches!(outcome, PolicyOutcome::AskUser { violations, .. } if violations.len() == 1));
 }
@@ -756,30 +754,30 @@ async fn hard_limits_checked_first() {
 #[tokio::test]
 async fn policy_auto_goal_approves_when_no_questions() {
     let mut settings = Settings::default();
-    settings.approvals.goal = CheckpointSettings::auto(DecideWith::Rules);
+    settings.approvals.understand = ApprovalPointSettings::auto(DecideWith::Rules);
     let goal = |open_questions| {
         evidence(
-            CheckpointKind::Goal,
+            ApprovalKind::Understand,
             EvidenceFacts {
                 open_questions,
                 ..EvidenceFacts::default()
             },
         )
     };
-    let h = harness(settings);
+    let h = driver(settings);
     let outcome = h
         .policy
-        .evaluate(&point(CheckpointKind::Goal), &goal(Some(0)))
+        .evaluate(&point(ApprovalKind::Understand), &goal(Some(0)))
         .await;
     match outcome {
         PolicyOutcome::Decided {
             verdict,
             by,
-            approver,
+            judge,
             spot_check,
             ..
         } => assert_eq!(
-            (verdict, by, approver, spot_check),
+            (verdict, by, judge, spot_check),
             (Verdict::Approve, DecideWith::Rules, None, false)
         ),
         other => panic!("{other:?}"),
@@ -788,28 +786,28 @@ async fn policy_auto_goal_approves_when_no_questions() {
     for open in [Some(1), Some(4), None] {
         let outcome = h
             .policy
-            .evaluate(&point(CheckpointKind::Goal), &goal(open))
+            .evaluate(&point(ApprovalKind::Understand), &goal(open))
             .await;
         assert_outcome(
             &outcome,
-            Expect::Would(Verdict::Escalate),
+            Expect::Would(Verdict::AskYou),
             &format!("{open:?}"),
         );
     }
-    assert_eq!(h.approver.calls(), 0);
+    assert_eq!(h.judge.calls(), 0);
 }
 
 #[tokio::test]
-async fn policy_shadow_records_would_decide() {
+async fn policy_auto_preview_records_would_decide() {
     let settings = merge_settings(ApprovalMode::AutoPreview, DecideWith::Rules, Otherwise::Ask);
-    let h = harness(settings);
+    let h = driver(settings);
     let outcome = h
         .policy
-        .evaluate(&point(CheckpointKind::Merge), &merge(Verdict::Approve))
+        .evaluate(&point(ApprovalKind::Merge), &merge(Verdict::Approve))
         .await;
     let PolicyOutcome::AskUser {
         violations,
-        shadow: Some(record),
+        auto_preview: Some(record),
     } = outcome
     else {
         panic!("{outcome:?}");
@@ -820,7 +818,7 @@ async fn policy_shadow_records_would_decide() {
         (Verdict::Approve, DecideWith::Rules)
     );
     assert!(!record.reasons.is_empty());
-    assert_eq!(h.autonomy.shadows(), [record]);
+    assert_eq!(h.autonomy.auto_previews(), [record]);
     assert!(
         !h.autonomy.log().contains(&"reserve"),
         "auto preview reserves nothing"
@@ -828,15 +826,15 @@ async fn policy_shadow_records_would_decide() {
 
     let settings = merge_settings(ApprovalMode::AutoPreview, DecideWith::Model, Otherwise::Ask);
     let fakes = Fakes {
-        approver: FakeApprover::answering(Verdict::Reject),
+        judge: FakeJudge::answering(Verdict::Reject),
         ..Fakes::default()
     };
-    let h = harness_with(settings, fakes);
+    let h = driver_with(settings, fakes);
     let outcome = h
         .policy
-        .evaluate(&point(CheckpointKind::Merge), &merge(Verdict::Approve))
+        .evaluate(&point(ApprovalKind::Merge), &merge(Verdict::Approve))
         .await;
-    let want = ShadowRecord {
+    let want = AutoPreviewRecord {
         would: Verdict::Reject,
         by: DecideWith::Model,
         reasons: vec![
@@ -848,14 +846,14 @@ async fn policy_shadow_records_would_decide() {
         outcome,
         PolicyOutcome::AskUser {
             violations: Vec::new(),
-            shadow: Some(want.clone()),
+            auto_preview: Some(want.clone()),
         }
     );
-    assert_eq!(h.autonomy.shadows(), [want]);
-    assert_eq!(h.approver.calls(), 1);
+    assert_eq!(h.autonomy.auto_previews(), [want]);
+    assert_eq!(h.judge.calls(), 1);
 }
 
-/// A reloader over a settings file the test can change between checkpoints.
+/// A reloader over a settings file the test can change between approvals.
 fn reloadable() -> (Arc<Mutex<Option<Settings>>>, SettingsReloader) {
     let file = Arc::new(Mutex::new(None));
     let read = file.clone();
@@ -870,8 +868,8 @@ async fn policy_stricter_of_run_start_and_reloaded_settings() {
         reload,
         ..Fakes::default()
     };
-    let h = harness_with(auto_merge(), fakes);
-    let merge_point = point(CheckpointKind::Merge);
+    let h = driver_with(auto_merge(), fakes);
+    let merge_point = point(ApprovalKind::Merge);
     let run_start = h.policy.parts().source.run_start().clone();
 
     // A reload that fails keeps the run-start values.
@@ -882,7 +880,7 @@ async fn policy_stricter_of_run_start_and_reloaded_settings() {
         .await;
     assert_outcome(&outcome, Expect::Decided(Verdict::Approve), "run start");
 
-    // A tighter mode applies at the next checkpoint.
+    // A tighter mode applies at the next approval.
     let tighter = merge_settings(ApprovalMode::Supervised, DecideWith::Rules, Otherwise::Ask);
     *file.lock().unwrap() = Some(tighter);
     let outcome = h
@@ -922,7 +920,7 @@ async fn policy_stricter_of_run_start_and_reloaded_settings() {
     let mut supervised =
         merge_settings(ApprovalMode::Supervised, DecideWith::Rules, Otherwise::Ask);
     supervised.limits.auto_merges_per_day = Some(3);
-    let h = harness_with(supervised, fakes);
+    let h = driver_with(supervised, fakes);
     let mut looser = auto_merge();
     looser
         .approvals
@@ -970,8 +968,8 @@ async fn a_mode_tightened_mid_run_caps_the_override() {
         reload,
         ..Fakes::default()
     };
-    let h = harness_with(auto_merge(), fakes);
-    let mut shift_tab = point(CheckpointKind::Merge);
+    let h = driver_with(auto_merge(), fakes);
+    let mut shift_tab = point(ApprovalKind::Merge);
     shift_tab.mode_override = Some(ApprovalMode::Auto);
 
     *file.lock().unwrap() = Some(auto_merge());
@@ -981,14 +979,14 @@ async fn a_mode_tightened_mid_run_caps_the_override() {
         .await;
     assert_outcome(&outcome, Expect::Decided(Verdict::Approve), "unchanged");
 
-    let shadow = merge_settings(ApprovalMode::AutoPreview, DecideWith::Rules, Otherwise::Ask);
-    *file.lock().unwrap() = Some(shadow);
+    let auto_preview = merge_settings(ApprovalMode::AutoPreview, DecideWith::Rules, Otherwise::Ask);
+    *file.lock().unwrap() = Some(auto_preview);
     let outcome = h
         .policy
         .evaluate(&shift_tab, &merge(Verdict::Approve))
         .await;
     assert_outcome(&outcome, Expect::Would(Verdict::Approve), "auto_preview");
-    assert_eq!(h.autonomy.shadows().len(), 1);
+    assert_eq!(h.autonomy.auto_previews().len(), 1);
 
     let supervised = merge_settings(ApprovalMode::Supervised, DecideWith::Rules, Otherwise::Ask);
     *file.lock().unwrap() = Some(supervised.clone());
@@ -1004,7 +1002,7 @@ async fn a_mode_tightened_mid_run_caps_the_override() {
         reload,
         ..Fakes::default()
     };
-    let h = harness_with(supervised.clone(), fakes);
+    let h = driver_with(supervised.clone(), fakes);
     *file.lock().unwrap() = Some(supervised);
     let outcome = h
         .policy
@@ -1014,8 +1012,8 @@ async fn a_mode_tightened_mid_run_caps_the_override() {
 }
 
 /// Auto for `kind`, decided with `decide_with`, and a rejection would stop the run.
-fn auto_kind(kind: CheckpointKind, decide_with: DecideWith) -> Settings {
-    fn set(table: &mut CheckpointSettings, decide_with: DecideWith) {
+fn auto_kind(kind: ApprovalKind, decide_with: DecideWith) -> Settings {
+    fn set(table: &mut ApprovalPointSettings, decide_with: DecideWith) {
         table.mode = ApprovalMode::Auto;
         table.decide_with = decide_with;
         table.otherwise = Otherwise::Stop;
@@ -1023,12 +1021,12 @@ fn auto_kind(kind: CheckpointKind, decide_with: DecideWith) -> Settings {
     let mut settings = Settings::default();
     let approvals = &mut settings.approvals;
     match kind {
-        CheckpointKind::Goal => set(&mut approvals.goal, decide_with),
-        CheckpointKind::Budget => set(&mut approvals.budget, decide_with),
-        CheckpointKind::Escalation => set(&mut approvals.escalation, decide_with),
-        CheckpointKind::ChangeRequest => set(&mut approvals.change_request, decide_with),
-        CheckpointKind::WorkflowPromotion => {
-            let mut table = approvals.workflow_promotion.as_checkpoint();
+        ApprovalKind::Understand => set(&mut approvals.understand, decide_with),
+        ApprovalKind::Limit => set(&mut approvals.limit, decide_with),
+        ApprovalKind::Stuck => set(&mut approvals.stuck, decide_with),
+        ApprovalKind::ChangeRequest => set(&mut approvals.change_request, decide_with),
+        ApprovalKind::WorkflowPromotion => {
+            let mut table = approvals.workflow_promotion.as_approval();
             set(&mut table, decide_with);
             approvals.workflow_promotion = table.into();
         }
@@ -1038,45 +1036,45 @@ fn auto_kind(kind: CheckpointKind, decide_with: DecideWith) -> Settings {
 }
 
 #[tokio::test]
-async fn no_approver_model_waives_what_is_always_yours() {
-    use CheckpointKind::{Budget, ChangeRequest, Escalation, Goal, WorkflowPromotion};
+async fn no_judge_model_waives_what_is_always_yours() {
+    use ApprovalKind::{ChangeRequest, Limit, Stuck, Understand, WorkflowPromotion};
     let open = |open_questions| EvidenceFacts {
         open_questions,
         ..EvidenceFacts::default()
     };
     let none = EvidenceFacts::default;
     // A name, the kind, a change to its settings, and the facts.
-    type Case = (
-        &'static str,
-        CheckpointKind,
-        fn(&mut Settings),
-        EvidenceFacts,
-    );
+    type Case = (&'static str, ApprovalKind, fn(&mut Settings), EvidenceFacts);
     let cases: [Case; 10] = [
-        ("goal with 2 open questions", Goal, |_| {}, open(Some(2))),
-        ("goal with no count", Goal, |_| {}, open(None)),
+        (
+            "understand with 2 open questions",
+            Understand,
+            |_| {},
+            open(Some(2)),
+        ),
+        ("understand with no count", Understand, |_| {}, open(None)),
         (
             "limit without use_reserve",
-            Budget,
-            |s| s.approvals.rules.budget.use_reserve = false,
+            Limit,
+            |s| s.approvals.rules.limit.use_reserve = false,
             none(),
         ),
         (
             "limit with use_reserve",
-            Budget,
-            |s| s.approvals.rules.budget.use_reserve = true,
+            Limit,
+            |s| s.approvals.rules.limit.use_reserve = true,
             none(),
         ),
         (
-            "escalation with no extra attempt",
-            Escalation,
-            |s| s.approvals.rules.escalation.max_extra_attempts = 0,
+            "a stuck task with no extra try",
+            Stuck,
+            |s| s.approvals.rules.stuck.max_extra_tries = 0,
             none(),
         ),
         (
-            "escalation with extra attempts",
-            Escalation,
-            |s| s.approvals.rules.escalation.max_extra_attempts = 3,
+            "a stuck task with extra tries",
+            Stuck,
+            |s| s.approvals.rules.stuck.max_extra_tries = 3,
             none(),
         ),
         (
@@ -1109,24 +1107,24 @@ async fn no_approver_model_waives_what_is_always_yours() {
                 let mut settings = auto_kind(kind, decide_with);
                 tweak(&mut settings);
                 let fakes = Fakes {
-                    approver: FakeApprover::answering(model),
+                    judge: FakeJudge::answering(model),
                     ..Fakes::default()
                 };
-                let h = harness_with(settings, fakes);
+                let h = driver_with(settings, fakes);
                 let outcome = h
                     .policy
                     .evaluate(&point(kind), &evidence(kind, facts.clone()))
                     .await;
-                assert_outcome(&outcome, Expect::Would(Verdict::Escalate), &case);
+                assert_outcome(&outcome, Expect::Would(Verdict::AskYou), &case);
                 assert!(last_reason(&outcome).is_some(), "{case}");
-                assert_eq!(h.approver.calls(), 0, "{case}");
+                assert_eq!(h.judge.calls(), 0, "{case}");
             }
         }
     }
 
     // With no open question the model decides the goal, but its rejection asks, since stopping
     // the run over a goal is yours to call.
-    let no_questions = || evidence(Goal, open(Some(0)));
+    let no_questions = || evidence(Understand, open(Some(0)));
     let cases = [
         (
             DecideWith::Model,
@@ -1154,15 +1152,15 @@ async fn no_approver_model_waives_what_is_always_yours() {
         ),
     ];
     for (decide_with, model, expect, calls) in cases {
-        let case = format!("goal with no open question, {decide_with:?}, model says {model:?}");
+        let case = format!("understand, no open question, {decide_with:?}, model says {model:?}");
         let fakes = Fakes {
-            approver: FakeApprover::answering(model),
+            judge: FakeJudge::answering(model),
             ..Fakes::default()
         };
-        let h = harness_with(auto_kind(Goal, decide_with), fakes);
-        let outcome = h.policy.evaluate(&point(Goal), &no_questions()).await;
+        let h = driver_with(auto_kind(Understand, decide_with), fakes);
+        let outcome = h.policy.evaluate(&point(Understand), &no_questions()).await;
         assert_outcome(&outcome, expect, &case);
-        assert_eq!(h.approver.calls(), calls, "{case}");
+        assert_eq!(h.judge.calls(), calls, "{case}");
     }
 }
 
@@ -1170,18 +1168,18 @@ async fn no_approver_model_waives_what_is_always_yours() {
 async fn auto_that_does_not_decide_says_why() {
     let settings = merge_settings(ApprovalMode::Auto, DecideWith::Model, Otherwise::Stop);
     let fakes = Fakes {
-        approver: FakeApprover::answering(Verdict::Escalate),
+        judge: FakeJudge::answering(Verdict::AskYou),
         ..Fakes::default()
     };
-    let outcome = harness_with(settings, fakes)
+    let outcome = driver_with(settings, fakes)
         .policy
-        .evaluate(&point(CheckpointKind::Merge), &merge(Verdict::Approve))
+        .evaluate(&point(ApprovalKind::Merge), &merge(Verdict::Approve))
         .await;
-    let want = ShadowRecord {
-        would: Verdict::Escalate,
+    let want = AutoPreviewRecord {
+        would: Verdict::AskYou,
         by: DecideWith::Model,
         reasons: vec![
-            "the model says Escalate".to_owned(),
+            "the model says AskYou".to_owned(),
             "asked GPT 5.6 Luna on Codex to approve it".to_owned(),
         ],
     };
@@ -1189,38 +1187,39 @@ async fn auto_that_does_not_decide_says_why() {
         outcome,
         PolicyOutcome::AskUser {
             violations: Vec::new(),
-            shadow: Some(want),
+            auto_preview: Some(want),
         }
     );
 
     // Records that lowered auto to supervised, such as broken ones or `auto-off`, say so.
     let why = "the approval records couldn't take a spot check: disk full";
-    let h = harness(auto_merge());
+    let h = driver(auto_merge());
     *h.autonomy.effective.lock().unwrap() = Some(ApprovalMode::Supervised);
     *h.autonomy.paused.lock().unwrap() = Some(why.to_owned());
     let outcome = h
         .policy
-        .evaluate(&point(CheckpointKind::Merge), &merge(Verdict::Approve))
+        .evaluate(&point(ApprovalKind::Merge), &merge(Verdict::Approve))
         .await;
-    assert_outcome(&outcome, Expect::Would(Verdict::Escalate), "lowered");
+    assert_outcome(&outcome, Expect::Would(Verdict::AskYou), "lowered");
     assert_eq!(last_reason(&outcome), Some(why.to_owned()));
-    assert_eq!(h.approver.calls(), 0);
+    assert_eq!(h.judge.calls(), 0);
 
-    // A checkpoint you set to supervised just asks.
+    // An approval you set to supervised just asks.
     let supervised = merge_settings(ApprovalMode::Supervised, DecideWith::Rules, Otherwise::Ask);
-    let h = harness(supervised);
+    let h = driver(supervised);
     *h.autonomy.paused.lock().unwrap() = Some(why.to_owned());
     let outcome = h
         .policy
-        .evaluate(&point(CheckpointKind::Merge), &merge(Verdict::Approve))
+        .evaluate(&point(ApprovalKind::Merge), &merge(Verdict::Approve))
         .await;
     assert_eq!(outcome, asks());
 }
 
-/// A plan nobody judged, as a workflow the lead picked runs: within budget, nothing flagged.
+/// A plan nobody judged, as a workflow the main agent picked runs: within the limit, nothing
+/// flagged.
 fn unjudged_plan(protected: &[&str]) -> EvidencePacket {
     evidence(
-        CheckpointKind::Plan,
+        ApprovalKind::Plan,
         EvidenceFacts {
             estimate_usd: Some(1.0),
             protected_paths: protected.iter().map(|path| (*path).to_owned()).collect(),
@@ -1229,31 +1228,27 @@ fn unjudged_plan(protected: &[&str]) -> EvidencePacket {
     )
 }
 
-/// The review's probe: in auto the lead answers the crew's questions, yet your plan rules
+/// The review's probe: in auto the main agent answers the crew's questions, yet your plan rules
 /// still hold. A plan with no judging facts asks, by your rules alone too, and so does a close
-/// call or a partly priced spend under a dollar budget. An uncontested plan's facts, which a
-/// workflow the lead picks without drafting carries, go through.
+/// call or a partly priced spend under a dollar limit. An uncontested plan's facts, which a
+/// workflow the main agent picks without drafting carries, go through.
 #[tokio::test]
-async fn the_plan_rules_hold_when_the_lead_answers() {
+async fn the_plan_rules_hold_when_the_main_agent_answers() {
     for decide_with in [DecideWith::RulesAndModel, DecideWith::Rules] {
         let mut settings = Settings::default();
         settings.approvals.plan.decide_with = decide_with;
-        let h = harness(settings);
+        let h = driver(settings);
         let outcome = h
             .policy
-            .evaluate(&point(CheckpointKind::Plan), &unjudged_plan(&[]))
+            .evaluate(&point(ApprovalKind::Plan), &unjudged_plan(&[]))
             .await;
         assert_outcome(
             &outcome,
-            Expect::Would(Verdict::Escalate),
+            Expect::Would(Verdict::AskYou),
             &format!("unjudged, {decide_with:?}"),
         );
         if decide_with == DecideWith::Rules {
-            assert_eq!(
-                h.approver.calls(),
-                0,
-                "your rules alone never ask the approver"
-            );
+            assert_eq!(h.judge.calls(), 0, "your rules alone never ask the judge");
         }
     }
 
@@ -1267,19 +1262,19 @@ async fn the_plan_rules_hold_when_the_lead_answers() {
         estimate_usd: Some(1.0),
         ..EvidenceFacts::default()
     };
-    let h = harness(Settings::default());
+    let h = driver(Settings::default());
     let outcome = h
         .policy
         .evaluate(
-            &point(CheckpointKind::Plan),
-            &evidence(CheckpointKind::Plan, uncontested.clone()),
+            &point(ApprovalKind::Plan),
+            &evidence(ApprovalKind::Plan, uncontested.clone()),
         )
         .await;
     assert!(
         matches!(
             &outcome,
-            PolicyOutcome::Decided { verdict: Verdict::Approve, approver: Some(model), .. }
-                if *model == approver_model()
+            PolicyOutcome::Decided { verdict: Verdict::Approve, judge: Some(model), .. }
+                if *model == judge_model()
         ),
         "{outcome:?}"
     );
@@ -1288,11 +1283,11 @@ async fn the_plan_rules_hold_when_the_lead_answers() {
         winner_margin: Some(0.1),
         ..uncontested.clone()
     };
-    let outcome = harness(Settings::default())
+    let outcome = driver(Settings::default())
         .policy
         .evaluate(
-            &point(CheckpointKind::Plan),
-            &evidence(CheckpointKind::Plan, close_call),
+            &point(ApprovalKind::Plan),
+            &evidence(ApprovalKind::Plan, close_call),
         )
         .await;
     assert!(
@@ -1301,19 +1296,19 @@ async fn the_plan_rules_hold_when_the_lead_answers() {
     );
 
     let mut dollars = Settings::default();
-    dollars.limits.budget.spend_per_run = Some(20.0);
+    dollars.limits.spend.spend_per_run = Some(20.0);
     let mut partly_priced = uncontested;
     partly_priced.spent.cost_partial = true;
-    let outcome = harness(dollars)
+    let outcome = driver(dollars)
         .policy
         .evaluate(
-            &point(CheckpointKind::Plan),
-            &evidence(CheckpointKind::Plan, partly_priced),
+            &point(ApprovalKind::Plan),
+            &evidence(ApprovalKind::Plan, partly_priced),
         )
         .await;
     assert_outcome(
         &outcome,
-        Expect::Would(Verdict::Escalate),
+        Expect::Would(Verdict::AskYou),
         "a partly priced spend under a dollar limit",
     );
 }
@@ -1323,28 +1318,28 @@ async fn when_rules_approve_and_the_model_does_not_its_reasons_come_first() {
     let mut settings = Settings::default();
     settings.approvals.answers = Some(Answerer::You);
     let fakes = Fakes {
-        approver: FakeApprover::answering(Verdict::Escalate),
+        judge: FakeJudge::answering(Verdict::AskYou),
         ..Fakes::default()
     };
     let facts = EvidenceFacts {
         open_questions: Some(0),
         ..EvidenceFacts::default()
     };
-    let outcome = harness_with(settings, fakes)
+    let outcome = driver_with(settings, fakes)
         .policy
         .evaluate(
-            &point(CheckpointKind::Goal),
-            &evidence(CheckpointKind::Goal, facts),
+            &point(ApprovalKind::Understand),
+            &evidence(ApprovalKind::Understand, facts),
         )
         .await;
     let PolicyOutcome::AskUser {
-        shadow: Some(shadow),
+        auto_preview: Some(auto_preview),
         ..
     } = &outcome
     else {
         panic!("the model needs you: {outcome:?}");
     };
-    assert_eq!(shadow.reasons[0], "the model says Escalate");
+    assert_eq!(auto_preview.reasons[0], "the model says AskYou");
 }
 
 #[test]
@@ -1363,8 +1358,8 @@ fn who_answers_takes_the_stricter_side() {
     assert_eq!(pick(Some(Main), Some(Main)), Some(Main));
     assert_eq!(pick(None, None), None);
     // A model you picked holds while both name it; two different ones follow the mode.
-    let glm = Answerer::Model("openrouter/z-ai/glm-5".parse().expect("a worker"));
-    let gpt = Answerer::Model("codex/gpt-x".parse().expect("a worker"));
+    let glm = Answerer::Model("openrouter/z-ai/glm-5".parse().expect("a model"));
+    let gpt = Answerer::Model("codex/gpt-x".parse().expect("a model"));
     assert_eq!(
         pick(Some(glm.clone()), Some(glm.clone())),
         Some(glm.clone())
@@ -1374,8 +1369,8 @@ fn who_answers_takes_the_stricter_side() {
     assert_eq!(pick(Some(glm), Some(You)), Some(You));
 }
 
-/// Full auto everywhere holds only while both say so, and two different hard-limit choices
-/// stop safely, or park when either side parks.
+/// Autopilot everywhere holds only while both say so, and two different hard-limit choices
+/// stop safely, or wait when either side waits.
 #[test]
 fn the_autopilot_switch_and_hard_limits_take_the_stricter_side() {
     use argonauts_core::settings::approvals::AtHardLimit;
@@ -1404,10 +1399,10 @@ fn the_autopilot_switch_and_hard_limits_take_the_stricter_side() {
         stricter(&a, &b).approvals.merge.at_hard_limit,
         AtHardLimit::Stop
     );
-    b.approvals.merge.at_hard_limit = AtHardLimit::Park;
+    b.approvals.merge.at_hard_limit = AtHardLimit::Wait;
     assert_eq!(
         stricter(&a, &b).approvals.merge.at_hard_limit,
-        AtHardLimit::Park
+        AtHardLimit::Wait
     );
 }
 
@@ -1430,8 +1425,8 @@ fn stricter_takes_the_tighter_side_of_every_key() {
 
     let mut a = Settings::default();
     let mut b = Settings::default();
-    a.approvals.goal.mode = ApprovalMode::Auto;
-    b.approvals.goal.mode = ApprovalMode::AutoPreview;
+    a.approvals.understand.mode = ApprovalMode::Auto;
+    b.approvals.understand.mode = ApprovalMode::AutoPreview;
     a.approvals.merge.otherwise = Otherwise::Stop;
     b.approvals.merge.otherwise = Otherwise::SendBack;
     a.approvals.plan.otherwise = Otherwise::Stop;
@@ -1446,17 +1441,17 @@ fn stricter_takes_the_tighter_side_of_every_key() {
     b.approvals.rules.plan.min_winner_margin = 3.0;
     b.approvals.rules.merge.max_changed_lines = 200;
     a.approvals.rules.merge.allow_debt = true;
-    b.approvals.rules.budget.use_reserve = false;
-    b.approvals.rules.escalation.max_extra_attempts = 0;
+    b.approvals.rules.limit.use_reserve = false;
+    b.approvals.rules.stuck.max_extra_tries = 0;
     b.approvals.rules.workflow_promotion.change_classes = vec!["checklist_item".to_owned()];
     b.approvals.rules.workflow_promotion.min_days_between = 30;
     b.approvals
         .refuse_ancestor_env
         .push("OTHER_AGENT".to_owned());
-    a.approvals.decides = approver_model().into();
-    b.approvals.decides = WorkerRef::new("claude", None).into();
-    a.approvals.approver.different_provider = false;
-    b.approvals.approver.second_model = Some(WorkerRef::new("agy", None));
+    a.approvals.decides = judge_model().into();
+    b.approvals.decides = ModelRef::new("claude", None).into();
+    a.approvals.judge.different_provider = false;
+    b.approvals.judge.second_model = Some(ModelRef::new("agy", None));
     a.limits.protected_paths.push("migrations/**".to_owned());
     a.limits.dependency_allowlist = vec!["serde".to_owned(), "rand".to_owned()];
     b.limits.dependency_allowlist = vec!["serde".to_owned()];
@@ -1470,12 +1465,12 @@ fn stricter_takes_the_tighter_side_of_every_key() {
     b.sandbox.network = false;
     b.sandbox.agents_commit = false;
     a.sandbox.agents_see_other_worktrees = true;
-    b.limits.budget.spend_per_run = None;
-    a.limits.budget.spend_per_run = Some(5.0);
+    b.limits.spend.spend_per_run = None;
+    a.limits.spend.spend_per_run = Some(5.0);
 
     let s = stricter(&a, &b);
     let ap = &s.approvals;
-    assert_eq!(ap.goal.mode, ApprovalMode::AutoPreview);
+    assert_eq!(ap.understand.mode, ApprovalMode::AutoPreview);
     assert_eq!(ap.merge.otherwise, Otherwise::Ask);
     assert_eq!(ap.plan.otherwise, Otherwise::Stop);
     assert_eq!(ap.goal_changes, GoalChanges::Deny);
@@ -1488,8 +1483,8 @@ fn stricter_takes_the_tighter_side_of_every_key() {
     assert_eq!(ap.rules.merge.max_changed_lines, 200);
     assert_eq!(ap.rules.merge.min_test_coverage_of_changed_lines, 0.8);
     assert!(!ap.rules.merge.allow_debt);
-    assert!(!ap.rules.budget.use_reserve);
-    assert_eq!(ap.rules.escalation.max_extra_attempts, 0);
+    assert!(!ap.rules.limit.use_reserve);
+    assert_eq!(ap.rules.stuck.max_extra_tries, 0);
     assert_eq!(
         ap.rules.workflow_promotion.change_classes,
         ["checklist_item"]
@@ -1501,8 +1496,8 @@ fn stricter_takes_the_tighter_side_of_every_key() {
             .contains(&"OPENCLAW_SHELL".to_owned())
     );
     assert_eq!(ap.decides, Decides::Judge);
-    assert!(ap.approver.different_provider);
-    assert_eq!(ap.approver.second_model, Some(WorkerRef::new("agy", None)));
+    assert!(ap.judge.different_provider);
+    assert_eq!(ap.judge.second_model, Some(ModelRef::new("agy", None)));
     assert!(
         s.limits
             .protected_paths
@@ -1517,7 +1512,7 @@ fn stricter_takes_the_tighter_side_of_every_key() {
     assert!(!s.sandbox.network);
     assert!(!s.sandbox.agents_commit);
     assert!(!s.sandbox.agents_see_other_worktrees);
-    assert_eq!(s.limits.budget.spend_per_run, Some(5.0));
+    assert_eq!(s.limits.spend.spend_per_run, Some(5.0));
 
     let mode = |mode| {
         let mut settings = Settings::default();
@@ -1557,7 +1552,7 @@ fn stricter_takes_the_tighter_side_of_every_key() {
     assert_eq!(pause(0, 0), 0);
     assert_eq!(pause(2, 5), 2);
 
-    // Removing or replacing the approver model stops it at once.
+    // Removing or replacing the judge stops it at once.
     let model = |run: Decides, now: Decides| {
         let mut x = Settings::default();
         let mut y = Settings::default();
@@ -1565,28 +1560,28 @@ fn stricter_takes_the_tighter_side_of_every_key() {
         y.approvals.decides = now;
         stricter(&x, &y).approvals.decides
     };
-    let codex = Decides::Model(approver_model());
+    let codex = Decides::Model(judge_model());
     assert_eq!(model(codex.clone(), codex.clone()), codex);
     assert_eq!(model(codex.clone(), Decides::Judge), Decides::Judge);
     assert_eq!(model(Decides::Judge, codex), Decides::Judge);
 }
 
-/// Approvable merge evidence, but for the cards whose quality debt no strong enough model
+/// Approvable merge evidence, but for the tasks whose quality debt no strong enough model
 /// reviewed. `None` means nobody measured it.
 fn indebted(debt: Option<&[&str]>) -> EvidencePacket {
     let facts = EvidenceFacts {
-        unreviewed_debt: debt.map(|cards| cards.iter().map(|card| (*card).to_owned()).collect()),
+        unreviewed_debt: debt.map(|tasks| tasks.iter().map(|task| (*task).to_owned()).collect()),
         ..merge_facts(Verdict::Approve)
     };
-    evidence(CheckpointKind::Merge, facts)
+    evidence(ApprovalKind::Merge, facts)
 }
 
 #[tokio::test]
 async fn allow_debt_lets_auto_merge_debt() {
-    let merge_point = point(CheckpointKind::Merge);
+    let merge_point = point(ApprovalKind::Merge);
     let debt = indebted(Some(&["task-03"]));
 
-    // Off, debt asks you whoever decides, and no approver model is started for it.
+    // Off, debt asks you whoever decides, and no judge is started for it.
     for decide_with in [
         DecideWith::Rules,
         DecideWith::Model,
@@ -1594,27 +1589,27 @@ async fn allow_debt_lets_auto_merge_debt() {
         DecideWith::RulesOrModel,
     ] {
         for otherwise in [Otherwise::Ask, Otherwise::SendBack, Otherwise::Stop] {
-            let h = harness(merge_settings(ApprovalMode::Auto, decide_with, otherwise));
+            let h = driver(merge_settings(ApprovalMode::Auto, decide_with, otherwise));
             let case = format!("{decide_with:?} {otherwise:?}");
             let outcome = h.policy.evaluate(&merge_point, &debt).await;
-            assert_outcome(&outcome, Expect::Would(Verdict::Escalate), &case);
+            assert_outcome(&outcome, Expect::Would(Verdict::AskYou), &case);
             assert!(last_reason(&outcome).is_some_and(|why| why.contains("task-03")));
             let outcome = h.policy.evaluate(&merge_point, &indebted(None)).await;
             let unmeasured = format!("{case}, debt not measured");
-            assert_outcome(&outcome, Expect::Would(Verdict::Escalate), &unmeasured);
-            assert_eq!(h.approver.calls(), 0, "{case}");
+            assert_outcome(&outcome, Expect::Would(Verdict::AskYou), &unmeasured);
+            assert_eq!(h.judge.calls(), 0, "{case}");
         }
     }
 
-    // Shadow records that auto would have asked.
-    let h = harness(merge_settings(
+    // Auto preview records that auto would have asked.
+    let h = driver(merge_settings(
         ApprovalMode::AutoPreview,
         DecideWith::Model,
         Otherwise::Ask,
     ));
     let outcome = h.policy.evaluate(&merge_point, &debt).await;
-    assert_outcome(&outcome, Expect::Would(Verdict::Escalate), "auto_preview");
-    assert!(h.autonomy.shadows()[0].reasons[0].contains("task-03"));
+    assert_outcome(&outcome, Expect::Would(Verdict::AskYou), "auto_preview");
+    assert!(h.autonomy.auto_previews()[0].reasons[0].contains("task-03"));
 
     // On, auto merges it.
     let (file, reload) = reloadable();
@@ -1624,7 +1619,7 @@ async fn allow_debt_lets_auto_merge_debt() {
     };
     let mut lenient = auto_merge();
     lenient.approvals.rules.merge.allow_debt = true;
-    let h = harness_with(lenient.clone(), fakes);
+    let h = driver_with(lenient.clone(), fakes);
     let outcome = h.policy.evaluate(&merge_point, &debt).await;
     assert_outcome(&outcome, Expect::Decided(Verdict::Approve), "allowed");
     let outcome = h.policy.evaluate(&merge_point, &indebted(None)).await;
@@ -1634,10 +1629,10 @@ async fn allow_debt_lets_auto_merge_debt() {
         "allowed, not measured",
     );
 
-    // Turning it off mid-run applies at the next checkpoint.
+    // Turning it off mid-run applies at the next approval.
     *file.lock().unwrap() = Some(auto_merge());
     let outcome = h.policy.evaluate(&merge_point, &debt).await;
-    assert_outcome(&outcome, Expect::Would(Verdict::Escalate), "turned off");
+    assert_outcome(&outcome, Expect::Would(Verdict::AskYou), "turned off");
     let outcome = h.policy.evaluate(&merge_point, &indebted(Some(&[]))).await;
     assert_outcome(&outcome, Expect::Decided(Verdict::Approve), "no debt");
 
@@ -1646,11 +1641,11 @@ async fn allow_debt_lets_auto_merge_debt() {
         reload: Arc::new(move || Some(lenient.clone())),
         ..Fakes::default()
     };
-    let h = harness_with(auto_merge(), fakes);
+    let h = driver_with(auto_merge(), fakes);
     let outcome = h.policy.evaluate(&merge_point, &debt).await;
     assert_outcome(
         &outcome,
-        Expect::Would(Verdict::Escalate),
+        Expect::Would(Verdict::AskYou),
         "turned on mid-run",
     );
 }
@@ -1660,32 +1655,32 @@ fn user_approved(point: DecisionPoint) -> UserDecision {
         point,
         action: AnswerAction::Merge,
         edited: false,
-        shadow: None,
+        auto_preview: None,
     }
 }
 
 #[tokio::test]
 async fn user_decided_before_evaluate_finishes() {
-    let gate = Arc::new(Notify::new());
+    let check = Arc::new(Notify::new());
     let fakes = Fakes {
-        approver: FakeApprover {
-            gate: Some(gate.clone()),
-            ..FakeApprover::answering(Verdict::Approve)
+        judge: FakeJudge {
+            check: Some(check.clone()),
+            ..FakeJudge::answering(Verdict::Approve)
         },
         ..Fakes::default()
     };
     let settings = merge_settings(ApprovalMode::Auto, DecideWith::Model, Otherwise::Ask);
-    let h = harness_with(settings, fakes);
-    let merge_point = point(CheckpointKind::Merge);
+    let h = driver_with(settings, fakes);
+    let merge_point = point(ApprovalKind::Merge);
     let packet = merge(Verdict::Approve);
 
-    // Your answer lands while the approver model is still thinking.
+    // Your answer lands while the judge is still thinking.
     let (outcome, ()) = tokio::join!(h.policy.evaluate(&merge_point, &packet), async {
         h.policy.user_decided(&user_approved(merge_point.clone()));
-        gate.notify_one();
+        check.notify_one();
     });
 
-    let want = ShadowRecord {
+    let want = AutoPreviewRecord {
         would: Verdict::Approve,
         by: DecideWith::Model,
         reasons: vec![
@@ -1697,18 +1692,21 @@ async fn user_decided_before_evaluate_finishes() {
         outcome,
         PolicyOutcome::AskUser {
             violations: Vec::new(),
-            shadow: Some(want.clone()),
+            auto_preview: Some(want.clone()),
         }
     );
-    assert_eq!(h.autonomy.log(), ["user_decided", "reserve", "note_shadow"]);
-    assert_eq!(h.autonomy.shadows(), [want]);
-    assert_eq!(h.approver.calls(), 1);
+    assert_eq!(
+        h.autonomy.log(),
+        ["user_decided", "reserve", "note_auto_preview"]
+    );
+    assert_eq!(h.autonomy.auto_previews(), [want]);
+    assert_eq!(h.judge.calls(), 1);
 }
 
 #[tokio::test]
 async fn evaluate_finishes_before_user_decided() {
-    let h = harness(auto_merge());
-    let merge_point = point(CheckpointKind::Merge);
+    let h = driver(auto_merge());
+    let merge_point = point(ApprovalKind::Merge);
     let outcome = h
         .policy
         .evaluate(&merge_point, &merge(Verdict::Approve))
@@ -1718,9 +1716,9 @@ async fn evaluate_finishes_before_user_decided() {
     // Your late answer still reaches the records, which give back what auto reserved.
     h.policy.user_decided(&user_approved(merge_point.clone()));
     assert_eq!(h.autonomy.log(), ["reserve", "user_decided"]);
-    assert!(h.autonomy.shadows().is_empty());
+    assert!(h.autonomy.auto_previews().is_empty());
 
-    // A second evaluation of the same checkpoint now only records a shadow.
+    // A second evaluation of the same approval now only records an auto preview.
     let again = h
         .policy
         .evaluate(&merge_point, &merge(Verdict::Approve))

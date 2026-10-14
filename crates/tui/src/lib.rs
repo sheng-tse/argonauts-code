@@ -1,6 +1,6 @@
-//! Argonauts' terminal interface, built to look and feel like Claude Code. Finished transcript
-//! items print once into the terminal's own scrollback, and only the live region at the bottom
-//! redraws. Overlays take the alternate screen and give the chat back where it was.
+//! Argonauts Code's terminal interface, built to look and feel like Claude Code. Finished
+//! transcript items print once into the terminal's own scrollback, and only the live region at the
+//! bottom redraws. Overlays take the alternate screen and give the conversation back where it was.
 //!
 //! The app controller talks to it over two channels: [`AppEvent`](argonauts_core::app::AppEvent)s
 //! come down, [`UiCommand`](argonauts_core::app::UiCommand)s go up.
@@ -12,24 +12,24 @@ pub mod cell;
 pub mod format;
 pub mod history;
 pub mod keywords;
+pub mod kit;
 pub mod markdown;
 pub mod model;
 pub mod render;
 pub mod terminal;
 pub mod text;
 pub mod theme;
-pub mod widgets;
 
 // What connects the screen to the app controller.
 pub mod a11y;
 pub mod bridge;
-pub mod cards;
 pub mod commands;
 pub mod keymap;
 pub mod mentions;
 pub mod mods;
 pub mod overview;
 pub mod prompt_history;
+pub mod questions;
 pub mod runtime;
 pub mod stability;
 pub mod state;

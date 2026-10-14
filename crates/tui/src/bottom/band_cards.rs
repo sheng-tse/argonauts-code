@@ -9,16 +9,16 @@
 //! A mod with nothing to draw yet, such as the run's card with no run, takes no row. A mod
 //! from a file of yours takes its place here as one more kind of card.
 
-use argonauts_core::api::{CardBrief, StatusSummary};
-use argonauts_core::events::card::CardState;
-use argonauts_core::settings::ui::WidgetName;
+use argonauts_core::api::{StatusSummary, TaskBrief};
+use argonauts_core::events::task::TaskState;
+use argonauts_core::settings::ui::ModName;
 use ratatui::text::Span;
 
+use crate::kit::{ContextCard, Drawn, Form, Frame, Kit};
 use crate::overview::stats::pinned::StatsCard;
 use crate::overview::{StatusCard, StatusCards, UsageCard, UsageCards};
 use crate::state::RunState;
 use crate::text::truncate_spans;
-use crate::widgets::{ContextCard, Drawn, Form, Frame, Kit};
 
 /// A pinned mod this band draws.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,11 +31,11 @@ pub(super) enum BandCard {
 }
 
 impl BandCard {
-    pub(super) fn of(name: WidgetName) -> Option<Self> {
-        if name == WidgetName::Context {
+    pub(super) fn of(name: ModName) -> Option<Self> {
+        if name == ModName::Context {
             return Some(Self::Context);
         }
-        if name == WidgetName::Stats {
+        if name == ModName::Stats {
             return Some(Self::Stats);
         }
         let usage = UsageCard::of(name).map(Self::Usage);
@@ -64,23 +64,23 @@ impl PinnedRun {
     /// The run as its cards draw it, from what its events said so far. Its goal and plan
     /// aren't shown above the input, so they're left out.
     pub fn of(run: &RunState) -> Self {
-        let tasks = run.cards.values().map(|task| CardBrief {
-            card: task.id.clone(),
+        let tasks = run.tasks.values().map(|task| TaskBrief {
+            task: task.id.clone(),
             title: task.title.clone(),
-            state: task.state.unwrap_or(CardState::Waiting),
-            owner: task.owner.clone(),
+            state: task.state.unwrap_or(TaskState::Waiting),
+            worker: task.worker.clone(),
             note: String::new(),
         });
         let waiting = run
-            .checkpoints
+            .approvals
             .iter()
             .filter(|approval| approval.opened.needs_you)
             .map(|approval| approval.opened.title.clone());
         Self {
             summary: StatusSummary {
                 run: Some(run.id.clone()),
-                cards: tasks.collect(),
-                budget: run.budget.clone(),
+                tasks: tasks.collect(),
+                spend: run.spend.clone(),
                 waiting: waiting.collect(),
                 ..StatusSummary::default()
             },

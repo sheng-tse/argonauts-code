@@ -1,4 +1,4 @@
-//! Runs a manifest adapter's command the way the harness worker does, without a conductor:
+//! Runs a manifest adapter's command the way the CLI runner does, without Argonauts Code:
 //! files written, an argument vector, the environment adjusted, the prompt on stdin, and every
 //! line through the adapter's parser.
 

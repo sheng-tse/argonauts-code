@@ -1,5 +1,5 @@
 //! The opened agent as a person meets it: tabs that Tab goes through, a plan drawn as a table,
-//! the rest of an agent's talk with Argonauts left to the raw log, and keys that say what they
+//! the rest of an agent's talk with Argonauts Code left to the raw log, and keys that say what they
 //! do before they do it.
 
 use std::time::Instant;
@@ -90,15 +90,15 @@ fn reported(name: &str, input: serde_json::Value) -> ToolRecord {
 fn plan() -> serde_json::Value {
     json!({
         "plan": {"summary": "Two tasks."},
-        "cards": [
+        "tasks": [
             {"key": "iface", "title": "Due-date stubs", "task": "Define the Due type.",
              "owned_paths": ["src/due.rs"], "depends_on": []},
             {"key": "impl", "title": "Store, list, overdue", "task": "Store and list them.",
              "owned_paths": [], "depends_on": ["iface"]}
         ],
         "assignments": [
-            {"card": "iface", "owner": "claude-code", "reviewers": ["antigravity-cli/gemini"]},
-            {"card": "impl", "owner": "codex", "reviewers": ["antigravity-cli/gemini"]}
+            {"task": "iface", "worker": "claude-code", "reviewers": ["antigravity-cli/gemini"]},
+            {"task": "impl", "worker": "codex", "reviewers": ["antigravity-cli/gemini"]}
         ]
     })
 }
@@ -166,7 +166,7 @@ fn raw_of(session: SessionKey, lines: usize) -> ViewData {
                 .collect(),
             truncated: false,
             path: PathBuf::from("raw.jsonl"),
-            vendor_transcript: None,
+            cli_transcript: None,
         },
     }
 }
@@ -282,12 +282,12 @@ fn a_result_written_at_the_end_of_a_message_reads_as_words_too() {
 }
 
 /// An edit reads as its patch alone, as Claude Code shows it, and a Codex edit, whose call
-/// carries no patch, takes the change Argonauts saw, so it shows once.
+/// carries no patch, takes the change Argonauts Code saw, so it shows once.
 #[test]
 fn an_edit_shows_once_with_its_patch_and_nothing_after_it() {
     let (mut state, run, mut view) = opened();
     let session = agent(&mut state, &run);
-    session.vendor = "claude-code".to_owned();
+    session.agent_id = "claude-code".to_owned();
     let mut edit = reported(
         "Edit",
         json!({"file_path": "src/due.rs", "old_string": "a", "new_string": "b"}),
@@ -306,7 +306,7 @@ fn an_edit_shows_once_with_its_patch_and_nothing_after_it() {
 
     let (mut state, run, mut view) = opened();
     let session = agent(&mut state, &run);
-    session.vendor = "codex".to_owned();
+    session.agent_id = "codex".to_owned();
     let mut change = reported(
         "file_change",
         json!({"changes": [{"path": "/w/src/due.rs", "kind": "update"}]}),
@@ -564,7 +564,7 @@ fn the_goal_tab_scrolls_when_the_screen_is_short() {
 fn with_a_tasks_goal() -> (AppState, RunId, SessionView) {
     let (mut state, run, view) = with_goal();
     let mut goal = state.goals.of(&run, &first()).unwrap().clone();
-    goal.task = Some(argonauts_core::CardId::new("task-002").unwrap());
+    goal.task = Some(argonauts_core::TaskId::new("task-002").unwrap());
     state.goals.remember(&run, &[goal]);
     (state, run, view.on(Tab::Goal))
 }
@@ -586,7 +586,7 @@ fn the_goal_tab_holds_the_goal_and_runs_its_checks() {
     use argonauts_core::events::goal::GoalAction;
 
     let (mut state, run, mut view) = with_a_tasks_goal();
-    // With room for every card, the footer holds every key.
+    // With room for every task, the footer holds every key.
     let text = screen_of(&mut view, &state, 120, 40);
     assert_eq!(
         footer(&text),
@@ -602,7 +602,7 @@ fn the_goal_tab_holds_the_goal_and_runs_its_checks() {
         ),
         "{text}"
     );
-    let task = Some(argonauts_core::CardId::new("task-002").unwrap());
+    let task = Some(argonauts_core::TaskId::new("task-002").unwrap());
     assert_eq!(
         goal_action(press(&mut view, &state, KeyCode::Char('p'))),
         GoalAction::Pause { task: task.clone() }
@@ -712,12 +712,12 @@ fn a_goal_that_is_over_offers_no_keys_on_it() {
 /// workflow as Claude Code also lists it among the subagents.
 fn with_its_own_workflow() -> (AppState, RunId, SessionView) {
     use argonauts_core::events::session::{
-        SubagentKind, SubagentStatus, SubagentUpdate, VendorAgent, VendorAgentState, VendorPhase,
-        VendorWorkflow,
+        CliAgent, CliAgentState, CliPhase, CliWorkflowRun, SubagentKind, SubagentStatus,
+        SubagentUpdate,
     };
     let (mut state, run, view) = opened();
     let session = agent(&mut state, &run);
-    session.vendor = "claude-code".to_owned();
+    session.agent_id = "claude-code".to_owned();
     session.tools.push(ToolRecord {
         id: "toolu_wf".to_owned(),
         name: "Workflow".to_owned(),
@@ -726,12 +726,12 @@ fn with_its_own_workflow() -> (AppState, RunId, SessionView) {
         ok: Some(true),
         output: None,
     });
-    let phase = |index: u32, title: &str| VendorPhase {
+    let phase = |index: u32, title: &str| CliPhase {
         index,
         title: title.to_owned(),
         detail: String::new(),
     };
-    let worker = |index: u32, state: VendorAgentState| VendorAgent {
+    let worker = |index: u32, state: CliAgentState| CliAgent {
         index,
         label: format!("step:{index}"),
         phase: Some(index),
@@ -741,20 +741,21 @@ fn with_its_own_workflow() -> (AppState, RunId, SessionView) {
         tool_calls: 0,
         duration_ms: 0,
         started_at_ms: None,
-        attempt: 1,
+        try_number: 1,
         prompt: None,
         result: None,
+        ..CliAgent::default()
     };
-    session.workflows.push(VendorWorkflow {
+    session.workflows.push(CliWorkflowRun {
         id: "w7k2".to_owned(),
         call: Some("toolu_wf".to_owned()),
         name: "add-due-dates".to_owned(),
         description: String::new(),
         phases: vec![phase(1, "build"), phase(2, "review"), phase(3, "judge")],
         agents: vec![
-            worker(1, VendorAgentState::Done),
-            worker(2, VendorAgentState::Running),
-            worker(3, VendorAgentState::Queued),
+            worker(1, CliAgentState::Done),
+            worker(2, CliAgentState::Running),
+            worker(3, CliAgentState::Queued),
         ],
         status: SubagentStatus::Running,
         tokens: 0,
@@ -778,20 +779,44 @@ fn with_its_own_workflow() -> (AppState, RunId, SessionView) {
     (state, run, view)
 }
 
+/// While Claude Code still writes the script there is no workflow: nothing of the call shows
+/// until its first report. A call that failed before that says why.
 #[test]
-fn claude_codes_own_workflow_is_one_row_with_its_steps_beneath() {
+fn a_workflow_call_shows_nothing_until_its_script_reports() {
+    let (mut state, run, mut view) = with_its_own_workflow();
+    let session = agent(&mut state, &run);
+    session.workflows.clear();
+    session.subagents.clear();
+    session.tools[0].ok = None;
+    let text = screen_of(&mut view, &state, 100, 40);
+    assert!(!text.contains("Workflow"), "{text}");
+
+    let session = agent(&mut state, &run);
+    session.tools[0].ok = Some(false);
+    session.tools[0].output =
+        Some("Workflow script has a syntax error and was not launched:\nUnexpected".to_owned());
+    let text = screen_of(&mut view, &state, 100, 40);
+    assert!(text.contains("● Workflow(workflow)"), "{text}");
+    assert!(
+        text.contains("Workflow script has a syntax error"),
+        "{text}"
+    );
+}
+
+#[test]
+fn claude_codes_own_workflow_is_its_call_and_where_to_watch_it() {
     let (state, _, mut view) = with_its_own_workflow();
     let text = screen_of(&mut view, &state, 100, 40);
     let rows: Vec<&str> = text
         .lines()
-        .filter(|line| line.contains("Workflow(") || line.contains("build"))
+        .filter(|line| line.contains("Workflow(") || line.contains("Running in background"))
         .map(str::trim)
         .collect();
     assert_eq!(
         rows,
         [
-            "● Workflow(add-due-dates) · Claude Code's own · 3 agents",
-            "⎿  ✔ build · ◐ review · ○ judge"
+            "● Workflow(add-due-dates)",
+            "⎿  Running in background · /workflows to monitor and save"
         ],
         "{text}"
     );
@@ -817,7 +842,7 @@ fn an_edit_is_drawn_from_the_patch_it_reported_with_the_files_line_numbers() {
     assert!(text.contains("42 +y"), "{text}");
 }
 
-/// Argonauts also notes how each file stands after the session's calls. A file whose call drew
+/// Argonauts Code also notes how each file stands after the session's calls. A file whose call drew
 /// its own patch is shown once, from the patch; one no call drew, as a shell command's, still
 /// shows.
 #[test]
@@ -848,7 +873,7 @@ fn a_file_its_call_drew_is_not_drawn_again_from_the_change_seen_after() {
     assert!(text.contains("new b"), "{text}");
 }
 
-/// A call its model is still writing shows in the Output tab as the chat shows it, by its
+/// A call its model is still writing shows in the Output tab as the conversation shows it, by its
 /// name alone and with a steady dim bullet; filled in, it reads as any call, and one that
 /// never lands is gone.
 #[test]

@@ -4,20 +4,21 @@
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::plan::PlanEvent;
 use argonauts_core::events::session::InputPartKind;
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::session_runner::Access;
 use argonauts_core::steps::plan::{
     Draft, DraftInput, Judge, JudgeInput, LabeledPlan, PlanDraft, RubricCriterion,
 };
-use argonauts_core::worker::Access;
 use argonauts_core::workflow::StandardPhase;
 
 use crate::engine::host::{Ask, Host};
 use crate::error::{EngineError, EngineResult};
-use crate::lead;
-use crate::plan::context::{self, crew_for, families, part, workers_for};
+use crate::plan::context::{self, crew_for, part, providers, workers_for};
 use crate::plan::{decisions, drafts};
 use crate::prompts::plan::{MERGE_CHECK, MERGE_DRAFTS, SYNTHESIZE};
 use crate::state::plan::{MERGED_LABEL, SealedDraft};
+use crate::task::at_start;
+use crate::tie_breaker;
 use crate::workflow::{StepCall, StepDone};
 
 /// A completeness score under this sends the merge back once with the judge's reasons.
@@ -79,22 +80,20 @@ pub async fn merge(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     Ok(StepDone::done(summary))
 }
 
-/// The step's worker, else the phase lead, whose process work this is.
-fn merger(host: &Host, call: &StepCall) -> WorkerRef {
-    match &call.step.workers {
-        argonauts_core::workflow::StepWorkers::Named(named) if !named.is_empty() => {
-            named[0].clone()
-        }
+/// The step's worker, else the tie-breaker, whose process work this is.
+fn merger(host: &Host, call: &StepCall) -> ModelRef {
+    match &call.step.models {
+        argonauts_core::workflow::StepModels::Named(named) if !named.is_empty() => named[0].clone(),
         _ => host
-            .read(|state| lead::phase_lead(state, host.settings()))
-            .unwrap_or_else(|| host.settings().main_agent.clone()),
+            .read(|state| tie_breaker::tie_breaker(state, host.settings()))
+            .unwrap_or_else(|| host.settings().crew.main.clone()),
     }
 }
 
 async fn merge_drafts(
     host: &Host,
     call: &StepCall,
-    merger: &WorkerRef,
+    merger: &ModelRef,
     latest: &[SealedDraft],
 ) -> EngineResult<SealedDraft> {
     let plans = drafts::labeled(&latest.iter().collect::<Vec<_>>())?;
@@ -134,12 +133,12 @@ fn plans_text(plans: &[LabeledPlan]) -> String {
 async fn ask_merge(
     host: &Host,
     call: &StepCall,
-    merger: &WorkerRef,
+    merger: &ModelRef,
     plans: &str,
     gaps: Option<&str>,
     slot: u32,
 ) -> EngineResult<crate::engine::host::Answered<PlanDraft>> {
-    let crew = context::card_roles_lines(host)?;
+    let crew = context::task_roles_lines(host)?;
     let input = host.read(|state| DraftInput {
         goal: context::goal_brief(state),
         notes: Vec::new(),
@@ -149,13 +148,14 @@ async fn ask_merge(
     });
     let mut ask = Ask::new(
         Some(call.at.clone()),
-        RoleName::PhaseLead,
+        RoleName::TieBreaker,
         merger.clone(),
         MERGE_DRAFTS,
         input,
     );
     ask.access = Access::ReadOnly;
     ask.slot = slot;
+    ask.parts.extend(at_start::part(host).await?);
     ask.parts.push(part(
         InputPartKind::StepInput,
         "the drafts",
@@ -171,21 +171,21 @@ async fn ask_merge(
     host.ask::<Draft>(ask).await
 }
 
-/// A judge of another family than the merger scores the merge's completeness. `None` when no
+/// A judge of another provider than the merger scores the merge's completeness. `None` when no
 /// such judge is available or its answer failed; the merge then stands.
 async fn check_complete(
     host: &Host,
     call: &StepCall,
-    merger: &WorkerRef,
+    merger: &ModelRef,
     plans: &str,
     merged: &str,
     slot: u32,
 ) -> EngineResult<Option<(f64, String)>> {
-    let family = families(host);
-    let merger_family = family(merger);
+    let provider = providers(host);
+    let merger_provider = provider(merger);
     let judge = crew_for(host.settings(), RoleName::Judge)
         .into_iter()
-        .find(|judge| judge != merger && family(judge) != merger_family);
+        .find(|judge| judge != merger && provider(judge) != merger_provider);
     let Some(judge) = judge else {
         return Ok(None);
     };
@@ -201,7 +201,7 @@ async fn check_complete(
             label: 1,
             text: merged.to_owned(),
         }],
-        spikes: Vec::new(),
+        experiments: Vec::new(),
     };
     let mut ask = Ask::new(
         Some(call.at.clone()),
@@ -232,11 +232,11 @@ async fn check_complete(
 
 /// Outside planning: one agent combines what the step's input holds.
 async fn synthesize_input(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
-    let role = call.step.role.unwrap_or(RoleName::PhaseLead);
+    let role = call.step.role.unwrap_or(RoleName::TieBreaker);
     let worker = workers_for(call, host.settings(), role, Some(1))
         .into_iter()
         .next()
-        .unwrap_or_else(|| host.settings().main_agent.clone());
+        .unwrap_or_else(|| host.settings().crew.main.clone());
     let text = context::step_input(host, call).await?;
     let input = host.read(|state| DraftInput {
         goal: context::goal_brief(state),

@@ -1,5 +1,5 @@
-//! Stopping what a scenario left running when it drops, before its folder goes: supervisors
-//! keep going after the app closes, by design, and a hanging fake vendor would outlive the
+//! Stopping what a scenario left running when it drops, before its folder goes: run hosts
+//! keep going after the app closes, by design, and a hanging fake agent would outlive the
 //! test. Each pid is checked against its command line first, so a pid reused by another
 //! program is left alone.
 
@@ -13,15 +13,15 @@ use argonauts_testkit::journal;
 
 use crate::Scenario;
 
-/// How long the watchers of killed supervisors get to stop the agents they guard.
+/// How long the watchers of killed run hosts get to stop the agents they guard.
 const SWEEP: Duration = Duration::from_secs(10);
 
 pub(crate) fn stop(scenario: &Scenario) {
     let root = scenario.repo.root();
-    let running = supervising(root);
-    // Each supervisor forks a watcher that stops its agents once the supervisor dies, so the
-    // supervisors go first: the ones whose parent isn't another.
-    let mut supervisors: Vec<u32> = running
+    let running = hosting(root);
+    // Each run host forks a watcher that stops its agents once the run host dies, so the
+    // run hosts go first: the ones whose parent isn't another.
+    let mut run_hosts: Vec<u32> = running
         .iter()
         .filter(|process| !running.iter().any(|other| other.pid == process.ppid))
         .map(|process| process.pid)
@@ -31,26 +31,25 @@ pub(crate) fn stop(scenario: &Scenario) {
             continue;
         };
         let run = dir.file_name().unwrap_or_default().to_string_lossy();
-        let theirs = command_line(pid).is_some_and(|line| {
-            line.contains(" supervise ") && line.contains(&format!("--run {run}"))
-        });
-        if theirs && !supervisors.contains(&pid) {
-            supervisors.push(pid);
+        let theirs = command_line(pid)
+            .is_some_and(|line| line.contains(" host ") && line.contains(&format!("--run {run}")));
+        if theirs && !run_hosts.contains(&pid) {
+            run_hosts.push(pid);
         }
     }
-    for pid in supervisors {
+    for pid in run_hosts {
         kill_with_group(pid);
     }
     let deadline = Instant::now() + SWEEP;
-    while !supervising(root).is_empty() && Instant::now() < deadline {
+    while !hosting(root).is_empty() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(50));
     }
-    for process in supervising(root) {
+    for process in hosting(root) {
         kill_with_group(process.pid);
     }
 
-    let bin_dir = scenario.vendors.bin_dir().to_string_lossy().into_owned();
-    for invocation in scenario.vendors.invocations().unwrap_or_default() {
+    let bin_dir = scenario.clis.bin_dir().to_string_lossy().into_owned();
+    for invocation in scenario.clis.invocations().unwrap_or_default() {
         if command_line(invocation.pid).is_some_and(|line| line.contains(&bin_dir)) {
             kill_with_group(invocation.pid);
         }
@@ -62,8 +61,8 @@ struct Process {
     ppid: u32,
 }
 
-/// `argonauts supervise` processes for the repo at `root`: supervisors and their watchers.
-fn supervising(root: &Path) -> Vec<Process> {
+/// `argonauts host` processes for the repo at `root`: run hosts and their watchers.
+fn hosting(root: &Path) -> Vec<Process> {
     let mut roots = vec![root.to_path_buf()];
     if let Ok(real) = root.canonicalize()
         && real != root
@@ -72,7 +71,7 @@ fn supervising(root: &Path) -> Vec<Process> {
     }
     let needles: Vec<String> = roots
         .iter()
-        .map(|root| format!(" supervise --repo {} ", root.display()))
+        .map(|root| format!(" host --repo {} ", root.display()))
         .collect();
     let Ok(output) = Command::new("/bin/ps")
         .args(["-axo", "pid=,ppid=,command="])
@@ -92,7 +91,7 @@ fn supervising(root: &Path) -> Vec<Process> {
         .collect()
 }
 
-/// The supervisor pid a run recorded.
+/// The run host pid a run recorded.
 fn recorded_pid(run_dir: &Path) -> Option<u32> {
     let text = std::fs::read_to_string(run_dir.join(run_files::PID)).ok()?;
     text.split(|c: char| !c.is_ascii_digit())
@@ -119,7 +118,7 @@ fn group_of(pid: u32) -> Option<u32> {
     String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
-/// SIGKILL to `pid`, and to the rest of its process group when it leads one, as a supervisor
+/// SIGKILL to `pid`, and to the rest of its process group when it heads one, as a run host
 /// and an agent each do.
 fn kill_with_group(pid: u32) {
     let target = if group_of(pid) == Some(pid) {

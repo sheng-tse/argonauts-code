@@ -59,15 +59,15 @@ fn whole_ui_section(rows: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
     section
 }
 
-fn open_theme_picker(harness: &mut Harness) -> Screen {
-    harness.send("/theme");
-    harness.press(Key::Enter);
-    let request = harness.wait_command("request");
+fn open_theme_picker(driver: &mut TestDriver) -> Screen {
+    driver.send("/theme");
+    driver.press(Key::Enter);
+    let request = driver.wait_command("request");
     assert_eq!(
         request["view"],
         json!({"view": "settings", "section": "ui"})
     );
-    let picker = harness.wait_visible("light");
+    let picker = driver.wait_visible("light");
     assert!(
         row_of(&picker, "(?i)bell|keymap|screen.reader|verbs").is_none(),
         "the theme picker shows the themes, not the whole ui section:\n{}",
@@ -78,17 +78,17 @@ fn open_theme_picker(harness: &mut Harness) -> Screen {
 
 /// Esc until the main screen is back, since Esc on the scope question may step back to the
 /// picker first.
-fn close_everything(harness: &mut Harness) {
+fn close_everything(driver: &mut TestDriver) {
     for _ in 0..3 {
-        if harness
+        if driver
             .poll_visible(MODE_IDLE, Duration::from_millis(500))
             .is_some()
         {
             return;
         }
-        harness.press(Key::Esc);
+        driver.press(Key::Esc);
     }
-    harness.wait_visible(MODE_IDLE);
+    driver.wait_visible(MODE_IDLE);
 }
 
 #[test]
@@ -100,13 +100,13 @@ fn config_view_layers() {
         setting_row("roles.reviewer.effort", "\"high\"", "project-local", &[]),
         setting_row("approvals.merge.mode", "\"auto_preview\"", "session", &[]),
     ];
-    let mut harness = Harness::start(pickers(vec![settings_view("config", rows)]));
-    harness.wait_visible(MODE_IDLE);
-    harness.send("/config");
-    harness.press(Key::Enter);
-    let slash = harness.wait_command("slash");
+    let mut driver = TestDriver::start(pickers(vec![settings_view("config", rows)]));
+    driver.wait_visible(MODE_IDLE);
+    driver.send("/config");
+    driver.press(Key::Enter);
+    let slash = driver.wait_command("slash");
     assert_eq!(slash["command"]["command"], "config");
-    let view = harness.wait_visible("approvals\\.merge\\.mode");
+    let view = driver.wait_visible("approvals\\.merge\\.mode");
     for (key, layer) in [
         ("ui.keys", "global"),
         ("ui.theme", "built-in"),
@@ -127,17 +127,17 @@ fn config_view_layers() {
 #[test]
 fn settings_picker_then_scope_question() {
     let script = theme_answers(vec![vec![theme_row("project")], vec![theme_row("project")]]);
-    let mut harness = Harness::start(script);
-    harness.wait_visible(MODE_IDLE);
-    let picker = open_theme_picker(&mut harness);
+    let mut driver = TestDriver::start(script);
+    driver.wait_visible(MODE_IDLE);
+    let picker = open_theme_picker(&mut driver);
     let current = expect_row(&picker, "dark");
     assert!(
         picker.visible[current].contains('✓'),
         "{}",
         picker.visible_text()
     );
-    harness.press(Key::Char('3'));
-    let question = harness.wait_visible("Everywhere");
+    driver.press(Key::Char('3'));
+    let question = driver.wait_visible("Everywhere");
     assert_order(
         &question,
         &[
@@ -173,15 +173,15 @@ fn settings_picker_then_scope_question() {
         "a project file sets it, so saving everywhere changes nothing; the question says so:\n{}",
         question.visible_text()
     );
-    close_everything(&mut harness);
-    harness.submit("still here");
-    harness.assert_no_command("set_setting");
+    close_everything(&mut driver);
+    driver.submit("still here");
+    driver.assert_no_command("set_setting");
 
-    open_theme_picker(&mut harness);
-    harness.press(Key::Char('3'));
-    harness.wait_visible("Everywhere");
-    harness.press(Key::Char('2'));
-    let set = harness.wait_command("set_setting");
+    open_theme_picker(&mut driver);
+    driver.press(Key::Char('3'));
+    driver.wait_visible("Everywhere");
+    driver.press(Key::Char('2'));
+    let set = driver.wait_command("set_setting");
     assert_eq!(
         set,
         json!({"type": "set_setting", "key": "ui.theme", "value": "\"light\"",
@@ -192,29 +192,29 @@ fn settings_picker_then_scope_question() {
 #[test]
 fn settings_picker_reset_row() {
     let script = theme_answers(vec![vec![theme_row("built-in")], vec![theme_row("global")]]);
-    let mut harness = Harness::start(script);
-    harness.wait_visible(MODE_IDLE);
-    let built_in = open_theme_picker(&mut harness);
+    let mut driver = TestDriver::start(script);
+    driver.wait_visible(MODE_IDLE);
+    let built_in = open_theme_picker(&mut driver);
     assert!(
         row_of(&built_in, "(?i)reset").is_none(),
         "a built-in value has nothing to reset:\n{}",
         built_in.visible_text()
     );
-    close_everything(&mut harness);
+    close_everything(&mut driver);
 
-    let from_file = open_theme_picker(&mut harness);
+    let from_file = open_theme_picker(&mut driver);
     let reset = expect_row(&from_file, "(?i)reset");
     let number = from_file.visible[reset]
         .chars()
         .find(char::is_ascii_digit)
         .expect("the Reset row is numbered");
-    harness.press(Key::Char(number));
-    let sent = harness.wait_command("reset_setting");
+    driver.press(Key::Char(number));
+    let sent = driver.wait_command("reset_setting");
     assert_eq!(
         sent,
         json!({"type": "reset_setting", "key": "ui.theme", "scope": "global"})
     );
-    harness.assert_no_command("set_setting");
+    driver.assert_no_command("set_setting");
 }
 
 #[test]
@@ -228,7 +228,7 @@ fn setting_changed_ui_key_applies_at_once() {
             [
                 mode_answering("t-001"),
                 turn_started("t-001", "check the build"),
-                chat_tool_started("t-001", "c1", "Bash", json!({"command": "cargo build"})),
+                conversation_tool_started("t-001", "c1", "Bash", json!({"command": "cargo build"})),
             ],
         )
         .await_signal("change")
@@ -237,23 +237,20 @@ fn setting_changed_ui_key_applies_at_once() {
             0,
             ui_settings(json!({"accent": "#ff8800", "theme": "light"})),
         );
-    let mut harness = Harness::launch(script)
+    let mut driver = TestDriver::launch(script)
         .env("COLORTERM", "truecolor")
         .start();
-    harness.wait_visible(MODE_IDLE);
-    harness.submit("check the build");
-    harness.wait_visible(WORKING_LINE);
-    let before = harness.raw().len();
-    assert!(
-        !contains(&harness.raw(), b"255;136;0"),
-        "not the accent yet"
-    );
-    harness.signal("change");
-    harness.wait_visible("ui\\.accent");
-    harness.wait_until("the new accent drawn", |_| {
-        contains(&harness.raw()[before..], b"38;2;255;136;0")
+    driver.wait_visible(MODE_IDLE);
+    driver.submit("check the build");
+    driver.wait_visible(WORKING_LINE);
+    let before = driver.raw().len();
+    assert!(!contains(&driver.raw(), b"255;136;0"), "not the accent yet");
+    driver.signal("change");
+    driver.wait_visible("ui\\.accent");
+    driver.wait_until("the new accent drawn", |_| {
+        contains(&driver.raw()[before..], b"38;2;255;136;0")
     });
-    harness.wait_visible(WORKING_LINE);
+    driver.wait_visible(WORKING_LINE);
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {

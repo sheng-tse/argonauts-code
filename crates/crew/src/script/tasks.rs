@@ -6,13 +6,13 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::card::{
-    CardBudget, CardKind, CardSpec, CardState, GateOutcome, ReviewEvent,
+use argonauts_core::events::task::{
+    CheckOutcome, ReviewEvent, TaskKind, TaskLimit, TaskSpec, TaskState,
 };
 use argonauts_core::labels;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
 use argonauts_core::steps::judgment::{ReviewComment, ReviewOutput, ReviewVerdict};
 use argonauts_core::steps::plan::Severity;
@@ -21,13 +21,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::bridge::{Bridge, lock, shown_change};
-use crate::card::pipeline::{self, Until};
-use crate::card::support::{newest_owner_session, owner_of, record_of, state_of};
-use crate::card::{self, machine::Trigger, worktree};
 use crate::engine::host::{Host, Ran};
 use crate::error::{EngineError, EngineResult};
 use crate::review::{Verdict, with_findings};
 use crate::roles;
+use crate::task::pipeline::{self, Until};
+use crate::task::support::{newest_worker_session, record_of, state_of, worker_of};
+use crate::task::{self, machine::Trigger, worktree};
 use crate::workflow::StepAt;
 
 /// What a call works on when it names no task and asks for no worktree of its own: the
@@ -45,13 +45,13 @@ pub(super) struct Book {
 struct Entry {
     /// The task's name in the script, or the label of a writer with a worktree of its own.
     name: String,
-    card: CardId,
+    task: TaskId,
     /// Writers on one task take turns in its worktree.
     #[serde(skip)]
     turn: Arc<tokio::sync::Mutex<()>>,
     /// The newest verdict of the script's own review, when it gave one.
     accepted: Option<bool>,
-    /// One of several attempts the judge didn't keep.
+    /// One of several tries the judge didn't keep.
     dropped: bool,
     /// The calls, by their place in the script, whose turn at the task is over. A run that
     /// stopped before such a call's answer was saved asks it again, and its work is done.
@@ -93,15 +93,15 @@ impl Book {
         let base = format!("task-{}", labels::id_slug(name, 6));
         let mut id = base.clone();
         for n in 2.. {
-            if !entries.iter().any(|entry| entry.card.as_str() == id) {
+            if !entries.iter().any(|entry| entry.task.as_str() == id) {
                 break;
             }
             id = format!("{base}-{n}");
         }
-        let card = CardId::new(id).map_err(|err| EngineError::Refused(err.to_string()))?;
+        let task = TaskId::new(id).map_err(|err| EngineError::Refused(err.to_string()))?;
         let entry = Entry {
             name: name.to_owned(),
-            card,
+            task,
             turn: Arc::default(),
             accepted: None,
             dropped: false,
@@ -121,10 +121,10 @@ impl Book {
     }
 
     /// A call's turn at a task is over. Its work makes the task's last verdict stale.
-    fn worked(&self, card: &CardId, call: u32) -> EngineResult<()> {
+    fn worked(&self, task: &TaskId, call: u32) -> EngineResult<()> {
         let mut entries = lock(&self.entries);
         for entry in entries.iter_mut() {
-            if entry.card == *card {
+            if entry.task == *task {
                 if entry.accepted == Some(false) {
                     entry.sent_back += 1;
                 }
@@ -135,9 +135,9 @@ impl Book {
         self.keep_on_disk(&entries)
     }
 
-    /// The judge kept one seat of a step's attempts, so the others are never merged.
+    /// The judge kept one of a step's tries, so the others are never merged.
     pub fn keep(&self, kept: &Kept) -> EngineResult<()> {
-        // The attempts of one step share their label up to the seat's number.
+        // The tries of one step share their label up to the try's number.
         let step = |label: &str| label.rsplit_once(':').map(|(step, _)| step.to_owned());
         let Some(kept_step) = step(&kept.label) else {
             return Ok(());
@@ -153,10 +153,10 @@ impl Book {
 }
 
 /// Who built the task the call is about, once someone has.
-pub(super) fn author(bridge: &Bridge<'_>, call: &AgentCall) -> Option<WorkerRef> {
+pub(super) fn author(bridge: &Bridge<'_>, call: &AgentCall) -> Option<ModelRef> {
     let entry = bridge.tasks.known(call.task.as_deref()?)?;
-    let record = record_of(bridge.host, &entry.card).ok()?;
-    Some(owner_of(bridge.host, &record))
+    let record = record_of(bridge.host, &entry.task).ok()?;
+    Some(worker_of(bridge.host, &record))
 }
 
 fn name_of(call: &AgentCall) -> String {
@@ -171,13 +171,13 @@ fn name_of(call: &AgentCall) -> String {
 pub(super) async fn work(
     bridge: &Bridge<'_>,
     call: &AgentCall,
-    worker: &WorkerRef,
+    worker: &ModelRef,
 ) -> EngineResult<AgentEnd> {
     let host = bridge.host;
     let at = &bridge.call.at;
     let entry = bridge.tasks.entry(&name_of(call))?;
     let _turn = entry.turn.lock().await;
-    let card = &entry.card;
+    let task = &entry.task;
     // A worker's own workflow is a level of nesting, which `workflows.max_depth` allows.
     let nests = call.own_workflow
         || call
@@ -185,7 +185,7 @@ pub(super) async fn work(
             .as_ref()
             .is_some_and(|phase| bridge.own_workflow_in.contains(phase));
     if nests && host.settings().workflows.max_depth > 1 {
-        host.shared().let_run_its_own_workflow(card);
+        host.shared().let_run_its_own_workflow(task);
     }
     let already = entry.finished.contains(&call.index);
     let rounds = host.settings().review.max_change_rounds;
@@ -199,10 +199,10 @@ pub(super) async fn work(
         ));
         return Ok(end);
     }
-    let state = if host.read(|state| state.cards.get(card).is_none()) {
+    let state = if host.read(|state| state.tasks.get(task).is_none()) {
         // The brief is the call's words, under the name of whoever wrote them.
-        crate::prompts::instructions::brief_written_by(host, card, bridge.author(call))?;
-        card::create(host, spec(host, call, card, worker))?;
+        crate::prompts::instructions::brief_written_by(host, task, bridge.author(call))?;
+        task::create(host, spec(host, call, task, worker))?;
         // A step kept going `until` a condition has its task worked as that goal from the
         // writer's first turn.
         if let Some(until) = call.until.as_deref().filter(|_| call.writes) {
@@ -212,28 +212,28 @@ pub(super) async fn work(
                 host,
                 until,
                 step,
-                card,
+                task,
                 call.kept_by.as_deref(),
                 max_rounds.copied(),
             )?;
         }
-        pipeline::drive(host, card, at, Until::GatesPassed).await?
+        pipeline::drive(host, task, at, Until::ChecksPassed).await?
     } else {
-        match state_of(host, card)? {
+        match state_of(host, task)? {
             // This very call did its work before the run stopped, so it isn't done twice.
-            state @ (CardState::InReview | CardState::Integrated) if already => state,
-            CardState::InReview => pipeline::revise(host, card, at, &call.prompt).await?,
+            state @ (TaskState::InReview | TaskState::Merged) if already => state,
+            TaskState::InReview => pipeline::revise(host, task, at, &call.prompt).await?,
             // A goal's next round on work the run already merged.
-            CardState::Integrated => pipeline::send_back(host, card, at, &call.prompt).await?,
+            TaskState::Merged => pipeline::send_back(host, task, at, &call.prompt).await?,
             // The run stopped mid-task, and the task picks up where it was.
-            _ => pipeline::drive(host, card, at, Until::GatesPassed).await?,
+            _ => pipeline::drive(host, task, at, Until::ChecksPassed).await?,
         }
     };
-    if !already && matches!(state, CardState::InReview | CardState::Integrated) {
-        bridge.tasks.worked(card, call.index)?;
+    if !already && matches!(state, TaskState::InReview | TaskState::Merged) {
+        bridge.tasks.worked(task, call.index)?;
     }
-    let record = record_of(host, card)?;
-    let session = host.read(|state| newest_owner_session(state, card).cloned());
+    let record = record_of(host, task)?;
+    let session = host.read(|state| newest_worker_session(state, task).cloned());
     let mut end = match &session {
         Some(session) => {
             bridge.ran(call, &session.key)?;
@@ -249,7 +249,7 @@ pub(super) async fn work(
         None => AgentEnd::answered(Value::Null),
     };
     end.result = match state {
-        CardState::InReview | CardState::Integrated => {
+        TaskState::InReview | TaskState::Merged => {
             let said = record
                 .reports
                 .last()
@@ -267,7 +267,7 @@ pub(super) async fn work(
     Ok(end)
 }
 
-fn spec(host: &Host, call: &AgentCall, card: &CardId, worker: &WorkerRef) -> CardSpec {
+fn spec(host: &Host, call: &AgentCall, task: &TaskId, worker: &ModelRef) -> TaskSpec {
     let criteria = host.read(|state| {
         state
             .goal
@@ -280,21 +280,21 @@ fn spec(host: &Host, call: &AgentCall, card: &CardId, worker: &WorkerRef) -> Car
         .task
         .clone()
         .unwrap_or_else(|| labels::slug(&call.label, 3));
-    CardSpec {
-        id: card.clone(),
+    TaskSpec {
+        id: task.clone(),
         title: call.label.clone(),
         task: call.prompt.clone(),
-        kind: CardKind::Build,
+        kind: TaskKind::Build,
         owned_paths: Vec::new(),
         read_only_paths: Vec::new(),
         forbidden_paths: Vec::new(),
         hidden_paths: Vec::new(),
         depends_on: Vec::new(),
         criteria,
-        owner: Some(worker.clone()),
+        worker: Some(worker.clone()),
         // The script's own steps review it.
         reviewers: Vec::new(),
-        budget: CardBudget::default(),
+        limit: TaskLimit::default(),
         predictions: None,
         item: Some(item),
     }
@@ -313,10 +313,10 @@ pub(super) async fn change_of(
         return Ok(None);
     };
     let host = bridge.host;
-    if host.read(|state| state.cards.get(&entry.card).is_none()) {
+    if host.read(|state| state.tasks.get(&entry.task).is_none()) {
         return Ok(None);
     }
-    let tree = worktree::ensure(host, &entry.card).await?;
+    let tree = worktree::ensure(host, &entry.task).await?;
     let git = worktree::tree_git(host, &tree.path).await?;
     let change = match git.head_commit(&tree.path).await? {
         Some(head) => git.review_diff(&tree.path, &tree.base, &head).await?,
@@ -335,44 +335,44 @@ pub(super) async fn tree_of(
     };
     if bridge
         .host
-        .read(|state| state.cards.get(&entry.card).is_none())
+        .read(|state| state.tasks.get(&entry.task).is_none())
     {
         return Ok(None);
     }
-    Ok(Some(worktree::ensure(bridge.host, &entry.card).await?.path))
+    Ok(Some(worktree::ensure(bridge.host, &entry.task).await?.path))
 }
 
 /// What the task's checks said after its last build, one line each, newest per check:
 /// `tests passed: 9 passed, 0 failed`. `None` before any ran.
-pub(super) fn checks_of(bridge: &Bridge<'_>, task: Option<&str>) -> Option<String> {
-    let card = card_of(bridge, task)?;
-    let gates = bridge
+pub(super) fn checks_of(bridge: &Bridge<'_>, name: Option<&str>) -> Option<String> {
+    let task = task_of(bridge, name)?;
+    let checks = bridge
         .host
-        .read(|state| state.cards.get(&card).map(|record| record.gates.clone()))?;
-    checks_text(&gates)
+        .read(|state| state.tasks.get(&task).map(|record| record.checks.clone()))?;
+    checks_text(&checks)
 }
 
 /// What the checks said for every task the script's writers worked on, each line under its
 /// task, for a call about no one task, such as the judge who signs off the run.
 pub(super) fn all_checks(bridge: &Bridge<'_>) -> Option<String> {
-    let tasks: Vec<(String, CardId)> = lock(&bridge.tasks.entries)
+    let entries: Vec<(String, TaskId)> = lock(&bridge.tasks.entries)
         .iter()
         .filter(|entry| !entry.dropped)
-        .map(|entry| (entry.name.clone(), entry.card.clone()))
+        .map(|entry| (entry.name.clone(), entry.task.clone()))
         .collect();
-    let lines: Vec<String> = tasks
+    let lines: Vec<String> = entries
         .iter()
-        .flat_map(|(name, card)| {
-            let gates = bridge
+        .flat_map(|(name, task)| {
+            let checks = bridge
                 .host
-                .read(|state| state.cards.get(card).map(|record| record.gates.clone()))
+                .read(|state| state.tasks.get(task).map(|record| record.checks.clone()))
                 .unwrap_or_default();
             let name = if name == THE_REQUEST {
                 "the request"
             } else {
                 name.as_str()
             };
-            gate_lines(&gates)
+            check_lines(&checks)
                 .into_iter()
                 .map(move |line| format!("{name}: {line}"))
         })
@@ -381,40 +381,40 @@ pub(super) fn all_checks(bridge: &Bridge<'_>) -> Option<String> {
         return None;
     }
     Some(format!(
-        "Argonauts ran these after each build, in its task's worktree:\n{}",
+        "Argonauts Code ran these after each build, in its task's worktree:\n{}",
         lines.join("\n")
     ))
 }
 
-fn checks_text(gates: &[GateOutcome]) -> Option<String> {
-    let lines = gate_lines(gates);
+fn checks_text(checks: &[CheckOutcome]) -> Option<String> {
+    let lines = check_lines(checks);
     if lines.is_empty() {
         return None;
     }
     Some(format!(
-        "Argonauts ran these after the build, in the task's worktree:\n{}",
+        "Argonauts Code ran these after the build, in the task's worktree:\n{}",
         lines.join("\n")
     ))
 }
 
 /// Each check's newest result in one line, such as `tests (node --test) passed: 9 pass`.
-fn gate_lines(gates: &[GateOutcome]) -> Vec<String> {
-    let mut newest: Vec<&GateOutcome> = Vec::new();
-    for gate in gates.iter().filter(|gate| !gate.skipped) {
-        match newest.iter_mut().find(|seen| seen.name == gate.name) {
-            Some(seen) => *seen = gate,
-            None => newest.push(gate),
+fn check_lines(checks: &[CheckOutcome]) -> Vec<String> {
+    let mut newest: Vec<&CheckOutcome> = Vec::new();
+    for check in checks.iter().filter(|check| !check.skipped) {
+        match newest.iter_mut().find(|seen| seen.name == check.name) {
+            Some(seen) => *seen = check,
+            None => newest.push(check),
         }
     }
     newest
         .into_iter()
-        .map(crate::card::gates::result_line)
+        .map(crate::task::checks::result_line)
         .collect()
 }
 
-/// The card the script's `task` is worked on, once a writer took it.
-pub(super) fn card_of(bridge: &Bridge<'_>, task: Option<&str>) -> Option<CardId> {
-    bridge.tasks.known(task?).map(|entry| entry.card)
+/// The task the script's `task` is worked on, once a writer took it.
+pub(super) fn task_of(bridge: &Bridge<'_>, task: Option<&str>) -> Option<TaskId> {
+    bridge.tasks.known(task?).map(|entry| entry.task)
 }
 
 /// A reader's answer about a task that says whether it accepts it is the script's verdict. It
@@ -426,15 +426,15 @@ pub(super) fn judged(
     ran: &Ran,
     answer: &Value,
 ) -> EngineResult<()> {
-    let (Some(task), Some(accept)) = (
+    let (Some(name), Some(accept)) = (
         call.task.as_deref(),
         answer.get("accept").and_then(Value::as_bool),
     ) else {
         return Ok(());
     };
-    let (card, round) = {
+    let (task, round) = {
         let mut entries = lock(&bridge.tasks.entries);
-        let Some(entry) = entries.iter_mut().find(|entry| entry.name == task) else {
+        let Some(entry) = entries.iter_mut().find(|entry| entry.name == name) else {
             return Ok(());
         };
         // One reviewer who asks for a change is enough to send it back.
@@ -443,12 +443,12 @@ pub(super) fn judged(
         let round = u32::try_from(entry.finished.len())
             .unwrap_or(u32::MAX)
             .max(1);
-        let card = entry.card.clone();
+        let task = entry.task.clone();
         bridge.tasks.keep_on_disk(&entries)?;
-        (card, round)
+        (task, round)
     };
     let host = bridge.host;
-    if host.read(|state| state.cards.get(&card).is_none()) {
+    if host.read(|state| state.tasks.get(&task).is_none()) {
         return Ok(());
     }
     let review = ReviewEvent::Reviewed {
@@ -457,7 +457,7 @@ pub(super) fn judged(
         round,
         review: review_of(accept, answer),
     };
-    host.record(Some(&card), Some(&ran.key), RunEventKind::Review(review))?;
+    host.record(Some(&task), Some(&ran.key), RunEventKind::Review(review))?;
     Ok(())
 }
 
@@ -504,18 +504,18 @@ fn review_of(accept: bool, answer: &Value) -> ReviewOutput {
 }
 
 /// The script is over: what its reviews accepted, or nobody reviewed, is merged into the run.
-/// A task its reviews never accepted is yours to decide, and an attempt the judge didn't keep
+/// A task its reviews never accepted is yours to decide, and a try the judge didn't keep
 /// stays on its branch. Returns how many tasks were merged.
 pub(super) async fn finish(bridge: &Bridge<'_>, at: &StepAt) -> EngineResult<usize> {
     let host = bridge.host;
     let entries = lock(&bridge.tasks.entries).clone();
     let mut merged = 0;
     for entry in entries {
-        let card = &entry.card;
-        if entry.dropped || host.read(|state| state.cards.get(card).is_none()) {
+        let task = &entry.task;
+        if entry.dropped || host.read(|state| state.tasks.get(task).is_none()) {
             continue;
         }
-        if state_of(host, card)? == CardState::InReview {
+        if state_of(host, task)? == TaskState::InReview {
             if entry.accepted == Some(false) {
                 let what = match entry.sent_back {
                     0 => "the workflow's reviewers didn't accept it".to_owned(),
@@ -524,14 +524,14 @@ pub(super) async fn finish(bridge: &Bridge<'_>, at: &StepAt) -> EngineResult<usi
                         rounds_of_fixes(n)
                     ),
                 };
-                let why = with_findings(what, &newest_findings(host, card));
-                pipeline::transition(host, card, Trigger::ChangesRequestedAgain, &why)?;
+                let why = with_findings(what, &newest_findings(host, task));
+                pipeline::transition(host, task, Trigger::ChangesRequestedAgain, &why)?;
             } else {
                 let why = "the workflow's own steps accepted it";
-                pipeline::transition(host, card, Trigger::Approved, why)?;
+                pipeline::transition(host, task, Trigger::Approved, why)?;
             }
         }
-        if pipeline::run_card(host, card, at).await? == CardState::Integrated {
+        if pipeline::run_task(host, task, at).await? == TaskState::Merged {
             merged += 1;
         }
     }
@@ -540,8 +540,8 @@ pub(super) async fn finish(bridge: &Bridge<'_>, at: &StepAt) -> EngineResult<usi
 
 /// What the task's newest round of reviews asked for, in the reviewers' words: their findings,
 /// or the summary of one who gave none.
-fn newest_findings(host: &Host, card: &CardId) -> Verdict {
-    let reviews = record_of(host, card)
+fn newest_findings(host: &Host, task: &TaskId) -> Verdict {
+    let reviews = record_of(host, task)
         .map(|record| record.reviews)
         .unwrap_or_default();
     let reviewed = || {
@@ -585,10 +585,10 @@ fn rounds_of_fixes(n: u32) -> String {
 mod tests {
     use super::*;
 
-    fn gate(name: &str, passed: bool, summary: &str) -> GateOutcome {
-        GateOutcome {
+    fn check(name: &str, passed: bool, summary: &str) -> CheckOutcome {
+        CheckOutcome {
             name: name.to_owned(),
-            kind: argonauts_core::events::card::GateKind::Command,
+            kind: argonauts_core::events::task::CheckKind::Command,
             passed,
             command: Some(vec!["node".to_owned(), "--test".to_owned()]),
             exit_code: Some(i32::from(!passed)),
@@ -603,14 +603,14 @@ mod tests {
 
     #[test]
     fn a_reviewer_reads_the_newest_result_of_each_check() {
-        let gates = [
-            gate("tests", false, "8 pass, 1 fail"),
-            gate("tests", true, "9 pass, 0 fail"),
+        let checks = [
+            check("tests", false, "8 pass, 1 fail"),
+            check("tests", true, "9 pass, 0 fail"),
         ];
         assert_eq!(
-            checks_text(&gates).as_deref(),
+            checks_text(&checks).as_deref(),
             Some(
-                "Argonauts ran these after the build, in the task's worktree:\n\
+                "Argonauts Code ran these after the build, in the task's worktree:\n\
                  tests (node --test) passed: 9 pass, 0 fail"
             )
         );
@@ -627,18 +627,18 @@ mod tests {
         let second = book
             .entry("migrate-user-table-to-new-schema-step-2")
             .unwrap();
-        assert_eq!(first.card.as_str(), "task-migrate-user-table-to-new-schema");
+        assert_eq!(first.task.as_str(), "task-migrate-user-table-to-new-schema");
         assert_eq!(
-            second.card.as_str(),
+            second.task.as_str(),
             "task-migrate-user-table-to-new-schema-2"
         );
         // A name seen before keeps its task.
         let again = book
             .entry("migrate-user-table-to-new-schema-step-2")
             .unwrap();
-        assert_eq!(again.card, second.card);
+        assert_eq!(again.task, second.task);
         // A name in another script still makes a task.
         let chinese = book.entry("修復登入頁面").unwrap();
-        assert_eq!(chinese.card.as_str(), "task-task");
+        assert_eq!(chinese.task.as_str(), "task-task");
     }
 }

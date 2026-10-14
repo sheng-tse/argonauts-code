@@ -27,7 +27,7 @@ const RULES: &[(&[&str], ErrorCategory, bool)] = &[
         ErrorCategory::Billing,
         false,
     ),
-    (&["token budget exhausted"], ErrorCategory::Budget, false),
+    (&["token budget exhausted"], ErrorCategory::Limit, false),
     (
         &[
             "context window",

@@ -8,8 +8,8 @@ mod cache;
 pub mod catalog;
 pub mod discovery;
 mod estimate;
-mod family;
 mod files;
+mod provider;
 pub mod reported;
 mod trust;
 
@@ -21,13 +21,13 @@ use argonauts_core::ReportedModel;
 use argonauts_core::future::BoxFuture;
 use argonauts_core::limits::CostEstimate;
 use argonauts_core::model_catalog::ModelCatalog;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::paths::Paths;
 use argonauts_core::registry::{CostUnit, ModelAccess, ModelEntry, ModelRegistry, RegistryKind};
 use argonauts_core::settings::Settings;
 use time::OffsetDateTime;
 
-use crate::harnesses::every_builtin_harness;
+use crate::clis::every_builtin_cli;
 use discovery::{CLAUDE_LIST_FRESH_FOR, ClaudeSource, agent_enabled};
 
 pub use builtin::{
@@ -35,9 +35,9 @@ pub use builtin::{
 };
 pub use cache::ModelCache;
 pub use catalog::{CatalogSource, FetchedCatalog, shipped_catalog};
-pub(crate) use family::resolve_family;
-pub use family::{family_from_model_id, family_problems};
 pub use files::{ModelTier, ModelsFile, read_registry_file, set_model_tier};
+pub(crate) use provider::resolve_provider;
+pub use provider::{provider_from_model_id, provider_problems};
 pub use trust::ProjectModels;
 
 /// Leaves out the repo's `.argonauts/models.toml`, since this takes no trust input; use
@@ -72,7 +72,7 @@ pub fn registry_with_trust(
 }
 
 /// The CLIs that list their own models to a session: Claude Code in its `initialize` reply.
-const REPORTING_HARNESSES: &[&str] = &["claude-code"];
+const REPORTING_CLIS: &[&str] = &["claude-code"];
 
 /// `<repo>/.argonauts/models.toml`.
 pub fn project_models_path(repo_root: &Path) -> PathBuf {
@@ -98,13 +98,13 @@ pub struct FileRegistry {
     /// The catalog fetched last, as the cache keeps it and as it reads.
     fetched: RwLock<Option<(FetchedCatalog, ModelCatalog)>>,
     yours: Vec<ModelsFile>,
-    /// What each CLI that lists its own models listed last, by harness id.
+    /// What each CLI that lists its own models listed last, by CLI id.
     reported: RwLock<BTreeMap<String, Vec<ReportedModel>>>,
     /// Where those lists are kept between runs; `None` keeps them in memory.
     home: Option<Paths>,
-    /// (harness id, `family`) for the built-in profiles and every manifest in the files read,
+    /// (CLI id, `provider`) for the built-in profiles and every manifest in the files read,
     /// later winning by id.
-    harness_families: Vec<(String, String)>,
+    cli_providers: Vec<(String, String)>,
     warnings: Vec<String>,
 }
 
@@ -150,9 +150,9 @@ impl FileRegistry {
     }
 
     fn empty(settings: &Settings) -> Self {
-        let harness_families = every_builtin_harness()
+        let cli_providers = every_builtin_cli()
             .into_iter()
-            .map(|manifest| (manifest.id, manifest.family))
+            .map(|manifest| (manifest.id, manifest.provider))
             .collect();
         Self {
             settings: settings.clone(),
@@ -168,7 +168,7 @@ impl FileRegistry {
             yours: Vec::new(),
             reported: RwLock::new(BTreeMap::new()),
             home: None,
-            harness_families,
+            cli_providers,
             warnings: Vec::new(),
         }
     }
@@ -260,10 +260,10 @@ impl FileRegistry {
             .reported
             .get_mut()
             .unwrap_or_else(PoisonError::into_inner);
-        for harness in REPORTING_HARNESSES {
-            let models = reported::read(&home.reported_models(harness));
+        for cli in REPORTING_CLIS {
+            let models = reported::read(&home.reported_models(cli));
             if !models.is_empty() {
-                reported.insert((*harness).to_owned(), models);
+                reported.insert((*cli).to_owned(), models);
             }
         }
         self.home = Some(home);
@@ -305,14 +305,14 @@ impl FileRegistry {
     }
 
     fn add_file(&mut self, mut file: ModelsFile) {
-        for manifest in std::mem::take(&mut file.harnesses) {
+        for manifest in std::mem::take(&mut file.clis) {
             match self
-                .harness_families
+                .cli_providers
                 .iter_mut()
                 .find(|(id, _)| *id == manifest.id)
             {
-                Some(slot) => slot.1 = manifest.family,
-                None => self.harness_families.push((manifest.id, manifest.family)),
+                Some(slot) => slot.1 = manifest.provider,
+                None => self.cli_providers.push((manifest.id, manifest.provider)),
             }
         }
         self.yours.push(file);
@@ -342,8 +342,8 @@ impl FileRegistry {
             .clone();
         merge(&mut all, discovered);
         let reported = self.reported.read().unwrap_or_else(PoisonError::into_inner);
-        for (harness, models) in reported.iter() {
-            let added = reported::new_entries(&self.settings, harness, models, &all);
+        for (cli, models) in reported.iter() {
+            let added = reported::new_entries(&self.settings, cli, models, &all);
             all.extend(added);
         }
         for file in &self.yours {
@@ -357,24 +357,24 @@ impl FileRegistry {
         all
     }
 
-    fn manifest_family(&self, worker: &WorkerRef) -> Option<&str> {
-        self.harness_families
+    fn manifest_provider(&self, worker: &ModelRef) -> Option<&str> {
+        self.cli_providers
             .iter()
-            .find(|(id, _)| *id == worker.worker)
-            .map(|(_, family)| family.as_str())
+            .find(|(id, _)| *id == worker.agent)
+            .map(|(_, provider)| provider.as_str())
     }
 
-    /// A model the registry has no entry for still costs what its harness or endpoint does:
-    /// the harness's default entry, or an entry made from `[endpoints.<id>]`.
-    fn estimate_entry(&self, worker: &WorkerRef) -> Option<ModelEntry> {
+    /// A model the registry has no entry for still costs what its CLI or endpoint does:
+    /// the CLI's default entry, or an entry made from `[endpoints.<id>]`.
+    fn estimate_entry(&self, worker: &ModelRef) -> Option<ModelEntry> {
         if let Some(entry) = self.get(worker) {
             return Some(entry);
         }
-        if let Some(entry) = self.get(&WorkerRef::new(worker.worker.clone(), None)) {
+        if let Some(entry) = self.get(&ModelRef::new(worker.agent.clone(), None)) {
             return Some(entry);
         }
-        let endpoint = endpoint_settings(&self.settings, &worker.worker)?;
-        let mut entry = builtin::harness_entry(&self.settings, &worker.worker, None);
+        let endpoint = endpoint_settings(&self.settings, &worker.agent)?;
+        let mut entry = builtin::cli_entry(&self.settings, &worker.agent, None);
         entry.id = worker.clone();
         entry.kind = RegistryKind::Endpoint;
         entry.tools = false;
@@ -387,21 +387,21 @@ impl FileRegistry {
     }
 }
 
-/// The cached entries whose harness is still on or whose endpoint is still configured, with
-/// a harness's access and cost from the settings now, since you may have changed its auth.
+/// The cached entries whose CLI is still on or whose endpoint is still configured, with
+/// a CLI's access and cost from the settings now, since you may have changed its auth.
 fn still_listed(settings: &Settings, cached: Vec<ModelEntry>) -> Vec<ModelEntry> {
     cached
         .into_iter()
         .filter(|entry| match entry.kind {
-            RegistryKind::Harness => settings
+            RegistryKind::Cli => settings
                 .agents
-                .get(&entry.id.worker)
+                .get(&entry.id.agent)
                 .is_none_or(|agent| agent.enabled),
-            RegistryKind::Endpoint => settings.endpoints.contains_key(&entry.id.worker),
+            RegistryKind::Endpoint => settings.endpoints.contains_key(&entry.id.agent),
         })
         .map(|mut entry| {
-            if entry.kind == RegistryKind::Harness {
-                (entry.access, entry.cost) = builtin::harness_access(settings, &entry.id.worker);
+            if entry.kind == RegistryKind::Cli {
+                (entry.access, entry.cost) = builtin::cli_access(settings, &entry.id.agent);
             }
             entry
         })
@@ -410,7 +410,7 @@ fn still_listed(settings: &Settings, cached: Vec<ModelEntry>) -> Vec<ModelEntry>
 
 /// A Claude Code model read from Anthropic, rather than one of the aliases Claude Code takes.
 fn from_anthropic(entry: &ModelEntry) -> bool {
-    entry.id.worker == "claude-code"
+    entry.id.agent == "claude-code"
         && entry.discovered
         && entry
             .id
@@ -430,28 +430,28 @@ fn merge(into: &mut Vec<ModelEntry>, later: Vec<ModelEntry>) {
 }
 
 /// The entry with this exact id, else the one that lists the model as an alias.
-fn position(entries: &[ModelEntry], worker: &WorkerRef) -> Option<usize> {
+fn position(entries: &[ModelEntry], worker: &ModelRef) -> Option<usize> {
     let exact = entries.iter().position(|e| e.id == *worker);
     let alias = || {
         let model = worker.model.as_deref()?;
         entries
             .iter()
-            .position(|e| e.id.worker == worker.worker && e.aliases.iter().any(|a| a == model))
+            .position(|e| e.id.agent == worker.agent && e.aliases.iter().any(|a| a == model))
     };
     exact.or_else(alias)
 }
 
 impl ModelRegistry for FileRegistry {
-    fn get(&self, worker: &WorkerRef) -> Option<ModelEntry> {
+    fn get(&self, worker: &ModelRef) -> Option<ModelEntry> {
         let entries = self.entries();
         position(&entries, worker).map(|at| entries[at].clone())
     }
 
-    fn family(&self, worker: &WorkerRef) -> String {
-        family::resolve_family(
+    fn provider(&self, worker: &ModelRef) -> String {
+        provider::resolve_provider(
             worker,
             self.get(worker).as_ref(),
-            self.manifest_family(worker),
+            self.manifest_provider(worker),
         )
     }
 
@@ -459,7 +459,7 @@ impl ModelRegistry for FileRegistry {
         self.entries()
     }
 
-    fn estimate(&self, worker: &WorkerRef, input_tokens: u64, output_tokens: u64) -> CostEstimate {
+    fn estimate(&self, worker: &ModelRef, input_tokens: u64, output_tokens: u64) -> CostEstimate {
         let entry = self.estimate_entry(worker);
         estimate::estimate(entry.as_ref(), worker, input_tokens, output_tokens)
     }
@@ -497,7 +497,7 @@ impl ModelRegistry for FileRegistry {
                 }
                 Some(Err(reason)) => found
                     .skipped
-                    .push(format!("Argonauts' model catalog: {reason}")),
+                    .push(format!("Argonauts Code's model catalog: {reason}")),
                 None => {}
             }
             let mut claude_listed = *self
@@ -533,7 +533,7 @@ impl ModelRegistry for FileRegistry {
                     .collect();
                 let kept = discovered
                     .iter()
-                    .filter(|entry| found.failed.contains(&entry.id.worker))
+                    .filter(|entry| found.failed.contains(&entry.id.agent))
                     .cloned();
                 let models: Vec<ModelEntry> = found
                     .models
@@ -598,7 +598,7 @@ impl ModelRegistry for FileRegistry {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
-            .map(|(harness, models)| reported::layer(harness, models))
+            .map(|(cli, models)| reported::layer(cli, models))
             .collect();
         catalog::layered(
             fetched.as_ref().map(|(_, catalog)| catalog),
@@ -608,7 +608,7 @@ impl ModelRegistry for FileRegistry {
         )
     }
 
-    fn models_reported(&self, harness: &str, models: &[ReportedModel]) {
+    fn models_reported(&self, cli: &str, models: &[ReportedModel]) {
         if models.is_empty() {
             return;
         }
@@ -616,13 +616,13 @@ impl ModelRegistry for FileRegistry {
             .reported
             .write()
             .unwrap_or_else(PoisonError::into_inner);
-        if reported.get(harness).is_some_and(|known| known == models) {
+        if reported.get(cli).is_some_and(|known| known == models) {
             return;
         }
-        reported.insert(harness.to_owned(), models.to_vec());
+        reported.insert(cli.to_owned(), models.to_vec());
         // A list that can't be kept is only missing until the CLI's next reply.
         if let Some(home) = &self.home {
-            let _ = reported::write(&home.reported_models(harness), models);
+            let _ = reported::write(&home.reported_models(cli), models);
         }
     }
 }
@@ -669,7 +669,7 @@ mod tests {
         registry.read_reported(Paths::new(home.path()));
         registry.models_reported("claude-code", &listed);
 
-        let worker = |w: &str| -> WorkerRef { w.parse().unwrap() };
+        let worker = |w: &str| -> ModelRef { w.parse().unwrap() };
         let newest = registry.get(&worker("claude-code/claude-opus-6")).unwrap();
         assert_eq!(newest.efforts, ["low", "max"]);
         let catalog = registry.catalog();
@@ -715,7 +715,7 @@ mod tests {
             },
         );
         let registry = FileRegistry::from_files(&settings, None, None);
-        let worker = |w: &str| -> WorkerRef { w.parse().unwrap() };
+        let worker = |w: &str| -> ModelRef { w.parse().unwrap() };
         assert!(registry.get(&worker("claude-code/opus")).is_some());
         assert!(registry.get(&worker("codex/gpt-6-luna")).is_none());
         assert_eq!(registry.list().len(), 7);
@@ -747,7 +747,7 @@ mod tests {
         let file = dir.path().join("models.toml");
         std::fs::write(
             &file,
-            "[[model]]\nid = \"ollama/llama3.2:latest\"\nfamily = \"llama\"\nkind = \"endpoint\"\n\
+            "[[model]]\nid = \"ollama/llama3.2:latest\"\nprovider = \"meta\"\nkind = \"endpoint\"\n\
              access = \"local\"\ncost = { unit = \"none\" }\ntier = 2\n",
         )
         .unwrap();
@@ -794,8 +794,8 @@ mod tests {
         assert!(registry.get(&"ollama/llama3".parse().unwrap()).is_none());
     }
 
-    const LAUNCH_ENTRY: &str = "[[model]]\nid = \"opencode/ollama/llama3.2\"\nfamily = \"gpt\"\n\
-        kind = \"harness\"\naccess = \"local\"\ncost = { unit = \"none\" }\ntier = 5\n\
+    const LAUNCH_ENTRY: &str = "[[model]]\nid = \"opencode/ollama/llama3.2\"\nprovider = \"openai\"\n\
+        kind = \"cli\"\naccess = \"local\"\ncost = { unit = \"none\" }\ntier = 5\n\
         launch = { provider_model = \"openrouter/openai/gpt-5\" }\n";
 
     #[test]
@@ -803,15 +803,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("models.toml");
         std::fs::write(&file, LAUNCH_ENTRY).unwrap();
-        let worker: WorkerRef = "opencode/ollama/llama3.2".parse().unwrap();
+        let worker: ModelRef = "opencode/ollama/llama3.2".parse().unwrap();
 
         let untrusted = ProjectModels::read(&file, &[]).unwrap();
         assert!(!untrusted.trusted());
         let registry = FileRegistry::from_files(&Settings::default(), None, Some(&untrusted));
         let launch = registry.get(&worker).and_then(|e| e.launch);
         assert_eq!(launch, None);
-        // The id names the family; the untrusted entry's "gpt" is ignored.
-        assert_eq!(registry.family(&worker), "llama");
+        // The id names the provider; the untrusted entry's "openai" is ignored.
+        assert_eq!(registry.provider(&worker), "meta");
         assert_eq!(registry.warnings().len(), 1, "{:?}", registry.warnings());
         assert!(registry.warnings()[0].contains("its model entry is ignored until you trust"));
 
@@ -856,7 +856,7 @@ mod tests {
     fn a_tier_alone_keeps_the_rest_of_the_entry_current() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("models.toml");
-        let worker: WorkerRef = "claude-code/opus".parse().unwrap();
+        let worker: ModelRef = "claude-code/opus".parse().unwrap();
         let opus = FileRegistry::from_files(&Settings::default(), None, None)
             .get(&worker)
             .unwrap();
@@ -920,7 +920,7 @@ mod tests {
         assert!(skipped[0].starts_with("endpoint gone: "), "{skipped:?}");
     }
 
-    /// A stand-in `codex` that prints `fixture` for `codex debug models`, and fails otherwise.
+    /// A fake `codex` that prints `fixture` for `codex debug models`, and fails otherwise.
     #[cfg(unix)]
     fn fake_codex(dir: &Path, name: &str, fixture: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
@@ -948,7 +948,7 @@ mod tests {
         registry
             .list()
             .into_iter()
-            .filter(|e| e.id.worker == "codex" && e.id.model.is_some())
+            .filter(|e| e.id.agent == "codex" && e.id.model.is_some())
             .collect()
     }
 
@@ -957,7 +957,7 @@ mod tests {
     async fn the_cached_list_counts_until_a_refresh_lands() {
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("home").join("models-cache.json");
-        let codex = fake_codex(dir.path(), "codex", "codex/0.158.0/debug-models.json");
+        let codex = fake_codex(dir.path(), "codex", "codex/debug-models.json");
         let settings = codex_only(codex);
 
         let first = FileRegistry::from_files(&settings, None, None).with_cache(&cache);
@@ -978,11 +978,7 @@ mod tests {
         assert!(listed.iter().all(|e| e.discovered && !e.efforts.is_empty()));
 
         // A refresh that fails for Codex keeps what Codex listed before.
-        let failing = fake_codex(
-            dir.path(),
-            "codex-broken",
-            "codex/0.158.0/debug-models.json",
-        );
+        let failing = fake_codex(dir.path(), "codex-broken", "codex/debug-models.json");
         std::fs::write(&failing, "#!/bin/sh\necho 'not logged in' >&2\nexit 3\n").unwrap();
         let broken = FileRegistry::from_files(&codex_only(failing), None, None).with_cache(&cache);
         assert!(broken.discover().await.is_empty());
@@ -990,7 +986,7 @@ mod tests {
         assert_eq!(broken.discovery_skipped().len(), 1);
         assert_eq!(ModelCache::read(&cache).unwrap().models.len(), 7);
 
-        // A harness you turned off, or an API key you switched to, shows at once.
+        // A CLI you turned off, or an API key you switched to, shows at once.
         let mut off = settings.clone();
         off.agents.get_mut("codex").unwrap().enabled = false;
         let off = FileRegistry::from_files(&off, None, None).with_cache(&cache);
@@ -1019,7 +1015,7 @@ mod tests {
     async fn a_refresh_drops_models_a_cli_no_longer_lists() {
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("models-cache.json");
-        let mut gone = harness_entry_for_test("codex", "gpt-retired");
+        let mut gone = cli_entry_for_test("codex", "gpt-retired");
         gone.discovered = true;
         ModelCache {
             refreshed: OffsetDateTime::UNIX_EPOCH,
@@ -1030,16 +1026,16 @@ mod tests {
         }
         .write(&cache)
         .unwrap();
-        let codex = fake_codex(dir.path(), "codex", "codex/0.158.0/debug-models.json");
+        let codex = fake_codex(dir.path(), "codex", "codex/debug-models.json");
         let registry = FileRegistry::from_files(&codex_only(codex), None, None).with_cache(&cache);
-        let retired: WorkerRef = "codex/gpt-retired".parse().unwrap();
+        let retired: ModelRef = "codex/gpt-retired".parse().unwrap();
         assert!(registry.get(&retired).is_some());
         registry.discover().await;
         assert!(registry.get(&retired).is_none());
         assert!(registry.refreshed().unwrap() > OffsetDateTime::UNIX_EPOCH);
     }
 
-    fn harness_entry_for_test(adapter: &str, model: &str) -> ModelEntry {
-        builtin::harness_entry(&Settings::default(), adapter, Some(model))
+    fn cli_entry_for_test(adapter: &str, model: &str) -> ModelEntry {
+        builtin::cli_entry(&Settings::default(), adapter, Some(model))
     }
 }

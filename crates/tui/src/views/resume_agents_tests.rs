@@ -16,7 +16,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use time::macros::datetime;
 use time::{Duration, OffsetDateTime};
 
-use super::{Footer, ResumePicker};
+use super::ResumePicker;
 use crate::state::AppState;
 use crate::theme::Theme;
 use crate::views::{View, ViewCtx, ViewOutcome};
@@ -65,11 +65,11 @@ fn helper(id: &str, kind: SubagentKind) -> Helper {
     }
 }
 
-/// run-02, still parked, with its finished owner, then run-01, merged, with its owner (who
+/// run-02, still waiting, with its finished worker, then run-01, merged, with its worker (who
 /// started two explorers and a workflow) and its reviewer, whose CLI can't resume.
 fn picker() -> ResumePicker {
-    let mut owner = agent("run-01", 1, RoleName::Worker, "claude-code", Resume::Ready);
-    owner.helpers = vec![
+    let mut worker = agent("run-01", 1, RoleName::Worker, "claude-code", Resume::Ready);
+    worker.helpers = vec![
         helper("toolu_01", SubagentKind::Subagent),
         helper("toolu_02", SubagentKind::Subagent),
         helper("wf_01", SubagentKind::Workflow),
@@ -83,13 +83,13 @@ fn picker() -> ResumePicker {
             why: "OpenCode can't resume a session".into(),
         },
     );
-    let parked = agent("run-02", 1, RoleName::Worker, "codex", Resume::RunOwns);
+    let waiting = agent("run-02", 1, RoleName::Worker, "codex", Resume::RunOwns);
     let runs = vec![
-        run("run-02", 1, RunPhase::Parked),
+        run("run-02", 1, RunPhase::Waiting),
         run("run-01", 5, RunPhase::Merged),
     ];
     let read = runs.iter().map(|run| run.run.clone()).collect();
-    let mut view = ResumePicker::new(runs).with_agents(vec![owner, reviewer, parked], read);
+    let mut view = ResumePicker::new(runs).with_agents(vec![worker, reviewer, waiting], read);
     view.clock = crate::format::WallClock::pinned(WALL);
     view
 }
@@ -130,24 +130,11 @@ fn rows(view: &ResumePicker) -> Vec<String> {
 
 /// Each row's kind and id, such as `agent s-001`.
 fn listed(view: &ResumePicker) -> Vec<String> {
-    rows(view)
-        .iter()
-        .map(|row| {
-            let words: Vec<&str> = row
-                .split_whitespace()
-                .filter(|word| *word != "❯")
-                .take(2)
-                .collect();
-            words.join(" ")
-        })
-        .collect()
+    view.rows.iter().map(|row| view.named(*row)).collect()
 }
 
 fn hints(view: &ResumePicker) -> Vec<String> {
-    match view.footer() {
-        Footer::Hints(parts) => parts.into_iter().map(|(hint, _)| hint).collect(),
-        Footer::Line(_) => Vec::new(),
-    }
+    view.keys().into_iter().map(|(key, _)| key).collect()
 }
 
 /// Moves the selection to the row `at`, counting from the first row under the heading.
@@ -174,12 +161,10 @@ fn resumed(outcome: &ViewOutcome) -> Option<AgentSessionRef> {
 fn a_runs_agents_fold_under_it_until_you_open_it() {
     let mut view = picker();
     assert_eq!(listed(&view), ["run run-02", "run run-01"]);
-    let header = view.header(&Theme::dark());
-    assert_eq!(header.summary, "2 runs · 3 agent sessions");
 
     select(&mut view, 1);
     assert!(
-        hints(&view).contains(&"⏎ agents".to_owned()),
+        hints(&view).contains(&"enter shows its agents".to_owned()),
         "{:?}",
         hints(&view)
     );
@@ -193,9 +178,8 @@ fn a_runs_agents_fold_under_it_until_you_open_it() {
     );
     let text = rows(&view);
     for cell in [
-        "  s-001",
-        // Two subagents and a workflow, counted on the session's row.
-        "worker · task-001 · 3 helpers · Fixed both functions.",
+        // Indented under its run, with two subagents and a workflow counted on its row.
+        "  worker · task-001 · 3 helpers · Fixed both functions.",
         "Claude Code",
         "5h ago",
     ] {
@@ -220,7 +204,7 @@ fn enter_carries_on_a_session_whose_run_ended() {
     select(&mut view, 1);
     press(&mut view, KeyCode::Right);
     select(&mut view, 2);
-    assert!(hints(&view).contains(&"⏎ continue".to_owned()));
+    assert!(hints(&view).contains(&"enter continues it".to_owned()));
     let outcome = press(&mut view, KeyCode::Enter);
     assert_eq!(
         resumed(&outcome),
@@ -230,7 +214,7 @@ fn enter_carries_on_a_session_whose_run_ended() {
 
     // The app says why one can't, and shows its transcript.
     select(&mut view, 3);
-    assert!(hints(&view).contains(&"⏎ transcript".to_owned()));
+    assert!(hints(&view).contains(&"enter shows its transcript".to_owned()));
     let outcome = press(&mut view, KeyCode::Enter);
     assert_eq!(
         resumed(&outcome),
@@ -239,12 +223,12 @@ fn enter_carries_on_a_session_whose_run_ended() {
     );
 }
 
-/// The parked run still owns its finished owner's session: its next round resumes it.
+/// The waiting run still owns its finished worker's session: its next round resumes it.
 #[test]
 fn a_session_whose_run_hasnt_ended_waits_for_the_run() {
     let mut view = picker();
     select(&mut view, 0);
-    assert!(hints(&view).contains(&"⏎ resume".to_owned()));
+    assert!(hints(&view).contains(&"enter resumes it".to_owned()));
     assert!(hints(&view).contains(&"→ agents".to_owned()));
     press(&mut view, KeyCode::Right);
     select(&mut view, 1);
@@ -256,7 +240,7 @@ fn a_session_whose_run_hasnt_ended_waits_for_the_run() {
     );
     let offered = hints(&view);
     assert!(
-        offered.iter().all(|hint| !hint.starts_with('⏎')),
+        offered.iter().all(|hint| !hint.starts_with("enter")),
         "{offered:?}"
     );
     match press(&mut view, KeyCode::Enter) {
@@ -277,10 +261,13 @@ fn slash_narrows_the_list_to_the_rows_that_match() {
     // Agents show under their run when they match, folded or not.
     typed(&mut view, "opencode");
     assert_eq!(listed(&view), ["run run-01", "agent s-002"]);
-    assert_eq!(view.header(&Theme::dark()).summary, "2 of 5 match");
+    assert_eq!(
+        view.title_line("~", 2, &Theme::dark()).to_string(),
+        "Resume a conversation · in ~ · search: opencode"
+    );
     // Letters are the search's now, so x stops nothing.
-    assert!(hints(&view).contains(&"esc clear search".to_owned()));
-    assert!(!hints(&view).contains(&"x stop".to_owned()));
+    assert!(hints(&view).contains(&"esc clears the search".to_owned()));
+    assert!(!hints(&view).contains(&"x stops it".to_owned()));
 
     // Every word you type is found, in any case.
     for _ in 0.."opencode".len() {
@@ -312,9 +299,9 @@ fn an_older_runs_agents_are_asked_for_when_you_open_it() {
         run("run-02", 1, RunPhase::Merged),
         run("run-01", 30, RunPhase::Merged),
     ];
-    let owner = agent("run-02", 1, RoleName::Worker, "claude-code", Resume::Ready);
+    let worker = agent("run-02", 1, RoleName::Worker, "claude-code", Resume::Ready);
     let mut view =
-        ResumePicker::new(runs).with_agents(vec![owner], vec![RunId::new("run-02").unwrap()]);
+        ResumePicker::new(runs).with_agents(vec![worker], vec![RunId::new("run-02").unwrap()]);
     select(&mut view, 1);
     match press(&mut view, KeyCode::Right) {
         ViewOutcome::Request(ViewRequest::AgentSessions { run }) => {
@@ -333,7 +320,7 @@ fn an_older_runs_agents_are_asked_for_when_you_open_it() {
     // A fresh list from the app keeps what was read since.
     let data = ViewData::Runs {
         runs: view.runs.clone(),
-        chats: Vec::new(),
+        conversations: Vec::new(),
         sessions: Vec::new(),
         agents: vec![agent(
             "run-02",
@@ -375,7 +362,7 @@ fn a_run_that_ended_offers_no_stop() {
     let mut view = picker();
     select(&mut view, 1);
     assert!(
-        !hints(&view).contains(&"x stop".to_owned()),
+        !hints(&view).contains(&"x stops it".to_owned()),
         "{:?}",
         hints(&view)
     );
@@ -387,22 +374,28 @@ fn a_run_that_ended_offers_no_stop() {
     }
     select(&mut view, 0);
     assert!(
-        hints(&view).contains(&"x stop".to_owned()),
+        hints(&view).contains(&"x stops it".to_owned()),
         "{:?}",
         hints(&view)
     );
 }
 
-/// The title says a step named like its role once, as the retro's is, and leaves out the
+/// The title says a step named like its role once, as the run review's is, and leaves out the
 /// fenced report a build session's last message ends with.
 #[test]
 fn a_title_says_its_role_once_and_leaves_the_report_block_out() {
-    let mut retro = agent("run-01", 3, RoleName::Retro, "claude-code", Resume::Ready);
-    retro.label = Some("retro".into());
-    retro.last_message = None;
-    assert_eq!(super::agent_title(&retro), "retro");
-    let mut owner = agent("run-01", 1, RoleName::Worker, "claude-code", Resume::Ready);
-    owner.label = Some("build:money".into());
-    owner.last_message = Some("Done\n```json\n{\"status\": \"done\"}\n```".into());
-    assert_eq!(super::agent_title(&owner), "worker · build:money · Done");
+    let mut run_review = agent(
+        "run-01",
+        3,
+        RoleName::RunReview,
+        "claude-code",
+        Resume::Ready,
+    );
+    run_review.label = Some("run-review".into());
+    run_review.last_message = None;
+    assert_eq!(super::agent_title(&run_review), "run-review");
+    let mut worker = agent("run-01", 1, RoleName::Worker, "claude-code", Resume::Ready);
+    worker.label = Some("build:money".into());
+    worker.last_message = Some("Done\n```json\n{\"status\": \"done\"}\n```".into());
+    assert_eq!(super::agent_title(&worker), "worker · build:money · Done");
 }

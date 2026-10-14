@@ -5,7 +5,7 @@
 //! | Part | Where |
 //! |---|---|
 //! | the loaded files, and what each command last printed | this file |
-//! | the numbers Argonauts already keeps, as readings | [`sources`] |
+//! | the numbers Argonauts Code already keeps, as readings | [`sources`] |
 //! | a command, in the sandbox, with a timeout | [`command`] |
 //! | writing a file | [`files`] |
 
@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use argonauts_conductor::sandbox::{self, SandboxWrap};
 use argonauts_core::app::{AppEvent, ViewData};
-use argonauts_core::input::WidgetChange;
+use argonauts_core::input::ModPlaceChange;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::mods::view::{
     FileProblem, LineCli, LineNumbers, ModChange, ModRow, ModRowKind, ModsView,
@@ -29,7 +29,7 @@ use argonauts_core::settings::mods::{
     LoadedMod, MODS_DIR, ModFile, ModOrigin, ModPlace, ModReading, ModSet, ModSource, builtin,
     is_mod_name, load, span_words,
 };
-use argonauts_core::settings::ui::{Place, UiSettings, WidgetName};
+use argonauts_core::settings::ui::{ModName, Place, UiSettings};
 use argonauts_core::views::ContextRow;
 use argonauts_core::{NoteLevel, Spend};
 use tokio::sync::{mpsc, watch};
@@ -167,7 +167,7 @@ struct Watcher {
     env: Arc<AppEnv>,
     settings: watch::Receiver<Arc<Settings>>,
     internal: mpsc::UnboundedSender<Internal>,
-    /// A test's stand-in. Unset, the sandbox `sandbox.mode` asks for.
+    /// A test's fake. Unset, the sandbox `sandbox.mode` asks for.
     sandbox: Option<Arc<dyn SandboxWrap>>,
 }
 
@@ -367,19 +367,19 @@ fn programs_beside(loaded: &LoadedMod) -> Vec<PathBuf> {
         .collect()
 }
 
-/// What Argonauts keeps that the built-in sources and the bottom line's preview draw from.
+/// What Argonauts Code keeps that the built-in sources and the bottom line's preview draw from.
 async fn numbers(ctx: &Ctx, context: Option<ContextRow>) -> Numbers {
     let settings = ctx.settings();
-    let quotas = crate::controller::quota_chips(
+    let plan_chips = crate::controller::plan_usage_chips(
         &settings.crew.members(),
-        ctx.services.quota.as_ref(),
+        ctx.services.plan_usage.as_ref(),
         ctx.services.health.as_ref(),
     );
     let now = ctx.services.clock.now();
     let mut today: Vec<(String, Spend)> = Vec::new();
     for line in UsageLedger::new(&ctx.env.paths).read_since(Some(local_day(now))) {
         let label =
-            crate::controller::vendor_label(&argonauts_core::names::VendorId(line.vendor.clone()));
+            crate::controller::agent_label(&argonauts_core::names::AgentId(line.agent_id.clone()));
         match today.iter_mut().find(|(cli, _)| *cli == label) {
             Some((_, spent)) => crate::views::sessions::add_spend(spent, &line.spent()),
             None => today.push((label, line.spent())),
@@ -389,7 +389,7 @@ async fn numbers(ctx: &Ctx, context: Option<ContextRow>) -> Numbers {
     runs.sort_by_key(|run| std::cmp::Reverse(run.updated));
     Numbers {
         context,
-        quotas,
+        plan_chips,
         today,
         runs,
         now: Some(now),
@@ -400,28 +400,28 @@ async fn numbers(ctx: &Ctx, context: Option<ContextRow>) -> Numbers {
 fn line_numbers(ctx: &Ctx, numbers: &Numbers) -> LineNumbers {
     let settings = ctx.settings();
     let (agent, _) = crate::controller::header_agent(ctx);
-    let main = agent.vendor();
+    let main = agent.agent_id();
     let mut seen = Vec::new();
     let mut clis: Vec<LineCli> = Vec::new();
     for worker in settings.crew.members() {
-        let vendor = worker.vendor();
-        if seen.contains(&vendor) {
+        let agent_id = worker.agent_id();
+        if seen.contains(&agent_id) {
             continue;
         }
-        let reading = ctx.services.quota.get(&vendor);
+        let reading = ctx.services.plan_usage.get(&agent_id);
         let window = reading.as_ref().and_then(|reading| reading.window.clone());
         let used = reading.as_ref().and_then(|reading| reading.used);
         let week = window
             .as_deref()
             .is_some_and(|name| name.contains("week") || name.contains("seven"));
         clis.push(LineCli {
-            label: crate::controller::vendor_label(&vendor),
-            id: vendor.0.clone(),
-            main: vendor == main,
+            label: crate::controller::agent_label(&agent_id),
+            id: agent_id.0.clone(),
+            main: agent_id == main,
             five_hours: used.filter(|_| !week),
             seven_days: used.filter(|_| week),
         });
-        seen.push(vendor);
+        seen.push(agent_id);
     }
     // The one in use comes first, as on the line itself.
     clis.sort_by_key(|cli| !cli.main);
@@ -525,7 +525,7 @@ fn card_row(
             reading,
             note,
             needs_trust,
-            asks_for_line: loaded.asks_for_line && !file.places.contains(&ModPlace::ModeLine),
+            asks_for_line: loaded.asks_for_line && !file.places.contains(&ModPlace::BottomLine),
             hidden_by_line,
         },
     }
@@ -822,13 +822,13 @@ struct Elsewhere {
     on_line: Option<bool>,
     /// A built-in card into a place list in your settings, or out of it. The band above the
     /// input and the Overview's tabs draw those cards from the lists.
-    lists: Vec<(WidgetName, Place, bool)>,
+    lists: Vec<(ModName, Place, bool)>,
 }
 
 /// A save of a mod's keys, with the places its own file doesn't decide taken apart: the pairs
 /// to write into the mod's file, and what the save changes elsewhere. A tick for the bottom
 /// line is written in the line's file, and a built-in card's tick in the place lists. The
-/// mod's file never gains such a place this way, and loses a `mode-line` it had only when the
+/// mod's file never gains such a place this way, and loses a `bottom-line` it had only when the
 /// mod leaves the line. A `places` that then says nothing new isn't written at all.
 fn places_apart(
     ctx: &Ctx,
@@ -862,11 +862,11 @@ fn places_apart(
             elsewhere.lists.push((card, list, now));
         }
     }
-    let on_line = saved.contains(&ModPlace::ModeLine);
+    let on_line = saved.contains(&ModPlace::BottomLine);
     elsewhere.on_line = Some(on_line);
     // The places the mod's own file decides.
     let own = |place: &ModPlace| {
-        *place != ModPlace::ModeLine && (card.is_none() || place.list().is_none())
+        *place != ModPlace::BottomLine && (card.is_none() || place.list().is_none())
     };
     let own_of = |places: &[ModPlace]| -> Vec<ModPlace> {
         places.iter().copied().filter(|place| own(place)).collect()
@@ -878,7 +878,7 @@ fn places_apart(
     } else {
         let written = saved
             .iter()
-            .filter(|place| own(place) || (**place == ModPlace::ModeLine && asked))
+            .filter(|place| own(place) || (**place == ModPlace::BottomLine && asked))
             .map(|place| toml::Value::String(place.word().to_owned()))
             .collect();
         pairs[at].1 = toml::Value::Array(written).to_string();
@@ -889,13 +889,13 @@ fn places_apart(
 /// Writes a built-in card into the place lists a save ticked it into, and out of the ones it
 /// was ticked out of. Each is one setting, saved where its value came from and announced.
 fn set_in_lists(ctx: &mut Ctx, elsewhere: &Elsewhere) -> anyhow::Result<()> {
-    for &(widget, place, show) in &elsewhere.lists {
+    for &(the_mod, place, show) in &elsewhere.lists {
         let change = if show {
-            WidgetChange::Show { place }
+            ModPlaceChange::Show { place }
         } else {
-            WidgetChange::Hide { place }
+            ModPlaceChange::Hide { place }
         };
-        let setting = change.setting(widget, &ctx.settings().ui);
+        let setting = change.setting(the_mod, &ctx.settings().ui);
         if let Some((key, value)) = setting {
             crate::controller::settings::set_where_it_came_from(ctx, key, value, None)?;
         }
@@ -1084,7 +1084,7 @@ pub(crate) async fn file_command(
         save_keys(ctx, state, &name, &pairs, save_origin(loaded.origin))?;
     }
     let said = match elsewhere.on_line {
-        Some(on) if place == ModPlace::ModeLine => {
+        Some(on) if place == ModPlace::BottomLine => {
             set_on_line(ctx, state, &name, on)?;
             on_line_words(&name, on)
         }

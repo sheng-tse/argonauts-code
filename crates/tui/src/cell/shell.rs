@@ -22,7 +22,7 @@ const COMMAND_LINES: usize = 10;
 const SCREEN_ROWS: usize = 24;
 
 /// What else shares the screen with a long output: the command, the fold row, the input, and
-/// the mode line.
+/// the bottom line.
 const OTHER_ROWS: usize = 8;
 
 /// A line keeps this many bytes of its start and of its end, and the middle of a longer one
@@ -142,9 +142,9 @@ impl WrapKey {
     }
 
     fn wrap(&self, line: &OutputLine) -> Vec<Line<'static>> {
-        let lead = [indent(BODY_COL)];
+        let margin = [indent(BODY_COL)];
         let spans = line.spans(self.text, self.dim, self.ellipsis);
-        wrap_spans(&spans, self.width, &lead, &lead)
+        wrap_spans(&spans, self.width, &margin, &margin)
     }
 }
 
@@ -290,7 +290,7 @@ impl ShellRun {
         let theme = ctx.theme;
         let width = usize::from(ctx.width);
         let dim = theme.style(Role::Dim);
-        let lead = [indent(BODY_COL)];
+        let margin = [indent(BODY_COL)];
         let key = WrapKey::of(ctx);
         let wrapped = self.wrapped(key);
         let output = self.output();
@@ -310,7 +310,7 @@ impl ShellRun {
         if ctx.expanded || all <= fold {
             for index in 0..output.len() {
                 if Some(index) == self.head && self.dropped > 0 {
-                    rows.push(more_row(lead.to_vec(), theme, self.dropped, false, width));
+                    rows.push(more_row(margin.to_vec(), theme, self.dropped, false, width));
                 }
                 rows.extend_from_slice(rows_of(index));
             }
@@ -330,7 +330,7 @@ impl ShellRun {
                 room -= line.len();
                 newest.push(line);
             }
-            rows.push(more_row(lead.to_vec(), theme, hidden, false, width));
+            rows.push(more_row(margin.to_vec(), theme, hidden, false, width));
             for line in newest.into_iter().rev() {
                 rows.extend_from_slice(line);
             }
@@ -347,7 +347,7 @@ impl ShellRun {
                 room -= line.len();
                 rows.extend_from_slice(line);
             }
-            rows.push(more_row(lead.to_vec(), theme, hidden, true, width));
+            rows.push(more_row(margin.to_vec(), theme, hidden, true, width));
         }
         let end = match self.end {
             None => {
@@ -360,18 +360,18 @@ impl ShellRun {
                 rows.extend(wrap_spans(
                     &[Span::styled(running, dim)],
                     width,
-                    &lead,
-                    &lead,
+                    &margin,
+                    &margin,
                 ));
                 Some(("(ctrl+c to stop)".to_owned(), dim))
             }
             Some(ShellEnd::Exit(0)) if output.is_empty() => Some(("(No output)".to_owned(), dim)),
             Some(ShellEnd::Exit(0)) => None,
             Some(ShellEnd::Exit(code)) => {
-                Some((format!("Exit code {code}"), theme.style(Role::Error)))
+                Some((format!("Exit code {code}"), theme.style(Role::Danger)))
             }
             Some(ShellEnd::Signal) => {
-                Some(("Ended by a signal".to_owned(), theme.style(Role::Error)))
+                Some(("Ended by a signal".to_owned(), theme.style(Role::Danger)))
             }
             Some(ShellEnd::Stopped) => Some(("Stopped".to_owned(), dim)),
         };
@@ -379,8 +379,8 @@ impl ShellRun {
             rows.extend(wrap_spans(
                 &[Span::styled(words, style)],
                 width,
-                &lead,
-                &lead,
+                &margin,
+                &margin,
             ));
         }
         if let Some(first) = rows.first_mut() {

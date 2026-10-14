@@ -28,7 +28,7 @@ impl HistoryCell for Record {
     fn lines(&self, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
         let theme = ctx.theme;
         let width = usize::from(ctx.width);
-        let glyph = theme.glyphs.card;
+        let glyph = theme.glyphs.question;
         let first = [
             marks::decorative(glyph, theme.style(Role::Success)),
             Span::raw(" "),

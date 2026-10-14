@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_runner::{Check, Checked};
 
 use crate::engine::host::Host;
@@ -12,13 +12,13 @@ use crate::error::EngineResult;
 use crate::goal::until::{self, Asked};
 use crate::workflow::StepCall;
 
-/// Checks `check` against the work in `workdir`. `task` is the card the script's task is
+/// Checks `check` against the work in `workdir`. `task` is the task the script's task is
 /// worked on, and `max_rounds` what the file allows the step or the whole file.
 pub async fn check(
     host: &Host,
     call: &StepCall,
     check: &Check,
-    task: Option<&CardId>,
+    task: Option<&TaskId>,
     max_rounds: Option<u32>,
     workdir: &Path,
 ) -> EngineResult<Checked> {
@@ -29,7 +29,7 @@ pub async fn check(
         step: check.step.as_deref(),
         task,
         kept_by: check.kept_by.as_deref(),
-        attempt: check.attempt,
+        try_number: check.try_number,
         round: check.round,
         max_rounds,
     };
@@ -47,7 +47,7 @@ pub fn work_as(
     host: &Host,
     until: &str,
     step: Option<&str>,
-    task: &CardId,
+    task: &TaskId,
     kept_by: Option<&str>,
     max_rounds: Option<u32>,
 ) -> EngineResult<()> {
@@ -57,7 +57,7 @@ pub fn work_as(
         step,
         task: Some(task),
         kept_by,
-        attempt: None,
+        try_number: None,
         round: None,
         max_rounds,
     };

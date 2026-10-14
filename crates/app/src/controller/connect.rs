@@ -1,6 +1,6 @@
-//! `/connect <hermes|openclaw>`: lets a front end drive Argonauts over MCP. It shows the entry
-//! the front end's config needs, then writes it only after you confirm, copying the file aside
-//! first. The front end can start, watch, pause, and guide runs; approvals stay here.
+//! `/connect <hermes|openclaw>`: lets an outside agent drive Argonauts Code over MCP. It shows the
+//! entry the outside agent's config needs, then writes it only after you confirm, copying the file
+//! aside first. The outside agent can start, watch, pause, and guide runs; approvals stay here.
 
 use std::collections::HashMap;
 use std::fs;
@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use argonauts_core::NoteLevel;
 use argonauts_core::app::{AppEvent, ChoiceKind};
-use argonauts_core::events::checkpoint::AnswerAction;
-use argonauts_core::input::FrontEnd;
+use argonauts_core::events::approval::AnswerAction;
+use argonauts_core::input::OutsideAgent;
 use argonauts_core::names::ChoiceId;
 
 use super::{Ctx, Effect};
@@ -19,7 +19,7 @@ use crate::choices::{self, NOT_CHANGED};
 
 type Handled = anyhow::Result<Vec<Effect>>;
 
-/// The MCP server's name in the front end's config.
+/// The MCP server's name in the outside agent's config.
 const SERVER: &str = "argonauts";
 
 #[derive(Default)]
@@ -29,19 +29,19 @@ pub(crate) struct ConnectState {
 }
 
 struct Pending {
-    front_end: FrontEnd,
+    outside_agent: OutsideAgent,
     file: PathBuf,
     server: Server,
 }
 
-/// How the front end starts Argonauts' MCP server.
+/// How the outside agent starts Argonauts Code's MCP server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Server {
     pub argonauts: PathBuf,
     pub repo: PathBuf,
 }
 
-/// What the front end's config file needs.
+/// What the outside agent's config file needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Edit {
     /// The file with the entry added.
@@ -56,11 +56,15 @@ pub(crate) fn owns_choice(state: &ConnectState, id: &ChoiceId) -> bool {
     state.pending.contains_key(id)
 }
 
-pub(crate) fn connect(ctx: &mut Ctx, state: &mut ConnectState, front_end: FrontEnd) -> Handled {
+pub(crate) fn connect(
+    ctx: &mut Ctx,
+    state: &mut ConnectState,
+    outside_agent: OutsideAgent,
+) -> Handled {
     let Some(home) = ctx.env.user_home.clone() else {
         anyhow::bail!("can't find your home directory, so /connect can't find the config file");
     };
-    let file = config_file(front_end, &home);
+    let file = config_file(outside_agent, &home);
     let server = Server {
         argonauts: std::env::current_exe()
             .and_then(|exe| exe.canonicalize())
@@ -69,11 +73,11 @@ pub(crate) fn connect(ctx: &mut Ctx, state: &mut ConnectState, front_end: FrontE
     };
     let shown = ctx.env.display(&file);
     let existing = read(&file)?;
-    let edit = match front_end {
-        FrontEnd::Hermes => hermes_edit(existing.as_deref(), &server),
-        FrontEnd::OpenClaw => openclaw_edit(existing.as_deref(), &server),
+    let edit = match outside_agent {
+        OutsideAgent::Hermes => hermes_edit(existing.as_deref(), &server),
+        OutsideAgent::OpenClaw => openclaw_edit(existing.as_deref(), &server),
     };
-    let name = display_name(front_end);
+    let name = display_name(outside_agent);
     let mut lines = vec![
         format!(
             "{name} starts `argonauts mcp serve` for this repo and can start, watch, pause, and \
@@ -83,11 +87,11 @@ pub(crate) fn connect(ctx: &mut Ctx, state: &mut ConnectState, front_end: FrontE
         format!("In {shown}:"),
     ];
     lines.extend(
-        entry(front_end, &server)
+        entry(outside_agent, &server)
             .lines()
             .map(|line| format!("  {line}")),
     );
-    if front_end == FrontEnd::OpenClaw {
+    if outside_agent == OutsideAgent::OpenClaw {
         lines.push(String::new());
         lines.push(format!("Or run: {}", openclaw_command(&server)));
     }
@@ -125,7 +129,7 @@ pub(crate) fn connect(ctx: &mut Ctx, state: &mut ConnectState, front_end: FrontE
             state.pending.insert(
                 id,
                 Pending {
-                    front_end,
+                    outside_agent,
                     file,
                     server,
                 },
@@ -170,7 +174,7 @@ pub(crate) fn answer_choice(
                 NoteLevel::Info,
                 format!(
                     "Restart {} so it starts the server.",
-                    display_name(pending.front_end)
+                    display_name(pending.outside_agent)
                 ),
             );
         }
@@ -198,22 +202,22 @@ fn close(ctx: &Ctx, id: ChoiceId, outcome: impl Into<String>) {
     });
 }
 
-fn display_name(front_end: FrontEnd) -> &'static str {
-    match front_end {
-        FrontEnd::Hermes => "Hermes",
-        FrontEnd::OpenClaw => "OpenClaw",
+fn display_name(outside_agent: OutsideAgent) -> &'static str {
+    match outside_agent {
+        OutsideAgent::Hermes => "Hermes",
+        OutsideAgent::OpenClaw => "OpenClaw",
     }
 }
 
 /// `~/.hermes/config.yaml`, or `$HERMES_HOME/config.yaml` for a Hermes home elsewhere, and
 /// `~/.openclaw/openclaw.json`.
-fn config_file(front_end: FrontEnd, home: &Path) -> PathBuf {
-    match front_end {
-        FrontEnd::Hermes => std::env::var_os("HERMES_HOME")
+fn config_file(outside_agent: OutsideAgent, home: &Path) -> PathBuf {
+    match outside_agent {
+        OutsideAgent::Hermes => std::env::var_os("HERMES_HOME")
             .filter(|dir| !dir.is_empty())
             .map_or_else(|| home.join(".hermes"), PathBuf::from)
             .join("config.yaml"),
-        FrontEnd::OpenClaw => home.join(".openclaw").join("openclaw.json"),
+        OutsideAgent::OpenClaw => home.join(".openclaw").join("openclaw.json"),
     }
 }
 
@@ -232,10 +236,10 @@ fn quoted(path: &Path) -> String {
 }
 
 /// The entry as the config holds it.
-pub(super) fn entry(front_end: FrontEnd, server: &Server) -> String {
-    match front_end {
-        FrontEnd::Hermes => hermes_entry(server, ""),
-        FrontEnd::OpenClaw => {
+pub(super) fn entry(outside_agent: OutsideAgent, server: &Server) -> String {
+    match outside_agent {
+        OutsideAgent::Hermes => hermes_entry(server, ""),
+        OutsideAgent::OpenClaw => {
             let value =
                 serde_json::json!({ "mcp": { "servers": { SERVER: openclaw_server(server) } } });
             serde_json::to_string_pretty(&value).unwrap_or_default()
@@ -394,9 +398,9 @@ enum Written {
 fn write(pending: &Pending) -> anyhow::Result<Written> {
     let file = &pending.file;
     let existing = read(file)?;
-    let edit = match pending.front_end {
-        FrontEnd::Hermes => hermes_edit(existing.as_deref(), &pending.server),
-        FrontEnd::OpenClaw => openclaw_edit(existing.as_deref(), &pending.server),
+    let edit = match pending.outside_agent {
+        OutsideAgent::Hermes => hermes_edit(existing.as_deref(), &pending.server),
+        OutsideAgent::OpenClaw => openclaw_edit(existing.as_deref(), &pending.server),
     };
     let text = match edit {
         Edit::Write(text) => text,
@@ -457,11 +461,11 @@ fn backup_display(ctx: &Ctx, file: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use argonauts_core::app::{AnswerTarget, AppEvent, UiCommand};
-    use argonauts_core::events::checkpoint::AnswerAction;
-    use argonauts_core::input::{FrontEnd, SlashCommand};
+    use argonauts_core::events::approval::AnswerAction;
+    use argonauts_core::input::{OutsideAgent, SlashCommand};
 
     use super::*;
-    use crate::controller::test_support::Harness;
+    use crate::controller::test_support::TestDriver;
 
     fn server() -> Server {
         Server {
@@ -524,9 +528,9 @@ mod tests {
         assert!(openclaw_command(&server()).ends_with("--cwd '/code/my repo'"));
     }
 
-    fn connect(front_end: FrontEnd) -> UiCommand {
+    fn connect(outside_agent: OutsideAgent) -> UiCommand {
         UiCommand::Slash {
-            command: SlashCommand::Connect { front_end },
+            command: SlashCommand::Connect { outside_agent },
         }
     }
 
@@ -536,13 +540,13 @@ mod tests {
             action,
             text: None,
             evidence_sha256: None,
-            cards: Vec::new(),
+            tasks: Vec::new(),
             remember: false,
         }
     }
 
-    async fn question(harness: &mut Harness) -> ChoiceId {
-        let event = harness
+    async fn question(driver: &mut TestDriver) -> ChoiceId {
+        let event = driver
             .until(|event| matches!(event, AppEvent::Choice { .. }))
             .await;
         match event {
@@ -554,8 +558,8 @@ mod tests {
         }
     }
 
-    async fn closed(harness: &mut Harness) -> String {
-        let event = harness
+    async fn closed(driver: &mut TestDriver) -> String {
+        let event = driver
             .until(|event| matches!(event, AppEvent::ChoiceClosed { .. }))
             .await;
         match event {
@@ -566,13 +570,13 @@ mod tests {
 
     #[tokio::test]
     async fn hermes_config_is_written_only_after_yes_with_a_backup() {
-        let mut harness = Harness::start().await;
-        let file = harness.repo.user_home().join(".hermes").join("config.yaml");
+        let mut driver = TestDriver::start().await;
+        let file = driver.repo.user_home().join(".hermes").join("config.yaml");
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(&file, "model: x\n").unwrap();
 
-        harness.send(connect(FrontEnd::Hermes)).await;
-        let report = harness
+        driver.send(connect(OutsideAgent::Hermes)).await;
+        let report = driver
             .until(|event| matches!(event, AppEvent::Report { .. }))
             .await;
         let AppEvent::Report { title, lines } = report else {
@@ -583,15 +587,15 @@ mod tests {
             lines.iter().any(|line| line.contains("mcp_servers:")),
             "{lines:?}"
         );
-        let id = question(&mut harness).await;
+        let id = question(&mut driver).await;
         assert_eq!(
             fs::read_to_string(&file).unwrap(),
             "model: x\n",
             "nothing yet"
         );
 
-        harness.send(answer(id, AnswerAction::Approve)).await;
-        let outcome = closed(&mut harness).await;
+        driver.send(answer(id, AnswerAction::Approve)).await;
+        let outcome = closed(&mut driver).await;
         assert!(
             outcome.starts_with("Updated ~/.hermes/config.yaml"),
             "{outcome}"
@@ -609,42 +613,42 @@ mod tests {
         assert_eq!(fs::read_to_string(backup).unwrap(), "model: x\n");
 
         // Connected now, so a second /connect changes nothing and asks nothing.
-        harness.send(connect(FrontEnd::Hermes)).await;
-        let AppEvent::Report { lines, .. } = harness
+        driver.send(connect(OutsideAgent::Hermes)).await;
+        let AppEvent::Report { lines, .. } = driver
             .until(|event| matches!(event, AppEvent::Report { .. }))
             .await
         else {
             unreachable!()
         };
         assert!(lines.last().unwrap().contains("already"), "{lines:?}");
-        harness.exit().await;
+        driver.exit().await;
     }
 
     #[tokio::test]
     async fn no_leaves_the_openclaw_config_alone() {
-        let mut harness = Harness::start().await;
-        let file = harness
+        let mut driver = TestDriver::start().await;
+        let file = driver
             .repo
             .user_home()
             .join(".openclaw")
             .join("openclaw.json");
-        harness.send(connect(FrontEnd::OpenClaw)).await;
-        let id = question(&mut harness).await;
-        harness.send(answer(id, AnswerAction::Cancel)).await;
-        assert_eq!(closed(&mut harness).await, NOT_CHANGED);
+        driver.send(connect(OutsideAgent::OpenClaw)).await;
+        let id = question(&mut driver).await;
+        driver.send(answer(id, AnswerAction::Cancel)).await;
+        assert_eq!(closed(&mut driver).await, NOT_CHANGED);
         assert!(!file.exists());
 
-        harness.send(connect(FrontEnd::OpenClaw)).await;
-        let id = question(&mut harness).await;
-        harness.send(answer(id, AnswerAction::Approve)).await;
+        driver.send(connect(OutsideAgent::OpenClaw)).await;
+        let id = question(&mut driver).await;
+        driver.send(answer(id, AnswerAction::Approve)).await;
         assert_eq!(
-            closed(&mut harness).await,
+            closed(&mut driver).await,
             "Created ~/.openclaw/openclaw.json."
         );
         let value: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(value["mcp"]["servers"]["argonauts"]["args"][1], "serve");
-        harness.exit().await;
+        driver.exit().await;
     }
 
     #[test]

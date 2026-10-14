@@ -4,7 +4,7 @@
 //! This is the one place they are registered. A tool has a file of its own beside this one,
 //! which gives its name, its description and its input schema, and one line in [`all`]. A call
 //! goes to the app as [`Ask::Tool`] under that name, where the app's own registry
-//! (`controller/chat/tools`) does the work and writes the reply.
+//! (`controller/conversation/tools`) does the work and writes the reply.
 
 use std::sync::Arc;
 
@@ -90,7 +90,7 @@ pub(super) async fn call(
     let reply = ask::send(asking, asked)
         .await
         .unwrap_or_else(|err| AskReply {
-            text: format!("Argonauts couldn't be reached: {err}"),
+            text: format!("Argonauts Code couldn't be reached: {err}"),
             is_error: true,
         });
     let content = vec![ContentBlock::text(reply.text)];

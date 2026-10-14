@@ -1,6 +1,6 @@
 //! Delivering messages at delivery points: the next session start, or the next turn for queued
-//! messages. A drafter or blind reviewer gets only your text. Records `Delivered`, which marks
-//! the message handed to that session, so replaying a log never sends it twice.
+//! messages. A drafting agent or blind reviewer gets only your text. Records `Delivered`, which
+//! marks the message passed to that session, so replaying a log never sends it twice.
 
 use std::fmt::Write as _;
 
@@ -14,8 +14,8 @@ use argonauts_core::events::shared::{
 };
 use argonauts_core::input::MentionTarget;
 use argonauts_core::names::{MessageId, RoleName, SessionKey};
+use argonauts_core::session_runner::SessionControl;
 use argonauts_core::settings::Settings;
-use argonauts_core::worker::SessionControl;
 
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
@@ -153,7 +153,7 @@ pub(crate) fn hand_over(
         .reserve_control(&who.session)
         .map_err(EngineError::Refused)?;
     host.record(
-        who.card.as_ref(),
+        who.task.as_ref(),
         Some(&who.session),
         RunEventKind::Session(SessionEvent::Queued(queued.clone())),
     )?;
@@ -167,7 +167,7 @@ fn record_delivered(host: &Host, message: &MessageId, who: &Addressee) -> Engine
         return Ok(());
     }
     host.record(
-        who.card.as_ref(),
+        who.task.as_ref(),
         Some(&who.session),
         RunEventKind::Blackboard(BlackboardEvent::Delivered {
             message: message.clone(),
@@ -184,7 +184,8 @@ pub fn addressee(host: &Host, session: &SessionKey) -> EngineResult<Addressee> {
             session: session.clone(),
             worker: record.started.worker.clone(),
             role: record.started.role,
-            card: record.card.clone(),
+            step: record.started.step,
+            task: record.task.clone(),
         })
     })
     .ok_or_else(|| {
@@ -201,10 +202,10 @@ fn is_blind(host: &Host, who: &Addressee) -> bool {
     }
 }
 
-/// Drafters, judges, and blind reviewers work blind.
+/// Drafting agents, judges, and blind reviewers work blind.
 pub fn blind_role(role: RoleName, settings: &Settings) -> bool {
     match role {
-        RoleName::Drafter => settings.drafting.blind,
+        RoleName::Draft => settings.drafting.blind,
         RoleName::Judge => true,
         RoleName::Reviewer => settings
             .roles
@@ -277,7 +278,7 @@ fn part(message: &BlackboardMessage, text: String) -> InputPart {
 pub fn target(to: &Recipient, who: &Addressee) -> MentionTarget {
     match to {
         Recipient::All => MentionTarget::All,
-        Recipient::Card { card } => MentionTarget::Card(card.clone()),
+        Recipient::Task { task } => MentionTarget::Task(task.clone()),
         Recipient::Role { role } => MentionTarget::Role(*role),
         Recipient::Worker { worker } => MentionTarget::Worker(worker.clone()),
         Recipient::Session { .. } | Recipient::User => MentionTarget::Worker(who.worker.clone()),
@@ -290,8 +291,8 @@ pub fn kind_label(kind: BlackboardKind) -> &'static str {
         BlackboardKind::Answer => "Answer",
         BlackboardKind::ChangeRequest => "Change request",
         BlackboardKind::Decision => "Decision",
-        BlackboardKind::SpikeReport => "Experiment report",
-        BlackboardKind::Handoff => "Fallback",
+        BlackboardKind::ExperimentReport => "Experiment report",
+        BlackboardKind::Fallback => "Fallback",
         BlackboardKind::Guidance => "Guidance",
         BlackboardKind::Mention => "Message",
     }
@@ -301,18 +302,18 @@ pub fn party_label(party: &Party) -> String {
     match party {
         Party::User | Party::Declined => "you".to_owned(),
         Party::Rules => "your approval rules".to_owned(),
-        Party::Approver { model } => format!("your approver {model}"),
+        Party::Judge { model } => format!("your judge {model}"),
         Party::Config => "a setting".to_owned(),
         Party::Autopilot => "autopilot".to_owned(),
-        Party::Conductor => "the conductor".to_owned(),
+        Party::ArgonautsCode => "Argonauts Code".to_owned(),
         Party::Agent { worker, .. } => worker.to_string(),
-        Party::FrontEnd { client } => client.clone(),
+        Party::OutsideAgent { client } => client.clone(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::names::WorkerRef;
+    use argonauts_core::names::ModelRef;
 
     use super::*;
 
@@ -342,7 +343,7 @@ mod tests {
             BlackboardKind::Question,
             Party::Agent {
                 session: SessionKey::numbered(2),
-                worker: WorkerRef::new("codex", None),
+                worker: ModelRef::new("codex", None),
             },
         );
         assert_eq!(text_for(&agent, true), None);
@@ -350,9 +351,9 @@ mod tests {
     }
 
     #[test]
-    fn drafters_and_judges_are_blind() {
+    fn drafting_agents_and_judges_are_blind() {
         let settings = Settings::default();
-        assert!(blind_role(RoleName::Drafter, &settings));
+        assert!(blind_role(RoleName::Draft, &settings));
         assert!(blind_role(RoleName::Judge, &settings));
         assert!(!blind_role(RoleName::Worker, &settings));
     }

@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use super::lookup::{Located, STARLARK, STARLARK_LATER, YAML, is_workflow_name, load};
+use super::lookup::{Located, STARLARK, STARLARK_LATER, YAML, load};
+use super::name::is_workflow_name;
 use super::{WorkflowDirs, WorkflowInfo};
 
 /// Every workflow for the `/workflow` picker: the built-ins, then the files in `global`, then

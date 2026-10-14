@@ -1,4 +1,4 @@
-//! `argonauts run`, `status`, and `inbox`.
+//! `argonauts run` and `status`.
 
 use std::process::ExitCode;
 
@@ -12,7 +12,7 @@ use crate::args::RunArgs;
 use crate::text::{count, words};
 use crate::usage::usage;
 
-/// Parked at a checkpoint, so a script can tell waiting for you apart from failing.
+/// Waiting at an approval, so a script can tell waiting for you apart from failing.
 pub const WAITING_EXIT: u8 = 3;
 
 /// As for a process ended by SIGINT.
@@ -36,8 +36,8 @@ pub async fn run(args: &RunArgs, set: &[String], screen_reader: bool) -> anyhow:
 }
 
 fn mode(args: &RunArgs) -> Option<RunMode> {
-    if args.solo {
-        Some(RunMode::Solo)
+    if args.captain {
+        Some(RunMode::Captain)
     } else if args.crew {
         Some(RunMode::Crew)
     } else {
@@ -46,15 +46,16 @@ fn mode(args: &RunArgs) -> Option<RunMode> {
 }
 
 /// The flags as settings overrides. The model and effort flags belong to an agent, so they
-/// need its id: `--agent`, or your default agent.
+/// need its id: `--agent`, or your main agent.
 fn overrides(args: &RunArgs, set: &[String]) -> anyhow::Result<Vec<String>> {
     let agent = match &args.agent {
         Some(agent) => agent.clone(),
         None if args.needs_agent() => {
             argonauts_app::current_settings(None, set.to_vec())
                 .map_err(usage)?
-                .main_agent
-                .worker
+                .crew
+                .main
+                .agent
         }
         None => String::new(),
     };
@@ -74,9 +75,9 @@ fn overrides(args: &RunArgs, set: &[String]) -> anyhow::Result<Vec<String>> {
 fn closing_line(exit: &RunCommandExit, detach: bool) -> Option<String> {
     match exit {
         RunCommandExit::Finished(_) => None,
-        RunCommandExit::Waiting { run, checkpoint } => Some(format!(
+        RunCommandExit::Waiting { run, approval } => Some(format!(
             "waiting for you: {} · argonauts resume {run}",
-            sanitize_for_terminal(checkpoint)
+            sanitize_for_terminal(approval)
         )),
         // A script that detached wants the id alone.
         RunCommandExit::Detached(run) if detach => Some(run.to_string()),
@@ -131,8 +132,8 @@ fn status_text(report: &StatusReport) -> String {
     sanitize_for_terminal(&out)
 }
 
-/// `run-03 · parked · the plan checkpoint · Add a flag`
-fn run_line(run: &RunSummary) -> String {
+/// `run-03 · waiting · the plan approval · Add a flag`
+pub(crate) fn run_line(run: &RunSummary) -> String {
     let mut parts = vec![run.run.to_string(), words(&run.state)];
     if !run.stopped_at.is_empty() {
         parts.push(run.stopped_at.clone());
@@ -141,30 +142,9 @@ fn run_line(run: &RunSummary) -> String {
     parts.join(" · ")
 }
 
-pub async fn inbox() -> anyhow::Result<ExitCode> {
-    let runs = argonauts_app::inbox(None).await?;
-    // Learning's proposals wait too; a repo whose learning files can't be read still lists
-    // its runs.
-    let proposals = argonauts_app::learning_inbox(None).unwrap_or_else(|err| {
-        let err = sanitize_for_terminal(&format!("{err:#}"));
-        eprintln!("argonauts: learning's proposals couldn't be read: {err}");
-        Vec::new()
-    });
-    if runs.is_empty() && proposals.is_empty() {
-        println!("Nothing waits for you.");
-    }
-    for run in &runs {
-        println!("{}", sanitize_for_terminal(&run_line(run)));
-    }
-    for line in &proposals {
-        println!("{}", sanitize_for_terminal(line));
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
 #[cfg(test)]
 mod tests {
-    use argonauts_app::LiveSupervisor;
+    use argonauts_app::LiveRunHost;
     use argonauts_core::api::RunState;
     use argonauts_core::{RunId, Spend};
 
@@ -185,7 +165,7 @@ mod tests {
         assert_eq!(finished(RunOutcome::Stopped), ExitCode::from(130));
         let waiting = RunCommandExit::Waiting {
             run: run_id(),
-            checkpoint: "the plan approval".to_owned(),
+            approval: "the plan approval".to_owned(),
         };
         assert_eq!(exit_code(&waiting), ExitCode::from(WAITING_EXIT));
         assert_eq!(
@@ -195,10 +175,10 @@ mod tests {
     }
 
     #[test]
-    fn a_parked_run_says_how_to_resume_it() {
+    fn a_waiting_run_says_how_to_resume_it() {
         let waiting = RunCommandExit::Waiting {
             run: run_id(),
-            checkpoint: "the plan\u{1b}[2J approval".to_owned(),
+            approval: "the plan\u{1b}[2J approval".to_owned(),
         };
         assert_eq!(
             closing_line(&waiting, false).unwrap(),
@@ -217,13 +197,13 @@ mod tests {
     }
 
     #[test]
-    fn status_lists_live_supervisors_and_this_repos_runs() {
+    fn status_lists_live_run_hosts_and_this_repos_runs() {
         assert_eq!(
             status_text(&StatusReport::default()),
             "Nothing is running.\n"
         );
         let report = StatusReport {
-            live: vec![LiveSupervisor {
+            live: vec![LiveRunHost {
                 pid: 42,
                 start_time: 0,
                 repo_root: "/code/app".into(),
@@ -235,7 +215,7 @@ mod tests {
                 title: "Add a flag".to_owned(),
                 mode: RunMode::Crew,
                 workflow: "council".to_owned(),
-                state: RunState::Parked,
+                state: RunState::Waiting,
                 stopped_at: "the plan approval".to_owned(),
                 updated: time::OffsetDateTime::UNIX_EPOCH,
                 spent: Spend::default(),

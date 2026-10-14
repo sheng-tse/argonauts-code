@@ -1,6 +1,6 @@
-//! The crew panel, from Claude Code's agent list and Codex's agent command center: tabs by
+//! The agent panel, from Claude Code's agent list and Codex's agent command center: tabs by
 //! state with counts, every agent, conversation, and CLI session grouped by repo and then run,
-//! the highlighted row's details beside the list on a wide screen, and the quotas on one line.
+//! the highlighted row's details beside the list on a wide screen, and the plan usage on one line.
 
 mod draw;
 mod rows;
@@ -12,8 +12,8 @@ mod tests;
 use std::time::{Duration, Instant};
 
 use argonauts_core::RunId;
+use argonauts_core::agent_panel::{AgentPanelRows, CrewRow, CrewState, CrewTab, CrewTarget};
 use argonauts_core::app::{AnswerTarget, UiCommand, ViewRequest};
-use argonauts_core::crew_panel::{CrewPanel, CrewRow, CrewState, CrewTab, CrewTarget};
 use argonauts_core::input::{ResumeTarget, SlashCommand};
 use argonauts_core::names::SessionKey;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -39,7 +39,7 @@ pub const DETAILS_BESIDE: u16 = 120;
 const MIN_LIST_ROWS: u16 = 3;
 
 #[derive(Debug)]
-pub struct CrewView {
+pub struct AgentPanelView {
     pub tab: CrewTab,
     /// The highlighted row among the tab's, in the order they show.
     pub list: ListState,
@@ -64,7 +64,7 @@ pub struct CrewView {
 }
 
 /// The rows a tab shows, in order, from the panel's groups.
-fn ordered(panel: &CrewPanel, tab: CrewTab) -> Vec<&CrewRow> {
+fn ordered(panel: &AgentPanelRows, tab: CrewTab) -> Vec<&CrewRow> {
     panel
         .groups(tab)
         .into_iter()
@@ -82,7 +82,7 @@ fn sleeping(state: &AppState, row: &CrewRow) -> bool {
     }
 }
 
-impl CrewView {
+impl AgentPanelView {
     pub fn new(_state: &AppState) -> Self {
         Self {
             tab: CrewTab::All,
@@ -108,7 +108,7 @@ impl CrewView {
         }
     }
 
-    fn panel(&self, state: &AppState) -> CrewPanel {
+    fn panel(&self, state: &AppState) -> AgentPanelRows {
         rows::panel(state, self.clock.now())
     }
 
@@ -170,9 +170,9 @@ impl CrewView {
     }
 
     /// Enter or → on a row.
-    fn open(&self, state: &AppState, panel: &CrewPanel, row: &CrewRow) -> ViewOutcome {
+    fn open(&self, state: &AppState, panel: &AgentPanelRows, row: &CrewRow) -> ViewOutcome {
         let resume = |target: ResumeTarget| {
-            ViewOutcome::SendToChat(UiCommand::Slash {
+            ViewOutcome::SendToConversation(UiCommand::Slash {
                 command: SlashCommand::Resume {
                     target: Some(target),
                 },
@@ -185,7 +185,7 @@ impl CrewView {
                     .get(run)
                     .and_then(|held| rows::asked_by(held, session));
                 match asks {
-                    Some(open) => ViewOutcome::AnswerCard(AnswerTarget::Checkpoint {
+                    Some(open) => ViewOutcome::AnswerQuestion(AnswerTarget::Approval {
                         run: run.clone(),
                         id: open.opened.id.clone(),
                     }),
@@ -200,10 +200,10 @@ impl CrewView {
                     }),
                 }
             }
-            CrewTarget::Checkpoint { run, checkpoint } => {
-                ViewOutcome::AnswerCard(AnswerTarget::Checkpoint {
+            CrewTarget::Approval { run, approval } => {
+                ViewOutcome::AnswerQuestion(AnswerTarget::Approval {
                     run: run.clone(),
-                    id: checkpoint.clone(),
+                    id: approval.clone(),
                 })
             }
             CrewTarget::Run { run } if state.attached.as_ref() == Some(run) => {
@@ -221,7 +221,7 @@ impl CrewView {
                 })
             }
             CrewTarget::Run { run } if row.repo == panel.repo => {
-                ViewOutcome::SendToChat(UiCommand::Resume {
+                ViewOutcome::SendToConversation(UiCommand::Resume {
                     run: Some(run.clone()),
                 })
             }
@@ -230,10 +230,10 @@ impl CrewView {
                 rows::clean(run.as_str()),
                 rows::clean(&row.repo)
             )),
-            CrewTarget::Conversation { chat } => resume(ResumeTarget::Conversation(chat.clone())),
-            CrewTarget::VendorSession { session } => {
-                resume(ResumeTarget::VendorSession(session.clone()))
+            CrewTarget::Conversation { conversation } => {
+                resume(ResumeTarget::Conversation(conversation.clone()))
             }
+            CrewTarget::CliSession { session } => resume(ResumeTarget::CliSession(session.clone())),
         }
     }
 
@@ -241,16 +241,18 @@ impl CrewView {
     fn stop(&mut self, state: &AppState, row: &CrewRow) -> ViewOutcome {
         let (run, session) = match &row.target {
             CrewTarget::Agent { run, session } => (run, session),
-            CrewTarget::Checkpoint { .. } => {
+            CrewTarget::Approval { .. } => {
                 return ViewOutcome::Notice("This task has no agent to stop".into());
             }
             CrewTarget::Run { .. } => {
                 return ViewOutcome::Notice("/stop stops the run on screen".into());
             }
             CrewTarget::Conversation { .. } => {
-                return ViewOutcome::Notice("Esc in the chat stops a conversation's turn".into());
+                return ViewOutcome::Notice(
+                    "Esc in the conversation stops a conversation's turn".into(),
+                );
             }
-            CrewTarget::VendorSession { .. } => {
+            CrewTarget::CliSession { .. } => {
                 return ViewOutcome::Notice("A CLI session has nothing running to stop".into());
             }
         };
@@ -304,7 +306,7 @@ impl CrewView {
         &mut self,
         state: &AppState,
         rows: &[&CrewRow],
-        panel: &CrewPanel,
+        panel: &AgentPanelRows,
         area: Rect,
         buf: &mut Buffer,
         theme: &Theme,
@@ -329,7 +331,7 @@ impl CrewView {
                 theme,
             )
         };
-        if state.crew_panel.is_none() {
+        if state.agent_panel.is_none() {
             body.push(BodyLine {
                 line: Line::default(),
                 row: None,
@@ -354,7 +356,7 @@ impl CrewView {
 /// `c` on an agent: a finished one's session carries on as a direct conversation through its
 /// CLI's own resume once its run ended, and a running one is taken over in its agent view. An
 /// agent of another repo's run carries on from an app open there.
-fn carry_on(state: &AppState, panel: &CrewPanel, row: &CrewRow) -> ViewOutcome {
+fn carry_on(state: &AppState, panel: &AgentPanelRows, row: &CrewRow) -> ViewOutcome {
     let CrewTarget::Agent { run, session } = &row.target else {
         return ViewOutcome::Notice("c carries on a finished agent's session. → opens this".into());
     };
@@ -405,7 +407,7 @@ fn details_width(width: u16) -> u16 {
     (width * 3 / 10).clamp(34, 56)
 }
 
-impl View for CrewView {
+impl View for AgentPanelView {
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>) {
         let theme = ctx.theme;
         let state = ctx.state;

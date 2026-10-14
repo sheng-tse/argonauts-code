@@ -1,10 +1,10 @@
-//! The endpoint presets, and your `[endpoints.<id>]` tables merged over them.
+//! The known endpoints, and your `[endpoints.<id>]` tables merged over them.
 
 use super::Settings;
 use super::agents::EndpointSettings;
 
-/// (id, base URL, key variable, local) for each preset.
-const PRESETS: &[(&str, &str, Option<&str>, bool)] = &[
+/// (id, base URL, key variable, local) for each known endpoint.
+const KNOWN_ENDPOINTS: &[(&str, &str, Option<&str>, bool)] = &[
     (
         "openrouter",
         "https://openrouter.ai/api/v1",
@@ -15,10 +15,10 @@ const PRESETS: &[(&str, &str, Option<&str>, bool)] = &[
     ("lmstudio", "http://127.0.0.1:1234/v1", None, true),
 ];
 
-/// The endpoint presets `openrouter`, `ollama`, and `lmstudio`, as settings with their base
+/// The known endpoints `openrouter`, `ollama`, and `lmstudio`, as settings with their base
 /// URL, key variable, and whether they're local.
 pub fn builtin_endpoint(id: &str) -> Option<EndpointSettings> {
-    let &(_, base_url, api_key_env, local) = PRESETS.iter().find(|preset| preset.0 == id)?;
+    let &(_, base_url, api_key_env, local) = KNOWN_ENDPOINTS.iter().find(|known| known.0 == id)?;
     Some(EndpointSettings {
         base_url: Some(base_url.to_owned()),
         api_key_env: api_key_env.map(str::to_owned),
@@ -27,61 +27,61 @@ pub fn builtin_endpoint(id: &str) -> Option<EndpointSettings> {
     })
 }
 
-/// `[endpoints.<id>]` as the endpoint worker needs it: your table over the preset of the same
-/// name, key by key. `None` when neither exists.
+/// `[endpoints.<id>]` as the endpoint runner needs it: your table over the known endpoint of the
+/// same name, key by key. `None` when neither exists.
 ///
 /// Settings arrive resolved, so a key still at its default counts as unset. The one exception
-/// is `local`: pointing a preset at another `base_url` drops the preset's `local = true`,
-/// because a server elsewhere isn't on your machine unless you say so.
+/// is `local`: pointing a known endpoint at another `base_url` drops the known endpoint's `local =
+/// true`, because a server elsewhere isn't on your machine unless you say so.
 pub fn endpoint_settings(settings: &Settings, id: &str) -> Option<EndpointSettings> {
-    let preset = builtin_endpoint(id);
+    let known = builtin_endpoint(id);
     let Some(yours) = settings.endpoints.get(id) else {
-        return preset;
+        return known;
     };
-    let Some(preset) = preset else {
+    let Some(known) = known else {
         return Some(yours.clone());
     };
     let default = EndpointSettings::default();
     let moved = yours
         .base_url
         .as_ref()
-        .is_some_and(|url| Some(url) != preset.base_url.as_ref());
+        .is_some_and(|url| Some(url) != known.base_url.as_ref());
     Some(EndpointSettings {
-        base_url: yours.base_url.clone().or(preset.base_url),
-        api_key_env: yours.api_key_env.clone().or(preset.api_key_env),
-        api: either(yours.api, preset.api, default.api),
+        base_url: yours.base_url.clone().or(known.base_url),
+        api_key_env: yours.api_key_env.clone().or(known.api_key_env),
+        api: either(yours.api, known.api, default.api),
         structured_output: either(
             yours.structured_output,
-            preset.structured_output,
+            known.structured_output,
             default.structured_output,
         ),
-        local: yours.local || (!moved && preset.local),
-        allow_api_billing: yours.allow_api_billing || preset.allow_api_billing,
-        timeout: either(yours.timeout.clone(), preset.timeout, default.timeout),
+        local: yours.local || (!moved && known.local),
+        allow_api_billing: yours.allow_api_billing || known.allow_api_billing,
+        timeout: either(yours.timeout.clone(), known.timeout, default.timeout),
         max_concurrency: either(
             yours.max_concurrency,
-            preset.max_concurrency,
+            known.max_concurrency,
             default.max_concurrency,
         ),
         header_env: if yours.header_env.is_empty() {
-            preset.header_env
+            known.header_env
         } else {
             yours.header_env.clone()
         },
     })
 }
 
-fn either<T: PartialEq>(yours: T, preset: T, default: T) -> T {
-    if yours == default { preset } else { yours }
+fn either<T: PartialEq>(yours: T, known: T, default: T) -> T {
+    if yours == default { known } else { yours }
 }
 
-/// Where each local endpoint listens, as (host, port) from its `base_url`: the local presets
-/// unless you moved them, and every table of yours marked `local`. A session's network proxy
-/// lets it reach exactly these, since they speak plain HTTP and often sit on loopback.
+/// Where each local endpoint listens, as (host, port) from its `base_url`: the known local
+/// endpoints unless you moved them, and every table of yours marked `local`. A session's network
+/// proxy lets it reach exactly these, since they speak plain HTTP and often sit on loopback.
 pub fn local_endpoint_addresses(settings: &Settings) -> Vec<(String, u16)> {
-    let ids = PRESETS
+    let ids = KNOWN_ENDPOINTS
         .iter()
-        .map(|preset| preset.0)
+        .map(|known| known.0)
         .chain(settings.endpoints.keys().map(String::as_str));
     let mut addresses: Vec<(String, u16)> = ids
         .filter_map(|id| endpoint_settings(settings, id))
@@ -129,7 +129,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn endpoint_presets_merge_under_your_table() {
+    fn known_endpoints_merge_under_your_table() {
         let openrouter = builtin_endpoint("openrouter").unwrap();
         assert_eq!(
             openrouter.base_url.as_deref(),
@@ -186,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn local_endpoints_are_the_local_presets_and_yours() {
+    fn local_endpoints_are_the_known_local_ones_and_yours() {
         let mut settings = Settings::default();
         assert_eq!(
             local_endpoint_addresses(&settings),

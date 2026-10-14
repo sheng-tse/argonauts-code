@@ -12,10 +12,11 @@ pub(crate) use build::overview as build_overview;
 pub(crate) use records::Record;
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use argonauts_core::app::{AppEvent, ViewData};
-use argonauts_core::overview::OverviewPeriod;
+use argonauts_core::overview::{ModelTokens, OverviewPeriod};
 use argonauts_core::pricing::{ListPrice, PriceList};
 use argonauts_core::settings::endpoints::endpoint_settings;
 use argonauts_core::{NoteLevel, Paths};
@@ -26,9 +27,10 @@ pub(crate) use self::build::Sources;
 pub(crate) use self::build::through_argonauts;
 use self::import::Locations;
 pub(crate) use self::import::doctor_lines;
+use self::records::IMPORTED;
 pub(crate) use self::records::Store;
 use crate::controller::{Ctx, Effect};
-use crate::usage_ledger::{UsageLedger, local_day};
+use crate::usage_ledger::{LedgerLine, UsageLedger, local_day};
 use crate::work_ledger::WorkLedger;
 
 /// Answers the Overview tab: first its question when it carries the answer, then its numbers.
@@ -59,10 +61,11 @@ pub(crate) async fn view(
     // The CLIs the import can find, by the names the screen gives them.
     let names: BTreeMap<&str, String> = ["claude-code", "codex", "antigravity-cli", "opencode"]
         .into_iter()
-        .map(|id| (id, ctx.names.harness(id)))
+        .map(|id| (id, ctx.names.cli(id)))
         .collect();
     let colors = ctx.settings().overview.year_colors;
     let prices = price_list(ctx);
+    let spelling = ctx.names.names();
     let data = tokio::task::spawn_blocking(move || {
         let now = OffsetDateTime::now_utc();
         let records = match state.import {
@@ -76,11 +79,18 @@ pub(crate) async fn view(
             work: &work,
             clock: WallClock::default(),
             prices: &prices,
+            names: &spelling,
         };
-        let mut data = build::overview(&sources, period, local_day(now), status, colors, &|id| {
+        let today = local_day(now);
+        let mut data = build::overview(&sources, period, today, status, colors, &|id| {
             names.get(id).cloned().unwrap_or_else(|| id.to_owned())
         });
         data.found = import::found_line(data.found.take(), &state);
+        // Claude Code's own count is read only once you said yes to reading its folder.
+        if state.import == Some(true) {
+            let first = period.first_day(today);
+            data.claude_stats = import::claude_count(&Locations::from_env(), first);
+        }
         data
     })
     .await?;
@@ -120,13 +130,20 @@ fn answered(store: &Store, yes: bool) -> std::io::Result<()> {
     store.save_state(&state)
 }
 
+/// Every model that has run here with its tokens in all, from every line of the usage
+/// ledger in `usage_dir` and the import beside it: the list the Overview's numbers carry,
+/// for the other tabs.
+pub(crate) fn all_time_models(usage_dir: &Path, lines: &[LedgerLine]) -> Vec<ModelTokens> {
+    let store = Store::at(&usage_dir.join(IMPORTED));
+    let records = match store.state().import {
+        Some(true) => store.records(),
+        _ => Arc::new(Vec::new()),
+    };
+    build::all_time_models(&records, lines)
+}
+
 /// Every line of the usage ledger and the work ledger.
-fn ledgers(
-    paths: &Paths,
-) -> (
-    Vec<crate::usage_ledger::LedgerLine>,
-    Vec<crate::work_ledger::WorkLine>,
-) {
+fn ledgers(paths: &Paths) -> (Vec<LedgerLine>, Vec<crate::work_ledger::WorkLine>) {
     let lines = UsageLedger::new(paths).read_since(None);
     let work = WorkLedger::beside(&paths.usage_dir()).read_since(None);
     (lines, work)

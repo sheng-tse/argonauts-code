@@ -11,7 +11,7 @@ use time::OffsetDateTime;
 
 use argonauts_core::RunId;
 use argonauts_core::future::BoxFuture;
-use argonauts_core::limits::GateRunner;
+use argonauts_core::limits::CheckRunner;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::evolution::ReplaySettings;
 
@@ -21,7 +21,7 @@ use super::files::{
 use super::{Entry, Proposal, ReplaySet, checks};
 use crate::error::{LearningError, Result};
 use crate::store::Store;
-use crate::types::RecipeRef;
+use crate::types::LearnedWorkflowRef;
 
 /// Beside `replay/`, so an agent's sandbox can be given a replay repository without any view
 /// into the hidden folder.
@@ -52,7 +52,7 @@ pub enum SplitReason {
     Retired,
 }
 
-/// A fresh seed for `ReplaySet::accept`, drawn by the conductor, never by an agent or by you,
+/// A fresh seed for `ReplaySet::accept`, drawn by Argonauts Code, never by an agent or by you,
 /// and kept with the split it decides.
 pub fn draw_seed() -> u64 {
     rand::random()
@@ -63,7 +63,7 @@ pub fn holdout_draw(seed: u64, holdout_share: f64) -> bool {
     StdRng::seed_from_u64(seed).random::<f64>() < holdout_share
 }
 
-/// The split's rule, as the conductor last read it from your settings, and the holdout's
+/// The split's rule, as Argonauts Code last read it from your settings, and the holdout's
 /// count of candidates. `accept` has no settings of its own, so it uses these.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct SetState {
@@ -112,7 +112,7 @@ struct SpendRecord {
     at: OffsetDateTime,
     usd: f64,
     task: String,
-    recipe: RecipeRef,
+    learned_workflow: LearnedWorkflowRef,
 }
 
 impl ReplaySet {
@@ -166,12 +166,12 @@ impl ReplaySet {
         &'a self,
         run: &'a RunId,
         settings: &'a Settings,
-        gates: Arc<dyn GateRunner>,
+        checks: Arc<dyn CheckRunner>,
     ) -> BoxFuture<'a, Result<Option<Proposal>>> {
-        Box::pin(checks::consider(self, run, settings, gates))
+        Box::pin(checks::consider(self, run, settings, checks))
     }
 
-    /// Accepts a proposal. The conductor, not an agent, puts it in tuning or holdout at random:
+    /// Accepts a proposal. Argonauts Code, not an agent, puts it in tuning or holdout at random:
     /// the seed draws the side, and the draw is recorded in `split.jsonl`.
     pub fn accept(&self, id: &str, seed: u64) -> Result<Entry> {
         let id = checked(id)?;
@@ -271,7 +271,7 @@ impl ReplaySet {
 
     /// `limits.evolution_usd_per_month` less what replays spent this month; `None` when no
     /// monthly limit is set.
-    pub fn budget_left(&self, settings: &Settings, now: OffsetDateTime) -> Result<Option<f64>> {
+    pub fn limit_left(&self, settings: &Settings, now: OffsetDateTime) -> Result<Option<f64>> {
         let Some(limit) = settings.limits.evolution_usd_per_month else {
             return Ok(None);
         };
@@ -296,7 +296,7 @@ impl ReplaySet {
         self.dir().join("tests").join(id)
     }
 
-    /// What a replay's cards keep hidden: each of the entry's hidden tests at its repo path,
+    /// What a replay's tasks keep hidden: each of the entry's hidden tests at its repo path,
     /// and the replay folder that holds them.
     pub(super) fn hidden_paths(&self, entry: &Entry) -> Vec<String> {
         let root = self.hidden_tests_dir(&entry.id);
@@ -328,14 +328,19 @@ impl ReplaySet {
         self.write_state(&state)
     }
 
-    pub(super) fn record_spend(&self, task: &str, recipe: &RecipeRef, usd: f64) -> Result<()> {
+    pub(super) fn record_spend(
+        &self,
+        task: &str,
+        learned_workflow: &LearnedWorkflowRef,
+        usd: f64,
+    ) -> Result<()> {
         append_json_line(
             &self.spend_path(),
             &SpendRecord {
                 at: OffsetDateTime::now_utc(),
                 usd,
                 task: task.to_owned(),
-                recipe: recipe.clone(),
+                learned_workflow: learned_workflow.clone(),
             },
         )
     }

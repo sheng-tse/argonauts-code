@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use super::RequiredStep;
-use crate::prompt_parts::CrewRole;
+use crate::settings::crew::CrewRole;
 
 #[derive(Debug, Default)]
 pub(super) struct Said {
@@ -299,11 +299,11 @@ fn role_for(name: &str) -> CrewRole {
     let plain = name.to_lowercase();
     let has = |words: &[&str]| words.iter().any(|word| plain.contains(word));
     if has(&["review", "audit", "scan", "inspect"]) {
-        CrewRole::Reviewers
+        CrewRole::Reviewer
     } else if has(&["sign off", "sign-off", "signoff", "approv"]) {
         CrewRole::Judge
     } else {
-        CrewRole::Workers
+        CrewRole::Worker
     }
 }
 

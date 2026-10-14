@@ -3,7 +3,7 @@
 //! `~/.argonauts/`, as `[[step]]` entries.
 //!
 //! Only the names are read here. Whether a workflow really contains the steps is checked where
-//! the workflow is written, before it runs; the view and the chat mark what they are shown.
+//! the workflow is written, before it runs; the view and the conversation mark what they are shown.
 
 use std::path::{Path, PathBuf};
 
@@ -48,8 +48,8 @@ fn with_kept(env: &AppEnv, kept: &[KeptStep]) -> Vec<String> {
 }
 
 /// `event` as the screen is sent it. A workflow's declaration goes with the steps you require
-/// named, so the chat marks them where it lists the phases, as the view does: its own phases,
-/// and those of a workflow one of its steps runs, which only that workflow's report names.
+/// named, so the conversation marks them where it lists the phases, as the view does: its own
+/// phases, and those of a workflow one of its steps runs, which only that workflow's report names.
 /// The journal keeps the declaration as the workflow made it.
 pub(crate) fn for_screen(event: &RunEvent, env: &AppEnv) -> RunEvent {
     let mut event = event.clone();
@@ -118,7 +118,7 @@ mod tests {
             r#"
             [[step]]
             name = "Secrets scan"
-            role = "reviewers"
+            role = "reviewer"
             does = "Scan the change for keys, tokens and passwords."
             when = "after build"
             "#,
@@ -129,7 +129,7 @@ mod tests {
             r#"
             [[step]]
             name = "Benchmark"
-            role = "workers"
+            role = "worker"
             when = "before sign-off"
 
             [[step]]
@@ -152,7 +152,7 @@ mod tests {
 
         let phase = |index: u32, title: &str| argonauts_core::events::workflow::DeclaredPhase {
             index,
-            title: title.to_owned(),
+            name: title.to_owned(),
             detail: String::new(),
             standard: StandardPhase::Do,
         };
@@ -201,7 +201,7 @@ mod tests {
         std::fs::create_dir_all(&workflows).unwrap();
         std::fs::write(
             workflows.join("always.toml"),
-            "[[step]]\nname = \"Benchmark\"\nrole = \"workers\"\n",
+            "[[step]]\nname = \"Benchmark\"\nrole = \"worker\"\n",
         )
         .unwrap();
 
@@ -209,9 +209,9 @@ mod tests {
             seq: 0,
             ts: time::OffsetDateTime::UNIX_EPOCH,
             run_id: RunId::new("run-01").unwrap(),
-            card_id: None,
+            task_id: None,
             session: None,
-            source: "conductor".to_owned(),
+            source: "argonauts-code".to_owned(),
             kind: RunEventKind::Workflow(kind),
         };
         let declared = event(WorkflowEvent::Declared(Box::new(WorkflowDeclared {
@@ -220,7 +220,7 @@ mod tests {
             description: String::new(),
             phases: vec![DeclaredPhase {
                 index: 0,
-                title: "Benchmark".to_owned(),
+                name: "Benchmark".to_owned(),
                 detail: String::new(),
                 standard: StandardPhase::Do,
             }],
@@ -254,12 +254,12 @@ mod tests {
         std::fs::create_dir_all(&workflows).unwrap();
         std::fs::write(
             workflows.join("always.toml"),
-            "[[step]]\nname = \"Benchmark\"\nrole = \"workers\"\n",
+            "[[step]]\nname = \"Benchmark\"\nrole = \"worker\"\n",
         )
         .unwrap();
         let kept = |name: &str| KeptStep {
             name: name.to_owned(),
-            role: CrewRole::Reviewers,
+            role: CrewRole::Reviewer,
             does: None,
             when: None,
         };

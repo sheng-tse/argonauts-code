@@ -7,13 +7,13 @@ const PICTURED: &str = r#"
 # Whoever writes a workflow, you or the orchestrator or Claude Code, these steps are in it.
 [[step]]
 name = "Benchmark"
-role = "workers"
+role = "worker"
 does = "Run the benchmarks and report any slowdown over 5%."
 when = "before sign-off"          # first · after plan · after build · before sign-off · last
 
 [[step]]
 name = "Secrets scan"
-role = "reviewers"
+role = "reviewer"
 does = "Scan the change for keys, tokens and passwords."
 when = "after build"
 "#;
@@ -41,9 +41,9 @@ fn the_pictured_file_requires_its_two_steps() {
     let steps = parse(PICTURED).expect("valid");
     assert_eq!(steps.len(), 2);
     assert_eq!(steps[0].name, "Benchmark");
-    assert_eq!(steps[0].role, CrewRole::Workers);
+    assert_eq!(steps[0].role, CrewRole::Worker);
     assert_eq!(steps[0].when.as_deref(), Some("before sign-off"));
-    assert_eq!(steps[1].role, CrewRole::Reviewers);
+    assert_eq!(steps[1].role, CrewRole::Reviewer);
     assert_eq!(
         steps[1].does.as_deref(),
         Some("Scan the change for keys, tokens and passwords.")
@@ -83,8 +83,8 @@ name = "  "
 fn a_step_left_bare_goes_to_the_workers_before_the_sign_off() {
     let steps = parse("[[step]]\nname = \"Lint\"\nrole = \"reviewer\"\n[[step]]\nname = \"x\"\n")
         .expect("valid");
-    assert_eq!(steps[0].role, CrewRole::Reviewers);
-    assert_eq!(steps[1].role, CrewRole::Workers);
+    assert_eq!(steps[0].role, CrewRole::Reviewer);
+    assert_eq!(steps[1].role, CrewRole::Worker);
     assert_eq!(steps[1].when, None);
     assert!(brief::step_line(&steps[1]).contains("before the sign-off"));
 }
@@ -125,7 +125,7 @@ fn a_step_the_setup_kept_wins_over_the_files_and_the_request_over_it() {
     write(home.path(), PICTURED);
     let kept = |name: &str, when: &str| RequiredStep {
         name: name.to_owned(),
-        role: CrewRole::Workers,
+        role: CrewRole::Worker,
         does: None,
         when: Some(when.to_owned()),
     };
@@ -235,15 +235,15 @@ fn a_request_can_say_a_step_every_workflow_must_contain() {
         panic!("three steps");
     };
     assert_eq!(benchmark.when.as_deref(), Some("last"));
-    assert_eq!(benchmark.role, CrewRole::Workers);
+    assert_eq!(benchmark.role, CrewRole::Worker);
     assert_eq!(
         benchmark.does.as_deref(),
         Some("Every workflow must end with a benchmark run.")
     );
     assert_eq!(scan.when.as_deref(), Some("after build"));
-    assert_eq!(scan.role, CrewRole::Reviewers);
+    assert_eq!(scan.role, CrewRole::Reviewer);
     assert_eq!(review.when.as_deref(), Some("before sign-off"));
-    assert_eq!(review.role, CrewRole::Reviewers);
+    assert_eq!(review.role, CrewRole::Reviewer);
 }
 
 #[test]
@@ -302,7 +302,7 @@ fn a_missing_or_misplaced_step_is_asked_for_once() {
     );
     assert!(ask.contains("(missing)"), "{ask}");
     assert!(ask.contains("(in the wrong place)"), "{ask}");
-    assert!(ask.contains("Argonauts adds it itself"), "{ask}");
+    assert!(ask.contains("Argonauts Code adds it itself"), "{ask}");
 }
 
 #[test]

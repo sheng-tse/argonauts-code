@@ -1,4 +1,4 @@
-//! The `RunStarted` a new run's supervisor writes from `start.json`, with the commit the run
+//! The `RunStarted` a new run's run host writes from `start.json`, with the commit the run
 //! works from, and the base worktree at that commit.
 
 use std::collections::BTreeMap;
@@ -8,15 +8,17 @@ use std::path::Path;
 use anyhow::{Context as _, bail};
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::run::{OverrideRecord, RunLifecycle, RunStarted};
+use argonauts_core::hidden_git::{CLEARED_STALE_LOCK, Writers};
 use argonauts_core::paths::create_private_dir_all;
 use argonauts_core::settings::delivery::HistorySettings;
-use argonauts_core::{RunId, unborn};
+use argonauts_core::{Note, RunId, leave_out, unborn};
 use argonauts_registry::resolve;
 
 use crate::app_settings::sources;
 use crate::env::{AppEnv, FolderGit};
 use crate::git::{git, has_commits, head, uncommitted_paths};
-use crate::hidden_git::{self, Survey};
+use crate::hidden_git::{self, Snapshot, Survey};
+use crate::live_registry::live_run_hosts;
 use crate::run_files::{SettingsRecord, StartRecord};
 use crate::trust::TrustStore;
 
@@ -116,7 +118,7 @@ fn unborn_base(
         let add: Vec<&str> = add.iter().map(String::as_str).collect();
         git_with_index(root, &index, &add)?;
         let tree = git_with_index(root, &index, &["write-tree"])?;
-        let message = "Argonauts run base: your files before your first commit";
+        let message = "Argonauts Code run base: your files before your first commit";
         let commit = git_with_index(root, &index, &["commit-tree", &tree, "-m", message])?;
         git(root, &["update-ref", &unborn::base_ref(run), &commit])?;
         Ok::<_, anyhow::Error>((commit, survey.left_out))
@@ -159,7 +161,7 @@ fn copy_your_index(root: &Path, index: &Path) -> anyhow::Result<()> {
 fn refuse_too_much(env: &AppEnv) -> anyhow::Result<()> {
     if let Some(what) = hidden_git::refused(&env.repo_root, env.user_home.as_deref()) {
         bail!(
-            "this is {what}, which is too much to record for a workflow. Start Argonauts in \
+            "this is {what}, which is too much to record for a workflow. Start Argonauts Code in \
              the project's own folder"
         );
     }
@@ -173,9 +175,59 @@ fn left_out_note(left_out: &[String]) -> Option<String> {
     ))
 }
 
+/// The width of a kind's name in the list of what a folder without git leaves out, and of
+/// what was found of it here.
+const KIND_WIDTH: usize = 16;
+const FOUND_WIDTH: usize = 18;
+
+/// What the first workflow in a folder without git says under its note: each kind of file the
+/// leave-out list holds, what of it this folder has, and the setting that changes the list.
+fn left_out_rows(setting: &[String], snapshot: &Snapshot) -> Vec<String> {
+    let row = |kind: &str, found: &[String], also: &str| {
+        let (found, also) = match found {
+            [] => ("none here".to_owned(), also.to_owned()),
+            found if also.is_empty() => (found.join(", "), String::new()),
+            found => (found.join(", "), format!("also {also}")),
+        };
+        // A long name still stands clear of what follows it.
+        let found = format!(
+            "{found:<width$}",
+            width = FOUND_WIDTH.max(found.chars().count() + 2)
+        );
+        format!("{kind:<KIND_WIDTH$}{found}{also}")
+    };
+    let mut rows =
+        vec!["Left out of what the agents see, and left alone in your folder:".to_owned()];
+    for group in leave_out::met(setting, &snapshot.kept_out) {
+        rows.push(row(group.name, &group.found, &group.also));
+    }
+    let yours = leave_out::added_and_found(setting, &snapshot.kept_out);
+    if !yours.is_empty() {
+        rows.push(row("your own", &yours, ""));
+    }
+    if let Some(sized) = named(&snapshot.left_out) {
+        rows.push(format!("{:<KIND_WIDTH$}{sized}", "too big"));
+    }
+    rows.push("history.leave_out adds to the list or takes from it".to_owned());
+    rows
+}
+
+/// Whether another run host of this folder is alive, which may be writing its history.
+pub(crate) fn other_writers(env: &AppEnv) -> Writers {
+    let this = std::process::id();
+    let another = live_run_hosts(&env.paths)
+        .iter()
+        .any(|host| host.pid != this && host.repo_root == env.repo_root);
+    if another {
+        Writers::Maybe
+    } else {
+        Writers::None
+    }
+}
+
 /// A folder without git has nothing committed, so the base is the folder as it is, recorded
-/// in the history Argonauts keeps for it. A folder that kept none until now starts here, and
-/// is told so: agents working side by side need branches, and chat and solo never did.
+/// in the history Argonauts Code keeps for it. A folder that kept none until now starts here, and
+/// is told so: agents working side by side need branches, and conversation and Captain never did.
 fn folder_base(env: &AppEnv, history: &HistorySettings) -> anyhow::Result<Base> {
     if !history.enabled {
         bail!(
@@ -184,18 +236,27 @@ fn folder_base(env: &AppEnv, history: &HistorySettings) -> anyhow::Result<Base> 
         );
     }
     refuse_too_much(env)?;
+    let first_time = !env.git().has_history();
+    hidden_git::turn_on(&env.state_dir)?;
+    let writers = other_writers(env);
+    let snapshot =
+        hidden_git::record(&env.repo_root, history, "Your folder before a run", writers)?;
     let mut notes = Vec::new();
-    if !env.git().has_history() {
-        notes.push(format!(
+    if snapshot.cleared_stale_lock {
+        notes.push(CLEARED_STALE_LOCK.to_owned());
+    }
+    if first_time {
+        let line = format!(
             "This folder has no git, so this workflow keeps its history under {}. Your folder \
              gets no .git, and the finished work is written back into your files. /git changes \
              that.",
             env.display(env.paths.home())
-        ));
+        );
+        let rows = left_out_rows(&history.leave_out, &snapshot);
+        notes.push(Note::text_with_rows(&line, &rows));
+    } else {
+        notes.extend(left_out_note(&snapshot.left_out));
     }
-    hidden_git::turn_on(&env.state_dir)?;
-    let snapshot = hidden_git::record(&env.repo_root, history, "Your folder before a run")?;
-    notes.extend(left_out_note(&snapshot.left_out));
     Ok(Base {
         commit: snapshot.commit,
         uncommitted: Vec::new(),
@@ -234,8 +295,8 @@ fn started(
         forced: request.forced,
         workflow: recorded.settings.workflow.clone(),
         estimate: request.estimate.clone(),
-        triage: request.triage.clone(),
-        chat_turn: request.chat_turn.clone(),
+        captain_or_crew: request.captain_or_crew.clone(),
+        conversation_turn: request.conversation_turn.clone(),
         continues: request.continues.clone(),
         repo_root: root.clone(),
         base_branch: git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok(),
@@ -245,9 +306,9 @@ fn started(
         settings_sha256: recorded.sha256.clone(),
         settings: serde_json::to_value(&recorded.settings)?,
         overrides: override_records(env, start, recorded),
-        harness_versions: BTreeMap::new(),
+        cli_versions: BTreeMap::new(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
-        front_end: request.front_end.clone(),
+        outside_agent: request.outside_agent.clone(),
         instructions: request.instructions.clone(),
         required_steps: request.required_steps.clone(),
     })
@@ -310,7 +371,7 @@ fn snapshot_commit(root: &Path, run_dir: &Path) -> anyhow::Result<String> {
                 "-p",
                 "HEAD",
                 "-m",
-                "Argonauts run base: HEAD with your uncommitted changes",
+                "Argonauts Code run base: HEAD with your uncommitted changes",
             ],
         )
     })();
@@ -330,9 +391,9 @@ fn git_with_index(root: &Path, index: &Path, args: &[&str]) -> anyhow::Result<St
     let output = crate::git::command(root)
         .args(args)
         .env("GIT_INDEX_FILE", index)
-        .env("GIT_AUTHOR_NAME", "Argonauts")
+        .env("GIT_AUTHOR_NAME", "Argonauts Code")
         .env("GIT_AUTHOR_EMAIL", "argonauts@localhost")
-        .env("GIT_COMMITTER_NAME", "Argonauts")
+        .env("GIT_COMMITTER_NAME", "Argonauts Code")
         .env("GIT_COMMITTER_EMAIL", "argonauts@localhost")
         .output()
         .with_context(|| format!("running git {}", args.join(" ")))?;
@@ -360,7 +421,7 @@ pub(crate) fn first_started(journal: &Path) -> anyhow::Result<RunStarted> {
 }
 
 /// `<worktrees>/base`, detached at `commit`, where read-only sessions work. A restarted
-/// supervisor finds it in place.
+/// run host finds it in place.
 pub(crate) fn base_worktree(root: &Path, base: &Path, commit: &str) -> anyhow::Result<()> {
     if base.join(".git").exists() {
         return Ok(());
@@ -472,6 +533,111 @@ mod tests {
         let next = folder_base(&env, &settings.history).unwrap();
         assert_ne!(next.commit, base.commit);
         assert!(next.notes.is_empty(), "{:?}", next.notes);
+    }
+
+    #[test]
+    fn the_first_note_names_what_the_default_list_leaves_out() {
+        let folder = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let root = folder.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/left-pad")).unwrap();
+        std::fs::write(root.join("src/cli.js"), "run()\n").unwrap();
+        std::fs::write(root.join("package.json"), "{}\n").unwrap();
+        std::fs::write(root.join(".env"), "TOKEN=1\n").unwrap();
+        std::fs::write(root.join("node_modules/left-pad/index.js"), "pad()\n").unwrap();
+        let env = AppEnv::for_repo(Paths::new(home.path()), root, false).unwrap();
+        let settings = argonauts_core::settings::Settings::default();
+
+        let base = folder_base(&env, &settings.history).unwrap();
+
+        let held = git(
+            &env.repo_root,
+            &["ls-tree", "-r", "--name-only", &base.commit],
+        )
+        .unwrap();
+        assert_eq!(held, "package.json\nsrc/cli.js");
+        let note = Note {
+            level: argonauts_core::NoteLevel::Info,
+            text: base.notes[0].clone(),
+        };
+        assert!(
+            note.line()
+                .starts_with("This folder has no git, so this workflow keeps")
+        );
+        // The rows under the note are the picture's, cell for cell, and its first
+        // line the picture's words, which name the home folder as you would type it.
+        let picture = include_str!("../../../tui/tests/golden/no_git_fixes.txt");
+        let pictured: Vec<&str> = picture.lines().take(7).collect();
+        let under: Vec<String> = note
+            .rows()
+            .enumerate()
+            .map(|(row, text)| match row {
+                0 => format!("  ⎿  {text}"),
+                _ => format!("     {text}"),
+            })
+            .collect();
+        assert_eq!(under, pictured[2..]);
+        let words = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let said = note
+            .line()
+            .replace(&env.display(env.paths.home()), "~/.argonauts");
+        assert_eq!(
+            format!("● {}", words(&said)),
+            words(&pictured[..2].join(" "))
+        );
+        assert_eq!(note.detail(), None);
+        // Left alone in the folder, and out of every copy the agents work in.
+        assert!(root.join(".env").is_file());
+        let tree = home.path().join("worktrees/base");
+        base_worktree(&env.repo_root, &tree, &base.commit).unwrap();
+        assert!(tree.join("src/cli.js").is_file());
+        assert!(!tree.join(".env").exists() && !tree.join("node_modules").exists());
+    }
+
+    #[test]
+    fn the_setting_adds_to_the_list_and_takes_from_it() {
+        let folder = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let root = folder.path();
+        std::fs::create_dir_all(root.join("scratch")).unwrap();
+        std::fs::write(root.join("scratch/draft.txt"), "x\n").unwrap();
+        std::fs::write(root.join("site.key"), "public\n").unwrap();
+        std::fs::write(root.join("app.py"), "print()\n").unwrap();
+        let env = AppEnv::for_repo(Paths::new(home.path()), root, false).unwrap();
+        let history = HistorySettings {
+            leave_out: vec!["scratch/".into(), "!*.key".into()],
+            ..HistorySettings::default()
+        };
+
+        let base = folder_base(&env, &history).unwrap();
+
+        let held = git(
+            &env.repo_root,
+            &["ls-tree", "-r", "--name-only", &base.commit],
+        )
+        .unwrap();
+        assert_eq!(held, "app.py\nsite.key");
+        let rows = &base.notes[0];
+        assert!(
+            rows.contains("secrets         none here         .env, .env.*, *.pem"),
+            "{rows}"
+        );
+        assert!(rows.contains("your own        scratch/"), "{rows}");
+
+        // Naming a file an earlier record took drops it from the record, never from the folder.
+        let history = HistorySettings {
+            leave_out: vec!["scratch/".into()],
+            ..HistorySettings::default()
+        };
+        let next = folder_base(&env, &history).unwrap();
+        let held = git(
+            &env.repo_root,
+            &["ls-tree", "-r", "--name-only", &next.commit],
+        )
+        .unwrap();
+        assert_eq!(held, "app.py");
+        assert!(root.join("site.key").is_file());
     }
 
     #[test]

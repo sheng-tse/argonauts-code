@@ -1,5 +1,5 @@
-//! What the crew keeps between runs besides recipes: notes and their safety limits, exported
-//! skills, and the shared outcome log.
+//! What the crew keeps between runs besides learned workflows: notes and their safety limits,
+//! exported skills, and the shared outcome log.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -49,8 +49,8 @@ pub struct SkillSettings {
     /// Link each exported skill into .claude/skills, the only place Claude Code reads project
     /// skills from.
     pub claude_link: bool,
-    /// Once a promoted learned workflow passes its canary, propose exporting it as a skill, as a branch
-    /// that waits for you.
+    /// Once a promoted learned workflow passes its canary, propose exporting it as a skill, as a
+    /// branch that waits for you.
     pub export_after_canary: bool,
 }
 

@@ -170,7 +170,7 @@ fn what_needs_you_has_a_row_each_and_recent_is_one_dim_row() {
 #[test]
 fn a_run_with_no_tasks_yet_shows_its_goal_and_no_bar() {
     let mut summary = sample::status();
-    summary.cards.clear();
+    summary.tasks.clear();
     summary.waiting.clear();
     let rows = drawn(&summary, 110, |cards, kit, frame| {
         Some(cards.run(kit, frame, RunShape::WHOLE))

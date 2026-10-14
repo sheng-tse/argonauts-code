@@ -1,5 +1,5 @@
-//! Agent process groups a crashed supervisor left behind. Each is killed before anything
-//! resumes, so two processes never share one vendor session.
+//! Agent process groups a crashed run host left behind. Each is killed before anything
+//! resumes, so two processes never share one CLI session.
 
 use std::io;
 use std::path::Path;
@@ -26,7 +26,7 @@ pub(crate) async fn kill_orphans(run_dir: &Path, home: &Paths) -> anyhow::Result
     let home = home.clone();
     tokio::task::spawn_blocking(move || kill_now(&run_dir, &home))
         .await
-        .context("stopping agents a crashed supervisor left")?
+        .context("stopping agents a crashed run host left")?
 }
 
 fn kill_now(run_dir: &Path, home: &Paths) -> anyhow::Result<Vec<u32>> {
@@ -90,9 +90,9 @@ fn orphan_groups(run_dir: &Path, processes: &mut Processes) -> anyhow::Result<Ve
         let ours = match processes.start_time(group.pid) {
             Some(started) if started == group.start_time => i32::try_from(group.pid)
                 .is_ok_and(|pid| getpgid(Some(Pid::from_raw(pid))).ok() == Some(pgid)),
-            // The leader's pid now belongs to another process.
+            // The pid of the group's first process now belongs to another.
             Some(_) => false,
-            // The leader exited, but a build or a watcher it started may still run. A group id
+            // That process exited, but a build or a watcher it started may still run. A group id
             // isn't reused while its group has members, so with no process holding that pid
             // the members left are the agent's.
             None => processes.start_time(group.pgid).is_none() && has_members(pgid),
@@ -234,12 +234,12 @@ mod tests {
         true
     }
 
-    /// A shell that starts `sleep` in the background and exits at once, as a vendor CLI that
+    /// A shell that starts `sleep` in the background and exits at once, as a CLI that
     /// crashed would leave the build it started. Returns the shell's pid and the sleep's.
-    fn leaderless_group() -> (u32, u32) {
+    fn group_left_behind() -> (u32, u32) {
         use std::io::BufRead as _;
         use std::os::unix::process::CommandExt as _;
-        let mut leader = std::process::Command::new("sh")
+        let mut shell = std::process::Command::new("sh")
             .args(["-c", "sleep 30 & echo $!"])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -247,28 +247,28 @@ mod tests {
             .spawn()
             .unwrap();
         let mut line = String::new();
-        std::io::BufReader::new(leader.stdout.take().unwrap())
+        std::io::BufReader::new(shell.stdout.take().unwrap())
             .read_line(&mut line)
             .unwrap();
-        leader.wait().unwrap();
-        (leader.id(), line.trim().parse().unwrap())
+        shell.wait().unwrap();
+        (shell.id(), line.trim().parse().unwrap())
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_group_whose_leader_exited_is_still_killed() {
+    async fn a_group_whose_first_process_exited_is_still_killed() {
         let dir = tempfile::tempdir().unwrap();
         let home = Paths::new(dir.path().join("home"));
         let run_dir = dir.path().join("run");
-        let (leader, member) = leaderless_group();
+        let (shell, member) = group_left_behind();
         let group = AgentGroup {
-            pgid: leader,
-            pid: leader,
+            pgid: shell,
+            pid: shell,
             start_time: 1,
         };
         record(&run_dir, 1, &group);
 
         let killed = kill_orphans(&run_dir, &home).await.unwrap();
-        assert_eq!(killed, vec![leader]);
+        assert_eq!(killed, vec![shell]);
         assert!(dies(member), "the build the agent left behind stops too");
     }
 

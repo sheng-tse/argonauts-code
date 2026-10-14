@@ -1,6 +1,6 @@
-//! What the main session asks of Argonauts, as the chat draws it: a plain line in words, such
-//! as `Looked up reviews`, never a tool's internal name. Starting a workflow shows as the
-//! session's own line and the workflow's row, so its call draws nothing unless Argonauts
+//! What the main session asks of Argonauts Code, as the conversation draws it: a plain line in
+//! words, such as `Looked up reviews`, never a tool's internal name. Starting a workflow shows as
+//! the session's own line and the workflow's row, so its call draws nothing unless Argonauts Code
 //! turned it down.
 
 use serde_json::Value;
@@ -19,7 +19,7 @@ pub(crate) enum Own {
 }
 
 impl Own {
-    /// However the CLI prefixes Argonauts' server: Claude Code's
+    /// However the CLI prefixes Argonauts Code's server: Claude Code's
     /// `mcp__argonauts_status__argonauts_lookup`, Codex's `mcp:argonauts_status/argonauts_lookup`
     /// or OpenCode's `argonauts_status_argonauts_lookup`.
     pub(crate) fn named(name: &str) -> Option<Self> {
@@ -59,19 +59,19 @@ impl Own {
             },
             Own::Setup => "Proposed a change to your setup".to_owned(),
             Own::Guide => match field("topic") {
-                Some(topic) => format!("Read Argonauts' guide on {topic}"),
-                None => "Read Argonauts' guide".to_owned(),
+                Some(topic) => format!("Read Argonauts Code's guide on {topic}"),
+                None => "Read Argonauts Code's guide".to_owned(),
             },
             Own::Lookup => match field("what") {
-                Some(what) => format!("Looked up {what} in Argonauts' records"),
-                None => "Looked up Argonauts' records".to_owned(),
+                Some(what) => format!("Looked up {what} in Argonauts Code's records"),
+                None => "Looked up Argonauts Code's records".to_owned(),
             },
         };
         Some(ToolCall::described(ToolKind::Other, text))
     }
 }
 
-/// A start Argonauts turned down, as one plain line: its answer's first line, such as
+/// A start Argonauts Code turned down, as one plain line: its answer's first line, such as
 /// `No workflow started.` The session reads the rest, which says why, and tries again.
 pub(crate) fn turned_down(ok: bool, output: Option<&str>) -> Option<ToolCall> {
     let first = output
@@ -122,7 +122,7 @@ mod tests {
         let line = |own: Own, input| own.line(&input).map(|call| call.title.plain());
         assert_eq!(
             line(Own::Lookup, json!({"what": "reviews"})).as_deref(),
-            Some("Looked up reviews in Argonauts' records")
+            Some("Looked up reviews in Argonauts Code's records")
         );
         assert_eq!(
             line(Own::Goal, json!({"action": "pause"})).as_deref(),
@@ -134,7 +134,7 @@ mod tests {
         );
         assert_eq!(
             line(Own::Guide, json!({"topic": "workflows"})).as_deref(),
-            Some("Read Argonauts' guide on workflows")
+            Some("Read Argonauts Code's guide on workflows")
         );
         assert_eq!(line(Own::StartWorkflow, json!({"request": "x"})), None);
     }

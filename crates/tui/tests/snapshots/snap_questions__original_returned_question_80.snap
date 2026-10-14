@@ -1,0 +1,17 @@
+---
+source: crates/tui/tests/snap_questions.rs
+expression: text(&lines)
+---
+────────────────────────────────────────────────────────────────────────────────
+◆ Claude Code is back · task-002 (Redis store) was continued by codex/gpt-5.6
+  3 commits since fallback-1 · +84 -12 · tests passed
+  Needs review by Opus on Claude Code
+
+  ❯ 1. Let claude-code/opus review codex's work
+    2. Give the task back to claude-code/opus
+    3. Redo from fallback-1 with claude-code/opus
+    4. Keep codex's work, and move on
+    5. Take over myself
+    6. Show the diff since fallback-1
+
+  Enter to choose · Tab to add a note · Esc to carry on without me

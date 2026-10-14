@@ -1,4 +1,4 @@
-//! Owners, the review ring, and chores for a validated graph. What it knows about each worker
+//! Workers, the review ring, and chores for a validated graph. What it knows about each worker
 //! comes in through [`Crew`], so the whole assignment is plain code over its inputs.
 
 use std::collections::BTreeMap;
@@ -6,64 +6,64 @@ use std::collections::BTreeMap;
 use rand::RngExt;
 use rand::rngs::StdRng;
 
-use argonauts_core::CardId;
-use argonauts_core::events::card::{CardKind, CardSpec};
+use argonauts_core::TaskId;
 use argonauts_core::events::plan::TaskGraph;
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::events::task::{TaskKind, TaskSpec};
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::protocol::{ChoreAssignment, ReviewAssignment, RoutingAlgorithm};
 
 use argonauts_learning::routing::{Draw, RunSoFar};
 
 use super::ring;
-use super::router::{self, Candidate, CardToRoute, Choice};
+use super::router::{self, Candidate, Choice, TaskToRoute};
 use crate::roles;
 
 pub struct Crew<'a> {
     pub settings: &'a Settings,
     /// The run's risk labels, which may rule out exploring.
     pub labels: &'a [String],
-    /// The run's task type from triage, for build cards.
+    /// The run's task type from its estimate, for build tasks.
     pub run_task_type: Option<&'a str>,
-    /// The owner candidates for a task type, with records, health, quota, and cost.
-    pub owners: &'a dyn Fn(&str) -> Vec<Candidate>,
-    pub family: &'a dyn Fn(&WorkerRef) -> String,
-    /// `limits.protected_paths`, so a card that touches them is never explored on.
+    /// The worker candidates for a task type, with records, health, plan usage, and cost.
+    pub workers: &'a dyn Fn(&str) -> Vec<Candidate>,
+    pub provider: &'a dyn Fn(&ModelRef) -> String,
+    /// `limits.protected_paths`, so a task that touches them is never explored on.
     pub protected: &'a [String],
 }
 
-/// One owner pick, for `Divide::Owner`.
+/// One worker pick, for `Divide::Worker`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pick {
-    pub card: CardId,
+    pub task: TaskId,
     pub algorithm: RoutingAlgorithm,
     pub choice: Choice,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Assignment {
-    pub cards: Vec<CardSpec>,
+    pub tasks: Vec<TaskSpec>,
     pub picks: Vec<Pick>,
-    /// The router's draws on learning's records, one per card it routed that way.
+    /// The router's draws on learning's records, one per task it routed that way.
     pub draws: Vec<Draw>,
 }
 
-/// The key for track records and budgets from history.
-pub fn task_type(kind: &CardKind, run_task_type: Option<&str>) -> String {
+/// The key for track records and limits from history.
+pub fn task_type(kind: &TaskKind, run_task_type: Option<&str>) -> String {
     let fixed = match kind {
-        CardKind::Build | CardKind::Solo => return run_task_type.unwrap_or("build").to_owned(),
-        CardKind::Interface => "interface",
-        CardKind::AcceptanceTests { .. } => "acceptance_tests",
-        CardKind::Chore => "chore",
-        CardKind::Docs => "docs",
-        CardKind::Spike { .. } => "spike",
+        TaskKind::Build | TaskKind::Captain => return run_task_type.unwrap_or("build").to_owned(),
+        TaskKind::Interface => "interface",
+        TaskKind::AcceptanceTests { .. } => "acceptance_tests",
+        TaskKind::Chore => "chore",
+        TaskKind::Docs => "docs",
+        TaskKind::Experiment { .. } => "experiment",
     };
     fixed.to_owned()
 }
 
-pub fn assign(mut cards: Vec<CardSpec>, crew: &Crew, rng: &mut StdRng) -> Assignment {
+pub fn assign(mut tasks: Vec<TaskSpec>, crew: &Crew, rng: &mut StdRng) -> Assignment {
     let settings = crew.settings;
-    let mut load: BTreeMap<WorkerRef, u32> = BTreeMap::new();
+    let mut load: BTreeMap<ModelRef, u32> = BTreeMap::new();
     let mut picks = Vec::new();
     let mut routed = 0;
     let mut chores = 0;
@@ -71,22 +71,22 @@ pub fn assign(mut cards: Vec<CardSpec>, crew: &Crew, rng: &mut StdRng) -> Assign
     let mut draws = Vec::new();
     let mut so_far = RunSoFar::default();
 
-    for card in cards.iter_mut().filter(|card| !is_test(card)) {
-        let kind = task_type(&card.kind, crew.run_task_type);
-        let mut candidates = (crew.owners)(&kind);
+    for task in tasks.iter_mut().filter(|task| !is_test(task)) {
+        let kind = task_type(&task.kind, crew.run_task_type);
+        let mut candidates = (crew.workers)(&kind);
         for candidate in &mut candidates {
-            candidate.running_cards += load.get(&candidate.worker).copied().unwrap_or(0);
+            candidate.running_tasks += load.get(&candidate.worker).copied().unwrap_or(0);
         }
-        let rotating = matches!(card.kind, CardKind::Chore | CardKind::Docs)
+        let rotating = matches!(task.kind, TaskKind::Chore | TaskKind::Docs)
             && settings.divide.chores == ChoreAssignment::Rotate;
-        let (algorithm, choice) = if settings.divide.single_owner && single.is_some() {
+        let (algorithm, choice) = if settings.divide.single_worker && single.is_some() {
             let choice = single.clone().map(|mut choice| {
                 choice.explored = false;
                 choice.reason = "one worker builds the whole plan".to_owned();
                 choice
             });
             (settings.routing.algorithm, choice)
-        } else if rotating && !settings.divide.single_owner {
+        } else if rotating && !settings.divide.single_worker {
             let choice = route(RoutingAlgorithm::RoundRobin, &candidates, crew, rng, chores).map(
                 |mut choice| {
                     choice.reason = format!("rotating chore, turn {}", chores + 1);
@@ -97,13 +97,13 @@ pub fn assign(mut cards: Vec<CardSpec>, crew: &Crew, rng: &mut StdRng) -> Assign
             (RoutingAlgorithm::RoundRobin, choice)
         } else {
             let algorithm = settings.routing.algorithm;
-            let to_route = CardToRoute {
-                card: &card.id,
+            let to_route = TaskToRoute {
+                task: &task.id,
                 task_type: &kind,
                 labels: crew.labels,
-                touches_protected: touches(&card.owned_paths, crew.protected),
+                touches_protected: touches(&task.owned_paths, crew.protected),
             };
-            let choice = router::route_card(
+            let choice = router::route_task(
                 algorithm,
                 &candidates,
                 &to_route,
@@ -117,16 +117,16 @@ pub fn assign(mut cards: Vec<CardSpec>, crew: &Crew, rng: &mut StdRng) -> Assign
                 choice
             });
             routed += 1;
-            if settings.divide.single_owner {
+            if settings.divide.single_worker {
                 single.clone_from(&choice);
             }
             (algorithm, choice)
         };
         if let Some(choice) = choice {
-            card.owner = Some(choice.worker.clone());
+            task.worker = Some(choice.worker.clone());
             *load.entry(choice.worker.clone()).or_default() += 1;
             picks.push(Pick {
-                card: card.id.clone(),
+                task: task.id.clone(),
                 algorithm,
                 choice,
             });
@@ -138,45 +138,45 @@ pub fn assign(mut cards: Vec<CardSpec>, crew: &Crew, rng: &mut StdRng) -> Assign
         ReviewAssignment::Random => rng.random_range(0..pool.len().max(1)),
         _ => 0,
     };
-    for card in cards.iter_mut().filter(|card| !is_test(card)) {
-        if let Some(owner) = card.owner.clone() {
-            card.reviewers = reviewers_for(&owner, None, &pool, crew, offset);
+    for task in tasks.iter_mut().filter(|task| !is_test(task)) {
+        if let Some(worker) = task.worker.clone() {
+            task.reviewers = reviewers_for(&worker, None, &pool, crew, offset);
             if settings.review.assign != ReviewAssignment::Fixed {
                 offset += 1;
             }
         }
     }
 
-    let tested: BTreeMap<CardId, (Option<WorkerRef>, Vec<WorkerRef>)> = cards
+    let tested: BTreeMap<TaskId, (Option<ModelRef>, Vec<ModelRef>)> = tasks
         .iter()
-        .map(|card| {
+        .map(|task| {
             (
-                card.id.clone(),
-                (card.owner.clone(), card.reviewers.clone()),
+                task.id.clone(),
+                (task.worker.clone(), task.reviewers.clone()),
             )
         })
         .collect();
-    for card in cards.iter_mut() {
-        let CardKind::AcceptanceTests { for_card } = &card.kind else {
+    for task in tasks.iter_mut() {
+        let TaskKind::AcceptanceTests { for_task } = &task.kind else {
             continue;
         };
-        let (build_owner, build_reviewers) = tested.get(for_card).cloned().unwrap_or_default();
+        let (build_worker, build_reviewers) = tested.get(for_task).cloned().unwrap_or_default();
         let choice = match build_reviewers.first() {
             Some(reviewer) => Some(Choice {
                 worker: reviewer.clone(),
                 explored: false,
-                reason: format!("{for_card}'s reviewer writes its acceptance tests"),
+                reason: format!("{for_task}'s reviewer writes its acceptance tests"),
             }),
             None => {
-                let candidates: Vec<Candidate> = (crew.owners)("acceptance_tests")
+                let candidates: Vec<Candidate> = (crew.workers)("acceptance_tests")
                     .into_iter()
                     .filter(|candidate| {
-                        build_owner.as_ref().is_none_or(|owner| {
+                        build_worker.as_ref().is_none_or(|worker| {
                             roles::conflict(
                                 RoleName::Reviewer,
                                 &candidate.worker,
-                                Some(owner),
-                                crew.family,
+                                Some(worker),
+                                crew.provider,
                             )
                             .is_none()
                         })
@@ -186,26 +186,26 @@ pub fn assign(mut cards: Vec<CardSpec>, crew: &Crew, rng: &mut StdRng) -> Assign
             }
         };
         if let Some(choice) = choice {
-            card.owner = Some(choice.worker.clone());
-            card.reviewers =
-                reviewers_for(&choice.worker, build_owner.as_ref(), &pool, crew, offset);
+            task.worker = Some(choice.worker.clone());
+            task.reviewers =
+                reviewers_for(&choice.worker, build_worker.as_ref(), &pool, crew, offset);
             offset += 1;
             picks.push(Pick {
-                card: card.id.clone(),
+                task: task.id.clone(),
                 algorithm: settings.routing.algorithm,
                 choice,
             });
         }
     }
     Assignment {
-        cards,
+        tasks,
         picks,
         draws,
     }
 }
 
-/// Whether any of a card's paths shares a prefix with a protected pattern, before either's
-/// first wildcard. Cheap and on the safe side: a near miss only means the card isn't explored.
+/// Whether any of a task's paths shares a prefix with a protected pattern, before either's
+/// first wildcard. Cheap and on the safe side: a near miss only means the task isn't explored.
 pub fn touches(owned: &[String], protected: &[String]) -> bool {
     let literal = |pattern: &str| -> String {
         pattern
@@ -223,27 +223,27 @@ pub fn touches(owned: &[String], protected: &[String]) -> bool {
     })
 }
 
-/// What the plan checkpoint should flag: cards without an owner, and cards with fewer
+/// What the plan approval should flag: tasks without a worker, and tasks with fewer
 /// reviewers than `review.per_task`.
 pub fn shortfalls(graph: &TaskGraph, settings: &Settings) -> Vec<String> {
     let per_task = settings.review.per_task as usize;
     let mut flags = Vec::new();
-    for card in &graph.cards {
-        if card.owner.is_none() {
+    for task in &graph.tasks {
+        if task.worker.is_none() {
             flags.push(format!(
-                "No agent is up and under its plan usage to own {} (\"{}\").",
-                card.id, card.title
+                "No agent is up with plan usage left to own {} (\"{}\").",
+                task.id, task.title
             ));
-        } else if card.reviewers.len() < per_task {
-            let families = if settings.review.other_provider {
+        } else if task.reviewers.len() < per_task {
+            let providers = if settings.review.other_provider {
                 " from another provider"
             } else {
                 ""
             };
             flags.push(format!(
-                "{} has {} of {per_task} reviewers{families}.",
-                card.id,
-                card.reviewers.len()
+                "{} has {} of {per_task} reviewers{providers}.",
+                task.id,
+                task.reviewers.len()
             ));
         }
     }
@@ -267,25 +267,25 @@ fn route(
     )
 }
 
-/// The ring around `owner`, never `owner` itself or `also_not` (a test card's tested owner).
+/// The ring around `worker`, never `worker` itself or `also_not` (a test task's tested worker).
 fn reviewers_for(
-    owner: &WorkerRef,
-    also_not: Option<&WorkerRef>,
-    pool: &[WorkerRef],
+    worker: &ModelRef,
+    also_not: Option<&ModelRef>,
+    pool: &[ModelRef],
     crew: &Crew,
     offset: usize,
-) -> Vec<WorkerRef> {
-    let clear = |worker: &WorkerRef, of: Option<&WorkerRef>| {
-        roles::conflict(RoleName::Reviewer, worker, of, crew.family).is_none()
+) -> Vec<ModelRef> {
+    let clear = |model: &ModelRef, of: Option<&ModelRef>| {
+        roles::conflict(RoleName::Reviewer, model, of, crew.provider).is_none()
     };
-    let candidates: Vec<(WorkerRef, String)> = pool
+    let candidates: Vec<(ModelRef, String)> = pool
         .iter()
-        .filter(|worker| clear(worker, Some(owner)) && clear(worker, also_not))
-        .map(|worker| (worker.clone(), (crew.family)(worker)))
+        .filter(|model| clear(model, Some(worker)) && clear(model, also_not))
+        .map(|model| (model.clone(), (crew.provider)(model)))
         .collect();
     let review = &crew.settings.review;
     ring::reviewers(
-        &(crew.family)(owner),
+        &(crew.provider)(worker),
         &candidates,
         review.per_task as usize,
         review.other_provider,
@@ -293,25 +293,25 @@ fn reviewers_for(
     )
 }
 
-fn is_test(card: &CardSpec) -> bool {
-    matches!(card.kind, CardKind::AcceptanceTests { .. })
+fn is_test(task: &TaskSpec) -> bool {
+    matches!(task.kind, TaskKind::AcceptanceTests { .. })
 }
 
 #[cfg(test)]
 mod tests {
     use argonauts_core::limits::{CostEstimate, HealthState, TrackRecord};
-    use argonauts_core::steps::plan::{CardProposal, ProposedKind, TaskGraphProposal};
+    use argonauts_core::steps::plan::{ProposedKind, TaskGraphProposal, TaskProposal};
     use rand::SeedableRng;
 
     use super::*;
     use crate::divide::{contracts, graph};
 
-    fn worker(text: &str) -> WorkerRef {
+    fn worker(text: &str) -> ModelRef {
         text.parse().unwrap()
     }
 
-    fn family(worker: &WorkerRef) -> String {
-        match worker.worker.as_str() {
+    fn provider(worker: &ModelRef) -> String {
+        match worker.agent.as_str() {
             "claude-code" => "claude",
             "codex" => "gpt",
             _ => "gemini",
@@ -333,8 +333,8 @@ mod tests {
         settings
     }
 
-    fn cards() -> Vec<CardSpec> {
-        let card = |key: &str, kind, owned: &str| CardProposal {
+    fn tasks() -> Vec<TaskSpec> {
+        let task = |key: &str, kind, owned: &str| TaskProposal {
             key: key.to_owned(),
             title: key.to_owned(),
             task: key.to_owned(),
@@ -345,31 +345,31 @@ mod tests {
             criteria: vec!["G1".to_owned()],
         };
         let proposal = TaskGraphProposal {
-            cards: vec![
-                card("api", ProposedKind::Interface, "src/api.rs"),
-                card("store", ProposedKind::Build, "src/store/**"),
-                card("middleware", ProposedKind::Build, "src/mw/**"),
-                card("docs", ProposedKind::Docs, "docs/a.md"),
-                card("cleanup", ProposedKind::Chore, "scripts/**"),
+            tasks: vec![
+                task("api", ProposedKind::Interface, "src/api.rs"),
+                task("store", ProposedKind::Build, "src/store/**"),
+                task("middleware", ProposedKind::Build, "src/mw/**"),
+                task("docs", ProposedKind::Docs, "docs/a.md"),
+                task("cleanup", ProposedKind::Chore, "scripts/**"),
             ],
         };
         contracts::contracts_first(graph::convert(&proposal).0, true)
     }
 
     fn assigned(settings: &Settings, seed: u64) -> Assignment {
-        let owners = |_: &str| -> Vec<Candidate> {
+        let workers = |_: &str| -> Vec<Candidate> {
             settings
                 .crew
                 .members()
                 .iter()
-                .map(|worker| Candidate {
-                    worker: worker.clone(),
+                .map(|model| Candidate {
+                    worker: model.clone(),
                     record: Some(TrackRecord { passed: 8, of: 10 }),
                     health: HealthState::Healthy,
-                    quota_used: None,
+                    plan_usage_used: None,
                     plan_limit: None,
                     cost: CostEstimate::Unknown,
-                    running_cards: 0,
+                    running_tasks: 0,
                     learned: None,
                 })
                 .collect()
@@ -378,72 +378,72 @@ mod tests {
             settings,
             labels: &[],
             run_task_type: Some("feature"),
-            owners: &owners,
-            family: &family,
+            workers: &workers,
+            provider: &provider,
             protected: &[],
         };
-        assign(cards(), &crew, &mut StdRng::seed_from_u64(seed))
+        assign(tasks(), &crew, &mut StdRng::seed_from_u64(seed))
     }
 
     #[test]
-    fn every_card_gets_an_owner_and_a_ring_from_other_families() {
+    fn every_task_gets_a_worker_and_a_ring_from_other_providers() {
         let settings = settings();
         let assignment = assigned(&settings, 42);
         assert_eq!(assignment, assigned(&settings, 42));
-        assert_eq!(assignment.picks.len(), assignment.cards.len());
-        let by_id: BTreeMap<&CardId, &CardSpec> = assignment
-            .cards
+        assert_eq!(assignment.picks.len(), assignment.tasks.len());
+        let by_id: BTreeMap<&TaskId, &TaskSpec> = assignment
+            .tasks
             .iter()
-            .map(|card| (&card.id, card))
+            .map(|task| (&task.id, task))
             .collect();
-        for card in &assignment.cards {
-            let owner = card.owner.as_ref().unwrap();
-            assert_eq!(card.reviewers.len(), 1, "{}", card.id);
-            for reviewer in &card.reviewers {
-                assert_ne!(family(reviewer), family(owner), "{}", card.id);
+        for task in &assignment.tasks {
+            let worker = task.worker.as_ref().unwrap();
+            assert_eq!(task.reviewers.len(), 1, "{}", task.id);
+            for reviewer in &task.reviewers {
+                assert_ne!(provider(reviewer), provider(worker), "{}", task.id);
             }
-            if let CardKind::AcceptanceTests { for_card } = &card.kind {
-                let tested = by_id[for_card];
-                assert_eq!(Some(owner), tested.reviewers.first());
-                assert_ne!(Some(owner), tested.owner.as_ref());
-                assert!(!card.reviewers.contains(tested.owner.as_ref().unwrap()));
+            if let TaskKind::AcceptanceTests { for_task } = &task.kind {
+                let tested = by_id[for_task];
+                assert_eq!(Some(worker), tested.reviewers.first());
+                assert_ne!(Some(worker), tested.worker.as_ref());
+                assert!(!task.reviewers.contains(tested.worker.as_ref().unwrap()));
             }
         }
         let docs = &assignment
             .picks
             .iter()
-            .find(|p| p.card.as_str() == "task-004")
+            .find(|p| p.task.as_str() == "task-004")
             .unwrap();
         assert_eq!(docs.algorithm, RoutingAlgorithm::RoundRobin);
         assert_eq!(docs.choice.reason, "rotating chore, turn 1");
         let graph = TaskGraph {
-            cards: assignment.cards,
+            tasks: assignment.tasks,
             critical_path: Vec::new(),
         };
         assert!(shortfalls(&graph, &settings).is_empty());
     }
 
     #[test]
-    fn one_owner_for_the_whole_plan() {
+    fn one_worker_for_the_whole_plan() {
         let mut settings = settings();
-        settings.divide.single_owner = true;
+        settings.divide.single_worker = true;
         let assignment = assigned(&settings, 3);
-        let owners: Vec<&WorkerRef> = assignment
-            .cards
+        let workers: Vec<&ModelRef> = assignment
+            .tasks
             .iter()
-            .filter(|card| !is_test(card))
-            .filter_map(|card| card.owner.as_ref())
+            .filter(|task| !is_test(task))
+            .filter_map(|task| task.worker.as_ref())
             .collect();
-        assert!(owners.windows(2).all(|pair| pair[0] == pair[1]));
+        assert!(workers.windows(2).all(|pair| pair[0] == pair[1]));
     }
 
     #[test]
-    fn a_one_family_crew_is_flagged() {
+    fn a_one_provider_crew_is_flagged() {
         let mut settings = settings();
         settings.crew = vec![worker("claude-code/opus"), worker("claude-code/sonnet")].into();
         let assignment = assigned(&settings, 1);
         let graph = TaskGraph {
-            cards: assignment.cards,
+            tasks: assignment.tasks,
             critical_path: Vec::new(),
         };
         let flags = shortfalls(&graph, &settings);

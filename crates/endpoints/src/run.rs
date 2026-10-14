@@ -1,5 +1,5 @@
 //! One session's exchange: wait for a slot, send the request, stream the reply into events,
-//! wait out rate limits the time budget allows, and classify the end. Stop and wrap-up drop
+//! wait out rate limits the time limit allows, and classify the end. Stop and wrap-up drop
 //! the request, which closes the connection.
 
 use std::future::Future;
@@ -10,15 +10,14 @@ use argonauts_core::events::session::{
     EndReason, SessionEnd, SessionEvent, SessionInput, SessionStarted,
 };
 use argonauts_core::limits::{
-    CostEstimate, HealthBoard, HealthSignal, QuotaBoard, QuotaReading, QuotaSource, QuotaStatus,
+    CostEstimate, HealthBoard, HealthSignal, PlanUsageBoard, PlanUsageReading, PlanUsageSource,
+    PlanUsageStatus,
 };
-use argonauts_core::names::{SessionKey, VendorId, WorkerRef};
+use argonauts_core::names::{AgentId, ModelRef, SessionKey};
 use argonauts_core::registry::ModelRegistry;
+use argonauts_core::session_runner::{RunnerEvent, SessionControl};
 use argonauts_core::settings::agents::EndpointApi;
-use argonauts_core::worker::{SessionControl, WorkerEvent};
-use argonauts_core::{
-    AgentEvent, BudgetDimension, ErrorCategory, MessageStage, RetryReason, Spend,
-};
+use argonauts_core::{AgentEvent, ErrorCategory, LimitDimension, MessageStage, RetryReason, Spend};
 use futures::StreamExt;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, RETRY_AFTER};
 use serde_json::Value;
@@ -45,14 +44,14 @@ const MAX_BODY_BYTES: usize = MAX_EVENT_BYTES;
 /// What the session reports to, shared by every step of the exchange.
 pub(crate) struct Session {
     pub key: SessionKey,
-    pub vendor: VendorId,
+    pub agent_id: AgentId,
     /// The worker and model prices are looked up by.
-    pub pricing: WorkerRef,
-    pub quota: Arc<dyn QuotaBoard>,
+    pub pricing: ModelRef,
+    pub plan_usage: Arc<dyn PlanUsageBoard>,
     pub health: Arc<dyn HealthBoard>,
     pub registry: Arc<dyn ModelRegistry>,
-    pub events: mpsc::Sender<WorkerEvent>,
-    /// Taken out of every error and quota detail the endpoint sends back.
+    pub events: mpsc::Sender<RunnerEvent>,
+    /// Taken out of every error and plan usage detail the endpoint sends back.
     pub secrets: Secrets,
 }
 
@@ -75,34 +74,34 @@ pub(crate) struct Limits {
     pub timeout: Option<Duration>,
     /// When the session's minutes run out. Only this bounds the wait for a slot and the
     /// waits out rate limits, so time spent queued never counts against a request.
-    pub budget: Option<Instant>,
+    pub limit: Option<Instant>,
 }
 
 impl Limits {
-    /// A request sent now ends at its timeout, or when the budget runs out if that's sooner.
+    /// A request sent now ends at its timeout, or when the limit runs out if that's sooner.
     fn request(&self) -> Option<Deadline> {
         let timeout = self.timeout.and_then(|limit| {
             Instant::now()
                 .checked_add(limit)
                 .map(|at| Deadline::Timeout { at, limit })
         });
-        let budget = self.budget.map(Deadline::Budget);
-        match (timeout, budget) {
-            (Some(timeout), Some(budget)) if budget.at() <= timeout.at() => Some(budget),
+        let limit = self.limit.map(Deadline::Limit);
+        match (timeout, limit) {
+            (Some(timeout), Some(limit)) if limit.at() <= timeout.at() => Some(limit),
             (Some(timeout), _) => Some(timeout),
-            (None, budget) => budget,
+            (None, limit) => limit,
         }
     }
 
     fn queue(&self) -> Option<Deadline> {
-        self.budget.map(Deadline::Budget)
+        self.limit.map(Deadline::Limit)
     }
 
     fn allows_wait(&self, wait: Duration) -> bool {
-        self.budget.is_none_or(|budget| {
+        self.limit.is_none_or(|limit| {
             Instant::now()
                 .checked_add(wait)
-                .is_some_and(|end| end <= budget)
+                .is_some_and(|end| end <= limit)
         })
     }
 }
@@ -110,25 +109,25 @@ impl Limits {
 /// The limit a wait ran into.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Deadline {
-    Budget(Instant),
+    Limit(Instant),
     Timeout { at: Instant, limit: Duration },
 }
 
 impl Deadline {
     fn at(self) -> Instant {
         match self {
-            Deadline::Budget(at) | Deadline::Timeout { at, .. } => at,
+            Deadline::Limit(at) | Deadline::Timeout { at, .. } => at,
         }
     }
 
     /// Only a request that outlives its own timeout is the endpoint's fault. Running out of
-    /// the session's minutes is a budget end, which never counts against its health.
+    /// the session's minutes is a limit end, which never counts against its health.
     fn missed(self) -> EndReason {
         match self {
-            Deadline::Budget(_) => EndReason::BudgetHit {
-                dimension: BudgetDimension::Minutes,
+            Deadline::Limit(_) => EndReason::LimitHit {
+                dimension: LimitDimension::Minutes,
             },
-            Deadline::Timeout { limit, .. } => EndReason::VendorError {
+            Deadline::Timeout { limit, .. } => EndReason::CliError {
                 category: ErrorCategory::Timeout,
                 message: format!("no whole reply within {}s", limit.as_secs()),
             },
@@ -200,12 +199,12 @@ pub(crate) async fn run(
     clock: Instant,
 ) -> SessionEnd {
     session
-        .emit(WorkerEvent::Session(SessionEvent::Started(Box::new(
+        .emit(RunnerEvent::Session(SessionEvent::Started(Box::new(
             started,
         ))))
         .await;
     session
-        .emit(WorkerEvent::Session(SessionEvent::Input(Box::new(input))))
+        .emit(RunnerEvent::Session(SessionEvent::Input(Box::new(input))))
         .await;
     let outcome = match &plan {
         Ok(exchange) => session.drive(exchange, &mut raw, &mut control).await,
@@ -217,13 +216,13 @@ pub(crate) async fn run(
 }
 
 impl Session {
-    async fn emit(&self, event: WorkerEvent) {
+    async fn emit(&self, event: RunnerEvent) {
         // A reader that has gone away stops the session through `control`, not here.
         let _ = self.events.send(event).await;
     }
 
     async fn emit_agent(&self, event: AgentEvent) {
-        self.emit(WorkerEvent::Agent(event)).await;
+        self.emit(RunnerEvent::Agent(event)).await;
     }
 
     /// Runs `future` while answering `control`: stop, wrap-up, and a dropped sender end the
@@ -249,7 +248,7 @@ impl Session {
                     // No tool is ever running, so "after the tool call" is now.
                     Some(SessionControl::StopAfterTool) => return Waited::Halted(EndReason::Paused),
                     Some(SessionControl::Deliver(message)) => {
-                        self.emit(WorkerEvent::Session(SessionEvent::Queued(message))).await;
+                        self.emit(RunnerEvent::Session(SessionEvent::Queued(message))).await;
                     }
                     // An endpoint's reply is one request, which nothing can join.
                     Some(SessionControl::Send { uuid, .. }) => {
@@ -295,11 +294,11 @@ impl Session {
         let mut waits = 0;
         let mut reply = ReplyStream::new(exchange.api);
         loop {
-            let attempt = within(
+            let exchanged = within(
                 exchange.limits.request(),
-                self.attempt(exchange, raw, &mut reply),
+                self.exchange_once(exchange, raw, &mut reply),
             );
-            let after = match self.wait(attempt, control).await {
+            let after = match self.wait(exchanged, control).await {
                 Waited::Done(Ok(Ok(()))) => {
                     return Outcome::completed(exchange.schema.as_ref(), reply.finish());
                 }
@@ -317,7 +316,8 @@ impl Session {
             }
             waits += 1;
             self.health.observe(HealthSignal::Retry {
-                vendor: self.vendor.clone(),
+                agent_id: self.agent_id.clone(),
+                model: self.pricing.model.clone(),
                 session: self.key.clone(),
                 reason: RetryReason::RateLimit,
             });
@@ -329,11 +329,11 @@ impl Session {
             if let Waited::Halted(reason) = self.wait(tokio::time::sleep(after), control).await {
                 return Outcome::ended(reason, reply.finish());
             }
-            reply = reply.next_attempt();
+            reply = reply.next_try();
         }
     }
 
-    async fn attempt(
+    async fn exchange_once(
         &self,
         exchange: &Exchange,
         raw: &mut RawLog,
@@ -369,7 +369,7 @@ impl Session {
             self.report_raw(raw).await;
             let failure =
                 errors::classify(status, retry_after, &body, &exchange.model, &self.secrets);
-            self.note_quota(&failure, retry_after, &body);
+            self.note_plan_usage(&failure, retry_after, &body);
             return Err(failure);
         }
         if !streamed {
@@ -402,7 +402,7 @@ impl Session {
         }
         overflowed(&decoder)?;
         if !reply.finished() {
-            return Err(Failure::End(EndReason::VendorError {
+            return Err(Failure::End(EndReason::CliError {
                 category: ErrorCategory::Network,
                 message: "the stream closed before the reply finished".to_owned(),
             }));
@@ -454,13 +454,13 @@ impl Session {
     fn stream_failure(&self, failure: StreamFailure, model: &str) -> Failure {
         let classified =
             errors::classify(failure.status, None, &failure.body, model, &self.secrets);
-        self.note_quota(&classified, None, &failure.body);
+        self.note_plan_usage(&classified, None, &failure.body);
         classified
     }
 
-    /// Rate limits and spent quota or credits go on the quota board, with the body as sent but
-    /// for credentials.
-    fn note_quota(&self, failure: &Failure, retry_after: Option<Duration>, body: &str) {
+    /// Rate limits and a spent plan or credits go on the plan usage board, with the body as sent
+    /// but for credentials.
+    fn note_plan_usage(&self, failure: &Failure, retry_after: Option<Duration>, body: &str) {
         let limited = match failure {
             Failure::Retry { .. } => true,
             Failure::End(reason) => matches!(
@@ -475,13 +475,13 @@ impl Session {
         let mut detail =
             serde_json::from_str(body).unwrap_or_else(|_| Value::String(body.to_owned()));
         self.secrets.redact_json(&mut detail);
-        self.quota.observe(QuotaReading {
-            vendor: self.vendor.clone(),
-            status: QuotaStatus::Rejected,
+        self.plan_usage.observe(PlanUsageReading {
+            agent_id: self.agent_id.clone(),
+            status: PlanUsageStatus::Rejected,
             used: None,
             resets_at: retry_after.and_then(|after| errors::reset_time(now, after)),
             window: None,
-            source: QuotaSource::Http,
+            source: PlanUsageSource::Http,
             observed_at: now,
             detail: Some(detail),
             wrap_up: false,
@@ -529,7 +529,8 @@ impl Session {
         match &reason {
             EndReason::Completed => {
                 self.health.observe(HealthSignal::Success {
-                    vendor: self.vendor.clone(),
+                    agent_id: self.agent_id.clone(),
+                    model: self.pricing.model.clone(),
                     session: self.key.clone(),
                 });
                 if let Some(detail) = &mismatch {
@@ -554,7 +555,8 @@ impl Session {
                     errors::is_health_failure(category) || matches!(other, EndReason::RateLimited);
                 if errors::is_health_failure(category) {
                     self.health.observe(HealthSignal::Error {
-                        vendor: self.vendor.clone(),
+                        agent_id: self.agent_id.clone(),
+                        model: self.pricing.model.clone(),
                         session: self.key.clone(),
                         category,
                     });
@@ -569,7 +571,7 @@ impl Session {
         }
         let text = (!reply.text.is_empty()).then(|| reply.text.clone());
         SessionEnd {
-            vendor_session: None,
+            cli_session: None,
             exit_code: None,
             signal: None,
             duration_ms: u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -604,7 +606,7 @@ impl Session {
                         Some(cost)
                     }
                     CostEstimate::Free => Some(0.0),
-                    CostEstimate::Quota(_) | CostEstimate::Unknown => None,
+                    CostEstimate::PlanUsage(_) | CostEstimate::Unknown => None,
                 }
             }
         };
@@ -648,7 +650,7 @@ fn overflowed(decoder: &SseDecoder) -> Result<(), Failure> {
 }
 
 fn misbehaved(message: String) -> Failure {
-    Failure::End(EndReason::VendorError {
+    Failure::End(EndReason::CliError {
         category: ErrorCategory::Server,
         message,
     })
@@ -668,7 +670,7 @@ fn transport_failure(err: reqwest::Error, url: &str, secrets: &Secrets) -> EndRe
         "the connection failed".to_owned()
     };
     let message = format!("{what}: {}", err.without_url());
-    EndReason::VendorError {
+    EndReason::CliError {
         category,
         message: secrets.redact(&message),
     }
@@ -696,21 +698,21 @@ fn cut_off(cutoff: &Cutoff) -> EndReason {
             "the endpoint left the reply incomplete".to_owned(),
         ),
     };
-    EndReason::VendorError { category, message }
+    EndReason::CliError { category, message }
 }
 
 fn describe(reason: &EndReason) -> String {
     match reason {
         EndReason::Auth { message }
         | EndReason::Billing { message }
-        | EndReason::VendorError { message, .. }
+        | EndReason::CliError { message, .. }
         | EndReason::StartFailed { message }
         | EndReason::Crashed { message } => message.clone(),
         EndReason::UsageLimit { .. } => "the endpoint's usage limit is reached".to_owned(),
         EndReason::RateLimited => "rate limited for longer than the session can wait".to_owned(),
         EndReason::ContextFull => "the prompt is longer than the model's context".to_owned(),
         EndReason::ModelUnavailable { model } => format!("the endpoint has no model {model}"),
-        EndReason::BudgetHit { .. } => "the session's time ran out".to_owned(),
+        EndReason::LimitHit { .. } => "the session's time ran out".to_owned(),
         other => format!("{other:?}"),
     }
 }
@@ -720,7 +722,7 @@ mod tests {
     use std::io::{Read, Write};
 
     use super::*;
-    use argonauts_testkit::services::{MemoryHealthBoard, MemoryQuotaBoard, StaticRegistry};
+    use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard, StaticRegistry};
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -799,9 +801,9 @@ mod tests {
         let (events, mut received) = mpsc::channel(64);
         let session = Session {
             key: SessionKey::numbered(1),
-            vendor: VendorId("fake".to_owned()),
-            pricing: WorkerRef::new("fake", Some("m".to_owned())),
-            quota: Arc::new(MemoryQuotaBoard::default()),
+            agent_id: AgentId("fake".to_owned()),
+            pricing: ModelRef::new("fake", Some("m".to_owned())),
+            plan_usage: Arc::new(MemoryPlanUsageBoard::default()),
             health: Arc::new(MemoryHealthBoard::default()),
             registry: Arc::new(StaticRegistry::default()),
             events,
@@ -818,7 +820,7 @@ mod tests {
             slots: Arc::new(Semaphore::new(1)),
             limits: Limits {
                 timeout: None,
-                budget: None,
+                limit: None,
             },
         };
         let dir = tempfile::tempdir().unwrap();
@@ -831,7 +833,7 @@ mod tests {
         drop(session);
         let mut agent = Vec::new();
         while let Some(event) = received.recv().await {
-            if let WorkerEvent::Agent(event) = event {
+            if let RunnerEvent::Agent(event) = event {
                 agent.push(event);
             }
         }
@@ -839,7 +841,7 @@ mod tests {
     }
 
     fn chunk(content: &str, finish: Option<&str>) -> Value {
-        json!({"model": "vendor/routed",
+        json!({"model": "agent/routed",
                "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": finish}]})
     }
 
@@ -878,7 +880,7 @@ mod tests {
             events[0],
             AgentEvent::Init {
                 session_id: None,
-                model: Some("vendor/routed".to_owned()),
+                model: Some("agent/routed".to_owned()),
                 tools: Vec::new(),
                 plugins: Vec::new(),
                 capabilities: Vec::new(),
@@ -965,7 +967,7 @@ mod tests {
         ];
         for (api, payloads, category) in cases {
             let (events, end) = exchange(api, Some(verdict_schema()), payloads).await;
-            let EndReason::VendorError {
+            let EndReason::CliError {
                 category: ended,
                 message,
             } = &end.reason
@@ -983,11 +985,11 @@ mod tests {
     }
 
     #[test]
-    fn each_request_gets_its_whole_timeout_unless_the_budget_ends_first() {
+    fn each_request_gets_its_whole_timeout_unless_the_limit_ends_first() {
         let timeout = Some(5 * MINUTE);
         let far = Limits {
             timeout,
-            budget: Some(Instant::now() + 60 * MINUTE),
+            limit: Some(Instant::now() + 60 * MINUTE),
         };
         let Some(Deadline::Timeout { at, limit }) = far.request() else {
             panic!("the timeout comes first");
@@ -998,20 +1000,20 @@ mod tests {
         let near = Instant::now() + MINUTE;
         let close = Limits {
             timeout,
-            budget: Some(near),
+            limit: Some(near),
         };
-        assert_eq!(close.request(), Some(Deadline::Budget(near)));
-        assert_eq!(close.queue(), Some(Deadline::Budget(near)));
+        assert_eq!(close.request(), Some(Deadline::Limit(near)));
+        assert_eq!(close.queue(), Some(Deadline::Limit(near)));
         assert!(matches!(
             close.request().unwrap().missed(),
-            EndReason::BudgetHit {
-                dimension: BudgetDimension::Minutes
+            EndReason::LimitHit {
+                dimension: LimitDimension::Minutes
             }
         ));
 
         let timeout_only = Limits {
             timeout,
-            budget: None,
+            limit: None,
         };
         assert_eq!(
             timeout_only.queue(),
@@ -1032,7 +1034,7 @@ mod tests {
             format!("http://agent:hunter22@127.0.0.1:{port}/v1/chat/completions?key=q-secret");
         let err = reqwest::Client::new().post(&url).send().await.unwrap_err();
         let secrets = Secrets::new(vec!["hunter22".into()]);
-        let EndReason::VendorError { message, .. } = transport_failure(err, &url, &secrets) else {
+        let EndReason::CliError { message, .. } = transport_failure(err, &url, &secrets) else {
             panic!("expected an agent error");
         };
         assert!(!message.contains("hunter22"), "{message}");
@@ -1053,7 +1055,7 @@ mod tests {
         ] {
             let reason = cut_off(&cutoff);
             assert!(
-                matches!(&reason, EndReason::VendorError { category: c, .. } if *c == category),
+                matches!(&reason, EndReason::CliError { category: c, .. } if *c == category),
                 "{reason:?}"
             );
             assert!(!errors::is_health_failure(errors::category(&reason)));

@@ -495,7 +495,7 @@ passed = "teal"
         assert!(has("the name \"Checks\" won't do"), "{found:?}");
         assert!(has("body is \"pie\"; use stack, meters"), "{found:?}");
         assert!(
-            has("sidebar isn't a place; use above, mode-line"),
+            has("sidebar isn't a place; use above, bottom-line"),
             "{found:?}"
         );
         assert!(

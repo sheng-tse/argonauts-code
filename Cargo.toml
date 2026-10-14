@@ -82,7 +82,7 @@ signal-hook = "0.3.18"
 similar = "3.2.0"
 # The Starlark parser alone. The `starlark` crate itself turns on serde_json's
 # `arbitrary_precision` for the whole workspace, which breaks numbers in flattened and untagged
-# types, so recipes evaluate their scripts with our own small interpreter instead.
+# types, so workflow scripts are evaluated by our own small interpreter instead.
 starlark_syntax = "0.14.2"
 strip-ansi-escapes = "0.2.1"
 syntect = "5.3.0"

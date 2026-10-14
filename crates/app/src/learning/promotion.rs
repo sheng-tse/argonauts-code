@@ -1,36 +1,36 @@
-//! The promotion checkpoint: a candidate that cleared its replays and its holdout reaches the
+//! The promotion approval: a candidate that cleared its replays and its holdout reaches the
 //! decision point `approvals.workflow_promotion`, decided by your approval policy from
-//! `PromotionFacts` (its change class and when the recipe last promoted), then the loop's
-//! `Evolution::decide`. Anything the rules don't settle waits for you in `/learned` and the
-//! inbox; shadow records what auto would have done and waits too.
+//! `PromotionFacts` (its change class and when the learned workflow last promoted), then the loop's
+//! `Evolution::decide`. Anything the rules don't settle waits for you in `/learned` and
+//! `argonauts approvals`; auto preview records what auto would have done and waits too.
 
 use argonauts_core::RunId;
-use argonauts_core::events::checkpoint::CheckpointKind;
+use argonauts_core::events::approval::ApprovalKind;
 use argonauts_core::events::run::Party;
-use argonauts_core::names::CheckpointId;
+use argonauts_core::names::ApprovalId;
 use argonauts_core::policy::{
     ApprovalPolicy, DecisionPoint, EvidenceDocument, EvidenceFacts, EvidencePacket, PolicyOutcome,
     PromotionFacts, Verdict,
 };
 use argonauts_learning::evolution::{Action, Candidate, Evolution};
 
-/// What the checkpoint came to.
+/// What the approval came to.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Promotion {
-    /// Your rules or the approver approved it, and the loop promoted it into its canary.
+    /// Your rules or the judge approved it, and the loop promoted it into its canary.
     Promoted { by: Party, actions: Vec<Action> },
     /// Your rules rejected it.
     Rejected { by: Party, actions: Vec<Action> },
-    /// It waits for you, with why. `shadow` is what auto would have done.
+    /// It waits for you, with why. `auto preview` is what auto would have done.
     Waits {
         reasons: Vec<String>,
-        shadow: Option<Verdict>,
+        auto_preview: Option<Verdict>,
     },
 }
 
-/// Evaluates the checkpoint for `candidate` and, when the policy decides, tells the loop.
+/// Evaluates the approval for `candidate` and, when the policy decides, tells the loop.
 /// `packet` is the comparison the loop handed over, shown as evidence.
-pub(crate) async fn checkpoint(
+pub(crate) async fn approval(
     policy: &dyn ApprovalPolicy,
     evolution: &Evolution,
     candidate: &Candidate,
@@ -39,27 +39,30 @@ pub(crate) async fn checkpoint(
     let (point, evidence) = decision(evolution, candidate, packet)?;
     let outcome = policy.evaluate(&point, &evidence).await;
     let (verdict, by, reasons) = match outcome {
-        PolicyOutcome::AskUser { violations, shadow } => {
+        PolicyOutcome::AskUser {
+            violations,
+            auto_preview,
+        } => {
             let mut reasons: Vec<String> = violations
                 .iter()
                 .map(|violation| violation.detail.clone())
                 .collect();
-            if let Some(shadow) = &shadow {
-                reasons.extend(shadow.reasons.iter().cloned());
+            if let Some(auto_preview) = &auto_preview {
+                reasons.extend(auto_preview.reasons.iter().cloned());
             }
             return Ok(Promotion::Waits {
                 reasons,
-                shadow: shadow.map(|shadow| shadow.would),
+                auto_preview: auto_preview.map(|auto_preview| auto_preview.would),
             });
         }
         PolicyOutcome::Decided {
             verdict,
-            approver,
+            judge,
             reasons,
             ..
         } => {
-            let by = match approver {
-                Some(model) => Party::Approver { model },
+            let by = match judge {
+                Some(model) => Party::Judge { model },
                 None => Party::Rules,
             };
             (verdict, by, reasons)
@@ -74,9 +77,9 @@ pub(crate) async fn checkpoint(
             actions: evolution.decide(&candidate.id, false, &by)?,
             by,
         }),
-        Verdict::Escalate => Ok(Promotion::Waits {
+        Verdict::AskYou => Ok(Promotion::Waits {
             reasons,
-            shadow: None,
+            auto_preview: None,
         }),
     }
 }
@@ -92,18 +95,18 @@ fn decision(
         Some(run) => run.clone(),
         None => RunId::new("evolution")?,
     };
-    // Its own id, so the approval records never mistake it for a checkpoint of the run that
+    // Its own id, so the approval records never mistake it for an approval of the run that
     // proposed it, or for another candidate's.
-    let checkpoint = CheckpointId::parse(&format!("promote-{}", candidate.id))
+    let approval = ApprovalId::parse(&format!("promote-{}", candidate.id))
         .ok_or_else(|| anyhow::anyhow!("{} can't name an approval", candidate.id))?;
     let point = DecisionPoint {
         run,
-        checkpoint,
-        kind: CheckpointKind::WorkflowPromotion,
-        recipe: Some(candidate.parent.name.clone()),
+        approval,
+        kind: ApprovalKind::WorkflowPromotion,
+        learned_workflow: Some(candidate.parent.name.clone()),
         authors: Vec::new(),
         mode_override: None,
-        lead: None,
+        main_agent: None,
     };
     let facts = EvidenceFacts {
         promotion: Some(PromotionFacts {
@@ -113,7 +116,7 @@ fn decision(
         ..EvidenceFacts::default()
     };
     let evidence = EvidencePacket {
-        kind: CheckpointKind::WorkflowPromotion,
+        kind: ApprovalKind::WorkflowPromotion,
         goal: None,
         facts,
         agent_outputs: Vec::new(),
@@ -134,17 +137,17 @@ mod tests {
 
     use time::OffsetDateTime;
 
-    use argonauts_core::events::card::CardSpec;
+    use argonauts_core::events::task::TaskSpec;
     use argonauts_core::future::BoxFuture;
     use argonauts_core::policy::{
-        ApprovalsView, HardLimits, ShadowRecord, UserDecision, Violation,
+        ApprovalsView, AutoPreviewRecord, HardLimits, UserDecision, Violation,
     };
+    use argonauts_core::session_runner::SessionSpec;
     use argonauts_core::settings::Settings;
     use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
-    use argonauts_core::worker::SessionSpec;
     use argonauts_learning::evolution::{CandidateState, Thresholds, state};
-    use argonauts_learning::recipes::{Change, ChangeClass};
-    use argonauts_learning::{RecipeRef, Store};
+    use argonauts_learning::learned_workflows::{Change, ChangeClass};
+    use argonauts_learning::{LearnedWorkflowRef, Store};
 
     use super::*;
 
@@ -158,7 +161,7 @@ mod tests {
         fn check_point(&self, _: &DecisionPoint, _: &EvidencePacket) -> Vec<Violation> {
             Vec::new()
         }
-        fn check_card_diff(&self, _: &CardSpec, _: &str) -> Vec<Violation> {
+        fn check_task_diff(&self, _: &TaskSpec, _: &str) -> Vec<Violation> {
             Vec::new()
         }
         fn check_session(&self, _: &SessionSpec) -> Vec<Violation> {
@@ -198,7 +201,7 @@ mod tests {
     fn candidate() -> Candidate {
         Candidate {
             id: "api-feature-v5".to_owned(),
-            parent: RecipeRef {
+            parent: LearnedWorkflowRef {
                 name: "api-feature".to_owned(),
                 version: 4,
             },
@@ -234,7 +237,7 @@ mod tests {
         PolicyOutcome::Decided {
             verdict,
             by: DecideWith::Rules,
-            approver: None,
+            judge: None,
             reasons: vec!["checklist_item is a class you allow".to_owned()],
             spot_check: false,
         }
@@ -251,32 +254,33 @@ mod tests {
             settings,
             reload,
             state,
-            Arc::new(crate::commands::NoWorkers),
+            Arc::new(crate::commands::NoRunners),
             Arc::new(argonauts_core::steps::SchemaStepRunner),
         )
     }
 
     /// The decision follows the policy: what it settles goes to the loop, what it doesn't
-    /// waits for you, and the real policy under supervised or shadow never promotes.
+    /// waits for you, and the real policy under supervised or auto preview never promotes.
     #[tokio::test]
-    async fn promotion_checkpoint_follows_approvals() {
+    async fn promotion_approval_follows_approvals() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("state"), dir.path().join("repo"));
         stored(&store, &[candidate()]);
         let evolution = Evolution::open(&store).unwrap();
         let packet = serde_json::json!({"gain_points": 14.0});
 
-        // The policy is asked at the recipe promotion point, with the change class as a fact.
+        // The policy is asked at the learned workflow promotion point, with the change class as a
+        // fact.
         let auto = answering(decided(Verdict::Approve));
-        let outcome = checkpoint(&auto, &evolution, &candidate(), &packet)
+        let outcome = approval(&auto, &evolution, &candidate(), &packet)
             .await
             .unwrap();
         let asked = auto.asked.lock().unwrap().clone();
         assert_eq!(asked.len(), 1);
         let (point, evidence) = &asked[0];
-        assert_eq!(point.kind, CheckpointKind::WorkflowPromotion);
-        assert_eq!(point.recipe.as_deref(), Some("api-feature"));
-        assert_eq!(point.checkpoint.as_str(), "promote-api-feature-v5");
+        assert_eq!(point.kind, ApprovalKind::WorkflowPromotion);
+        assert_eq!(point.learned_workflow.as_deref(), Some("api-feature"));
+        assert_eq!(point.approval.as_str(), "promote-api-feature-v5");
         assert_eq!(
             evidence
                 .facts
@@ -309,37 +313,43 @@ mod tests {
             Some(CandidateState::Canary { runs: 0 })
         );
 
-        // Escalated, or asked of you, it waits, with what shadow would have done.
-        let escalated = answering(decided(Verdict::Escalate));
-        let waits = checkpoint(&escalated, &evolution, &candidate(), &packet)
+        // Left to you, it waits, with what auto preview would have done.
+        let needs_you = answering(decided(Verdict::AskYou));
+        let waits = approval(&needs_you, &evolution, &candidate(), &packet)
             .await
             .unwrap();
-        assert!(matches!(waits, Promotion::Waits { shadow: None, .. }));
-        let shadowed = answering(PolicyOutcome::AskUser {
+        assert!(matches!(
+            waits,
+            Promotion::Waits {
+                auto_preview: None,
+                ..
+            }
+        ));
+        let previewed = answering(PolicyOutcome::AskUser {
             violations: Vec::new(),
-            shadow: Some(ShadowRecord {
+            auto_preview: Some(AutoPreviewRecord {
                 would: Verdict::Approve,
                 by: DecideWith::Rules,
                 reasons: vec!["would promote".to_owned()],
             }),
         });
-        let waits = checkpoint(&shadowed, &evolution, &candidate(), &packet)
+        let waits = approval(&previewed, &evolution, &candidate(), &packet)
             .await
             .unwrap();
         assert_eq!(
             waits,
             Promotion::Waits {
                 reasons: vec!["would promote".to_owned()],
-                shadow: Some(Verdict::Approve),
+                auto_preview: Some(Verdict::Approve),
             }
         );
 
-        // Your real policy, set to supervised or shadow, never promotes on its own.
+        // Your real policy, set to supervised or auto preview, never promotes on its own.
         for mode in [ApprovalMode::Supervised, ApprovalMode::AutoPreview] {
             let mut settings = Settings::default();
             settings.approvals.workflow_promotion.mode = mode;
             let policy = real_policy(settings, &dir.path().join("state"));
-            let outcome = checkpoint(policy.as_ref(), &evolution, &candidate(), &packet)
+            let outcome = approval(policy.as_ref(), &evolution, &candidate(), &packet)
                 .await
                 .unwrap();
             assert!(
@@ -350,8 +360,8 @@ mod tests {
     }
 
     /// With the defaults, your rules promote a class they allow on their own, then hold the
-    /// recipe's next promotion for `min_days_between` days from when this one started, however
-    /// long the next candidate waited in the queue. A class they don't allow waits for you.
+    /// learned workflow's next promotion for `min_days_between` days from when this one started,
+    /// however long the next candidate waited in the queue. A class they don't allow waits for you.
     #[tokio::test]
     async fn default_rules_promote_allowed_classes_and_space_them_out() {
         let dir = tempfile::tempdir().unwrap();
@@ -362,7 +372,7 @@ mod tests {
         let evolution = Evolution::open(&store).unwrap();
         let policy = real_policy(Settings::default(), &state_dir);
 
-        let promoted = checkpoint(policy.as_ref(), &evolution, &candidate(), &packet)
+        let promoted = approval(policy.as_ref(), &evolution, &candidate(), &packet)
             .await
             .unwrap();
         assert!(
@@ -379,7 +389,7 @@ mod tests {
         let started = evolution.last_promoted("api-feature").unwrap();
         assert!(started.is_some());
 
-        // The canary ends, and the recipe's next candidate, queued long ago, comes up.
+        // The canary ends, and the learned workflow's next candidate, queued long ago, comes up.
         std::fs::remove_file(store.evolution_dir().join(state::CANARIES)).unwrap();
         let next = Candidate {
             id: "api-feature-v6".to_owned(),
@@ -389,7 +399,7 @@ mod tests {
         let mut all = evolution.candidates().unwrap();
         all.push(next.clone());
         stored(&store, &all);
-        let waits = checkpoint(policy.as_ref(), &evolution, &next, &packet)
+        let waits = approval(policy.as_ref(), &evolution, &next, &packet)
             .await
             .unwrap();
         match &waits {
@@ -401,16 +411,16 @@ mod tests {
         }
         assert_eq!(evolution.last_promoted("api-feature").unwrap(), started);
 
-        // A class your rules don't allow, on a recipe that never promoted, waits too.
+        // A class your rules don't allow, on a learned workflow that never promoted, waits too.
         let workflow = Candidate {
             id: "cli-flag-v2".to_owned(),
-            parent: RecipeRef {
+            parent: LearnedWorkflowRef {
                 name: "cli-flag".to_owned(),
                 version: 1,
             },
             version: 2,
             change: Change {
-                key: "phases".to_owned(),
+                key: "workflow".to_owned(),
                 class: ChangeClass::StepGraph,
                 before: None,
                 after: Some(serde_json::json!("maker-checker")),
@@ -419,7 +429,7 @@ mod tests {
         };
         all.push(workflow.clone());
         stored(&store, &all);
-        let waits = checkpoint(policy.as_ref(), &evolution, &workflow, &packet)
+        let waits = approval(policy.as_ref(), &evolution, &workflow, &packet)
             .await
             .unwrap();
         assert!(matches!(waits, Promotion::Waits { .. }), "{waits:?}");

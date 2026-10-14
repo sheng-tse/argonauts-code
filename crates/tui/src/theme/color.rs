@@ -177,7 +177,7 @@ fn fit_ansi16(role: Role, style: Style) -> Style {
         Role::BarFill => style.bg = Some(Color::Yellow),
         _ => style.bg = style.bg.map(to_ansi16),
     }
-    if let Some(named) = widget_ansi16(role) {
+    if let Some(named) = mod_ansi16(role) {
         style.fg = Some(named);
     }
     // Bright text is the brightest the palette has, bright white on a dark theme, as Claude
@@ -193,11 +193,11 @@ fn fit_ansi16(role: Role, style: Style) -> Style {
     style
 }
 
-/// The widget roles by name, so the terminal's palette decides, and a bar's parts stay apart
+/// The mod roles by name, so the terminal's palette decides, and a bar's parts stay apart
 /// where the nearest named color would give two of them the same one.
-fn widget_ansi16(role: Role) -> Option<Color> {
+fn mod_ansi16(role: Role) -> Option<Color> {
     let color = match role {
-        Role::WidgetBorder | Role::Denominator | Role::CatFree => Color::DarkGray,
+        Role::ModBorder | Role::Denominator | Role::CatFree => Color::DarkGray,
         Role::Tick => Color::LightYellow,
         Role::Held | Role::BadgeText => Color::Black,
         Role::CatSystem | Role::TokensInput => Color::Blue,
@@ -246,7 +246,7 @@ fn fit_no_color(role: Role, style: Style) -> Style {
         ..style
     };
     match role {
-        Role::Dim | Role::Faint | Role::Rule | Role::Denominator | Role::WidgetBorder => {
+        Role::Dim | Role::Faint | Role::Rule | Role::Denominator | Role::ModBorder => {
             style.add_modifier(Modifier::DIM)
         }
         Role::Accent | Role::Shimmer => style.add_modifier(Modifier::BOLD),

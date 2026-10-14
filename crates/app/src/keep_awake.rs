@@ -1,14 +1,18 @@
 //! Keeping the computer awake. A long run stops when the laptop sleeps, so
-//! while anything is working Argonauts holds sleep off by itself, and `/awake` holds it off
+//! while anything is working Argonauts Code holds sleep off by itself, and `/awake` holds it off
 //! until you quit or for a time you give. On macOS the hold is the built-in `caffeinate`,
-//! told to watch this process, so it ends when Argonauts does however that happens. The
-//! screen may still dim, and a closed lid still sleeps unless the laptop is on power.
+//! told to watch this process, so it ends when Argonauts Code does however that happens.
+//!
+//! `/awake` keeps the screen on too, since you asked in order to watch. The hold for work
+//! under way leaves the screen to your own settings unless `awake.screen_while_working` adds
+//! it. A closed lid still sleeps unless the laptop is on power.
 
 use std::time::{Duration, Instant};
 
 use argonauts_core::NoteLevel;
-use argonauts_core::app::AwakeHold;
+use argonauts_core::app::{AppEvent, AwakeHold};
 use argonauts_core::settings::Span;
+use argonauts_core::settings::awake::AwakeSettings;
 use time::OffsetDateTime;
 
 use crate::controller::{Ctx, Effect};
@@ -16,9 +20,56 @@ use crate::controller::{Ctx, Effect};
 /// One hold on the computer's sleep, which ends when it's dropped.
 pub(crate) trait Hold: Send + Sync {}
 
+/// What a hold keeps awake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Keeps {
+    /// The computer; the screen dims and locks as your settings say.
+    Computer,
+    ComputerAndScreen,
+}
+
+impl Keeps {
+    fn while_working(settings: &AwakeSettings) -> Self {
+        if settings.screen_while_working {
+            Keeps::ComputerAndScreen
+        } else {
+            Keeps::Computer
+        }
+    }
+}
+
 /// Starts a hold, for this many seconds or until it's dropped. `None` when the computer has
-/// no way to hold sleep off that Argonauts knows.
-pub(crate) type StartHold = Box<dyn Fn(Option<u64>) -> Option<Box<dyn Hold>> + Send + Sync>;
+/// no way to hold sleep off that Argonauts Code knows.
+pub(crate) type StartHold = Box<dyn Fn(Keeps, Option<u64>) -> Option<Box<dyn Hold>> + Send + Sync>;
+
+/// What `/awake` says it did: what's held, how to undo it, and what it can't do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Said {
+    pub text: String,
+    pub undo: Option<String>,
+    pub caveat: Option<String>,
+}
+
+impl Said {
+    fn held(text: String) -> Self {
+        Self {
+            text,
+            undo: Some("/awake off lets them sleep again.".to_owned()),
+            caveat: Some(LID.to_owned()),
+        }
+    }
+
+    fn cant() -> Self {
+        Self {
+            text: CANT.to_owned(),
+            undo: None,
+            caveat: None,
+        }
+    }
+}
+
+/// No hold keeps a laptop awake through a closed lid on battery, so the message says so.
+const LID: &str = "On battery, closing the lid still puts the Mac to sleep.";
 
 /// What `/awake` asked for.
 enum Asked {
@@ -38,10 +89,12 @@ pub(crate) struct KeepAwake {
     start: StartHold,
     /// `awake.while_working`, as last told.
     while_working: bool,
+    /// What the hold for work under way keeps awake, from `awake.screen_while_working`.
+    work_keeps: Keeps,
     working: bool,
     asked: Asked,
-    /// The hold for work under way.
-    for_work: Option<Box<dyn Hold>>,
+    /// The hold for work under way, with what it keeps awake.
+    for_work: Option<(Keeps, Box<dyn Hold>)>,
     /// The hold `/awake` asked for.
     for_you: Option<Box<dyn Hold>>,
 }
@@ -49,7 +102,7 @@ pub(crate) struct KeepAwake {
 impl KeepAwake {
     /// Never holds anything, as in tests.
     pub(crate) fn never() -> Self {
-        Self::with(Box::new(|_| None))
+        Self::with(Box::new(|_, _| None))
     }
 
     /// Holds sleep off the way this computer does it.
@@ -61,6 +114,7 @@ impl KeepAwake {
         Self {
             start,
             while_working: true,
+            work_keeps: Keeps::Computer,
             working: false,
             asked: Asked::Nothing,
             for_work: None,
@@ -68,44 +122,51 @@ impl KeepAwake {
         }
     }
 
-    /// Whether anything is working now, and what `awake.while_working` says now.
-    pub(crate) fn working(&mut self, working: bool, while_working: bool) {
+    /// Whether anything is working now, and what `[awake]` says now.
+    pub(crate) fn working(&mut self, working: bool, settings: &AwakeSettings) {
         self.working = working;
-        self.while_working = while_working;
+        self.while_working = settings.while_working;
+        self.work_keeps = Keeps::while_working(settings);
         self.settle();
     }
 
-    /// `/awake`: until you quit. Says what it did.
-    pub(crate) fn until_quit(&mut self) -> String {
-        self.for_you = (self.start)(None);
+    /// `/awake`: the computer and its screen, until you quit. Says what it did.
+    pub(crate) fn until_quit(&mut self) -> Said {
+        self.for_you = (self.start)(Keeps::ComputerAndScreen, None);
         if self.for_you.is_none() {
-            return CANT.to_owned();
+            return Said::cant();
         }
         self.asked = Asked::UntilQuit;
         self.settle();
-        "Keeping the computer awake until you quit. /awake off lets it sleep again.".to_owned()
+        Said::held("Keeping the computer and its screen awake until you quit.".to_owned())
     }
 
     /// `/awake <time>`: for `span` from `now`, as you wrote it in `time`.
-    pub(crate) fn for_a_time(&mut self, span: Duration, time: &str, now: OffsetDateTime) -> String {
-        self.for_you = (self.start)(Some(span.as_secs().max(1)));
+    pub(crate) fn for_a_time(&mut self, span: Duration, time: &str, now: OffsetDateTime) -> Said {
+        self.for_you = (self.start)(Keeps::ComputerAndScreen, Some(span.as_secs().max(1)));
         if self.for_you.is_none() {
-            return CANT.to_owned();
+            return Said::cant();
         }
         self.asked = Asked::Until {
             ends: Instant::now() + span,
             at: now + span,
         };
         self.settle();
-        format!("Keeping the computer awake for {time}. /awake off lets it sleep again.")
+        Said::held(format!(
+            "Keeping the computer and its screen awake for {time}."
+        ))
     }
 
     /// `/awake off`: the computer may sleep, also while agents work.
-    pub(crate) fn off(&mut self) -> String {
+    pub(crate) fn off(&mut self) -> Said {
         self.asked = Asked::Off;
         self.for_you = None;
         self.settle();
-        "The computer may sleep again, also while agents work. /awake keeps it awake.".to_owned()
+        Said {
+            text: "The computer and its screen may sleep again, also while agents work.".to_owned(),
+            undo: Some("/awake keeps them awake.".to_owned()),
+            caveat: None,
+        }
     }
 
     /// The hold you asked for, for the bottom line. `None` when you asked for none, or its
@@ -128,15 +189,21 @@ impl KeepAwake {
             self.for_you = None;
         }
         let wanted = self.working && self.while_working && !matches!(self.asked, Asked::Off);
-        match (wanted, self.for_work.is_some()) {
-            (true, false) => self.for_work = (self.start)(None),
-            (false, true) => self.for_work = None,
-            _ => {}
+        let held = self.for_work.as_ref().map(|(keeps, _)| *keeps);
+        match (wanted, held) {
+            (false, _) => self.for_work = None,
+            // A changed setting swaps the hold for one that keeps what it now says.
+            (true, held) if held != Some(self.work_keeps) => {
+                self.for_work = None;
+                self.for_work =
+                    (self.start)(self.work_keeps, None).map(|hold| (self.work_keeps, hold));
+            }
+            (true, _) => {}
         }
     }
 }
 
-const CANT: &str = "Argonauts can keep only a Mac awake so far, so nothing changed.";
+const CANT: &str = "Argonauts Code can keep only a Mac awake so far, so nothing changed.";
 
 /// `/awake`, `/awake <time>` and `/awake off`. The bottom line shows a hold you asked for.
 pub(crate) fn command(ctx: &mut Ctx, time: Option<String>) -> anyhow::Result<Vec<Effect>> {
@@ -150,29 +217,38 @@ pub(crate) fn command(ctx: &mut Ctx, time: Option<String>) -> anyhow::Result<Vec
             _ => anyhow::bail!("/awake takes a time such as 2h or 45m, or off"),
         },
     };
-    ctx.notice(NoteLevel::Info, said);
+    match said {
+        Said {
+            text,
+            undo: None,
+            caveat: None,
+        } => ctx.notice(NoteLevel::Info, text),
+        Said { text, undo, caveat } => ctx.send(AppEvent::Switched { text, undo, caveat }),
+    }
     Ok(vec![Effect::Status])
 }
 
-/// A hold for as long as this process hosts a run, for the supervisor. `None` when the
-/// computer has no way Argonauts knows.
-pub(crate) fn while_hosting() -> Option<Box<dyn Hold>> {
-    system_hold(None)
+/// A hold for as long as this process hosts a run, for the run host, keeping what `[awake]`
+/// says work under way keeps. `None` when the computer has no way Argonauts Code knows.
+pub(crate) fn while_hosting(settings: &AwakeSettings) -> Option<Box<dyn Hold>> {
+    system_hold(Keeps::while_working(settings), None)
 }
 
 #[cfg(target_os = "macos")]
-fn system_hold(secs: Option<u64>) -> Option<Box<dyn Hold>> {
-    mac::Caffeinate::start(secs).map(|hold| Box::new(hold) as Box<dyn Hold>)
+fn system_hold(keeps: Keeps, secs: Option<u64>) -> Option<Box<dyn Hold>> {
+    mac::Caffeinate::start(keeps, secs).map(|hold| Box::new(hold) as Box<dyn Hold>)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn system_hold(_secs: Option<u64>) -> Option<Box<dyn Hold>> {
+fn system_hold(_keeps: Keeps, _secs: Option<u64>) -> Option<Box<dyn Hold>> {
     None
 }
 
 #[cfg(target_os = "macos")]
 mod mac {
     use std::process::{Child, Command, Stdio};
+
+    use super::Keeps;
 
     /// By its full path, so a wrapper of the same name on `PATH` is never what runs.
     const CAFFEINATE: &str = "/usr/bin/caffeinate";
@@ -181,13 +257,13 @@ mod mac {
     pub(super) struct Caffeinate(Child);
 
     impl Caffeinate {
-        /// `-i` holds idle sleep off, and `-s` system sleep while on power. `-w` ties it to
-        /// this process, so it ends with Argonauts even after a crash. `-t` ends it by
-        /// itself.
-        pub(super) fn start(secs: Option<u64>) -> Option<Self> {
+        /// `-i` holds idle sleep off, `-s` system sleep while on power, and `-d` keeps the
+        /// display on. `-w` ties it to this process, so it ends with Argonauts Code even
+        /// after a crash. `-t` ends it by itself.
+        pub(super) fn start(keeps: Keeps, secs: Option<u64>) -> Option<Self> {
             let mut command = Command::new(CAFFEINATE);
             command
-                .arg("-is")
+                .arg(flags(keeps))
                 .args(["-w", &std::process::id().to_string()]);
             if let Some(secs) = secs {
                 command.args(["-t", &secs.to_string()]);
@@ -204,6 +280,13 @@ mod mac {
                     None
                 }
             }
+        }
+    }
+
+    pub(super) fn flags(keeps: Keeps) -> &'static str {
+        match keeps {
+            Keeps::Computer => "-is",
+            Keeps::ComputerAndScreen => "-dis",
         }
     }
 
@@ -242,63 +325,108 @@ mod tests {
         }
     }
 
-    /// The times each hold was started for.
-    type Started = Arc<Mutex<Vec<Option<u64>>>>;
+    /// What each hold was started to keep awake, and for how long.
+    type Started = Arc<Mutex<Vec<(Keeps, Option<u64>)>>>;
 
     /// A keeper whose live holds are counted.
     fn counted() -> (KeepAwake, Arc<AtomicUsize>, Started) {
         let held = Arc::new(AtomicUsize::new(0));
         let started = Started::default();
         let (count, log) = (held.clone(), started.clone());
-        let start: StartHold = Box::new(move |secs| {
-            log.lock().unwrap().push(secs);
+        let start: StartHold = Box::new(move |keeps, secs| {
+            log.lock().unwrap().push((keeps, secs));
             count.fetch_add(1, Ordering::SeqCst);
             Some(Box::new(Counted(count.clone())) as Box<dyn Hold>)
         });
         (KeepAwake::with(start), held, started)
     }
 
-    #[test]
-    fn it_holds_sleep_off_only_while_something_works() {
-        let (mut awake, held, _) = counted();
-        assert_eq!(held.load(Ordering::SeqCst), 0);
-        awake.working(true, true);
-        awake.working(true, true);
-        assert_eq!(held.load(Ordering::SeqCst), 1, "one hold, however often");
-        assert_eq!(awake.held(), None, "the bottom line names only your own");
-        awake.working(false, true);
-        assert_eq!(held.load(Ordering::SeqCst), 0);
-
-        // `awake.while_working = false`, and then true again while it works.
-        awake.working(true, false);
-        assert_eq!(held.load(Ordering::SeqCst), 0);
-        awake.working(true, true);
-        assert_eq!(held.load(Ordering::SeqCst), 1);
+    fn settings(while_working: bool, screen_while_working: bool) -> AwakeSettings {
+        AwakeSettings {
+            while_working,
+            screen_while_working,
+        }
     }
 
     #[test]
-    fn awake_holds_until_you_quit_and_off_ends_every_hold() {
+    fn it_holds_sleep_off_only_while_something_works() {
         let (mut awake, held, started) = counted();
+        let on = settings(true, false);
+        assert_eq!(held.load(Ordering::SeqCst), 0);
+        awake.working(true, &on);
+        awake.working(true, &on);
+        assert_eq!(held.load(Ordering::SeqCst), 1, "one hold, however often");
+        assert_eq!(awake.held(), None, "the bottom line names only your own");
+        awake.working(false, &on);
+        assert_eq!(held.load(Ordering::SeqCst), 0);
+
+        // `awake.while_working = false`, and then true again while it works.
+        awake.working(true, &settings(false, false));
+        assert_eq!(held.load(Ordering::SeqCst), 0);
+        awake.working(true, &on);
+        assert_eq!(held.load(Ordering::SeqCst), 1);
+        // Work under way leaves the screen to your own settings.
+        assert_eq!(
+            *started.lock().unwrap(),
+            [(Keeps::Computer, None), (Keeps::Computer, None)]
+        );
+    }
+
+    #[test]
+    fn work_under_way_keeps_the_screen_on_only_when_the_setting_adds_it() {
+        let (mut awake, held, started) = counted();
+        awake.working(true, &settings(true, true));
+        assert_eq!(*started.lock().unwrap(), [(Keeps::ComputerAndScreen, None)]);
+        // Turning the setting off mid-work swaps the hold for one without the screen.
+        awake.working(true, &settings(true, false));
+        assert_eq!(held.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            started.lock().unwrap().last(),
+            Some(&(Keeps::Computer, None))
+        );
+        assert_eq!(started.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn awake_holds_the_screen_too_until_you_quit_and_off_ends_every_hold() {
+        let (mut awake, held, started) = counted();
+        let on = settings(true, false);
         let said = awake.until_quit();
-        assert!(
-            said.starts_with("Keeping the computer awake until you quit."),
-            "{said}"
+        assert_eq!(
+            said,
+            Said {
+                text: "Keeping the computer and its screen awake until you quit.".into(),
+                undo: Some("/awake off lets them sleep again.".into()),
+                caveat: Some("On battery, closing the lid still puts the Mac to sleep.".into()),
+            }
         );
         assert_eq!(held.load(Ordering::SeqCst), 1);
         assert_eq!(awake.held(), Some(AwakeHold::UntilQuit));
-        awake.working(true, true);
-        awake.working(false, true);
+        assert_eq!(*started.lock().unwrap(), [(Keeps::ComputerAndScreen, None)]);
+        awake.working(true, &on);
+        awake.working(false, &on);
         assert_eq!(held.load(Ordering::SeqCst), 1, "yours stays when work ends");
 
-        awake.working(true, true);
+        awake.working(true, &on);
         let said = awake.off();
-        assert!(said.starts_with("The computer may sleep again"), "{said}");
+        assert_eq!(
+            said.text,
+            "The computer and its screen may sleep again, also while agents work."
+        );
+        assert_eq!(said.undo.as_deref(), Some("/awake keeps them awake."));
+        assert_eq!(said.caveat, None);
         assert_eq!(held.load(Ordering::SeqCst), 0, "not even while agents work");
         assert_eq!(awake.held(), None);
         // Asking again brings both back.
         awake.until_quit();
         assert_eq!(held.load(Ordering::SeqCst), 2);
-        assert!(started.lock().unwrap().iter().all(Option::is_none));
+        assert!(
+            started
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(_, secs)| secs.is_none())
+        );
     }
 
     #[test]
@@ -307,10 +435,17 @@ mod tests {
         let now = time::macros::datetime!(2026-10-07 13:45 UTC);
         let said = awake.for_a_time(Duration::from_secs(2 * 3600), "2h", now);
         assert_eq!(
-            said,
-            "Keeping the computer awake for 2h. /awake off lets it sleep again."
+            said.text,
+            "Keeping the computer and its screen awake for 2h."
         );
-        assert_eq!(*started.lock().unwrap(), [Some(7200)]);
+        assert_eq!(
+            said.undo.as_deref(),
+            Some("/awake off lets them sleep again.")
+        );
+        assert_eq!(
+            *started.lock().unwrap(),
+            [(Keeps::ComputerAndScreen, Some(7200))]
+        );
         assert_eq!(held.load(Ordering::SeqCst), 1);
         let until = time::macros::datetime!(2026-10-07 15:45 UTC);
         assert_eq!(awake.held(), Some(AwakeHold::Until { at: until }));
@@ -321,9 +456,9 @@ mod tests {
         use argonauts_core::app::AppMode;
         use argonauts_core::names::TurnId;
 
-        use crate::controller::test_support::{HarnessOptions, TestCtx};
+        use crate::controller::test_support::{CliOptions, TestCtx};
 
-        let (mut parts, _) = TestCtx::new(HarnessOptions::default());
+        let (mut parts, _) = TestCtx::new(CliOptions::default());
         let (awake, held, _) = counted();
         parts.ctx.awake = awake;
         let ctx = &mut parts.ctx;
@@ -351,16 +486,32 @@ mod tests {
 
         let mut said = Vec::new();
         while let Ok(event) = parts.events.try_recv() {
-            said.push(event);
+            if let AppEvent::Switched { text, undo, caveat } = event {
+                said.push((text, undo, caveat.is_some()));
+            }
         }
-        let said = format!("{said:?}");
-        for line in [
-            "Keeping the computer awake until you quit.",
-            "The computer may sleep again, also while agents work.",
-            "Keeping the computer awake for 45m.",
-        ] {
-            assert!(said.contains(line), "{line}: {said}");
-        }
+        let undo = |words: &str| Some(words.to_owned());
+        assert_eq!(
+            said,
+            [
+                (
+                    "Keeping the computer and its screen awake until you quit.".to_owned(),
+                    undo("/awake off lets them sleep again."),
+                    true
+                ),
+                (
+                    "The computer and its screen may sleep again, also while agents work."
+                        .to_owned(),
+                    undo("/awake keeps them awake."),
+                    false
+                ),
+                (
+                    "Keeping the computer and its screen awake for 45m.".to_owned(),
+                    undo("/awake off lets them sleep again."),
+                    true
+                ),
+            ]
+        );
     }
 
     /// The real thing on a Mac: `caffeinate` runs while the hold lives, and ends with it.
@@ -374,7 +525,9 @@ mod tests {
                 .status()
                 .is_ok_and(|status| status.success())
         };
-        let hold = mac::Caffeinate::start(Some(30)).expect("caffeinate starts");
+        assert_eq!(mac::flags(Keeps::Computer), "-is");
+        assert_eq!(mac::flags(Keeps::ComputerAndScreen), "-dis");
+        let hold = mac::Caffeinate::start(Keeps::Computer, Some(30)).expect("caffeinate starts");
         let pid = hold.pid();
         assert!(alive(pid));
         drop(hold);
@@ -384,9 +537,9 @@ mod tests {
     #[test]
     fn a_computer_with_no_way_to_hold_sleep_off_says_so() {
         let mut awake = KeepAwake::never();
-        assert_eq!(awake.until_quit(), CANT);
+        assert_eq!(awake.until_quit(), Said::cant());
         assert_eq!(awake.held(), None);
-        awake.working(true, true);
+        awake.working(true, &settings(true, false));
         assert_eq!(awake.held(), None);
     }
 }

@@ -4,7 +4,7 @@ expression: "picker_lines(picker, width)"
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   Main agent
-  Who answers in chat, does solo work, and steps in last when others stop
+  Who answers in conversation, works as Captain, and steps in last when others stop
 
   ❯ 1. Claude Code ✓   opus · subscription · 42% used
     2. Codex           1 model · API key

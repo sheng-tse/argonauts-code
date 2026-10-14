@@ -1,6 +1,6 @@
 //! Claude Code's Artifact tool in the stream. No artifact was published to
 //! record this, since that makes a page on the account that runs the check: the lines in
-//! `data/artifact-2.1.292.stdout.jsonl` are built to the shape Claude Code 2.1.292's program
+//! `data/artifact.stdout.jsonl` are built to the shape Claude Code 2.1.292's program
 //! text gives them. The call is a `tool_use` named `Artifact` whose input names the file. The
 //! result's text is the tool's own, `Published <file> at <url> (Version N)…`, and the user
 //! line carries the tool's structured result (`url`, `path`, `title`, `updated`, `seq`).
@@ -12,7 +12,7 @@ use argonauts_core::adapter::Adapter;
 use argonauts_core::artifacts::{self, Artifact};
 use serde_json::Value;
 
-const STREAM: &str = include_str!("data/artifact-2.1.292.stdout.jsonl");
+const STREAM: &str = include_str!("data/artifact.stdout.jsonl");
 const CHART_PAGE: &str = "https://claude.ai/code/artifact/0b1e7c9a-4f1d-4c57-9a55-2f6f0d3a8e11";
 const REPORT: &str = "https://claude.ai/code/artifact/7d2c4b18-93aa-4e0f-8c61-5b0e9f1a2c33";
 

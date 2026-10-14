@@ -1,0 +1,12 @@
+{
+  "adapter": "claude-code",
+  "args": null,
+  "cli_version": "2.1.289",
+  "also_matches": [],
+  "date": "2026-10-03",
+  "exit_code": 0,
+  "model": "claude-haiku-4-5-20251001",
+  "note": "Recorded by hand in a throwaway repo to see how Claude Code reports a workflow it runs itself in headless stream-json output, for $0.05. The command line wasn't kept. Local paths, the socket, plugins, skills, and slash commands are replaced or emptied.",
+  "program": "claude",
+  "session_id": "90cd206e-be5b-4400-99cd-b92e8719667f"
+}

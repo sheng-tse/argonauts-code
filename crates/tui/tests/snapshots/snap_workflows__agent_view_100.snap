@@ -4,33 +4,33 @@ expression: "screen(&mut view, width, height, &state)"
 ---
 ──────────────────────────────────────────────────────────────────────────────────────────────
  argonauts-ui-kit
- Build a standalone Rust UI kit prototype that matches…    8/12 steps · 2h44m · ↓ 1.4M tokens
+ Build a standalone Rust UI kit prototype that matches Claude Code:…      8/12 agents · 2h44m
 
- ╭ Build · 7 steps ───────────┬ build:a-terminal-bottom ────────────────────────────────────╮
- │ ❯✔ build:a-terminal-bottom │ ✔ Completed · Opus on Claude Code · 6m02s                   │
- │  ✔ build:b-history-cells   │ claude-code/opus · run-01 · 381k tok · $0.84                │
- │  ✗ build:d-plain-mode      │                                                             │
- │                            │ Prompt · 14 lines · ↵expand                                 │
- │                            │   Build the terminal and the whole bottom region of the UI… │
- │                            │   Read the design notes first, then the reference screensh… │
- │                            │   …12 more lines                                            │
- │                            │                                                             │
- │                            │ Activity · last 3 of 195 tool calls · ↵expand               │
- │                            │   ● Bash(cargo test -p argonauts-tui composer)              │
- │                            │   ● Bash(cargo clippy -p argonauts-tui --all-targets -- -…) │
- │                            │   ● Bash(cargo test -p argonauts-tui)                       │
- │                            │                                                             │
- │                            │ Diff · 4 files · +120 -18 · ↵open                           │
- │                            │                                                             │
- │                            │ Subagents · 4 · structure not exposed · ↵expand             │
- │                            │   ✔ explorer  done · Found 14 call sites                    │
- │                            │   ◐ planner   running                                       │
- │                            │   ✗ tester    failed · 2 tests failed                       │
- │                            │   …1 more                                                   │
- │                            │                                                             │
- │                            │ Outcome · 14 lines · ↵expand                                │
- │                            │   Report: the terminal and the bottom region are done, with │
- │                            │   no stubs left.                                            │
- │                            │                                                             │
- ╰────────────────────────────┴────────────────────────────────────────────── 1–25 of 29 ↓ ─╯
- ↑↓ agent · j/k scroll · ⏎ expand · p pause · esc back · s save
+ ╭ Build · 7 agents ───────────┬ build:a-terminal-bottom ───────────────────────────────────╮
+ │ ❯ ✔ build:a-terminal-bottom │ ✔ Done · Opus on Claude Code                               │
+ │   ✔ build:b-history-cells   │ 381k tok · 195 tool calls · 6m 2s                          │
+ │   ✘ build:d-plain-mode      │                                                            │
+ │                             │ Prompt · 14 lines · ⏎ expand                               │
+ │                             │   Build the terminal and the whole bottom region of the U… │
+ │                             │   … 13 more lines                                          │
+ │                             │ Activity · last 3 of 195 tool calls · ⏎ expand             │
+ │                             │   ⏺ Bash(cargo test -p argonauts-tui composer) · error     │
+ │                             │   ⏺ Bash(cargo clippy -p argonauts-tui --all-targets -- …) │
+ │                             │   ◌ Bash(cargo test -p argonauts-tui) · no result          │
+ │                             │ Diff · 4 files · +120 -18 · d open                         │
+ │                             │ Subagents · 4 · structure not exposed · ⏎ expand           │
+ │                             │   ✔ explorer  done · Found 14 call sites                   │
+ │                             │   ◐ planner   running                                      │
+ │                             │   ✗ tester    failed · 2 tests failed                      │
+ │                             │   … 1 more                                                 │
+ │                             │ Outcome · 14 lines · ⏎ expand                              │
+ │                             │   Report: the terminal and the bottom region are done,     │
+ │                             │   with no stubs left.                                      │
+ │                             │                                                            │
+ │                             │   What I built                                             │
+ │                             │                                                            │
+ │                             │   - Terminal: history above the live region, redrawing     │
+ │                             │   … 8 more lines                                           │
+ │                             │                                                            │
+ ╰─────────────────────────────┴────────────────────────────────────────────────────────────╯
+ ↑↓ agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back

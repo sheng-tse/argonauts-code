@@ -6,12 +6,12 @@ use std::sync::Arc;
 use argonauts_core::app::UiCommand;
 use argonauts_core::events::context::ContextDetail;
 use argonauts_core::settings::bottom_line::STATS;
-use argonauts_core::settings::ui::{ContextDetail as Wanted, WidgetName, WidgetWidth};
+use argonauts_core::settings::ui::{ContextDetail as Wanted, ModName, ModWidth};
 
 use crate::bottom::{PinnedRun, wall_now};
+use crate::kit::ContextCard;
 use crate::overview::{conversation_context, session_context};
 use crate::state::AppState;
-use crate::widgets::ContextCard;
 
 use super::Cx;
 
@@ -25,13 +25,13 @@ pub fn sync(cx: &mut Cx<'_>) {
         .mods
         .iter()
         .copied()
-        .filter(|name| !ui.widget(*name).open)
+        .filter(|name| !ui.the_mod(*name).open)
         .collect();
     band.halves = band
         .mods
         .iter()
         .copied()
-        .filter(|name| ui.widget(*name).width == WidgetWidth::Half)
+        .filter(|name| ui.the_mod(*name).width == ModWidth::Half)
         .collect();
     band.side_by_side_at = usize::from(ui.above_input.side_by_side_at);
     // A span the settings check refused lands at once.
@@ -61,19 +61,19 @@ pub fn sync(cx: &mut Cx<'_>) {
         .status
         .as_ref()
         .is_some_and(|status| status.line.settings.has(STATS));
-    let runs = [WidgetName::Run, WidgetName::Budget, WidgetName::Waiting];
+    let runs = [ModName::Run, ModName::RunLimits, ModName::Waiting];
     band.run = if runs.into_iter().any(|name| band.pins(name)) {
         cx.state.followed_run().map(PinnedRun::of)
     } else {
         None
     };
-    let context = band.pins(WidgetName::Context);
+    let context = band.pins(ModName::Context);
     band.context = if context {
         context_card(cx.state)
     } else {
         None
     };
-    // The run's cards name who has each task, by the names as they stand now.
+    // The run's card names who has each task, by the names as they stand now.
     if band.run.is_some() && band.names != cx.state.names {
         band.names = cx.state.names.clone();
     }
@@ -93,7 +93,7 @@ pub fn sync(cx: &mut Cx<'_>) {
 /// The conversation's context by category where its CLI has counted it, and otherwise the
 /// fullest session of the run the screen follows.
 fn context_card(state: &AppState) -> Option<ContextCard> {
-    if let Some(breakdown) = &state.chat.context {
+    if let Some(breakdown) = &state.conversation.context {
         return Some(conversation_context(breakdown));
     }
     let run = state.followed_run()?;
@@ -110,7 +110,7 @@ fn context_card(state: &AppState) -> Option<ContextCard> {
     let context = fullest.context?;
     let subject = match &fullest.label {
         Some(label) => label.clone(),
-        None => crate::state::task_label(fullest.role, fullest.step, fullest.card.as_ref()),
+        None => crate::state::task_label(fullest.role, fullest.step, fullest.task.as_ref()),
     };
     Some(session_context(
         subject,
@@ -125,17 +125,17 @@ mod tests {
     use std::time::Instant;
 
     use argonauts_core::app::AppEvent;
-    use argonauts_core::events::card::CardState;
+    use argonauts_core::events::task::TaskState;
     use argonauts_core::settings::ui::UiSettings;
-    use argonauts_core::{CardId, RunId, Verbosity};
+    use argonauts_core::{RunId, TaskId, Verbosity};
 
     use super::*;
     use crate::ViewModel;
     use crate::bridge::Bridge;
     use crate::options::UiOptions;
-    use crate::state::{CardRow, RunState};
+    use crate::state::{RunState, TaskRow};
 
-    fn pinning(mods: &[WidgetName]) -> AppEvent {
+    fn pinning(mods: &[ModName]) -> AppEvent {
         let mut ui = UiSettings::default();
         ui.above_input.mods = mods.to_vec();
         AppEvent::UiSettings {
@@ -146,30 +146,30 @@ mod tests {
     }
 
     #[test]
-    fn the_runs_cards_draw_from_the_run_the_screen_follows() {
+    fn the_runs_card_draws_from_the_run_the_screen_follows() {
         let mut bridge = Bridge::new(&UiOptions::default());
         let mut model = ViewModel::default();
         let now = Instant::now();
-        bridge.on_event(&mut model, &pinning(&[WidgetName::Run]), now);
+        bridge.on_event(&mut model, &pinning(&[ModName::Run]), now);
         assert_eq!(model.bottom.band.run, None, "no run is followed yet");
 
         let id = RunId::new("run-03").expect("a run id");
         let mut run = RunState::new(id.clone());
-        for (n, state) in [(1, CardState::Integrated), (2, CardState::Running)] {
-            let mut task = CardRow::new(CardId::numbered(n), "CSV writer");
+        for (n, state) in [(1, TaskState::Merged), (2, TaskState::Running)] {
+            let mut task = TaskRow::new(TaskId::numbered(n), "CSV writer");
             task.state = Some(state);
-            run.cards.insert(task.id.clone(), task);
+            run.tasks.insert(task.id.clone(), task);
         }
         bridge.state.runs.insert(id.clone(), run);
         bridge.state.attached = Some(id.clone());
-        bridge.on_event(&mut model, &pinning(&[WidgetName::Run]), now);
+        bridge.on_event(&mut model, &pinning(&[ModName::Run]), now);
         let pinned = model.bottom.band.run.as_ref().expect("the run's card");
         assert_eq!(pinned.summary.run, Some(id));
-        let states: Vec<CardState> = pinned.summary.cards.iter().map(|task| task.state).collect();
-        assert_eq!(states, [CardState::Integrated, CardState::Running]);
+        let states: Vec<TaskState> = pinned.summary.tasks.iter().map(|task| task.state).collect();
+        assert_eq!(states, [TaskState::Merged, TaskState::Running]);
 
         // Unpinned, nothing about the run is kept for the band.
-        bridge.on_event(&mut model, &pinning(&[WidgetName::Spend]), now);
+        bridge.on_event(&mut model, &pinning(&[ModName::Spend]), now);
         assert_eq!(model.bottom.band.run, None);
     }
 
@@ -180,9 +180,9 @@ mod tests {
         let now = Instant::now();
         let watch = |detail| UiCommand::WatchContext { detail };
 
-        let out = bridge.on_event(&mut model, &pinning(&[WidgetName::Context]), now);
+        let out = bridge.on_event(&mut model, &pinning(&[ModName::Context]), now);
         assert_eq!(out.commands, [watch(Some(ContextDetail::Summary))]);
-        let out = bridge.on_event(&mut model, &pinning(&[WidgetName::Context]), now);
+        let out = bridge.on_event(&mut model, &pinning(&[ModName::Context]), now);
         assert!(out.commands.is_empty(), "asked once, not with every event");
         let out = bridge.on_event(&mut model, &pinning(&[]), now);
         assert_eq!(out.commands, [watch(None)]);

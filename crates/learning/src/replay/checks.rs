@@ -7,15 +7,15 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use argonauts_core::events::card::GateKind;
-use argonauts_core::events::{BudgetEvent, IntegrationEvent, ReviewEvent, RunLifecycle};
+use argonauts_core::events::task::CheckKind;
+use argonauts_core::events::{MergeEvent, ReviewEvent, RunLifecycle, SpendEvent};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::layout::{repo_state, run_files};
-use argonauts_core::limits::{GateRequest, GateRunner};
+use argonauts_core::limits::{CheckRequest, CheckRunner};
+use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::evolution::EntryAcceptance;
-use argonauts_core::worker::{SandboxMode, SandboxProfile};
-use argonauts_core::{CardId, RunId, journal};
+use argonauts_core::{RunId, TaskId, journal};
 
 use super::files::{
     Scratch, nonce, place, read_regular, remove_if_present, safe_relative, write_json,
@@ -24,11 +24,11 @@ use super::isolated::isolated_repo;
 use super::{Check, Entry, Proposal, ReplaySet, names};
 use crate::error::{LearningError, Result};
 
-/// A gate with no timeout of its own gets the default `gates.timeout`.
+/// A check with no timeout of its own gets the default `checks.timeout`.
 const DEFAULT_TIMEOUT_SECS: u64 = 30 * 60;
 
-/// What a scoring checkout needs besides the tests: the `gates.setup` commands, such as an
-/// install from the lockfile, and how long a gate may run.
+/// What a scoring checkout needs besides the tests: the `checks.setup` commands, such as an
+/// install from the lockfile, and how long a check may run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(super) struct ScoringSetup {
     pub setup: Vec<Vec<String>>,
@@ -67,7 +67,7 @@ pub(super) async fn consider(
     set: &ReplaySet,
     run: &RunId,
     settings: &Settings,
-    gates: Arc<dyn GateRunner>,
+    runner: Arc<dyn CheckRunner>,
 ) -> Result<Option<Proposal>> {
     let id = run.as_str();
     set.refresh_rule(&settings.evolution.replay)?;
@@ -115,7 +115,7 @@ pub(super) async fn consider(
         merged: merged.clone(),
         tests: hidden,
         test_command: test_command.clone().unwrap_or_default(),
-        budget_usd: facts.spent_usd,
+        limit_usd: facts.spent_usd,
         holdout: false,
         accepted: OffsetDateTime::now_utc(),
     };
@@ -123,7 +123,7 @@ pub(super) async fn consider(
     let mut checks = vec![kept];
     if facts.spent_usd <= 0.0 {
         checks.push(Check {
-            name: "budget_known".to_owned(),
+            name: "limit_known".to_owned(),
             passed: false,
             detail: "the run recorded no cost in dollars, so there's no limit to replay it at"
                 .to_owned(),
@@ -156,8 +156,8 @@ pub(super) async fn consider(
             &entry.tests,
         )?;
         let replay_dir = set.dir();
-        let at_merged = run_tests(&gates, &entry, &merged_dir.0, &scoring, &replay_dir).await?;
-        let at_base = run_tests(&gates, &entry, &base_dir.0, &scoring, &replay_dir).await?;
+        let at_merged = run_tests(&runner, &entry, &merged_dir.0, &scoring, &replay_dir).await?;
+        let at_base = run_tests(&runner, &entry, &base_dir.0, &scoring, &replay_dir).await?;
         checks.extend([
             Check {
                 name: "fails_at_base".to_owned(),
@@ -235,26 +235,26 @@ fn keep_hidden_tests(
     Ok((hidden, check))
 }
 
-/// The run's own full suite, else the one your gates name.
+/// The run's own full suite, else the one your checks name.
 fn test_command(facts: &MergedRun, settings: &Settings) -> Option<Vec<String>> {
-    let gates = &settings.checks;
+    let checks = &settings.checks;
     facts
         .test_command
         .clone()
-        .or_else(|| gates.full_suite.last().map(|gate| gate.command.clone()))
-        .or_else(|| gates.run.last().map(|gate| gate.command.clone()))
+        .or_else(|| checks.full_suite.last().map(|check| check.command.clone()))
+        .or_else(|| checks.run.last().map(|check| check.command.clone()))
         .filter(|command| !command.is_empty())
 }
 
 fn scoring_setup(settings: &Settings) -> ScoringSetup {
-    let gates = &settings.checks;
+    let checks = &settings.checks;
     ScoringSetup {
-        setup: gates
+        setup: checks
             .setup
             .iter()
-            .map(|gate| gate.command.clone())
+            .map(|check| check.command.clone())
             .collect(),
-        timeout_secs: gates
+        timeout_secs: checks
             .timeout
             .parse()
             .ok()
@@ -263,11 +263,11 @@ fn scoring_setup(settings: &Settings) -> ScoringSetup {
     }
 }
 
-/// Copies the hidden tests into `dir` and runs the entry's tests there through the gate
+/// Copies the hidden tests into `dir` and runs the entry's tests there through the check
 /// runner, after the setup commands. The tests run sandboxed, with the replay folder unreadable
 /// except for the checkout itself.
 pub(super) async fn run_tests(
-    gates: &Arc<dyn GateRunner>,
+    checks: &Arc<dyn CheckRunner>,
     entry: &Entry,
     dir: &Path,
     scoring: &ScoringSetup,
@@ -294,9 +294,9 @@ pub(super) async fn run_tests(
         ask_port: None,
         closed: Vec::new(),
     };
-    let request = |name: &str, command: &[String], setup: bool| GateRequest {
+    let request = |name: &str, command: &[String], setup: bool| CheckRequest {
         run: entry.run.clone(),
-        card: CardId::numbered(0),
+        task: TaskId::numbered(0),
         name: name.to_owned(),
         command: command.to_vec(),
         workdir: dir.to_path_buf(),
@@ -305,7 +305,7 @@ pub(super) async fn run_tests(
         setup,
     };
     for command in &scoring.setup {
-        let outcome = gates.run(request("replay-setup", command, true)).await;
+        let outcome = checks.run(request("replay-setup", command, true)).await;
         if !outcome.passed {
             return Ok(TestRun {
                 ran: false,
@@ -314,7 +314,7 @@ pub(super) async fn run_tests(
             });
         }
     }
-    let outcome = gates
+    let outcome = checks
         .run(request("replay-tests", &entry.test_command, false))
         .await;
     Ok(TestRun {
@@ -375,7 +375,7 @@ fn merged_run(events: &[RunEvent]) -> Option<MergedRun> {
     for event in events {
         match &event.kind {
             RunEventKind::Run(RunLifecycle::Started(run)) => started = Some(run.as_ref()),
-            RunEventKind::Integration(IntegrationEvent::Landed { sha, .. }) => {
+            RunEventKind::Merge(MergeEvent::RunMerged { sha, .. }) => {
                 merged = Some(sha.clone());
             }
             RunEventKind::Review(ReviewEvent::TestsWritten { files, .. }) => {
@@ -385,12 +385,12 @@ fn merged_run(events: &[RunEvent]) -> Option<MergedRun> {
                     }
                 }
             }
-            RunEventKind::Gate(gate) if gate.kind == GateKind::FullSuite && gate.passed => {
-                if let Some(command) = &gate.command {
+            RunEventKind::Check(check) if check.kind == CheckKind::FullSuite && check.passed => {
+                if let Some(command) = &check.command {
                     test_command = Some(command.clone());
                 }
             }
-            RunEventKind::Budget(BudgetEvent::Run(budget)) => spent_usd = budget.spent.cost_usd,
+            RunEventKind::Spend(SpendEvent::Run(limit)) => spent_usd = limit.spent.cost_usd,
             _ => {}
         }
     }

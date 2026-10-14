@@ -8,9 +8,9 @@ Who decides each approval, and how auto matched you
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Who checks                          the cheapest model from another provider │
 │ ❯ The judge                    cheapest, other provider  built-in            │
-│   Rules file                   ~/.argonauts/approver-r…  everywhere (global) │
+│   Rules file                   ~/.argonauts/judge-rule…  everywhere (global) │
 │                                                                              │
-│ Goal · auto · rules and approver both agree    0 matches in a row · 0 misses │
+│ Understand · auto · rules and judge both agree  0 matches in a row · 0 miss… │
 │   How it's decided             auto                      built-in            │
 │   Who decides in auto          both agree                built-in            │
 │   When auto doesn't approve    ask you                   built-in            │

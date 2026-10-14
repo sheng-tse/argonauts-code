@@ -1,5 +1,5 @@
 //! Two choices the sandbox settings make: what happens in a repository you haven't trusted
-//! (`sandbox.untrusted_repos`), and whether your own harness hooks run in Argonauts sessions
+//! (`sandbox.untrusted_repos`), and whether your own CLI hooks run in Argonauts Code sessions
 //! (`sandbox.user_hooks`).
 
 use argonauts_core::settings::approvals::{SandboxSettings, UntrustedRepos, UserHooks};
@@ -13,7 +13,7 @@ pub enum RepoAction {
     Refuse(String),
 }
 
-/// Harnesses load a repository's own hooks, MCP servers, and agents, each in its own way, so an
+/// CLIs load a repository's own hooks, MCP servers, and agents, each in its own way, so an
 /// untrusted repository runs in a container or not at all.
 pub fn untrusted_repo(settings: &SandboxSettings, trusted: bool) -> RepoAction {
     if trusted {
@@ -31,7 +31,7 @@ pub fn untrusted_repo(settings: &SandboxSettings, trusted: bool) -> RepoAction {
 }
 
 /// The launch tweak for `sandbox.user_hooks`: the adapter's `user_hooks_off` when set to
-/// `disable`, nothing for `inherit`. Its effect says where the harness can't do it.
+/// `disable`, nothing for `inherit`. Its effect says where the CLI can't do it.
 pub fn user_hooks(adapter: &dyn Adapter, settings: &SandboxSettings) -> LaunchTweak {
     match settings.user_hooks {
         UserHooks::Disable => adapter.user_hooks_off(),
@@ -60,7 +60,7 @@ mod tests {
         }
     }
 
-    /// A harness with a verified flag that skips your hooks.
+    /// A CLI with a verified flag that skips your hooks.
     struct SkipsHooks(ScriptAdapter);
 
     impl Adapter for SkipsHooks {

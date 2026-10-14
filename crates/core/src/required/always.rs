@@ -6,25 +6,25 @@ use std::path::Path;
 use serde::Deserialize;
 
 use super::{RequiredStep, role_named, same_name, when_problem};
-use crate::prompt_parts::CrewRole;
+use crate::settings::crew::CrewRole;
 
 pub const FILE: &str = "always.toml";
 
 /// What `/setup` may leave in the workflows folder: every line a comment, so it requires
 /// nothing until you write a step.
 pub const STARTER: &str = r#"# Steps every workflow must contain, whoever writes it: you, the orchestrator or Claude Code.
-# Argonauts checks a written workflow before it runs. If a step is missing, the orchestrator
-# is asked once to add it, and after that Argonauts adds it itself.
+# Argonauts Code checks a written workflow before it runs. If a step is missing, the orchestrator
+# is asked once to add it, and after that Argonauts Code adds it itself.
 #
 # [[step]]
 # name = "Benchmark"
-# role = "workers"                 # main · orchestrator · workers · reviewers · judge
+# role = "worker"                  # main · orchestrator · worker · reviewer · judge
 # does = "Run the benchmarks and report any slowdown over 5%."
 # when = "before sign-off"         # first · after <step> · before <step> · last
 #
 # [[step]]
 # name = "Secrets scan"
-# role = "reviewers"
+# role = "reviewer"
 # does = "Scan the change for keys, tokens and passwords."
 # when = "after build"
 "#;
@@ -39,14 +39,14 @@ same name.
 ```toml
 [[step]]
 name = "Benchmark"
-role = "workers"            # main · orchestrator · workers · reviewers · judge
+role = "worker"             # main · orchestrator · worker · reviewer · judge
 does = "Run the benchmarks and report any slowdown over 5%."
 when = "before sign-off"    # first · after <step> · before <step> · last
 ```
 
-`name` is required. `role` is `workers` when left out, and `when` is before the sign-off.
-Argonauts checks a written workflow before it runs: a missing step is asked for once, and then
-Argonauts adds it itself. In the view such a step carries ★.
+`name` is required. `role` is `worker` when left out, and `when` is before the sign-off.
+Argonauts Code checks a written workflow before it runs: a missing step is asked for once, and then
+Argonauts Code adds it itself. In the view such a step carries ★.
 
 A request can say the same for itself ("every workflow must end with a benchmark run"), or fix
 its task list ("do exactly these three tasks: ..."): the plan then keeps those tasks as given,
@@ -103,13 +103,13 @@ pub fn parse(text: &str) -> Result<Vec<RequiredStep>, Vec<String>> {
         }
         seen.push(name.clone());
         let role = match entry.role.as_deref() {
-            None => CrewRole::Workers,
+            None => CrewRole::Worker,
             Some(role) => match role_named(role) {
                 Some(role) => role,
                 None => {
                     problems.push(format!(
-                        "step {name:?}: role = {role:?} is none of main, orchestrator, workers, \
-                         reviewers, judge"
+                        "step {name:?}: role = {role:?} is none of main, orchestrator, worker, \
+                         reviewer, judge"
                     ));
                     continue;
                 }

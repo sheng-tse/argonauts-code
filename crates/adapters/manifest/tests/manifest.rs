@@ -7,9 +7,9 @@ use argonauts_adapter_manifest::{
     manifest_adapter, manifest_adapter_with, manifest_adapter_with_templates,
 };
 use argonauts_core::adapter::Transport;
-use argonauts_core::limits::QuotaReading;
-use argonauts_core::registry::HarnessManifest;
-use argonauts_core::registry::harness::{
+use argonauts_core::limits::PlanUsageReading;
+use argonauts_core::registry::CliManifest;
+use argonauts_core::registry::cli::{
     ErrorPattern, FinalJsonPointers, HomeKeep, HomeTemplate, OutputKind, PromptChannel, SchemaFlag,
     StopWaits,
 };
@@ -25,8 +25,8 @@ fn strings(list: &[&str]) -> Vec<String> {
     list.iter().map(|text| (*text).to_owned()).collect()
 }
 
-fn jsonl_plugin() -> HarnessManifest {
-    HarnessManifest {
+fn jsonl_plugin() -> CliManifest {
+    CliManifest {
         id: "jsonl-plugin".into(),
         display_name: "JSONL plugin".into(),
         binary: fixture("jsonl-plugin.sh"),
@@ -35,7 +35,7 @@ fn jsonl_plugin() -> HarnessManifest {
         read_only_args: strings(&["--model", "{model}", "--effort", "{effort}"]),
         build_args: strings(&["--model", "{model}", "--write", "out.txt"]),
         resume_args: strings(&["--resume", "{session}"]),
-        family: "mine".into(),
+        provider: "mine".into(),
         env: strings(&["OPENAI_API_KEY"]),
         errors: vec![ErrorPattern {
             pattern: "credentials or agent init failed".into(),
@@ -43,7 +43,7 @@ fn jsonl_plugin() -> HarnessManifest {
             retryable: false,
         }],
         env_set: [("PLUGIN_NO_UPDATE".to_owned(), "1".to_owned())].into(),
-        ..HarnessManifest::default()
+        ..CliManifest::default()
     }
 }
 
@@ -69,7 +69,7 @@ fn manifest_adapter_runs_jsonl_plugin() {
     assert_eq!(adapter.display_name(), "JSONL plugin");
     assert_eq!(adapter.version_args(), ["--version"]);
     assert_eq!(adapter.tested_versions(), ["1.0.0"]);
-    assert_eq!(adapter.default_family(), "mine");
+    assert_eq!(adapter.default_provider(), "mine");
     assert_eq!(adapter.transport(), Transport::Lines);
     let work = tempfile::tempdir().unwrap();
 
@@ -163,20 +163,20 @@ fn manifest_adapter_runs_jsonl_plugin() {
 fn a_plugin_scripts_its_own_events() {
     let work = tempfile::tempdir().unwrap();
     let script = work.path().join("events.jsonl");
-    let line = json!({"type": "quota", "reading": reading("claude-code")}).to_string();
+    let line = json!({"type": "plan_usage", "reading": reading("claude-code")}).to_string();
     std::fs::write(&script, format!("{line}\n")).unwrap();
     let adapter = manifest_adapter(jsonl_plugin());
     let mut req = request(work.path(), SessionRole::ReadOnly);
     req.extra_args = vec!["--events".into(), script.to_string_lossy().into_owned()];
     let run = run(adapter.as_ref(), &adapter.command(&req).unwrap());
-    // A plugin can't file readings under another vendor.
+    // A plugin can't file readings under another agent.
     assert!(matches!(&run.events[1],
-        AgentEvent::Quota { reading } if reading.vendor.0 == "jsonl-plugin"));
+        AgentEvent::PlanUsage { reading } if reading.agent_id.0 == "jsonl-plugin"));
     assert!(is_result(run.events.last().unwrap(), None, false));
 }
 
-fn final_json_cli() -> HarnessManifest {
-    HarnessManifest {
+fn final_json_cli() -> CliManifest {
+    CliManifest {
         id: "one-shot".into(),
         display_name: "One-shot CLI".into(),
         binary: fixture("final-json-plugin.sh"),
@@ -189,7 +189,7 @@ fn final_json_cli() -> HarnessManifest {
             "--write",
             "x.txt",
         ]),
-        family: "from-model".into(),
+        provider: "from-model".into(),
         output: OutputKind::FinalJson,
         schema: Some(SchemaFlag {
             flag: "--json-schema".into(),
@@ -209,7 +209,7 @@ fn final_json_cli() -> HarnessManifest {
             error_kind: Some("/error/kind".into()),
             error_message: Some("/error/message".into()),
         }),
-        ..HarnessManifest::default()
+        ..CliManifest::default()
     }
 }
 
@@ -312,9 +312,9 @@ fn final_json_without_a_document_fails_plainly() {
     assert!(is_result(&events[1], Some("half"), true));
 }
 
-fn reading(vendor: &str) -> QuotaReading {
+fn reading(agent_id: &str) -> PlanUsageReading {
     serde_json::from_value(json!({
-        "vendor": vendor,
+        "agent_id": agent_id,
         "status": "warning",
         "used": 0.9,
         "resets_at": null,
@@ -326,7 +326,7 @@ fn reading(vendor: &str) -> QuotaReading {
     .unwrap()
 }
 
-/// Stands in for a built-in adapter: `quota` lines become readings under its own vendor.
+/// Stands in for a built-in adapter: `plan_usage` lines become readings under its own agent.
 struct Builtin;
 
 struct BuiltinParser;
@@ -334,7 +334,7 @@ struct BuiltinParser;
 impl StreamParser for BuiltinParser {
     fn parse_stdout_line(&mut self, line: &str) -> Vec<AgentEvent> {
         match line {
-            "quota" => vec![AgentEvent::Quota {
+            "plan_usage" => vec![AgentEvent::PlanUsage {
                 reading: reading("claude-code"),
             }],
             text => vec![AgentEvent::Message {
@@ -394,14 +394,14 @@ impl Adapter for Builtin {
     }
 }
 
-fn borrowed_stream() -> HarnessManifest {
-    HarnessManifest {
+fn borrowed_stream() -> CliManifest {
+    CliManifest {
         id: "other-cli".into(),
         display_name: "Other CLI".into(),
         binary: "/opt/other/bin/other".into(),
         read_only_args: strings(&["-p", "{prompt}", "--model", "{model}"]),
         build_args: strings(&["-p", "{prompt}"]),
-        family: "other".into(),
+        provider: "other".into(),
         prompt: PromptChannel::Argument,
         output: OutputKind::Parser,
         parser: Some("claude-code".into()),
@@ -410,7 +410,7 @@ fn borrowed_stream() -> HarnessManifest {
             category: ErrorCategory::Overloaded,
             retryable: true,
         }],
-        ..HarnessManifest::default()
+        ..CliManifest::default()
     }
 }
 
@@ -433,10 +433,10 @@ fn manifest_reuses_builtin_parser() {
             parent: None
         }]
     );
-    // The reading lands on this harness's board, not the built-in's.
+    // The reading lands on this CLI's board, not the built-in's.
     assert_eq!(
-        parser.parse_stdout_line("quota"),
-        [AgentEvent::Quota {
+        parser.parse_stdout_line("plan_usage"),
+        [AgentEvent::PlanUsage {
             reading: reading("other-cli")
         }]
     );
@@ -466,12 +466,12 @@ fn manifest_reuses_builtin_parser() {
 #[test]
 fn manifest_home_template_per_session() {
     let root = tempfile::tempdir().unwrap();
-    let templates = scratch(root.path(), "harnesses");
+    let templates = scratch(root.path(), "clis");
     let template = scratch(&templates, "agent");
     std::fs::create_dir_all(template.join("skills")).unwrap();
     std::fs::write(template.join("config.yaml"), "memory: false\n").unwrap();
     std::fs::write(template.join("skills/README.md"), "none\n").unwrap();
-    let manifest = HarnessManifest {
+    let manifest = CliManifest {
         read_only_args: strings(&["--config", "{home}/config.yaml"]),
         home: Some(HomeTemplate {
             env: "AGENT_HOME".into(),
@@ -505,7 +505,7 @@ fn manifest_home_template_per_session() {
         homes.push(home);
     }
     assert_ne!(homes[0], homes[1]);
-    // Each session's home is its own copy: a change in one reaches neither the other nor the
+    // Each session's home is its own worktree: a change in one reaches neither the other nor the
     // template.
     std::fs::write(homes[0].join("config.yaml"), "memory: true\n").unwrap();
     let read = |path: &Path| std::fs::read_to_string(path).unwrap();
@@ -536,7 +536,7 @@ fn manifest_home_template_per_session() {
 fn the_prompt_channel_is_honored() {
     let root = tempfile::tempdir().unwrap();
     let session = scratch(root.path(), "session");
-    let by_file = HarnessManifest {
+    let by_file = CliManifest {
         prompt: PromptChannel::File,
         read_only_args: strings(&["--message-file", "{prompt_file}"]),
         ..jsonl_plugin()
@@ -551,14 +551,14 @@ fn the_prompt_channel_is_honored() {
     assert_eq!(spec.stdin, None);
 
     // `{prompt}` is refused unless the manifest chose the argument channel.
-    let sneaky = HarnessManifest {
+    let sneaky = CliManifest {
         read_only_args: strings(&["-p", "{prompt}"]),
         ..jsonl_plugin()
     };
     let err = manifest_adapter(sneaky).command(&req).unwrap_err();
     assert!(err.to_string().contains("prompt = \"argument\""), "{err}");
 
-    let unknown = HarnessManifest {
+    let unknown = CliManifest {
         read_only_args: strings(&["--dir", "{worktree}"]),
         ..jsonl_plugin()
     };
@@ -571,14 +571,14 @@ fn launches_the_manifest_refuses() {
     let work = tempfile::tempdir().unwrap();
     let mut req = request(work.path(), SessionRole::ReadOnly);
     req.resume_session = Some("s-1".into());
-    let no_resume = HarnessManifest {
+    let no_resume = CliManifest {
         resume_args: Vec::new(),
         ..jsonl_plugin()
     };
     let err = manifest_adapter(no_resume).command(&req).unwrap_err();
     assert!(err.to_string().contains("can't resume"), "{err}");
 
-    let acp = HarnessManifest {
+    let acp = CliManifest {
         transport: Transport::Acp,
         ..jsonl_plugin()
     };
@@ -587,7 +587,7 @@ fn launches_the_manifest_refuses() {
         .unwrap_err();
     assert!(err.to_string().contains("ACP adapter"), "{err}");
 
-    let bad_regex = HarnessManifest {
+    let bad_regex = CliManifest {
         errors: vec![ErrorPattern {
             pattern: "(unclosed".into(),
             category: ErrorCategory::Auth,
@@ -603,7 +603,7 @@ fn launches_the_manifest_refuses() {
 
 #[test]
 fn take_over_and_stop_come_from_the_manifest() {
-    let manifest = HarnessManifest {
+    let manifest = CliManifest {
         interactive_resume: strings(&["--resume", "{session}", "--cwd", "{workdir}"]),
         stop: Some(StopWaits {
             after_interrupt: Span::new("2s"),
@@ -629,7 +629,7 @@ fn take_over_and_stop_come_from_the_manifest() {
 }
 
 #[test]
-fn a_harness_without_a_schema_flag_gets_the_schema_in_its_prompt() {
+fn a_cli_without_a_schema_flag_gets_the_schema_in_its_prompt() {
     let root = tempfile::tempdir().unwrap();
     let work = scratch(root.path(), "work");
     let session = scratch(root.path(), "session");
@@ -649,7 +649,7 @@ fn a_harness_without_a_schema_flag_gets_the_schema_in_its_prompt() {
         "no schema file for a CLI that can't take one"
     );
 
-    let in_a_file = HarnessManifest {
+    let in_a_file = CliManifest {
         prompt: PromptChannel::File,
         ..jsonl_plugin()
     };
@@ -666,7 +666,7 @@ fn a_harness_without_a_schema_flag_gets_the_schema_in_its_prompt() {
     );
     assert_eq!(spec.stdin, None);
 
-    let as_an_argument = HarnessManifest {
+    let as_an_argument = CliManifest {
         prompt: PromptChannel::Argument,
         read_only_args: strings(&["--ask", "{prompt}"]),
         ..jsonl_plugin()

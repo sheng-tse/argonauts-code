@@ -13,7 +13,7 @@ pub struct UiOptions {
     pub verbosity: Verbosity,
     pub keys: KeyScheme,
     pub color: bool,
-    /// Ring the terminal bell when a card needs the user.
+    /// Ring the terminal bell when a question needs the user.
     pub bell: bool,
     /// Shown as `~` in paths.
     pub home_dir: Option<PathBuf>,

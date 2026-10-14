@@ -1,4 +1,4 @@
-//! `argonauts mcp serve`: your runs to an MCP client such as Hermes or OpenClaw. A front end
+//! `argonauts mcp serve`: your runs to an MCP client such as Hermes or OpenClaw. An outside agent
 //! can keep the server for days, so `mcp.*` and the repo's trust are read again on every call,
 //! and the server keeps whichever of those and the start values is stricter.
 
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use argonauts_core::layout::repo_state;
 use argonauts_core::{Paths, RepoId, project_config_path, project_local_config_path, sha256_hex};
-use argonauts_mcp::{FrontEndOptions, FrontEndReloader, FrontEndSettings};
+use argonauts_mcp::{OutsideAgentOptions, OutsideAgentReloader, OutsideAgentSettings};
 use serde::Deserialize;
 
 /// A direct turn's questions: where the app listens, and which tools ask it.
@@ -19,7 +19,7 @@ pub struct Asking<'a> {
     pub approve: bool,
     /// The main session's tools to offer, by name.
     pub tools: &'a [String],
-    /// Crew roles it may ask, such as `reviewers`.
+    /// Crew roles it may ask, such as `reviewer`.
     pub roles: &'a [String],
 }
 
@@ -68,13 +68,13 @@ pub async fn serve(repo: Option<&Path>, set: &[String]) -> anyhow::Result<ExitCo
     let root = root
         .canonicalize()
         .with_context(|| format!("opening {}", root.display()))?;
-    let start = front_end_settings(&root, set)?;
-    let reload: FrontEndReloader = {
+    let start = outside_agent_settings(&root, set)?;
+    let reload: OutsideAgentReloader = {
         let root = root.clone();
         let set = set.to_vec();
-        Arc::new(move || front_end_settings(&root, &set).ok())
+        Arc::new(move || outside_agent_settings(&root, &set).ok())
     };
-    let options = FrontEndOptions {
+    let options = OutsideAgentOptions {
         mcp: start.mcp,
         repo_trusted: start.repo_trusted,
         reload: Some(reload),
@@ -85,16 +85,16 @@ pub async fn serve(repo: Option<&Path>, set: &[String]) -> anyhow::Result<ExitCo
 
 /// The repo's `mcp.*` as resolved now, safety keys from untrusted files left out, and whether
 /// you trust the repo.
-fn front_end_settings(root: &Path, set: &[String]) -> anyhow::Result<FrontEndSettings> {
+fn outside_agent_settings(root: &Path, set: &[String]) -> anyhow::Result<OutsideAgentSettings> {
     let settings = argonauts_app::current_settings(Some(root), set.to_vec())?;
     let home = Paths::from_env()?;
-    Ok(FrontEndSettings {
+    Ok(OutsideAgentSettings {
         mcp: settings.mcp,
         repo_trusted: repo_trusted(&home, root),
     })
 }
 
-/// You set the repo up with `argonauts init`, which made its `.argonauts` folder, and you
+/// You set the repo up with `argonauts setup`, which made its `.argonauts` folder, and you
 /// trusted each settings file in it as it is now. An unreadable trust record trusts nothing.
 fn repo_trusted(home: &Paths, root: &Path) -> bool {
     if !root.join(".argonauts").is_dir() {

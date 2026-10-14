@@ -1,4 +1,4 @@
-//! Owners by `routing.algorithm`, among the role's candidates. The engine keeps the rules that
+//! Workers by `routing.algorithm`, among the role's candidates. The engine keeps the rules that
 //! remove candidates: agents that are down, degraded when another fits, or out of plan, which
 //! is when their provider says so or their plan window is as full as your `limits.plan_usage`.
 //! With learning's track records, `bandit` ranks what's left by Thompson
@@ -6,44 +6,44 @@
 //! only where `routing::may_explore` allows, and every draw is kept for the outcome log.
 //! Without them, `bandit` samples Beta(passes + 1, failures + 1) from plain counts. Among
 //! workers within `routing.tie_band` of the best, the lower registry cost wins, then fewer
-//! running cards. Seeded, so tests are deterministic.
+//! running tasks. Seeded, so tests are deterministic.
 
 use std::cmp::Ordering;
 
 use rand::RngExt;
 use rand::rngs::StdRng;
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::limits::{CostEstimate, HealthState, TrackRecord};
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::protocol::{RoutingAlgorithm, RoutingSettings};
 use argonauts_learning::Assignment;
 use argonauts_learning::records::Record;
 use argonauts_learning::routing::{self, Considered, Draw, RunSoFar};
 
-/// Draws used to estimate how likely the chosen owner was, logged with the choice.
+/// Draws used to estimate how likely the chosen worker was, logged with the choice.
 const PROBABILITY_DRAWS: u32 = 200;
 
 /// A worker the router may pick, with what it knows about it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Candidate {
-    pub worker: WorkerRef,
+    pub worker: ModelRef,
     pub record: Option<TrackRecord>,
     pub health: HealthState,
-    /// Share of quota used, 0 to 1, when known.
-    pub quota_used: Option<f64>,
+    /// Share of plan usage used, 0 to 1, when known.
+    pub plan_usage_used: Option<f64>,
     /// Your `limits.plan_usage`, when you set one.
     pub plan_limit: Option<f64>,
     pub cost: CostEstimate,
-    pub running_cards: u32,
-    /// Its learning record for the card's task type, from the book divide rebuilt.
+    pub running_tasks: u32,
+    /// Its learning record for the task's task type, from the book divide rebuilt.
     pub learned: Option<Record>,
 }
 
-/// The card being routed, as the exploration guardrails and the draw log see it.
+/// The task being routed, as the exploration guardrails and the draw log see it.
 #[derive(Debug, Clone, Copy)]
-pub struct CardToRoute<'a> {
-    pub card: &'a CardId,
+pub struct TaskToRoute<'a> {
+    pub task: &'a TaskId,
     pub task_type: &'a str,
     pub labels: &'a [String],
     pub touches_protected: bool,
@@ -51,13 +51,13 @@ pub struct CardToRoute<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Choice {
-    pub worker: WorkerRef,
+    pub worker: ModelRef,
     pub explored: bool,
-    /// One line for `Divide::Owner`.
+    /// One line for `Divide::Worker`.
     pub reason: String,
 }
 
-/// Thompson sampling over track records. `None` when no candidate is up and under its quota.
+/// Thompson sampling over track records. `None` when no candidate is up with plan usage left.
 pub fn choose(
     candidates: &[Candidate],
     labels: &[String],
@@ -98,7 +98,7 @@ pub fn choose(
         .filter(|(_, rate)| *rate >= best - settings.tie_band)
         .min_by(|(a, a_rate), (b, b_rate)| {
             cost_order(a.cost, b.cost)
-                .then(a.running_cards.cmp(&b.running_cards))
+                .then(a.running_tasks.cmp(&b.running_tasks))
                 .then(b_rate.total_cmp(a_rate))
         })?;
     let mut reason = record_line(chosen);
@@ -112,11 +112,11 @@ pub fn choose(
     })
 }
 
-/// The candidates best first, the same every time: those up and under their quota first, then
+/// The candidates best first, the same every time: those up with plan usage left first, then
 /// by the track record's expected pass rate, then the cheaper and the less busy, then as listed.
 /// Code goes by it where a pick must not change between tries, such as moving an assignment
 /// that broke the rules.
-pub fn rank(candidates: &[Candidate]) -> Vec<WorkerRef> {
+pub fn rank(candidates: &[Candidate]) -> Vec<ModelRef> {
     let up = eligible(candidates);
     let expected = |candidate: &Candidate| {
         let (passed, failed) = passes_and_failures(candidate.record);
@@ -129,7 +129,7 @@ pub fn rank(candidates: &[Candidate]) -> Vec<WorkerRef> {
         b_up.cmp(&a_up)
             .then(expected(b).total_cmp(&expected(a)))
             .then(cost_order(a.cost, b.cost))
-            .then(a.running_cards.cmp(&b.running_cards))
+            .then(a.running_tasks.cmp(&b.running_tasks))
             .then(a_at.cmp(b_at))
     });
     ranked
@@ -138,8 +138,8 @@ pub fn rank(candidates: &[Candidate]) -> Vec<WorkerRef> {
         .collect()
 }
 
-/// The algorithm that routes a card under `algorithm`. The coordinator's own picks are taken
-/// from its assignments before routing, so any card it left without an owner goes to `bandit`.
+/// The algorithm that routes a task under `algorithm`. The orchestrator's own picks are taken
+/// from its assignments before routing, so any task it left without a worker goes to `bandit`.
 pub fn effective(algorithm: RoutingAlgorithm) -> RoutingAlgorithm {
     match algorithm {
         RoutingAlgorithm::Orchestrator => RoutingAlgorithm::Bandit,
@@ -147,7 +147,7 @@ pub fn effective(algorithm: RoutingAlgorithm) -> RoutingAlgorithm {
     }
 }
 
-/// Picks by `algorithm`, as [`effective`] resolves it. `turn` counts the cards routed so far,
+/// Picks by `algorithm`, as [`effective`] resolves it. `turn` counts the tasks routed so far,
 /// for round-robin.
 pub fn route(
     algorithm: RoutingAlgorithm,
@@ -175,7 +175,7 @@ pub fn route(
             let reason = if chosen.worker == candidates[0].worker {
                 "the first listed worker".to_owned()
             } else {
-                "the first listed worker that is up and under its plan usage".to_owned()
+                "the first listed worker that is up with plan usage left".to_owned()
             };
             Some(Choice {
                 worker: chosen.worker.clone(),
@@ -186,13 +186,13 @@ pub fn route(
     }
 }
 
-/// [`route`] for one card, with learning's records when every candidate has one: `bandit` and
+/// [`route`] for one task, with learning's records when every candidate has one: `bandit` and
 /// `epsilon-greedy` rank by the routing utility, explore only where the guardrails allow and
 /// count it in `so_far`, and return the draw for the outcome log.
-pub fn route_card(
+pub fn route_task(
     algorithm: RoutingAlgorithm,
     candidates: &[Candidate],
-    to_route: &CardToRoute,
+    to_route: &TaskToRoute,
     settings: &RoutingSettings,
     rng: &mut StdRng,
     turn: usize,
@@ -221,7 +221,7 @@ pub fn route_card(
 fn learned(
     algorithm: RoutingAlgorithm,
     candidates: &[Candidate],
-    to_route: &CardToRoute,
+    to_route: &TaskToRoute,
     settings: &RoutingSettings,
     rng: &mut StdRng,
     so_far: RunSoFar,
@@ -248,7 +248,7 @@ fn learned(
             so_far,
             settings,
         );
-    let by_worker = |worker: &WorkerRef| {
+    let by_worker = |worker: &ModelRef| {
         eligible
             .iter()
             .find(|candidate| &candidate.worker == worker)
@@ -257,7 +257,7 @@ fn learned(
     let explored = match algorithm {
         RoutingAlgorithm::EpsilonGreedy => {
             if may_explore && rng.random::<f64>() < settings.explore_rate {
-                let others: Vec<&WorkerRef> = ranked
+                let others: Vec<&ModelRef> = ranked
                     .iter()
                     .map(|ranked| &ranked.worker)
                     .filter(|worker| **worker != best_mean)
@@ -289,7 +289,7 @@ fn learned(
                 .filter_map(|ranked| by_worker(&ranked.worker).map(|c| (c, ranked.mean)))
                 .min_by(|(a, a_mean), (b, b_mean)| {
                     cost_order(a.cost, b.cost)
-                        .then(a.running_cards.cmp(&b.running_cards))
+                        .then(a.running_tasks.cmp(&b.running_tasks))
                         .then(b_mean.total_cmp(a_mean))
                 })
                 .map(|(candidate, _)| candidate)?
@@ -326,7 +326,7 @@ fn learned(
         _ => record_line(chosen),
     };
     let draw = Draw {
-        card: to_route.card.clone(),
+        task: to_route.task.clone(),
         task_type: to_route.task_type.to_owned(),
         considered,
         chosen: chosen.worker.clone(),
@@ -363,13 +363,13 @@ fn removed_by(candidate: &Candidate, eligible: &[&Candidate]) -> Option<String> 
 impl Candidate {
     /// Its provider's plan window is spent.
     fn plan_ran_out(&self) -> bool {
-        self.quota_used.is_some_and(|used| used >= 1.0)
+        self.plan_usage_used.is_some_and(|used| used >= 1.0)
     }
 
     /// Nothing new goes to it: its plan ran out, or it is as full as you let it get.
     fn out_of_plan(&self) -> bool {
         let limit = self.plan_limit.unwrap_or(1.0);
-        self.quota_used.is_some_and(|used| used >= limit)
+        self.plan_usage_used.is_some_and(|used| used >= limit)
     }
 }
 
@@ -380,7 +380,7 @@ pub fn beta_sample(alpha: f64, beta: f64, rng: &mut StdRng) -> f64 {
     if x + y > 0.0 { x / (x + y) } else { 0.5 }
 }
 
-/// Candidates that may take a new card, in their given order.
+/// Candidates that may take a new task, in their given order.
 fn eligible(candidates: &[Candidate]) -> Vec<&Candidate> {
     let usable: Vec<&Candidate> = candidates
         .iter()
@@ -431,7 +431,7 @@ fn cost_order(a: CostEstimate, b: CostEstimate) -> Ordering {
     fn key(cost: CostEstimate) -> (u8, f64) {
         match cost {
             CostEstimate::Free => (0, 0.0),
-            CostEstimate::Quota(share) => (1, share),
+            CostEstimate::PlanUsage(share) => (1, share),
             CostEstimate::Usd(usd) => (2, usd),
             CostEstimate::Unknown => (3, 0.0),
         }
@@ -448,7 +448,7 @@ fn record_line(candidate: &Candidate) -> String {
         }
         _ => "no track record yet".to_owned(),
     };
-    if let Some(used) = candidate.quota_used {
+    if let Some(used) = candidate.plan_usage_used {
         line.push_str(&format!(", {:.0}% of plan used", used * 100.0));
     }
     line
@@ -496,10 +496,10 @@ mod tests {
             worker: worker.parse().unwrap(),
             record: Some(TrackRecord { passed, of }),
             health: HealthState::Healthy,
-            quota_used: None,
+            plan_usage_used: None,
             plan_limit: None,
             cost: CostEstimate::Unknown,
-            running_cards: 0,
+            running_tasks: 0,
             learned: None,
         }
     }
@@ -570,16 +570,16 @@ mod tests {
     #[test]
     fn a_plan_is_used_until_it_runs_out_unless_you_set_a_limit() {
         let mut busy = candidate("codex", 10, 10);
-        busy.quota_used = Some(0.95);
+        busy.plan_usage_used = Some(0.95);
         let mut fine = candidate("claude-code", 1, 10);
-        fine.quota_used = Some(0.4);
+        fine.plan_usage_used = Some(0.4);
         // No limit: 95% used is still usable, and the better record wins.
         let crew = [busy.clone(), fine.clone()];
         for pick in picks(&crew, &no_explore(), 5) {
             assert_eq!(pick, "codex");
         }
         let mut out = busy.clone();
-        out.quota_used = Some(1.0);
+        out.plan_usage_used = Some(1.0);
         for pick in picks(&[out, fine.clone()], &no_explore(), 5) {
             assert_eq!(pick, "claude-code");
         }
@@ -600,11 +600,11 @@ mod tests {
     #[test]
     fn router_skips_an_agent_that_is_down_or_out_of_plan() {
         let mut busy = candidate("codex", 10, 10);
-        busy.quota_used = Some(1.0);
+        busy.plan_usage_used = Some(1.0);
         let mut down = candidate("agy", 10, 10);
         down.health = HealthState::Down;
         let mut fine = candidate("claude-code", 1, 10);
-        fine.quota_used = Some(0.4);
+        fine.plan_usage_used = Some(0.4);
         let crew = [busy.clone(), down.clone(), fine];
         for pick in picks(&crew, &RoutingSettings::default(), 5) {
             assert_eq!(pick, "claude-code");
@@ -649,10 +649,10 @@ mod tests {
 
         // Same cost: the less busy one.
         let mut busy = cheap.clone();
-        busy.running_cards = 3;
+        busy.running_tasks = 3;
         let mut idle = candidate("agy", 500, 500);
         idle.cost = CostEstimate::Usd(1.5);
-        idle.running_cards = 1;
+        idle.running_tasks = 1;
         for pick in picks(&[busy, idle], &no_explore(), 4) {
             assert_eq!(pick, "agy");
         }
@@ -698,7 +698,7 @@ mod tests {
         assert_eq!(fixed.worker.to_string(), "claude-code");
         assert_eq!(
             fixed.reason,
-            "the first listed worker that is up and under its plan usage"
+            "the first listed worker that is up with plan usage left"
         );
     }
 }

@@ -1,5 +1,5 @@
 //! The sandbox launcher alone. The app's own binary carries the same launcher; this one lets the
-//! conductor's tests run it without building the app.
+//! tests of this crate run it without building the app.
 
 fn main() {
     let code = argonauts_conductor::sandbox::launcher::launcher_main().unwrap_or_else(|| {

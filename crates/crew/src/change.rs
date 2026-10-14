@@ -11,17 +11,17 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::layout;
 use argonauts_core::paths::create_private_dir_all;
 
-use crate::card::claims;
-use crate::card::worktree::{self, CardTree};
 use crate::engine::host::Host;
 use crate::error::EngineResult;
 use crate::git::{Claims, Git, LeftOut};
+use crate::task::claims;
+use crate::task::worktree::{self, TaskTree};
 
-/// A task's change as it stands in its folder.
+/// A task's change as its folder holds it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaskChange {
     /// The commit the change is measured from.
@@ -42,8 +42,8 @@ impl TaskChange {
 
 /// The task's change now, committed or not: what its commit holds once the session that is
 /// working on it ends. Reading it changes nothing in the folder.
-pub async fn of_task(host: &Host, card: &CardId) -> EngineResult<TaskChange> {
-    let reading = Reading::of(host, card).await?;
+pub async fn of_task(host: &Host, task: &TaskId) -> EngineResult<TaskChange> {
+    let reading = Reading::of(host, task).await?;
     let change = reading
         .git
         .change_since(
@@ -64,8 +64,8 @@ pub async fn of_task(host: &Host, card: &CardId) -> EngineResult<TaskChange> {
 
 /// The task's change now as a commit on no branch, holding exactly what [`of_task`] reads,
 /// for checks that run while its agents are still at work.
-pub async fn commit_of_task(host: &Host, card: &CardId) -> EngineResult<String> {
-    let reading = Reading::of(host, card).await?;
+pub async fn commit_of_task(host: &Host, task: &TaskId) -> EngineResult<String> {
+    let reading = Reading::of(host, task).await?;
     Ok(reading
         .git
         .commit_of_change(
@@ -80,7 +80,7 @@ pub async fn commit_of_task(host: &Host, card: &CardId) -> EngineResult<String> 
 /// What reading a task's change takes: its folder, the claims on it, the agent's own commits,
 /// and a throwaway index of its own.
 struct Reading {
-    tree: CardTree,
+    tree: TaskTree,
     git: Git,
     claims: Option<Claims>,
     commits: Vec<String>,
@@ -88,14 +88,14 @@ struct Reading {
 }
 
 impl Reading {
-    async fn of(host: &Host, card: &CardId) -> EngineResult<Self> {
-        let tree = worktree::ensure(host, card).await?;
+    async fn of(host: &Host, task: &TaskId) -> EngineResult<Self> {
+        let tree = worktree::ensure(host, task).await?;
         let git = worktree::tree_git(host, &tree.path).await?;
-        let claims = claims::of_card(host, card, &tree.path);
+        let claims = claims::of_task(host, task, &tree.path);
         // The agent's own commits may have swept in what a command left behind; they're
         // sorted the way the session's commit sorts them. Your commits and the engine's are
         // kept whole.
-        let engine = worktree::conductor_commits(host, card)?;
+        let engine = worktree::conductor_commits(host, task)?;
         let commits: Vec<String> = git
             .first_parent_log(&tree.path, &format!("{}..HEAD", tree.base))
             .await?
@@ -103,7 +103,7 @@ impl Reading {
             .map(|(sha, _)| sha)
             .filter(|sha| !engine.contains(sha))
             .collect();
-        let dir = layout::card_dir(&host.repo().run_dir, card);
+        let dir = layout::task_dir(&host.repo().run_dir, task);
         create_private_dir_all(&dir)?;
         let index = dir.join(format!("change-{}.index", next_index()));
         Ok(Self {

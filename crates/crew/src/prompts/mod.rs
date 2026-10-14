@@ -7,18 +7,19 @@
 
 pub mod assemble;
 pub mod board;
-pub mod card;
 pub mod catalog;
 pub mod divide;
+pub mod fallback;
 pub mod files;
 pub mod frame;
 pub mod goal;
-pub mod handoff;
 pub mod instructions;
 pub mod merge;
 pub mod plan;
 pub mod review;
+pub mod task;
 pub mod trust;
+pub mod understand;
 pub mod warnings;
 pub mod workflow;
 pub mod writer;

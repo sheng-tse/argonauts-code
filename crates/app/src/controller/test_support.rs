@@ -1,5 +1,5 @@
-//! Test doubles for the controller: a conductor and approvals that record every call, and a
-//! harness that runs the real controller loop against them and testkit's fake workers.
+//! Test doubles for the controller: Argonauts Code and approvals that record every call, and a
+//! test driver that runs the real controller loop against them and testkit's fake workers.
 
 // Shared by many tests, and not every test reads every part.
 #![allow(dead_code)]
@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use argonauts_core::api::{
-    ApiError, Approvals, CheckpointAnswer, ConductorApi, DiffScope, DiffView, EventStream, RawView,
+    ApiError, ApprovalAnswer, Approvals, ConductorApi, DiffScope, DiffView, EventStream, RawView,
     RunHandle, RunSummary, StartRun, StatusSummary, SteerAck, TakeOverTicket,
 };
 use argonauts_core::app::{AppEvent, UiCommand};
@@ -20,13 +20,13 @@ use argonauts_core::events::goal::GoalAction;
 use argonauts_core::events::session::QueuedMessage;
 use argonauts_core::future::BoxFuture;
 use argonauts_core::input::MentionTarget;
-use argonauts_core::names::{CheckpointId, MessageId, SessionKey, WorkerRef};
+use argonauts_core::names::{ApprovalId, MessageId, ModelRef, SessionKey};
 use argonauts_core::registry::ModelRegistry;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::steps::SchemaStepRunner;
-use argonauts_core::{CardId, Paths, RunId};
-use argonauts_testkit::services::{MemoryHealthBoard, MemoryQuotaBoard};
-use argonauts_testkit::{FakeDirectory, FakeWorker, TempRepo};
+use argonauts_core::{Paths, RunId, TaskId};
+use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
+use argonauts_testkit::{FakeDirectory, FakeRunner, TempRepo};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
@@ -38,7 +38,7 @@ use crate::trace::Trace;
 /// How long a test waits for the next event before failing.
 pub(crate) const WAIT: Duration = Duration::from_secs(5);
 
-/// A conductor call, as the fake recorded it.
+/// Argonauts Code call, as the fake recorded it.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Call {
     Start(Box<StartRun>),
@@ -76,10 +76,14 @@ pub(crate) enum Call {
         run: RunId,
         session: SessionKey,
     },
+    RestartSession {
+        run: RunId,
+        session: SessionKey,
+    },
     Reassign {
         run: RunId,
-        card: CardId,
-        to: WorkerRef,
+        task: TaskId,
+        to: ModelRef,
     },
     List,
     Continue {
@@ -89,20 +93,20 @@ pub(crate) enum Call {
     Status(RunId),
     Diff {
         run: RunId,
-        card: CardId,
+        task: TaskId,
     },
     Raw {
         run: RunId,
         session: SessionKey,
     },
-    Revert {
+    Rewind {
         run: RunId,
-        card: CardId,
+        task: TaskId,
         checkpoint: u32,
     },
     SpotCheck {
         run: RunId,
-        id: CheckpointId,
+        id: ApprovalId,
         correct: bool,
     },
     Goal {
@@ -177,7 +181,7 @@ impl FakeConductor {
         }
     }
 
-    /// Closes the run's stream; with `crashed`, the supervisor went away first.
+    /// Closes the run's stream; with `crashed`, the run host went away first.
     pub(crate) fn end(&self, run: &RunId, crashed: bool) {
         if let Some(stream) = lock(&self.streams).remove(run)
             && crashed
@@ -334,15 +338,27 @@ impl ConductorApi for FakeConductor {
         ready(Ok(()))
     }
 
+    fn restart_session(
+        &self,
+        run: &RunId,
+        session: &SessionKey,
+    ) -> BoxFuture<'_, Result<(), ApiError>> {
+        self.record(Call::RestartSession {
+            run: run.clone(),
+            session: session.clone(),
+        });
+        ready(self.refuses(run).map_or(Ok(()), Err))
+    }
+
     fn reassign(
         &self,
         run: &RunId,
-        card: &CardId,
-        to: WorkerRef,
+        task: &TaskId,
+        to: ModelRef,
     ) -> BoxFuture<'_, Result<(), ApiError>> {
         self.record(Call::Reassign {
             run: run.clone(),
-            card: card.clone(),
+            task: task.clone(),
             to,
         });
         ready(Ok(()))
@@ -373,13 +389,13 @@ impl ConductorApi for FakeConductor {
     fn diff(
         &self,
         run: &RunId,
-        card: &CardId,
+        task: &TaskId,
         scope: DiffScope,
     ) -> BoxFuture<'_, Result<DiffView, ApiError>> {
         let _ = scope;
         self.record(Call::Diff {
             run: run.clone(),
-            card: card.clone(),
+            task: task.clone(),
         });
         ready(Err(ApiError::NotNow(
             "the fake conductor has no diffs".to_owned(),
@@ -396,15 +412,15 @@ impl ConductorApi for FakeConductor {
         )))
     }
 
-    fn revert(
+    fn rewind(
         &self,
         run: &RunId,
-        card: &CardId,
+        task: &TaskId,
         checkpoint: u32,
     ) -> BoxFuture<'_, Result<(), ApiError>> {
-        self.record(Call::Revert {
+        self.record(Call::Rewind {
             run: run.clone(),
-            card: card.clone(),
+            task: task.clone(),
             checkpoint,
         });
         ready(Ok(()))
@@ -413,7 +429,7 @@ impl ConductorApi for FakeConductor {
     fn spot_check(
         &self,
         run: &RunId,
-        id: &CheckpointId,
+        id: &ApprovalId,
         correct: bool,
     ) -> BoxFuture<'_, Result<(), ApiError>> {
         self.record(Call::SpotCheck {
@@ -438,7 +454,7 @@ impl ConductorApi for FakeConductor {
 pub(crate) enum ApprovalCall {
     Answer {
         run: RunId,
-        answer: CheckpointAnswer,
+        answer: ApprovalAnswer,
     },
     Mode {
         run: RunId,
@@ -446,17 +462,17 @@ pub(crate) enum ApprovalCall {
     },
     ReassignOverriding {
         run: RunId,
-        card: CardId,
-        to: WorkerRef,
+        task: TaskId,
+        to: ModelRef,
         rule: String,
     },
     TakeOver {
         run: RunId,
-        card: CardId,
+        task: TaskId,
     },
     TakeOverEnded {
         run: RunId,
-        card: CardId,
+        task: TaskId,
     },
 }
 
@@ -476,7 +492,7 @@ impl FakeApprovals {
 }
 
 impl Approvals for FakeApprovals {
-    fn answer(&self, run: &RunId, answer: CheckpointAnswer) -> BoxFuture<'_, Result<(), ApiError>> {
+    fn answer(&self, run: &RunId, answer: ApprovalAnswer) -> BoxFuture<'_, Result<(), ApiError>> {
         self.record(ApprovalCall::Answer {
             run: run.clone(),
             answer,
@@ -499,13 +515,13 @@ impl Approvals for FakeApprovals {
     fn reassign_overriding(
         &self,
         run: &RunId,
-        card: &CardId,
-        to: WorkerRef,
+        task: &TaskId,
+        to: ModelRef,
         rule: String,
     ) -> BoxFuture<'_, Result<(), ApiError>> {
         self.record(ApprovalCall::ReassignOverriding {
             run: run.clone(),
-            card: card.clone(),
+            task: task.clone(),
             to,
             rule,
         });
@@ -515,27 +531,27 @@ impl Approvals for FakeApprovals {
     fn take_over(
         &self,
         run: &RunId,
-        card: &CardId,
+        task: &TaskId,
     ) -> BoxFuture<'_, Result<TakeOverTicket, ApiError>> {
         self.record(ApprovalCall::TakeOver {
             run: run.clone(),
-            card: card.clone(),
+            task: task.clone(),
         });
         ready(Err(ApiError::NotNow(
             "the fake approvals can't take over".to_owned(),
         )))
     }
 
-    fn take_over_ended(&self, run: &RunId, card: &CardId) -> BoxFuture<'_, Result<(), ApiError>> {
+    fn take_over_ended(&self, run: &RunId, task: &TaskId) -> BoxFuture<'_, Result<(), ApiError>> {
         self.record(ApprovalCall::TakeOverEnded {
             run: run.clone(),
-            card: card.clone(),
+            task: task.clone(),
         });
         ready(Ok(()))
     }
 }
 
-/// The real registry with discovery off, so no test runs a vendor CLI's model listing. A test
+/// The real registry with discovery off, so no test runs a CLI's model listing. A test
 /// that wants discovery passes its own, on fake CLIs.
 pub(crate) fn quiet_registry(
     settings: &argonauts_core::settings::Settings,
@@ -549,7 +565,7 @@ pub(crate) fn quiet_registry(
 /// Runs before the controller starts, such as writing a settings file.
 pub(crate) type Prepare = Box<dyn FnOnce(&TempRepo)>;
 
-pub(crate) struct HarnessOptions {
+pub(crate) struct CliOptions {
     /// A person at a terminal. Without one the app holds no `Approvals`.
     pub interactive: bool,
     /// `--set` flags.
@@ -558,11 +574,11 @@ pub(crate) struct HarnessOptions {
     pub prepare: Option<Prepare>,
     /// The model registry, such as testkit's `StaticRegistry`; the real one knows no models yet.
     pub registry: Option<Arc<dyn ModelRegistry>>,
-    /// This repo's runs as the conductor lists them when the app opens.
+    /// This repo's runs as Argonauts Code lists them when the app opens.
     pub runs: Vec<RunSummary>,
 }
 
-impl Default for HarnessOptions {
+impl Default for CliOptions {
     fn default() -> Self {
         Self {
             interactive: true,
@@ -586,14 +602,14 @@ pub(crate) struct TestCtx {
     pub conductor: Arc<FakeConductor>,
     pub approvals: Arc<FakeApprovals>,
     pub directory: Arc<FakeDirectory>,
-    pub agent: Arc<FakeWorker>,
+    pub agent: Arc<FakeRunner>,
     pub env: Arc<AppEnv>,
-    pub quota: Arc<MemoryQuotaBoard>,
+    pub plan_usage: Arc<MemoryPlanUsageBoard>,
     pub health: Arc<MemoryHealthBoard>,
 }
 
 impl TestCtx {
-    pub(crate) fn new(options: HarnessOptions) -> (Self, Opening) {
+    pub(crate) fn new(options: CliOptions) -> (Self, Opening) {
         let repo = TempRepo::new().expect("a temp repo");
         if let Some(prepare) = options.prepare {
             prepare(&repo);
@@ -607,11 +623,11 @@ impl TestCtx {
         let settings = AppSettings::load(&env, options.flags, options.interactive)
             .expect("settings that resolve");
         let directory = Arc::new(FakeDirectory::new());
-        let agent = directory.add(FakeWorker::harness("claude-code", "claude"));
+        let agent = directory.add(FakeRunner::cli("claude-code", "anthropic"));
         let conductor = Arc::new(FakeConductor::default());
         conductor.set_runs(options.runs);
         let approvals = Arc::new(FakeApprovals::default());
-        let quota = Arc::new(MemoryQuotaBoard::default());
+        let plan_usage = Arc::new(MemoryPlanUsageBoard::default());
         let health = Arc::new(MemoryHealthBoard::default());
         let registry = options
             .registry
@@ -624,7 +640,7 @@ impl TestCtx {
             workers: directory.clone(),
             steps: Arc::new(SchemaStepRunner),
             registry,
-            quota: quota.clone(),
+            plan_usage: plan_usage.clone(),
             health: health.clone(),
             clock: Arc::new(SystemClock),
         };
@@ -642,7 +658,7 @@ impl TestCtx {
             directory,
             agent,
             env,
-            quota,
+            plan_usage,
             health,
         };
         (parts, options.opening)
@@ -650,29 +666,32 @@ impl TestCtx {
 }
 
 /// The real controller loop in a temp repo and home, with a fake conductor, fake approvals,
-/// and a fake default agent (`claude-code`) whose sessions a test scripts.
-pub(crate) struct Harness {
+/// and a fake main agent (`claude-code`) whose sessions a test scripts.
+pub(crate) struct TestDriver {
     pub repo: TempRepo,
     pub conductor: Arc<FakeConductor>,
     pub approvals: Arc<FakeApprovals>,
     pub directory: Arc<FakeDirectory>,
-    pub agent: Arc<FakeWorker>,
+    pub agent: Arc<FakeRunner>,
     pub env: Arc<AppEnv>,
-    pub quota: Arc<MemoryQuotaBoard>,
+    pub plan_usage: Arc<MemoryPlanUsageBoard>,
     pub health: Arc<MemoryHealthBoard>,
+    /// What the controller knows of the CLIs, which the app's own start fills from Doctor.
+    pub cli_facts: Arc<super::status_tab::CliFacts>,
     commands: mpsc::Sender<UiCommand>,
     events: mpsc::UnboundedReceiver<AppEvent>,
     seen: Vec<AppEvent>,
     task: JoinHandle<anyhow::Result<()>>,
 }
 
-impl Harness {
+impl TestDriver {
     pub(crate) async fn start() -> Self {
-        Self::start_with(HarnessOptions::default()).await
+        Self::start_with(CliOptions::default()).await
     }
 
-    pub(crate) async fn start_with(options: HarnessOptions) -> Self {
+    pub(crate) async fn start_with(options: CliOptions) -> Self {
         let (parts, opening) = TestCtx::new(options);
+        let cli_facts = Arc::clone(&parts.ctx.cli_facts);
         let controller = Controller::new(parts.ctx, parts.internal).expect("a controller");
         let (commands, commands_receiver) = mpsc::channel(64);
         let task = tokio::spawn(controller.run(commands_receiver, opening));
@@ -683,8 +702,9 @@ impl Harness {
             directory: parts.directory,
             agent: parts.agent,
             env: parts.env,
-            quota: parts.quota,
+            plan_usage: parts.plan_usage,
             health: parts.health,
+            cli_facts,
             commands,
             events: parts.events,
             seen: Vec::new(),
@@ -710,9 +730,13 @@ impl Harness {
 
     /// The next event. Fails the test after [`WAIT`], or when the controller stopped.
     pub(crate) async fn next(&mut self) -> AppEvent {
-        let event = tokio::time::timeout(WAIT, self.events.recv())
+        self.next_within(WAIT).await
+    }
+
+    async fn next_within(&mut self, wait: Duration) -> AppEvent {
+        let event = tokio::time::timeout(wait, self.events.recv())
             .await
-            .unwrap_or_else(|_| panic!("no event within {WAIT:?}; seen so far: {:#?}", self.seen))
+            .unwrap_or_else(|_| panic!("no event within {wait:?}; seen so far: {:#?}", self.seen))
             .expect("the controller stopped sending events");
         self.seen.push(event.clone());
         event
@@ -720,8 +744,18 @@ impl Harness {
 
     /// Reads events until one matches, and returns it.
     pub(crate) async fn until(&mut self, what: impl Fn(&AppEvent) -> bool) -> AppEvent {
+        self.until_within(WAIT, what).await
+    }
+
+    /// As [`Self::until`], giving each event up to `wait`: for a test that starts real
+    /// processes, which take their time while every other test runs beside it.
+    pub(crate) async fn until_within(
+        &mut self,
+        wait: Duration,
+        what: impl Fn(&AppEvent) -> bool,
+    ) -> AppEvent {
         loop {
-            let event = self.next().await;
+            let event = self.next_within(wait).await;
             if what(&event) {
                 return event;
             }
@@ -753,12 +787,12 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn the_harness_opens_with_a_status_line_and_exits() {
-        let mut harness = Harness::start().await;
-        harness
+    async fn the_cli_opens_with_a_header_and_bottom_line_and_exits() {
+        let mut driver = TestDriver::start().await;
+        driver
             .until(|event| matches!(event, AppEvent::Status { .. }))
             .await;
-        let events = harness.exit().await;
+        let events = driver.exit().await;
         assert!(matches!(events.last(), Some(AppEvent::Exit)), "{events:#?}");
     }
 }

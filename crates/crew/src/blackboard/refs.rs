@@ -1,22 +1,22 @@
-//! What a message cites: paths, cards, tests, and earlier records, read from its text by code,
-//! and whether a path falls under a card's glob.
+//! What a message cites: paths, tasks, tests, and earlier records, read from its text by code,
+//! and whether a path falls under a task's glob.
 
 use std::sync::LazyLock;
 
 use globset::{Glob, GlobMatcher};
 use regex::Regex;
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 
-static CARD: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(task|test|spike)-\d{3,}$").expect("a valid pattern"));
+static TASK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(task|test|experiment)-\d{3,}$").expect("a valid pattern"));
 static RECORD: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(m|D)-\d{3,}$").expect("a valid pattern"));
 static TEST: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)+$").expect("a valid pattern")
 });
 
-/// Paths, card ids, test names, and message or decision ids cited in `text`, in order, once
+/// Paths, task ids, test names, and message or decision ids cited in `text`, in order, once
 /// each.
 pub fn refs_in(text: &str) -> Vec<String> {
     let mut refs: Vec<String> = Vec::new();
@@ -39,7 +39,7 @@ fn cites(word: &str) -> bool {
     if word.is_empty() || word.contains("://") {
         return false;
     }
-    CARD.is_match(word) || RECORD.is_match(word) || TEST.is_match(word) || is_path(word)
+    TASK.is_match(word) || RECORD.is_match(word) || TEST.is_match(word) || is_path(word)
 }
 
 fn is_path(word: &str) -> bool {
@@ -64,13 +64,13 @@ fn is_path(word: &str) -> bool {
     }
 }
 
-pub fn card_in(reference: &str) -> Option<CardId> {
-    CARD.is_match(reference)
-        .then(|| CardId::new(reference).ok())
+pub fn task_in(reference: &str) -> Option<TaskId> {
+    TASK.is_match(reference)
+        .then(|| TaskId::new(reference).ok())
         .flatten()
 }
 
-/// Whether `path` (a path, or a glob itself) falls under `pattern`, a card's owned or read-only
+/// Whether `path` (a path, or a glob itself) falls under `pattern`, a task's owned or read-only
 /// glob.
 pub fn under(pattern: &str, path: &str) -> bool {
     let path = path.trim_start_matches("./");
@@ -110,7 +110,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn refs_are_paths_cards_tests_and_records() {
+    fn refs_are_paths_tasks_tests_and_records() {
         let refs = refs_in(
             "Should `src/limiter/mod.rs` use Redis? task-003 relies on it, and \
              limiter::tests::burst fails since m-004. See Cargo.toml, or https://example.com.",
@@ -137,7 +137,7 @@ mod tests {
         assert!(under("src/limiter/**", "src/limiter/**"));
         assert!(under("src/**", "src/limiter/*.rs"));
         assert!(!under("src/limiter/**", "src/api/*.rs"));
-        assert_eq!(card_in("task-004"), Some(CardId::new("task-004").unwrap()));
-        assert_eq!(card_in("src/task-004"), None);
+        assert_eq!(task_in("task-004"), Some(TaskId::new("task-004").unwrap()));
+        assert_eq!(task_in("src/task-004"), None);
     }
 }

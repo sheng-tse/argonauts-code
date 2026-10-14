@@ -1,4 +1,4 @@
-# What /model says about each model. Argonauts ships this file, and each day it fetches the
+# What /model says about each model. Argonauts Code ships this file, and each day it fetches the
 # copy on the main branch, checked against models.toml.sha256 next to it, so a model that
 # ships after a release still gets its description. Your own ~/.argonauts/models.toml wins.
 #
@@ -294,6 +294,13 @@ cache_read = 1.0
 
 [[price]]
 model = "gemini-3.6-flash"
+input = 0.75
+output = 3.75
+cache_read = 0.075
+
+# Its introductory price, checked on 2026-10-13.
+[[price]]
+model = "gemini-3.8-flash"
 input = 0.75
 output = 3.75
 cache_read = 0.075

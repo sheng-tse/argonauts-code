@@ -226,7 +226,7 @@ mod tests {
         let file = bottom_line::read(&text).unwrap();
         assert_eq!(file.right, ["plan-usage"]);
         assert_eq!(
-            file.plan_usage.shown_as,
+            file.plan_usage.r#as,
             argonauts_core::settings::bottom_line::PlanUsageAs::Left
         );
         let err = save(

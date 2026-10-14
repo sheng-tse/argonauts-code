@@ -13,7 +13,7 @@ use crate::theme::{Role, Theme};
 pub struct AssistantMessage {
     pub markdown: String,
     /// Shown in the transcript overlay, like `01:07 PM claude-haiku-4-5`. In a crew it names the
-    /// vendor too.
+    /// agent too.
     pub stamp: Option<String>,
 }
 

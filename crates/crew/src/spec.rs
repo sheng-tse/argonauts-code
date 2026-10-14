@@ -6,16 +6,16 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use argonauts_core::events::session::{InputPart, InputPartKind};
-use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::session_runner::{
+    Access, RunnerKind, SandboxMode, SandboxProfile, SessionLimits, SessionShell, SessionSpec,
+};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxChoice;
 use argonauts_core::settings::sessions::{FanoutSwitch, NativeFanout, SessionLifetime};
 use argonauts_core::settings::shell::RoleShell;
 use argonauts_core::steps::StepName;
-use argonauts_core::worker::{
-    Access, SandboxMode, SandboxProfile, SessionLimits, SessionShell, SessionSpec, WorkerKind,
-};
-use argonauts_core::{CardId, RunId};
+use argonauts_core::{RunId, TaskId};
 
 use crate::error::{EngineError, EngineResult};
 
@@ -25,20 +25,20 @@ pub struct SpecInput {
     pub run: RunId,
     pub key: SessionKey,
     pub role: RoleName,
-    pub worker: WorkerRef,
-    pub kind: WorkerKind,
-    pub card: Option<CardId>,
+    pub worker: ModelRef,
+    pub kind: RunnerKind,
+    pub task: Option<TaskId>,
     pub step: Option<StepName>,
     pub access: Access,
     pub workdir: PathBuf,
     pub session_dir: PathBuf,
     pub prompt: Vec<InputPart>,
     pub json_schema: Option<Value>,
-    /// The vendor session to resume.
+    /// The CLI session to resume.
     pub resume: Option<String>,
     pub lifetime: SessionLifetime,
     pub limits: SessionLimits,
-    /// Required for `Build` and `Spike`; the worker refuses them without it.
+    /// Required for `Build` and `Experiment`; the worker refuses them without it.
     pub goal_sha256: Option<String>,
     pub status_file: Option<PathBuf>,
     /// Blind reviewers and judges never get native fan-out, nor the CLI's own MCP servers,
@@ -55,7 +55,7 @@ pub struct SpecInput {
 }
 
 pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec> {
-    let builds = matches!(input.access, Access::Build | Access::Spike);
+    let builds = matches!(input.access, Access::Build | Access::Experiment);
     if builds && input.goal_sha256.is_none() {
         return Err(EngineError::Refused(
             "a build or experiment session needs the approved goal's hash".to_owned(),
@@ -63,7 +63,7 @@ pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec>
     }
     let temp = input.session_dir.join("tmp");
     let mut sandbox = sandbox(settings, input.access, &input.workdir, &temp)?;
-    if input.kind == WorkerKind::Endpoint {
+    if input.kind == RunnerKind::Endpoint {
         // An endpoint runs no commands, so there is nothing to sandbox.
         sandbox.mode = SandboxMode::None;
     }
@@ -83,12 +83,12 @@ pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec>
     };
     Ok(SessionSpec {
         run: Some(input.run),
-        card: input.card,
+        task: input.task,
         key: input.key,
         role: input.role,
         step: input.step,
         effort: effort(settings, input.role, &input.worker),
-        worker: with_model(settings, &input.worker),
+        model: with_model(settings, &input.worker),
         access: input.access,
         workdir: input.workdir,
         session_dir: input.session_dir,
@@ -99,6 +99,7 @@ pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec>
         }),
         json_schema: input.json_schema,
         resume: input.resume,
+        fork: false,
         lifetime: input.lifetime,
         // Long sessions stay open for steering and deliveries; a one-shot answer must end.
         keep_input_open: builds,
@@ -114,9 +115,9 @@ pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec>
         status_file: input.status_file,
         env: Vec::new(),
         asking: None,
-        cli_workflow: argonauts_core::worker::CliWorkflow {
+        cli_workflow: argonauts_core::session_runner::CliWorkflow {
             background_off: !own_workflows,
-            ..argonauts_core::worker::CliWorkflow::default()
+            ..argonauts_core::session_runner::CliWorkflow::default()
         },
         shell,
     })
@@ -230,7 +231,7 @@ fn may_run_own_workflows(settings: &Settings, input: &SpecInput) -> bool {
     !input.blind && (input.own_workflow || settings.crew.worker_workflows)
 }
 
-/// The parts go out concatenated, so each but the last ends in a blank line. Otherwise a card's
+/// The parts go out concatenated, so each but the last ends in a blank line. Otherwise a task's
 /// last line and the goal's first run together, as `Kind: the whole changeAdd median`.
 fn separated(mut parts: Vec<InputPart>) -> Vec<InputPart> {
     let last = parts.len().saturating_sub(1);
@@ -244,8 +245,8 @@ fn separated(mut parts: Vec<InputPart>) -> Vec<InputPart> {
     parts
 }
 
-/// `roles.<role>.effort`, else `agents.<harness>.effort`, else unset.
-pub fn effort(settings: &Settings, role: RoleName, worker: &WorkerRef) -> Option<String> {
+/// `roles.<role>.effort`, else `agents.<cli>.effort`, else unset.
+pub fn effort(settings: &Settings, role: RoleName, worker: &ModelRef) -> Option<String> {
     settings
         .roles
         .get(&role)
@@ -253,22 +254,22 @@ pub fn effort(settings: &Settings, role: RoleName, worker: &WorkerRef) -> Option
         .or_else(|| {
             settings
                 .agents
-                .get(&worker.worker)
+                .get(&worker.agent)
                 .and_then(|agent| agent.effort.clone())
         })
 }
 
 /// The worker with its model filled in: its own reference's model, else
-/// `agents.<harness>.model`.
-pub fn with_model(settings: &Settings, worker: &WorkerRef) -> WorkerRef {
+/// `agents.<cli>.model`.
+pub fn with_model(settings: &Settings, worker: &ModelRef) -> ModelRef {
     if worker.model.is_some() {
         return worker.clone();
     }
     let model = settings
         .agents
-        .get(&worker.worker)
+        .get(&worker.agent)
         .and_then(|agent| agent.model.clone());
-    WorkerRef::new(worker.worker.clone(), model)
+    ModelRef::new(worker.agent.clone(), model)
 }
 
 /// Writable: the worktree and temp for building access, nothing for read-only. Network per
@@ -282,11 +283,11 @@ pub fn sandbox(
     let mode = match settings.sandbox.mode {
         SandboxChoice::Os => SandboxMode::Os,
         SandboxChoice::Container => SandboxMode::Container,
-        // Your own safety key; the hard limits flag it at every checkpoint.
+        // Your own safety key; the hard limits flag it at every approval.
         SandboxChoice::Tool | SandboxChoice::None => SandboxMode::None,
     };
     let mut writable = vec![temp.to_path_buf()];
-    if matches!(access, Access::Build | Access::Spike) {
+    if matches!(access, Access::Build | Access::Experiment) {
         writable.insert(0, workdir.to_path_buf());
         for extra in &settings.sandbox.extra_writable {
             writable.push(extra_path(extra, workdir)?);
@@ -338,11 +339,11 @@ mod tests {
 
     fn settings() -> Settings {
         let mut settings = Settings::default();
-        let owner = RoleSettings {
+        let worker = RoleSettings {
             effort: Some("high".to_owned()),
             ..RoleSettings::default()
         };
-        settings.roles.insert(RoleName::Worker, owner);
+        settings.roles.insert(RoleName::Worker, worker);
         let codex = AgentSettings {
             effort: Some("low".to_owned()),
             model: Some("gpt-x".to_owned()),
@@ -377,10 +378,10 @@ mod tests {
     }
 
     #[test]
-    fn effort_is_the_roles_then_the_harnesss_then_unset() {
+    fn effort_is_the_roles_then_the_clis_then_unset() {
         let settings = settings();
-        let codex = WorkerRef::new("codex", None);
-        let claude = WorkerRef::new("claude-code", None);
+        let codex = ModelRef::new("codex", None);
+        let claude = ModelRef::new("claude-code", None);
         assert_eq!(
             effort(&settings, RoleName::Worker, &codex).as_deref(),
             Some("high")
@@ -393,18 +394,18 @@ mod tests {
     }
 
     #[test]
-    fn the_model_is_the_references_own_else_the_harnesss() {
+    fn the_model_is_the_references_own_else_the_clis() {
         let settings = settings();
-        let own = WorkerRef::new("codex", Some("gpt-y".to_owned()));
+        let own = ModelRef::new("codex", Some("gpt-y".to_owned()));
         assert_eq!(with_model(&settings, &own), own);
         assert_eq!(
-            with_model(&settings, &WorkerRef::new("codex", None))
+            with_model(&settings, &ModelRef::new("codex", None))
                 .model
                 .as_deref(),
             Some("gpt-x")
         );
         assert_eq!(
-            with_model(&settings, &WorkerRef::new("agy", None)).model,
+            with_model(&settings, &ModelRef::new("agy", None)).model,
             None
         );
     }
@@ -415,9 +416,9 @@ mod tests {
             run: RunId::new("run-01").unwrap(),
             key: SessionKey::parse("s-001").unwrap(),
             role: RoleName::Reviewer,
-            worker: WorkerRef::new("claude-code", None),
-            kind: WorkerKind::Harness,
-            card: None,
+            worker: ModelRef::new("claude-code", None),
+            kind: RunnerKind::Cli,
+            task: None,
             step: None,
             access: Access::ReadOnly,
             workdir: PathBuf::from("/w"),
@@ -539,7 +540,7 @@ mod tests {
         assert_eq!(with_shell_rules(parts.clone(), &SessionShell::None), parts);
     }
 
-    /// A workflow's step may give a review to a worker seat; reading a change to judge it is
+    /// A workflow's step may give a review to a worker; reading a change to judge it is
     /// what earns the checks' shell, whatever the role is called.
     #[test]
     fn a_session_that_reviews_a_change_gets_the_checks_whatever_its_role() {
@@ -563,9 +564,9 @@ mod tests {
             run: RunId::new("run-01").unwrap(),
             key: SessionKey::parse("s-001").unwrap(),
             role,
-            worker: WorkerRef::new("claude-code", None),
-            kind: WorkerKind::Harness,
-            card: Some(CardId::new("task-a").unwrap()),
+            worker: ModelRef::new("claude-code", None),
+            kind: RunnerKind::Cli,
+            task: Some(TaskId::new("task-a").unwrap()),
             step: None,
             access,
             workdir: PathBuf::from("/w"),

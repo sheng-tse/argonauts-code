@@ -103,7 +103,7 @@ fn a_host_not_on_the_list_is_refused() {
     let (upstream, contacted) = echo_server();
     let lookups = Arc::new(AtomicUsize::new(0));
     let proxy = Proxy::with_resolver(to_loopback(upstream, lookups.clone())).unwrap();
-    let url = proxy.session_url(&Allowlist::for_harness("claude-code", &[]).unwrap());
+    let url = proxy.session_url(&Allowlist::for_cli("claude-code", &[]).unwrap());
     let auth = auth_header(&url);
 
     for target in [
@@ -143,7 +143,7 @@ fn a_tunnel_needs_its_lists_key() {
     let target = format!("api.example.test:{upstream}");
     let allow = Allowlist::parse([target.as_str()]).unwrap();
     let url = proxy.session_url(&allow);
-    let other = proxy.session_url(&Allowlist::for_harness("codex", &[]).unwrap());
+    let other = proxy.session_url(&Allowlist::for_cli("codex", &[]).unwrap());
     assert_ne!(url, other);
 
     let wrong_key = "Proxy-Authorization: Basic YXJnb25hdXRzOm5vcGU=\r\n";
@@ -403,7 +403,7 @@ fn a_local_endpoint_is_reached_on_loopback_at_exactly_its_port() {
     let (local, contacted) = echo_server();
     let (other, other_contacted) = echo_server();
     let proxy = Proxy::start().unwrap();
-    let allow = Allowlist::for_harness("opencode", &[])
+    let allow = Allowlist::for_cli("opencode", &[])
         .unwrap()
         .with_local_endpoints([("LocalHost".to_owned(), local)]);
     let url = proxy.session_url(&allow);

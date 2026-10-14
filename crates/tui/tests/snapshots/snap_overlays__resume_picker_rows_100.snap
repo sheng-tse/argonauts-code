@@ -2,35 +2,13 @@
 source: crates/tui/tests/snap_overlays.rs
 expression: "screen(&mut view, width, height, &state)"
 ---
-Resume a run
-Waiting runs never expire, so resume it or stop it                                            3 runs
-
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│     Run     Title                        State      Stopped at          When  Spent  Sessions    │
-│ ❯ ◆ run-03  Add a --json flag to export  ◆ waiting  merge approval    2d ago  $0.46         2    │
-│     run-02  Fix the flaky export test    ✗ crashed  merge approval    3h ago  $0.46         2    │
-│     run-01  Rename the CSV writer        ✔ merged   merge approval  just now  $0.46         2    │
+│ Resume a run · in ~/code/export                                                                  │
 │                                                                                                  │
+│     from              first prompt or title                             last used     length     │
+│ ❯ ◆ Argonauts Code    Add a --json flag to export                       Sep 28        waiting    │
+│     Argonauts Code    Fix the flaky export test                         3h ago        stopped    │
+│     Argonauts Code    Rename the CSV writer                             just now      merged     │
 │                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
+│ ↑↓ pick · enter resumes it · → agents · x stops it · d diff · r raw · / search · esc             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-↑↓ select · ⏎ resume · → agents · x stop · d diff · r raw · / search · esc back

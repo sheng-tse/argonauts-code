@@ -1,6 +1,7 @@
-//! The resume picker: earlier conversations with the lead, parked or stopped runs, and the main
-//! agent CLI's own sessions for this repo, newest first, with where each stopped, when, what it
-//! spent, and what resuming restarts. Parked runs never expire.
+//! The resume picker: one list of earlier conversations, waiting or stopped runs, and the CLIs'
+//! own sessions for this folder, newest first, with where each is from, when it was last used,
+//! and how long it is. Enter carries one on, `b` branches from it, and `a` lists every folder's
+//! sessions. Waiting runs never expire.
 //!
 //! Each run's agents' sessions fold under it, and → shows them: a row per session, with the
 //! helpers its CLI started inside it counted on that row. A session carries on through its CLI's
@@ -10,47 +11,63 @@
 
 use std::collections::HashSet;
 
+use argonauts_core::RunId;
 use argonauts_core::agent_sessions::{AgentSession, AgentSessionRef, Resume};
 use argonauts_core::api::{DiffScope, RunState as RunPhase, RunSummary};
-use argonauts_core::app::{ChatSummary, UiCommand, ViewData, ViewRequest};
+use argonauts_core::app::{ConversationSummary, UiCommand, ViewData, ViewRequest};
+use argonauts_core::cli_sessions::{CliSession, CliSessionRef};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::input::{ResumeTarget, SlashCommand};
-use argonauts_core::names::ChatId;
-use argonauts_core::vendor_sessions::{VendorSession, VendorSessionRef};
-use argonauts_core::{RunId, Spend};
+use argonauts_core::names::ConversationId;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use ratatui::widgets::{Clear, Widget};
 use time::OffsetDateTime;
 
-use crate::format::{WallClock, vendor_label};
+use crate::format::{WallClock, agent_label};
+use crate::kit::State;
 use crate::state::AppState;
 use crate::text::sanitize_line;
 use crate::theme::{Role, Theme};
-use crate::widgets::State;
 
-use super::list::{self, Column, ListState, fit_columns};
-use super::panes::{self, Footer, Header, Marks, Side};
-use super::states;
+use super::list::{self, ListState};
+use super::panes::{self, Marks};
 use super::{View, ViewCtx, ViewOutcome};
 
-/// Cells between columns.
+/// Cells kept clear after a column's text.
 const GAP: usize = 2;
+
+/// The cells before a row's columns: the selection mark and the needs-you mark, a blank after
+/// each.
+const MARGIN: usize = 4;
+
+/// The columns' widths. The title takes what's left of the row, up to [`TITLE_MOST`]. Where a
+/// row is from holds the longest of the names, a CLI's or the app's own.
+const FROM: usize = 18;
+const LAST_USED: usize = 14;
+const LENGTH: usize = 10;
+const TITLE_MOST: usize = 62;
+const TITLE_LEAST: usize = 16;
+
+/// The box's own rows: its two borders, the title and the blank under it, the heading, and the
+/// blank and the keys under the rows.
+const AROUND: usize = 7;
 
 /// How much of a CLI session's id the list shows, unless two listed share that start.
 const SHORT_ID: usize = 8;
 
-/// The least of a title the list keeps while agents' sessions show, enough for a session's
-/// role, card, and helpers, before the column of who ran it gives way.
-const AGENT_TITLE_MIN: usize = 30;
+/// A session its CLI wrote to this lately may still be open in it, so Enter asks first.
+const MAYBE_OPEN: time::Duration = time::Duration::minutes(2);
 
 #[derive(Debug)]
 pub struct ResumePicker {
     pub runs: Vec<RunSummary>,
-    pub chats: Vec<ChatSummary>,
+    pub conversations: Vec<ConversationSummary>,
     /// The main agent CLI's own sessions.
-    pub sessions: Vec<VendorSession>,
+    pub sessions: Vec<CliSession>,
     /// What the Id column shows for each session, such as `codex:019a5770`.
     session_ids: Vec<String>,
     /// The agents' sessions of the runs read so far, each run's in the order they started.
@@ -70,12 +87,16 @@ pub struct ResumePicker {
     pub clock: WallClock,
     /// The run a first `x` asked to stop.
     confirm_stop: Option<RunId>,
+    /// The session a first Enter warned may still be open in its CLI.
+    confirm_open: Option<CliSessionRef>,
+    /// The CLIs' sessions listed are every folder's.
+    every_folder: bool,
     page: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Row {
-    Chat(usize),
+    Conversation(usize),
     Run(usize),
     Session(usize),
     /// Under its run.
@@ -85,29 +106,32 @@ enum Row {
 /// A row by what it lists, which a fresh list or a new filter keeps selected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Picked {
-    Chat(ChatId),
+    Conversation(ConversationId),
     Run(RunId),
-    Session(VendorSessionRef),
+    Session(CliSessionRef),
     Agent(AgentSessionRef),
 }
 
 impl ResumePicker {
     pub fn new(runs: Vec<RunSummary>) -> Self {
-        Self::with_chats(runs, Vec::new())
+        Self::with_conversations(runs, Vec::new())
     }
 
-    pub fn with_chats(runs: Vec<RunSummary>, chats: Vec<ChatSummary>) -> Self {
-        Self::listing(runs, chats, Vec::new())
+    pub fn with_conversations(
+        runs: Vec<RunSummary>,
+        conversations: Vec<ConversationSummary>,
+    ) -> Self {
+        Self::listing(runs, conversations, Vec::new())
     }
 
     pub fn listing(
         runs: Vec<RunSummary>,
-        chats: Vec<ChatSummary>,
-        sessions: Vec<VendorSession>,
+        conversations: Vec<ConversationSummary>,
+        sessions: Vec<CliSession>,
     ) -> Self {
         let mut picker = Self {
             runs,
-            chats,
+            conversations,
             session_ids: short_ids(&sessions),
             sessions,
             agents: Vec::new(),
@@ -119,6 +143,8 @@ impl ResumePicker {
             list: ListState::default(),
             clock: WallClock::local(),
             confirm_stop: None,
+            confirm_open: None,
+            every_folder: false,
             page: 1,
         };
         picker.rows = picker.merged();
@@ -138,11 +164,14 @@ impl ResumePicker {
     /// matches them, and a row that doesn't match what you typed is left out.
     fn merged(&self) -> Vec<Row> {
         let words = search_words(&self.filter);
-        let mut rows = Vec::with_capacity(self.runs.len() + self.chats.len() + self.sessions.len());
-        let (mut chat, mut run, mut session) = (0, 0, 0);
+        let mut rows =
+            Vec::with_capacity(self.runs.len() + self.conversations.len() + self.sessions.len());
+        let (mut conversation, mut run, mut session) = (0, 0, 0);
         loop {
             let heads = [
-                self.chats.get(chat).map(|c| (c.updated, Row::Chat(chat))),
+                self.conversations
+                    .get(conversation)
+                    .map(|c| (c.updated, Row::Conversation(conversation))),
                 self.runs.get(run).map(|r| (r.updated, Row::Run(run))),
                 self.sessions
                     .get(session)
@@ -156,7 +185,7 @@ impl ResumePicker {
                 break;
             };
             match next {
-                Row::Chat(_) => chat += 1,
+                Row::Conversation(_) => conversation += 1,
                 Row::Run(_) => run += 1,
                 Row::Session(_) => session += 1,
                 Row::Agent(_) => {}
@@ -202,12 +231,18 @@ impl ResumePicker {
     /// What a row is found by: its id and title, what it ran on, and an agent's run too.
     fn search_text(&self, row: Row) -> String {
         match row {
-            Row::Chat(i) => {
-                let chat = &self.chats[i];
-                let worker = chat.worker.as_ref().map_or_else(String::new, |worker| {
-                    format!("{worker} {}", vendor_label(&worker.worker))
-                });
-                format!("{} {} {worker}", chat.chat, chat.title)
+            Row::Conversation(i) => {
+                let conversation = &self.conversations[i];
+                let worker = conversation
+                    .worker
+                    .as_ref()
+                    .map_or_else(String::new, |worker| {
+                        format!("{worker} {}", agent_label(&worker.agent))
+                    });
+                format!(
+                    "{} {} {worker}",
+                    conversation.conversation, conversation.title
+                )
             }
             Row::Run(i) => {
                 let run = &self.runs[i];
@@ -217,9 +252,9 @@ impl ResumePicker {
             Row::Session(i) => {
                 let session = &self.sessions[i];
                 let branch = session.branch.as_deref().unwrap_or_default();
-                let vendor = vendor_label(&session.vendor.0);
+                let cli = agent_label(&session.agent_id.0);
                 let id = &self.session_ids[i];
-                format!("{id} {} {vendor} {branch}", session.title)
+                format!("{id} {} {cli} {branch}", session.title)
             }
             Row::Agent(a) => {
                 let agent = &self.agents[a];
@@ -229,7 +264,7 @@ impl ResumePicker {
                     agent.role.as_str().to_owned(),
                     agent.label.clone().unwrap_or_default(),
                     agent.worker.to_string(),
-                    vendor_label(&agent.worker.worker),
+                    agent_label(&agent.worker.agent),
                     agent.last_message.clone().unwrap_or_default(),
                     agent.helper_counts(),
                 ]
@@ -240,10 +275,23 @@ impl ResumePicker {
 
     fn picked(&self, row: Row) -> Picked {
         match row {
-            Row::Chat(i) => Picked::Chat(self.chats[i].chat.clone()),
+            Row::Conversation(i) => {
+                Picked::Conversation(self.conversations[i].conversation.clone())
+            }
             Row::Run(i) => Picked::Run(self.runs[i].run.clone()),
             Row::Session(i) => Picked::Session(self.sessions[i].reference()),
             Row::Agent(a) => Picked::Agent(self.agents[a].reference()),
+        }
+    }
+
+    /// A row's kind and id, such as `agent s-001`, which tests tell rows apart by.
+    #[cfg(test)]
+    fn named(&self, row: Row) -> String {
+        match row {
+            Row::Conversation(i) => format!("conversation {}", self.conversations[i].conversation),
+            Row::Run(i) => format!("run {}", self.runs[i].run),
+            Row::Session(i) => format!("session {}", self.session_ids[i]),
+            Row::Agent(a) => format!("agent {}", self.agents[a].session),
         }
     }
 
@@ -267,14 +315,14 @@ impl ResumePicker {
         }
     }
 
-    fn selected_chat(&self) -> Option<&ChatSummary> {
+    fn selected_conversation(&self) -> Option<&ConversationSummary> {
         match self.selected_row()? {
-            Row::Chat(i) => self.chats.get(i),
+            Row::Conversation(i) => self.conversations.get(i),
             _ => None,
         }
     }
 
-    fn selected_session(&self) -> Option<(&VendorSession, &str)> {
+    fn selected_session(&self) -> Option<(&CliSession, &str)> {
         match self.selected_row()? {
             Row::Session(i) => Some((self.sessions.get(i)?, self.session_ids.get(i)?)),
             _ => None,
@@ -288,235 +336,287 @@ impl ResumePicker {
         }
     }
 
-    /// More than runs, so a Kind column tells them apart.
+    /// More than runs, so the list is of conversations.
     fn mixed(&self) -> bool {
-        !self.chats.is_empty() || !self.sessions.is_empty() || !self.agents.is_empty()
+        !self.conversations.is_empty() || !self.sessions.is_empty() || !self.agents.is_empty()
     }
 
-    fn columns(&self, width: usize, names: &DisplayNames, theme: &Theme) -> Vec<Column> {
-        let now = self.clock.now();
-        let cells = |cell: &dyn Fn(Row) -> String| -> Vec<String> {
-            self.rows.iter().map(|row| cell(*row)).collect()
-        };
-        let mixed = self.mixed();
-        let agents_shown = self.rows.iter().any(|row| matches!(row, Row::Agent(_)));
-        let mut columns = Vec::new();
-        if mixed {
-            columns.push(Column::new("Kind", cells(&|row| self.kind(row).to_owned())).keep(6));
-        }
-        columns.extend([
-            Column::new(
-                if mixed { "Id" } else { "Run" },
-                cells(&|row| match row {
-                    Row::Run(i) => sanitize_line(self.runs[i].run.as_str()).into_owned(),
-                    Row::Chat(i) => sanitize_line(self.chats[i].chat.as_str()).into_owned(),
-                    Row::Session(i) => sanitize_line(&self.session_ids[i]).into_owned(),
-                    // Indented under its run.
-                    Row::Agent(a) => format!("  {}", clean(self.agents[a].session.as_str())),
-                }),
-            ),
-            {
-                let title = Column::new(
-                    "Title",
-                    cells(&|row| match row {
-                        Row::Run(i) => clean(&self.runs[i].title),
-                        Row::Chat(i) => clean(&self.chats[i].title),
-                        Row::Session(i) => clean(&self.sessions[i].title),
-                        Row::Agent(a) => agent_title(&self.agents[a]),
-                    }),
-                );
-                if agents_shown {
-                    title.flex_min(AGENT_TITLE_MIN)
-                } else {
-                    title.flex()
-                }
-            },
-            Column::new(
-                "State",
-                cells(&|row| match row {
-                    Row::Run(i) => state_cell(self.runs[i].state, theme),
-                    Row::Agent(a) => agent_state(&self.agents[a]).to_owned(),
-                    _ => String::new(),
-                }),
-            )
-            .keep(5),
-            Column::new(
-                if mixed { "Details" } else { "Stopped at" },
-                cells(&|row| match row {
-                    Row::Run(i) => run_details(&self.runs[i]),
-                    Row::Chat(i) => chat_details(&self.chats[i], names),
-                    Row::Session(i) => session_details(&self.sessions[i]),
-                    Row::Agent(a) => sanitize_line(&names.worker(&self.agents[a].worker))
-                        .trim()
-                        .to_owned(),
-                }),
-            )
-            .keep(1),
-            Column::new(
-                "When",
-                cells(&|row| match row {
-                    Row::Run(i) => ago(self.runs[i].updated, now),
-                    Row::Chat(i) => ago(self.chats[i].updated, now),
-                    Row::Session(i) => ago(self.sessions[i].updated, now),
-                    Row::Agent(a) => ago(self.agents[a].updated, now),
-                }),
-            )
-            .numeric()
-            .keep(4),
-            Column::new(
-                "Spent",
-                cells(&|row| match row {
-                    Row::Run(i) => spent(&self.runs[i].spent),
-                    _ => String::new(),
-                }),
-            )
-            .numeric()
-            .keep(3),
-            Column::new(
-                "Sessions",
-                cells(&|row| match row {
-                    Row::Run(i) => self.runs[i].sessions_to_resume.to_string(),
-                    _ => String::new(),
-                }),
-            )
-            .numeric()
-            .keep(2),
-        ]);
-        if mixed {
-            // Conversations and CLI sessions have no state, spend, or sessions; a column none
-            // of the rows fills gives its room to the titles.
-            columns.retain(|column| {
-                column.heading == "Title" || column.cells.iter().any(|cell| !cell.is_empty())
-            });
-        }
-        fit_columns(columns, width, GAP)
-    }
-
-    fn kind(&self, row: Row) -> &'static str {
+    /// Where a row is from: Argonauts Code's own conversations and runs, or a CLI by its name
+    /// and color.
+    fn from(&self, row: Row, names: &DisplayNames, theme: &Theme) -> (String, Style) {
+        let cli = |id: &str| names.cli(&sanitize_line(id));
         match row {
-            Row::Run(_) => "run",
-            Row::Chat(_) => "chat",
-            Row::Session(_) => "session",
-            Row::Agent(_) => "agent",
+            Row::Conversation(_) | Row::Run(_) => (
+                "Argonauts Code".to_owned(),
+                theme.style(Role::Text).add_modifier(Modifier::BOLD),
+            ),
+            Row::Session(i) => {
+                let id = self.sessions[i].agent_id.0.as_str();
+                (cli(id), theme.style(Role::for_cli(id)))
+            }
+            Row::Agent(a) => {
+                let id = self.agents[a].worker.agent.as_str();
+                (cli(id), theme.style(Role::for_cli(id)))
+            }
         }
     }
 
+    fn title(&self, row: Row) -> String {
+        match row {
+            Row::Run(i) => clean(&self.runs[i].title),
+            Row::Conversation(i) => clean(&self.conversations[i].title),
+            Row::Session(i) => {
+                let session = &self.sessions[i];
+                let title = clean(&session.title);
+                // Among every folder's sessions, each says where it ran.
+                match session.folder.file_name().filter(|_| self.every_folder) {
+                    Some(folder) => format!("{title} · in {}", clean(&folder.to_string_lossy())),
+                    None => title,
+                }
+            }
+            // Indented under its run.
+            Row::Agent(a) => format!("  {}", agent_title(&self.agents[a])),
+        }
+    }
+
+    fn updated(&self, row: Row) -> OffsetDateTime {
+        match row {
+            Row::Run(i) => self.runs[i].updated,
+            Row::Conversation(i) => self.conversations[i].updated,
+            Row::Session(i) => self.sessions[i].updated,
+            Row::Agent(a) => self.agents[a].updated,
+        }
+    }
+
+    /// How long a conversation or a session is, or the state of a run or an agent's session.
+    fn length(&self, row: Row, theme: &Theme) -> (String, Style) {
+        let dim = theme.style(Role::Dim);
+        match row {
+            Row::Conversation(i) => {
+                let conversation = &self.conversations[i];
+                let length = match (conversation.turns, conversation.runs) {
+                    (0, runs) => counted(runs, "run"),
+                    (turns, _) => counted(turns, "turn"),
+                };
+                (length, dim)
+            }
+            Row::Session(i) => (counted(self.sessions[i].turns, "turn"), dim),
+            Row::Run(i) => {
+                let state = self.runs[i].state;
+                (state_word(state).to_owned(), theme.style(state_role(state)))
+            }
+            Row::Agent(a) => (agent_state(&self.agents[a]).to_owned(), dim),
+        }
+    }
+
+    /// The heading, then a row for each listed, `width` cells wide at most.
     fn lines(&self, width: usize, names: &DisplayNames, theme: &Theme) -> Vec<Line<'static>> {
         let marks = Marks::for_theme(theme);
         let dim = theme.style(Role::Dim);
-        // The selection mark and the ◆ slot lead every row.
-        let lead = 4;
-        let columns = self.columns(width.saturating_sub(lead), names, theme);
-        let mut heading = vec![Span::raw(" ".repeat(lead))];
-        for (i, column) in columns.iter().enumerate() {
-            if i > 0 {
-                heading.push(Span::raw(" ".repeat(GAP)));
-            }
-            heading.push(Span::styled(column.cell(column.heading), dim));
-        }
-        let mut lines = vec![Line::from(heading)];
+        let picked = theme.style(Role::Question);
+        let title_width = width
+            .saturating_sub(MARGIN + FROM + LAST_USED + LENGTH)
+            .clamp(TITLE_LEAST, TITLE_MOST);
+        let mut lines = vec![Line::from(vec![
+            Span::raw(" ".repeat(MARGIN)),
+            Span::styled(cell("from", FROM), dim),
+            Span::styled(cell("first prompt or title", title_width), dim),
+            Span::styled(cell("last used", LAST_USED), dim),
+            Span::styled("length", dim),
+        ])];
         for (i, row) in self.rows.iter().enumerate() {
             let selected = i == self.list.selected;
-            let run = match *row {
-                Row::Run(r) => Some(&self.runs[r]),
-                _ => None,
+            let remind = matches!(*row, Row::Run(r) if self.runs[r].remind);
+            let (from, from_style) = self.from(*row, names, theme);
+            let (length, length_style) = self.length(*row, theme);
+            let title_style = if selected {
+                picked
+            } else {
+                theme.style(Role::Text)
             };
-            let mut spans = vec![
+            lines.push(Line::from(vec![
                 if selected {
-                    Span::styled(format!("{} ", marks.selected), theme.style(Role::Card))
+                    Span::styled(format!("{} ", marks.selected), picked)
                 } else {
                     Span::raw("  ")
                 },
-                if run.is_some_and(|run| run.remind) {
+                if remind {
                     Span::styled(marks.needs_you, theme.style(Role::StateNeedsYou))
                 } else {
                     Span::raw(" ")
                 },
                 Span::raw(" "),
-            ];
-            for (c, column) in columns.iter().enumerate() {
-                if c > 0 {
-                    spans.push(Span::raw(" ".repeat(GAP)));
-                }
-                let style = match (column.heading, run) {
-                    ("Title", _) if selected => theme.style(Role::Card),
-                    ("Title", _) => theme.style(Role::Text),
-                    ("State", Some(run)) => theme.style(state_role(run.state)),
-                    _ => dim,
-                };
-                spans.push(Span::styled(column.cell(&column.cells[i]), style));
-            }
-            lines.push(Line::from(spans));
+                Span::styled(cell(&from, FROM), from_style),
+                Span::styled(cell(&self.title(*row), title_width), title_style),
+                Span::styled(
+                    cell(&last_used(self.updated(*row), &self.clock), LAST_USED),
+                    dim,
+                ),
+                // The last column, so a state longer than a length runs on.
+                Span::styled(length, length_style),
+            ]));
         }
         if self.rows.is_empty() {
             let text = if self.filter.trim().is_empty() {
-                "  No waiting or stopped runs"
+                "    Nothing to resume here yet"
             } else {
-                "  Nothing matches"
+                "    Nothing matches"
             };
             lines.push(Line::from(Span::styled(text, dim)));
         }
         lines
     }
 
-    /// The keys for the row selected. While you type a search, letters are the search's, so
-    /// only the keys without them show.
-    fn footer(&self) -> Footer {
+    /// `Resume a conversation · in ~/work/shop`, then what you search for and which rows show
+    /// when they don't all fit.
+    fn title_line(&self, folder: &str, shown: usize, theme: &Theme) -> Line<'static> {
+        let title = if self.mixed() || self.runs.is_empty() {
+            "Resume a conversation"
+        } else {
+            "Resume a run"
+        };
+        let mut rest = match clean(folder) {
+            _ if self.every_folder => " · in every folder".to_owned(),
+            folder if folder.is_empty() => String::new(),
+            folder => format!(" · in {folder}"),
+        };
+        if self.filtering || !self.filter.is_empty() {
+            rest.push_str(&format!(" · search: {}", sanitize_line(&self.filter)));
+        }
+        if shown < self.rows.len() {
+            let first = self.list.offset + 1;
+            let last = self.list.offset + shown;
+            rest.push_str(&format!(" · {first}-{last} of {}", self.rows.len()));
+        }
+        Line::from(vec![
+            Span::styled(title, theme.style(Role::Text).add_modifier(Modifier::BOLD)),
+            Span::styled(rest, theme.style(Role::Dim)),
+        ])
+    }
+
+    /// The keys for the row selected, each with how long it stays as the row gets narrow.
+    /// While you type a search, letters are the search's, so only the keys without them show.
+    fn keys(&self) -> Vec<(String, u8)> {
         if let Some(run) = &self.confirm_stop {
-            let again = format!("x again to stop {}", sanitize_line(run.as_str()));
-            return Footer::hints(&[(&again, 0), ("esc to keep", 0)]);
+            let again = format!("x again stops {}", sanitize_line(run.as_str()));
+            return vec![(again, 9), ("esc keeps it".to_owned(), 9)];
+        }
+        if let Some(session) = &self.confirm_open {
+            let cli = agent_label(&sanitize_line(&session.agent_id.0));
+            return vec![
+                (
+                    format!("{cli} wrote to it just now, so it may still be open there"),
+                    9,
+                ),
+                ("enter continues it here anyway".to_owned(), 8),
+                ("b branches from it instead".to_owned(), 7),
+                ("esc".to_owned(), 9),
+            ];
         }
         let letters = !self.filtering;
-        let mut hints = vec![("↑↓ select", 0)];
+        let mut keys: Vec<(&str, u8)> = vec![("↑↓ pick", 9)];
         match self.selected_row() {
             Some(Row::Agent(a)) => match &self.agents[a].resume {
-                Resume::Ready => hints.push(("⏎ continue", 6)),
-                Resume::Cannot { .. } => hints.push(("⏎ transcript", 6)),
+                Resume::Ready => keys.push(("enter continues it", 8)),
+                Resume::Cannot { .. } => keys.push(("enter shows its transcript", 8)),
                 Resume::Working | Resume::RunOwns => {}
             },
             Some(Row::Run(r)) => {
                 let run = &self.runs[r];
                 let open = self.open.contains(&run.run);
-                if run.state == RunPhase::Merged {
-                    hints.push((
-                        if open {
-                            "⏎ hide agents"
-                        } else {
-                            "⏎ agents"
-                        },
-                        6,
-                    ));
-                } else {
-                    hints.push(("⏎ resume", 6));
-                    hints.push((
-                        if open {
-                            "← hide agents"
-                        } else {
-                            "→ agents"
-                        },
-                        5,
-                    ));
+                match (run.state == RunPhase::Merged, open) {
+                    (true, true) => keys.push(("enter hides its agents", 8)),
+                    (true, false) => keys.push(("enter shows its agents", 8)),
+                    (false, true) => keys.extend([("enter resumes it", 8), ("← hides agents", 5)]),
+                    (false, false) => keys.extend([("enter resumes it", 8), ("→ agents", 5)]),
                 }
                 if letters && !run.state.ended() {
-                    hints.push(("x stop", 4));
+                    keys.push(("x stops it", 4));
                 }
                 if letters {
-                    hints.push(("d diff", 3));
+                    keys.push(("d diff", 3));
                 }
             }
-            Some(Row::Chat(_) | Row::Session(_)) => hints.push(("⏎ resume", 6)),
+            Some(Row::Conversation(_) | Row::Session(_)) => {
+                keys.push(("enter continues it", 8));
+                if letters {
+                    keys.push(("b branches from it, the original untouched", 6));
+                }
+            }
             None => {}
         }
-        let raw = matches!(self.selected_row(), Some(Row::Run(_) | Row::Agent(_)));
-        if letters && raw {
-            hints.push(("r raw", 2));
+        let of_a_run = matches!(self.selected_row(), Some(Row::Run(_) | Row::Agent(_)));
+        if letters && of_a_run {
+            keys.push(("r raw", 2));
         }
         if letters {
-            hints.extend([("/ search", 1), (panes::ESC_BACK, 0)]);
+            let folders = if self.every_folder {
+                "a this folder"
+            } else {
+                "a every folder"
+            };
+            // On a run's row its own keys outlast the one that lists more sessions.
+            let keep = if of_a_run { 1 } else { 5 };
+            keys.extend([(folders, keep), ("/ search", 7), ("esc", 9)]);
         } else {
-            hints.push(("esc clear search", 0));
+            keys.push(("esc clears the search", 9));
         }
-        Footer::hints(&hints)
+        keys.into_iter()
+            .map(|(key, keep)| (key.to_owned(), keep))
+            .collect()
+    }
+
+    /// The keys on one row, the ones that matter least left out until the rest fit.
+    fn key_line(&self, width: usize, theme: &Theme) -> Line<'static> {
+        let mut keys = self.keys();
+        let joined = |keys: &[(String, u8)]| {
+            let words: Vec<&str> = keys.iter().map(|(key, _)| key.as_str()).collect();
+            words.join(" · ")
+        };
+        while Span::raw(joined(&keys)).width() > width && keys.len() > 1 {
+            let least = keys.iter().map(|(_, keep)| *keep).min().unwrap_or(0);
+            let Some(at) = keys.iter().rposition(|(_, keep)| *keep == least) else {
+                break;
+            };
+            keys.remove(at);
+        }
+        Line::from(Span::styled(joined(&keys), theme.style(Role::Dim)))
+    }
+
+    /// The list in its box, `width` cells wide: the title, the heading, `shown` rows from the
+    /// first in view, and the keys.
+    fn boxed(
+        &self,
+        width: usize,
+        shown: usize,
+        folder: &str,
+        names: &DisplayNames,
+        theme: &Theme,
+    ) -> Vec<Line<'static>> {
+        let inner = width.saturating_sub(4);
+        let faint = theme.style(Role::Faint);
+        let table = self.lines(inner, names, theme);
+        let mut body = vec![
+            self.title_line(folder, shown, theme),
+            Line::default(),
+            table[0].clone(),
+        ];
+        body.extend(table.iter().skip(1 + self.list.offset).take(shown).cloned());
+        body.push(Line::default());
+        body.push(self.key_line(inner, theme));
+        let rule = "─".repeat(width.saturating_sub(2));
+        let mut lines = vec![Line::from(Span::styled(format!("╭{rule}╮"), faint))];
+        for line in body {
+            let line = clipped(line, inner);
+            let fill = inner.saturating_sub(line.width());
+            let mut spans = vec![Span::styled("│ ", faint)];
+            spans.extend(line.spans);
+            spans.push(Span::raw(" ".repeat(fill)));
+            spans.push(Span::styled(" │", faint));
+            lines.push(Line::from(spans));
+        }
+        lines.push(Line::from(Span::styled(format!("╰{rule}╯"), faint)));
+        lines
     }
 
     /// Enter: a conversation or a CLI session carries on, a run resumes, and a merged run, which
@@ -532,9 +632,19 @@ impl ResumePicker {
         };
         match self.selected_row() {
             Some(Row::Agent(a)) => Self::open_agent(&self.agents[a]),
-            Some(Row::Chat(i)) => resume(ResumeTarget::Conversation(self.chats[i].chat.clone())),
+            Some(Row::Conversation(i)) => resume(ResumeTarget::Conversation(
+                self.conversations[i].conversation.clone(),
+            )),
             Some(Row::Session(i)) => {
-                resume(ResumeTarget::VendorSession(self.sessions[i].reference()))
+                let session = &self.sessions[i];
+                let reference = session.reference();
+                let lately = self.clock.now() - session.updated < MAYBE_OPEN;
+                if lately && self.confirm_open.as_ref() != Some(&reference) {
+                    self.confirm_open = Some(reference);
+                    return ViewOutcome::Consumed;
+                }
+                self.confirm_open = None;
+                resume(ResumeTarget::CliSession(reference))
             }
             Some(Row::Run(r)) if self.runs[r].state == RunPhase::Merged => {
                 if self.open.contains(&self.runs[r].run) {
@@ -543,13 +653,46 @@ impl ResumePicker {
                     self.unfold(r)
                 }
             }
-            // The run takes the screen, as a conversation carried on does, so its card isn't
+            // The run takes the screen, as a conversation carried on does, so its question isn't
             // left waiting behind the picker.
-            Some(Row::Run(r)) => ViewOutcome::SendToChat(UiCommand::Resume {
+            Some(Row::Run(r)) => ViewOutcome::SendToConversation(UiCommand::Resume {
                 run: Some(self.runs[r].run.clone()),
             }),
             None => ViewOutcome::Consumed,
         }
+    }
+
+    /// `b`: a new conversation that starts from the one picked, which stays as it was.
+    fn branch(&mut self) -> ViewOutcome {
+        self.confirm_open = None;
+        let target = match self.selected_row() {
+            Some(Row::Conversation(i)) => {
+                ResumeTarget::BranchConversation(self.conversations[i].conversation.clone())
+            }
+            Some(Row::Session(i)) => ResumeTarget::BranchCliSession(self.sessions[i].reference()),
+            Some(Row::Run(_) | Row::Agent(_)) => {
+                return ViewOutcome::Notice(
+                    "Only a conversation or a CLI's session branches. ⏎ carries this one on"
+                        .to_owned(),
+                );
+            }
+            None => return ViewOutcome::Consumed,
+        };
+        ViewOutcome::Send(UiCommand::Slash {
+            command: SlashCommand::Resume {
+                target: Some(target),
+            },
+        })
+    }
+
+    /// `a`: the list again with every folder's sessions, or with this folder's alone.
+    fn other_folders(&mut self) -> ViewOutcome {
+        self.every_folder = !self.every_folder;
+        ViewOutcome::Request(if self.every_folder {
+            ViewRequest::SessionsEverywhere
+        } else {
+            ViewRequest::Runs
+        })
     }
 
     fn open_agent(agent: &AgentSession) -> ViewOutcome {
@@ -602,7 +745,7 @@ impl ResumePicker {
                 let run = &self.agents[a].run;
                 self.runs.iter().position(|summary| &summary.run == run)
             }
-            Row::Chat(_) | Row::Session(_) => None,
+            Row::Conversation(_) | Row::Session(_) => None,
         }
     }
 
@@ -688,65 +831,20 @@ impl ResumePicker {
                 clean(&agent.reference().to_string())
             ));
         }
-        if let Some(chat) = self.selected_chat() {
+        if let Some(conversation) = self.selected_conversation() {
             return ViewOutcome::Notice(format!(
                 "{} is a conversation. ⏎ carries it on",
-                sanitize_line(chat.chat.as_str())
+                sanitize_line(conversation.conversation.as_str())
             ));
         }
         match self.selected_session() {
             Some((session, id)) => ViewOutcome::Notice(format!(
                 "{} is a {} session. ⏎ carries it on",
                 sanitize_line(id),
-                vendor_label(&sanitize_line(&session.vendor.0))
+                agent_label(&sanitize_line(&session.agent_id.0))
             )),
             None => ViewOutcome::Consumed,
         }
-    }
-
-    /// `Resume a conversation or a run`, or a session too when the CLI has some, and how many
-    /// of each, or how many match what you typed.
-    fn header(&self, theme: &Theme) -> Header {
-        if !self.mixed() {
-            return Header {
-                title: Line::from(Span::styled("Resume a run", theme.style(Role::Label))),
-                description: "Waiting runs never expire, so resume it or stop it".to_owned(),
-                summary: self.matching(panes::count(self.runs.len(), "run")),
-            };
-        }
-        let sessions = self.sessions.first().map_or_else(String::new, |first| {
-            format!("{} session", vendor_label(&sanitize_line(&first.vendor.0)))
-        });
-        // Only the kinds listed, so a list of sessions alone doesn't read `0 runs`.
-        let summary: Vec<String> = [
-            (self.chats.len(), "conversation"),
-            (self.runs.len(), "run"),
-            (self.agents.len(), "agent session"),
-            (self.sessions.len(), sessions.as_str()),
-        ]
-        .into_iter()
-        .filter(|(count, _)| *count > 0)
-        .map(|(count, noun)| panes::count(count, noun))
-        .collect();
-        let title = if self.sessions.is_empty() && self.agents.is_empty() {
-            "Resume a conversation or a run"
-        } else {
-            "Resume a conversation, a run, or a session"
-        };
-        Header {
-            title: Line::from(Span::styled(title, theme.style(Role::Label))),
-            description: "Pick one to carry on. Waiting runs never expire".to_owned(),
-            summary: self.matching(summary.join(" · ")),
-        }
-    }
-
-    /// The counts, or how many rows match what you typed.
-    fn matching(&self, counts: String) -> String {
-        if self.filter.trim().is_empty() {
-            return counts;
-        }
-        let total = self.chats.len() + self.runs.len() + self.sessions.len() + self.agents.len();
-        format!("{} of {total} match", self.rows.len())
     }
 }
 
@@ -770,14 +868,14 @@ fn run_owns(run: &RunId, session: &str) -> String {
 
 /// `codex:019a5770`: each id cut to its first [`SHORT_ID`] characters, or more where two
 /// listed ids start the same, so each still names one session for `/resume`.
-fn short_ids(sessions: &[VendorSession]) -> Vec<String> {
+fn short_ids(sessions: &[CliSession]) -> Vec<String> {
     sessions
         .iter()
         .map(|session| {
             let id = session.id.as_str();
             let shared = sessions
                 .iter()
-                .filter(|other| other.vendor == session.vendor && other.id != session.id)
+                .filter(|other| other.agent_id == session.agent_id && other.id != session.id)
                 .map(|other| common_prefix(id, &other.id))
                 .max()
                 .unwrap_or(0);
@@ -787,7 +885,7 @@ fn short_ids(sessions: &[VendorSession]) -> Vec<String> {
                 .chain([id.len()])
                 .find(|&at| at >= SHORT_ID.max(shared + 1))
                 .unwrap_or(id.len());
-            format!("{}:{}", session.vendor, &id[..cut])
+            format!("{}:{}", session.agent_id, &id[..cut])
         })
         .collect()
 }
@@ -799,37 +897,14 @@ fn common_prefix(a: &str, b: &str) -> usize {
         .map_or_else(|| a.len().min(b.len()), |((at, _), _)| at)
 }
 
-/// `Claude Code on main`.
-fn session_details(session: &VendorSession) -> String {
-    let vendor = vendor_label(&sanitize_line(&session.vendor.0));
-    match session.branch.as_deref().map(clean) {
-        Some(branch) if !branch.is_empty() => format!("{vendor} on {branch}"),
-        _ => vendor,
-    }
-}
-
-/// `3 turns with claude-code`, or `1 run` for one that only started or opened runs.
-fn chat_details(chat: &ChatSummary, names: &DisplayNames) -> String {
-    let turns = match (chat.turns, chat.runs) {
-        (0, 1) => "1 run".to_owned(),
-        (0, runs) if runs > 1 => format!("{runs} runs"),
-        (1, _) => "1 turn".to_owned(),
-        (turns, _) => format!("{turns} turns"),
-    };
-    match &chat.worker {
-        Some(worker) => format!("{turns} with {}", sanitize_line(&names.worker(worker))),
-        None => turns,
-    }
-}
-
-/// `owner · build:money · 3 subagents · Fixed both functions.`, by the agent's name in the run
-/// (its card, for a run from before names). The helpers its CLI started come back with the
+/// `worker · build:money · 3 subagents · Fixed both functions.`, by the agent's name in the run
+/// (its task, for a run from before names). The helpers its CLI started come back with the
 /// session, so they're counted here rather than listed.
 fn agent_title(agent: &AgentSession) -> String {
     let role = agent.role.as_str();
     let parts = [
         Some(role.to_owned()),
-        // A step named like its role, as the retro is, says it once.
+        // A step named like its role, as the run review is, says it once.
         agent
             .label
             .as_deref()
@@ -877,23 +952,23 @@ fn agent_state(agent: &AgentSession) -> &'static str {
     }
 }
 
-/// The request for a run's diff: its newest card with changes, as far as this screen knows.
+/// The request for a run's diff: its newest task with changes, as far as this screen knows.
 pub(crate) fn diff_request(state: &AppState, run: &RunId) -> Result<ViewRequest, String> {
     let known = state.runs.get(run);
-    let card = known.and_then(|known| {
+    let task = known.and_then(|known| {
         known
-            .cards
+            .tasks
             .values()
             .rev()
-            .find(|card| card.diff.is_some_and(|diff| diff.files_changed > 0))
-            .or_else(|| known.cards.values().next_back())
-            .map(|card| card.id.clone())
+            .find(|task| task.diff.is_some_and(|diff| diff.files_changed > 0))
+            .or_else(|| known.tasks.values().next_back())
+            .map(|task| task.id.clone())
     });
-    match card {
-        Some(card) => Ok(ViewRequest::Diff {
+    match task {
+        Some(task) => Ok(ViewRequest::Diff {
             run: run.clone(),
-            card,
-            scope: DiffScope::Card,
+            task,
+            scope: DiffScope::Task,
         }),
         None => Err(format!(
             "No tasks of {} on this screen yet. Resume it to see its diff",
@@ -902,7 +977,7 @@ pub(crate) fn diff_request(state: &AppState, run: &RunId) -> Result<ViewRequest,
     }
 }
 
-/// The request for a run's raw log: its newest session's vendor lines.
+/// The request for a run's raw log: its newest session's agent lines.
 pub(crate) fn raw_request(state: &AppState, run: &RunId) -> Result<ViewRequest, String> {
     let session = state.runs.get(run).and_then(|known| {
         known
@@ -922,17 +997,6 @@ pub(crate) fn raw_request(state: &AppState, run: &RunId) -> Result<ViewRequest, 
     }
 }
 
-/// Where the run stopped, unless that only repeats its state, as `merged` does for a merged
-/// run.
-fn run_details(run: &RunSummary) -> String {
-    let details = clean(&run.stopped_at);
-    if details.eq_ignore_ascii_case(state_word(run.state)) {
-        String::new()
-    } else {
-        details
-    }
-}
-
 fn clean(text: &str) -> String {
     sanitize_line(text).trim().to_owned()
 }
@@ -941,8 +1005,10 @@ pub(crate) fn state_word(state: RunPhase) -> &'static str {
     match state {
         RunPhase::Running => "running",
         RunPhase::Pausing => "pausing",
-        RunPhase::Parked => "waiting",
-        RunPhase::Crashed => "crashed",
+        RunPhase::Waiting => "waiting",
+        RunPhase::Crashed => "stopped",
+        RunPhase::NeverStarted => "never started",
+        RunPhase::FromAnotherBuild => "from an older Argonauts",
         RunPhase::Merged => "merged",
         RunPhase::PullRequest => "pull request",
         RunPhase::BranchLeft => "branch left",
@@ -957,10 +1023,15 @@ pub(crate) fn state_word(state: RunPhase) -> &'static str {
 fn state_of(state: RunPhase) -> State {
     match state {
         RunPhase::Running | RunPhase::Pausing => State::Working,
-        RunPhase::Parked => State::NeedsYou,
-        RunPhase::Crashed | RunPhase::Failed => State::Failed,
+        RunPhase::Waiting => State::NeedsYou,
+        RunPhase::Failed => State::Failed,
         RunPhase::Merged | RunPhase::PullRequest => State::Done,
-        RunPhase::BranchLeft | RunPhase::Stopped | RunPhase::Abandoned => State::Stopped,
+        RunPhase::BranchLeft
+        | RunPhase::Stopped
+        | RunPhase::Abandoned
+        | RunPhase::Crashed
+        | RunPhase::NeverStarted
+        | RunPhase::FromAnotherBuild => State::Stopped,
     }
 }
 
@@ -968,10 +1039,80 @@ pub(crate) fn state_role(state: RunPhase) -> Role {
     state_of(state).role()
 }
 
-/// `✔ merged`: the state's glyph and its word, which the row draws in the state's color.
-fn state_cell(state: RunPhase, theme: &Theme) -> String {
-    let (glyph, _) = states::mark(state_of(state), theme);
-    format!("{glyph} {}", state_word(state))
+/// `text` cut to leave [`GAP`] clear cells in a slot of `width`, and padded to fill it.
+fn cell(text: &str, width: usize) -> String {
+    let room = width.saturating_sub(GAP);
+    let mut cut = String::new();
+    for ch in text.chars() {
+        let wider = format!("{cut}{ch}");
+        if Span::raw(wider.as_str()).width() > room {
+            break;
+        }
+        cut = wider;
+    }
+    let fill = width.saturating_sub(Span::raw(cut.as_str()).width());
+    format!("{cut}{}", " ".repeat(fill))
+}
+
+/// `line` cut to `width` cells, so the box's right side stays in place.
+fn clipped(line: Line<'static>, width: usize) -> Line<'static> {
+    if line.width() <= width {
+        return line;
+    }
+    let mut room = width;
+    let mut spans = Vec::new();
+    for span in line.spans {
+        let mut kept = String::new();
+        for ch in span.content.chars() {
+            let wide = Span::raw(ch.to_string()).width();
+            if wide > room {
+                room = 0;
+                break;
+            }
+            room -= wide;
+            kept.push(ch);
+        }
+        spans.push(Span::styled(kept, span.style));
+    }
+    Line::from(spans)
+}
+
+/// `42 turns`, `1 turn`, `1.2k turns`, and nothing for none.
+fn counted(count: u32, noun: &str) -> String {
+    match count {
+        0 => String::new(),
+        1 => format!("1 {noun}"),
+        2..1_000 => format!("{count} {noun}s"),
+        _ => {
+            let tenths = count / 100;
+            let (whole, tenth) = (tenths / 10, tenths % 10);
+            if tenth == 0 {
+                format!("{whole}k {noun}s")
+            } else {
+                format!("{whole}.{tenth}k {noun}s")
+            }
+        }
+    }
+}
+
+/// `just now`, `12m ago`, `3h ago`, `yesterday`, then the day, such as `Oct 8`, with its year
+/// when that isn't this one.
+fn last_used(at: OffsetDateTime, clock: &WallClock) -> String {
+    let now = clock.now();
+    if now - at < time::Duration::DAY {
+        return ago(at, now);
+    }
+    let day = clock.to_local(at).date();
+    let today = clock.to_local(now).date();
+    if today.previous_day() == Some(day) {
+        return "yesterday".to_owned();
+    }
+    let month = &day.month().to_string()[..3];
+    if day.year() == today.year() {
+        format!("{month} {}", day.day())
+    } else {
+        format!("{month} {}, {}", day.day(), day.year())
+    }
 }
 
 /// `just now`, `12m ago`, `3h ago`, `4d ago`.
@@ -985,37 +1126,25 @@ pub(crate) fn ago(at: OffsetDateTime, now: OffsetDateTime) -> String {
     }
 }
 
-/// Dollars once anything was priced, else tokens.
-pub(crate) fn spent(spend: &Spend) -> String {
-    panes::spend(spend).unwrap_or_else(|| panes::tokens(spend.total_tokens()))
-}
-
 impl View for ResumePicker {
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>) {
-        let theme = ctx.theme;
-        let header = self.header(theme);
-        let panes = panes::split(area, 0);
-        panes::draw_header(buf, panes.header, &header, theme);
-        let search = if self.filter.is_empty() && !self.filtering {
-            String::new()
-        } else {
-            format!("Search: {}", sanitize_line(&self.filter))
-        };
-        panes::draw_box(buf, &panes, ["", &search], Side::Right, theme);
-
         // The heading stays; the rows scroll under it.
-        let height = usize::from(panes.right.height).saturating_sub(1);
-        self.page = height.max(1);
+        self.page = usize::from(area.height).saturating_sub(AROUND).max(1);
         self.list.keep_visible(self.rows.len(), self.page);
-        let lines = self.lines(usize::from(panes.right.width), &ctx.state.names, theme);
-        let mut shown = vec![lines[0].clone()];
-        shown.extend(lines.iter().skip(1 + self.list.offset).cloned());
-        panes::put_lines(buf, panes.right, &shown);
-
-        let marks = Marks::for_theme(theme);
-        let mark =
-            super::pager::position_mark(self.list.offset, height, self.rows.len(), marks.down);
-        panes::draw_footer(buf, panes.footer, self.footer(), &mark, theme);
+        // An empty list still has its one row, which says so.
+        let shown = self.rows.len().clamp(1, self.page);
+        let lines = self.boxed(
+            usize::from(area.width),
+            shown,
+            ctx.state
+                .welcome
+                .as_ref()
+                .map_or("", |welcome| &welcome.repo),
+            &ctx.state.names,
+            ctx.theme,
+        );
+        Clear.render(area, buf);
+        panes::put_lines(buf, area, &lines);
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &ViewCtx<'_>) -> ViewOutcome {
@@ -1025,6 +1154,12 @@ impl View for ResumePicker {
         // A second `x` stops the run. Any other key keeps it, and Esc only does that.
         let stopping = !self.filtering && plain && key.code == KeyCode::Char('x');
         if !stopping && self.confirm_stop.take().is_some() && key.code == KeyCode::Esc {
+            return ViewOutcome::Consumed;
+        }
+        // Enter or `b` answers the warning that a session may be open elsewhere. Any other key
+        // drops it, and Esc only does that.
+        let answering = key.code == KeyCode::Enter || (plain && key.code == KeyCode::Char('b'));
+        if !answering && self.confirm_open.take().is_some() && key.code == KeyCode::Esc {
             return ViewOutcome::Consumed;
         }
         if self.filtering {
@@ -1046,6 +1181,8 @@ impl View for ResumePicker {
             KeyCode::Esc => return ViewOutcome::Close,
             KeyCode::Char('q') if letters => return ViewOutcome::Close,
             KeyCode::Char('x') if letters => return self.stop(ctx.state),
+            KeyCode::Char('b') if letters => return self.branch(),
+            KeyCode::Char('a') if letters => return self.other_folders(),
             KeyCode::Char(c @ ('d' | 'r')) if letters => {
                 return self.run_view(ctx.state, c == 'd');
             }
@@ -1090,7 +1227,7 @@ impl View for ResumePicker {
             // the agents of the older runs you opened since.
             ViewData::Runs {
                 runs,
-                chats,
+                conversations,
                 sessions,
                 agents,
                 agents_read,
@@ -1102,7 +1239,7 @@ impl View for ResumePicker {
                     .collect();
                 self.read.extend(agents_read.iter().cloned());
                 self.runs = runs.clone();
-                self.chats = chats.clone();
+                self.conversations = conversations.clone();
                 self.sessions = sessions.clone();
                 self.agents = agents.clone();
                 self.agents.extend(kept);
@@ -1126,21 +1263,25 @@ impl View for ResumePicker {
 mod agents_tests;
 
 #[cfg(test)]
+#[path = "resume_picture_tests.rs"]
+mod picture_tests;
+
+#[cfg(test)]
 mod tests {
     use std::time::Instant;
 
     use argonauts_core::api::{RunState as RunPhase, RunSummary};
-    use argonauts_core::app::{ChatSummary, UiCommand};
+    use argonauts_core::app::{ConversationSummary, UiCommand};
+    use argonauts_core::cli_sessions::{CliSession, CliSessionRef};
     use argonauts_core::events::run::RunMode;
     use argonauts_core::input::{ResumeTarget, SlashCommand};
-    use argonauts_core::names::{ChatId, VendorId};
-    use argonauts_core::vendor_sessions::{VendorSession, VendorSessionRef};
+    use argonauts_core::names::{AgentId, ConversationId};
     use argonauts_core::{RunId, Spend};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use time::macros::datetime;
     use time::{Duration, OffsetDateTime};
 
-    use super::{Footer, ResumePicker};
+    use super::ResumePicker;
     use crate::state::AppState;
     use crate::theme::Theme;
     use crate::views::{View, ViewCtx, ViewOutcome};
@@ -1153,7 +1294,7 @@ mod tests {
             title: format!("{id} title"),
             mode: RunMode::Crew,
             workflow: "council".into(),
-            state: RunPhase::Parked,
+            state: RunPhase::Waiting,
             stopped_at: "merge approval".into(),
             updated: WALL - Duration::hours(hours_ago),
             spent: Spend::default(),
@@ -1165,9 +1306,9 @@ mod tests {
         }
     }
 
-    fn chat(n: u32, title: &str, hours_ago: i64) -> ChatSummary {
-        ChatSummary {
-            chat: ChatId::numbered(n),
+    fn conversation(n: u32, title: &str, hours_ago: i64) -> ConversationSummary {
+        ConversationSummary {
+            conversation: ConversationId::numbered(n),
             title: title.to_owned(),
             updated: WALL - Duration::hours(hours_ago),
             worker: Some("claude-code".parse().unwrap()),
@@ -1177,9 +1318,12 @@ mod tests {
     }
 
     fn picker() -> ResumePicker {
-        ResumePicker::with_chats(
+        ResumePicker::with_conversations(
             vec![run("run-02", 1), run("run-01", 5)],
-            vec![chat(2, "hi", 0), chat(1, "what does export do?", 3)],
+            vec![
+                conversation(2, "hi", 0),
+                conversation(1, "what does export do?", 3),
+            ],
         )
     }
 
@@ -1198,57 +1342,50 @@ mod tests {
     fn conversations_and_runs_list_together_newest_first() {
         let mut view = picker();
         view.clock = crate::format::WallClock::pinned(WALL);
-        let theme = Theme::dark();
-        let text: Vec<String> = view
-            .lines(100, &Default::default(), &theme)
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect()
-            })
-            .collect();
+        let order: Vec<String> = view.rows.iter().map(|row| view.named(*row)).collect();
+        assert_eq!(
+            order,
+            [
+                "conversation conversation-002",
+                "run run-02",
+                "conversation conversation-001",
+                "run run-01"
+            ]
+        );
+        let text = rows(&view, 100);
         assert!(
-            text[0].contains("Kind") && text[0].contains("Id"),
+            text[0].contains("from") && text[0].contains("last used"),
             "{text:?}"
         );
-        let order: Vec<&str> = text[1..]
-            .iter()
-            .map(|row| {
-                ["chat-002", "run-02", "chat-001", "run-01"]
-                    .into_iter()
-                    .find(|id| row.contains(id))
-                    .unwrap_or("?")
-            })
-            .collect();
-        assert_eq!(order, vec!["chat-002", "run-02", "chat-001", "run-01"]);
-        assert!(text[1].contains("chat") && text[1].contains("2 turns with Claude Code"));
-        assert!(text[2].contains("run ") && text[2].contains("waiting"));
+        assert!(
+            text[1].contains("Argonauts Code  ") && text[1].contains("2 turns"),
+            "{text:?}"
+        );
+        assert!(text[2].contains("waiting"), "{text:?}");
     }
 
-    /// A conversation that only started or opened runs counts those, not "0 turns".
     #[test]
     fn a_conversation_with_only_runs_counts_its_runs() {
-        use super::chat_details;
-        let names = argonauts_core::display_names::DisplayNames::default();
-        let only_runs = ChatSummary {
+        let only_runs = ConversationSummary {
             turns: 0,
             runs: 1,
             worker: None,
-            ..chat(3, "fix the median", 1)
+            ..conversation(3, "fix the median", 1)
         };
-        assert_eq!(chat_details(&only_runs, &names), "1 run");
-        let two = ChatSummary {
+        let two = ConversationSummary {
             runs: 2,
             ..only_runs.clone()
         };
-        assert_eq!(chat_details(&two, &names), "2 runs");
-        let chatted = ChatSummary {
+        let chatted = ConversationSummary {
             runs: 2,
-            ..chat(2, "hi", 1)
+            ..conversation(2, "hi", 1)
         };
-        assert_eq!(chat_details(&chatted, &names), "2 turns with Claude Code");
+        let view = ResumePicker::with_conversations(Vec::new(), vec![only_runs, two, chatted]);
+        let theme = Theme::dark();
+        let lengths: Vec<String> = (0..3)
+            .map(|i| view.length(super::Row::Conversation(i), &theme).0)
+            .collect();
+        assert_eq!(lengths, ["1 run", "2 runs", "2 turns"]);
     }
 
     #[test]
@@ -1262,41 +1399,38 @@ mod tests {
             sent(press(&mut view, KeyCode::Enter)),
             Some(UiCommand::Slash {
                 command: SlashCommand::Resume {
-                    target: Some(ResumeTarget::Conversation(ChatId::numbered(2))),
+                    target: Some(ResumeTarget::Conversation(ConversationId::numbered(2))),
                 },
             })
         );
         assert!(matches!(
             press(&mut view, KeyCode::Char('x')),
-            ViewOutcome::Notice(text) if text.contains("chat-002 is a conversation")
+            ViewOutcome::Notice(text) if text.contains("conversation-002 is a conversation")
         ));
         press(&mut view, KeyCode::Down);
-        // A run closes the picker on the way, so it and its card take the screen.
+        // A run closes the picker on the way, so it and its question take the screen.
         assert!(matches!(
             press(&mut view, KeyCode::Enter),
-            ViewOutcome::SendToChat(UiCommand::Resume { run: Some(run) }) if run.as_str() == "run-02"
+            ViewOutcome::SendToConversation(UiCommand::Resume { run: Some(run) }) if run.as_str() == "run-02"
         ));
     }
 
     #[test]
     fn a_conversation_offers_no_run_keys() {
         let mut view = picker();
-        let hints = |view: &ResumePicker| match view.footer() {
-            Footer::Hints(parts) => parts
-                .into_iter()
-                .map(|(part, _)| part)
-                .collect::<Vec<_>>()
-                .join(" · "),
-            Footer::Line(_) => unreachable!(),
-        };
-        assert_eq!(hints(&view), "↑↓ select · ⏎ resume · / search · esc back");
+        let keys = |view: &ResumePicker| view.key_line(200, &Theme::dark()).to_string();
+        assert_eq!(
+            keys(&view),
+            "↑↓ pick · enter continues it · b branches from it, the original untouched · a every \
+             folder · / search · esc"
+        );
         press(&mut view, KeyCode::Down);
-        assert!(hints(&view).contains("x stop · d diff · r raw"));
+        assert!(keys(&view).contains("x stops it · d diff · r raw"));
     }
 
-    fn session(vendor: &str, id: &str, title: &str, hours_ago: i64) -> VendorSession {
-        VendorSession {
-            vendor: VendorId(vendor.into()),
+    fn session(agent_id: &str, id: &str, title: &str, hours_ago: i64) -> CliSession {
+        CliSession {
+            agent_id: AgentId(agent_id.into()),
             id: id.into(),
             title: title.into(),
             prompt: None,
@@ -1305,13 +1439,14 @@ mod tests {
             model: None,
             branch: Some("main".into()),
             last_message: None,
+            turns: 3,
         }
     }
 
     fn with_sessions() -> ResumePicker {
         let mut view = ResumePicker::listing(
             vec![run("run-02", 1)],
-            vec![chat(2, "hi", 3)],
+            vec![conversation(2, "hi", 3)],
             vec![
                 session("claude-code", "0a1b2c3d-1111-4aaa", "Input loop notes", 0),
                 session("claude-code", "0a1b2c3d-2222-4aaa", "Fix the export", 2),
@@ -1334,65 +1469,58 @@ mod tests {
             .collect()
     }
 
-    /// A merged run says so once, under State, and Details stays empty rather than saying it
-    /// again; a parked one still says where it stopped.
+    /// A run says its state where a conversation says its length, and says it once.
     #[test]
     fn a_finished_run_says_its_state_once() {
         let mut merged = run("run-02", 1);
         merged.state = RunPhase::Merged;
         merged.stopped_at = "merged".into();
-        let view = ResumePicker::with_chats(vec![merged, run("run-01", 5)], vec![chat(1, "hi", 0)]);
+        let view = ResumePicker::with_conversations(
+            vec![merged, run("run-01", 5)],
+            vec![conversation(1, "hi", 0)],
+        );
         let text = rows(&view, 120);
-        let row = |id: &str| text.iter().find(|row| row.contains(id)).unwrap().clone();
+        let row = |id: &str| {
+            let at = view
+                .rows
+                .iter()
+                .position(|row| view.named(*row).ends_with(id));
+            text[1 + at.unwrap()].clone()
+        };
         assert_eq!(row("run-02").matches("merged").count(), 1, "{text:#?}");
-        assert!(row("run-01").contains("merge approval"), "{text:#?}");
+        assert!(row("run-01").contains("waiting"), "{text:#?}");
     }
 
     #[test]
-    fn cli_sessions_list_with_the_rest_under_a_kind() {
+    fn cli_sessions_list_with_the_rest() {
         let view = with_sessions();
-        let text = rows(&view, 120);
-        let order: Vec<&str> = text[1..]
-            .iter()
-            .map(|row| {
-                [
-                    "claude-code:0a1b2c3d-1",
-                    "run-02",
-                    "claude-code:0a1b2c3d-2",
-                    "chat-002",
-                    "claude-code:9f8e7d6c",
-                ]
-                .into_iter()
-                .find(|id| row.contains(id))
-                .unwrap_or("?")
-            })
-            .collect();
+        let order: Vec<String> = view.rows.iter().map(|row| view.named(*row)).collect();
+        // Two ids that start alike show until they are different; another shows its first part.
         assert_eq!(
             order,
-            vec![
-                "claude-code:0a1b2c3d-1",
-                "run-02",
-                "claude-code:0a1b2c3d-2",
-                "chat-002",
-                "claude-code:9f8e7d6c"
+            [
+                "session claude-code:0a1b2c3d-1",
+                "run run-02",
+                "session claude-code:0a1b2c3d-2",
+                "conversation conversation-002",
+                "session claude-code:9f8e7d6c"
             ]
         );
+        let text = rows(&view, 118);
         let first = &text[1];
-        for cell in [
-            "session",
-            "Input loop notes",
-            "Claude Code on main",
-            "just now",
-        ] {
+        for cell in ["Claude Code", "Input loop notes", "just now"] {
             assert!(first.contains(cell), "{cell}: {first}");
         }
-        // Two ids that start alike show until they differ; another shows its first part.
-        assert!(!text[5].contains("9f8e7d6c-"), "{}", text[5]);
     }
 
     #[test]
     fn enter_carries_a_cli_session_on() {
         let mut view = with_sessions();
+        // Its CLI wrote to it just now, so the first Enter asks.
+        assert!(matches!(
+            press(&mut view, KeyCode::Enter),
+            ViewOutcome::Consumed
+        ));
         let ViewOutcome::Send(sent) = press(&mut view, KeyCode::Enter) else {
             panic!("Enter sends nothing");
         };
@@ -1400,8 +1528,8 @@ mod tests {
             sent,
             UiCommand::Slash {
                 command: SlashCommand::Resume {
-                    target: Some(ResumeTarget::VendorSession(VendorSessionRef {
-                        vendor: VendorId("claude-code".into()),
+                    target: Some(ResumeTarget::CliSession(CliSessionRef {
+                        agent_id: AgentId("claude-code".into()),
                         id: "0a1b2c3d-1111-4aaa".into(),
                     })),
                 },
@@ -1414,29 +1542,17 @@ mod tests {
     }
 
     #[test]
-    fn the_header_counts_the_cli_sessions() {
+    fn the_title_says_where_and_which_rows_show() {
         let view = with_sessions();
-        let header = view.header(&Theme::dark());
+        let theme = Theme::dark();
         assert_eq!(
-            header.summary,
-            "1 conversation · 1 run · 3 Claude Code sessions"
+            view.title_line("~/work/shop", 5, &theme).to_string(),
+            "Resume a conversation · in ~/work/shop"
         );
         assert_eq!(
-            header.title.to_string(),
-            "Resume a conversation, a run, or a session"
+            view.title_line("~/work/shop", 2, &theme).to_string(),
+            "Resume a conversation · in ~/work/shop · 1-2 of 5"
         );
-
-        let alone = ResumePicker::listing(
-            Vec::new(),
-            Vec::new(),
-            vec![session(
-                "codex",
-                "019a5770-e3f9",
-                "Explain the input loop",
-                1,
-            )],
-        );
-        assert_eq!(alone.header(&Theme::dark()).summary, "1 Codex session");
     }
 
     #[test]
@@ -1446,7 +1562,7 @@ mod tests {
         press(&mut view, KeyCode::Down);
         let data = argonauts_core::app::ViewData::Runs {
             runs: Vec::new(),
-            chats: Vec::new(),
+            conversations: Vec::new(),
             sessions: view.sessions.clone(),
             agents: Vec::new(),
             agents_read: Vec::new(),
@@ -1457,17 +1573,9 @@ mod tests {
     }
 
     #[test]
-    fn runs_alone_keep_the_runs_picker() {
+    fn runs_alone_are_titled_as_runs() {
         let view = ResumePicker::new(vec![run("run-01", 1)]);
-        let theme = Theme::dark();
-        let heading: String = view.lines(100, &Default::default(), &theme)[0]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert!(
-            heading.contains("Run") && !heading.contains("Kind"),
-            "{heading}"
-        );
+        let title = view.title_line("~/work", 1, &Theme::dark()).to_string();
+        assert_eq!(title, "Resume a run · in ~/work");
     }
 }

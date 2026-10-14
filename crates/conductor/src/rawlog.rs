@@ -1,5 +1,5 @@
-//! Argonauts' own copy of everything a vendor printed and of every frame sent to a driven agent:
-//! `raw.stdout.jsonl`, `raw.stderr.txt`, and `raw.stdin.jsonl` in the session folder.
+//! Argonauts Code's own record of everything an agent printed and of every frame sent to a driven
+//! agent: `raw.stdout.jsonl`, `raw.stderr.txt`, and `raw.stdin.jsonl` in the session folder.
 //!
 //! A process spawned with [`RawLog::output_copies`] has its stdout and stderr copied byte for
 //! byte as they are read, before lines are split, cut at the length cap, or decoded, so long
@@ -20,7 +20,7 @@ use argonauts_core::driver::RawFrame;
 use argonauts_core::layout::session_files::{RAW_STDERR, RAW_STDIN, RAW_STDOUT};
 use tokio::io::{AsyncRead, ReadBuf};
 
-/// Everything is written straight through, unbuffered, so a supervisor that crashes loses none.
+/// Everything is written straight through, unbuffered, so a run host that crashes loses none.
 #[derive(Debug)]
 pub struct RawLog {
     session_dir: PathBuf,

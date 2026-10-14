@@ -1,24 +1,24 @@
-//! Predictions are probabilities written before a card starts, scored after it ends. Routing
+//! Predictions are probabilities written before a task starts, scored after it ends. Routing
 //! uses the Brier skill score against the worker's own base rate, since a worker that always
-//! predicts its average is calibrated and tells you nothing. The retro and `/records` show
-//! reliability separately, so calibration and telling easy cards from hard ones stay apart.
+//! predicts its average is calibrated and tells you nothing. The run review and `/records` show
+//! reliability separately, so calibration and telling easy tasks from hard ones stay apart.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::protocol::RoutingSettings;
-use argonauts_core::{CardId, RunId};
+use argonauts_core::{RunId, TaskId};
 
 use crate::outcomes::{LogLine, Outcome, Prediction, Predictor};
 
-pub const PASS_GATES_FIRST_TRY: &str = "p_pass_gates_first_try";
+pub const PASS_CHECKS_FIRST_TRY: &str = "p_pass_checks_first_try";
 pub const WITHIN_TIME_CAP: &str = "p_within_time_cap";
-pub const AT_MOST_TWO_ATTEMPTS: &str = "p_at_most_two_attempts";
-pub const PASSES_INTEGRATION: &str = "p_passes_integration";
-/// What an owner predicts about its own card; their skill is its routing score.
-pub const OWNER_METRICS: [&str; 3] = [PASS_GATES_FIRST_TRY, WITHIN_TIME_CAP, AT_MOST_TWO_ATTEMPTS];
+pub const AT_MOST_TWO_TRIES: &str = "p_at_most_two_tries";
+pub const PASSES_MERGE: &str = "p_passes_merge";
+/// What a worker predicts about its own task; their skill is its routing score.
+pub const WORKER_METRICS: [&str; 3] = [PASS_CHECKS_FIRST_TRY, WITHIN_TIME_CAP, AT_MOST_TWO_TRIES];
 
 /// `(p - outcome)^2`, where the outcome is 1 if it happened.
 pub fn brier(p: f64, happened: bool) -> f64 {
@@ -87,7 +87,7 @@ pub fn reliability(pairs: &[(f64, bool)]) -> Vec<Bin> {
 pub struct Decomposition {
     /// Calibration error; lower is better.
     pub reliability: f64,
-    /// How well predictions tell easy cards from hard ones; higher is better.
+    /// How well predictions tell easy tasks from hard ones; higher is better.
     pub resolution: f64,
     /// How hard the outcomes were to predict at all.
     pub uncertainty: f64,
@@ -119,10 +119,10 @@ pub fn decompose(pairs: &[(f64, bool)]) -> Decomposition {
     }
 }
 
-/// One worker's scores on one predicted quantity, such as `p_pass_gates_first_try`.
+/// One worker's scores on one predicted quantity, such as `p_pass_checks_first_try`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Calibration {
-    pub worker: WorkerRef,
+    pub worker: ModelRef,
     pub metric: String,
     pub count: u32,
     pub brier: f64,
@@ -136,19 +136,19 @@ pub struct Calibration {
     pub bins: Vec<Bin>,
 }
 
-/// Pairs every prediction with its card's outcome and scores each worker and metric. A
-/// reviewer's `p_passes_integration` scores its review accuracy.
+/// Pairs every prediction with its task's outcome and scores each worker and metric. A
+/// reviewer's `p_passes_merge` scores its review accuracy.
 ///
-/// An owner's prediction pairs with its own outcome for the card, so a fallback's result never
-/// scores the owner it replaced. A worker's base rate is its own, per task type.
+/// A worker's prediction pairs with its own outcome for the task, so a fallback's result never
+/// scores the worker it replaced. A worker's base rate is its own, per task type.
 pub fn calibration(lines: &[LogLine], settings: &RoutingSettings) -> Vec<Calibration> {
-    let mut outcomes: BTreeMap<(&RunId, &CardId), Vec<&Outcome>> = BTreeMap::new();
-    // A prediction stated again for the same card replaces the first.
-    let mut stated: BTreeMap<(&RunId, &CardId, &WorkerRef, bool), &Prediction> = BTreeMap::new();
+    let mut outcomes: BTreeMap<(&RunId, &TaskId), Vec<&Outcome>> = BTreeMap::new();
+    // A prediction stated again for the same task replaces the first.
+    let mut stated: BTreeMap<(&RunId, &TaskId, &ModelRef, bool), &Prediction> = BTreeMap::new();
     for line in lines {
         match line {
             LogLine::Outcome(outcome) => outcomes
-                .entry((&outcome.run, &outcome.card))
+                .entry((&outcome.run, &outcome.task))
                 .or_default()
                 .push(outcome),
             LogLine::Prediction(prediction) => {
@@ -156,7 +156,7 @@ pub fn calibration(lines: &[LogLine], settings: &RoutingSettings) -> Vec<Calibra
                 stated.insert(
                     (
                         &prediction.run,
-                        &prediction.card,
+                        &prediction.task,
                         &prediction.worker,
                         reviewer,
                     ),
@@ -167,21 +167,21 @@ pub fn calibration(lines: &[LogLine], settings: &RoutingSettings) -> Vec<Calibra
         }
     }
 
-    let mut scored: BTreeMap<(&WorkerRef, &'static str), Vec<Scored<'_>>> = BTreeMap::new();
+    let mut scored: BTreeMap<(&ModelRef, &'static str), Vec<Scored<'_>>> = BTreeMap::new();
     for prediction in stated.values() {
-        let Some(card) = outcomes.get(&(&prediction.run, &prediction.card)) else {
+        let Some(task) = outcomes.get(&(&prediction.run, &prediction.task)) else {
             continue;
         };
         let mut pairs = Vec::new();
-        if let Some(own) = card
+        if let Some(own) = task
             .iter()
             .rev()
             .find(|outcome| outcome.worker == prediction.worker)
         {
             pairs.extend([
                 (
-                    PASS_GATES_FIRST_TRY,
-                    prediction.p_pass_gates_first_try,
+                    PASS_CHECKS_FIRST_TRY,
+                    prediction.p_pass_checks_first_try,
                     *own,
                     Some(own.first_try),
                 ),
@@ -192,19 +192,19 @@ pub fn calibration(lines: &[LogLine], settings: &RoutingSettings) -> Vec<Calibra
                     own.within_time_cap,
                 ),
                 (
-                    AT_MOST_TWO_ATTEMPTS,
-                    prediction.p_at_most_two_attempts,
+                    AT_MOST_TWO_TRIES,
+                    prediction.p_at_most_two_tries,
                     *own,
-                    Some(own.attempts <= 2),
+                    Some(own.tries <= 2),
                 ),
             ]);
         }
-        if let Some(last) = card.last() {
+        if let Some(last) = task.last() {
             pairs.push((
-                PASSES_INTEGRATION,
-                prediction.p_passes_integration,
+                PASSES_MERGE,
+                prediction.p_passes_merge,
                 *last,
-                Some(last.integrated),
+                Some(last.merged),
             ));
         }
         for (metric, p, outcome, happened) in pairs {
@@ -235,7 +235,7 @@ struct Scored<'a> {
 }
 
 fn score_one(
-    worker: &WorkerRef,
+    worker: &ModelRef,
     metric: &str,
     scored: &[Scored<'_>],
     settings: &RoutingSettings,

@@ -4,6 +4,7 @@
 
 mod assistant;
 mod crew;
+mod decided;
 mod diff;
 mod group;
 mod header;
@@ -11,6 +12,7 @@ pub(crate) mod layout;
 mod notice;
 mod record;
 mod shell;
+mod templates;
 mod tool;
 mod turn;
 mod user;
@@ -24,19 +26,21 @@ use crate::theme::Role;
 
 pub use assistant::AssistantMessage;
 pub use crew::{AgentsStarted, StartedAgent};
+pub use decided::DecidedOnAutopilot;
 pub use diff::{DiffCell, DiffHunk, DiffKind, DiffLine, DiffParseError, DiffView};
 pub use group::CollapsedGroup;
 pub use header::{AgentReady, SessionHeader};
 pub use notice::{ExitNote, HungLine, Notice, ResultLine};
 pub use record::Record;
 pub use shell::{ShellEnd, ShellRun};
+pub use templates::{TemplateFolder, TemplateRows};
 pub use tool::Held;
 pub use tool::StepMark;
 pub use tool::{
     BLINK_PERIOD, PhaseLine, Todo, TodoState, ToolCall, ToolItem, ToolKind, ToolState, ToolStats,
-    ToolTitle,
+    ToolTitle, WorkflowEnd, WorkflowResult,
 };
-pub use turn::{Recap, TurnEnd};
+pub use turn::{Recap, Thought, TurnEnd};
 pub use user::UserMessage;
 
 pub trait HistoryCell: fmt::Debug + Send {
@@ -223,8 +227,8 @@ impl Tone {
             Tone::Normal => Role::Text,
             Tone::Dim => Role::Dim,
             Tone::Success => Role::Success,
-            Tone::Warning => Role::Warning,
-            Tone::Error => Role::Error,
+            Tone::Warning => Role::Warn,
+            Tone::Error => Role::Danger,
             Tone::Accent => Role::Accent,
             Tone::Code => Role::Code,
         }

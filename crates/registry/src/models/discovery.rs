@@ -13,7 +13,7 @@ use argonauts_core::registry::ModelEntry;
 use argonauts_core::settings::Settings;
 use tokio::task::JoinSet;
 
-use super::builtin::{CLAUDE_CODE_ALIASES, endpoint_settings, harness_access, harness_entry};
+use super::builtin::{CLAUDE_CODE_ALIASES, cli_access, cli_entry, endpoint_settings};
 
 pub use claude::{
     ANTHROPIC_API, ANTHROPIC_KEY_ENV, ClaudeSource, FRESH_FOR as CLAUDE_LIST_FRESH_FOR,
@@ -58,7 +58,7 @@ const MAX_MODELS_BYTES: usize = 16 * 1024 * 1024;
 pub struct Discovery {
     pub models: Vec<ModelEntry>,
     pub skipped: Vec<String>,
-    /// The harness or endpoint ids whose source failed, so what they listed before still counts.
+    /// The CLI or endpoint ids whose source failed, so what they listed before still counts.
     pub failed: Vec<String>,
 }
 
@@ -75,21 +75,21 @@ pub async fn discover_with_reasons(settings: &Settings) -> Discovery {
     }
     if agent_enabled(settings, "claude-code") {
         found.models.extend(CLAUDE_CODE_ALIASES.iter().map(|alias| {
-            let mut entry = harness_entry(settings, "claude-code", Some(alias));
+            let mut entry = cli_entry(settings, "claude-code", Some(alias));
             entry.discovered = true;
             entry
         }));
     }
     let (agy, codex, endpoints) = tokio::join!(
-        harness_models(settings, &AGY),
-        harness_models(settings, &CODEX),
+        cli_models(settings, &AGY),
+        cli_models(settings, &CODEX),
         endpoint_models(settings),
     );
-    let harnesses = [
+    let clis = [
         (AGY.adapter.to_owned(), agy),
         (CODEX.adapter.to_owned(), codex),
     ];
-    for (id, result) in harnesses.into_iter().chain(endpoints) {
+    for (id, result) in clis.into_iter().chain(endpoints) {
         match result {
             Ok(models) => found.models.extend(models),
             Err(reason) => {
@@ -108,10 +108,7 @@ pub(crate) fn agent_enabled(settings: &Settings, adapter: &str) -> bool {
         .is_none_or(|agent| agent.enabled)
 }
 
-async fn harness_models(
-    settings: &Settings,
-    source: &CliSource,
-) -> Result<Vec<ModelEntry>, String> {
+async fn cli_models(settings: &Settings, source: &CliSource) -> Result<Vec<ModelEntry>, String> {
     if !agent_enabled(settings, source.adapter) {
         return Ok(Vec::new());
     }
@@ -121,7 +118,7 @@ async fn harness_models(
         .and_then(|agent| agent.binary.clone())
         .unwrap_or_else(|| PathBuf::from(source.binary));
     let stdout = run(&program, source.args).await?;
-    let (access, cost) = harness_access(settings, source.adapter);
+    let (access, cost) = cli_access(settings, source.adapter);
     Ok((source.parse)(&stdout)?
         .into_iter()
         .map(|mut entry| {
@@ -288,7 +285,7 @@ mod tests {
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
-    /// A stand-in CLI that prints `fixture` only when called with exactly `args`.
+    /// A fake CLI that prints `fixture` only when called with exactly `args`.
     fn fake_cli(dir: &Path, name: &str, args: &str, fixture: &str) -> PathBuf {
         let path = dir.join(name);
         let script = format!(
@@ -320,14 +317,14 @@ mod tests {
                 dir.path(),
                 "agy",
                 "--output-format json models",
-                "agy/1.2.13/models.json",
+                "agy/models.json",
             )),
         );
         let mut codex = agent(fake_cli(
             dir.path(),
             "codex",
             "debug models",
-            "codex/0.158.0/debug-models.json",
+            "codex/debug-models.json",
         ));
         codex.auth = AuthMode::ApiKey;
         settings.agents.insert("codex".to_owned(), codex);
@@ -349,23 +346,13 @@ mod tests {
         );
 
         let found = discover_with_reasons(&settings).await;
-        let count = |worker: &str| {
-            found
-                .models
-                .iter()
-                .filter(|e| e.id.worker == worker)
-                .count()
-        };
+        let count = |worker: &str| found.models.iter().filter(|e| e.id.agent == worker).count();
         assert_eq!(count("claude-code"), 4);
         assert_eq!(count("antigravity-cli"), 14);
         assert_eq!(count("codex"), 7);
         assert_eq!(count("local-box"), 2);
         assert!(found.models.iter().all(|e| e.discovered));
-        let codex = found
-            .models
-            .iter()
-            .find(|e| e.id.worker == "codex")
-            .unwrap();
+        let codex = found.models.iter().find(|e| e.id.agent == "codex").unwrap();
         assert_eq!(codex.access, ModelAccess::ApiKey);
         let glm = found
             .models
@@ -373,8 +360,8 @@ mod tests {
             .find(|e| e.id.to_string() == "local-box/z-ai/glm-5.3")
             .unwrap();
         assert_eq!(
-            (glm.family.as_str(), glm.access),
-            ("glm", ModelAccess::Local)
+            (glm.provider.as_str(), glm.access),
+            ("zhipu", ModelAccess::Local)
         );
 
         assert_eq!(found.skipped.len(), 1, "{:?}", found.skipped);
@@ -395,7 +382,7 @@ mod tests {
                 dir.path(),
                 "codex-wrong",
                 "models",
-                "codex/0.158.0/meta.json",
+                "codex/meta.json",
             )),
         );
         settings.endpoints.clear();

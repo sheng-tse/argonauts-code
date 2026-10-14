@@ -1,14 +1,14 @@
 //! What each discovery source prints, as registry entries. None of them costs a model call.
 
 use argonauts_core::input::EFFORT_LEVELS;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::registry::{CostModel, CostUnit, ModelAccess, ModelEntry, RegistryKind};
 use argonauts_core::settings::Settings;
 use serde_json::Value;
 
-use crate::models::builtin::{cost, harness_entry};
-use crate::models::family::UNKNOWN_FAMILY;
-use crate::models::family_from_model_id;
+use crate::models::builtin::{cli_entry, cost};
+use crate::models::provider_from_model_id;
+use argonauts_core::registry::provider::UNKNOWN_PROVIDER;
 
 /// `agy --output-format json models`: the list sits under `command.data.models`, each model
 /// with the label agy's own picker shows. agy names thinking levels as separate model ids
@@ -29,7 +29,7 @@ pub fn parse_agy_models(json: &str) -> Result<Vec<ModelEntry>, String> {
         .iter()
         .filter_map(|model| {
             let id = model["id"].as_str()?;
-            let mut entry = discovered(harness_entry(&settings, "antigravity-cli", Some(id)));
+            let mut entry = discovered(cli_entry(&settings, "antigravity-cli", Some(id)));
             entry.name = plain(&model["label"]);
             if let Some(level) = agy_level(id, entry.name.as_deref()) {
                 entry.efforts = vec![level.to_owned()];
@@ -84,7 +84,7 @@ pub fn parse_codex_models(json: &str) -> Result<Vec<ModelEntry>, String> {
         .into_iter()
         .filter_map(|model| {
             let slug = model["slug"].as_str()?;
-            let mut entry = discovered(harness_entry(&settings, "codex", Some(slug)));
+            let mut entry = discovered(cli_entry(&settings, "codex", Some(slug)));
             entry.efforts = model["supported_reasoning_levels"]
                 .as_array()
                 .into_iter()
@@ -132,8 +132,8 @@ pub fn parse_openai_models(
 
 fn endpoint_entry(endpoint: &str, local: bool, model: &Value) -> Option<ModelEntry> {
     let id = model["id"].as_str()?;
-    // An id that can't name a worker couldn't be run either.
-    let worker: WorkerRef = format!("{endpoint}/{id}").parse().ok()?;
+    // An id that can't name a model couldn't be run either.
+    let worker: ModelRef = format!("{endpoint}/{id}").parse().ok()?;
     let supports = |parameter: &str| {
         model["supported_parameters"]
             .as_array()
@@ -145,8 +145,8 @@ fn endpoint_entry(endpoint: &str, local: bool, model: &Value) -> Option<ModelEnt
         .unwrap_or_default();
     Some(ModelEntry {
         id: worker,
-        family: family_from_model_id(id)
-            .unwrap_or(UNKNOWN_FAMILY)
+        provider: provider_from_model_id(id)
+            .unwrap_or(UNKNOWN_PROVIDER)
             .to_owned(),
         kind: RegistryKind::Endpoint,
         access: if local {
@@ -217,8 +217,8 @@ fn discovered(mut entry: ModelEntry) -> ModelEntry {
 mod tests {
     use super::*;
 
-    const AGY: &str = include_str!("../../../tests/fixtures/agy/1.2.13/models.json");
-    const CODEX: &str = include_str!("../../../tests/fixtures/codex/0.158.0/debug-models.json");
+    const AGY: &str = include_str!("../../../tests/fixtures/agy/models.json");
+    const CODEX: &str = include_str!("../../../tests/fixtures/codex/debug-models.json");
     const OPENROUTER: &str =
         include_str!("../../../tests/fixtures/openai-models/synthetic/openrouter.json");
     const OLLAMA: &str =
@@ -262,15 +262,15 @@ mod tests {
             agy[0].id.to_string(),
             "antigravity-cli/gemini-3.8-flash-high"
         );
-        let family = |id: &str| {
+        let provider = |id: &str| {
             agy.iter()
                 .find(|e| e.id.model.as_deref() == Some(id))
-                .map(|e| e.family.as_str())
+                .map(|e| e.provider.as_str())
         };
-        assert_eq!(family("gemini-3.6-flash-low"), Some("gemini"));
-        assert_eq!(family("claude-sonnet-4-6"), Some("claude"));
-        assert_eq!(family("claude-opus-4-6-thinking"), Some("claude"));
-        assert_eq!(family("gpt-oss-120b-medium"), Some("gpt-oss"));
+        assert_eq!(provider("gemini-3.6-flash-low"), Some("google"));
+        assert_eq!(provider("claude-sonnet-4-6"), Some("anthropic"));
+        assert_eq!(provider("claude-opus-4-6-thinking"), Some("anthropic"));
+        assert_eq!(provider("gpt-oss-120b-medium"), Some("openai"));
         assert_eq!(agy[0].name.as_deref(), Some("Gemini 3.8 Flash (High)"));
         let fixed = |id: &str| {
             agy.iter()
@@ -287,7 +287,7 @@ mod tests {
         for entry in &agy {
             assert!(entry.efforts.len() <= 1, "{}", entry.id);
             assert!(entry.discovered);
-            assert_eq!(entry.kind, RegistryKind::Harness);
+            assert_eq!(entry.kind, RegistryKind::Cli);
             assert_eq!(entry.access, ModelAccess::Subscription);
         }
 
@@ -318,9 +318,9 @@ mod tests {
             assert_eq!(*levels, &all[..known], "{model}");
         }
         assert!(
-            codex
-                .iter()
-                .all(|e| e.family == "gpt" && e.discovered && e.cost.unit == CostUnit::Quota)
+            codex.iter().all(|e| e.provider == "openai"
+                && e.discovered
+                && e.cost.unit == CostUnit::PlanUsage)
         );
         // The largest window Codex offers: 872k for all but one, whose default is all it has.
         let window = |model: &str| {
@@ -345,8 +345,8 @@ mod tests {
                 "openrouter/meta-llama/llama-4-maverick"
             ]
         );
-        let families: Vec<&str> = openrouter.iter().map(|e| e.family.as_str()).collect();
-        assert_eq!(families, ["glm", "deepseek", "gpt-oss", "llama"]);
+        let providers: Vec<&str> = openrouter.iter().map(|e| e.provider.as_str()).collect();
+        assert_eq!(providers, ["zhipu", "deepseek", "openai", "meta"]);
         let glm = &openrouter[0];
         assert_eq!(glm.kind, RegistryKind::Endpoint);
         assert_eq!(glm.access, ModelAccess::ApiKey);
@@ -374,7 +374,7 @@ mod tests {
         );
         assert_eq!(ollama[0].aliases, ["llama3.2"]);
         assert!(ollama[1].aliases.is_empty());
-        assert_eq!(ollama[2].family, "gpt-oss");
+        assert_eq!(ollama[2].provider, "openai");
         assert!(ollama.iter().all(|e| e.access == ModelAccess::Local
             && e.cost.unit == CostUnit::None
             && e.efforts.is_empty()));

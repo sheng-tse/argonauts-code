@@ -1,5 +1,5 @@
 //! Untrusted text can carry escapes that set the window title, write the clipboard, or reorder
-//! what you read, so everything Argonauts shows goes through [`sanitize_for_terminal`] first.
+//! what you read, so everything Argonauts Code shows goes through [`sanitize_for_terminal`] first.
 
 /// Drops control characters except tab and newline, whole CSI, OSC, DCS, SOS, PM, and APC
 /// sequences in 7-bit and 8-bit forms, other escapes, and bidi overrides.

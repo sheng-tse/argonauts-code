@@ -5,8 +5,8 @@
 //! the echo of your message in the same rainbow, held still. The CLI reacts to the word in the
 //! prompt itself, so it goes out as typed.
 //!
-//! Three more words get their own treatment in 2.1.289, and none fits a session Argonauts runs:
-//! `ultraplan` launches a cloud session from the interactive screen only (and is off unless
+//! Three more words get their own treatment in 2.1.289, and none fits a session Argonauts Code
+//! runs: `ultraplan` launches a cloud session from the interactive screen only (and is off unless
 //! Anthropic's server turns it on), `ultrareview` only adds a footer note for accounts that have
 //! the cloud review, and `ultracode` asks for a workflow only from a prompt Claude Code saw a
 //! person type into its own input, which a prompt sent over `stream-json` isn't shown to be.
@@ -19,9 +19,9 @@ pub const KEYWORDS: &[Keyword] = &[Keyword::new("ultrathink", KeywordLook::Rainb
 mod tests {
     use std::path::PathBuf;
 
+    use argonauts_core::cli_commands::CliCommandSet;
+    use argonauts_core::cli_sessions::CliScan;
     use argonauts_core::keywords::find;
-    use argonauts_core::vendor_commands::VendorCommandSet;
-    use argonauts_core::vendor_sessions::VendorScan;
     use argonauts_core::{Adapter, SessionRequest};
 
     use super::*;
@@ -32,8 +32,8 @@ mod tests {
     #[test]
     fn the_adapter_offers_its_table() {
         assert_eq!(ClaudeCodeAdapter.keywords(), KEYWORDS);
-        let scan = VendorScan::new("/nonexistent/repo", "/nonexistent/home");
-        let set = VendorCommandSet::of(&ClaudeCodeAdapter, &scan).unwrap();
+        let scan = CliScan::new("/nonexistent/repo", "/nonexistent/home");
+        let set = CliCommandSet::of(&ClaudeCodeAdapter, &scan).unwrap();
         assert_eq!(set.keywords, KEYWORDS);
         let found = find(PROMPT, ClaudeCodeAdapter.keywords());
         assert_eq!(found.len(), 1);

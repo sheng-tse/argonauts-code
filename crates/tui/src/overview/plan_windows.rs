@@ -12,17 +12,17 @@
 //! go, then the plan, then the CLI's name shortens; the bar keeps at least a few cells.
 
 use argonauts_core::api::PlanUsage;
-use argonauts_core::limits::{QuotaReading, QuotaStatus};
+use argonauts_core::limits::{PlanUsageReading, PlanUsageStatus};
 use argonauts_core::plan_usage::LiveWindow;
 use ratatui::text::Span;
 use time::OffsetDateTime;
 
 use super::cards::{UsageCards, cli_role};
 use super::usage::{left_words, reset_words};
+use crate::kit::bars;
+use crate::kit::{Drawn, Kit, Level, ljust, rjust};
 use crate::text::{str_width, truncate_spans};
 use crate::theme::Role;
-use crate::widgets::bars;
-use crate::widgets::{Drawn, Kit, Level, ljust, rjust};
 
 /// The widest bar a window gets.
 const BAR: usize = 22;
@@ -83,14 +83,14 @@ fn live_row(window: &LiveWindow) -> WindowRow {
     }
 }
 
-fn reading_row(reading: &QuotaReading) -> WindowRow {
+fn reading_row(reading: &PlanUsageReading) -> WindowRow {
     let key = reading.window.as_deref().unwrap_or("now");
     WindowRow {
         words: key_words(key),
         used: reading.used,
         resets_at: reading.resets_at,
-        out: reading.status == QuotaStatus::Rejected,
-        warned: reading.status == QuotaStatus::Warning,
+        out: reading.status == PlanUsageStatus::Rejected,
+        warned: reading.status == PlanUsageStatus::Warning,
     }
 }
 
@@ -235,7 +235,7 @@ impl UsageCards<'_> {
             }
             if let Some(words) = self.limit_reached(plan, windows) {
                 let mut row = vec![Span::raw(" ".repeat(columns.name + columns.plan))];
-                row.push(kit.span(words, Role::Warning));
+                row.push(kit.span(words, Role::Warn));
                 body.push(truncate_spans(&row, width));
             }
         }

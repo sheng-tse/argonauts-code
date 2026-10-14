@@ -16,6 +16,9 @@ use crate::user_config;
 
 /// The key variable each API provider reads, from the `env` lists in OpenCode's models.dev
 /// catalog, not run. Local routes and every other provider keep none.
+/// Keeps OpenCode from updating itself, so a session never switches versions halfway.
+pub(crate) const AUTO_UPDATE_ENV: &str = "OPENCODE_DISABLE_AUTOUPDATE";
+
 const PROVIDER_KEY_ENV: &[(&str, &str)] = &[
     ("anthropic", "ANTHROPIC_API_KEY"),
     ("openai", "OPENAI_API_KEY"),
@@ -61,7 +64,7 @@ pub(crate) fn build_with(
 
     // An update mid-run would replace the binary a crew session is using.
     cmd.env_set
-        .push(("OPENCODE_DISABLE_AUTOUPDATE".to_owned(), "1".to_owned()));
+        .push((AUTO_UPDATE_ENV.to_owned(), "1".to_owned()));
     cmd.env_set.extend(req.env_set.iter().cloned());
     // OpenCode connects any provider whose key variable is set, so an inherited key could bill
     // an API the session wasn't meant to use. GitHub tokens and the parent session's
@@ -108,7 +111,7 @@ fn model_route(req: &SessionRequest) -> anyhow::Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use argonauts_core::registry::LaunchHints;
-    use argonauts_core::{PARENT_SESSION_ENV_VARS, SessionRole, VENDOR_KEY_ENV_VARS};
+    use argonauts_core::{PARENT_SESSION_ENV_VARS, PROVIDER_KEY_ENV_VARS, SessionRole};
 
     use super::*;
 
@@ -219,7 +222,7 @@ mod tests {
     #[test]
     fn inherited_keys_and_parent_session_are_removed() {
         let cmd = build_with(&request(), &[], &LocalUrls::new()).unwrap();
-        for var in VENDOR_KEY_ENV_VARS.iter().chain(PARENT_SESSION_ENV_VARS) {
+        for var in PROVIDER_KEY_ENV_VARS.iter().chain(PARENT_SESSION_ENV_VARS) {
             assert!(removes(&cmd, var), "{var}");
         }
 
@@ -251,7 +254,7 @@ mod tests {
             None,
         ] {
             let cmd = build_with(&api_key(model), &[], &LocalUrls::new()).unwrap();
-            let all = VENDOR_KEY_ENV_VARS.len() + PARENT_SESSION_ENV_VARS.len();
+            let all = PROVIDER_KEY_ENV_VARS.len() + PARENT_SESSION_ENV_VARS.len();
             assert_eq!(cmd.env_remove.len(), all, "{model:?}");
         }
     }

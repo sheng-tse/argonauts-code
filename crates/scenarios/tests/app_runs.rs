@@ -1,7 +1,7 @@
-//! Runs from the chat: the small fix to its merge, closing and reattaching, pausing, stopping,
-//! resuming and continuing, main sessions across runs, the gates offer, handoff checkpoints and
-//! remembered picks, the lead's workflow design, `/context`, runs in other repos, and every
-//! command.
+//! Runs from the conversation: the small fix to its merge, closing and reattaching, pausing,
+//! stopping, resuming and continuing, main sessions across runs, the checks offer, fallback
+//! checkpoints and remembered picks, the main agent's workflow design, `/context`, runs in other
+//! repos, and every command.
 
 mod app_support;
 
@@ -13,32 +13,32 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, bail};
 use app_support::*;
+use argonauts_core::agent_panel::{AgentPanelRows, CrewState, CrewTarget};
 use argonauts_core::app::{AppChoice, AppEvent, AppMode, ChoiceKind, TraceLine};
 use argonauts_core::app::{UiCommand, ViewData};
-use argonauts_core::crew_panel::{CrewPanel, CrewState, CrewTarget};
-use argonauts_core::events::checkpoint::{
-    AnswerAction, CheckpointEvent, CheckpointKind, CheckpointOpened, CheckpointPacket,
+use argonauts_core::events::approval::{
+    AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
 };
-use argonauts_core::events::run::{ParkReason, RunLifecycle, RunMode, RunOutcome};
+use argonauts_core::events::run::{RunLifecycle, RunMode, RunOutcome, WaitReason};
 use argonauts_core::events::session::{EndReason, SessionEvent};
-use argonauts_core::events::{CardEvent, RunEventKind, WorkflowEvent};
+use argonauts_core::events::{RunEventKind, TaskEvent, WorkflowEvent};
 use argonauts_core::input::{Handler, SLASH_COMMANDS};
 use argonauts_core::layout::{run_files, user_files};
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::views::CheckpointRow;
 use argonauts_core::workflow::{Count, StepKind};
 use argonauts_core::{Paths, RepoId, RunId};
-use argonauts_scenarios::{Scenario, WAIT};
-use argonauts_testkit::{Invocation, Key, Pty};
+use argonauts_scenarios::{Scenario, WAIT, scenario_file};
+use argonauts_testkit::{FakeScenario, Invocation, Key, Pty};
 use serde_json::{Value, json};
 
-/// A solo change whose Claude owner commits, then hits its usage limit, so Codex finishes it.
+/// A Captain change whose Claude worker commits, then hits its usage limit, so Codex finishes it.
 const LIMITED_TASK: &str = "move the export job onto the worker queue";
-/// A review, for which the lead picks the review panel.
+/// A review, for which the main agent picks the review panel.
 const REVIEW_TASK: &str = "Review the retry change in src/retry.rs";
-/// The workflow the lead picks for a review.
+/// The workflow the main agent picks for a review.
 const REVIEW_PANEL: &str = r#"name: review-panel
-description: Two reviewers from other providers; an adjudicator only if they disagree
+description: Two reviewers from other providers; a judge only if they disagree
 params: { target: diff, reviewers: 2 }
 phases:
   - name: Review
@@ -48,20 +48,20 @@ phases:
         role: reviewer
         count: "{{reviewers}}"
         blind: true
-        different_family_from: author
-  - name: Adjudicate
+        different_provider_from: author
+  - name: Settle
     standard: decide
     steps:
       - kind: judge
-        role: adjudicator
+        role: judge
         when: reviewers_disagree
 "#;
 /// The project file's first line, which every write must keep.
 const KEPT_COMMENT: &str = "# Written by the scenario test, kept through every change.";
 
 /// `run_config()` with merges waiting for you: by default they land on their own when every
-/// check passes, and these scenarios answer the merge card.
-fn merge_card_config() -> String {
+/// check passes, and these scenarios answer the merge question.
+fn merge_question_config() -> String {
     format!(
         "{}\n[approvals.merge]\nmode = \"supervised\"\n",
         run_config()
@@ -74,16 +74,16 @@ fn codex_config(base: &str) -> String {
     format!("{base}\n[agents.codex]\nmodel = \"gpt-5.6-luna\"\n")
 }
 
-/// The goal's questions come to you, for the scenarios that walk through its question card.
-/// In auto the lead would answer them otherwise.
+/// The goal's questions come to you, for the scenarios that walk through its question.
+/// In auto the main agent would answer them otherwise.
 const YOU_ANSWER: &str = "\n[approvals]\nanswers = \"you\"\n";
 
 fn is_finished(outcome: RunOutcome) -> impl Fn(&argonauts_core::events::RunEvent) -> bool {
     move |event| matches!(&event.kind, RunEventKind::Run(RunLifecycle::Finished { outcome: o, .. }) if *o == outcome)
 }
 
-fn is_parked(event: &argonauts_core::events::RunEvent) -> bool {
-    matches!(event.kind, RunEventKind::Run(RunLifecycle::Parked { .. }))
+fn is_waiting(event: &argonauts_core::events::RunEvent) -> bool {
+    matches!(event.kind, RunEventKind::Run(RunLifecycle::Waiting { .. }))
 }
 
 fn is_resumed(event: &argonauts_core::events::RunEvent) -> bool {
@@ -91,25 +91,24 @@ fn is_resumed(event: &argonauts_core::events::RunEvent) -> bool {
 }
 
 #[test]
-fn app_example_small_fix_solo() -> anyhow::Result<()> {
-    let scenario = scenario_with(&merge_card_config())?;
+fn app_example_small_fix_captain() -> anyhow::Result<()> {
+    let scenario = scenario_with(&merge_question_config())?;
     scenario.repo.write("notes.txt", "scratch notes\n")?;
     scenario.repo.write("todo.txt", "later\n")?;
     let mut pty = start(&scenario)?;
     submit(&mut pty, requests::SMALL_FIX)?;
 
     let run_dir = wait_run_dir(&scenario)?;
-    let merge_card = wait_checkpoint(&scenario, CheckpointKind::Merge)?;
-    let keys: Vec<char> = merge_card.options.iter().map(|o| o.key).collect();
+    let merge_question = wait_approval(&scenario, ApprovalKind::Merge)?;
+    let keys: Vec<char> = merge_question.options.iter().map(|o| o.key).collect();
     assert_eq!(keys[..3], ['y', 'p', 'b'], "{keys:?}");
     assert!(keys.contains(&'x') && keys.last() == Some(&'d'), "{keys:?}");
 
-    // One check passing reads its command and `passed`; several read `All 3 passed`. The card
-    // draws a moment after its checkpoint opens, so the screen is read once both are on it.
+    // One check passing reads its command and `passed`; several read `All 3 passed`. The question
+    // draws a moment after its approval opens, so the screen is read once both are on it.
     pty.wait_for(r"Checks\(tests\)\n.*true · passed", WAIT)?;
     let screen = pty.wait_for(r"Show the diff", WAIT)?;
     let text = screen.text();
-    assert!(!text.contains("Triage("), "a triage row:\n{text}");
     let order = [
         "2 uncommitted files left out",
         "build:",
@@ -135,16 +134,16 @@ fn app_example_small_fix_solo() -> anyhow::Result<()> {
     merge(&mut pty, &run_dir)?;
     pty.wait_for(r"◆ Approved merging the run into main · you", WAIT)?;
     pty.wait_for(r"✻ \w+ for \d", WAIT)?;
-    check_mode_line(&pty)?;
+    check_bottom_row(&pty)?;
     let readme = scenario.repo.git(&["show", "main:README.md"])?;
     assert!(readme.contains("npm install @acme/api"), "{readme}");
-    scenario.shot(&pty, "app_example_small_fix_solo")?;
+    scenario.shot(&pty, "app_example_small_fix_captain")?;
     Ok(())
 }
 
 #[test]
 fn app_example_bigger_task_crew() -> anyhow::Result<()> {
-    // The example runs the preset's own workflow, without the lead designing one.
+    // The example runs the workflow as it is, without the main agent designing one.
     let workflows =
         config_with_workflows("orchestrator_designs = false\nadapt_at_phase_ends = false\n");
     let scenario = scenario_with(&codex_config(&format!("{workflows}\n{YOU_ANSWER}")))?;
@@ -152,21 +151,20 @@ fn app_example_bigger_task_crew() -> anyhow::Result<()> {
     submit(&mut pty, requests::CREW_TASK)?;
 
     let run_dir = wait_run_dir(&scenario)?;
-    let goal = wait_checkpoint(&scenario, CheckpointKind::Goal)?;
+    let goal = wait_approval(&scenario, ApprovalKind::Understand)?;
     let recommended = goal
         .options
         .first()
-        .expect("the goal approval has no answers");
+        .expect("the Understand approval has no answers");
     assert!(
         recommended.key == 'a' && recommended.recommended,
         "{goal:?}"
     );
     let text = pty.wait_for(r"What should the goal say\?", WAIT)?.text();
     // The goal's `● Goal(…)` line waits for its approval; before the question, the screen shows
-    // what the restatements agree on and what they assumed.
-    assert!(!text.contains("Triage("), "a triage row:\n{text}");
+    // what the readings agree on and what they assumed.
     let order = [
-        "What the restatements agree on",
+        "What the readings agree on",
         "Assumed",
         "What should the goal say?",
     ];
@@ -176,33 +174,36 @@ fn app_example_bigger_task_crew() -> anyhow::Result<()> {
         "expected {order:?} in order:\n{text}"
     );
 
-    // No agent works while the card waits, so the run parks and its supervisor exits.
-    wait_journal(&run_dir, "the run to park", is_parked)?;
-    wait_pid_gone(supervisor_pid(&run_dir)?)?;
+    // No agent works while the question waits, so the run waits and its run host exits.
+    wait_journal(&run_dir, "the run to wait", is_waiting)?;
+    wait_pid_gone(run_host_pid(&run_dir)?)?;
 
     // The recommended answer comes first.
-    answer_card(&mut pty, '1')?;
+    answer_question(&mut pty, '1')?;
     pty.wait_for("Goal question answered · Per API key", WAIT)?;
     pty.wait_for(
         r"● Goal\(.*\n.*Agreed by 3 agents · 1 question answered",
         WAIT,
     )?;
-    let drafters = wait_until("three drafter blocks", || {
+    let drafting_agents = wait_until("three drafting agent blocks", || {
         let text = pty.screen().text();
         Ok((text.matches("● draft:").count() >= 3).then_some(text))
     })?;
     for agent in ["Claude Code", "Codex", "Antigravity CLI"] {
-        assert!(drafters.contains(agent), "no {agent} drafter:\n{drafters}");
+        assert!(
+            drafting_agents.contains(agent),
+            "no {agent} drafting agent:\n{drafting_agents}"
+        );
     }
     scenario.shot(&pty, "app_example_bigger_task_crew")?;
     Ok(())
 }
 
-/// All hands through the fake vendors: the one-file fix that triage gives one
-/// agent goes to the crew while it's on, as the input rule's label says, and solo while it's off.
+/// Ultracode through the fake agents: the one-file fix that the rules give one agent goes to the
+/// crew while it's on, as the input rule's label says, and Captain while it's off.
 #[test]
 fn app_ultracode_sends_a_small_task_to_the_crew() -> anyhow::Result<()> {
-    for (on, mode) in [(true, RunMode::Crew), (false, RunMode::Solo)] {
+    for (on, mode) in [(true, RunMode::Crew), (false, RunMode::Captain)] {
         let config = if on {
             format!("ultracode = true\n{GLOBAL_CONFIG}\n")
         } else {
@@ -219,7 +220,10 @@ fn app_ultracode_sends_a_small_task_to_the_crew() -> anyhow::Result<()> {
         let started = run_started(&run_dir)?;
         assert_eq!(started.mode, mode);
         assert!(!started.forced);
-        let rule = started.triage.map(|triage| triage.rule).unwrap_or_default();
+        let rule = started
+            .captain_or_crew
+            .map(|captain_or_crew| captain_or_crew.rule)
+            .unwrap_or_default();
         assert_eq!(rule == "ultracode", on, "{rule}");
         if on {
             scenario.shot(&pty, "app_ultracode_sends_a_small_task_to_the_crew")?;
@@ -230,9 +234,9 @@ fn app_ultracode_sends_a_small_task_to_the_crew() -> anyhow::Result<()> {
 
 #[test]
 fn app_stays_open_after_merge() -> anyhow::Result<()> {
-    let scenario = scenario_with(&merge_card_config())?;
+    let scenario = scenario_with(&merge_question_config())?;
     let mut pty = start(&scenario)?;
-    let (run_dir, _) = reach_merge_card(&scenario, &mut pty)?;
+    let (run_dir, _) = reach_merge_question(&scenario, &mut pty)?;
     merge(&mut pty, &run_dir)?;
 
     wait_mode(&scenario, "the prompt back", |m| matches!(m, AppMode::Idle))?;
@@ -240,7 +244,7 @@ fn app_stays_open_after_merge() -> anyhow::Result<()> {
     wait_turns_finished(&scenario, 1)?;
     // The turn-end verb is picked from the voyage set, such as `Sailed for 3s`.
     pty.wait_for(r"(?s)❯ hi\n.*Hi\. Ask me anything.*✻ \w+ for \d", WAIT)?;
-    check_mode_line(&pty)?;
+    check_bottom_row(&pty)?;
     scenario.shot(&pty, "app_stays_open_after_merge")?;
     Ok(())
 }
@@ -249,10 +253,10 @@ fn app_stays_open_after_merge() -> anyhow::Result<()> {
 fn app_close_screen_run_continues_and_reattaches() -> anyhow::Result<()> {
     let scenario = scenario()?;
     let mut pty = start(&scenario)?;
-    let run_dir = start_solo(&scenario, &mut pty, requests::SLOW_TASK)?;
+    let run_dir = start_captain(&scenario, &mut pty, requests::SLOW_TASK)?;
     let run = run_id(&run_dir)?;
-    let owner = wait_owner_started(&scenario)?;
-    let supervisor = supervisor_pid(&run_dir)?;
+    let worker = wait_worker_started(&scenario)?;
+    let run_host = run_host_pid(&run_dir)?;
 
     pty.press(Key::Ctrl('c'))?;
     pty.wait_for("Press Ctrl-C again to exit · the run keeps going", WAIT)?;
@@ -263,10 +267,10 @@ fn app_close_screen_run_continues_and_reattaches() -> anyhow::Result<()> {
     let reattach = format!("Reattach with: argonauts resume {run}");
     assert!(text.contains(&reattach), "{text}");
     assert!(
-        pid_alive(supervisor),
-        "closing the screen stopped the supervisor"
+        pid_alive(run_host),
+        "closing the screen stopped the run host"
     );
-    assert!(pid_alive(owner), "closing the screen stopped the worker");
+    assert!(pid_alive(worker), "closing the screen stopped the worker");
 
     rotate_trace(&scenario, "first")?;
     let pty = start_with(&scenario, &["resume", run.as_str()])?;
@@ -281,7 +285,7 @@ fn app_close_screen_run_continues_and_reattaches() -> anyhow::Result<()> {
         |event| matches!(event, AppEvent::ReplayDone { run: done, .. } if *done == run),
     )?;
     pty.wait_for("build:\\S+ · ", WAIT)?;
-    assert!(pid_alive(owner), "reattaching restarted the worker");
+    assert!(pid_alive(worker), "reattaching restarted the worker");
     assert_eq!(
         claude_sessions(&scenario, "acceptEdits")?.len(),
         1,
@@ -291,18 +295,22 @@ fn app_close_screen_run_continues_and_reattaches() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Fails when a run waiting on you has a panel row, `◆ needs you`, or counts in the mode line,
-/// `← 1 needs you`, or when the app attached to it or listed rows for the panel. The line under
-/// the header says `1 run needs you`.
+/// How the panel row of a run that waits on you ends, before what it asks where the screen
+/// holds the run.
+const NEEDS_YOU_ROW: &str = "· needs you";
+
+/// Fails when a run waiting on you has a panel row, which ends `· needs you` and what it asks,
+/// or counts in the bottom line, `← 1 needs you`, or when the app attached to it or listed rows
+/// for the panel. The line under the header says `1 run needs you`.
 fn check_off_the_panel(scenario: &Scenario, pty: &Pty) -> anyhow::Result<()> {
     let text = pty.screen().visible_text();
     assert!(
-        !text.contains("◆ needs you"),
+        !text.contains(NEEDS_YOU_ROW),
         "the run got a panel row:\n{text}"
     );
     assert!(
         !text.contains(" 1 needs you"),
-        "the mode line counted the run:\n{text}"
+        "the bottom line counted the run:\n{text}"
     );
     let events = events(scenario)?;
     assert!(
@@ -316,20 +324,20 @@ fn check_off_the_panel(scenario: &Scenario, pty: &Pty) -> anyhow::Result<()> {
 }
 
 /// `argonauts` opens a new conversation, as `claude` does, and its panel holds only the runs
-/// started in it. A run parked on a question in an earlier session gets one line
-/// under the header, and no panel row or mode-line count; what you type goes to the new
-/// conversation, and the card waits until you open the run. `argonauts -c` carries on a
+/// started in it. A run waiting on a question in an earlier session gets one line
+/// under the header, and no panel row or bottom line count; what you type goes to the new
+/// conversation, and the question waits until you open the run. `argonauts -c` carries on a
 /// conversation that never opened the run, so it stays off that panel too.
 #[test]
-fn app_start_leaves_a_parked_question_for_you_to_open() -> anyhow::Result<()> {
+fn app_start_leaves_a_waiting_question_for_you_to_open() -> anyhow::Result<()> {
     const QUESTION: &str = "Keep the old name as an alias?";
     const TITLE: &str = "Rename the config loader";
     let scenario = scenario()?;
-    let parked = fabricate_parked_run(&scenario, 0)?;
-    let journal_before = run_events(&parked.dir)?.len();
+    let waiting = fabricate_waiting_run(&scenario, 0)?;
+    let journal_before = run_events(&waiting.dir)?.len();
     let mut pty = start(&scenario)?;
     pty.wait_for("1 run needs you · /resume", WAIT)?;
-    check_mode_line(&pty)?;
+    check_bottom_row(&pty)?;
     submit(&mut pty, requests::HI)?;
     wait_turns_finished(&scenario, 1)?;
     let text = pty.screen().visible_text();
@@ -339,17 +347,17 @@ fn app_start_leaves_a_parked_question_for_you_to_open() -> anyhow::Result<()> {
     );
     check_off_the_panel(&scenario, &pty)?;
     assert_eq!(
-        run_events(&parked.dir)?.len(),
+        run_events(&waiting.dir)?.len(),
         journal_before,
         "the waiting run changed while you chatted"
     );
-    scenario.shot(&pty, "app_start_leaves_a_parked_question_for_you_to_open")?;
+    scenario.shot(&pty, "app_start_leaves_a_waiting_question_for_you_to_open")?;
     quit(&mut pty)?;
 
     rotate_trace(&scenario, "first")?;
     let mut pty = start_with(&scenario, &["-c"])?;
     wait_event(&scenario, "the conversation to carry on", |event| {
-        matches!(event, AppEvent::ChatResumed { .. })
+        matches!(event, AppEvent::ConversationResumed { .. })
     })?;
     pty.wait_for("1 run needs you · /resume", WAIT)?;
     submit(&mut pty, requests::HI)?;
@@ -360,35 +368,35 @@ fn app_start_leaves_a_parked_question_for_you_to_open() -> anyhow::Result<()> {
         "the task or the run showed after -c:\n{text}"
     );
     check_off_the_panel(&scenario, &pty)?;
-    assert_eq!(run_events(&parked.dir)?.len(), journal_before);
+    assert_eq!(run_events(&waiting.dir)?.len(), journal_before);
     scenario.shot(
         &pty,
-        "app_continue_leaves_the_parked_question_for_you_to_open",
+        "app_continue_leaves_the_waiting_question_for_you_to_open",
     )?;
     Ok(())
 }
 
-/// A run belongs to the conversation that started or opened it. Started now, it
-/// gets a panel row. After a restart it shows only under the header, with no row and no count
-/// in the mode line, until `/resume <run>` opens it, card and row. `argonauts -c` carries on the
-/// newest conversation, one with no turn that only opened the run, and brings its row back, and
-/// Enter on the row opens it.
+/// A run belongs to the conversation that started or opened it. Started now, it gets a panel row.
+/// After a restart it shows only under the header, with no row and no count in the bottom line,
+/// until `/resume <run>` opens it, question and row. `argonauts -c` carries on the newest
+/// conversation, one with no turn that only opened the run, and brings its row back, and Enter on
+/// the row opens it.
 #[test]
-fn app_parked_run_belongs_to_the_conversation_that_started_it() -> anyhow::Result<()> {
-    let scenario = scenario_with(&merge_card_config())?;
+fn app_waiting_run_belongs_to_the_conversation_that_started_it() -> anyhow::Result<()> {
+    let scenario = scenario_with(&merge_question_config())?;
     let mut pty = start(&scenario)?;
-    let (run_dir, _) = reach_merge_card(&scenario, &mut pty)?;
+    let (run_dir, _) = reach_merge_question(&scenario, &mut pty)?;
     let run = run_id(&run_dir)?;
-    pty.wait_for("◆ needs you", WAIT)?;
+    pty.wait_for(NEEDS_YOU_ROW, WAIT)?;
     scenario.shot(&pty, "app_run_started_now_gets_a_row")?;
-    wait_journal(&run_dir, "the run to park", is_parked)?;
-    wait_pid_gone(supervisor_pid(&run_dir)?)?;
+    wait_journal(&run_dir, "the run to wait", is_waiting)?;
+    wait_pid_gone(run_host_pid(&run_dir)?)?;
     quit(&mut pty)?;
 
     rotate_trace(&scenario, "first")?;
     let mut pty = start(&scenario)?;
     pty.wait_for("1 run needs you · /resume", WAIT)?;
-    check_mode_line(&pty)?;
+    check_bottom_row(&pty)?;
     check_off_the_panel(&scenario, &pty)?;
     scenario.shot(&pty, "app_restart_leaves_an_earlier_run_off_the_panel")?;
     submit(&mut pty, &format!("/resume {run}"))?;
@@ -397,9 +405,9 @@ fn app_parked_run_belongs_to_the_conversation_that_started_it() -> anyhow::Resul
         "the run to open",
         |event| matches!(event, AppEvent::Attached { summary, .. } if summary.run == run),
     )?;
-    wait_checkpoint(&scenario, CheckpointKind::Merge)?;
+    wait_approval(&scenario, ApprovalKind::Merge)?;
     pty.wait_for("◆ Merge this run into main?", WAIT)?;
-    pty.wait_for("◆ needs you", WAIT)?;
+    pty.wait_for(NEEDS_YOU_ROW, WAIT)?;
     scenario.shot(&pty, "app_resume_brings_a_run_into_the_panel")?;
     quit(&mut pty)?;
 
@@ -408,13 +416,13 @@ fn app_parked_run_belongs_to_the_conversation_that_started_it() -> anyhow::Resul
     rotate_trace(&scenario, "second")?;
     let mut pty = start_with(&scenario, &["-c"])?;
     wait_event(&scenario, "the conversation to carry on", |event| {
-        matches!(event, AppEvent::ChatResumed { .. })
+        matches!(event, AppEvent::ConversationResumed { .. })
     })?;
-    pty.wait_for("◆ needs you", WAIT)?;
+    pty.wait_for(NEEDS_YOU_ROW, WAIT)?;
     pty.wait_for(" 1 needs you", WAIT)?;
-    check_mode_line(&pty)?;
+    check_bottom_row(&pty)?;
     pty.press(Key::Down)?;
-    pty.wait_for(r"❯ ◆ ", WAIT)?;
+    pty.wait_for(r"❯ ⏸ ", WAIT)?;
     pty.press(Key::Enter)?;
     wait_event(
         &scenario,
@@ -422,20 +430,71 @@ fn app_parked_run_belongs_to_the_conversation_that_started_it() -> anyhow::Resul
         |event| matches!(event, AppEvent::Attached { summary, .. } if summary.run == run),
     )?;
     pty.wait_for("◆ Merge this run into main?", WAIT)?;
-    // Focus left the panel, so the card takes the keys.
+    // Focus left the panel, so the question takes the keys.
     pty.wait_for(r"(?m)^  Enter to \w+.* · Esc to ", WAIT)?;
     scenario.shot(&pty, "app_continue_brings_back_the_conversations_run")?;
     Ok(())
 }
 
+/// A start says each one-time thing once, the CLIs first: a newer version of a CLI that is
+/// out, then a run an older Argonauts Code wrote. The start after it says neither again.
 #[test]
-fn app_resume_parked_run() -> anyhow::Result<()> {
-    let scenario = scenario_with(&merge_card_config())?;
+fn app_start_names_a_newer_cli_then_an_older_run_once_each() -> anyhow::Result<()> {
+    use argonauts_conductor::cli_versions::CliVersions;
+
+    const NEWER: &str = "Claude Code 2.1.999 is out";
+    const SHOWN_ONCE: &str = "shown once for this version";
+    const OLDER: &str = "was written by an older Argonauts and can't be opened";
+
+    let scenario = scenario()?;
+    let paths = Paths::new(scenario.repo.home());
+    // Where Claude Code was installed from said a moment ago what its newest version is.
+    let seen_at = paths.cli_versions();
+    let mut seen = CliVersions::load(&seen_at);
+    let now = time::OffsetDateTime::now_utc();
+    seen.asked_newest("claude-code", Some("2.1.999".to_owned()), now);
+    fs::create_dir_all(seen_at.parent().context("the versions file has a folder")?)?;
+    seen.save(&seen_at)?;
+    // A run of this folder that an older build wrote.
+    let repo = RepoId::for_repo(scenario.repo.root()).context("naming the test repo")?;
+    let run = RunId::new("run-20261004-072329-63c3")?;
+    let run_dir = paths.run_dir(&repo, &run);
+    fs::create_dir_all(&run_dir)?;
+    let older = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app/tests/fixtures/older-run");
+    for file in [run_files::START, run_files::EVENTS] {
+        fs::copy(older.join(file), run_dir.join(file))
+            .with_context(|| format!("copying the older run's {file}"))?;
+    }
+
     let mut pty = start(&scenario)?;
-    let (run_dir, _) = reach_merge_card(&scenario, &mut pty)?;
+    pty.wait_for(OLDER, WAIT)?;
+    let said = pty.screen().text();
+    for line in [NEWER, SHOWN_ONCE, OLDER] {
+        assert_eq!(said.matches(line).count(), 1, "{line}:\n{said}");
+    }
+    assert!(said.find(NEWER) < said.find(OLDER), "{said}");
+    quit(&mut pty)?;
+
+    rotate_trace(&scenario, "first")?;
+    let mut pty = start(&scenario)?;
+    check_bottom_row(&pty)?;
+    // Both would be on screen by now: the first start had them up with its welcome.
+    thread::sleep(Duration::from_secs(1));
+    let said = pty.screen().text();
+    for line in [NEWER, SHOWN_ONCE, OLDER] {
+        assert!(!said.contains(line), "{line} was said again:\n{said}");
+    }
+    quit(&mut pty)
+}
+
+#[test]
+fn app_resume_waiting_run() -> anyhow::Result<()> {
+    let scenario = scenario_with(&merge_question_config())?;
+    let mut pty = start(&scenario)?;
+    let (run_dir, _) = reach_merge_question(&scenario, &mut pty)?;
     let run = run_id(&run_dir)?;
-    wait_journal(&run_dir, "the run to park", is_parked)?;
-    wait_pid_gone(supervisor_pid(&run_dir)?)?;
+    wait_journal(&run_dir, "the run to wait", is_waiting)?;
+    wait_pid_gone(run_host_pid(&run_dir)?)?;
     quit(&mut pty)?;
 
     rotate_trace(&scenario, "first")?;
@@ -446,18 +505,18 @@ fn app_resume_parked_run() -> anyhow::Result<()> {
         "the app to attach",
         |event| matches!(event, AppEvent::Attached { summary, .. } if summary.run == run),
     )?;
-    wait_checkpoint(&scenario, CheckpointKind::Merge)?;
+    wait_approval(&scenario, ApprovalKind::Merge)?;
     pty.wait_for("◆ Merge this run into main?", WAIT)?;
     merge(&mut pty, &run_dir)?;
-    scenario.shot(&pty, "app_resume_parked_run")?;
+    scenario.shot(&pty, "app_resume_waiting_run")?;
     Ok(())
 }
 
 #[test]
 fn app_continue_merged_run() -> anyhow::Result<()> {
-    let scenario = scenario_with(&merge_card_config())?;
+    let scenario = scenario_with(&merge_question_config())?;
     let mut pty = start(&scenario)?;
-    let (first_dir, _) = reach_merge_card(&scenario, &mut pty)?;
+    let (first_dir, _) = reach_merge_question(&scenario, &mut pty)?;
     let first = run_id(&first_dir)?;
     merge(&mut pty, &first_dir)?;
 
@@ -481,11 +540,11 @@ fn app_continue_merged_run() -> anyhow::Result<()> {
 
 #[test]
 fn app_resume_stopped_run() -> anyhow::Result<()> {
-    let scenario = scenario_with(&merge_card_config())?;
+    let scenario = scenario_with(&merge_question_config())?;
     let mut pty = start(&scenario)?;
-    let run_dir = start_solo(&scenario, &mut pty, requests::SLOW_TASK)?;
+    let run_dir = start_captain(&scenario, &mut pty, requests::SLOW_TASK)?;
     let run = run_id(&run_dir)?;
-    let owner = wait_owner_started(&scenario)?;
+    let worker = wait_worker_started(&scenario)?;
 
     submit(&mut pty, "/stop")?;
     wait_journal(
@@ -493,19 +552,19 @@ fn app_resume_stopped_run() -> anyhow::Result<()> {
         "the run to stop",
         is_finished(RunOutcome::Stopped),
     )?;
-    wait_pid_gone(owner)?;
+    wait_pid_gone(worker)?;
 
-    // A stopped run can be resumed: the owner's vendor session picks up where it was.
+    // A stopped run can be resumed: the worker's CLI session picks up where it was.
     submit(&mut pty, &format!("/resume {run}"))?;
     wait_journal(&run_dir, "the run to resume", is_resumed)?;
     wait_until("the worker's session to resume", || {
         Ok(claude_sessions(&scenario, "acceptEdits")?
             .into_iter()
-            .find(|i| has_flag(&i.args, "--resume", "sess-owner-slow")))
+            .find(|i| has_flag(&i.args, "--resume", "sess-worker-slow")))
     })?;
 
     // A merged one refuses.
-    wait_checkpoint(&scenario, CheckpointKind::Merge)?;
+    wait_approval(&scenario, ApprovalKind::Merge)?;
     merge(&mut pty, &run_dir)?;
     let resumes_before = run_events(&run_dir)?.into_iter().filter(is_resumed).count();
     let notices_before = notices(&scenario)?.len();
@@ -524,11 +583,11 @@ fn app_resume_stopped_run() -> anyhow::Result<()> {
 #[test]
 fn app_resume_cli_opens_picker() -> anyhow::Result<()> {
     let scenario = scenario()?;
-    let parked = fabricate_parked_run(&scenario, 1)?;
-    let journal_before = run_events(&parked.dir)?.len();
+    let waiting = fabricate_waiting_run(&scenario, 1)?;
+    let journal_before = run_events(&waiting.dir)?.len();
 
     let mut pty = scenario.launch(&["resume"])?;
-    // The picker can take the screen before the mode line draws, which shows again after Esc.
+    // The picker can take the screen before the bottom line draws, which shows again after Esc.
     wait_event(&scenario, "the app's welcome", |event| {
         matches!(event, AppEvent::Welcome { .. })
     })?;
@@ -537,19 +596,22 @@ fn app_resume_cli_opens_picker() -> anyhow::Result<()> {
         "the runs picker",
         |event| matches!(event, AppEvent::View { data } if matches!(data.as_ref(), ViewData::Runs { .. })),
     )?;
-    if let AppEvent::View { data } = listed
-        && let ViewData::Runs { runs, .. } = *data
-    {
-        assert!(
-            runs.iter().any(|summary| summary.run == parked.run),
-            "{runs:?}"
-        );
-    }
-    pty.wait_for(parked.run.as_str(), WAIT)?;
+    let AppEvent::View { data } = listed else {
+        unreachable!("matched a view")
+    };
+    let ViewData::Runs { runs, .. } = *data else {
+        unreachable!("matched the runs picker")
+    };
+    let listed = runs
+        .iter()
+        .find(|summary| summary.run == waiting.run)
+        .with_context(|| format!("{runs:?}"))?;
+    // The list names a run by what was asked, as it names every session.
+    pty.wait_for(&regex::escape(&listed.title), WAIT)?;
     pty.press(Key::Esc)?;
-    check_mode_line(&pty)?;
+    check_bottom_row(&pty)?;
     assert_eq!(
-        run_events(&parked.dir)?.len(),
+        run_events(&waiting.dir)?.len(),
         journal_before,
         "opening the picker changed the run"
     );
@@ -561,25 +623,25 @@ fn app_resume_cli_opens_picker() -> anyhow::Result<()> {
 fn app_project_main_session_across_runs() -> anyhow::Result<()> {
     let scenario = scenario_with(&format!(
         "{}\n[roles.worker]\nlifetime = \"project\"\n",
-        merge_card_config()
+        merge_question_config()
     ))?;
     let mut pty = start(&scenario)?;
-    let (first_dir, _) = reach_merge_card(&scenario, &mut pty)?;
+    let (first_dir, _) = reach_merge_question(&scenario, &mut pty)?;
     merge(&mut pty, &first_dir)?;
 
-    start_solo(&scenario, &mut pty, requests::TIMED_TASK)?;
-    let owners = wait_until("the second run's worker", || {
-        let owners = claude_sessions(&scenario, "acceptEdits")?;
-        Ok((owners.len() >= 2).then_some(owners))
+    start_captain(&scenario, &mut pty, requests::TIMED_TASK)?;
+    let workers = wait_until("the second run's worker", || {
+        let workers = claude_sessions(&scenario, "acceptEdits")?;
+        Ok((workers.len() >= 2).then_some(workers))
     })?;
     assert!(
-        !owners[0].args.iter().any(|a| a == "--resume"),
+        !workers[0].args.iter().any(|a| a == "--resume"),
         "the first worker resumed something"
     );
     assert!(
-        has_flag(&owners[1].args, "--resume", "sess-owner-readme"),
+        has_flag(&workers[1].args, "--resume", "sess-worker-readme"),
         "the second run didn't resume the project's worker session: {:?}",
-        owners[1].args
+        workers[1].args
     );
     scenario.shot(&pty, "app_project_main_session_across_runs")?;
     Ok(())
@@ -587,10 +649,10 @@ fn app_project_main_session_across_runs() -> anyhow::Result<()> {
 
 #[test]
 fn app_pause_at_safe_point_and_resume() -> anyhow::Result<()> {
-    let scenario = scenario_with(&merge_card_config())?;
+    let scenario = scenario_with(&merge_question_config())?;
     let mut pty = start(&scenario)?;
-    let run_dir = start_solo(&scenario, &mut pty, requests::TIMED_TASK)?;
-    let owner = wait_owner_started(&scenario)?;
+    let run_dir = start_captain(&scenario, &mut pty, requests::TIMED_TASK)?;
+    let worker = wait_worker_started(&scenario)?;
 
     argonauts_scenarios::pause_run(&mut pty)?;
     wait_journal(&run_dir, "the pause request", |event| {
@@ -602,7 +664,7 @@ fn app_pause_at_safe_point_and_resume() -> anyhow::Result<()> {
     let paused = wait_journal(&run_dir, "the run to pause", |event| {
         matches!(event.kind, RunEventKind::Run(RunLifecycle::Paused { .. }))
     })?;
-    // A safe point stops each session after its current tool call. The owner had none open,
+    // A safe point stops each session after its current tool call. The worker had none open,
     // so it stopped at once, and its work was committed.
     if let RunEventKind::Run(RunLifecycle::Paused {
         sessions_stopped,
@@ -611,36 +673,36 @@ fn app_pause_at_safe_point_and_resume() -> anyhow::Result<()> {
     {
         assert_eq!(sessions_stopped, 1, "the pause didn't stop the worker");
         assert!(
-            committed.iter().any(|card| card.as_str() == "task-001"),
+            committed.iter().any(|task| task.as_str() == "task-001"),
             "{committed:?}"
         );
     }
-    wait_journal(&run_dir, "the run to park", |event| {
+    wait_journal(&run_dir, "the run to wait", |event| {
         matches!(
             &event.kind,
-            RunEventKind::Run(RunLifecycle::Parked {
-                reason: ParkReason::Paused,
+            RunEventKind::Run(RunLifecycle::Waiting {
+                reason: WaitReason::Paused,
                 ..
             })
         )
     })?;
     // Paused after its tool call, which a stop-now would have cut short.
-    let owner_end = run_events(&run_dir)?
+    let worker_end = run_events(&run_dir)?
         .into_iter()
         .find_map(|event| match event.kind {
             RunEventKind::Session(SessionEvent::Ended(end)) => Some(end.reason),
             _ => None,
         })
         .context("the worker's session never ended")?;
-    assert_eq!(owner_end, EndReason::Paused, "the worker was cut off");
-    wait_pid_gone(owner)?;
+    assert_eq!(worker_end, EndReason::Paused, "the worker was cut off");
+    wait_pid_gone(worker)?;
     wait_mode(&scenario, "the waiting mode", |m| {
-        matches!(m, AppMode::Parked { .. })
+        matches!(m, AppMode::Waiting { .. })
     })?;
 
     submit(&mut pty, "/resume")?;
     wait_journal(&run_dir, "the run to resume", is_resumed)?;
-    wait_checkpoint(&scenario, CheckpointKind::Merge)?;
+    wait_approval(&scenario, ApprovalKind::Merge)?;
     scenario.shot(&pty, "app_pause_at_safe_point_and_resume")?;
     Ok(())
 }
@@ -649,10 +711,10 @@ fn app_pause_at_safe_point_and_resume() -> anyhow::Result<()> {
 fn app_second_esc_stops_now_and_commits() -> anyhow::Result<()> {
     let scenario = scenario()?;
     let mut pty = start(&scenario)?;
-    let run_dir = start_solo(&scenario, &mut pty, requests::SLOW_TASK)?;
+    let run_dir = start_captain(&scenario, &mut pty, requests::SLOW_TASK)?;
     let run = run_id(&run_dir)?;
-    let owner = wait_owner_started(&scenario)?;
-    // The owner writes its file before it says this.
+    let worker = wait_worker_started(&scenario)?;
+    // The worker writes its file before it says this.
     pty.wait_for("Renaming the config loader", WAIT)?;
 
     // Esc leaves a working run going. Once it is pausing, Esc stops it now.
@@ -669,11 +731,11 @@ fn app_second_esc_stops_now_and_commits() -> anyhow::Result<()> {
     })?;
     if let RunEventKind::Run(RunLifecycle::Paused { committed, .. }) = paused.kind {
         assert!(
-            committed.iter().any(|card| card.as_str() == "task-001"),
+            committed.iter().any(|task| task.as_str() == "task-001"),
             "{committed:?}"
         );
     }
-    wait_pid_gone(owner)?;
+    wait_pid_gone(worker)?;
     let committed_work = run_branches(&scenario, &run)?.into_iter().any(|branch| {
         branch_files(&scenario, &branch)
             .is_ok_and(|files| files.contains(&"loader-notes.md".to_owned()))
@@ -684,17 +746,17 @@ fn app_second_esc_stops_now_and_commits() -> anyhow::Result<()> {
 }
 
 #[test]
-fn app_guidance_while_parked_delivered_on_resume() -> anyhow::Result<()> {
+fn app_guidance_while_waiting_delivered_on_resume() -> anyhow::Result<()> {
     let scenario = scenario()?;
     let mut pty = start(&scenario)?;
-    let run_dir = start_solo(&scenario, &mut pty, requests::SLOW_TASK)?;
-    wait_owner_started(&scenario)?;
+    let run_dir = start_captain(&scenario, &mut pty, requests::SLOW_TASK)?;
+    wait_worker_started(&scenario)?;
     pty.wait_for("Renaming the config loader", WAIT)?;
     argonauts_scenarios::pause_run(&mut pty)?;
     pty.press(Key::Esc)?;
-    wait_journal(&run_dir, "the run to park", is_parked)?;
+    wait_journal(&run_dir, "the run to wait", is_waiting)?;
     wait_mode(&scenario, "the waiting mode", |m| {
-        matches!(m, AppMode::Parked { .. })
+        matches!(m, AppMode::Waiting { .. })
     })?;
 
     submit(&mut pty, requests::GUIDANCE)?;
@@ -717,12 +779,12 @@ fn app_guidance_while_parked_delivered_on_resume() -> anyhow::Result<()> {
         "the resumed worker's prompt lacks the guidance: {:?}",
         resumed.stdin
     );
-    scenario.shot(&pty, "app_guidance_while_parked_delivered_on_resume")?;
+    scenario.shot(&pty, "app_guidance_while_waiting_delivered_on_resume")?;
     Ok(())
 }
 
 #[test]
-fn app_offers_detected_gates_once() -> anyhow::Result<()> {
+fn app_offers_detected_checks_once() -> anyhow::Result<()> {
     let package = "{\"scripts\": {\"test\": \"node test.js\", \"lint\": \"eslint .\"}}\n";
 
     // Skip means never again in this repo.
@@ -730,26 +792,26 @@ fn app_offers_detected_gates_once() -> anyhow::Result<()> {
     skipping.repo.write("package.json", package)?;
     skipping.repo.commit_all("add package.json")?;
     let mut pty = start(&skipping)?;
-    start_solo(&skipping, &mut pty, requests::SMALL_FIX)?;
-    let offer = wait_open_choice(&skipping, argonauts_core::app::ChoiceKind::DetectedGates)?;
+    start_captain(&skipping, &mut pty, requests::SMALL_FIX)?;
+    let offer = wait_open_choice(&skipping, argonauts_core::app::ChoiceKind::DetectedChecks)?;
     let body = offer.body.join("\n");
     assert!(body.contains("test") && body.contains("lint"), "{body}");
     let keys: Vec<char> = offer.options.iter().map(|o| o.key).collect();
     assert_eq!(keys, ['y', 'e', 'n'], "{offer:?}");
-    answer_card(&mut pty, number_of(&offer.options, 'n'))?;
+    answer_question(&mut pty, number_of(&offer.options, 'n'))?;
     wait_choice_closed(&skipping, &offer.id)?;
-    start_solo(&skipping, &mut pty, requests::TIMED_TASK)?;
-    wait_owner_started(&skipping)?;
+    start_captain(&skipping, &mut pty, requests::TIMED_TASK)?;
+    wait_worker_started(&skipping)?;
     thread::sleep(Duration::from_millis(500));
     let offers = events(&skipping)?
         .into_iter()
         .filter(|event| {
             matches!(event, AppEvent::Choice { choice }
-                if choice.kind == argonauts_core::app::ChoiceKind::DetectedGates)
+                if choice.kind == argonauts_core::app::ChoiceKind::DetectedChecks)
         })
         .count();
     assert_eq!(offers, 1, "the checks were offered again after Skip");
-    skipping.shot(&pty, "app_offers_detected_gates_once_skip")?;
+    skipping.shot(&pty, "app_offers_detected_checks_once_skip")?;
     quit(&mut pty)?;
 
     // Use these writes them to the project file.
@@ -757,9 +819,9 @@ fn app_offers_detected_gates_once() -> anyhow::Result<()> {
     using.repo.write("package.json", package)?;
     using.repo.commit_all("add package.json")?;
     let mut pty = start(&using)?;
-    start_solo(&using, &mut pty, requests::SMALL_FIX)?;
-    let offer = wait_open_choice(&using, argonauts_core::app::ChoiceKind::DetectedGates)?;
-    answer_card(&mut pty, number_of(&offer.options, 'y'))?;
+    start_captain(&using, &mut pty, requests::SMALL_FIX)?;
+    let offer = wait_open_choice(&using, argonauts_core::app::ChoiceKind::DetectedChecks)?;
+    answer_question(&mut pty, number_of(&offer.options, 'y'))?;
     wait_choice_closed(&using, &offer.id)?;
     let written = wait_until("the checks in the project file", || {
         Ok(read(&project_config(&using)).ok().filter(|text| {
@@ -769,8 +831,70 @@ fn app_offers_detected_gates_once() -> anyhow::Result<()> {
         }))
     })?;
     assert!(written.contains("npm"), "{written}");
-    using.shot(&pty, "app_offers_detected_gates_once_use")?;
+    using.shot(&pty, "app_offers_detected_checks_once_use")?;
     Ok(())
+}
+
+/// A run that would use a Codex older than the oldest version supported waits on one question,
+/// which says beside each answer what it does. Esc starts nothing; Run with it anyway starts
+/// the run with Codex as it is.
+#[test]
+fn app_asks_before_a_run_on_a_cli_that_must_be_updated() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut fakes = FakeScenario::load(&scenario_file(AGENTS))?;
+    fakes
+        .version
+        .insert("codex".to_owned(), "codex-cli 0.1.0".to_owned());
+    let outdated = dir.path().join("outdated-codex.toml");
+    fakes.save(&outdated)?;
+    let scenario = scenario_playing(&outdated)?;
+    fs::write(scenario.repo.global_config(), run_config())?;
+    let mut pty = start(&scenario)?;
+
+    submit(&mut pty, &format!("/captain {}", requests::SMALL_FIX))?;
+    let asked = wait_open_choice(&scenario, ChoiceKind::NeededUpdate)?;
+    assert!(
+        asked
+            .title
+            .starts_with("Codex 0.1.0 is older than Argonauts Code supports ("),
+        "{}",
+        asked.title
+    );
+    pty.wait_for(
+        r"1\. Update it now {18}codex update, then the run starts",
+        WAIT,
+    )?;
+    let screen = pty.screen().text();
+    for row in [
+        "◆ Codex 0.1.0 is older than Argonauts Code supports (",
+        "  Runs with it may misread what it does. Nothing has started yet.",
+        "2. Leave Codex out of this run    its roles go to the next model in your fallback order",
+        "3. Run with it anyway             and ask again before the next run",
+    ] {
+        assert!(screen.contains(row), "no {row:?} in\n{screen}");
+    }
+    assert!(run_dirs(&scenario).is_empty(), "nothing has started yet");
+    scenario.shot(&pty, "app_asks_before_a_run_on_a_cli_that_must_be_updated")?;
+
+    argonauts_scenarios::past_the_question_guard();
+    pty.press(Key::Esc)?;
+    let outcome = wait_choice_closed(&scenario, &asked.id)?;
+    assert_eq!(outcome, "Not started · Codex 0.1.0 still needs an update");
+    assert!(run_dirs(&scenario).is_empty(), "Esc started a run");
+
+    submit(&mut pty, &format!("/captain {}", requests::SMALL_FIX))?;
+    let again = wait_until("the question again", || {
+        Ok(open_choices(&scenario)?
+            .into_iter()
+            .find(|choice| choice.kind == ChoiceKind::NeededUpdate && choice.id != asked.id))
+    })?;
+    answer_question(&mut pty, number_of(&again.options, 'r'))?;
+    assert_eq!(
+        wait_choice_closed(&scenario, &again.id)?,
+        "Running with Codex 0.1.0."
+    );
+    wait_run_dir(&scenario)?;
+    quit(&mut pty)
 }
 
 #[test]
@@ -826,14 +950,15 @@ fn app_every_slash_command_handled() -> anyhow::Result<()> {
             pty.press(Key::Ctrl('c'))?;
             thread::sleep(Duration::from_millis(200));
         }
-        check_mode_line(&pty).map_err(|err| err.context(format!("after {line}")))?;
+        check_bottom_row(&pty).map_err(|err| err.context(format!("after {line}")))?;
     }
 
-    // `/setup` checks each CLI's login and `/update` runs each CLI's own updater, and neither
-    // calls a model.
+    // `/setup` checks each CLI's login and `/update` runs each CLI's updater (`update`, or
+    // OpenCode's `upgrade`), and neither calls a model.
+    const NO_MODEL_CALL: [&[&str]; 3] = [&["auth", "status"], &["update"], &["upgrade"]];
     let sessions: Vec<_> = all_sessions(&scenario)?
         .into_iter()
-        .filter(|invocation| invocation.args != ["auth", "status"] && invocation.args != ["update"])
+        .filter(|invocation| !NO_MODEL_CALL.iter().any(|args| invocation.args == *args))
         .collect();
     assert!(
         sessions.is_empty(),
@@ -889,96 +1014,96 @@ fn list_checkpoints(scenario: &Scenario, pty: &mut Pty) -> anyhow::Result<Vec<Ch
 }
 
 /// Picks fallback-1, the only checkpoint, so the newest is the one picked.
-fn ask_revert(scenario: &Scenario, pty: &mut Pty) -> anyhow::Result<AppChoice> {
+fn ask_rewind(scenario: &Scenario, pty: &mut Pty) -> anyhow::Result<AppChoice> {
     open_rewind(scenario, pty)?;
     pty.wait_for("fallback-1", WAIT)?;
     pty.press(Key::Enter)?;
-    wait_open_choice(scenario, ChoiceKind::ConfirmRevert)
+    wait_open_choice(scenario, ChoiceKind::ConfirmRewind)
 }
 
-/// `/rewind` at the merge card: the card's branch goes back to `fallback-1`, and the run's
+/// `/rewind` at the merge approval: the task's branch goes back to `fallback-1`, and the run's
 /// branch drops the work after it, which stays on the replaced branch.
 #[test]
 #[ignore = "a waiting approval holds the keys and Esc keeps the branch, so /rewind can't be \
-            typed at a waiting merge card"]
-fn app_checkpoints_and_revert_commands() -> anyhow::Result<()> {
+            typed at a waiting merge question"]
+fn app_checkpoints_and_rewind_commands() -> anyhow::Result<()> {
     let scenario = scenario_with(&codex_config(&format!(
         "{}\n[fallback]\nmode = \"auto\"\norder = [\"codex\"]\n",
-        merge_card_config()
+        merge_question_config()
     )))?;
     let mut pty = start(&scenario)?;
-    let run_dir = start_solo(&scenario, &mut pty, LIMITED_TASK)?;
+    let run_dir = start_captain(&scenario, &mut pty, LIMITED_TASK)?;
     let run = run_id(&run_dir)?;
     let tagged = wait_journal(&run_dir, "the fallback checkpoint", |event| {
         matches!(
             event.kind,
-            RunEventKind::Card(CardEvent::CheckpointTagged { n: 1, .. })
+            RunEventKind::Task(TaskEvent::CheckpointTagged { n: 1, .. })
         )
     })?;
-    let RunEventKind::Card(CardEvent::CheckpointTagged { commit, .. }) = tagged.kind else {
+    let RunEventKind::Task(TaskEvent::CheckpointTagged { commit, .. }) = tagged.kind else {
         unreachable!("matched a tag")
     };
-    // Codex's commit is in once the merge card opens. No agent works while it waits, so the
-    // run parks; the commands below wait for that, since one sent as it parks is refused.
-    let merge_card = wait_checkpoint(&scenario, CheckpointKind::Merge)?;
-    wait_journal(&run_dir, "the run to park", is_parked)?;
-    wait_pid_gone(supervisor_pid(&run_dir)?)?;
-    let CheckpointPacket::Merge(merge_packet) = merge_card.packet else {
-        bail!("the merge approval has no merge packet: {merge_card:?}");
+    // Codex's commit is in once the merge question opens. No agent works while it waits, so the
+    // run waits; the commands below wait for that, since one sent as it waits is refused.
+    let merge_question = wait_approval(&scenario, ApprovalKind::Merge)?;
+    wait_journal(&run_dir, "the run to wait", is_waiting)?;
+    wait_pid_gone(run_host_pid(&run_dir)?)?;
+    let ApprovalPacket::Merge(merge_packet) = merge_question.packet else {
+        bail!("the merge approval has no merge packet: {merge_question:?}");
     };
     let run_branch = merge_packet.branch;
-    let card_branch = format!("argonauts/{run}/task-001");
+    let task_branch = format!("argonauts/{run}/task-001");
     let tag = format!("argonauts/{run}/task-001/fallback-1");
     let kept_on = format!("argonauts/{run}/task-001-replaced-1");
 
-    hand_card_on(&mut pty)?;
+    pass_task_on(&mut pty)?;
     let listed = list_checkpoints(&scenario, &mut pty)?;
     let [row] = listed.as_slice() else {
         bail!("one approval, not {listed:?}");
     };
-    assert_eq!((row.card.as_str(), row.n), ("task-001", 1), "{row:?}");
-    assert_eq!(row.from.worker, "claude-code", "{row:?}");
-    assert!(row.to.iter().any(|to| to.worker == "codex"), "{row:?}");
+    assert_eq!((row.task.as_str(), row.n), ("task-001", 1), "{row:?}");
+    assert_eq!(row.from.agent, "claude-code", "{row:?}");
+    assert!(row.to.iter().any(|to| to.agent == "codex"), "{row:?}");
     assert_eq!(row.commit, commit, "{row:?}");
-    assert!(!row.reverted_here, "{row:?}");
+    assert!(!row.rewound_here, "{row:?}");
 
-    // Left with Esc, the confirm reverts nothing.
+    // Left with Esc, the confirm rewinds nothing.
     let heads = || -> anyhow::Result<[String; 2]> {
         Ok([
-            scenario.repo.git(&["rev-parse", &card_branch])?,
+            scenario.repo.git(&["rev-parse", &task_branch])?,
             scenario.repo.git(&["rev-parse", &run_branch])?,
         ])
     };
     let before = heads()?;
-    let confirm = ask_revert(&scenario, &mut pty)?;
+    let confirm = ask_rewind(&scenario, &mut pty)?;
     let body = confirm.body.join("\n");
     assert!(body.contains(&tag) && body.contains(&kept_on), "{body}");
     pty.press(Key::Esc)?;
-    assert_eq!(wait_choice_closed(&scenario, &confirm.id)?, "Not reverted.");
+    assert_eq!(wait_choice_closed(&scenario, &confirm.id)?, "Not rewound.");
     assert_eq!(heads()?, before);
 
-    let confirm = ask_revert(&scenario, &mut pty)?;
-    answer_card(&mut pty, number_of(&confirm.options, 'y'))?;
+    let confirm = ask_rewind(&scenario, &mut pty)?;
+    answer_question(&mut pty, number_of(&confirm.options, 'y'))?;
     wait_choice_closed(&scenario, &confirm.id)?;
-    wait_journal(&run_dir, "the revert", |event| {
+    wait_journal(&run_dir, "the rewind", |event| {
         matches!(
             &event.kind,
-            RunEventKind::Card(CardEvent::Reverted { to: 1, kept_on: kept })
+            RunEventKind::Task(TaskEvent::Rewound { to: 1, kept_on: kept })
                 if *kept == kept_on
         )
     })?;
     assert_eq!(
-        scenario.repo.git(&["rev-parse", &card_branch])?,
+        scenario.repo.git(&["rev-parse", &task_branch])?,
         scenario
             .repo
             .git(&["rev-parse", &format!("{tag}^{{commit}}")])?,
         "the task branch is back at fallback-1"
     );
-    let card_files = branch_files(&scenario, &card_branch)?;
+    let task_files = branch_files(&scenario, &task_branch)?;
     assert!(
-        card_files.contains(&"export-job.md".to_owned())
-            && !card_files.contains(&"export-callers.md".to_owned()),
-        "{card_files:?}"
+        task_files.contains(&"export-job.md".to_owned())
+            && !task_files.contains(&"export-callers.md".to_owned()),
+        "{task_files:?}"
     );
     let kept_files = branch_files(&scenario, &kept_on)?;
     assert!(
@@ -992,20 +1117,20 @@ fn app_checkpoints_and_revert_commands() -> anyhow::Result<()> {
         "the run's branch still has the work after fallback-1: {run_files:?}"
     );
 
-    // The revert opens a fresh merge card, which takes the keys as it shows.
-    hand_card_on(&mut pty)?;
+    // The rewind opens a fresh merge question, which takes the keys as it shows.
+    pass_task_on(&mut pty)?;
     let listed = list_checkpoints(&scenario, &mut pty)?;
-    assert!(listed.iter().all(|row| row.reverted_here), "{listed:?}");
-    scenario.shot(&pty, "app_checkpoints_and_revert_commands")?;
+    assert!(listed.iter().all(|row| row.rewound_here), "{listed:?}");
+    scenario.shot(&pty, "app_checkpoints_and_rewind_commands")?;
     Ok(())
 }
 
 #[test]
-fn app_lead_picks_review_panel_and_fills_params() -> anyhow::Result<()> {
-    // Picking another workflow than the preset's takes `lead_designs = "any"`.
+fn app_main_agent_picks_review_panel_and_fills_params() -> anyhow::Result<()> {
+    // Picking another workflow than the one in use takes `orchestrator_designs = "any"`.
     let workflows = config_with_workflows("orchestrator_designs = \"any\"\n");
     let scenario = scenario_with(&codex_config(&format!("{workflows}{YOU_ANSWER}")))?;
-    // The review panel is a project's own workflow, offered to the lead beside the built-ins.
+    // The review panel is a project's own workflow, offered to the main agent beside the built-ins.
     scenario
         .repo
         .write(".argonauts/workflows/review-panel.yaml", REVIEW_PANEL)?;
@@ -1017,9 +1142,9 @@ fn app_lead_picks_review_panel_and_fills_params() -> anyhow::Result<()> {
     pty.wait_for(r"Trusted ", WAIT)?;
     submit(&mut pty, &format!("/crew {REVIEW_TASK}"))?;
     let run_dir = wait_run_dir(&scenario)?;
-    // The restatements disagree on scope, so the goal card asks first.
-    let goal = wait_checkpoint(&scenario, CheckpointKind::Goal)?;
-    answer_card(&mut pty, number_of(&goal.options, 'a'))?;
+    // The readings disagree on scope, so the goal question asks first.
+    let goal = wait_approval(&scenario, ApprovalKind::Understand)?;
+    answer_question(&mut pty, number_of(&goal.options, 'a'))?;
 
     let design = wait_until("the main agent's design session", || {
         Ok(sessions_of(&scenario, "claude")?
@@ -1071,8 +1196,8 @@ fn app_lead_picks_review_panel_and_fills_params() -> anyhow::Result<()> {
         .context("the Review phase has no fan_out")?;
     assert_eq!(fan_out.count, Some(Count::Fixed(2)), "{fan_out:?}");
 
-    // Understand opens the run and its card is the one go-ahead: a review writes nothing, so no
-    // plan card follows, and the review phase runs.
+    // Understand opens the run and its question is the one go-ahead: a review writes nothing, so no
+    // plan task follows, and the review phase runs.
     assert_eq!(
         started
             .workflow
@@ -1084,7 +1209,7 @@ fn app_lead_picks_review_panel_and_fills_params() -> anyhow::Result<()> {
     wait_journal(&run_dir, "the Review phase", |event| {
         matches!(
             &event.kind,
-            RunEventKind::Workflow(WorkflowEvent::PhaseStarted(mark)) if mark.title == "Review"
+            RunEventKind::Workflow(WorkflowEvent::PhaseStarted(mark)) if mark.name == "Review"
         )
     })?;
     let plans = run_events(&run_dir)?
@@ -1092,68 +1217,69 @@ fn app_lead_picks_review_panel_and_fills_params() -> anyhow::Result<()> {
         .filter(|event| {
             matches!(
                 &event.kind,
-                RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
-                    if opened.kind == CheckpointKind::Plan
+                RunEventKind::Approval(ApprovalEvent::Opened(opened))
+                    if opened.kind == ApprovalKind::Plan
             )
         })
         .count();
     assert_eq!(plans, 0, "a review needs no plan approval");
-    scenario.shot(&pty, "app_lead_picks_review_panel_and_fills_params")?;
+    scenario.shot(&pty, "app_main_agent_picks_review_panel_and_fills_params")?;
     Ok(())
 }
 
-/// The replacement rule a remembered handoff pick saves.
-const REMEMBERED_RULE: &str = "fallback.workers.replace.claude-code.with";
+/// The fallback rule a remembered fallback pick saves.
+const REMEMBERED_RULE: &str = "fallback.worker.replace.claude-code.with";
 
-/// A handoff that asks, with Codex to pick.
-fn handoff_card_config() -> String {
+/// A fallback that asks, with Codex to pick.
+fn fallback_question_config() -> String {
     codex_config(&format!(
         "{}\n[fallback]\nmode = \"ask\"\norder = [\"codex\"]\n",
-        merge_card_config()
+        merge_question_config()
     ))
 }
 
-/// The handoff card's Codex candidate: its key and worker.
-/// The Codex candidate's number on the card, and the worker.
-fn codex_candidate(card: &CheckpointOpened) -> anyhow::Result<(char, WorkerRef)> {
-    card.options
+/// The fallback question's Codex candidate: its key and worker.
+/// The Codex candidate's number on the question, and the worker.
+fn codex_candidate(question: &ApprovalOpened) -> anyhow::Result<(char, ModelRef)> {
+    question
+        .options
         .iter()
         .find_map(|option| match &option.action {
-            AnswerAction::Candidate { worker } if worker.worker == "codex" => {
-                Some((number_of(&card.options, option.key), worker.clone()))
+            AnswerAction::Candidate { worker } if worker.agent == "codex" => {
+                Some((number_of(&question.options, option.key), worker.clone()))
             }
             _ => None,
         })
-        .with_context(|| format!("no Codex candidate on {card:?}"))
+        .with_context(|| format!("no Codex candidate on {question:?}"))
 }
 
-/// Remember this pick, the toggle after the handoff card's own options.
-fn remember_toggle(card: &CheckpointOpened) -> char {
-    char::from_digit(card.options.len() as u32 + 1, 10).expect("at most 9 options")
+/// Remember this pick, the toggle after the fallback question's own options.
+fn remember_toggle(question: &ApprovalOpened) -> char {
+    char::from_digit(question.options.len() as u32 + 1, 10).expect("at most 9 options")
 }
 
-/// Asks to remember an answered handoff card's pick: `m` on the answered card's record line.
+/// Asks to remember an answered fallback question's pick: `m` on the question's record line.
 fn remember_answered_pick(pty: &mut Pty) -> anyhow::Result<()> {
     pty.press(Key::Up)?;
     pty.press(Key::Char('m'))
 }
 
 #[test]
-fn app_remember_pick_saves_replacement_rule() -> anyhow::Result<()> {
+fn app_remember_pick_saves_fallback_rule() -> anyhow::Result<()> {
     let key = REMEMBERED_RULE;
 
     // Remembered as you pick, and saved for the project.
-    let scenario = scenario_with(&handoff_card_config())?;
+    let scenario = scenario_with(&fallback_question_config())?;
     scenario
         .repo
         .write(".argonauts/config.toml", &format!("{KEPT_COMMENT}\n"))?;
     scenario.repo.commit_all("add the project settings")?;
     let mut pty = start(&scenario)?;
-    start_solo(&scenario, &mut pty, LIMITED_TASK)?;
-    let card = wait_checkpoint(&scenario, CheckpointKind::Handoff)?;
-    let (pick_key, pick) = codex_candidate(&card)?;
+    start_captain(&scenario, &mut pty, LIMITED_TASK)?;
+    let question = wait_approval(&scenario, ApprovalKind::Fallback)?;
+    let (pick_key, pick) = codex_candidate(&question)?;
     let rule = format!("[\"{pick}\"]");
-    answer_card(&mut pty, remember_toggle(&card))?;
+    answer_question(&mut pty, remember_toggle(&question))?;
     pty.press(Key::Char(pick_key))?;
     answer_scope(&scenario, &mut pty, 'p', None)?;
     let changed = wait_setting_changed(&scenario, key, 1)?;
@@ -1175,7 +1301,7 @@ fn app_remember_pick_saves_replacement_rule() -> anyhow::Result<()> {
             .into_iter()
             .find(|invocation| prompt_of(invocation).contains(LIMITED_TASK)))
     })?;
-    let next_dir = start_solo(&scenario, &mut pty, requests::TIMED_TASK)?;
+    let next_dir = start_captain(&scenario, &mut pty, requests::TIMED_TASK)?;
     let settings = wait_until("the next run's settings", || {
         Ok(run_settings(&next_dir).ok())
     })?;
@@ -1185,25 +1311,25 @@ fn app_remember_pick_saves_replacement_rule() -> anyhow::Result<()> {
         Some(&json!([pick.to_string()])),
         "{settings}"
     );
-    scenario.shot(&pty, "app_remember_pick_saves_replacement_rule_project")?;
+    scenario.shot(&pty, "app_remember_pick_saves_fallback_rule_project")?;
     Ok(())
 }
 
 #[test]
-fn app_remember_answered_pick_saves_replacement_rule() -> anyhow::Result<()> {
+fn app_remember_answered_pick_saves_fallback_rule() -> anyhow::Result<()> {
     let key = REMEMBERED_RULE;
 
     // Remembered after the answer, and saved for just you.
-    let scenario = scenario_with(&handoff_card_config())?;
+    let scenario = scenario_with(&fallback_question_config())?;
     let mut pty = start(&scenario)?;
-    start_solo(&scenario, &mut pty, LIMITED_TASK)?;
-    let card = wait_checkpoint(&scenario, CheckpointKind::Handoff)?;
-    let (pick_key, pick) = codex_candidate(&card)?;
-    answer_card(&mut pty, pick_key)?;
+    start_captain(&scenario, &mut pty, LIMITED_TASK)?;
+    let question = wait_approval(&scenario, ApprovalKind::Fallback)?;
+    let (pick_key, pick) = codex_candidate(&question)?;
+    answer_question(&mut pty, pick_key)?;
     remember_answered_pick(&mut pty)?;
     wait_until("the remembered pick", || {
         Ok(commands(&scenario)?.into_iter().find(
-            |command| matches!(command, UiCommand::RememberPick { id, .. } if *id == card.id),
+            |command| matches!(command, UiCommand::RememberPick { id, .. } if *id == question.id),
         ))
     })?;
     answer_scope(&scenario, &mut pty, 'm', None)?;
@@ -1220,7 +1346,7 @@ fn app_remember_answered_pick_saves_replacement_rule() -> anyhow::Result<()> {
         !project_config(&scenario).exists(),
         "just you went to the shared file"
     );
-    scenario.shot(&pty, "app_remember_pick_saves_replacement_rule_local")?;
+    scenario.shot(&pty, "app_remember_pick_saves_fallback_rule_local")?;
     Ok(())
 }
 
@@ -1232,10 +1358,10 @@ fn app_context_command_lists_sessions() -> anyhow::Result<()> {
     let mut pty = start(&scenario)?;
     submit(&mut pty, requests::HI)?;
     wait_turns_finished(&scenario, 1)?;
-    let run_dir = start_solo(&scenario, &mut pty, requests::SLOW_TASK)?;
+    let run_dir = start_captain(&scenario, &mut pty, requests::SLOW_TASK)?;
     let run = run_id(&run_dir)?;
-    wait_owner_started(&scenario)?;
-    // The owner reports its usage with this message.
+    wait_worker_started(&scenario)?;
+    // The worker reports its usage with this message.
     pty.wait_for("Renaming the config loader", WAIT)?;
     let sessions = all_sessions(&scenario)?.len();
 
@@ -1252,29 +1378,33 @@ fn app_context_command_lists_sessions() -> anyhow::Result<()> {
         unreachable!("matched the context view")
     };
     let rows = view.rows;
-    let chat = rows.first().context("the context view has no rows")?;
-    assert!(chat.run.is_none() && chat.label == "chat", "{rows:#?}");
-    let owners: Vec<_> = rows
+    let conversation = rows.first().context("the context view has no rows")?;
+    assert!(
+        conversation.run.is_none() && conversation.label == "conversation",
+        "{rows:#?}"
+    );
+    let workers: Vec<_> = rows
         .iter()
         .filter(|row| row.run.as_ref() == Some(&run))
         .collect();
-    let [owner] = owners.as_slice() else {
+    let [worker] = workers.as_slice() else {
         bail!("expected one worker row: {rows:#?}");
     };
-    assert_eq!(owner.cap, Some(50_000), "{owner:?}");
+    assert_eq!(worker.cap, Some(50_000), "{worker:?}");
     assert_eq!(
-        (owner.spent.input_tokens, owner.spent.output_tokens),
+        (worker.spent.input_tokens, worker.spent.output_tokens),
         (1_200, 300),
-        "{owner:?}"
+        "{worker:?}"
     );
-    assert!(owner.used >= 1_200, "{owner:?}");
+    assert!(worker.used >= 1_200, "{worker:?}");
 
-    // The owner goes by its label, not its card's id. The chat shows the label too, so wait
-    // for the view's own count of its rows.
-    assert!(owner.label.starts_with("build:"), "{owner:?}");
+    // The worker goes by its label, not its task's id. The conversation shows the label too, so
+    // wait for the view's own count of its rows. The main agent's window comes first, under
+    // the title Claude Code gives it.
+    assert!(worker.label.starts_with("build:"), "{worker:?}");
     let text = pty.wait_for(r"\d+ sessions", WAIT)?.text();
     assert!(
-        text.contains("chat") && text.contains(&owner.label),
+        text.contains("Context Usage") && text.contains(&worker.label),
         "{text}"
     );
     thread::sleep(Duration::from_millis(500));
@@ -1287,7 +1417,7 @@ fn app_context_command_lists_sessions() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A second git repo beside the scenario's, under the same Argonauts home.
+/// A second git repo beside the scenario's, under the same Argonauts Code home.
 fn other_repo(scenario: &Scenario) -> anyhow::Result<PathBuf> {
     let root = scenario
         .repo
@@ -1307,16 +1437,16 @@ fn other_repo(scenario: &Scenario) -> anyhow::Result<PathBuf> {
 }
 
 /// A run in the repo at `root` that waits on an agent's question.
-fn waiting_run_in(scenario: &Scenario, root: &Path) -> anyhow::Result<ParkedRun> {
-    let parked = fabricate_parked_run(scenario, 0)?;
+fn waiting_run_in(scenario: &Scenario, root: &Path) -> anyhow::Result<WaitingRun> {
+    let waiting = fabricate_waiting_run(scenario, 0)?;
     let head = scenario
         .repo
         .git(&["-C", &root.to_string_lossy(), "rev-parse", "HEAD"])?;
     let repo = RepoId::for_repo(root).context("naming the other repo")?;
-    let dir = Paths::new(scenario.repo.home()).run_dir(&repo, &parked.run);
+    let dir = Paths::new(scenario.repo.home()).run_dir(&repo, &waiting.run);
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let mut journal = String::new();
-    for mut event in run_events(&parked.dir)? {
+    for mut event in run_events(&waiting.dir)? {
         if let RunEventKind::Run(RunLifecycle::Started(started)) = &mut event.kind {
             started.repo_root = root.to_owned();
             started.base_commit = head.clone();
@@ -1325,18 +1455,18 @@ fn waiting_run_in(scenario: &Scenario, root: &Path) -> anyhow::Result<ParkedRun>
         journal.push('\n');
     }
     fs::write(dir.join(run_files::EVENTS), journal).context("writing the moved journal")?;
-    fs::remove_dir_all(&parked.dir).context("removing the fabricated run")?;
-    Ok(ParkedRun {
-        run: parked.run,
+    fs::remove_dir_all(&waiting.dir).context("removing the fabricated run")?;
+    Ok(WaitingRun {
+        run: waiting.run,
         dir,
-        checkpoint: parked.checkpoint,
+        approval: waiting.approval,
     })
 }
 
-/// A sleeping child registered as the live supervisor of `run`, killed when it drops.
-struct StandInSupervisor(Child);
+/// A sleeping child registered as the live run host of `run`, killed when it drops.
+struct SleepingRunHost(Child);
 
-impl StandInSupervisor {
+impl SleepingRunHost {
     fn register(scenario: &Scenario, repo_root: &Path, run: &RunId) -> anyhow::Result<Self> {
         let now = || -> anyhow::Result<u64> {
             Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
@@ -1345,22 +1475,22 @@ impl StandInSupervisor {
         let child = Command::new("sleep")
             .arg("600")
             .spawn()
-            .context("starting a fallback supervisor")?;
+            .context("starting a fallback run host")?;
         let after = now()?;
-        let stand_in = Self(child);
+        let fake = Self(child);
         let path = scenario.repo.home().join(user_files::REGISTRY);
         let mut registry: Value = match fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str(&text).context("reading the registry")?,
-            Err(_) => json!({ "supervisors": [] }),
+            Err(_) => json!({ "run_hosts": [] }),
         };
-        let supervisors = registry["supervisors"]
+        let run_hosts = registry["run_hosts"]
             .as_array_mut()
-            .context("the registry has no supervisors list")?;
+            .context("the registry has no run hosts list")?;
         // Entries are keyed by the start time sysinfo reads, which can land a second either
         // side of this clock. Readers drop the entries whose time is wrong.
         for start_time in before.saturating_sub(1)..=after + 1 {
-            supervisors.push(json!({
-                "pid": stand_in.0.id(),
+            run_hosts.push(json!({
+                "pid": fake.0.id(),
                 "start_time": start_time,
                 "repo_root": repo_root,
                 "run": run,
@@ -1369,32 +1499,36 @@ impl StandInSupervisor {
         }
         fs::write(&path, serde_json::to_vec_pretty(&registry)?)
             .with_context(|| format!("writing {}", path.display()))?;
-        Ok(stand_in)
+        Ok(fake)
     }
 }
 
-impl Drop for StandInSupervisor {
+impl Drop for SleepingRunHost {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
 }
 
-/// Opens the crew panel with ← and returns the `n`th list the controller sent for it, which
-/// holds the runs of every repo with a live supervisor.
-fn open_crew_panel(scenario: &Scenario, pty: &mut Pty, n: usize) -> anyhow::Result<CrewPanel> {
-    check_mode_line(pty)?;
+/// Opens the agent panel with ← and returns the `n`th list the controller sent for it, which
+/// holds the runs of every repo with a live run host.
+fn open_agent_panel(
+    scenario: &Scenario,
+    pty: &mut Pty,
+    n: usize,
+) -> anyhow::Result<AgentPanelRows> {
+    check_bottom_row(pty)?;
     pty.press(Key::Left)?;
     let panels = wait_events(
         scenario,
-        "the crew panel",
+        "the agent panel",
         n,
         |event| matches!(event, AppEvent::View { data } if matches!(data.as_ref(), ViewData::Crew { .. })),
     )?;
     match panels.into_iter().nth(n - 1) {
         Some(AppEvent::View { data }) => match *data {
             ViewData::Crew { panel } => Ok(panel),
-            _ => unreachable!("matched the crew panel"),
+            _ => unreachable!("matched the agent panel"),
         },
         _ => unreachable!("waited for {n} panels"),
     }
@@ -1405,10 +1539,10 @@ fn app_all_repos_shows_other_repo_waiting() -> anyhow::Result<()> {
     let scenario = scenario()?;
     let other = other_repo(&scenario)?;
     let waiting = waiting_run_in(&scenario, &other)?;
-    let supervisor = StandInSupervisor::register(&scenario, &other, &waiting.run)?;
+    let run_host = SleepingRunHost::register(&scenario, &other, &waiting.run)?;
     let mut pty = start(&scenario)?;
 
-    let panel = open_crew_panel(&scenario, &mut pty, 1)?;
+    let panel = open_agent_panel(&scenario, &mut pty, 1)?;
     let there = other.display().to_string();
     let theirs: Vec<_> = panel.rows.iter().filter(|row| row.repo == there).collect();
     let [row] = theirs.as_slice() else {
@@ -1428,11 +1562,11 @@ fn app_all_repos_shows_other_repo_waiting() -> anyhow::Result<()> {
     pty.wait_for("other-repo", WAIT)?;
     scenario.shot(&pty, "app_all_repos_shows_other_repo_waiting")?;
 
-    // Only repos with a live supervisor are listed, so a run parked past the park grace, whose
-    // supervisor exited, drops out of the panel.
-    drop(supervisor);
+    // Only repos with a live run host are listed, so a run waiting past the wait grace, whose
+    // run host exited, drops out of the panel.
+    drop(run_host);
     pty.press(Key::Esc)?;
-    let panel = open_crew_panel(&scenario, &mut pty, 2)?;
+    let panel = open_agent_panel(&scenario, &mut pty, 2)?;
     assert!(
         !panel.rows.iter().any(|row| row.repo == there),
         "{panel:#?}"

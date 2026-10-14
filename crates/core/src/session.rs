@@ -1,4 +1,4 @@
-//! What the conductor asks an adapter for, and the process spec an adapter returns.
+//! What Argonauts Code asks an adapter for, and the process spec an adapter returns.
 
 use std::path::PathBuf;
 
@@ -6,10 +6,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::registry::LaunchHints;
+use crate::session_runner::SessionShell;
 use crate::settings::context::ContextAsk;
 use crate::settings::sessions::{Compaction, NativeFanout};
 use crate::settings::workflows::WorkflowSize;
-use crate::worker::SessionShell;
 
 /// Whether a session may change files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -20,7 +20,7 @@ pub enum SessionRole {
     #[default]
     ReadOnly,
     Build,
-    /// Direct solo: the CLI's default tools in your checkout, asking as [`Asks`] says.
+    /// Direct Captain: the CLI's default tools in your checkout, asking as [`Asks`] says.
     Direct,
 }
 
@@ -59,24 +59,28 @@ pub struct SessionRequest {
     pub effort: Option<String>,
     pub role: SessionRole,
     pub auth: AuthMode,
-    /// Report schema to enforce where the harness supports it.
+    /// Report schema to enforce where the CLI supports it.
     pub json_schema: Option<serde_json::Value>,
     pub resume_session: Option<String>,
-    /// Native spend cap where the harness has one, such as Claude Code `--max-budget-usd`.
-    pub max_budget_usd: Option<f64>,
+    /// Resume `resume_session` as a copy with an id of its own, which leaves the original as
+    /// it was, where the CLI can (Claude Code `--fork-session`, `codex exec fork`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fork_session: bool,
+    /// Native spend cap where the CLI has one, such as Claude Code `--max-budget-usd`.
+    pub spend_cap_usd: Option<f64>,
     pub extra_args: Vec<String>,
     /// A private directory outside the worktree for files the command needs, such as a schema file.
     pub scratch_dir: Option<PathBuf>,
-    /// SHA-256 of the approved goal. The conductor refuses a build session without one.
+    /// SHA-256 of the approved goal. Argonauts Code refuses a build session without one.
     pub goal_hash: Option<String>,
-    /// Keep stdin open with the harness's stream input, for steering and the wrap-up message.
+    /// Keep stdin open with the CLI's stream input, for steering and the wrap-up message.
     /// Also keeps the prompt out of the process list.
     #[serde(default)]
     pub keep_input_open: bool,
-    /// Choose the vendor session id up front where the harness allows (Claude `--session-id`).
+    /// Choose the CLI session id up front where the CLI allows (Claude `--session-id`).
     #[serde(default)]
     pub session_id: Option<String>,
-    /// A per-run project name where the harness shares one store (agy `--project`).
+    /// A per-run project name where the CLI shares one store (agy `--project`).
     #[serde(default)]
     pub project: Option<String>,
     /// The context window to ask the CLI for, where it has a setting for it: the largest it
@@ -100,7 +104,7 @@ pub struct SessionRequest {
     #[serde(default)]
     pub user_hooks_off: bool,
     /// Load none of the CLI's own MCP servers, plugins, or project settings. See
-    /// [`SessionSpec::isolated`](crate::worker::SessionSpec::isolated).
+    /// [`SessionSpec::isolated`](crate::session_runner::SessionSpec::isolated).
     #[serde(default)]
     pub isolated: bool,
     /// More of the CLI's own plugins an isolated session turns off, by name: built-ins a later
@@ -118,7 +122,7 @@ pub struct SessionRequest {
     pub asks: Asks,
     /// One of the CLI's own commands, which must reach it as a command (agy's slash commands).
     #[serde(default)]
-    pub vendor_command: bool,
+    pub cli_command: bool,
     /// Your conversation's own session. Claude Code's opens with `initialize`, which brings
     /// its commands and models, so messages you send later can join it as in its own screen.
     #[serde(default)]
@@ -132,7 +136,7 @@ pub struct SessionRequest {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub typed_by_you: bool,
     /// No workflow or background agent of the CLI's own: its tools for them are left out and
-    /// switched off. See [`CliWorkflow::background_off`](crate::worker::CliWorkflow).
+    /// switched off. See [`CliWorkflow::background_off`](crate::session_runner::CliWorkflow).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub background_off: bool,
     /// What a read-only session may run in a shell.
@@ -146,12 +150,12 @@ pub struct SessionRequest {
     /// the caller, which puts the lines in the prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub standing_note: Option<String>,
-    /// See [`SessionSpec::autopilot`](crate::worker::SessionSpec::autopilot).
+    /// See [`SessionSpec::autopilot`](crate::session_runner::SessionSpec::autopilot).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub autopilot: bool,
 }
 
-/// A file the conductor writes before spawning the command.
+/// A file Argonauts Code writes before spawning the command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpecFile {
     /// Parent directories are created.
@@ -235,7 +239,7 @@ fn quote_for_display(part: &str) -> String {
 }
 
 /// API key and token variables that no child sees unless its own auth mode needs one.
-pub const VENDOR_KEY_ENV_VARS: &[&str] = &[
+pub const PROVIDER_KEY_ENV_VARS: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
@@ -265,10 +269,10 @@ pub const PARENT_SESSION_ENV_VARS: &[&str] = &[
     "CLAUDE_EFFORT",
 ];
 
-/// Every variable from [`VENDOR_KEY_ENV_VARS`] except those in `keep`, plus all of
+/// Every variable from [`PROVIDER_KEY_ENV_VARS`] except those in `keep`, plus all of
 /// [`PARENT_SESSION_ENV_VARS`].
 pub fn env_remove_except(keep: &[&str]) -> Vec<String> {
-    VENDOR_KEY_ENV_VARS
+    PROVIDER_KEY_ENV_VARS
         .iter()
         .filter(|name| !keep.contains(name))
         .chain(PARENT_SESSION_ENV_VARS)
@@ -301,7 +305,7 @@ mod tests {
     #[test]
     fn requests_written_before_the_new_fields_still_read() {
         let old = r#"{"workdir":"/w","prompt":"hi","model":null,"effort":null,"role":"build",
-            "auth":"subscription","json_schema":null,"resume_session":null,"max_budget_usd":null,
+            "auth":"subscription","json_schema":null,"resume_session":null,"spend_cap_usd":null,
             "extra_args":[],"scratch_dir":null,"goal_hash":"g"}"#;
         let req: SessionRequest = serde_json::from_str(old).unwrap();
         assert_eq!(req.role, SessionRole::Build);
@@ -363,7 +367,7 @@ mod tests {
         assert!(removed.iter().any(|v| v == "GITHUB_TOKEN"));
         assert!(removed.iter().any(|v| v == "CLAUDE_CODE_OAUTH_TOKEN"));
         assert!(removed.iter().any(|v| v == "CLAUDE_CODE_MESSAGING_TOKEN"));
-        let all = VENDOR_KEY_ENV_VARS.len() + PARENT_SESSION_ENV_VARS.len();
+        let all = PROVIDER_KEY_ENV_VARS.len() + PARENT_SESSION_ENV_VARS.len();
         assert_eq!(removed.len(), all - 1);
         assert_eq!(env_remove_except(&[]).len(), all);
     }

@@ -142,7 +142,7 @@ impl HistoryCell for UserMessage {
 /// or bold with no color.
 fn with_mentions(text: &str, style: Style, theme: &Theme) -> Vec<Span<'static>> {
     let mention = if theme.has_color() {
-        theme.style(Role::Card)
+        theme.style(Role::Question)
     } else {
         style.add_modifier(Modifier::BOLD)
     };
@@ -263,7 +263,7 @@ mod tests {
         let colored: Vec<&str> = lines[0]
             .spans
             .iter()
-            .filter(|span| span.style.fg == theme.style(Role::Card).fg)
+            .filter(|span| span.style.fg == theme.style(Role::Question).fg)
             .map(|span| span.content.as_ref())
             .collect();
         assert_eq!(colored, ["@src/main.rs", "@codex"]);

@@ -3,7 +3,7 @@ use argonauts_core::names::{RoleName, SessionKey};
 
 use super::*;
 use crate::overview::sample;
-use crate::state::{CardRow, SessionState};
+use crate::state::{SessionState, TaskRow};
 use crate::text::plain_text;
 use crate::theme::{ColorLevel, Glyphs, Theme};
 
@@ -21,9 +21,9 @@ fn rows(drawn: Option<Drawn>) -> Vec<String> {
         .collect()
 }
 
-fn task(n: u32, title: &str, state: CardState, usd: f64, tokens: u64) -> TaskSpend {
+fn task(n: u32, title: &str, state: TaskState, usd: f64, tokens: u64) -> TaskSpend {
     TaskSpend {
-        task: CardId::numbered(n),
+        task: TaskId::numbered(n),
         title: title.to_owned(),
         state,
         usd,
@@ -33,14 +33,14 @@ fn task(n: u32, title: &str, state: CardState, usd: f64, tokens: u64) -> TaskSpe
 
 fn four_tasks() -> Vec<TaskSpend> {
     vec![
-        task(1, "CSV writer", CardState::Integrated, 0.31, 38_000),
-        task(2, "Report endpoint", CardState::Running, 0.62, 402_000),
-        task(3, "Docs and examples", CardState::Waiting, 0.09, 9_000),
-        task(4, "Review", CardState::Blocked, 0.18, 21_000),
+        task(1, "CSV writer", TaskState::Merged, 0.31, 38_000),
+        task(2, "Report endpoint", TaskState::Running, 0.62, 402_000),
+        task(3, "Docs and examples", TaskState::Waiting, 0.09, 9_000),
+        task(4, "Review", TaskState::Blocked, 0.18, 21_000),
     ]
 }
 
-fn tasks_card(task_limit: Option<BudgetAmount>, width: usize) -> Vec<String> {
+fn tasks_card(task_limit: Option<LimitAmount>, width: usize) -> Vec<String> {
     let theme = plain();
     let tasks = four_tasks();
     let cards = LimitsCards {
@@ -87,8 +87,8 @@ fn with_no_limit_each_task_shows_its_share_of_what_the_run_spent() {
 
 #[test]
 fn with_a_limit_each_task_fills_toward_it() {
-    let limit = BudgetAmount {
-        unit: BudgetUnit::Usd,
+    let limit = LimitAmount {
+        unit: LimitUnit::Usd,
         amount: 1.0,
     };
     let rows = tasks_card(Some(limit), 100);
@@ -99,8 +99,8 @@ fn with_a_limit_each_task_fills_toward_it() {
     assert!(rows[2].ends_with("$0.31  31% │"), "{rows:#?}");
     assert!(rows[3].ends_with("$0.62  62% │"), "{rows:#?}");
 
-    let tokens = BudgetAmount {
-        unit: BudgetUnit::Tokens,
+    let tokens = LimitAmount {
+        unit: LimitUnit::Tokens,
         amount: 300_000.0,
     };
     let rows = tasks_card(Some(tokens), 100);
@@ -111,8 +111,8 @@ fn with_a_limit_each_task_fills_toward_it() {
     );
 
     // Time isn't counted by task here, so the card says nothing it can't show.
-    let minutes = BudgetAmount {
-        unit: BudgetUnit::Minutes,
+    let minutes = LimitAmount {
+        unit: LimitUnit::Minutes,
         amount: 30.0,
     };
     assert!(tasks_card(Some(minutes), 100)[1].contains("no limit set"));
@@ -179,7 +179,7 @@ fn the_list_says_each_limit_in_words_and_where_it_came_from() {
     let set = sample::with_limit(set, "limits.run_tokens", "2000000", "project-local");
     let rows = list(&set, 110, 2);
     assert!(
-        rows[0].contains("at a limit the fallbacks take over, or the run stops"),
+        rows[0].contains("at a limit the task falls back, or the run stops"),
         "{rows:#?}"
     );
     assert_eq!(
@@ -241,8 +241,8 @@ fn a_long_list_scrolls_under_the_picked_limit_and_a_narrow_one_drops_the_keys() 
 fn a_runs_tasks_add_up_what_their_sessions_spent() {
     let mut run = RunState::new(RunId::new("run-03").expect("a run id"));
     for (n, title) in [(1, "CSV writer"), (2, "Report endpoint")] {
-        let task = CardRow::new(CardId::numbered(n), title);
-        run.cards.insert(task.id.clone(), task);
+        let task = TaskRow::new(TaskId::numbered(n), title);
+        run.tasks.insert(task.id.clone(), task);
     }
     // Two sessions worked on the first task, one on no task at all.
     for (n, task, usd, tokens) in [
@@ -251,7 +251,7 @@ fn a_runs_tasks_add_up_what_their_sessions_spent() {
         (3, None, 0.50, 1_000),
     ] {
         let key = SessionKey::numbered(n);
-        let worker = "codex/gpt-5.6".parse().expect("a worker");
+        let worker = "codex/gpt-5.6".parse().expect("a model");
         let mut session = SessionState::new(
             key.clone(),
             worker,
@@ -259,7 +259,7 @@ fn a_runs_tasks_add_up_what_their_sessions_spent() {
             RoleName::Worker,
             sample::now(),
         );
-        session.card = task.map(CardId::numbered);
+        session.task = task.map(TaskId::numbered);
         session.cost_usd = Some(usd);
         session.tokens_in = tokens;
         run.sessions.insert(key, session);
@@ -269,5 +269,5 @@ fn a_runs_tasks_add_up_what_their_sessions_spent() {
     assert!((tasks[0].usd - 0.31).abs() < 1e-9, "{tasks:?}");
     assert_eq!(tasks[0].tokens, 15_000);
     assert_eq!(tasks[1].usd, 0.0);
-    assert_eq!(tasks[1].state, CardState::Waiting);
+    assert_eq!(tasks[1].state, TaskState::Waiting);
 }

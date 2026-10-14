@@ -1,4 +1,4 @@
-//! Words a vendor CLI treats specially in a prompt, such as Claude Code's `ultrathink`. The input
+//! Words a CLI treats specially in a prompt, such as Claude Code's `ultrathink`. The input
 //! draws them the way that CLI draws them, and the prompt keeps them as typed so they still do
 //! what they do. Each adapter keeps its CLI's words in one table, so a new CLI version that adds
 //! or drops one is a data change.
@@ -38,7 +38,7 @@ pub enum KeywordLook {
     Flat,
 }
 
-/// Asks for a workflow for the one request it is typed in. Argonauts' own word, so it works
+/// Asks for a workflow for the one request it is typed in. Argonauts Code's own word, so it works
 /// whichever CLI the main session runs on. Claude Code never draws it in the echo of your
 /// message, so neither does the transcript here.
 pub const ULTRACODE: Keyword = Keyword::new("ultracode", KeywordLook::Flat, false);

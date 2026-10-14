@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use argonauts_core::registry::HarnessManifest;
-use argonauts_core::registry::harness::OutputKind;
+use argonauts_core::registry::CliManifest;
+use argonauts_core::registry::cli::OutputKind;
 use argonauts_core::settings::Span;
 use argonauts_core::{
     Adapter, Capabilities, CommandSpec, SessionRequest, StopPlan, StreamParser, extract_version,
@@ -17,13 +17,13 @@ pub(crate) struct ManifestAdapter {
     id: &'static str,
     display_name: &'static str,
     binary: &'static str,
-    family: &'static str,
+    provider: &'static str,
     version_args: &'static [&'static str],
     tested_versions: &'static [&'static str],
-    manifest: HarnessManifest,
+    manifest: CliManifest,
     /// With `output = "parser"`, the built-in adapter whose parser this one reuses.
     reused: Option<Arc<dyn Adapter>>,
-    /// Where home templates live. `None` is `~/.argonauts/harnesses/`, looked up at launch.
+    /// Where home templates live. `None` is `~/.argonauts/clis/`, looked up at launch.
     templates_root: Option<PathBuf>,
 }
 
@@ -41,7 +41,7 @@ fn leak_all(texts: &[String]) -> &'static [&'static str] {
 
 impl ManifestAdapter {
     pub(crate) fn new(
-        manifest: HarnessManifest,
+        manifest: CliManifest,
         builtins: &[Arc<dyn Adapter>],
         templates_root: Option<PathBuf>,
     ) -> Self {
@@ -58,7 +58,7 @@ impl ManifestAdapter {
             id: leak(&manifest.id),
             display_name: leak(&manifest.display_name),
             binary: leak(&manifest.binary),
-            family: leak(&manifest.family),
+            provider: leak(&manifest.provider),
             version_args: leak_all(&manifest.version_args),
             tested_versions: leak_all(&manifest.tested_versions),
             manifest,
@@ -119,7 +119,7 @@ impl Adapter for ManifestAdapter {
         };
         // A wait that doesn't parse, or `none`, keeps the default's.
         let wait = |span: &Span| span.parse().ok().flatten().unwrap_or(DEFAULT_WAIT);
-        StopPlan::escalating(wait(&stop.after_interrupt), wait(&stop.after_terminate))
+        StopPlan::stepped(wait(&stop.after_interrupt), wait(&stop.after_terminate))
     }
 
     /// Only a live stream reports usage as it goes, a document at exit says what its pointers
@@ -145,7 +145,7 @@ impl Adapter for ManifestAdapter {
             },
         };
         // Nothing checks that a manifest's `read_only_args` block writes, and some CLIs have no
-        // such flag, so read-only sessions need the Argonauts-owned read-only worktree.
+        // such flag, so read-only sessions need the read-only worktree Argonauts Code keeps.
         Capabilities {
             enforces_read_only: false,
             ..reported
@@ -154,23 +154,23 @@ impl Adapter for ManifestAdapter {
 
     fn interactive_resume(&self, session_id: &str, workdir: &Path) -> Option<CommandSpec> {
         // `command` refuses to launch a manifest whose take-over doesn't fill, so no session
-        // of this harness reaches here with an error to show.
+        // of this CLI reaches here with an error to show.
         crate::command::interactive_resume(&self.manifest, session_id, workdir)
             .ok()
             .flatten()
     }
 
-    fn default_family(&self) -> &'static str {
-        self.family
+    fn default_provider(&self) -> &'static str {
+        self.provider
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::registry::harness::FinalJsonPointers;
+    use argonauts_core::registry::cli::FinalJsonPointers;
 
-    /// A built-in whose capabilities differ from the default in every flag.
+    /// A built-in whose capabilities are different from the default in every flag.
     struct Builtin;
 
     impl Adapter for Builtin {
@@ -187,7 +187,7 @@ mod tests {
             Ok(CommandSpec::new("builtin", &req.workdir))
         }
         fn parser(&self) -> Box<dyn StreamParser> {
-            crate::output::parser_for(&HarnessManifest::default(), None)
+            crate::output::parser_for(&CliManifest::default(), None)
         }
         fn version_args(&self) -> &'static [&'static str] {
             &[]
@@ -218,13 +218,13 @@ mod tests {
     }
 
     fn adapter(output: OutputKind) -> ManifestAdapter {
-        let manifest = HarnessManifest {
+        let manifest = CliManifest {
             id: "cli".into(),
             read_only_args: vec!["--read-only".into()],
             output,
             parser: Some("builtin".into()),
             final_json: Some(FinalJsonPointers::default()),
-            ..HarnessManifest::default()
+            ..CliManifest::default()
         };
         let builtins: Vec<Arc<dyn Adapter>> = vec![Arc::new(Builtin)];
         ManifestAdapter::new(manifest, &builtins, None)

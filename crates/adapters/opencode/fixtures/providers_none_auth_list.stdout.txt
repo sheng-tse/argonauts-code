@@ -1,0 +1,5 @@
+
+┌  Credentials ~/.local/share/opencode/auth.json
+│
+└  0 credentials
+

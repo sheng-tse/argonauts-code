@@ -111,7 +111,8 @@ impl PasteBurst {
 impl Composer {
     /// A key from the terminal with the time it arrived, so a paste typed out by a terminal
     /// without bracketed paste arrives as one paste. Call
-    /// [`flush_paste_burst`](Self::flush_paste_burst) at [`paste_burst_due`](Self::paste_burst_due).
+    /// [`flush_paste_burst`](Self::flush_paste_burst) at
+    /// [`paste_burst_due`](Self::paste_burst_due).
     pub fn handle_key_at(&mut self, key: KeyEvent, now: Instant) -> ComposerEvent {
         let flushed = self.flush_paste_burst(now);
         let event = match self.burst_key(key, now) {
@@ -194,7 +195,7 @@ impl Composer {
         }
     }
 
-    /// The characters of the run already typed into the draft come back out to lead the
+    /// The characters of the run already typed into the draft come back out to start the
     /// burst, so the paste goes in whole.
     fn begin_burst(&mut self, c: char, now: Instant) {
         let typed = std::mem::take(&mut self.burst.typed);

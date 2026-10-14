@@ -11,19 +11,19 @@ use argonauts_core::event::AgentEvent;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::run::RunMode;
 use argonauts_core::events::session::{EndReason, SessionEvent};
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::session_runner::{Access, RunnerEvent, SessionControl};
 use argonauts_core::settings::roles::RoleSettings;
 use argonauts_core::settings::sessions::SessionLifetime;
-use argonauts_core::steps::goal::{Restate, RestateInput};
-use argonauts_core::worker::{Access, SessionControl, WorkerEvent};
+use argonauts_core::steps::understand::{Read, ReadInput};
 use argonauts_crew::EngineError;
 use argonauts_crew::engine::commands;
 use argonauts_crew::engine::host::{Ask, Host, SessionPlan};
-use argonauts_testkit::worker::FakeSession;
+use argonauts_testkit::runner::FakeSession;
 
 use support::{Crew, names, script};
 
-fn restatement(summary: &str) -> serde_json::Value {
+fn reading(summary: &str) -> serde_json::Value {
     json!({
         "summary": summary,
         "success_criteria": [],
@@ -34,23 +34,23 @@ fn restatement(summary: &str) -> serde_json::Value {
     })
 }
 
-fn restate(role: RoleName, worker: &WorkerRef, slot: u32) -> Ask<RestateInput> {
-    let input = RestateInput {
+fn read_ask(role: RoleName, worker: &ModelRef, slot: u32) -> Ask<ReadInput> {
+    let input = ReadInput {
         request: "add a --verbose flag".to_owned(),
         notes: Vec::new(),
         decisions: Vec::new(),
     };
-    let mut ask = Ask::new(None, role, worker.clone(), "Restate the request.", input);
+    let mut ask = Ask::new(None, role, worker.clone(), "Read the request back.", input);
     ask.slot = slot;
     ask
 }
 
-fn plan(worker: &WorkerRef, access: Access, host: &Host) -> SessionPlan {
+fn plan(worker: &ModelRef, access: Access, host: &Host) -> SessionPlan {
     SessionPlan {
         at: None,
         role: RoleName::Consultant,
         worker: worker.clone(),
-        card: None,
+        task: None,
         access,
         step: None,
         workdir: host.repo().root.clone(),
@@ -78,18 +78,18 @@ async fn live(host: &Host, count: usize) {
 #[tokio::test]
 async fn a_finished_ask_replays_from_the_log_and_runs_nothing() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
-    let worker = crew.worker("codex/gpt-x", "gpt");
-    let reference: WorkerRef = "codex/gpt-x".parse()?;
-    script(&worker, vec![restatement("first")]);
-    let (host, sink) = crew.host(RunMode::Solo)?;
+    let worker = crew.worker("codex/gpt-x", "openai");
+    let reference: ModelRef = "codex/gpt-x".parse()?;
+    script(&worker, vec![reading("first")]);
+    let (host, sink) = crew.host(RunMode::Captain)?;
     let first = host
-        .ask::<Restate>(restate(RoleName::Restater, &reference, 0))
+        .ask::<Read>(read_ask(RoleName::Reader, &reference, 0))
         .await?;
     assert_eq!(first.output.summary, "first");
 
     let (again, _) = crew.host_over(sink.events())?;
     let replayed = again
-        .ask::<Restate>(restate(RoleName::Restater, &reference, 0))
+        .ask::<Read>(read_ask(RoleName::Reader, &reference, 0))
         .await?;
     assert_eq!(replayed.output, first.output);
     assert_eq!(replayed.session, first.session);
@@ -98,35 +98,35 @@ async fn a_finished_ask_replays_from_the_log_and_runs_nothing() -> anyhow::Resul
 }
 
 #[tokio::test]
-async fn an_unfinished_ask_resumes_its_vendor_session_under_the_same_key() -> anyhow::Result<()> {
+async fn an_unfinished_ask_resumes_its_cli_session_under_the_same_key() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
-    let worker = crew.worker("codex/gpt-x", "gpt");
-    let reference: WorkerRef = "codex/gpt-x".parse()?;
-    worker.push(FakeSession::until_stopped(vec![WorkerEvent::Session(
-        SessionEvent::VendorSession {
-            id: "vendor-7".to_owned(),
+    let worker = crew.worker("codex/gpt-x", "openai");
+    let reference: ModelRef = "codex/gpt-x".parse()?;
+    worker.push(FakeSession::until_stopped(vec![RunnerEvent::Session(
+        SessionEvent::CliSession {
+            id: "cli-7".to_owned(),
             transcript: None,
         },
     )]));
-    let (host, sink) = crew.host(RunMode::Solo)?;
+    let (host, sink) = crew.host(RunMode::Captain)?;
     let asking = {
         let host = host.clone();
         let reference = reference.clone();
         tokio::spawn(async move {
-            host.ask::<Restate>(restate(RoleName::Restater, &reference, 0))
+            host.ask::<Read>(read_ask(RoleName::Reader, &reference, 0))
                 .await
         })
     };
     live(&host, 1).await;
-    // The supervisor died here: the log has the start and the vendor id, but no end.
+    // The run host died here: the log has the start and the agent id, but no end.
     let history = sink.events();
     asking.abort();
     let _ = asking.await;
 
-    script(&worker, vec![restatement("resumed")]);
+    script(&worker, vec![reading("resumed")]);
     let (again, _) = crew.host_over(history)?;
     let answered = again
-        .ask::<Restate>(restate(RoleName::Restater, &reference, 0))
+        .ask::<Read>(read_ask(RoleName::Reader, &reference, 0))
         .await?;
     assert_eq!(answered.output.summary, "resumed");
     let specs = worker.specs();
@@ -135,7 +135,7 @@ async fn an_unfinished_ask_resumes_its_vendor_session_under_the_same_key() -> an
         specs[1].key, specs[0].key,
         "the same session, not a new one"
     );
-    assert_eq!(specs[1].resume.as_deref(), Some("vendor-7"));
+    assert_eq!(specs[1].resume.as_deref(), Some("cli-7"));
     assert!(
         specs[1].prompt[0].text.contains("resumed"),
         "{:?}",
@@ -147,20 +147,20 @@ async fn an_unfinished_ask_resumes_its_vendor_session_under_the_same_key() -> an
 #[tokio::test]
 async fn lifetime_run_reuses_session() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
-    let worker = crew.worker("codex/gpt-x", "gpt");
-    let reference: WorkerRef = "codex/gpt-x".parse()?;
+    let worker = crew.worker("codex/gpt-x", "openai");
+    let reference: ModelRef = "codex/gpt-x".parse()?;
     crew.settings.roles.insert(
-        RoleName::Restater,
+        RoleName::Reader,
         RoleSettings {
             lifetime: Some(SessionLifetime::Run),
             ..RoleSettings::default()
         },
     );
-    script(&worker, vec![restatement("one"), restatement("two")]);
-    let (host, _) = crew.host(RunMode::Solo)?;
-    host.ask::<Restate>(restate(RoleName::Restater, &reference, 0))
+    script(&worker, vec![reading("one"), reading("two")]);
+    let (host, _) = crew.host(RunMode::Captain)?;
+    host.ask::<Read>(read_ask(RoleName::Reader, &reference, 0))
         .await?;
-    host.ask::<Restate>(restate(RoleName::Restater, &reference, 1))
+    host.ask::<Read>(read_ask(RoleName::Reader, &reference, 1))
         .await?;
     let specs = worker.specs();
     assert_eq!(specs[0].resume, None);
@@ -175,10 +175,10 @@ async fn lifetime_run_reuses_session() -> anyhow::Result<()> {
         "each task keeps its own key and logs"
     );
 
-    let mut blind = restate(RoleName::Restater, &reference, 2);
+    let mut blind = read_ask(RoleName::Reader, &reference, 2);
     blind.blind = true;
-    script(&worker, vec![restatement("three")]);
-    host.ask::<Restate>(blind).await?;
+    script(&worker, vec![reading("three")]);
+    host.ask::<Read>(blind).await?;
     assert_eq!(
         worker.specs()[2].resume,
         None,
@@ -190,10 +190,10 @@ async fn lifetime_run_reuses_session() -> anyhow::Result<()> {
 #[tokio::test]
 async fn building_sessions_wait_for_the_approved_goal() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
-    let worker = crew.worker("codex/gpt-x", "gpt");
-    let reference: WorkerRef = "codex/gpt-x".parse()?;
+    let worker = crew.worker("codex/gpt-x", "openai");
+    let reference: ModelRef = "codex/gpt-x".parse()?;
     let (host, _) = crew.host(RunMode::Crew)?;
-    for access in [Access::Build, Access::Spike] {
+    for access in [Access::Build, Access::Experiment] {
         let refused = host.start(plan(&reference, access, &host)).await;
         assert!(
             matches!(refused, Err(EngineError::Refused(_))),
@@ -207,10 +207,10 @@ async fn building_sessions_wait_for_the_approved_goal() -> anyhow::Result<()> {
 #[tokio::test]
 async fn a_started_session_is_pumped_into_the_log() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
-    let worker = crew.worker("codex/gpt-x", "gpt");
-    let reference: WorkerRef = "codex/gpt-x".parse()?;
+    let worker = crew.worker("codex/gpt-x", "openai");
+    let reference: ModelRef = "codex/gpt-x".parse()?;
     worker.push(FakeSession::completed("all done"));
-    let (host, sink) = crew.host(RunMode::Solo)?;
+    let (host, sink) = crew.host(RunMode::Captain)?;
     let running = host
         .start(plan(&reference, Access::ReadOnly, &host))
         .await?;
@@ -239,10 +239,10 @@ async fn a_started_session_is_pumped_into_the_log() -> anyhow::Result<()> {
     assert!(
         session
             .iter()
-            .all(|event| event.source == "codex" || event.source == "conductor")
+            .all(|event| event.source == "codex" || event.source == "argonauts-code")
     );
 
-    // Started again with the same identity, it hands back the recorded end.
+    // Started again with the same identity, it returns the recorded end.
     let replayed = host
         .start(plan(&reference, Access::ReadOnly, &host))
         .await?;
@@ -256,20 +256,20 @@ async fn a_started_session_is_pumped_into_the_log() -> anyhow::Result<()> {
 async fn pause_stops_running_step_sessions() -> anyhow::Result<()> {
     for now in [false, true] {
         let mut crew = Crew::new()?;
-        let worker = crew.worker("codex/gpt-x", "gpt");
-        let reference: WorkerRef = "codex/gpt-x".parse()?;
-        worker.push(FakeSession::until_stopped(vec![WorkerEvent::Agent(
+        let worker = crew.worker("codex/gpt-x", "openai");
+        let reference: ModelRef = "codex/gpt-x".parse()?;
+        worker.push(FakeSession::until_stopped(vec![RunnerEvent::Agent(
             AgentEvent::TextDelta {
                 text: "thinking".to_owned(),
                 parent: None,
             },
         )]));
-        let (host, sink) = crew.host(RunMode::Solo)?;
+        let (host, sink) = crew.host(RunMode::Captain)?;
         let asking = {
             let host = host.clone();
             let reference = reference.clone();
             tokio::spawn(async move {
-                host.ask::<Restate>(restate(RoleName::Restater, &reference, 0))
+                host.ask::<Read>(read_ask(RoleName::Reader, &reference, 0))
                     .await
             })
         };
@@ -317,10 +317,10 @@ async fn pause_stops_running_step_sessions() -> anyhow::Result<()> {
 #[tokio::test]
 async fn steering_reaches_a_running_session() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
-    let worker = crew.worker("codex/gpt-x", "gpt");
-    let reference: WorkerRef = "codex/gpt-x".parse()?;
+    let worker = crew.worker("codex/gpt-x", "openai");
+    let reference: ModelRef = "codex/gpt-x".parse()?;
     worker.push(FakeSession::until_stopped(Vec::new()));
-    let (host, _) = crew.host(RunMode::Solo)?;
+    let (host, _) = crew.host(RunMode::Captain)?;
     let running = host
         .start(plan(&reference, Access::ReadOnly, &host))
         .await?;

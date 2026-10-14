@@ -20,13 +20,13 @@ const MIN_DESCRIPTION: usize = 8;
 const SLIDER_INDENT: usize = 4;
 /// Between the slider's levels, where there's room.
 const SLIDER_GAP: usize = 6;
-/// Between the slider's right end and All hands beside it.
+/// Between the slider's right end and Ultracode beside it.
 const TOGGLE_GAP: usize = 4;
 const TOGGLE_HINT: &str = "Tab to toggle";
 /// Follows the level of a model that takes one only, as agy's `gemini-3.8-flash-high` does.
 const FIXED: &str = "fixed by the model";
 
-/// The marks beyond the theme's glyph set, with ASCII stand-ins.
+/// The marks beyond the theme's glyph set, with ASCII forms.
 struct Marks {
     current: &'static str,
     below: &'static str,
@@ -63,17 +63,17 @@ impl Picker {
     pub fn lines(&self, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
         let theme = ctx.theme;
         let width = usize::from(ctx.width);
-        let card = theme.style(Role::Card);
+        let question = theme.style(Role::Question);
         let dim = theme.style(Role::Dim);
         let indent = [Span::raw("  ")];
 
         let mut lines = vec![Line::from(decorative(
             theme.glyphs.rule.repeat(width),
-            card,
+            question,
         ))];
         lines.extend(wrap_text(
             sanitize_line(&self.title).trim(),
-            card.add_modifier(Modifier::BOLD),
+            question.add_modifier(Modifier::BOLD),
             width,
             &indent,
             &indent,
@@ -92,7 +92,7 @@ impl Picker {
         });
         if let Some(warning) = warning {
             let warning = sanitize_line(&warning);
-            let style = theme.style(Role::Warning);
+            let style = theme.style(Role::Warn);
             lines.extend(wrap_text(warning.trim(), style, width, &indent, &indent));
             lines.push(Line::default());
         }
@@ -132,8 +132,8 @@ impl Picker {
     /// The typed line, its end kept in view when it's longer than the row.
     fn input_row(&self, text: &str, ctx: &RenderCtx<'_>) -> Line<'static> {
         let theme = ctx.theme;
-        let lead = format!("  {} ", theme.glyphs.prompt);
-        let room = usize::from(ctx.width).saturating_sub(str_width(&lead) + 1);
+        let opening = format!("  {} ", theme.glyphs.prompt);
+        let room = usize::from(ctx.width).saturating_sub(str_width(&opening) + 1);
         let text = sanitize_line(text).into_owned();
         let shown = if str_width(&text) <= room {
             text
@@ -152,7 +152,7 @@ impl Picker {
             format!("{}{tail}", theme.glyphs.ellipsis)
         };
         Line::from(vec![
-            Span::styled(lead, theme.style(Role::Card)),
+            Span::styled(opening, theme.style(Role::Question)),
             Span::raw(shown),
             Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
         ])
@@ -193,7 +193,7 @@ impl Picker {
         let label_width = longest
             .min(MAX_LABEL)
             .min(width.saturating_sub(prefix + key_room));
-        // A row's state glyph leads its description, so it counts toward the column.
+        // A row's state glyph comes before its description, so it counts toward the column.
         let state_mark = |index: usize| {
             self.rows[index]
                 .state
@@ -230,7 +230,7 @@ impl Picker {
                 ]));
             }
             let (pointer, pointer_style) = if position == self.selected {
-                (theme.glyphs.prompt, theme.style(Role::Card))
+                (theme.glyphs.prompt, theme.style(Role::Question))
             } else if at + 1 == window.len() && below > 0 {
                 (marks.below, dim)
             } else if at == 0 && start > 0 {
@@ -241,7 +241,7 @@ impl Picker {
             let label_style = if row.current {
                 success
             } else if position == self.selected {
-                theme.style(Role::Card)
+                theme.style(Role::Question)
             } else {
                 theme.style(Role::Text)
             };
@@ -316,7 +316,7 @@ impl Picker {
         };
         let mut spans = vec![
             Span::raw("  "),
-            Span::styled(format!("{} ", marks.effort), theme.style(Role::Card)),
+            Span::styled(format!("{} ", marks.effort), theme.style(Role::Question)),
             Span::styled(sanitize_line(&level).into_owned(), theme.style(Role::Text)),
             Span::styled(sanitize_line(&note).into_owned(), dim),
         ];
@@ -354,7 +354,7 @@ impl Picker {
         let mut parts = Vec::new();
         let unmoving = self.flow.slider.as_ref().filter(|slider| !slider.moves());
         if let Some(slider) = unmoving {
-            // Tab is named beside All hands, where the view offers it.
+            // Tab is named beside Ultracode, where the view offers it.
             if slider.ultracode.is_some() {
                 parts.push(Part::new(part(enter), KEEP));
                 parts.push(Part::joined(dot(), part(esc("Esc to cancel")), 1));
@@ -403,7 +403,7 @@ fn slider_lines(slider: &EffortSlider, ctx: &RenderCtx<'_>) -> Vec<Line<'static>
     let theme = ctx.theme;
     let marks = Marks::for_theme(theme);
     let dim = theme.style(Role::Dim);
-    let card = theme.style(Role::Card);
+    let question = theme.style(Role::Question);
     let width = usize::from(ctx.width);
     let labels: Vec<String> = slider
         .stops
@@ -448,7 +448,10 @@ fn slider_lines(slider: &EffortSlider, ctx: &RenderCtx<'_>) -> Vec<Line<'static>
         Line::from(vec![
             indent(),
             Span::styled(theme.glyphs.rule.repeat(marker_at), dim),
-            Span::styled(marks.chosen, if slider.cli_default { dim } else { card }),
+            Span::styled(
+                marks.chosen,
+                if slider.cli_default { dim } else { question },
+            ),
             Span::styled(
                 theme
                     .glyphs
@@ -463,7 +466,7 @@ fn slider_lines(slider: &EffortSlider, ctx: &RenderCtx<'_>) -> Vec<Line<'static>
     for (index, label) in labels.iter().enumerate() {
         levels.push(Span::raw(" ".repeat(starts[index].saturating_sub(used))));
         let style = if index == chosen && !slider.cli_default {
-            card.add_modifier(Modifier::BOLD)
+            question.add_modifier(Modifier::BOLD)
         } else {
             dim
         };
@@ -487,19 +490,19 @@ fn slider_lines(slider: &EffortSlider, ctx: &RenderCtx<'_>) -> Vec<Line<'static>
         (false, false) => description,
     };
     if !description.is_empty() {
-        let lead = [indent()];
+        let margin = [indent()];
         lines.extend(wrap_text(
             &description,
             theme.style(Role::Text),
             width,
-            &lead,
-            &lead,
+            &margin,
+            &margin,
         ));
     }
     lines
 }
 
-/// All hands beside the slider, where Claude Code puts Ultracode: its name and state level with
+/// Ultracode beside the slider, where Claude Code puts Ultracode: its name and state level with
 /// the line and `Tab to toggle` under them, else one row under the levels where there's no room
 /// beside it. While it's on, a line under the levels says what it does.
 fn add_ultracode(
@@ -529,7 +532,7 @@ fn add_ultracode(
     lines.extend(ultracode_means(toggle, ctx));
 }
 
-/// `All hands  on`, brighter while it's on.
+/// `Ultracode  on`, brighter while it's on.
 fn ultracode_named(toggle: UltracodeToggle, ctx: &RenderCtx<'_>) -> Vec<Span<'static>> {
     let theme = ctx.theme;
     let (name, state) = if toggle.on {
@@ -546,7 +549,7 @@ fn ultracode_named(toggle: UltracodeToggle, ctx: &RenderCtx<'_>) -> Vec<Span<'st
     ]
 }
 
-/// All hands on a row of its own, with `Tab to toggle` after it.
+/// Ultracode on a row of its own, with `Tab to toggle` after it.
 fn ultracode_row(toggle: UltracodeToggle, ctx: &RenderCtx<'_>) -> Line<'static> {
     let mut row = vec![Span::raw(" ".repeat(SLIDER_INDENT))];
     row.extend(ultracode_named(toggle, ctx));
@@ -557,38 +560,38 @@ fn ultracode_row(toggle: UltracodeToggle, ctx: &RenderCtx<'_>) -> Line<'static> 
     Line::from(row)
 }
 
-/// What All hands does, only while it's on.
+/// What Ultracode does, only while it's on.
 fn ultracode_means(toggle: UltracodeToggle, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
     if !toggle.on {
         return Vec::new();
     }
-    let lead = [Span::raw(" ".repeat(SLIDER_INDENT))];
+    let margin = [Span::raw(" ".repeat(SLIDER_INDENT))];
     let means = format!("{}: {}", UltracodeToggle::NAME, UltracodeToggle::MEANS);
     wrap_text(
         &means,
         ctx.theme.style(Role::Dim),
         usize::from(ctx.width),
-        &lead,
-        &lead,
+        &margin,
+        &margin,
     )
 }
 
 /// A model that takes one level has no slider: the level, as `/model` shows it, and how to get
-/// another. One that takes none says so. Either way, the default agent's view still offers All
-/// hands.
+/// another. One that takes none says so. Either way, the main agent's view still offers
+/// Ultracode.
 fn fixed_level_lines(slider: &EffortSlider, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let text = theme.style(Role::Text);
     let width = usize::from(ctx.width);
     let indent = || Span::raw(" ".repeat(SLIDER_INDENT));
-    let lead = [indent()];
+    let margin = [indent()];
     let (mut lines, then) = match slider.level() {
         Some(level) => {
             let marks = Marks::for_theme(theme);
             let level = sanitize_line(level).trim().to_owned();
             let line = Line::from(vec![
                 indent(),
-                Span::styled(format!("{} ", marks.effort), theme.style(Role::Card)),
+                Span::styled(format!("{} ", marks.effort), theme.style(Role::Question)),
                 Span::styled(format!("{level} effort"), text),
                 Span::styled(format!(" ({FIXED})"), theme.style(Role::Dim)),
             ]);
@@ -598,7 +601,7 @@ fn fixed_level_lines(slider: &EffortSlider, ctx: &RenderCtx<'_>) -> Vec<Line<'st
             let model = sanitize_line(&slider.model).trim().to_owned();
             let says = format!("{model} takes no effort setting.");
             (
-                wrap_text(&says, text, width, &lead, &lead),
+                wrap_text(&says, text, width, &margin, &margin),
                 "To set an effort, pick another model with /model.",
             )
         }
@@ -609,6 +612,6 @@ fn fixed_level_lines(slider: &EffortSlider, ctx: &RenderCtx<'_>) -> Vec<Line<'st
         lines.extend(ultracode_means(toggle, ctx));
         lines.push(Line::default());
     }
-    lines.extend(wrap_text(then, text, width, &lead, &lead));
+    lines.extend(wrap_text(then, text, width, &margin, &margin));
     lines
 }

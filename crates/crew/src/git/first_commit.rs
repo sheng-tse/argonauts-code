@@ -64,7 +64,7 @@ impl Git {
             self.run(checkout, &args).await?;
         }
         // A fresh index knows no file's size or time, so git would read every file again the
-        // next time you ask for the status. It exits 1 for each file of yours that differs.
+        // next time you ask for the status. It exits 1 for each file of yours that is different.
         self.output(checkout, &["update-index", "-q", "--refresh"], &[])
             .await?;
         Ok(())

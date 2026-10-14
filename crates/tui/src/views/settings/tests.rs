@@ -3,7 +3,7 @@ use std::time::Instant;
 use argonauts_core::app::{MissingCli, ModelChoice, SettingRow, UiCommand, ViewData, ViewRequest};
 use argonauts_core::input::SlashCommand;
 use argonauts_core::limits::CostEstimate;
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::registry::ModelAccess;
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::ui::UiSettings;
@@ -24,7 +24,7 @@ fn row(key: &str, value: &str, layer: &str, allowed: &[&str]) -> SettingRow {
         key: key.to_owned(),
         value: value.to_owned(),
         layer: layer.to_owned(),
-        preset_from: None,
+        workflow_from: None,
         default_scope: SettingScope::Global,
         safety: false,
         allowed: allowed.iter().map(|value| (*value).to_owned()).collect(),
@@ -53,10 +53,10 @@ fn settings(command: &str, rows: Vec<SettingRow>) -> ViewData {
 fn choice(worker: &str, current: bool) -> ModelChoice {
     ModelChoice {
         worker: worker.parse().unwrap(),
-        family: "family".into(),
+        provider: "provider".into(),
         access: ModelAccess::Subscription,
         cost: CostEstimate::Unknown,
-        quota: None,
+        plan_usage: None,
         efforts: Vec::new(),
         strengths: Vec::new(),
         current,
@@ -155,9 +155,9 @@ fn model_opens_on_the_main_agents_clis_with_the_roles_a_level_down() {
     let asked = screen.answer(settings(
         "model",
         vec![
-            row("main_agent", "\"claude-code\"", "global", &[]),
+            row("crew.main", "\"claude-code\"", "global", &[]),
             row(
-                "roles.reviewer.workers",
+                "roles.reviewer.models",
                 "[\"codex/gpt-5.6\"]",
                 "built-in",
                 &[],
@@ -187,7 +187,7 @@ fn model_opens_on_the_main_agents_clis_with_the_roles_a_level_down() {
     let picker = screen.model.bottom.picker.as_ref().unwrap();
     assert_eq!(picker.rows[0].description, "GPT 5.6 on Codex");
 
-    // Esc goes back up and asks for the default agent's list again.
+    // Esc goes back up and asks for the main agent's list again.
     let back = screen.press(KeyCode::Esc);
     assert_eq!(
         back.commands,
@@ -205,9 +205,9 @@ fn answers_land_in_the_picker_that_asked() {
     screen.answer(settings(
         "model",
         vec![
-            row("main_agent", "\"claude-code/opus\"", "global", &[]),
+            row("crew.main", "\"claude-code/opus\"", "global", &[]),
             row(
-                "roles.reviewer.workers",
+                "roles.reviewer.models",
                 "[\"codex/gpt-5.6\"]",
                 "built-in",
                 &[],
@@ -228,7 +228,7 @@ fn answers_land_in_the_picker_that_asked() {
         }]
     );
 
-    // A late answer for the default agent, and a section nobody here asked for, stay out.
+    // A late answer for the main agent, and a section nobody here asked for, stay out.
     screen.answer(models(None, vec![choice("claude-code/haiku", true)]));
     screen.answer(ViewData::Settings {
         rows: vec![theme_row("global")],
@@ -293,7 +293,7 @@ fn model_pick_sends_argument_form() {
         assert!(screen.model.bottom.picker.is_none(), "a pick closes it");
         out.commands
     };
-    let worker: WorkerRef = "codex/gpt-5.6".parse().unwrap();
+    let worker: ModelRef = "codex/gpt-5.6".parse().unwrap();
     let agent = UiCommand::Slash {
         command: SlashCommand::Model {
             role: None,
@@ -443,7 +443,7 @@ fn effort_offers_only_the_models_levels() {
     screen.press(KeyCode::Enter);
     assert_eq!(screen.labels(), ["low", "high"]);
 
-    // Closed unchanged, it names the default agent's level, as /model names its model.
+    // Closed unchanged, it names the main agent's level, as /model names its model.
     let mut screen = Screen::new();
     screen.answer(settings("effort", rows));
     screen.press(KeyCode::Esc);
@@ -463,7 +463,7 @@ fn effort_offers_only_the_models_levels() {
 }
 
 #[test]
-fn agents_lists_each_harness_then_add_an_endpoint() {
+fn agents_lists_each_cli_then_add_an_endpoint() {
     let mut screen = Screen::new();
     screen.answer(settings(
         "agents",
@@ -568,11 +568,11 @@ fn agents_says_which_clis_are_not_installed_and_how_to_add_them() {
     assert_eq!(notes(&screen), expected);
 }
 
-/// Each agent's row leads its note with its state, as the glyph every view draws for that
+/// Each agent's row starts its note with its state, as the glyph every view draws for that
 /// state: on, off, and not installed. An endpoint has no switch, so it carries none.
 #[test]
 fn agents_mark_each_row_with_its_state() {
-    use crate::widgets::State;
+    use crate::kit::State;
 
     let enabled = |id: &str, on: &str| {
         row(
@@ -741,7 +741,7 @@ fn a_models_answer_for_a_left_picker_opens_nothing_over_another() {
     let mut screen = Screen::new();
     screen.answer(settings(
         "model",
-        vec![row("roles.reviewer.workers", "[]", "built-in", &[])],
+        vec![row("roles.reviewer.models", "[]", "built-in", &[])],
     ));
     screen.answer(models(
         Some(RoleName::Critic),
@@ -759,7 +759,7 @@ fn a_models_answer_for_a_left_picker_opens_nothing_over_another() {
     let mut screen = Screen::new();
     screen.answer(settings(
         "model",
-        vec![row("roles.reviewer.workers", "[]", "built-in", &[])],
+        vec![row("roles.reviewer.models", "[]", "built-in", &[])],
     ));
     screen.answer(models(None, vec![choice("claude-code", true)]));
     screen.press(KeyCode::Down);
@@ -783,7 +783,7 @@ fn esc_on_the_model_list_keeps_the_main_agent() {
     let mut screen = Screen::new();
     screen.answer(settings(
         "model",
-        vec![row("main_agent", "\"claude-code/haiku\"", "global", &[])],
+        vec![row("crew.main", "\"claude-code/haiku\"", "global", &[])],
     ));
     let out = screen.press(KeyCode::Esc);
     assert!(out.commands.is_empty());
@@ -819,7 +819,7 @@ fn the_model_list_moves_with_vim_keys_only_when_they_are_on() {
         screen.model.bottom.picker.is_none(),
         "l picks, as Enter does"
     );
-    let worker: WorkerRef = "codex/gpt-5.6".parse().unwrap();
+    let worker: ModelRef = "codex/gpt-5.6".parse().unwrap();
     assert_eq!(
         out.commands,
         [UiCommand::Slash {
@@ -872,22 +872,22 @@ fn a_model_without_a_description_says_what_kind_it_is() {
     use super::models::model_description;
 
     let mythos = ModelChoice {
-        family: "claude".into(),
+        provider: "anthropic".into(),
         name: "Mythos 5.1".into(),
         ..choice("claude-code/claude-mythos-5-1", false)
     };
     assert_eq!(
         model_description(&mythos),
-        "A Claude model on your subscription"
+        "An Anthropic model on your subscription"
     );
     let local = ModelChoice {
-        family: "olmo".into(),
+        provider: "olmo".into(),
         access: ModelAccess::Local,
         ..choice("ollama/olmo2", false)
     };
     assert_eq!(model_description(&local), "An Olmo model on this machine");
     let unknown = ModelChoice {
-        family: "unknown".into(),
+        provider: "unknown".into(),
         access: ModelAccess::ApiKey,
         ..choice("acme/x-1", false)
     };
@@ -943,7 +943,7 @@ fn esc_on_the_cli_list_keeps_the_default_with_what_it_runs() {
     let mut screen = Screen::new();
     let mut choices = claude_and_codex();
     for choice in &mut choices {
-        choice.current = choice.worker.model.is_none() && choice.worker.worker == "claude-code";
+        choice.current = choice.worker.model.is_none() && choice.worker.agent == "claude-code";
         if choice.current {
             choice.runs = Some("Opus 5.5".into());
         }
@@ -1075,7 +1075,7 @@ fn model_lists_the_clis_then_enter_opens_one() {
     // A model nothing describes says what kind it is, so its row doesn't read as blank.
     let mut choices = claude_and_codex();
     choices.push(ModelChoice {
-        family: "claude".into(),
+        provider: "anthropic".into(),
         ..choice("claude-code/claude-mythos-5-1", false)
     });
     let mut screen = Screen::new();
@@ -1087,7 +1087,10 @@ fn model_lists_the_clis_then_enter_opens_one() {
         .iter()
         .find(|row| row.label == "Mythos 5.1")
         .unwrap_or_else(|| panic!("{:?}", screen.labels()));
-    assert_eq!(mythos.description, "A Claude model on your subscription");
+    assert_eq!(
+        mythos.description,
+        "An Anthropic model on your subscription"
+    );
     assert_eq!(picker.esc_hint, "Esc to go back");
 
     // Esc goes back to the CLIs, on the one it left; the next opens on its default.

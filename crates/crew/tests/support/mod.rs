@@ -1,5 +1,5 @@
 //! Shared helpers for the engine scenarios: a crew of fake workers over a real temp repo, runs
-//! driven to where they park or finish, and answers to their checkpoints. Each `tests/engine_*.rs`
+//! driven to where they wait or finish, and answers to their approvals. Each `tests/engine_*.rs`
 //! file includes it with `mod support;`.
 #![allow(dead_code)]
 
@@ -11,31 +11,35 @@ use anyhow::{Context, bail};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
-use argonauts_core::api::CheckpointAnswer;
+use argonauts_core::api::ApprovalAnswer;
 use argonauts_core::clock::Clock;
 use argonauts_core::engine::{EngineCommand, EngineContext, EngineExit, RepoContext};
-use argonauts_core::events::checkpoint::{AnswerAction, CheckpointEvent, CheckpointKind};
+use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind};
 use argonauts_core::events::run::{RunLifecycle, RunMode, RunStarted};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::paths::Paths;
+use argonauts_core::session_runner::{RunnerEvent, SessionRunner, SessionSpec};
+use argonauts_core::settings::fallback::Retry;
 use argonauts_core::settings::workflows::AdaptWith;
 use argonauts_core::settings::{Settings, Span};
 use argonauts_core::steps::StepName;
-use argonauts_core::worker::{SessionSpec, Worker, WorkerEvent};
 use argonauts_core::{AgentEvent, RepoId, RunId};
 use argonauts_crew::engine::host::Host;
 use argonauts_crew::engine::shared::{Shared, with_git_env};
 use argonauts_crew::prompts::trust;
 use argonauts_crew::state::RunState;
 use argonauts_testkit::repo::TempRepo;
+use argonauts_testkit::runner::{FakeRunner, FakeSession};
 use argonauts_testkit::services::{FakeServices, MemorySink, TEST_RUN, engine_context_in};
-use argonauts_testkit::worker::{FakeSession, FakeWorker};
 
 /// A crew of fake workers, the fake services, and a temp repo with one commit.
 pub struct Crew {
     pub services: FakeServices,
     pub repo: TempRepo,
     pub settings: Settings,
+    /// A `PATH` for the engine's git and the tools it runs beside it, where a scenario stands
+    /// in for one, such as `gh`.
+    pub path: Option<String>,
 }
 
 /// A run going on in its own task.
@@ -54,9 +58,9 @@ pub struct Outcome {
 }
 
 impl Crew {
-    /// The default preset's settings with an empty crew. A run with a checkpoint waiting parks
-    /// at once instead of after the usual grace, and a session that failed for a vendor reason
-    /// goes again at once, so scenarios don't wait. The lead doesn't
+    /// The default workflow's settings with an empty crew. A run with an approval waiting waits
+    /// at once instead of after the usual grace, and a session that failed for an agent reason
+    /// goes again at once, so scenarios don't wait. The main agent doesn't
     /// design the workflow and no final check runs, unless a scenario turns them on, so
     /// scripted answers go to the steps they were written for. For the same reason a
     /// built-in workflow runs its fixed phases here, and the scenarios of a workflow's own
@@ -65,40 +69,41 @@ impl Crew {
         let mut settings = Settings::default();
         settings.crew.clear();
         settings.workflows.adapt_with = AdaptWith::Phases;
-        settings.supervisor.park_grace = Span::new("0s");
-        settings.supervisor.retry_wait = Span::new("0s");
-        settings.workflows.lead_designs = false.into();
+        settings.run_host.wait_grace = Span::new("0s");
+        settings.fallback.retry = Some(Retry::without_wait());
+        settings.workflows.orchestrator_designs = false.into();
         settings.workflows.final_check = false;
         Ok(Self {
             services: FakeServices::new(),
             repo: TempRepo::new()?,
             settings,
+            path: None,
         })
     }
 
-    /// Adds a fake harness worker such as `claude-code/opus` of `family` to the directory and
-    /// to `settings.crew`. The first one added is also the default agent.
-    pub fn worker(&mut self, worker: &str, family: &str) -> Arc<FakeWorker> {
-        self.enlist(FakeWorker::harness(worker, family))
+    /// Adds a fake CLI worker such as `claude-code/opus` of `provider` to the directory and
+    /// to `settings.crew`. The first one added is also the main agent.
+    pub fn worker(&mut self, worker: &str, provider: &str) -> Arc<FakeRunner> {
+        self.enlist(FakeRunner::cli(worker, provider))
     }
 
-    /// Adds a fake harness worker that answers every step with the smallest valid answer for
+    /// Adds a fake CLI worker that answers every step with the smallest valid answer for
     /// the step's schema, and ends a session without one as done.
-    pub fn answering_worker(&mut self, worker: &str, family: &str) -> Arc<FakeWorker> {
-        self.enlist(FakeWorker::harness(worker, family).respond_with(smallest_answer))
+    pub fn answering_worker(&mut self, worker: &str, provider: &str) -> Arc<FakeRunner> {
+        self.enlist(FakeRunner::cli(worker, provider).respond_with(smallest_answer))
     }
 
     /// An [`Crew::answering_worker`] whose build sessions also write `text` to `file` in their
-    /// worktree, so the card has a commit to make and to merge.
+    /// worktree, so the task has a commit to make and to merge.
     pub fn building_worker(
         &mut self,
         worker: &str,
-        family: &str,
+        provider: &str,
         file: &str,
         text: &str,
-    ) -> Arc<FakeWorker> {
+    ) -> Arc<FakeRunner> {
         let (file, text) = (file.to_owned(), text.to_owned());
-        let fake = FakeWorker::harness(worker, family).respond_with(move |spec| {
+        let fake = FakeRunner::cli(worker, provider).respond_with(move |spec| {
             if spec.step != Some(StepName::Build) {
                 return smallest_answer(spec);
             }
@@ -109,11 +114,11 @@ impl Crew {
         self.enlist(fake)
     }
 
-    pub fn enlist(&mut self, fake: FakeWorker) -> Arc<FakeWorker> {
+    pub fn enlist(&mut self, fake: FakeRunner) -> Arc<FakeRunner> {
         let fake = self.services.workers.add(fake);
-        let reference = fake.worker_ref().clone();
+        let reference = fake.model_ref().clone();
         if self.settings.crew.is_empty() {
-            self.settings.main_agent = reference.clone();
+            self.settings.crew.main = reference.clone();
         }
         if !self.settings.crew.contains(&reference) {
             self.settings.crew.add(reference);
@@ -123,15 +128,17 @@ impl Crew {
 
     /// The temp repo's home and git config, for the engine's git.
     pub fn git_env(&self) -> Vec<(String, String)> {
+        let path = self.path.clone().map(|path| ("PATH".to_owned(), path));
         self.repo
             .envs()
             .into_iter()
             .map(|(name, value)| (name, value.to_string_lossy().into_owned()))
+            .chain(path)
             .collect()
     }
 
-    /// Runs `request` to its end, answering each checkpoint it parks on with its recommended
-    /// option. Returns every stretch the engine ran, the last one finished or still parked
+    /// Runs `request` to its end, answering each approval it waits on with its recommended
+    /// option. Returns every stretch the engine ran, the last one finished or still waiting
     /// after `rounds` answers.
     pub async fn run_to_end(
         &self,
@@ -142,7 +149,7 @@ impl Crew {
         let mut outcomes = vec![self.start(mode, request).await?];
         for _ in 0..rounds {
             let last = &outcomes[outcomes.len() - 1];
-            if !matches!(last.exit, EngineExit::Parked(_)) {
+            if !matches!(last.exit, EngineExit::Waiting(_)) {
                 break;
             }
             let Some((command, _reply)) = recommended(&last.events) else {
@@ -193,8 +200,8 @@ impl Crew {
         ))
     }
 
-    /// The `RunStarted` the supervisor writes before the engine runs.
-    /// The repo's head, or the head of the history Argonauts keeps for a folder with no git.
+    /// The `RunStarted` the run host writes before the engine runs.
+    /// The repo's head, or the head of the history Argonauts Code keeps for a folder with no git.
     pub fn base_commit(&self) -> anyhow::Result<String> {
         let state_dir = self.repo_context()?.state_dir().to_path_buf();
         match argonauts_core::hidden_git::of(self.repo.root(), &state_dir) {
@@ -206,6 +213,20 @@ impl Crew {
         }
     }
 
+    /// The branch checked out as the run starts, which the app records: none for a detached
+    /// HEAD. A folder whose `.git` a test moved aside into a hidden history keeps that
+    /// history's one branch.
+    fn base_branch(&self) -> Option<String> {
+        if !self.repo.root().join(".git").exists() {
+            return Some("main".to_owned());
+        }
+        self.repo
+            .git(&["symbolic-ref", "--quiet", "--short", "HEAD"])
+            .ok()
+            .map(|branch| branch.trim().to_owned())
+            .filter(|branch| !branch.is_empty())
+    }
+
     pub fn run_started(&self, mode: RunMode, request: &str) -> anyhow::Result<RunEvent> {
         let (context, _, _) = self.context(Vec::new())?;
         let started = RunStarted {
@@ -215,20 +236,20 @@ impl Crew {
             forced: false,
             workflow: self.settings.workflow.clone(),
             estimate: None,
-            triage: None,
-            chat_turn: None,
+            captain_or_crew: None,
+            conversation_turn: None,
             continues: None,
             repo_root: self.repo.root().to_path_buf(),
-            base_branch: Some("main".to_owned()),
+            base_branch: self.base_branch(),
             base_commit: self.base_commit()?,
             uncommitted: Vec::new(),
             uncommitted_included: false,
             settings_sha256: context.settings_sha256.clone(),
             settings: serde_json::to_value(&self.settings)?,
             overrides: Vec::new(),
-            harness_versions: BTreeMap::new(),
+            cli_versions: BTreeMap::new(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
-            front_end: None,
+            outside_agent: None,
             instructions: Vec::new(),
             required_steps: Vec::new(),
         };
@@ -236,9 +257,9 @@ impl Crew {
             seq: 0,
             ts: self.services.clock.now(),
             run_id: context.run,
-            card_id: None,
+            task_id: None,
             session: None,
-            source: "supervisor".to_owned(),
+            source: "run-host".to_owned(),
             kind: RunEventKind::Run(RunLifecycle::Started(Box::new(started))),
         })
     }
@@ -257,15 +278,15 @@ impl Crew {
         Ok((Host::new(Arc::new(shared)), sink))
     }
 
-    /// Starts a run for `request` (its `RunStarted` written as the supervisor would) and drives
-    /// the engine until it parks or finishes.
+    /// Starts a run for `request` (its `RunStarted` written as the run host would) and drives
+    /// the engine until it waits or finishes.
     pub async fn start(&self, mode: RunMode, request: &str) -> anyhow::Result<Outcome> {
         let started = self.run_started(mode, request)?;
         self.drive(mode, vec![started], Vec::new(), false).await
     }
 
-    /// Wakes a parked run with `commands` queued in its inbox, as the supervisor does after an
-    /// answer, and drives it until it parks or finishes again.
+    /// Wakes a waiting run with `commands` queued in its inbox, as the run host does after an
+    /// answer, and drives it until it waits or finishes again.
     pub async fn resume(
         &self,
         history: Vec<RunEvent>,
@@ -275,14 +296,14 @@ impl Crew {
             .await
     }
 
-    /// Reopens a stopped run, as `/resume` asks its next supervisor to, and drives it until it
-    /// parks or finishes again.
+    /// Reopens a stopped run, as `/resume` asks its next run host to, and drives it until it
+    /// waits or finishes again.
     pub async fn reopen(&self, history: Vec<RunEvent>) -> anyhow::Result<Outcome> {
         self.drive(mode_of(&history), history, Vec::new(), true)
             .await
     }
 
-    /// Starts a run in its own task and hands back what a test needs to act on it mid-run:
+    /// Starts a run in its own task and returns what a test needs to act on it mid-run:
     /// its shutdown token, its inbox, and its log. Hold `repo.env_guard()` while it runs.
     pub fn spawn(&self, mode: RunMode, request: &str) -> anyhow::Result<Spawned> {
         let started = self.run_started(mode, request)?;
@@ -312,7 +333,7 @@ impl Crew {
                 bail!("the engine's inbox closed before it started");
             }
         }
-        // The engine's git gets the test repo's home and config handed to it rather than
+        // The engine's git gets the test repo's home and config passed to it rather than
         // through the process environment, so runs over separate repos go side by side.
         let engine = argonauts_crew::engine_for(&self.settings, mode).run(context);
         let exit = with_git_env(self.git_env(), engine).await;
@@ -320,6 +341,54 @@ impl Crew {
             exit,
             events: sink.events(),
         })
+    }
+}
+
+/// How the `gh` a scenario installs answers `gh pr create`.
+#[derive(Debug, Clone, Copy)]
+pub enum Gh {
+    /// Prints the pull request's address.
+    Opens(&'static str),
+    /// Fails with this on stderr.
+    Fails(&'static str),
+}
+
+impl Crew {
+    /// Gives the engine a `PATH` of its own: git as this process finds it, and `gh` only when
+    /// `gh` says how it answers. That `gh` writes the arguments of each call, one to a line,
+    /// into the file this returns. The machine's own `gh` is never run.
+    pub fn with_tools(&mut self, gh: Option<Gh>) -> anyhow::Result<PathBuf> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tools = self.repo.scratch().join("tools");
+        std::fs::create_dir_all(&tools)?;
+        let log = tools.join("gh.log");
+        let script = |name: &str, body: String| -> anyhow::Result<()> {
+            let path = tools.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}"))?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+            Ok(())
+        };
+        let git = which::which("git").context("git is installed")?;
+        script("git", format!("exec '{}' \"$@\"\n", git.display()))?;
+        let logged = format!("printf '%s\\n' \"$@\" >> '{}'\n", log.display());
+        match gh {
+            Some(Gh::Opens(url)) => script("gh", format!("{logged}echo '{url}'\n"))?,
+            Some(Gh::Fails(why)) => script("gh", format!("{logged}echo '{why}' >&2\nexit 1\n"))?,
+            None => {}
+        }
+        self.path = Some(tools.to_string_lossy().into_owned());
+        Ok(log)
+    }
+
+    /// Adds a bare repository as `origin` and pushes `main` to it. Returns its folder.
+    pub fn with_remote(&self) -> anyhow::Result<PathBuf> {
+        let remote = self.repo.scratch().join("origin.git");
+        let path = remote.to_string_lossy().into_owned();
+        self.repo.git(&["init", "--bare", "--quiet", &path])?;
+        self.repo.git(&["remote", "add", "origin", &path])?;
+        self.repo.git(&["push", "--quiet", "origin", "main"])?;
+        Ok(remote)
     }
 }
 
@@ -331,13 +400,13 @@ fn mode_of(history: &[RunEvent]) -> RunMode {
             RunEventKind::Run(RunLifecycle::Started(started)) => Some(started.mode),
             _ => None,
         })
-        .unwrap_or(RunMode::Solo)
+        .unwrap_or(RunMode::Captain)
 }
 
 /// What a CLI's edit tool reports when it writes `file`, which is how a new file comes to be
 /// the agent's own and not something a command left behind.
-pub fn wrote(file: &str) -> WorkerEvent {
-    WorkerEvent::Agent(AgentEvent::FileChanged {
+pub fn wrote(file: &str) -> RunnerEvent {
+    RunnerEvent::Agent(AgentEvent::FileChanged {
         path: file.to_owned(),
         kind: "add".to_owned(),
     })
@@ -351,55 +420,55 @@ pub fn smallest_answer(spec: &SessionSpec) -> FakeSession {
     }
 }
 
-/// An `Answer` for the newest open checkpoint of `kind`, carrying its evidence hash, and the
+/// An `Answer` for the newest open approval of `kind`, carrying its evidence hash, and the
 /// receiver for the engine's reply.
 pub fn answer(
     events: &[RunEvent],
-    kind: CheckpointKind,
+    kind: ApprovalKind,
     action: AnswerAction,
     text: Option<&str>,
 ) -> anyhow::Result<(EngineCommand, oneshot::Receiver<Result<(), String>>)> {
     let mut open = Vec::new();
     for event in events {
         match &event.kind {
-            RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) if opened.kind == kind => {
+            RunEventKind::Approval(ApprovalEvent::Opened(opened)) if opened.kind == kind => {
                 open.push(opened.clone());
             }
-            RunEventKind::Checkpoint(CheckpointEvent::Decided(decided)) => {
+            RunEventKind::Approval(ApprovalEvent::Decided(decided)) => {
                 open.retain(|opened| opened.id != decided.id);
             }
-            RunEventKind::Checkpoint(CheckpointEvent::Withdrawn { id, .. }) => {
+            RunEventKind::Approval(ApprovalEvent::Withdrawn { id, .. }) => {
                 open.retain(|opened| &opened.id != id);
             }
             _ => {}
         }
     }
     let Some(opened) = open.pop() else {
-        bail!("no open {kind:?} checkpoint in {} events", events.len());
+        bail!("no open {kind:?} approval in {} events", events.len());
     };
     let (reply, replied) = oneshot::channel();
-    let answer = CheckpointAnswer {
+    let answer = ApprovalAnswer {
         id: opened.id,
         action,
         text: text.map(str::to_owned),
         evidence_sha256: opened.evidence_sha256,
-        cards: Vec::new(),
+        tasks: Vec::new(),
     };
     Ok((EngineCommand::Answer { answer, reply }, replied))
 }
 
-/// The recommended answer to the newest open checkpoint of any kind.
+/// The recommended answer to the newest open approval of any kind.
 pub fn recommended(
     events: &[RunEvent],
 ) -> Option<(EngineCommand, oneshot::Receiver<Result<(), String>>)> {
     let mut open = Vec::new();
     for event in events {
         match &event.kind {
-            RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) => open.push(opened.clone()),
-            RunEventKind::Checkpoint(CheckpointEvent::Decided(decided)) => {
+            RunEventKind::Approval(ApprovalEvent::Opened(opened)) => open.push(opened.clone()),
+            RunEventKind::Approval(ApprovalEvent::Decided(decided)) => {
                 open.retain(|opened| opened.id != decided.id);
             }
-            RunEventKind::Checkpoint(CheckpointEvent::Withdrawn { id, .. }) => {
+            RunEventKind::Approval(ApprovalEvent::Withdrawn { id, .. }) => {
                 open.retain(|opened| &opened.id != id);
             }
             _ => {}
@@ -412,12 +481,12 @@ pub fn recommended(
         .find(|option| option.recommended)
         .or_else(|| opened.options.first())?;
     let (reply, replied) = oneshot::channel();
-    let answer = CheckpointAnswer {
+    let answer = ApprovalAnswer {
         id: opened.id.clone(),
         action: option.action.clone(),
         text: None,
         evidence_sha256: opened.evidence_sha256.clone(),
-        cards: Vec::new(),
+        tasks: Vec::new(),
     };
     Some((EngineCommand::Answer { answer, reply }, replied))
 }
@@ -497,7 +566,7 @@ fn fill_node(root: &Value, node: &Value, depth: usize) -> Value {
     }
 }
 
-/// The lead's brief for `DesignWorkflow`: an example by name with its params, or a workflow
+/// The main agent's brief for `DesignWorkflow`: an example by name with its params, or a workflow
 /// file of its own, with one criterion.
 pub fn brief(based_on: Option<&str>, params: Value, workflow: Option<&str>, why: &str) -> Value {
     serde_json::json!({
@@ -511,12 +580,12 @@ pub fn brief(based_on: Option<&str>, params: Value, workflow: Option<&str>, why:
                        "check": "review"}],
         "plan": [],
         "questions": [],
-        "first_attempt": null,
+        "first_try": null,
     })
 }
 
 /// Scripts one structured answer per value for the worker's next step sessions.
-pub fn script(worker: &FakeWorker, answers: Vec<Value>) {
+pub fn script(worker: &FakeRunner, answers: Vec<Value>) {
     for answer in answers {
         worker.push(FakeSession::structured(answer));
     }

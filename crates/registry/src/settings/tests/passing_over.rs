@@ -21,18 +21,87 @@ fn warned(resolved: &ResolvedSettings, wanted: &str) {
 fn a_role_with_no_such_name_leaves_the_other_roles_in_place() {
     let repo = Repo::new();
     repo.global(
-        "[roles.foreman]\nworkers = [\"codex\"]\n\
-         [roles.orchestrator]\nworkers = [\"claude-code\"]\n",
+        "[roles.foreman]\nmodels = [\"codex\"]\n\
+         [roles.orchestrator]\nmodels = [\"claude-code\"]\n",
     );
     let resolved = resolve(&repo.forgiving()).unwrap();
     let orchestrator = &resolved.settings.roles[&RoleName::Orchestrator];
-    assert_eq!(orchestrator.workers.len(), 1);
+    assert_eq!(orchestrator.models.len(), 1);
     warned(&resolved, "\"foreman\"");
     warned(&resolved, "so the default is used");
     assert!(
         resolve(&repo.trusted()).is_err(),
         "a check still refuses it"
     );
+}
+
+/// A role and a value nobody knows, in one file: each is passed over with a notice, and the
+/// rest of the file applies.
+#[test]
+fn an_unknown_role_and_value_are_each_passed_over_with_a_notice() {
+    let repo = Repo::new();
+    repo.global(
+        "[roles.navigator]\nmodels = [\"codex\"]\n\
+         [captain_or_crew]\notherwise = \"crew_then_captain\"\n\
+         [crew]\nmain = \"codex\"\n",
+    );
+    let resolved = resolve(&repo.forgiving()).unwrap();
+    assert_eq!(resolved.settings.crew.main.agent, "codex");
+    assert!(
+        !resolved
+            .settings
+            .roles
+            .contains_key(&RoleName::Orchestrator)
+    );
+    assert_eq!(
+        resolved.settings.captain_or_crew.otherwise,
+        Settings::default().captain_or_crew.otherwise
+    );
+    warned(&resolved, "\"navigator\"");
+    warned(&resolved, "\"crew_then_captain\"");
+}
+
+/// Two roles nobody knows and none that is known: the whole table is left out, and each of
+/// the two is named, not only the first serde met.
+#[test]
+fn every_unknown_role_is_named_when_no_role_is_left() {
+    let repo = Repo::new();
+    repo.global(
+        "[roles.navigator]\nmodels = [\"codex\"]\n\
+         [roles.foreman]\nmodels = [\"claude-code\"]\n\
+         [crew]\nmain = \"codex\"\n",
+    );
+    let resolved = resolve(&repo.forgiving()).unwrap();
+    assert_eq!(resolved.settings.crew.main.agent, "codex");
+    warned(&resolved, "\"navigator\"");
+    warned(&resolved, "\"foreman\"");
+    let named = |name: &str| {
+        resolved
+            .warnings
+            .iter()
+            .filter(|warning| warning.contains(name))
+            .count()
+    };
+    assert_eq!(
+        (named("\"navigator\""), named("\"foreman\"")),
+        (1, 1),
+        "{:?}",
+        resolved.warnings
+    );
+}
+
+/// A table at fault as a whole says so once, however many keys it holds.
+#[test]
+fn a_table_missing_what_it_needs_is_named_once() {
+    let repo = Repo::new();
+    repo.global("[[checks.run]]\nname = \"unit\"\n[[checks.run]]\nname = \"lint\"\n");
+    let resolved = resolve(&repo.forgiving()).unwrap();
+    let about_checks = resolved
+        .warnings
+        .iter()
+        .filter(|warning| warning.contains("checks.run"))
+        .count();
+    assert_eq!(about_checks, 1, "{:?}", resolved.warnings);
 }
 
 #[test]
@@ -62,12 +131,34 @@ fn a_value_the_checks_refuse_falls_back_too() {
 }
 
 #[test]
-fn a_workflow_with_no_such_name_runs_the_default_one() {
+fn a_workflow_with_no_such_name_runs_the_default_one_with_one_notice() {
     let repo = Repo::new();
     repo.project("workflow = \"no-such-workflow\"\n");
     let resolved = resolve(&repo.forgiving()).unwrap();
     assert_eq!(resolved.settings.workflow, Settings::default().workflow);
-    warned(&resolved, "no-such-workflow");
+    let named: Vec<&String> = resolved
+        .warnings
+        .iter()
+        .filter(|warning| warning.contains("no-such-workflow"))
+        .collect();
+    assert_eq!(
+        named,
+        [
+            "workflow = \"no-such-workflow\" in .argonauts/config.toml names no workflow, so the \
+             default is used; /workflow lists the ones you can pick"
+        ]
+    );
+}
+
+#[test]
+fn a_workflow_with_no_such_name_still_stops_a_strict_check() {
+    let repo = Repo::new();
+    repo.project("workflow = \"no-such-workflow\"\n");
+    let error = resolve(&repo.sources()).unwrap_err().to_string();
+    assert!(
+        error.contains("pick one of council, orchestrator, captain"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -75,15 +166,22 @@ fn odd_names_and_global_only_keys_in_a_project_file_are_ignored() {
     let repo = Repo::new();
     repo.project(
         "[agents.\"my.tool\"]\nextra_args = [\"--yolo\"]\n\
-         [notifications.chat]\ncommand = [\"/usr/bin/notify\", \"{text}\"]\n\
+         [notifications.conversation]\ncommand = [\"/usr/bin/notify\", \"{text}\"]\n\
          [ui]\nkeys = \"vim\"\n",
     );
     let resolved = resolve(&repo.forgiving()).unwrap();
     assert!(!resolved.settings.agents.contains_key("my.tool"));
-    assert!(resolved.settings.notifications.chat.command.is_empty());
+    assert!(
+        resolved
+            .settings
+            .notifications
+            .conversation
+            .command
+            .is_empty()
+    );
     assert_eq!(resolved.settings.ui.keys, argonauts_core::KeyScheme::Vim);
     warned(&resolved, "\"my.tool\" under agents");
-    warned(&resolved, "notifications.chat.command");
+    warned(&resolved, "notifications.conversation.command");
 }
 
 #[test]

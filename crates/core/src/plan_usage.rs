@@ -4,8 +4,10 @@
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 
-use crate::limits::{QuotaBoard, QuotaReading, QuotaSource, QuotaStatus, binding_reading};
-use crate::names::VendorId;
+use crate::limits::{
+    PlanUsageBoard, PlanUsageReading, PlanUsageSource, PlanUsageStatus, binding_reading,
+};
+use crate::names::AgentId;
 
 /// From this share of a window used, the CLI's own screens warn, and so does its reading.
 pub const WARNING_FROM: f64 = 0.8;
@@ -16,7 +18,7 @@ pub const UNNAMED_SHOWN_FOR: Duration = Duration::minutes(10);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LiveUsage {
-    pub vendor: VendorId,
+    pub agent_id: AgentId,
     /// Who the CLI was signed in as when it answered: an email, or the CLI's own account id.
     /// `None` when the CLI doesn't say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -35,7 +37,7 @@ pub struct LiveUsage {
     /// The CLI refuses ordinary work whatever its windows say.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub blocked: bool,
-    pub source: QuotaSource,
+    pub source: PlanUsageSource,
     #[serde(with = "time::serde::rfc3339")]
     pub read_at: OffsetDateTime,
 }
@@ -140,10 +142,10 @@ pub struct Behavior {
 }
 
 impl LiveUsage {
-    /// An empty reading of `vendor`, made `read_at`.
-    pub fn new(vendor: VendorId, source: QuotaSource, read_at: OffsetDateTime) -> Self {
+    /// An empty reading of `agent`, made `read_at`.
+    pub fn new(agent_id: AgentId, source: PlanUsageSource, read_at: OffsetDateTime) -> Self {
         Self {
-            vendor,
+            agent_id,
             account: None,
             plan: None,
             windows: Vec::new(),
@@ -155,10 +157,10 @@ impl LiveUsage {
         }
     }
 
-    /// Each window as the quota board keeps it, for what wants one number per CLI: the bottom
-    /// line, the handoff and the planner.
-    pub fn quota_readings(&self) -> Vec<QuotaReading> {
-        let mut readings: Vec<QuotaReading> = self
+    /// Each window as the plan usage board keeps it, for what wants one number per CLI: the bottom
+    /// line, the fallback and the planner.
+    pub fn plan_usage_readings(&self) -> Vec<PlanUsageReading> {
+        let mut readings: Vec<PlanUsageReading> = self
             .windows
             .iter()
             .map(|window| window.reading(self))
@@ -167,14 +169,14 @@ impl LiveUsage {
             && let Some(binding) = binding_reading(&readings).cloned()
             && let Some(reading) = readings.iter_mut().find(|r| **r == binding)
         {
-            reading.status = QuotaStatus::Rejected;
+            reading.status = PlanUsageStatus::Rejected;
         }
         readings
     }
 
     /// The window that binds soonest, as one number per CLI shows it.
-    pub fn binding(&self) -> Option<QuotaReading> {
-        binding_reading(&self.quota_readings()).cloned()
+    pub fn binding(&self) -> Option<PlanUsageReading> {
+        binding_reading(&self.plan_usage_readings()).cloned()
     }
 
     /// Whether a window it read has reset since, so the reading says nothing of it now.
@@ -199,7 +201,7 @@ impl LiveUsage {
     }
 
     /// Whether it stands as the CLI's own reading at `now`: it may be shown, and it was read
-    /// after anything that cast doubt on it (see [`QuotaBoard::doubted_at`]).
+    /// after anything that cast doubt on it (see [`PlanUsageBoard::doubted_at`]).
     pub fn current_at(&self, now: OffsetDateTime, doubted_at: Option<OffsetDateTime>) -> bool {
         self.shown_at(now) && doubted_at.is_none_or(|at| self.read_at > at)
     }
@@ -208,13 +210,13 @@ impl LiveUsage {
 /// The CLI's live reading while it stands as its own, as the Usage tab and the bottom line
 /// both show it.
 pub fn current_live(
-    board: &dyn QuotaBoard,
-    vendor: &VendorId,
+    board: &dyn PlanUsageBoard,
+    agent_id: &AgentId,
     now: OffsetDateTime,
 ) -> Option<LiveUsage> {
     board
-        .live(vendor)
-        .filter(|live| live.current_at(now, board.doubted_at(vendor)))
+        .live(agent_id)
+        .filter(|live| live.current_at(now, board.doubted_at(agent_id)))
 }
 
 impl LiveWindow {
@@ -250,15 +252,15 @@ impl LiveWindow {
         self
     }
 
-    fn reading(&self, of: &LiveUsage) -> QuotaReading {
+    fn reading(&self, of: &LiveUsage) -> PlanUsageReading {
         let status = match self.used {
-            Some(used) if used >= 1.0 => QuotaStatus::Rejected,
-            Some(used) if used >= WARNING_FROM => QuotaStatus::Warning,
-            Some(_) => QuotaStatus::Allowed,
-            None => QuotaStatus::Unknown,
+            Some(used) if used >= 1.0 => PlanUsageStatus::Rejected,
+            Some(used) if used >= WARNING_FROM => PlanUsageStatus::Warning,
+            Some(_) => PlanUsageStatus::Allowed,
+            None => PlanUsageStatus::Unknown,
         };
-        QuotaReading {
-            vendor: of.vendor.clone(),
+        PlanUsageReading {
+            agent_id: of.agent_id.clone(),
             status,
             used: self.used,
             resets_at: self.resets_at,
@@ -290,19 +292,19 @@ mod tests {
     fn reading(windows: Vec<LiveWindow>) -> LiveUsage {
         LiveUsage {
             windows,
-            ..LiveUsage::new(VendorId("codex".into()), QuotaSource::AppServer, READ)
+            ..LiveUsage::new(AgentId("codex".into()), PlanUsageSource::AppServer, READ)
         }
     }
 
     #[test]
-    fn windows_become_quota_readings_and_the_fullest_binds() {
+    fn windows_become_plan_usage_readings_and_the_fullest_binds() {
         let live = reading(vec![
             LiveWindow::new("five_hour", "5-hour", "5h limit").used(Some(0.2)),
             LiveWindow::new("weekly", "weekly", "Weekly limit").used(Some(0.85)),
         ]);
-        let readings = live.quota_readings();
+        let readings = live.plan_usage_readings();
         assert_eq!(readings.len(), 2);
-        assert_eq!(readings[1].status, QuotaStatus::Warning);
+        assert_eq!(readings[1].status, PlanUsageStatus::Warning);
         assert_eq!(readings[0].observed_at, READ);
         assert_eq!(live.binding().unwrap().window.as_deref(), Some("weekly"));
     }
@@ -313,7 +315,7 @@ mod tests {
             LiveWindow::new("five_hour", "5-hour", "5h limit").used(Some(0.3)),
         ]);
         live.blocked = true;
-        assert_eq!(live.binding().unwrap().status, QuotaStatus::Rejected);
+        assert_eq!(live.binding().unwrap().status, PlanUsageStatus::Rejected);
     }
 
     #[test]

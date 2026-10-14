@@ -1,15 +1,15 @@
 //! The router's arithmetic: one utility per candidate from its track record, Thompson draws
 //! over the posteriors, the probability each choice had, and the guardrails on exploring.
 //!
-//! The engine keeps the rules that remove candidates (the review ring, blindness, quotas,
-//! vendor health, caps, cost ceilings) and records which rule removed whom; this module ranks
-//! what's left. Predictions are one term of the utility and never change a card's path.
+//! The engine keeps the rules that remove candidates (the review ring, blindness, plan usage,
+//! agent health, caps, cost ceilings) and records which rule removed whom; this module ranks
+//! what's left. Predictions are one term of the utility and never change a task's path.
 
 use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
 
-use argonauts_core::CardId;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::TaskId;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::protocol::{RoutingSettings, RoutingWeights};
 
 use crate::records::Record;
@@ -29,7 +29,7 @@ pub fn utility(record: &Record, pass: f64, approval: f64, weights: &RoutingWeigh
 /// One candidate's place in a draw.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ranked {
-    pub worker: WorkerRef,
+    pub worker: ModelRef,
     /// The utility with this draw's rates.
     pub sampled: f64,
     /// The utility at the posterior means.
@@ -58,10 +58,10 @@ fn sampled_utility(record: &Record, weights: &RoutingWeights, rng: &mut StdRng) 
 }
 
 /// The probability that `chosen` would rank first, estimated with `draws` more seeded draws.
-/// Logged with the choice, so comparisons can weigh outcomes by how likely each owner was.
+/// Logged with the choice, so comparisons can weigh outcomes by how likely each worker was.
 pub fn choice_probability(
     eligible: &[Record],
-    chosen: &WorkerRef,
+    chosen: &ModelRef,
     weights: &RoutingWeights,
     rng: &mut StdRng,
     draws: u32,
@@ -75,7 +75,7 @@ pub fn choice_probability(
     let draws = draws.max(1);
     let mut first = 0_u32;
     for _ in 0..draws {
-        let mut best: Option<(f64, &WorkerRef)> = None;
+        let mut best: Option<(f64, &ModelRef)> = None;
         for record in eligible {
             let sampled = sampled_utility(record, weights, rng);
             if best.is_none_or(|(top, _)| sampled > top) {
@@ -92,15 +92,15 @@ pub fn choice_probability(
 /// What the run has routed so far, for the cap on exploring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RunSoFar {
-    /// Cards routed before this one.
+    /// Tasks routed before this one.
     pub routed: u32,
     /// Of those, the ones that went to anyone but the best by posterior mean.
     pub explored: u32,
 }
 
-/// Whether this card may go to anyone but the best by posterior mean. Never on a label in
-/// `no_explore_labels` or a card that touches protected paths, never for a fallback or retry,
-/// and never past `max_explore_share` of the run's cards.
+/// Whether this task may go to anyone but the best by posterior mean. Never on a label in
+/// `no_explore_labels` or a task that touches protected paths, never for a fallback or retry,
+/// and never past `max_explore_share` of the run's tasks.
 pub fn may_explore(
     labels: &[String],
     touches_protected: bool,
@@ -118,7 +118,7 @@ pub fn may_explore(
     if high_stakes || touches_protected || inherited {
         return false;
     }
-    // Counting this card, the share stays within the cap at every point of the run, so a short
+    // Counting this task, the share stays within the cap at every point of the run, so a short
     // run explores less rather than more.
     let explored = f64::from(so_far.explored) + 1.0;
     let routed = f64::from(so_far.routed) + 1.0;
@@ -128,7 +128,7 @@ pub fn may_explore(
 /// A candidate the engine considered, and the rule that removed it if one did.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Considered {
-    pub worker: WorkerRef,
+    pub worker: ModelRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub removed_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -140,10 +140,10 @@ pub struct Considered {
 /// One routing decision, logged so any assignment can be explained later.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Draw {
-    pub card: CardId,
+    pub task: TaskId,
     pub task_type: String,
     pub considered: Vec<Considered>,
-    pub chosen: WorkerRef,
+    pub chosen: ModelRef,
     pub reason: Assignment,
     pub probability: f64,
 }

@@ -2,17 +2,22 @@
 //! first as label and value, then a card for the CLIs, one for the settings in effect, and one
 //! for the runs in this folder.
 
-use argonauts_core::api::RunSummary;
+use argonauts_core::api::{RunState, RunSummary};
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::status_tab::{CliStatus, StatusTabView};
+use argonauts_core::settings::layer;
+use argonauts_core::status_tab::{
+    CliStatus, StatusTabView, VersionNoteKind, VersionStanding, asking_for_providers,
+    providers_unread,
+};
 use argonauts_core::text::shown_name;
 use ratatui::text::Span;
+use time::OffsetDateTime;
 
 use super::cards::cli_role;
 use crate::format::{self, WallClock};
+use crate::kit::{Drawn, Frame, Header, Kit, spread};
 use crate::text::{spans_width, str_width, truncate_spans};
 use crate::theme::Role;
-use crate::widgets::{Drawn, Frame, Header, Kit, spread};
 
 /// The runs card when this folder has none.
 pub const NO_RUNS: &str =
@@ -20,8 +25,8 @@ pub const NO_RUNS: &str =
 
 /// The labels' column of the facts at the top.
 const FACT_LABELS: usize = 16;
-/// The columns of the CLIs card: the name, then the version.
-const CLI_NAMES: usize = 19;
+/// The columns of the CLIs card: the dot and the name, then the version.
+const CLI_NAMES: usize = 18;
 const CLI_VERSIONS: usize = 10;
 /// The settings card's first column.
 const SETTING_NAMES: usize = 32;
@@ -33,96 +38,103 @@ pub struct StatusTabCards<'a> {
     pub view: &'a StatusTabView,
     pub names: &'a DisplayNames,
     pub clock: WallClock,
-    /// The approval mode the mode line shows, which may be this session's own.
+    /// The approval mode the bottom line shows, which may be this session's own.
     pub mode: Option<&'a str>,
 }
 
 impl StatusTabCards<'_> {
-    /// Version, conversation, folder, main session, workflow and mode, a row each.
+    /// Version, conversation, folder, main session, workflow and mode, a row each. A fact too
+    /// long for the tab runs on to a row under its words.
     pub fn facts(&self, kit: &Kit<'_>, width: usize) -> Drawn {
         let view = self.view;
-        let mut rows: Vec<(&str, Vec<Span<'static>>)> = vec![(
+        let text = |words: String| vec![kit.span(words, Role::Text)];
+        let dim = |words: String| vec![kit.dim(words)];
+        let mut facts: Vec<(&str, Vec<Vec<Span<'static>>>)> = vec![(
             "Version",
-            vec![kit.span(format!("Argonauts Code {}", view.version), Role::Text)],
+            vec![text(format!("Argonauts Code {}", view.version))],
         )];
         if let Some(conversation) = &view.conversation {
             // As the panel's other tabs write a time of day: `7:12pm`.
             let started = super::usage::twelve_hour(self.clock.to_local(conversation.started));
-            rows.push((
+            facts.push((
                 "Conversation",
                 vec![
-                    kit.span(conversation.id.clone(), Role::Text),
-                    kit.dim(format!(" · started {started}")),
+                    text(conversation.id.clone()),
+                    dim(format!("started {started}")),
                 ],
             ));
         }
         let git = if view.folder.git {
-            " · git"
+            "git"
         } else {
-            " · no git, workflows keep a hidden history"
+            "no git, workflows keep a hidden history"
         };
-        rows.push((
-            "Folder",
-            vec![
-                kit.span(view.folder.shown.clone(), Role::Text),
-                kit.dim(git),
-            ],
-        ));
+        let mut folder = vec![text(view.folder.shown.clone()), dim(git.to_owned())];
+        // What the hidden history takes, and the command that trims it.
+        if let Some(size) = view
+            .folder
+            .history_size
+            .as_ref()
+            .filter(|_| !view.folder.git)
+        {
+            folder.push(vec![
+                kit.dim(format!("history.git {size}{BETWEEN}")),
+                kit.span("/git clean", Role::Text),
+            ]);
+        }
+        facts.push(("Folder", folder));
         if let Some(main) = &view.main {
-            let mut tail = String::new();
+            let mut session = vec![text(self.names.worker(&main.worker))];
             if let Some(effort) = &main.effort {
-                tail.push_str(&format!(" · {effort} effort"));
+                session.push(dim(format!("{effort} effort")));
             }
             match (main.context_used, main.context_window) {
-                (Some(used), Some(window)) => tail.push_str(&format!(
-                    " · {} of {} context",
+                (Some(used), Some(window)) => session.push(dim(format!(
+                    "{} of {} context",
                     format::tokens(used),
                     format::tokens(window)
-                )),
+                ))),
                 (Some(used), None) => {
-                    tail.push_str(&format!(" · {} in context", format::tokens(used)))
+                    session.push(dim(format!("{} in context", format::tokens(used))))
                 }
                 _ => {}
             }
-            rows.push((
-                "Main session",
-                vec![
-                    kit.span(self.names.worker(&main.worker), Role::Text),
-                    kit.dim(tail),
-                ],
-            ));
+            facts.push(("Main session", session));
         }
         let ultracode = if view.workflow.ultracode { "on" } else { "off" };
-        rows.push((
+        facts.push((
             "Workflow",
             vec![
-                kit.span(shown_name(&view.workflow.name), Role::Text),
-                kit.dim(format!(
-                    " · ultracode {ultracode} · workflow size {}",
-                    view.workflow.size
-                )),
+                text(shown_name(&view.workflow.name)),
+                dim(format!("ultracode {ultracode}")),
+                dim(format!("workflow size {}", view.workflow.size)),
             ],
         ));
         let mode = self.mode.unwrap_or(&view.mode);
-        rows.push(("Mode", vec![kit.span(shown_name(mode), Role::Text)]));
+        facts.push(("Mode", vec![text(shown_name(mode))]));
         let mut drawn = Drawn::new();
-        for (label, value) in rows {
-            let mut row = vec![Span::raw(" "), kit.dim(padded(label, FACT_LABELS))];
-            row.extend(value);
-            drawn.push(truncate_spans(&row, width));
+        for (label, parts) in facts {
+            let label = vec![Span::raw(" "), kit.dim(padded(label, FACT_LABELS))];
+            let mut rows = PartRows::after(kit, label, 1 + FACT_LABELS, width);
+            for part in parts {
+                rows.push(part);
+            }
+            for row in rows.rows {
+                drawn.push(truncate_spans(&row, width));
+            }
         }
         drawn
     }
 
-    /// `◆ your CLIs`: each CLI with its version, who it's signed in as, its plan, and whether
-    /// that version was checked. The main session's CLI has the filled dot.
+    /// `◆ your CLIs`: each CLI with its version, who it's signed in as or what it can use, and
+    /// how that version stands. The main session's CLI has the filled dot.
     pub fn clis(&self, kit: &Kit<'_>, frame: Frame) -> Drawn {
         let inner = frame.inner();
         let mut body = Drawn::new();
         body.push(heading(
             kit,
             "your CLIs",
-            "who you're logged in as on each",
+            "who you're signed in as, or what each can use",
             inner,
         ));
         if self.view.clis.is_empty() {
@@ -131,7 +143,9 @@ impl StatusTabCards<'_> {
             ]);
         }
         for cli in &self.view.clis {
-            body.push(truncate_spans(&cli_row(kit, cli), inner));
+            for row in cli_rows(kit, cli, inner) {
+                body.push(truncate_spans(&row, inner));
+            }
         }
         frame.draw(kit, body)
     }
@@ -182,7 +196,7 @@ impl StatusTabCards<'_> {
         let tools = if settings.tools_off {
             "off · main_session.tools = false".to_owned()
         } else if settings.tools.is_empty() {
-            "none, since its CLI takes no tools from Argonauts".to_owned()
+            "none, since its CLI takes no tools from Argonauts Code".to_owned()
         } else {
             settings.tools.join(" · ")
         };
@@ -191,7 +205,7 @@ impl StatusTabCards<'_> {
             .view
             .main
             .as_ref()
-            .map(|main| self.names.harness(&main.worker.worker))
+            .map(|main| self.names.cli(&main.worker.agent))
             .unwrap_or_else(|| "its CLI".to_owned());
         let servers = match &settings.mcp_servers {
             None => "listed once the main session starts".to_owned(),
@@ -236,7 +250,8 @@ impl StatusTabCards<'_> {
             body.push(vec![kit.dim(NO_RUNS)]);
         }
         for run in self.view.runs.iter().take(RUNS_LISTED) {
-            body.push(truncate_spans(&run_row(kit, run), inner));
+            let day = day(self.clock.to_local(run.updated));
+            body.push(truncate_spans(&run_row(kit, run, &day), inner));
         }
         if let Some(more) = self
             .view
@@ -255,7 +270,7 @@ impl StatusTabCards<'_> {
 
 /// `◆ title` at the left of a card's first row, and what it's about, dim, at the right.
 fn heading(kit: &Kit<'_>, title: &str, about: &str, width: usize) -> Vec<Span<'static>> {
-    let left = Header::new(title, Role::Card).left(kit);
+    let left = Header::new(title, Role::Question).left(kit);
     let right = vec![kit.dim(about.to_owned())];
     if spans_width(&left) + spans_width(&right) + 2 > width {
         return truncate_spans(&left, width);
@@ -263,80 +278,246 @@ fn heading(kit: &Kit<'_>, title: &str, about: &str, width: usize) -> Vec<Span<'s
     spread(left, right, width)
 }
 
-/// `● Claude Code      2.1.295   you@example.com · Max · checked`: the dot in the CLI's
-/// colour, its name in bold, its version, who it's signed in as, then its plan and how its
-/// version stands, dim.
-fn cli_row(kit: &Kit<'_>, cli: &CliStatus) -> Vec<Span<'static>> {
-    let dot = if cli.main { "●" } else { "○" };
-    let name_room = CLI_NAMES - 2;
-    let name = vec![
-        kit.strong(cli.name.clone()),
-        Span::raw(" ".repeat(name_room.saturating_sub(str_width(&cli.name)).max(1))),
-    ];
-    if !cli.installed {
-        let mut row = vec![kit.dim(format!("{dot} "))];
-        row.extend(name);
-        row.push(Span::raw(padded("—", CLI_VERSIONS)));
-        row.push(kit.dim("not installed"));
-        row.push(kit.dim(" · /update can't add it"));
-        return row;
-    }
-    let mut row = vec![kit.span(format!("{dot} "), cli_role(&cli.id))];
-    row.extend(name);
-    row.push(kit.span(
-        padded(cli.version.as_deref().unwrap_or("?"), CLI_VERSIONS),
-        Role::Text,
-    ));
-    let mut tail: Vec<String> = Vec::new();
-    match &cli.account {
-        Some(account) => row.push(kit.span(account.clone(), Role::Text)),
-        None if cli.signed_out => {
-            row.push(kit.span("not signed in · /login signs in", Role::Warning));
-        }
-        None => row.push(kit.dim(argonauts_core::status_tab::UNNAMED_ACCOUNT)),
-    }
-    tail.extend(cli.plan.clone());
-    tail.push(cli.note.clone());
-    row.push(kit.dim(format!(" · {}", tail.join(" · "))));
-    row
+/// What stands between two parts of a row.
+const BETWEEN: &str = " · ";
+
+/// Rows of parts with a dim ` · ` between them. A part that doesn't fit what is left of a row
+/// starts the next one, set in under the first row's words, so a narrow tab drops no part and
+/// cuts only one too long for a row of its own.
+struct PartRows<'a> {
+    kit: &'a Kit<'a>,
+    /// The cells a row may fill.
+    width: usize,
+    /// The blank cells that start every row after the first.
+    set_in: usize,
+    rows: Vec<Vec<Span<'static>>>,
+    /// The row being filled has no part yet.
+    fresh: bool,
 }
 
-fn run_row(kit: &Kit<'_>, run: &RunSummary) -> Vec<Span<'static>> {
+impl<'a> PartRows<'a> {
+    /// The first row starts with `opening`, which is `set_in` cells wide.
+    fn after(kit: &'a Kit<'a>, opening: Vec<Span<'static>>, set_in: usize, width: usize) -> Self {
+        Self {
+            kit,
+            width,
+            set_in,
+            rows: vec![opening],
+            fresh: true,
+        }
+    }
+
+    /// Whether all of `parts` go on the row being filled.
+    fn has_room_for(&self, parts: &[Vec<Span<'static>>]) -> bool {
+        let between = str_width(BETWEEN);
+        let mut needed: usize = parts.iter().map(|part| between + spans_width(part)).sum();
+        if self.fresh {
+            needed = needed.saturating_sub(between);
+        }
+        let used = self.rows.last().map_or(0, |row| spans_width(row));
+        used + needed <= self.width
+    }
+
+    fn next_row(&mut self) {
+        if !self.fresh {
+            self.rows.push(vec![Span::raw(" ".repeat(self.set_in))]);
+            self.fresh = true;
+        }
+    }
+
+    fn push(&mut self, part: Vec<Span<'static>>) {
+        if !self.has_room_for(std::slice::from_ref(&part)) {
+            self.next_row();
+        }
+        let between = (!self.fresh).then(|| self.kit.dim(BETWEEN));
+        if let Some(row) = self.rows.last_mut() {
+            row.extend(between);
+            row.extend(part);
+            self.fresh = false;
+        }
+    }
+}
+
+/// `● Claude Code     2.1.296   you@example.com · Max · checked · works`: the dot in the CLI's
+/// colour, its name, its version, who it's signed in as or what it can use, dim, then how its
+/// version stands in that standing's colour. A second row, set in under the first's words,
+/// holds a provider CLI's default model and what a new major version was checked with. In a
+/// card `inner` cells across that the first row is too long for, how the version stands has
+/// the row under who is signed in.
+fn cli_rows(kit: &Kit<'_>, cli: &CliStatus, inner: usize) -> Vec<Vec<Span<'static>>> {
+    let dot = if cli.main { "●" } else { "○" };
+    let name = padded(&cli.name, CLI_NAMES - 2);
+    if !cli.installed {
+        return vec![vec![
+            kit.dim(format!("{dot} ")),
+            kit.span(name, Role::Text),
+            Span::raw(padded("—", CLI_VERSIONS)),
+            kit.dim("not installed"),
+            kit.dim(" · /update can't add it"),
+        ]];
+    }
+    let opening = vec![
+        kit.span(format!("{dot} "), cli_role(&cli.id)),
+        kit.span(name, Role::Text),
+        kit.dim(padded(cli.version.as_deref().unwrap_or("?"), CLI_VERSIONS)),
+    ];
+    let mut rows = PartRows::after(kit, opening, CLI_NAMES + CLI_VERSIONS, inner);
+    for part in who(kit, cli) {
+        rows.push(part);
+    }
+
+    let mut standing = vec![vec![
+        kit.span(cli.check.state(), standing_role(cli.check.standing)),
+    ]];
+    let note = cli.check.note();
+    // Up to date and a match are what the state already says; an update is worth the row.
+    if let Some(note) = note
+        .as_ref()
+        .filter(|note| matches!(note.kind, VersionNoteKind::Needed | VersionNoteKind::Out))
+    {
+        standing.push(vec![kit.dim(note.words.clone())]);
+        standing.extend(
+            note.command
+                .as_ref()
+                .map(|command| vec![kit.span(command.clone(), Role::Text)]),
+        );
+    }
+    // The end of the row is the command that updates the CLI, which a cut would take first.
+    if !rows.has_room_for(&standing) {
+        rows.next_row();
+    }
+    for part in standing {
+        rows.push(part);
+    }
+
+    let default_model = cli.default_model.as_ref();
+    let mut under: Vec<String> = Vec::new();
+    under.extend(default_model.map(|model| format!("default {model}")));
+    under.extend(
+        note.filter(|note| note.kind == VersionNoteKind::Compared)
+            .map(|note| note.words),
+    );
+    if !under.is_empty() {
+        rows.next_row();
+    }
+    for words in under {
+        rows.push(vec![kit.dim(words)]);
+    }
+    rows.rows
+}
+
+/// Who a CLI is signed in as, with its plan, or the providers it can use and how each bills,
+/// as the parts of its row.
+fn who(kit: &Kit<'_>, cli: &CliStatus) -> Vec<Vec<Span<'static>>> {
+    if let Some(providers) = &cli.providers {
+        if providers.is_empty() {
+            return vec![vec![kit.span(no_provider(&cli.command), Role::Text)]];
+        }
+        let named = providers.iter().map(|provider| {
+            vec![
+                kit.span(provider.name.clone(), Role::Text),
+                kit.dim(format!(" ({})", provider.billing.words())),
+            ]
+        });
+        return named.collect();
+    }
+    // A CLI with providers of its own has no one account, so nothing is said of an address.
+    if cli.lists_providers {
+        return vec![if cli.providers_unread {
+            vec![kit.span(providers_unread(&cli.command), Role::Warn)]
+        } else {
+            vec![kit.dim(asking_for_providers(&cli.name))]
+        }];
+    }
+    let with_plan = |account: String| {
+        let words = std::iter::once(account).chain(cli.plan.clone());
+        words.map(|words| vec![kit.dim(words)]).collect()
+    };
+    match &cli.account {
+        Some(account) => with_plan(account.clone()),
+        None if cli.untrusted_folder => {
+            vec![vec![kit.span(untrusted_folder(&cli.command), Role::Warn)]]
+        }
+        None if cli.signed_out => {
+            vec![vec![
+                kit.span("not signed in · /login signs in", Role::Warn),
+            ]]
+        }
+        None => with_plan(argonauts_core::status_tab::UNNAMED_ACCOUNT.to_owned()),
+    }
+}
+
+/// Said of a CLI that keeps providers of its own and has none: what connects one.
+pub fn no_provider(command: &str) -> String {
+    format!("no provider set up · {command} auth login")
+}
+
+/// A checked version reads as fine, a new major one as worth a look, and one that needs an
+/// update as wrong.
+fn standing_role(standing: VersionStanding) -> Role {
+    match standing {
+        VersionStanding::Checked => Role::Success,
+        VersionStanding::Newer => Role::Text,
+        VersionStanding::NewMajor => Role::Warn,
+        VersionStanding::Older | VersionStanding::Broken => Role::Danger,
+        VersionStanding::Unknown => Role::Dim,
+    }
+}
+
+/// Said of a CLI that asked about the folder before it showed anything else. Argonauts Code
+/// never answers that for you.
+pub fn untrusted_folder(command: &str) -> String {
+    format!("{command} hasn't trusted this folder; start {command} here once")
+}
+
+/// `○ hi · Oct 4 · from an older Argonauts, can't be resumed · a archives`: a run by its
+/// name, the day it last did something and the one word for its state. A run another build
+/// wrote names the key that moves it out of the way.
+fn run_row(kit: &Kit<'_>, run: &RunSummary, day: &str) -> Vec<Span<'static>> {
     let name = run.name.clone().unwrap_or_else(|| run.title.clone());
     let mark = if run.live { "●" } else { "○" };
     let mut row = vec![
         kit.span(
             format!("{mark} "),
-            if run.live { Role::Card } else { Role::Dim },
+            if run.live { Role::Question } else { Role::Dim },
         ),
         kit.span(name, Role::Text),
-        kit.dim(format!(" · {}", run.run)),
+        kit.dim(format!(" · {day}")),
     ];
     if !run.stopped_at.is_empty() {
         row.push(kit.dim(format!(" · {}", run.stopped_at)));
     }
     if run.needs_you() {
-        row.push(kit.span(" · waiting for you", Role::Warning));
+        row.push(kit.span(" · waiting for you", Role::Warn));
+    }
+    if run.state == RunState::FromAnotherBuild {
+        row.push(kit.dim(" · a archives"));
     }
     row
 }
 
+/// `Oct 4`.
+fn day(at: OffsetDateTime) -> String {
+    let month = at.month().to_string();
+    format!("{} {}", &month[..3], at.day())
+}
+
 /// What a layer of the settings is, in words.
-fn layer_words(layer: &str) -> &'static str {
-    match layer {
-        "global" => "your settings",
-        "project" => "this folder, shared",
-        "project-local" => "this folder, only you",
-        "workflow" => "its preset",
-        "flag" => "this start only",
-        "session" => "changed in this session",
+fn layer_words(name: &str) -> &'static str {
+    match name {
+        layer::GLOBAL => "your settings",
+        layer::PROJECT => "this folder, shared",
+        layer::PROJECT_LOCAL => "this folder, only you",
+        layer::WORKFLOW => "its workflow",
+        layer::FLAG => "this start only",
+        layer::SESSION => "changed in this session",
         _ => "",
     }
 }
 
 /// `text` and spaces to `width` cells, with at least one space after it.
 fn padded(text: &str, width: usize) -> String {
-    let used = crate::text::str_width(text);
+    let used = str_width(text);
     format!("{text}{}", " ".repeat(width.saturating_sub(used).max(1)))
 }
 
@@ -354,15 +535,39 @@ pub fn spoken(view: &StatusTabView, names: &DisplayNames) -> Vec<String> {
     lines.push(format!("workflow: {}", view.workflow.name));
     lines.push(format!("mode: {}", view.mode));
     for cli in &view.clis {
-        let state = if cli.installed {
-            let mut parts = vec![cli.version.clone().unwrap_or_default()];
-            parts.extend(cli.account.clone());
-            parts.extend(cli.plan.clone());
-            parts.push(cli.note.clone());
-            parts.join(", ")
-        } else {
-            "not installed".to_owned()
-        };
+        let state =
+            if cli.installed {
+                let mut parts = vec![cli.version.clone().unwrap_or_default()];
+                parts.extend(cli.account.clone());
+                if cli.untrusted_folder {
+                    parts.push(untrusted_folder(&cli.command));
+                }
+                parts.extend(cli.plan.clone());
+                match &cli.providers {
+                    Some(providers) if providers.is_empty() => {
+                        parts.push(no_provider(&cli.command));
+                    }
+                    Some(providers) => parts.extend(providers.iter().map(|provider| {
+                        format!("{} ({})", provider.name, provider.billing.words())
+                    })),
+                    None => {}
+                }
+                parts.extend(
+                    cli.default_model
+                        .as_ref()
+                        .map(|model| format!("default {model}")),
+                );
+                parts.push(cli.check.state());
+                if let Some(note) = cli.check.note() {
+                    parts.push(match &note.command {
+                        Some(command) => format!("{}, {command}", note.words),
+                        None => note.words,
+                    });
+                }
+                parts.join(", ")
+            } else {
+                "not installed".to_owned()
+            };
         lines.push(format!("{}: {state}", cli.name));
     }
     for file in &view.settings.files {

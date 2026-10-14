@@ -1,36 +1,38 @@
-//! Supervises agent sessions, worktrees, gates, and merges. The conductor is code, not a model.
+//! Runs agent sessions, worktrees, checks, and merges. Argonauts Code is code, not a model.
 
 pub mod agents;
+pub mod agents_file;
+pub mod checks;
+pub mod cli_runner;
 pub mod cli_versions;
 pub mod control;
 pub mod cpu;
 pub mod decision;
 pub mod doctor;
+pub mod fallback;
 pub mod filediff;
-pub mod gates;
 pub mod git;
-pub mod handoff;
-pub mod harness_worker;
 pub mod health;
 pub mod liveness;
 pub mod meter;
+pub mod model_health;
+pub mod plan_usage;
 pub mod process;
-pub mod quota;
 pub mod rawlog;
 pub mod reaper;
 pub mod recorder;
 pub mod recovery;
+pub mod run_host;
 pub mod sandbox;
 pub mod services;
 pub mod slots;
-pub mod solo;
-pub mod supervisor;
-pub mod vendors_file;
 pub mod watchdogs;
 
 #[cfg(test)]
 mod testutil;
 
+pub use checks::run_check;
+pub use cli_runner::CliRunner;
 pub use control::{ConductorSettings, StopHandle};
 pub use decision::{
     ChannelDecider, FixedDecider, MergeDecider, MergeRequest, PendingDecision, decision_channel,
@@ -39,11 +41,8 @@ pub use doctor::{
     AgentCheck, AgentStatus, DoctorDetails, DoctorReport, GitCheck, check_agent, doctor,
     doctor_details,
 };
-pub use gates::run_gate;
 pub use git::{Git, GitError};
-pub use harness_worker::HarnessWorker;
 pub use process::{AgentProcess, OutputLine, ProcessEvent, SpawnError, Stream, signal_group};
 pub use recorder::{CONDUCTOR_SOURCE, EventSink, Recorder};
-pub use services::{boards, boards_with, gate_runner, handoff_planner, limits_service};
-pub use solo::{SoloOutcome, SoloRun, budget_problem};
-pub use supervisor::{FinalResult, SessionOutcome, Supervisor, WrapUpDelivery};
+pub use run_host::{FinalResult, RunHost, SessionOutcome, WrapUpDelivery};
+pub use services::{boards, boards_with, check_runner, fallback_planner, limits_service};

@@ -29,18 +29,18 @@ pub enum Role {
     /// The brighter band that sweeps across the working verb.
     Shimmer,
     Success,
-    Error,
-    Warning,
+    Danger,
+    Warn,
     Code,
-    Card,
+    Question,
     /// The label on the composer's top rule.
     Label,
     ModeSupervised,
-    ModeShadow,
+    ModeAutoPreview,
     ModeAuto,
-    /// Claude Code's bypass-permissions red, since nothing in full auto waits for you.
+    /// Claude Code's bypass-permissions red, since nothing in autopilot waits for you.
     ModeAutopilot,
-    /// Shell mode: the input's `!`, its rules, and the mode line's words.
+    /// Shell mode: the input's `!`, its rules, and the bottom line's words.
     Shell,
     /// Background of a removed diff row.
     RemovedRow,
@@ -78,8 +78,8 @@ pub enum Role {
     SyntaxNumber,
     SyntaxType,
     SyntaxConstant,
-    /// A widget's frame.
-    WidgetBorder,
+    /// A mod's frame.
+    ModBorder,
     /// Where something happens on a bar: compaction, rotation, the soft stop.
     Tick,
     /// The part of a bar past its tick.
@@ -95,7 +95,7 @@ pub enum Role {
     CatSkills,
     CatMessages,
     CatFree,
-    /// What Argonauts sent a CLI that reports no breakdown of its context.
+    /// What Argonauts Code sent a CLI that reports no breakdown of its context.
     CatBrief,
     /// The rest of a conversation, and parts folded together.
     CatOther,
@@ -130,13 +130,13 @@ impl Role {
         Role::Accent,
         Role::Shimmer,
         Role::Success,
-        Role::Error,
-        Role::Warning,
+        Role::Danger,
+        Role::Warn,
         Role::Code,
-        Role::Card,
+        Role::Question,
         Role::Label,
         Role::ModeSupervised,
-        Role::ModeShadow,
+        Role::ModeAutoPreview,
         Role::ModeAuto,
         Role::ModeAutopilot,
         Role::Shell,
@@ -166,7 +166,7 @@ impl Role {
         Role::SyntaxNumber,
         Role::SyntaxType,
         Role::SyntaxConstant,
-        Role::WidgetBorder,
+        Role::ModBorder,
         Role::Tick,
         Role::Held,
         Role::BadgeText,
@@ -208,13 +208,13 @@ impl Role {
             Role::Accent => "accent",
             Role::Shimmer => "shimmer",
             Role::Success => "success",
-            Role::Error => "error",
-            Role::Warning => "warning",
+            Role::Danger => "danger",
+            Role::Warn => "warn",
             Role::Code => "code",
-            Role::Card => "card",
+            Role::Question => "question",
             Role::Label => "label",
             Role::ModeSupervised => "mode-supervised",
-            Role::ModeShadow => "mode-auto-preview",
+            Role::ModeAutoPreview => "mode-auto-preview",
             Role::ModeAuto => "mode-auto",
             Role::ModeAutopilot => "mode-autopilot",
             Role::Shell => "shell",
@@ -244,7 +244,7 @@ impl Role {
             Role::SyntaxNumber => "syntax-number",
             Role::SyntaxType => "syntax-type",
             Role::SyntaxConstant => "syntax-constant",
-            Role::WidgetBorder => "mod-border",
+            Role::ModBorder => "mod-border",
             Role::Tick => "tick",
             Role::Held => "held",
             Role::BadgeText => "badge-text",
@@ -283,11 +283,11 @@ impl Role {
     /// The role this one follows until it's given a color of its own.
     pub fn default_link(self) -> Option<Role> {
         match self {
-            Role::StateWorking => Some(Role::Card),
+            Role::StateWorking => Some(Role::Question),
             Role::StateWaiting | Role::StateTimer | Role::StateStopped => Some(Role::Dim),
-            Role::StateNeedsYou => Some(Role::Warning),
+            Role::StateNeedsYou => Some(Role::Warn),
             Role::StateDone => Some(Role::Success),
-            Role::StateFailed => Some(Role::Error),
+            Role::StateFailed => Some(Role::Danger),
             _ => None,
         }
     }
@@ -441,7 +441,7 @@ impl Theme {
     }
 
     /// Draws `role` as `target` draws, so overriding `target` moves both. A link that would
-    /// lead back to `role` is refused, and returns false.
+    /// come back to `role` is refused, and returns false.
     pub fn link(&mut self, role: Role, target: Role) -> bool {
         if self.resolve(target) == role {
             return false;
@@ -532,13 +532,13 @@ fn dark_style(role: Role) -> Style {
         Role::Accent => fg(0xe6a23c),
         Role::Shimmer => fg(0xf7d488),
         Role::Success => fg(0x4eba65),
-        Role::Error => fg(0xff6b80),
-        Role::Warning => fg(0xffc107),
+        Role::Danger => fg(0xff6b80),
+        Role::Warn => fg(0xffc107),
         Role::Code => fg(0xb1b9f9),
-        Role::Card => fg(0xb1b9f9),
+        Role::Question => fg(0xb1b9f9),
         Role::Label => fg(0xaf87ff),
         Role::ModeSupervised => fg(0x999999),
-        Role::ModeShadow => fg(0x48968c),
+        Role::ModeAutoPreview => fg(0x48968c),
         Role::ModeAuto => fg(0xffc107),
         Role::ModeAutopilot => fg(0xff6b80),
         // Claude Code's bash mode pink.
@@ -571,7 +571,7 @@ fn dark_style(role: Role) -> Style {
         Role::SyntaxNumber => fg(0xd19a66),
         Role::SyntaxType => fg(0xe5c07b),
         Role::SyntaxConstant => fg(0xd19a66),
-        Role::WidgetBorder => fg(0x4f5468),
+        Role::ModBorder => fg(0x4f5468),
         Role::Tick => fg(0xffc107),
         Role::Held => fg(0x262a3a),
         Role::BadgeText => fg(0x14161f),
@@ -616,13 +616,13 @@ fn light_style(role: Role) -> Style {
         Role::Accent => fg(0xb7791f),
         Role::Shimmer => fg(0xd69e2e),
         Role::Success => fg(0x2c7a39),
-        Role::Error => fg(0xcf222e),
-        Role::Warning => fg(0x966c1e),
+        Role::Danger => fg(0xcf222e),
+        Role::Warn => fg(0x966c1e),
         Role::Code => fg(0x5769f7),
-        Role::Card => fg(0x5769f7),
+        Role::Question => fg(0x5769f7),
         Role::Label => fg(0x8700ff),
         Role::ModeSupervised => fg(0x666666),
-        Role::ModeShadow => fg(0x006666),
+        Role::ModeAutoPreview => fg(0x006666),
         Role::ModeAuto => fg(0x966c1e),
         Role::ModeAutopilot => fg(0xcf222e),
         Role::Shell => fg(0xff0087),
@@ -653,7 +653,7 @@ fn light_style(role: Role) -> Style {
         Role::SyntaxNumber => fg(0xb45309),
         Role::SyntaxType => fg(0x9a6700),
         Role::SyntaxConstant => fg(0xb45309),
-        Role::WidgetBorder => fg(0xc4c8d2),
+        Role::ModBorder => fg(0xc4c8d2),
         Role::Tick => fg(0xb26a00),
         Role::Held => fg(0xf1f2f5),
         Role::BadgeText => fg(0xffffff),
@@ -712,7 +712,7 @@ mod tests {
         assert_eq!(fg(Role::Bright), Some(rgb(0xffffff)));
         assert_eq!(fg(Role::Faint), Some(rgb(0x505050)));
         assert_eq!(fg(Role::Rule), Some(rgb(0x888888)));
-        assert_eq!(fg(Role::Card), Some(rgb(0xb1b9f9)));
+        assert_eq!(fg(Role::Question), Some(rgb(0xb1b9f9)));
         assert_eq!(bg(Role::RemovedRow), Some(rgb(0x3d0100)));
         assert_eq!(bg(Role::AddedRow), Some(rgb(0x022800)));
         assert_eq!(bg(Role::UserBand), Some(rgb(0x373737)));

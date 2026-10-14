@@ -1,8 +1,8 @@
 //! `final-json`: stdout kept whole, then read at exit through the manifest's JSON pointers
 //! into `Init`, `Usage`, `Result`, and `Error`.
 
-use argonauts_core::registry::HarnessManifest;
-use argonauts_core::registry::harness::FinalJsonPointers;
+use argonauts_core::registry::CliManifest;
+use argonauts_core::registry::cli::FinalJsonPointers;
 use argonauts_core::{AgentEvent, ErrorCategory, StreamParser};
 use serde_json::Value;
 
@@ -17,7 +17,7 @@ pub(super) struct FinalJson {
 }
 
 impl FinalJson {
-    pub(super) fn new(manifest: &HarnessManifest) -> Self {
+    pub(super) fn new(manifest: &CliManifest) -> Self {
         Self {
             id: manifest.id.clone(),
             pointers: manifest.final_json.clone().unwrap_or_default(),
@@ -188,7 +188,8 @@ fn as_number(value: &Value) -> Option<f64> {
     }
 }
 
-/// An `error_kind` that names one of Argonauts' categories, such as `timeout` or `rate-limit`.
+/// An `error_kind` that names one of Argonauts Code's categories, such as `timeout` or
+/// `rate-limit`.
 fn category_named(kind: &str) -> Option<ErrorCategory> {
     let name = kind.trim().to_ascii_lowercase().replace('-', "_");
     serde_json::from_value(Value::String(name)).ok()

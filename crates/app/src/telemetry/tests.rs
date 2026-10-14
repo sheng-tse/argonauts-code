@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 
 use argonauts_core::events::goal::{Criterion, GoalEvent, GoalRun};
-use argonauts_core::events::run::{RunLifecycle, RunMode, TriageDecision};
+use argonauts_core::events::run::{CaptainOrCrewDecision, RunLifecycle, RunMode};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::goal::{CheckWith, GoalFrom, GoalScope, GoalSpec, KeptBy};
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::agents::EndpointSettings;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -34,7 +34,7 @@ fn line(day: Date, agent: &str, model: Option<&str>, tokens: u64, cost: f64) -> 
         run: None,
         agent: agent.to_owned(),
         model: model.map(str::to_owned),
-        vendor: agent.to_owned(),
+        agent_id: agent.to_owned(),
         input: tokens,
         cached: 0,
         output: 0,
@@ -42,6 +42,8 @@ fn line(day: Date, agent: &str, model: Option<&str>, tokens: u64, cost: f64) -> 
         estimated: false,
         partial: false,
         hour: None,
+        conversation: None,
+        took: 0,
     }
 }
 
@@ -51,7 +53,7 @@ fn run_line(day: Date, workflow: &str) -> WorkLine {
         repo: SECRET_REPO.to_owned(),
         run: argonauts_core::RunId::generate(),
         what: Work::Run {
-            by: Some(WorkerRef::new("claude-code".to_owned(), None)),
+            by: Some(ModelRef::new("claude-code".to_owned(), None)),
             took: 60,
             workflow: Some(workflow.to_owned()),
             goals: 0,
@@ -267,17 +269,17 @@ fn no_test_build_carries_a_key() {
     assert!(Sender::built_in().is_none());
 }
 
-/// A run triage sent to a workflow for ultracode, with a goal of its own set twice and one for
-/// a task.
+/// A run the Captain-or-crew rules sent to a workflow for ultracode, with a goal of its own set
+/// twice and one for a task.
 fn a_run_with_goals() -> Vec<RunEvent> {
     let mut started = run_started(0, "tidy the helpers", None);
     if let RunEventKind::Run(RunLifecycle::Started(run)) = &mut started.kind {
-        run.triage = Some(TriageDecision {
+        run.captain_or_crew = Some(CaptainOrCrewDecision {
             mode: RunMode::Crew,
-            escalate_to_crew: false,
+            move_to_crew: false,
             rule: "ultracode".to_owned(),
             reason: "Ultracode is on".to_owned(),
-            solo: None,
+            captain: None,
         });
     }
     let spec = GoalSpec::from_lines(
@@ -288,7 +290,7 @@ fn a_run_with_goals() -> Vec<RunEvent> {
     );
     let set = GoalRun::new(&spec, GoalScope::Workflow, KeptBy::Argonauts);
     let mut of_a_task = set.clone();
-    of_a_task.task = Some(argonauts_core::CardId::new("task-001").unwrap());
+    of_a_task.task = Some(argonauts_core::TaskId::new("task-001").unwrap());
     let goal = |seq, goal: &GoalRun| {
         event(
             seq,
@@ -335,9 +337,10 @@ fn goals_and_ultracode_count_from_runs_and_from_the_conversation() {
     assert_eq!(later.features.goals, 0, "a use counts on its own day");
 }
 
-/// The event counts the work the Overview's records hold for Argonauts: the same run lines give
-/// the Overview what ran through Argonauts and the event its workflows, and the same ledger its
-/// tokens. What the import read from a CLI's own files fills the Overview and never the event.
+/// The event counts the work the Overview's records hold for Argonauts Code: the same run lines
+/// give the Overview what ran through Argonauts Code and the event its workflows, and the same
+/// ledger its tokens. What the import read from a CLI's own files fills the Overview and never the
+/// event.
 #[test]
 fn the_event_counts_what_the_overviews_records_hold_and_nothing_imported() {
     use argonauts_core::overview::{ImportStatus, OverviewPeriod};
@@ -389,6 +392,7 @@ fn the_event_counts_what_the_overviews_records_hold_and_nothing_imported() {
         work: &work,
         clock: argonauts_tui::format::WallClock::default(),
         prices: &argonauts_core::pricing::PriceList::default(),
+        names: &argonauts_core::display_names::DisplayNames::default(),
     };
     let shown = crate::overview::build_overview(
         &sources,
@@ -399,7 +403,7 @@ fn the_event_counts_what_the_overviews_records_hold_and_nothing_imported() {
         &|id: &str| id.to_owned(),
     );
 
-    let through = shown.argonauts.expect("what ran through Argonauts");
+    let through = shown.argonauts.expect("what ran through Argonauts Code");
     let runs: u32 = sent.features.workflows.values().sum();
     assert_eq!(runs, through.workflows);
     assert_eq!(sent.features.workflows.get("council"), Some(&2));

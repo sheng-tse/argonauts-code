@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use argonauts_core::steps::narrate::{NarrateInput, NarrateMode};
 
-use crate::approver::render::fence;
+use crate::judge::render::fence;
 
 /// Starts with a blank line, since parts are sent back to back.
 pub fn text(input: &NarrateInput) -> String {

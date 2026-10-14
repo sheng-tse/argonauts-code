@@ -6,19 +6,19 @@
 
 use time::OffsetDateTime;
 
-use argonauts_core::events::card::CardEvent;
 use argonauts_core::events::goal::{
     CheckRun, CriterionState, GoalChecked, GoalEvent, GoalRun, GoalStatus,
 };
 use argonauts_core::events::run::RunLifecycle;
 use argonauts_core::events::session::SessionEvent;
+use argonauts_core::events::task::TaskEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::goal::report::{
     CheckReport, CliGoalReport, GoalReport, Keeper, LineReport, LineState, TryReport,
 };
 use argonauts_core::goal::{KeptBy, keep};
-use argonauts_core::names::{SessionKey, WorkerRef};
-use argonauts_core::{CardId, DiffStat};
+use argonauts_core::names::{ModelRef, SessionKey};
+use argonauts_core::{DiffStat, TaskId};
 
 use crate::labels;
 use crate::state::RunState;
@@ -40,7 +40,7 @@ pub fn reports(events: &[RunEvent]) -> Vec<GoalReport> {
 
 /// One goal as its events told it so far.
 struct Folded {
-    task: Option<CardId>,
+    task: Option<TaskId>,
     goal: GoalRun,
     set_at: OffsetDateTime,
     ended_because: Option<String>,
@@ -54,7 +54,7 @@ struct Folded {
     /// The try whose check first found each line met.
     met_on: Vec<(String, u32)>,
     /// Who works it, for the keeper's words.
-    worker: Option<WorkerRef>,
+    worker: Option<ModelRef>,
     /// The newest session that works it, which keys its agent's row.
     session: Option<SessionKey>,
 }
@@ -81,16 +81,16 @@ fn fold(goals: &mut Vec<Folded>, event: &RunEvent) {
         RunEventKind::Goal(goal_event) => fold_goal(goals, goal_event, event),
         // Work between a try's start and its check is that try's: a task's own for its goal,
         // and every task's for the run's.
-        RunEventKind::Card(CardEvent::Committed(commit)) if commit.sha.is_some() => {
-            for a_try in open_tries(goals, event.card_id.as_ref()) {
+        RunEventKind::Task(TaskEvent::Committed(commit)) if commit.sha.is_some() => {
+            for a_try in open_tries(goals, event.task_id.as_ref()) {
                 a_try.changed.files_changed += commit.stat.files_changed;
                 a_try.changed.insertions += commit.stat.insertions;
                 a_try.changed.deletions += commit.stat.deletions;
                 a_try.committed = true;
             }
         }
-        RunEventKind::Card(CardEvent::Reported(report)) => {
-            let Some(task) = event.card_id.as_ref() else {
+        RunEventKind::Task(TaskEvent::Reported(report)) => {
+            let Some(task) = event.task_id.as_ref() else {
                 return;
             };
             let Some(goal) = goals
@@ -108,27 +108,27 @@ fn fold(goals: &mut Vec<Folded>, event: &RunEvent) {
             }
         }
         RunEventKind::Session(SessionEvent::Started(started)) => {
-            if let Some(goal) = event.card_id.as_ref().and_then(|task| {
+            if let Some(goal) = event.task_id.as_ref().and_then(|task| {
                 goals
                     .iter_mut()
                     .find(|goal| goal.task.as_ref() == Some(task))
-            }) && started.access == argonauts_core::worker::Access::Build
+            }) && started.access == argonauts_core::session_runner::Access::Build
             {
                 goal.worker = Some(started.worker.clone());
                 goal.session.clone_from(&event.session);
             }
         }
         RunEventKind::Session(SessionEvent::Ended(end)) => {
-            for a_try in open_tries(goals, event.card_id.as_ref()) {
+            for a_try in open_tries(goals, event.task_id.as_ref()) {
                 a_try.work_ms += end.duration_ms;
                 a_try.tokens += end.spend.input_tokens + end.spend.output_tokens;
             }
         }
-        // Nothing runs across a pause, a park, the run's end or a restart, so a check you
+        // Nothing runs across a pause, a wait, the run's end or a restart, so a check you
         // asked for that never said how it ended isn't running any more.
         RunEventKind::Run(
             RunLifecycle::Paused { .. }
-            | RunLifecycle::Parked { .. }
+            | RunLifecycle::Waiting { .. }
             | RunLifecycle::Finished { .. }
             | RunLifecycle::Resumed(_),
         ) => {
@@ -143,7 +143,7 @@ fn fold(goals: &mut Vec<Folded>, event: &RunEvent) {
 /// The tries still at work that an event of `task` belongs to: its own goal's, and the run's.
 fn open_tries<'a>(
     goals: &'a mut [Folded],
-    task: Option<&'a CardId>,
+    task: Option<&'a TaskId>,
 ) -> impl Iterator<Item = &'a mut Try> {
     goals
         .iter_mut()
@@ -153,17 +153,17 @@ fn open_tries<'a>(
 }
 
 fn fold_goal(goals: &mut Vec<Folded>, goal_event: &GoalEvent, event: &RunEvent) {
-    let of = |goals: &mut Vec<Folded>, task: &Option<CardId>| {
+    let of = |goals: &mut Vec<Folded>, task: &Option<TaskId>| {
         goals.iter().position(|goal| &goal.task == task)
     };
     match goal_event {
         GoalEvent::Set(set) => match of(goals, &set.task) {
             // Set again, as when its worker changed: the tries so far stay.
             Some(at) => {
-                let attempts = std::mem::take(&mut goals[at].goal.attempts);
+                let tries = std::mem::take(&mut goals[at].goal.tries);
                 goals[at].goal = (**set).clone();
-                if goals[at].goal.attempts.is_empty() {
-                    goals[at].goal.attempts = attempts;
+                if goals[at].goal.tries.is_empty() {
+                    goals[at].goal.tries = tries;
                 }
             }
             None => {
@@ -189,7 +189,7 @@ fn fold_goal(goals: &mut Vec<Folded>, goal_event: &GoalEvent, event: &RunEvent) 
                 }
             }
         },
-        GoalEvent::AttemptStarted { n, title, task, .. } => {
+        GoalEvent::TryStarted { n, title, task, .. } => {
             if let Some(at) = of(goals, task)
                 && !goals[at].tries.iter().any(|a_try| a_try.n == *n)
             {
@@ -214,7 +214,7 @@ fn fold_goal(goals: &mut Vec<Folded>, goal_event: &GoalEvent, event: &RunEvent) 
             };
             let goal = &mut goals[at];
             goal.found(checked);
-            if let Some(a_try) = goal.try_mut(checked.attempt) {
+            if let Some(a_try) = goal.try_mut(checked.try_number) {
                 a_try.checked = Some((**checked).clone());
                 a_try.checked_at = Some(event.ts);
             }
@@ -233,7 +233,7 @@ fn fold_goal(goals: &mut Vec<Folded>, goal_event: &GoalEvent, event: &RunEvent) 
             let goal = &mut goals[at];
             goal.checking = false;
             goal.found(checked);
-            if let Some(a_try) = goal.try_mut(checked.attempt) {
+            if let Some(a_try) = goal.try_mut(checked.try_number) {
                 a_try.asked = Some((**checked).clone());
             }
         }
@@ -262,7 +262,7 @@ fn fold_goal(goals: &mut Vec<Folded>, goal_event: &GoalEvent, event: &RunEvent) 
             if let Some(at) = of(goals, task) {
                 let turns = goals[at].cli_says.as_ref().and_then(|says| says.turns);
                 goals[at].cli_says = Some(CliGoalReport {
-                    cli: argonauts_core::display_names::builtin_harness_name(&said.cli)
+                    cli: argonauts_core::display_names::builtin_cli_name(&said.cli)
                         .map_or_else(|| said.cli.clone(), str::to_owned),
                     status: said.status.clone(),
                     note: said.note.clone(),
@@ -281,7 +281,7 @@ impl Folded {
             let met = verdict.verdict == CriterionState::Met;
             let known = self.met_on.iter().position(|(id, _)| id == &verdict.id);
             match (met, known) {
-                (true, None) => self.met_on.push((verdict.id.clone(), checked.attempt)),
+                (true, None) => self.met_on.push((verdict.id.clone(), checked.try_number)),
                 // A line that stopped holding is met again on a later try, if at all.
                 (false, Some(at)) => {
                     self.met_on.remove(at);
@@ -301,8 +301,8 @@ impl Folded {
         let last = self.last.as_ref();
         // Before its first session a task's agent is the one its plan gave it.
         let worker = self.worker.clone().or_else(|| {
-            let record = state.cards.get(self.task.as_ref()?)?;
-            record.owner.clone().or_else(|| record.spec.owner.clone())
+            let record = state.tasks.get(self.task.as_ref()?)?;
+            record.worker.clone().or_else(|| record.spec.worker.clone())
         });
         let lines = self
             .goal
@@ -392,7 +392,7 @@ impl Folded {
             })
             .collect();
         let of = match &self.task {
-            Some(task) => labels::card_label(state, task),
+            Some(task) => labels::task_label(state, task),
             None => state
                 .run
                 .named
@@ -413,7 +413,7 @@ impl Folded {
                 words: match (self.goal.kept_by, &worker) {
                     (KeptBy::Cli, Some(worker)) => format!("{}'s own goal", cli::name(worker)),
                     (KeptBy::Cli, None) => "the CLI's own goal".to_owned(),
-                    (KeptBy::Argonauts, _) => "Argonauts".to_owned(),
+                    (KeptBy::Argonauts, _) => "Argonauts Code".to_owned(),
                 },
                 cli: match self.goal.kept_by {
                     KeptBy::Cli => worker.as_ref().map(cli::name),
@@ -521,8 +521,8 @@ mod tests {
     use argonauts_core::goal::{CheckWith, GoalFrom, GoalScope, GoalSpec};
     use time::Duration;
 
-    fn task() -> CardId {
-        CardId::new("task-002").expect("an id")
+    fn task() -> TaskId {
+        TaskId::new("task-002").expect("an id")
     }
 
     fn at(seq: u64, kind: RunEventKind) -> RunEvent {
@@ -530,9 +530,9 @@ mod tests {
             seq,
             ts: OffsetDateTime::UNIX_EPOCH + Duration::seconds(i64::try_from(seq).unwrap() * 60),
             run_id: RunId::new("run-01").expect("an id"),
-            card_id: Some(task()),
+            task_id: Some(task()),
             session: None,
-            source: "conductor".to_owned(),
+            source: "argonauts-code".to_owned(),
             kind,
         }
     }
@@ -566,7 +566,7 @@ mod tests {
     }
 
     fn started(n: u32) -> GoalEvent {
-        GoalEvent::AttemptStarted {
+        GoalEvent::TryStarted {
             n,
             title: format!("try {n}"),
             phase: 0,
@@ -623,7 +623,7 @@ mod tests {
             total: None,
             ms: 9_000,
             output: String::new(),
-            agent: Some("claude-code/astra".parse().expect("a worker")),
+            agent: Some("claude-code/astra".parse().expect("a model")),
         }
     }
 
@@ -632,7 +632,7 @@ mod tests {
     fn checked(n: u32, failed: u32) -> GoalEvent {
         let first = n >= 2;
         GoalEvent::Checked(Box::new(GoalChecked {
-            attempt: n,
+            try_number: n,
             verdicts: vec![
                 verdict("G1", first),
                 verdict("G2", true),
@@ -765,7 +765,7 @@ mod tests {
                 7,
                 GoalEvent::CheckingNow {
                     task: Some(task()),
-                    attempt: 3,
+                    try_number: 3,
                 },
             ),
         ];
@@ -809,7 +809,7 @@ mod tests {
                 3,
                 GoalEvent::CheckingNow {
                     task: Some(task()),
-                    attempt: 1,
+                    try_number: 1,
                 },
             )
         };
@@ -826,16 +826,16 @@ mod tests {
         ));
         assert!(!reports(&dropped)[0].checking);
 
-        // A run that parked under it, as when its engine was halted, runs nothing either.
-        let mut parked = before;
-        parked.push(at(
+        // A run that stopped to wait under it, as when its engine was halted, runs nothing either.
+        let mut waiting = before;
+        waiting.push(at(
             4,
-            RunEventKind::Run(RunLifecycle::Parked {
-                reason: argonauts_core::events::run::ParkReason::Checkpoint,
+            RunEventKind::Run(RunLifecycle::Waiting {
+                reason: argonauts_core::events::run::WaitReason::Approval,
                 waiting_on: Vec::new(),
             }),
         ));
-        let report = &reports(&parked)[0];
+        let report = &reports(&waiting)[0];
         assert!(!report.checking);
         assert_eq!(report.lines[0].state, LineState::Unchecked);
     }
@@ -852,7 +852,7 @@ mod tests {
                 6,
                 GoalEvent::StatusChanged {
                     status: GoalStatus::Met,
-                    by: Party::Conductor,
+                    by: Party::ArgonautsCode,
                     task: Some(task()),
                     why: None,
                 },
@@ -876,7 +876,7 @@ mod tests {
             8,
             GoalEvent::StatusChanged {
                 status: GoalStatus::Stuck,
-                by: Party::Conductor,
+                by: Party::ArgonautsCode,
                 task: Some(task()),
                 why: Some("the same failure 3 rounds running, after a change of approach".into()),
             },

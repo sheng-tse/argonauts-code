@@ -26,7 +26,7 @@
 {"in":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"20260930_101500_ab12cd","update":{"sessionUpdate":"usage_update","used":24120,"size":262144,"cost":{"amount":0.25,"currency":"USD"}}}}}
 {"in":{"jsonrpc":"2.0","id":4,"result":{"stopReason":"end_turn","usage":{"inputTokens":18000,"outputTokens":900,"cachedReadTokens":12000,"thoughtTokens":300,"totalTokens":18900}}}}
 {"in":{"jsonrpc":"2.0","id":5,"result":{"stopReason":"end_turn","usage":{"inputTokens":2000,"outputTokens":80,"cachedReadTokens":1500,"totalTokens":2080}}}}
-{"out":{"id":6,"method":"session/prompt","params":{"sessionId":"20260930_101500_ab12cd","prompt":[{"type":"text","text":"Your turn ended without a report. Call the argonauts_report tool now with your final report. It is the only way your report reaches Argonauts."}]}}}
+{"out":{"id":6,"method":"session/prompt","params":{"sessionId":"20260930_101500_ab12cd","prompt":[{"type":"text","text":"Your turn ended without a report. Call the argonauts_report tool now with your final report. It is the only way your report reaches Argonauts Code."}]}}}
 {"report":{"status":"done","summary":"The retry helper backs off, with the API unchanged."}}
 {"in":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"20260930_101500_ab12cd","update":{"sessionUpdate":"usage_update","used":24800,"size":262144,"cost":{"amount":0.375,"currency":"USD"}}}}}
 {"in":{"jsonrpc":"2.0","id":6,"result":{"stopReason":"end_turn","usage":{"inputTokens":24000,"outputTokens":40,"cachedReadTokens":23000,"totalTokens":24040}}}}

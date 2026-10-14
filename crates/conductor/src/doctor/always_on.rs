@@ -1,6 +1,6 @@
 //! Always-on agents on this machine, such as an OpenClaw gateway listening on 18789 or a
-//! `hermes gateway` process. They run as you, outside any sandbox Argonauts controls, and could
-//! reach your approval commands, so doctor names them. It reads no config and no credentials.
+//! `hermes gateway` process. They run as you, outside any sandbox Argonauts Code controls, and
+//! could reach your approval commands, so doctor names them. It reads no config and no credentials.
 
 use std::ffi::OsString;
 use std::net::{Ipv4Addr, SocketAddr};

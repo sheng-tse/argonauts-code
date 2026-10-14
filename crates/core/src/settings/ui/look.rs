@@ -126,7 +126,7 @@ fn is_file_name(name: &str) -> bool {
 }
 
 /// A color in Claude Code's forms: `#rrggbb`, `#rgb`, `rgb(r,g,b)`, `ansi256(n)`,
-/// `ansi:<name>`, or another role's name, such as `warning`.
+/// `ansi:<name>`, or another role's name, such as `warn`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ColorText(String);
@@ -249,7 +249,7 @@ impl TryFrom<String> for Percent {
 #[serde(try_from = "String", into = "String")]
 pub enum Threshold {
     Percent(Percent),
-    /// Where Argonauts starts asking for more budget.
+    /// Where Argonauts Code starts asking to raise the limit.
     SoftStop,
 }
 
@@ -288,8 +288,7 @@ pub struct FormatSettings {
     /// Token counts: short (212k, 1.2M), lower (Claude Code's 1.2m), or full (212,400)
     pub tokens: TokenStyle,
     /// Plan usage says how much is used or how much is left, everywhere it shows
-    #[serde(rename = "plan_usage")]
-    pub quota: QuotaWording,
+    pub plan_usage: PlanUsageWording,
     /// Clock times: 12h (4:40pm) or 24h (16:40)
     pub clock: ClockStyle,
     /// When plan usage resets: a clock time, a countdown, or both
@@ -309,7 +308,7 @@ pub enum TokenStyle {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum QuotaWording {
+pub enum PlanUsageWording {
     #[default]
     Used,
     Left,
@@ -379,7 +378,7 @@ pub enum State {
     Working,
     /// Waiting on other work.
     Waiting,
-    /// Waiting on a timer, such as a quota's reset.
+    /// Waiting on a timer, such as a plan usage reset.
     Timer,
     NeedsYou,
     /// Done, merged, or passed.
@@ -438,11 +437,11 @@ impl State {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct StatesSettings {
-    /// Running, building, or checking its gates
+    /// Running, building, or running its checks
     pub working: StateStyle,
     /// Waiting on other work
     pub waiting: StateStyle,
-    /// Waiting on a timer, such as a quota's reset
+    /// Waiting on a timer, such as a plan usage reset
     pub timer: StateStyle,
     /// Waiting on you
     pub needs_you: StateStyle,
@@ -555,7 +554,7 @@ mod tests {
         ] {
             assert!(read::<ColorText>(bad).is_err(), "{bad}");
         }
-        assert!(ColorText::from("card").is_role());
+        assert!(ColorText::from("question").is_role());
         assert!(!ColorText::from("#fff").is_role());
     }
 

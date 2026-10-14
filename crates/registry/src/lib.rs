@@ -1,12 +1,11 @@
-//! Settings resolution, presets, workflow files, harness profiles, the model registry, and
+//! Settings resolution, workflows and their files, CLI profiles, the model registry, and
 //! the plan-terms note.
 
 mod always;
 mod catalog;
+pub mod clis;
 mod form;
-pub mod harnesses;
 pub mod models;
-mod presets;
 mod resolve;
 mod settings;
 mod terms;
@@ -21,22 +20,23 @@ use argonauts_core::settings::Settings;
 
 pub use always::save_required_steps;
 pub use catalog::{setting_meta, settings_catalog};
+pub use clis::{CliEntries, builtin_clis, cli_manifests};
 pub use form::settings_form;
-pub use harnesses::{HarnessEntries, builtin_harnesses, harness_manifests};
-pub use models::{family_from_model_id, family_problems, registry};
-pub use presets::{builtin_preset, presets, presets_in, upgrade_presets, write_preset};
+pub use models::{provider_from_model_id, provider_problems, registry};
 pub use resolve::resolve;
-pub use settings::crew::seat_problems;
-pub use settings::old_names::{OldName, Renamed, rename_old_names};
-pub use settings::plain::gate_commands;
+pub use settings::crew::crew_list_problems;
+pub use settings::plain::check_commands;
 pub use settings::tighten::tightens;
 pub use terms::TERMS_NOTE;
 pub use workflows::{WorkflowError, WorkflowInfo, find_workflow, workflows_in};
+pub use workflows::{
+    builtin_workflow, upgrade_workflows, workflow_choices, workflow_choices_in, write_workflow,
+};
 pub use write::{check_settings, remove_setting, safety_keys_in, write_setting};
 
-/// Later layers win key by key: built-in, `global`, `project`, `project_local`, the preset with
-/// the run's recipe over it, then `overrides`. Preset files are looked up in
-/// `.argonauts/presets/`, then `~/.argonauts/presets/`, then the built-in.
+/// Later layers win key by key: built-in, `global`, `project`, `project_local`, the workflow with
+/// the run's learned workflow over it, then `overrides`. Workflow files are looked up in
+/// `.argonauts/workflows/`, then `~/.argonauts/workflows/`, then the built-in.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SettingsSources {
     /// `~/.argonauts/config.toml`. Any of the three files may be missing.
@@ -54,14 +54,15 @@ pub struct SettingsSources {
     pub project_trusted: bool,
     /// The same for `config.local.toml`, which a repo can also carry committed.
     pub project_local_trusted: bool,
-    /// The recipe triage matched for this run, applied in the preset layer.
-    pub recipe: Option<RecipeOverlay>,
+    /// The learned workflow the Captain-or-crew choice matched for this run, applied in the
+    /// workflow layer.
+    pub learned_workflow: Option<LearnedWorkflowOverlay>,
     /// `key=value` settings a request asked for, above every other layer, for one run. A
     /// safety key among them must only tighten what the other layers say.
     pub request: Vec<String>,
     /// A key a file sets that can't be used is an error, as a check of the files wants. Off,
     /// as when the app starts, the key is left out, its default is used and a warning names
-    /// it, so a file from an older Argonauts or with a typo never stops the app.
+    /// it, so a file from an older Argonauts Code or with a typo never stops the app.
     pub strict: bool,
     /// The project's files that came with the repository and wait for your trust. The
     /// workflow's settings layer passes them over, so one named after a built-in leaves it in
@@ -69,12 +70,12 @@ pub struct SettingsSources {
     pub waiting: Vec<PathBuf>,
 }
 
-/// A recipe version's protocol settings, as learning's `recipes::settings_overlay` gives them.
-/// A recipe that sets a safety key or a fixed-core key is left out whole, with a warning, never
-/// half-applied.
+/// A learned workflow version's protocol settings, as learning's
+/// `learned_workflows::settings_overlay` gives them. A learned workflow that sets a safety key or a
+/// fixed-core key is left out whole, with a warning, never half-applied.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct RecipeOverlay {
-    /// Such as `recipe api-feature v4`, which `/config` shows as the keys' source.
+pub struct LearnedWorkflowOverlay {
+    /// Such as `learned workflow api-feature v4`, which `/config` shows as the keys' source.
     pub label: String,
     /// The settings, as TOML text.
     pub settings: String,
@@ -83,7 +84,7 @@ pub struct RecipeOverlay {
     pub canary: bool,
     /// A replay of this version in an isolated repo, which never merges (`merge.mode =
     /// "leave"`) and spends at most this much (`limits.spend_per_run`).
-    pub replay_budget_usd: Option<u64>,
+    pub replay_limit_usd: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,27 +111,27 @@ pub enum SettingsError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PresetUpgrade {
+pub struct WorkflowUpgrade {
     pub name: String,
     pub path: PathBuf,
-    pub outcome: PresetUpgradeOutcome,
+    pub outcome: WorkflowUpgradeOutcome,
 }
 
 /// Judged by the built-in hash the file records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PresetUpgradeOutcome {
+pub enum WorkflowUpgradeOutcome {
     Current,
     /// You hadn't edited it, so it became the new built-in.
     Updated,
     /// You edited it, so it was kept. `tell` is true only the first time, so the app says so
-    /// once and points at `/preset diff <name>`.
+    /// once and points at `/workflow diff <name>`.
     KeptEdited {
         tell: bool,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PresetInfo {
+pub struct WorkflowChoice {
     pub name: String,
     /// `built-in`, or the file it came from.
     pub source: String,

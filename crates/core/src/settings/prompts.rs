@@ -7,21 +7,21 @@ use std::fmt;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
-use crate::names::{RoleName, WorkerRef};
-use crate::prompt_parts::CrewRole;
+use crate::names::{ModelRef, RoleName};
+use crate::settings::crew::CrewRole;
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct PromptSettings {
     /// Who writes each agent's instructions: `orchestrator` (its own words for that agent, the
-    /// default), `built-in` (Argonauts' own templates), or a model such as `codex/gpt-5.6`.
+    /// default), `built-in` (Argonauts Code's own templates), or a model such as `codex/gpt-5.6`.
     pub writer: Writer,
     /// A Markdown file in the repo that replaces the drafting prompt. Empty uses the built-in.
     pub drafting: String,
     /// A Markdown file in the repo that replaces the build prompt. Empty uses the built-in.
     pub build: String,
-    /// One role can differ, as `[prompts.judge]` does, by a crew role's name (`workers`,
-    /// `reviewers`, `judge`, `orchestrator`, `main`) or a finer role's own.
+    /// One role can be different, as `[prompts.judge]` does, by a crew role's name (`worker`,
+    /// `reviewer`, `judge`, `orchestrator`, `main`) or a finer role's own.
     #[serde(flatten)]
     pub roles: BTreeMap<String, RolePrompts>,
 }
@@ -82,13 +82,13 @@ impl PromptSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum Writer {
-    /// The orchestrator's own words for the agent. Where it wrote none, Argonauts' template.
+    /// The orchestrator's own words for the agent. Where it wrote none, Argonauts Code's template.
     #[default]
     Orchestrator,
-    /// Argonauts' own templates, as they are or as you changed them.
+    /// Argonauts Code's own templates, as they are or as you changed them.
     BuiltIn,
     /// This model writes each agent's instructions before the agent starts.
-    Model(WorkerRef),
+    Model(ModelRef),
 }
 
 impl Writer {
@@ -169,17 +169,17 @@ mod tests {
     }
 
     #[test]
-    fn one_role_can_differ() {
+    fn one_role_can_be_different() {
         let settings = parsed(
-            "writer = \"orchestrator\"\n\n[judge]\nwriter = \"built-in\"\n\n[reviewers]\nwriter = \
-             \"codex/gpt-5.6\"\n\n[critic]\nwriter = \"built-in\"\n",
+            "writer = \"orchestrator\"\n\n[judge]\nwriter = \"built-in\"\n\n[reviewer]\nwriter = \
+             \"codex/gpt-5.6\"\n\n[critic]\nwriter = \"built-in\"\n\n[main]\nwriter = \"codex/gpt-5.6\"\n",
         );
         assert_eq!(settings.writer_for(RoleName::Judge), &Writer::BuiltIn);
         assert_eq!(settings.writer_for(RoleName::Worker), &Writer::Orchestrator);
         // A finer role follows its crew role's table unless it has its own.
         let model = Writer::Model("codex/gpt-5.6".parse().unwrap());
         assert_eq!(settings.writer_for(RoleName::Reviewer), &model);
-        assert_eq!(settings.writer_for(RoleName::Adjudicator), &model);
+        assert_eq!(settings.writer_for(RoleName::Consultant), &model);
         assert_eq!(settings.writer_for(RoleName::Critic), &Writer::BuiltIn);
     }
 
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn a_requests_words_reach_the_roles_that_follow() {
         let settings = parsed(
-            "[reviewers]\nrequest = \"focus on date parsing\"\n\n[critic]\nrequest = \"be \
+            "[reviewer]\nrequest = \"focus on date parsing\"\n\n[critic]\nrequest = \"be \
              blunt\"\n",
         );
         assert_eq!(
@@ -211,8 +211,8 @@ mod tests {
         );
         assert!(settings.request_for(RoleName::Worker).is_empty());
         assert_eq!(
-            PromptSettings::request_key(CrewRole::Reviewers),
-            "prompts.reviewers.request"
+            PromptSettings::request_key(CrewRole::Reviewer),
+            "prompts.reviewer.request"
         );
     }
 

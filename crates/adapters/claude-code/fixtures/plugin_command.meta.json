@@ -1,0 +1,95 @@
+{
+  "adapter": "claude-code",
+  "program": "claude",
+  "name": "plugin_command",
+  "args": [
+    "-p",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--model",
+    "haiku",
+    "--effort",
+    "low",
+    "--max-budget-usd",
+    "0.08",
+    "--strict-mcp-config",
+    "--permission-mode",
+    "dontAsk",
+    "--permission-prompts",
+    "none",
+    "--tools",
+    "Read,Glob,Grep",
+    "--disallowedTools",
+    "SendMessage",
+    "ListAgents",
+    "Agent",
+    "--settings",
+    "<live>/claude-settings.json",
+    "--plugin-dir",
+    "<probe>/argo-probe",
+    "--no-session-persistence",
+    "--debug-file",
+    "<live>/debug.log"
+  ],
+  "date": "2026-10-04T13:25:01Z",
+  "duration_ms": 22470,
+  "exit_code": 0,
+  "sanitized": "absolute paths replaced with <workdir> (the throwaway repo), <live> (its check folder), <probe> (the folder holding the test plugin and hook), <scratch> (the scratch folder), Claude Code's folder slug with <workdir-slug>, its per-user temp folder with /tmp/claude-uid, the home directory with ~, and email addresses with <email>",
+  "cli_version": "2.1.289",
+  "also_matches": [],
+  "model": "haiku",
+  "effort": "low",
+  "env_removed": [
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_PID",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "EMPTY_VAR"
+  ],
+  "keep_input_open": true,
+  "role": "read_only",
+  "stdin_file": "mod_command.stdin.jsonl",
+  "stdin_note": "each line as written, with _t seconds since the start; _stdin: closed marks where the input closed",
+  "session_id": "e7fa0c33-57d8-4b20-8ebf-2aaa4c8aa0bd",
+  "result_total_cost_usd": [
+    0,
+    0.011364299999999999,
+    0.011364299999999999,
+    0.011364299999999999
+  ],
+  "files": [
+    {
+      "path": "<live>/claude-settings.json",
+      "contents": "{\"crossSessionInbound\": \"refuse\", \"attribution\": {\"commit\": \"\", \"pr\": \"\"}, \"sandbox\": {\"enabled\": false}}\n"
+    },
+    {
+      "path": "<probe>/argo-probe/.claude-plugin/plugin.json",
+      "contents": "{\n  \"name\": \"argo-probe\",\n  \"version\": \"0.0.1\",\n  \"description\": \"Argonauts live check: a mod that adds context, registers commands, and pushes toast, status, and log lines.\"\n}\n"
+    },
+    {
+      "path": "<probe>/argo-probe/hooks/hooks.json",
+      "contents": "{\n  \"description\": \"Argonauts live-check probe\",\n  \"modules\": [\"./register.js\"]\n}\n"
+    },
+    {
+      "path": "<probe>/argo-probe/hooks/register.js",
+      "contents": "// Argonauts live check. Every effect carries a marker word,\n// so the stream and the model's answer show which hooks ran.\nexport function register(on) {\n  let lateRegistered = false\n\n  on('session.start', async ($, e, next) => {\n    $.ui.log('PROBE-LOG-START session.start ran')\n    $.ui.toast('PROBE-TOAST-START')\n    await $.command.register({\n      name: 'probe-cmd',\n      description: 'Argonauts probe: answers with a fixed line',\n    })\n    return next(e)\n  })\n\n  // Context added to every turn: a block next to claudeMd and currentDate.\n  on('prompt.context', async ($, e, next) =>\n    next({\n      ...e,\n      blocks: [...e.blocks, { name: 'argoProbe', text: 'Probe code word: KESTREL-29.' }],\n    }),\n  )\n\n  // The prompt as typed, with one more line.\n  on('prompt.submit', async ($, e, next) =>\n    next({ ...e, text: `${e.text}\\n\\n(Probe code word: HERON-41.)` }),\n  )\n\n  on('command.run', { command: 'probe-cmd' }, async $ => {\n    $.ui.toast('PROBE-TOAST-CMD')\n    $.ui.status('PROBE-STATUS-CMD')\n    $.ui.log('PROBE-LOG-CMD')\n    return { text: 'PROBE-CMD-OUTPUT probe-cmd ran' }\n  })\n\n  on('command.run', { command: 'probe-late' }, async () => ({ text: 'PROBE-LATE-OUTPUT' }))\n\n  // Registered mid-session, to see whether Claude Code reports commands_changed.\n  on('turn.complete', async ($, e, next) => {\n    if (!lateRegistered) {\n      lateRegistered = true\n      await $.command.register({\n        name: 'probe-late',\n        description: 'Argonauts probe: registered after the first turn',\n      })\n    }\n    return next(e)\n  })\n}\n"
+    }
+  ],
+  "files_after": [
+    "README.md"
+  ],
+  "note": "A session that isn't isolated, with the same test plugin. session.start's ui_log and ui_toast come before the first init line. The initialize reply lists probe-cmd as {name, description, argumentHint} with no builtin and no plugin field. /probe-cmd runs under -p without the model: an assistant message from model <synthetic> whose text is 'argo-probe: PROBE-CMD-OUTPUT probe-cmd ran', then a result with num_turns 0 and local_command 'custom'; its ui_toast {plugin, text, timeout_ms: 4000}, ui_status {plugin, text}, and ui_log {plugin, text} come before the result, none marked internal. Each message gets its own init line. The model turn's answer was KESTREL-29, HERON-41: both ways of adding context reach the model. probe-late, registered at that turn's turn.complete, brought system/commands_changed with the full list (66) right after the result, and the next init's slash_commands has it. ui_attach as desktop answered {surfaces: [desktop]}; the pushes after it were the same. /probe-late ran."
+}

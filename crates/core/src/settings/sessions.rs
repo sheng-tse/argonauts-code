@@ -1,4 +1,4 @@
-//! Sessions, compaction, fan-out, concurrency, the circuit breaker, and the supervisor.
+//! Sessions, compaction, fan-out, concurrency, the circuit breaker, and the run host.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -14,10 +14,10 @@ pub struct SessionSettings {
     /// How much context a session may hold: the largest window each CLI offers for the
     /// model, unless you lower it.
     pub context: ContextSize,
-    /// When a session rotates to a fresh one with a handoff note: near its window's end.
+    /// When a session rotates to a fresh one with a fallback note: near its window's end.
     pub rotate_at: RotateAt,
-    /// Chat with the default agent resumes the same CLI session each turn.
-    pub chat_resumes: bool,
+    /// Conversation with the main agent resumes the same CLI session each turn.
+    pub conversation_resumes: bool,
 }
 
 impl Default for SessionSettings {
@@ -26,7 +26,7 @@ impl Default for SessionSettings {
             lifetime: SessionLifetime::Task,
             context: ContextSize::default(),
             rotate_at: RotateAt::Share(NEAR_THE_END),
-            chat_resumes: true,
+            conversation_resumes: true,
         }
     }
 }
@@ -79,14 +79,14 @@ pub enum SessionLifetime {
     Project,
 }
 
-/// Compaction per launched session. Your harness settings files are never edited.
+/// Compaction per launched session. Your CLI settings files are never edited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Compaction {
-    /// Pass nothing; the harness uses your settings.
+    /// Pass nothing; the CLI uses your settings.
     Inherit,
     Auto,
-    /// No compaction where the harness allows it (Claude Code); a full session rotates.
+    /// No compaction where the CLI allows it (Claude Code); a full session rotates.
     Off,
 }
 
@@ -110,7 +110,7 @@ impl Default for NativeFanout {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FanoutSwitch {
-    /// The harness decides, and may run a workflow of its own where it has one.
+    /// The CLI decides, and may run a workflow of its own where it has one.
     On,
     Off,
 }
@@ -121,15 +121,14 @@ pub enum FanoutSwitch {
 pub struct ConcurrencySettings {
     pub max_sessions: u32,
     /// Sessions of one agent at once.
-    #[serde(rename = "max_per_agent")]
-    pub max_per_vendor: u32,
+    pub max_per_agent: u32,
 }
 
 impl Default for ConcurrencySettings {
     fn default() -> Self {
         Self {
             max_sessions: 6,
-            max_per_vendor: 3,
+            max_per_agent: 3,
         }
     }
 }
@@ -140,7 +139,7 @@ impl Default for ConcurrencySettings {
 pub struct HealthSettings {
     /// Errors or retries within `window` that mark an agent degraded.
     pub degraded_after: u32,
-    /// Overload or server errors within `window` that mark it down...
+    /// Network errors and timeouts within `window` that mark it down...
     pub down_after: u32,
     /// ...seen across at least this many sessions.
     pub down_sessions: u32,
@@ -163,29 +162,24 @@ impl Default for HealthSettings {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
-pub struct SupervisorSettings {
-    /// How long a supervisor with nothing to do waits for an answer before the run waits for
-    /// you and the supervisor exits.
-    #[serde(rename = "wait_grace")]
-    pub park_grace: Span,
+pub struct RunHostSettings {
+    /// How long a run host with nothing to do waits for an answer before the run waits for
+    /// you and the run host exits.
+    pub wait_grace: Span,
     /// The engine writes a `Run::Snapshot` after this many events, so a resume or a reattach
     /// replays from the latest snapshot instead of from the start.
     pub snapshot_every: u32,
     /// Most text and reasoning deltas per second per session that go into the journal. Finer
     /// deltas reach live subscribers only.
     pub journal_deltas_per_second: u32,
-    /// How long a step waits before it asks an agent again whose session ended for a agent
-    /// reason, such as a passing sign-in error.
-    pub retry_wait: Span,
 }
 
-impl Default for SupervisorSettings {
+impl Default for RunHostSettings {
     fn default() -> Self {
         Self {
-            park_grace: Span::new("10s"),
+            wait_grace: Span::new("10s"),
             snapshot_every: 5000,
             journal_deltas_per_second: 10,
-            retry_wait: Span::new("5s"),
         }
     }
 }
@@ -195,14 +189,18 @@ impl Default for SupervisorSettings {
 pub struct RunsSettings {
     /// A run waiting for you longer than this many days gets a reminder in `/resume` and
     /// `argonauts doctor`. A waiting run never expires.
-    #[serde(rename = "remind_waiting_days")]
-    pub remind_parked_days: u32,
+    pub remind_waiting_days: u32,
+    /// Keeps the copies a run worked in, and its branches, after it ends, for looking at
+    /// afterwards. `/git clean` removes them. Off, a run takes them with it when it ends, and
+    /// only a run that waits or that you stopped keeps them for `/resume`.
+    pub keep_copies: bool,
 }
 
 impl Default for RunsSettings {
     fn default() -> Self {
         Self {
-            remind_parked_days: 7,
+            remind_waiting_days: 7,
+            keep_copies: false,
         }
     }
 }

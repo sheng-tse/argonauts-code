@@ -2,17 +2,31 @@
 //! noticed, so each gets one notice, per version the kinds of events it sent that its adapter
 //! doesn't read yet, with counts, the built-in plugins a later version loads that its adapter
 //! doesn't know, and the CLI's own commands its adapter's table doesn't list. Never their content.
+//!
+//! It also keeps what reminding you to update needs: the newest version out where each CLI
+//! was installed from, asked once a day; which newer versions the start-up line has named,
+//! so each is named once; and, per version, what its start-up message lacked of the fields
+//! Argonauts Code reads.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::Path;
 
+use argonauts_core::adapter::StartupField;
+use argonauts_core::status_tab::CliVersionCheck;
 use argonauts_core::{Adapter, ReportedCommand, create_private_dir_all, write_private_file};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use time::OffsetDateTime;
 
+use crate::doctor::AgentCheck;
+use crate::doctor::newest::{install_source, update_command};
+use crate::doctor::standing::{is_newer, oldest_supported, standing};
 use crate::doctor::versions::{VersionFit, newest_tested, version_fit};
+
+/// How long an answer about the newest version is good for.
+const NEWEST_GOOD_FOR: time::Duration = time::Duration::days(1);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliVersions {
@@ -36,6 +50,30 @@ pub struct CliEntry {
     /// doesn't have, by name. The `/` menu offers them in every folder.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub commands: BTreeMap<String, ReportedCommand>,
+    /// The newest version out where it was installed from, as last asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest: Option<NewestAsked>,
+    /// The newer versions the start-up line has named, so each is named once.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub reminded: BTreeSet<String>,
+    /// By version, the fields Argonauts Code reads that its start-up message lacked, by their
+    /// place in the message. A version with an empty set was compared and lacked none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub startup: BTreeMap<String, BTreeSet<String>>,
+    /// The missing fields already said at start-up, as `version field`, so each is said once.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub warned: BTreeSet<String>,
+}
+
+/// What an install source last said the newest version is, and when it was asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewestAsked {
+    /// `None` when it couldn't say. That still counts as asked, so a source that is down is
+    /// asked once a day like any other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub asked: OffsetDateTime,
 }
 
 impl CliVersions {
@@ -130,6 +168,64 @@ impl CliVersions {
         kinds
     }
 
+    /// Whether `cli`'s install source is due to be asked again: never asked, or a day ago.
+    pub fn newest_due(&self, cli: &str, now: OffsetDateTime) -> bool {
+        self.clis
+            .get(cli)
+            .and_then(|entry| entry.newest.as_ref())
+            .is_none_or(|newest| now - newest.asked >= NEWEST_GOOD_FOR)
+    }
+
+    /// Keeps what `cli`'s install source said at `now`.
+    pub fn asked_newest(&mut self, cli: &str, version: Option<String>, now: OffsetDateTime) {
+        self.clis.entry(cli.to_owned()).or_default().newest = Some(NewestAsked {
+            version,
+            asked: now,
+        });
+    }
+
+    /// The newest version of `cli` out where it was installed from, once that has been asked.
+    pub fn newest(&self, cli: &str) -> Option<&str> {
+        self.clis.get(cli)?.newest.as_ref()?.version.as_deref()
+    }
+
+    /// True the first time the start-up line asks to name `version` of `cli` as out.
+    pub fn first_reminder(&mut self, cli: &str, version: &str) -> bool {
+        self.clis
+            .entry(cli.to_owned())
+            .or_default()
+            .reminded
+            .insert(version.to_owned())
+    }
+
+    /// Keeps which fields `version` of `cli` left out of its start-up message. The fields of
+    /// every session count, since a field may come only with some of them. True when
+    /// something new was learned.
+    pub fn saw_startup(&mut self, cli: &str, version: &str, missing: &[&str]) -> bool {
+        let versions = &mut self.clis.entry(cli.to_owned()).or_default().startup;
+        let new_version = !versions.contains_key(version);
+        let known = versions.entry(version.to_owned()).or_default();
+        let before = known.len();
+        known.extend(missing.iter().map(|field| (*field).to_owned()));
+        new_version || known.len() != before
+    }
+
+    /// The fields `version` of `cli` left out of its start-up message. `None` until a session
+    /// of that version has started.
+    pub fn startup_missing(&self, cli: &str, version: &str) -> Option<Vec<String>> {
+        let missing = self.clis.get(cli)?.startup.get(version)?;
+        Some(missing.iter().cloned().collect())
+    }
+
+    /// True the first time `field` missing from `version` of `cli` asks to be said.
+    pub fn first_warning(&mut self, cli: &str, version: &str, field: &str) -> bool {
+        self.clis
+            .entry(cli.to_owned())
+            .or_default()
+            .warned
+            .insert(format!("{version} {field}"))
+    }
+
     /// Records `version` and says, once per version, when it's newer than every recording.
     /// `path` is the file to keep that in.
     pub fn notice_once(path: &Path, adapter: &dyn Adapter, version: &str) -> Option<String> {
@@ -144,6 +240,122 @@ impl CliVersions {
     }
 }
 
+/// What Doctor found of an installed CLI that its version check starts from.
+#[derive(Debug, Clone, Copy)]
+pub struct Installed<'a> {
+    pub version: Option<&'a str>,
+    /// Where its program is, which says where it was installed from.
+    pub path: Option<&'a Path>,
+    /// Its `--help` offers every flag Argonauts Code passes.
+    pub flags_whole: bool,
+}
+
+impl<'a> Installed<'a> {
+    pub fn of(check: &'a AgentCheck) -> Self {
+        Self {
+            version: check.version.as_deref(),
+            path: check.path.as_deref(),
+            flags_whole: check.problem.is_none(),
+        }
+    }
+}
+
+/// How an installed CLI's version stands, whether everything Argonauts Code reads from it is
+/// there, and what there is to update to, from what `seen` holds of it.
+pub fn version_check(
+    adapter: &dyn Adapter,
+    installed: Installed<'_>,
+    seen: &CliVersions,
+) -> CliVersionCheck {
+    let tested = adapter.tested_versions();
+    let version = installed.version;
+    let standing = standing(version, tested, adapter.broken_versions());
+    let newest = seen.newest(adapter.id()).map(str::to_owned);
+    let source = installed
+        .path
+        .and_then(|path| install_source(path, &adapter.install_sources()));
+    // A CLI with a start-up message is only known to give everything once one was read.
+    let startup_whole = adapter.startup_message().is_none_or(|_| {
+        version
+            .and_then(|version| seen.startup_missing(adapter.id(), version))
+            .is_some_and(|missing| missing.is_empty())
+    });
+    CliVersionCheck {
+        standing,
+        works: installed.flags_whole && startup_whole,
+        checked_with: newest_tested(tested).map(str::to_owned),
+        oldest_supported: standing
+            .needs_update()
+            .then(|| oldest_supported(tested).map(str::to_owned))
+            .flatten(),
+        newer_is_out: newest
+            .as_deref()
+            .zip(version)
+            .is_some_and(|(newest, installed)| is_newer(newest, installed)),
+        newest,
+        update_command: update_command(adapter, source.as_ref()),
+    }
+}
+
+/// What a CLI's start-up message lacks of the fields its adapter reads, when `line` is that
+/// message. `None` for any other line.
+pub fn startup_lacks(adapter: &dyn Adapter, line: &str) -> Option<Vec<&'static StartupField>> {
+    let startup = adapter.startup_message()?;
+    if !line.contains(startup.marker) {
+        return None;
+    }
+    let message: Value = serde_json::from_str(line).ok()?;
+    let is_startup = startup
+        .is
+        .iter()
+        .all(|(pointer, value)| message.pointer(pointer).and_then(Value::as_str) == Some(*value));
+    is_startup.then(|| {
+        startup
+            .fields
+            .iter()
+            .filter(|field| message.pointer(field.pointer).is_none_or(Value::is_null))
+            .collect()
+    })
+}
+
+/// `Claude Code 2.1.297 no longer reports its context, so /context shows less until Argonauts
+/// Code is updated`, for each field of `missing` its adapter reads, with the field's place.
+pub fn startup_warnings(
+    adapter: &dyn Adapter,
+    version: &str,
+    missing: &[String],
+) -> Vec<(&'static str, String)> {
+    let Some(startup) = adapter.startup_message() else {
+        return Vec::new();
+    };
+    let cli = adapter.display_name();
+    startup
+        .fields
+        .iter()
+        .filter(|field| missing.iter().any(|missing| missing == field.pointer))
+        .map(|field| {
+            let warning = format!(
+                "{cli} {version} no longer reports {}, so {} until Argonauts Code is updated",
+                field.what, field.without
+            );
+            (field.pointer, warning)
+        })
+        .collect()
+}
+
+/// `Claude Code 2.1.297 is out · claude update · shown once for this version`: the one line
+/// start-up says of a newer version, the first time it is known.
+pub fn out_line(name: &str, check: &CliVersionCheck) -> Option<String> {
+    let newest = check.newest.as_deref().filter(|_| check.newer_is_out)?;
+    let mut line = format!("{name} {newest} is out");
+    if let Some(command) = &check.update_command {
+        line.push_str(" · ");
+        line.push_str(command);
+    }
+    line.push_str(" · shown once for this version");
+    Some(line)
+}
+
 /// The notice for a CLI newer than the newest version its adapter was checked with.
 pub fn newer_notice(adapter: &dyn Adapter, version: &str) -> Option<String> {
     let tested = adapter.tested_versions();
@@ -153,8 +365,8 @@ pub fn newer_notice(adapter: &dyn Adapter, version: &str) -> Option<String> {
     let newest = newest_tested(tested)?;
     let cli = adapter.display_name();
     Some(format!(
-        "{cli} {version} is newer than {newest}, the newest version Argonauts was checked with. \
-         It should work. /doctor lists anything it sends that Argonauts doesn't read yet."
+        "{cli} {version} is newer than {newest}, the newest version Argonauts Code was checked with. \
+         It should work. /doctor lists anything it sends that Argonauts Code doesn't read yet."
     ))
 }
 
@@ -178,26 +390,27 @@ pub fn event_kind(raw: &Value) -> Option<String> {
     })
 }
 
-/// `loaded built-in plugins Argonauts doesn't know yet: cc-plugin-x, which blind roles turn off`
+/// `loaded built-in plugins Argonauts Code doesn't know yet: cc-plugin-x, which blind roles turn
+/// off`
 pub fn builtins_line(names: &[String]) -> Option<String> {
     (!names.is_empty()).then(|| {
         format!(
-            "loaded built-in plugins Argonauts doesn't know yet: {}, which blind roles turn off",
+            "loaded built-in plugins Argonauts Code doesn't know yet: {}, which blind roles turn off",
             names.join(", ")
         )
     })
 }
 
-/// `sent 2 kinds of events Argonauts doesn't read yet: system/turn_summary, cost_update`
+/// `sent 2 kinds of events Argonauts Code doesn't read yet: system/turn_summary, cost_update`
 pub fn unread_line(kinds: &[(String, u64)]) -> Option<String> {
     let names: Vec<&str> = kinds.iter().map(|(kind, _)| kind.as_str()).collect();
     match names.as_slice() {
         [] => None,
         [one] => Some(format!(
-            "sent 1 kind of event Argonauts doesn't read yet: {one}"
+            "sent 1 kind of event Argonauts Code doesn't read yet: {one}"
         )),
         many => Some(format!(
-            "sent {} kinds of events Argonauts doesn't read yet: {}",
+            "sent {} kinds of events Argonauts Code doesn't read yet: {}",
             many.len(),
             many.join(", ")
         )),
@@ -232,7 +445,7 @@ mod tests {
         assert!(back.unread("codex", "2.1.291").is_empty());
         assert_eq!(
             unread_line(&back.unread("claude-code", "2.1.291")).as_deref(),
-            Some("sent 2 kinds of events Argonauts doesn't read yet: system/x, cost_update")
+            Some("sent 2 kinds of events Argonauts Code doesn't read yet: system/x, cost_update")
         );
         assert!(unread_line(&[]).is_none());
         // Nothing but kinds and counts.
@@ -259,8 +472,8 @@ mod tests {
         let notice = CliVersions::notice_once(&path, &adapter, "2.1.297").unwrap();
         assert_eq!(
             notice,
-            "Claude Code 2.1.297 is newer than 2.1.295, the newest version Argonauts was \
-             checked with. It should work. /doctor lists anything it sends that Argonauts \
+            "Claude Code 2.1.297 is newer than 2.1.295, the newest version Argonauts Code was \
+             checked with. It should work. /doctor lists anything it sends that Argonauts Code \
              doesn't read yet."
         );
         // The file is read again each time, as after a restart.

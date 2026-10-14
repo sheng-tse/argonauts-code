@@ -1,35 +1,35 @@
 //! The profile a session runs in. It starts from what the engine asked for and adds every rule no
-//! caller may loosen. Build and spike sessions write their worktree, temp, and the harness's own
-//! state; read-only and no-tools sessions only temp and the harness's own state. The handoff
-//! transcripts in the worktree, the harness's config, and the code it runs stay read-only, and so
+//! caller may loosen. Build and experiment sessions write their worktree, temp, and the CLI's own
+//! state; read-only and no-tools sessions only temp and the CLI's own state. The fallback
+//! transcripts in the worktree, the CLI's config, and the code it runs stay read-only, and so
 //! do the worktree's git files, but for what a commit on its own branch needs when agents commit
 //! (`sandbox.agents_commit`); hooks, config, and every other ref stay read-only then too. The
-//! harness's records of your other sessions stay unreadable. No session reads `~/.argonauts`
+//! CLI's records of your other sessions stay unreadable. No session reads `~/.argonauts`
 //! (but its own session files and what its launch names there), any worktree but its own (and
 //! the run's base worktree for read-only run sessions, or the run's other worktrees when
-//! `sandbox.agents_see_other_worktrees` is on), other vendors' or other agents' state and
+//! `sandbox.agents_see_other_worktrees` is on), other agents' state and
 //! credentials, or `~/.ssh`, and none reaches a socket that acts for you, such as the ssh
 //! agent's or docker's.
 //!
 //! Rules nest: the most specific path wins, so a session's own worktree can sit inside the
-//! denied `~/.argonauts`, and the harness's config stays read-only inside its writable state.
+//! denied `~/.argonauts`, and the CLI's config stays read-only inside its writable state.
 //! A denied area is unwritable too, and a readable path is read-only unless it is also writable.
 
 use std::path::{Component, Path, PathBuf};
 
 use argonauts_core::CommandSpec;
 use argonauts_core::layout::{repo_state, session_files};
-use argonauts_core::worker::{Access, SandboxProfile};
+use argonauts_core::session_runner::{Access, SandboxProfile};
 
 use super::SandboxError;
-use crate::handoff::transcript::WORKTREE_FOLDER;
+use crate::fallback::transcript::WORKTREE_FOLDER;
 
 /// Facts about one session that the profile depends on.
 #[derive(Debug, Clone)]
 pub struct ProfileInput<'a> {
     pub access: Access,
     /// The adapter id, such as `claude-code`, whose own state stays writable.
-    pub vendor: &'a str,
+    pub agent_id: &'a str,
     pub workdir: &'a Path,
     pub session_dir: &'a Path,
     /// `~/.argonauts`.
@@ -42,13 +42,13 @@ pub struct ProfileInput<'a> {
     /// `sandbox.extra_writable`, already absolute.
     pub extra_writable: &'a [PathBuf],
     /// `sandbox.agents_see_other_worktrees`: the run's other worktrees are readable.
-    pub sees_other_copies: bool,
-    /// `sandbox.agents_commit`: a build or spike session in a linked worktree may commit on its
-    /// own branch.
+    pub sees_other_worktrees: bool,
+    /// `sandbox.agents_commit`: a build or experiment session in a linked worktree may commit on
+    /// its own branch.
     pub commits: bool,
 }
 
-/// What a direct turn may never change in your checkout: Argonauts' own config and the files
+/// What a direct turn may never change in your checkout: Argonauts Code's own config and the files
 /// that configure agent CLIs, which the main session and every later one load.
 pub const PROTECTED_PATHS: &[&str] = &[
     ".argonauts/",
@@ -64,17 +64,17 @@ pub const PROTECTED_PATHS: &[&str] = &[
 /// Git's files that run code, closed even when a direct turn may commit.
 const DIRECT_GIT_KEPT: &[&str] = &["hooks", "config", "info"];
 
-/// Harnesses whose state and credentials sit at known places in your home. No session reads
+/// CLIs whose state and credentials sit at known places in your home. No session reads
 /// another one's.
-const KNOWN_VENDORS: &[&str] = &["claude-code", "codex", "antigravity-cli", "opencode"];
+const KNOWN_AGENTS: &[&str] = &["claude-code", "codex", "antigravity-cli", "opencode"];
 
-/// Where a harness keeps its files in your home, relative to it.
-struct VendorHome {
+/// Where a CLI keeps its files in your home, relative to it.
+struct CliHome {
     /// State and credentials it writes while it runs.
     state: &'static [&'static str],
     /// Config, instructions, and code it runs, such as hooks, MCP servers, and plugins.
     /// Read-only, so a session can't plant a command that runs outside any sandbox the next time
-    /// you start that harness yourself.
+    /// you start that CLI yourself.
     config: &'static [&'static str],
     /// Records of your other sessions that it doesn't need while it runs: the prompts you typed,
     /// IDE auth tokens, and the shell setup other sessions source before each command.
@@ -89,7 +89,7 @@ struct VendorHome {
     asked_first: &'static [&'static str],
 }
 
-const CLAUDE_CODE: VendorHome = VendorHome {
+const CLAUDE_CODE: CliHome = CliHome {
     state: &[".claude", "Library/Caches/claude-cli-nodejs"],
     // `~/.claude.json` holds your MCP servers. Claude Code 2.1.285 runs fine with it read-only.
     config: &[
@@ -121,7 +121,7 @@ const CLAUDE_CODE: VendorHome = VendorHome {
     asked_first: &[".claude/dev-mods"],
 };
 
-const CODEX: VendorHome = VendorHome {
+const CODEX: CliHome = CliHome {
     state: &[".codex"],
     config: &[
         ".codex/config.toml",
@@ -137,7 +137,7 @@ const CODEX: VendorHome = VendorHome {
         ".codex/skills",
         ".codex/plugins",
         ".codex/packages",
-        ".codex/vendor_imports",
+        ".codex/cli_imports",
     ],
     private: &[
         ".codex/history.jsonl",
@@ -148,7 +148,7 @@ const CODEX: VendorHome = VendorHome {
     asked_first: &[],
 };
 
-const ANTIGRAVITY_CLI: VendorHome = VendorHome {
+const ANTIGRAVITY_CLI: CliHome = CliHome {
     state: &[".gemini"],
     config: &[
         ".gemini/settings.json",
@@ -173,7 +173,7 @@ const ANTIGRAVITY_CLI: VendorHome = VendorHome {
     asked_first: &[],
 };
 
-const OPENCODE: VendorHome = VendorHome {
+const OPENCODE: CliHome = CliHome {
     state: &[
         ".local/share/opencode",
         ".local/state/opencode",
@@ -186,7 +186,7 @@ const OPENCODE: VendorHome = VendorHome {
     asked_first: &[],
 };
 
-const NO_HOME: VendorHome = VendorHome {
+const NO_HOME: CliHome = CliHome {
     state: &[],
     config: &[],
     private: &[],
@@ -194,17 +194,17 @@ const NO_HOME: VendorHome = VendorHome {
     asked_first: &[],
 };
 
-/// The harness whose files in your home `vendor` uses. OpenCode over ACP runs the same
+/// The CLI whose files in your home `agent` uses. OpenCode over ACP runs the same
 /// `opencode` program as the OpenCode adapter, so it keeps its state in the same places.
-fn home_vendor(vendor: &str) -> &str {
-    match vendor {
+fn home_agent(agent_id: &str) -> &str {
+    match agent_id {
         "opencode-acp" => "opencode",
         other => other,
     }
 }
 
-fn vendor_home(vendor: &str) -> &'static VendorHome {
-    match home_vendor(vendor) {
+fn cli_home(agent_id: &str) -> &'static CliHome {
+    match home_agent(agent_id) {
         "claude-code" => &CLAUDE_CODE,
         "codex" => &CODEX,
         "antigravity-cli" => &ANTIGRAVITY_CLI,
@@ -213,7 +213,7 @@ fn vendor_home(vendor: &str) -> &'static VendorHome {
     }
 }
 
-/// Relative to your home. Unreadable to every session, whatever its vendor.
+/// Relative to your home. Unreadable to every session, whatever its agent.
 const CREDENTIAL_STORES: &[&str] = &[
     ".ssh",
     ".aws",
@@ -260,9 +260,9 @@ const OTHER_AGENTS: &[&str] = &[
     ".local/share/amp",
 ];
 
-/// The session's own files that its harness reads: the status file, the MCP config, the schema,
-/// a manifest harness's prompt, the report the status server writes, and a home made from a
-/// harness template. Its raw logs and process record stay unreadable.
+/// The session's own files that its CLI reads: the status file, the MCP config, the schema,
+/// a manifest CLI's prompt, the report the status server writes, and a home made from a
+/// CLI template. Its raw logs and process record stay unreadable.
 const OWN_SESSION_FILES: &[&str] = &[
     session_files::STATUS,
     session_files::MCP_CONFIG,
@@ -282,26 +282,26 @@ const PRIVATE_SESSION_FILES: &[&str] = &[
 ];
 
 /// Every rule no caller may loosen, added to what the engine asked for. The engine's own
-/// writable paths and `extra_writable` count only for build and spike sessions, and only
+/// writable paths and `extra_writable` count only for build and experiment sessions, and only
 /// outside every denied area.
 pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> SandboxProfile {
     let home = input.user_home;
-    let own = vendor_home(input.vendor);
+    let own = cli_home(input.agent_id);
     let in_home =
         |paths: &[&str]| -> Vec<PathBuf> { paths.iter().map(|path| home.join(path)).collect() };
     let mut config = in_home(own.config);
     if input.access != Access::Direct {
         config.extend(in_home(own.asked_first));
     }
-    let own_transcripts = own_transcript_dir(input.vendor, home, input.workdir);
+    let own_transcripts = own_transcript_dir(input.agent_id, home, input.workdir);
 
     let mut hard_deny = vec![input.argonauts_home.to_path_buf()];
     hard_deny.extend(in_home(CREDENTIAL_STORES));
     hard_deny.extend(
-        KNOWN_VENDORS
+        KNOWN_AGENTS
             .iter()
-            .filter(|vendor| **vendor != home_vendor(input.vendor))
-            .flat_map(|vendor| vendor_state_dirs(vendor, home)),
+            .filter(|agent_id| **agent_id != home_agent(input.agent_id))
+            .flat_map(|agent_id| cli_state_dirs(agent_id, home)),
     );
     hard_deny.extend(other_agents_state(home));
     hard_deny.extend(CONTAINER_RUNTIMES.iter().map(|path| home.join(path)));
@@ -310,20 +310,20 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
         std::env::var("DOCKER_HOST").ok(),
     ));
     hard_deny.extend(in_home(own.private));
-    hard_deny.extend(transcript_dirs(input.vendor, home));
+    hard_deny.extend(transcript_dirs(input.agent_id, home));
 
-    let other_copies = input
-        .sees_other_copies
+    let other_worktrees = input
+        .sees_other_worktrees
         .then(|| run_worktrees(input.argonauts_home, input.workdir))
         .flatten();
     let mut deny_read = hard_deny.clone();
-    // With other copies open, the engine's own list of them to deny no longer applies.
+    // With other worktrees open, the engine's own list of them to deny no longer applies.
     deny_read.extend(
         requested
             .deny_read
             .iter()
             .filter(|path| {
-                !other_copies
+                !other_worktrees
                     .as_ref()
                     .is_some_and(|run| path.starts_with(run))
             })
@@ -355,10 +355,10 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
     if input.access == Access::ReadOnly {
         readable.extend(input.base_worktree.map(Path::to_path_buf));
     }
-    readable.extend(other_copies);
+    readable.extend(other_worktrees);
     readable.extend(outside_all(requested.readable.iter(), &hard_deny));
     if builds {
-        // A replacement reads the transcripts its handoffs left in the worktree, and can't
+        // A fallback reads the transcripts left for it in the worktree, and can't
         // rewrite the record of what the session before it did.
         readable.push(input.workdir.join(WORKTREE_FOLDER));
     }
@@ -389,7 +389,7 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
     }
     let git = LinkedGit::of(input.workdir);
     let git_dirs = git.as_ref().map(LinkedGit::dirs).unwrap_or_default();
-    // A folder with no git keeps its history in Argonauts' home, so that one folder there is
+    // A folder with no git keeps its history in Argonauts Code's home, so that one folder there is
     // open to git's files as a repository's `.git` is: the history of the session's own
     // project, and no other.
     let history = own_history(input.argonauts_home, input.workdir);
@@ -463,7 +463,7 @@ fn hooks_folder(workdir: &Path) -> Option<PathBuf> {
 struct LinkedGit {
     own: PathBuf,
     common: Option<PathBuf>,
-    /// Such as `refs/heads/argonauts/run-1/card-a`, or `None` when `HEAD` is detached.
+    /// Such as `refs/heads/argonauts/run-1/task-a`, or `None` when `HEAD` is detached.
     branch: Option<PathBuf>,
 }
 
@@ -521,7 +521,7 @@ impl LinkedGit {
     /// What a commit writes: the worktree's own git folder (its index, `HEAD`'s log, and the
     /// lock on `HEAD`), the objects, and the branch's ref with its lock and log. A ref or log
     /// that isn't there yet stays out, since the Linux sandbox would make it as a folder; a
-    /// packed ref then can't move, and the conductor commits after the session instead.
+    /// packed ref then can't move, and Argonauts Code commits after the session instead.
     fn commit_paths(&self) -> Vec<PathBuf> {
         let mut paths = vec![self.own.clone()];
         let Some(common) = &self.common else {
@@ -574,7 +574,7 @@ fn branch_ref(head: &str) -> Option<PathBuf> {
 
 /// Git takes a lock by making the file itself and fails when one is there, so a sandbox never
 /// makes a writable lock ahead. Neither Landlock nor a bind mount can grant making that one name,
-/// so on Linux and in a container an agent's commit can't move its branch, and the conductor
+/// so on Linux and in a container an agent's commit can't move its branch, and Argonauts Code
 /// commits after the session.
 pub(super) fn is_git_lock(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext == "lock")
@@ -619,11 +619,11 @@ fn is_within(path: &Path, dir: &Path) -> bool {
     path.is_absolute() && resolve_path(path).starts_with(resolve_path(dir))
 }
 
-/// Everything a harness keeps in your home, such as `~/.claude` and `~/.claude.json` for Claude
-/// Code or `~/.codex` for Codex. Empty for a harness that runs from a per-session home made from
+/// Everything a CLI keeps in your home, such as `~/.claude` and `~/.claude.json` for Claude
+/// Code or `~/.codex` for Codex. Empty for a CLI that runs from a per-session home made from
 /// a template.
-pub fn vendor_state_dirs(vendor: &str, user_home: &Path) -> Vec<PathBuf> {
-    let home = vendor_home(vendor);
+pub fn cli_state_dirs(agent_id: &str, user_home: &Path) -> Vec<PathBuf> {
+    let home = cli_home(agent_id);
     home.state
         .iter()
         .chain(home.config)
@@ -631,30 +631,30 @@ pub fn vendor_state_dirs(vendor: &str, user_home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The files a harness writes afresh inside a read-only folder of its (see `VendorHome`). The
-/// conductor makes any that are missing before a session starts, since the session can write
+/// The files a CLI writes afresh inside a read-only folder of its (see `AgentHome`).
+/// Argonauts Code makes any that are missing before a session starts, since the session can write
 /// them but not make a new name beside them.
-pub fn rewritten_files(vendor: &str, user_home: &Path) -> Vec<PathBuf> {
-    vendor_home(vendor)
+pub fn rewritten_files(agent_id: &str, user_home: &Path) -> Vec<PathBuf> {
+    cli_home(agent_id)
         .rewritten
         .iter()
         .map(|path| user_home.join(path))
         .collect()
 }
 
-/// Folders where a harness keeps every session's transcript, which no session reads but for its
+/// Folders where a CLI keeps every session's transcript, which no session reads but for its
 /// own. Codex and agy keep theirs by date or id, so they stay open to every session of the same
-/// harness until each session gets a home of its own.
-fn transcript_dirs(vendor: &str, user_home: &Path) -> Vec<PathBuf> {
-    match vendor {
+/// CLI until each session gets a home of its own.
+fn transcript_dirs(agent_id: &str, user_home: &Path) -> Vec<PathBuf> {
+    match agent_id {
         "claude-code" => vec![user_home.join(".claude/projects")],
         _ => Vec::new(),
     }
 }
 
 /// The folder a session's own transcripts go to, inside [`transcript_dirs`].
-fn own_transcript_dir(vendor: &str, user_home: &Path, workdir: &Path) -> Option<PathBuf> {
-    match vendor {
+fn own_transcript_dir(agent_id: &str, user_home: &Path, workdir: &Path) -> Option<PathBuf> {
+    match agent_id {
         "claude-code" => claude_project_dir(user_home, workdir),
         _ => None,
     }
@@ -1027,16 +1027,21 @@ mod tests {
         }
     }
 
-    fn profile_for(l: &Layout, access: Access, vendor: &str, extra: &[PathBuf]) -> SandboxProfile {
+    fn profile_for(
+        l: &Layout,
+        access: Access,
+        agent_id: &str,
+        extra: &[PathBuf],
+    ) -> SandboxProfile {
         let status = l.session.join(session_files::STATUS);
         let workdir = match access {
-            Access::Build | Access::Spike | Access::Direct => l.own_tree.clone(),
+            Access::Build | Access::Experiment | Access::Direct => l.own_tree.clone(),
             Access::ReadOnly => l.base_tree.clone(),
             Access::NoTools => l.session.join("work"),
         };
         let input = ProfileInput {
             access,
-            vendor,
+            agent_id,
             workdir: &workdir,
             session_dir: &l.session,
             argonauts_home: &l.argonauts,
@@ -1044,7 +1049,7 @@ mod tests {
             base_worktree: Some(&l.base_tree),
             status_file: Some(&status),
             extra_writable: extra,
-            sees_other_copies: false,
+            sees_other_worktrees: false,
             commits: false,
         };
         session_profile(&SandboxProfile::default(), &input)
@@ -1055,7 +1060,7 @@ mod tests {
         let l = layout();
         for access in [
             Access::Build,
-            Access::Spike,
+            Access::Experiment,
             Access::ReadOnly,
             Access::NoTools,
         ] {
@@ -1098,20 +1103,20 @@ mod tests {
     }
 
     #[test]
-    fn a_replacement_reads_its_handoff_transcripts_but_cant_change_them() {
+    fn a_fallback_reads_its_transcripts_but_cant_change_them() {
         let l = layout();
         let transcript = l.own_tree.join(".argonauts/fallback/1/transcript.md");
-        for access in [Access::Build, Access::Spike] {
-            for vendor in ["claude-code", "codex", "antigravity-cli", "opencode"] {
-                let profile = profile_for(&l, access, vendor, &[]);
-                assert!(can_read(&profile, &transcript), "{access:?} {vendor}");
-                assert!(!can_write(&profile, &transcript), "{access:?} {vendor}");
+        for access in [Access::Build, Access::Experiment] {
+            for agent_id in ["claude-code", "codex", "antigravity-cli", "opencode"] {
+                let profile = profile_for(&l, access, agent_id, &[]);
+                assert!(can_read(&profile, &transcript), "{access:?} {agent_id}");
+                assert!(!can_write(&profile, &transcript), "{access:?} {agent_id}");
                 assert!(can_write(&profile, &l.own_tree.join("src/lib.rs")));
                 // Only its own worktree's, and never the run's copy in the state folder.
                 let other = l.other_tree.join(".argonauts/fallback/1/transcript.md");
-                assert!(!can_read(&profile, &other), "{access:?} {vendor}");
-                let kept = l.run.join("cards/task-a/fallback-1/transcript.md");
-                assert!(!can_read(&profile, &kept), "{access:?} {vendor}");
+                assert!(!can_read(&profile, &other), "{access:?} {agent_id}");
+                let kept = l.run.join("tasks/task-a/fallback-1/transcript.md");
+                assert!(!can_read(&profile, &kept), "{access:?} {agent_id}");
             }
         }
     }
@@ -1124,7 +1129,7 @@ mod tests {
         let mod_file = l.home.join(".claude/dev-mods/s-1/register.js");
         let direct = profile_for(&l, Access::Direct, "claude-code", &[]);
         assert!(can_write(&direct, &mod_file));
-        for access in [Access::Build, Access::Spike, Access::ReadOnly] {
+        for access in [Access::Build, Access::Experiment, Access::ReadOnly] {
             let profile = profile_for(&l, access, "claude-code", &[]);
             assert!(can_read(&profile, &mod_file), "{access:?}");
             assert!(!can_write(&profile, &mod_file), "{access:?}");
@@ -1132,7 +1137,7 @@ mod tests {
     }
 
     #[test]
-    fn vendor_config_stays_read_only() {
+    fn agent_config_stays_read_only() {
         let l = layout();
         let config = [
             ("claude-code", ".claude.json"),
@@ -1155,20 +1160,20 @@ mod tests {
         ];
         for access in [
             Access::Build,
-            Access::Spike,
+            Access::Experiment,
             Access::ReadOnly,
             Access::NoTools,
         ] {
-            for (vendor, path) in config {
-                let profile = profile_for(&l, access, vendor, &[]);
+            for (agent_id, path) in config {
+                let profile = profile_for(&l, access, agent_id, &[]);
                 let path = l.home.join(path);
                 assert!(
                     can_read(&profile, &path),
-                    "{access:?} {vendor} reads {path:?}"
+                    "{access:?} {agent_id} reads {path:?}"
                 );
                 assert!(
                     !can_write(&profile, &path),
-                    "{access:?} {vendor} writes {path:?}"
+                    "{access:?} {agent_id} writes {path:?}"
                 );
             }
         }
@@ -1189,7 +1194,7 @@ mod tests {
         );
         assert!(rewritten_files("codex", &l.home).is_empty());
         // The state around the config stays writable.
-        for (vendor, path) in [
+        for (agent_id, path) in [
             ("codex", ".codex/sessions/2026/09/30/rollout-a.jsonl"),
             ("codex", ".codex/auth.json"),
             (
@@ -1198,8 +1203,8 @@ mod tests {
             ),
             ("opencode", ".local/share/opencode/storage/a.json"),
         ] {
-            let profile = profile_for(&l, Access::ReadOnly, vendor, &[]);
-            assert!(can_write(&profile, &l.home.join(path)), "{vendor} {path}");
+            let profile = profile_for(&l, Access::ReadOnly, agent_id, &[]);
+            assert!(can_write(&profile, &l.home.join(path)), "{agent_id} {path}");
         }
         // Not even `extra_writable` opens config.
         let extra = [
@@ -1215,7 +1220,7 @@ mod tests {
     }
 
     // OpenCode 1.18.34 over ACP stopped at start with EEXIST on mkdir ~/.local/share/opencode,
-    // because that folder was denied to every harness but `opencode`.
+    // because that folder was denied to every CLI but `opencode`.
     #[test]
     fn opencode_over_acp_keeps_opencodes_state() {
         let l = layout();
@@ -1242,13 +1247,13 @@ mod tests {
         let l = layout();
         for access in [
             Access::Build,
-            Access::Spike,
+            Access::Experiment,
             Access::ReadOnly,
             Access::NoTools,
         ] {
             let profile = profile_for(&l, access, "claude-code", &[]);
             let workdir = match access {
-                Access::Build | Access::Spike | Access::Direct => l.own_tree.clone(),
+                Access::Build | Access::Experiment | Access::Direct => l.own_tree.clone(),
                 Access::ReadOnly => l.base_tree.clone(),
                 Access::NoTools => l.session.join("work"),
             };
@@ -1325,10 +1330,10 @@ mod tests {
         ] {
             assert!(!can_read(&profile, &l.home.join(path)), "reads {path}");
         }
-        // Another vendor's cache stays denied, wherever the temp folder puts the home.
+        // Another agent's cache stays denied, wherever the temp folder puts the home.
         assert!(!can_write(&profile, &l.home.join(".cache/opencode/x")));
         assert!(!can_read(&profile, &l.home.join(".cache/opencode/x")));
-        // Its own state is writable, other vendors' state isn't.
+        // Its own state is writable, other agents' state isn't.
         let codex = profile_for(&l, Access::ReadOnly, "codex", &[]);
         assert!(can_write(&codex, &l.home.join(".codex/sessions/a.jsonl")));
         assert!(!can_read(&codex, &l.home.join(".claude.json")));
@@ -1339,15 +1344,15 @@ mod tests {
     fn build_sessions_never_write_your_package_caches() {
         let l = layout();
         let profile = profile_for(&l, Access::Build, "codex", &[]);
-        // In your home only the harness's own state, the worktree, and the session's own files
+        // In your home only the CLI's own state, the worktree, and the session's own files
         // are writable.
-        let vendor_state = vendor_state_dirs("codex", &l.home);
+        let agent_state = cli_state_dirs("codex", &l.home);
         for path in profile
             .writable
             .iter()
             .filter(|path| path.starts_with(&l.home))
         {
-            let own = vendor_state.contains(path) || path.starts_with(&l.session);
+            let own = agent_state.contains(path) || path.starts_with(&l.session);
             assert!(own || *path == l.own_tree, "{path:?}");
         }
         let root = PathBuf::from("/tmp/caches");
@@ -1446,7 +1451,7 @@ mod tests {
         for tree in [&l.own_tree, &l.base_tree] {
             std::fs::create_dir_all(tree.join(".git/hooks")).unwrap();
         }
-        for access in [Access::Build, Access::Spike, Access::ReadOnly] {
+        for access in [Access::Build, Access::Experiment, Access::ReadOnly] {
             let profile = profile_for(&l, access, "claude-code", &[]);
             let workdir = match access {
                 Access::ReadOnly => &l.base_tree,
@@ -1502,12 +1507,12 @@ mod tests {
         access: Access,
         workdir: &Path,
         requested: &SandboxProfile,
-        sees_other_copies: bool,
+        sees_other_worktrees: bool,
         commits: bool,
     ) -> SandboxProfile {
         let input = ProfileInput {
             access,
-            vendor: "codex",
+            agent_id: "codex",
             workdir,
             session_dir: &l.session,
             argonauts_home: &l.argonauts,
@@ -1515,13 +1520,13 @@ mod tests {
             base_worktree: None,
             status_file: None,
             extra_writable: &[],
-            sees_other_copies,
+            sees_other_worktrees,
             commits,
         };
         session_profile(requested, &input)
     }
 
-    /// A card's worktree linked to a repository in temp, on its own branch.
+    /// A task's worktree linked to a repository in temp, on its own branch.
     struct Repo {
         _temp: tempfile::TempDir,
         common: PathBuf,
@@ -1587,8 +1592,8 @@ mod tests {
             r.common.join("packed-refs"),
             r.common.join("refs/heads/main"),
             r.common.join("refs/heads/main.lock"),
-            r.common.join("refs/heads/argonauts/run-1/integration"),
-            r.common.join("refs/heads/argonauts/run-1/integration.lock"),
+            r.common.join("refs/heads/argonauts/run-1/merged"),
+            r.common.join("refs/heads/argonauts/run-1/merged.lock"),
             r.common.join("objects/pack/pack-1.pack"),
             r.common.join("objects/info/alternates"),
             l.own_tree.join(".git"),
@@ -1607,7 +1612,7 @@ mod tests {
         }
     }
 
-    /// A folder without git keeps its history in Argonauts' home. A worktree of that history
+    /// A folder without git keeps its history in Argonauts Code's home. A worktree of that history
     /// reads it as it would a repository's `.git`, and another project's history stays shut.
     #[test]
     fn a_worktree_of_a_hidden_history_reads_its_own_history_and_no_other() {
@@ -1711,7 +1716,7 @@ mod tests {
     #[test]
     fn agents_see_other_worktrees_reads_the_runs_other_worktrees() {
         let l = layout();
-        // The engine lists the other copies to deny, which the switch overrides.
+        // The engine lists the other worktrees to deny, which the switch overrides.
         let requested = SandboxProfile {
             deny_read: vec![l.other_tree.clone(), l.home.join("private")],
             ..SandboxProfile::default()
@@ -1731,10 +1736,11 @@ mod tests {
         assert!(!can_read(&closed, &l.other_tree.join("src/lib.rs")));
         assert!(!can_read(&closed, &l.base_tree.join("src/lib.rs")));
 
-        // A session outside the run's worktrees, such as chat in your checkout, gets nothing more.
+        // A session outside the run's worktrees, such as conversation in your checkout, gets
+        // nothing more.
         let checkout = l.home.join("code/app");
-        let chat = switched(&l, Access::Build, &checkout, &requested, true, false);
-        assert!(!can_read(&chat, &l.other_tree.join("src/lib.rs")));
+        let conversation = switched(&l, Access::Build, &checkout, &requested, true, false);
+        assert!(!can_read(&conversation, &l.other_tree.join("src/lib.rs")));
     }
 
     #[test]
@@ -1790,7 +1796,7 @@ mod tests {
         let l = layout();
         let input = ProfileInput {
             access: Access::ReadOnly,
-            vendor: "codex",
+            agent_id: "codex",
             workdir: &repo,
             session_dir: &l.session,
             argonauts_home: &l.argonauts,
@@ -1798,7 +1804,7 @@ mod tests {
             base_worktree: None,
             status_file: None,
             extra_writable: &[],
-            sees_other_copies: false,
+            sees_other_worktrees: false,
             commits: false,
         };
         let profile = session_profile(&SandboxProfile::default(), &input);
@@ -1835,7 +1841,7 @@ mod tests {
         let workdir = l.own_tree.clone();
         let input = ProfileInput {
             access: Access::Build,
-            vendor: "codex",
+            agent_id: "codex",
             workdir: &workdir,
             session_dir: &l.session,
             argonauts_home: &l.argonauts,
@@ -1843,7 +1849,7 @@ mod tests {
             base_worktree: None,
             status_file: None,
             extra_writable: &[],
-            sees_other_copies: false,
+            sees_other_worktrees: false,
             commits: false,
         };
         for (network, proxy_port) in [(true, None), (false, None), (false, Some(4128))] {

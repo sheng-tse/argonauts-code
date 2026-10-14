@@ -1,0 +1,94 @@
+{
+  "adapter": "claude-code",
+  "program": "claude",
+  "name": "isolation_keys",
+  "args": [
+    "-p",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--model",
+    "haiku",
+    "--effort",
+    "low",
+    "--max-budget-usd",
+    "0.08",
+    "--strict-mcp-config",
+    "--permission-mode",
+    "dontAsk",
+    "--permission-prompts",
+    "none",
+    "--tools",
+    "Read,Glob,Grep",
+    "--disallowedTools",
+    "SendMessage",
+    "ListAgents",
+    "Agent",
+    "--setting-sources",
+    "user",
+    "--settings",
+    "<live>/claude-settings.json",
+    "--plugin-dir",
+    "<probe>/argo-probe",
+    "--no-session-persistence",
+    "--debug-file",
+    "<live>/debug.log"
+  ],
+  "date": "2026-10-04T13:29:06Z",
+  "duration_ms": 6570,
+  "exit_code": 0,
+  "sanitized": "absolute paths replaced with <workdir> (the throwaway repo), <live> (its check folder), <probe> (the folder holding the test plugin and hook), <scratch> (the scratch folder), Claude Code's folder slug with <workdir-slug>, its per-user temp folder with /tmp/claude-uid, the home directory with ~, and email addresses with <email>",
+  "cli_version": "2.1.289",
+  "also_matches": [],
+  "model": "haiku",
+  "effort": "low",
+  "env_removed": [
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_PID",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "EMPTY_VAR"
+  ],
+  "keep_input_open": true,
+  "role": "read_only",
+  "stdin_file": "isolation_keys.stdin.jsonl",
+  "stdin_note": "each line as written, with _t seconds since the start; _stdin: closed marks where the input closed",
+  "session_id": "c6c91d95-e769-4fcb-9abf-d4096cf7ada5",
+  "result_total_cost_usd": [
+    0.0114923
+  ],
+  "files": [
+    {
+      "path": "<live>/claude-settings.json",
+      "contents": "{\"crossSessionInbound\": \"refuse\", \"attribution\": {\"commit\": \"\", \"pr\": \"\"}, \"sandbox\": {\"enabled\": false}, \"disableAllHooks\": true, \"syncClaudeAiSkills\": false, \"syncClaudeAiPlugins\": false, \"enabledPlugins\": {\"example-plugin-a@claude-plugins-official\": false, \"example-plugin-b@claude-plugins-official\": false, \"example-plugin-c@claude-plugins-official\": false, \"example-plugin-d@claude-plugins-official\": false, \"example-plugin-e@claude-plugins-official\": false, \"cc-plugin-you-should-know@builtin\": false}}\n"
+    },
+    {
+      "path": "<probe>/argo-probe/.claude-plugin/plugin.json",
+      "contents": "{\n  \"name\": \"argo-probe\",\n  \"version\": \"0.0.1\",\n  \"description\": \"Argonauts live check: a mod that adds context, registers commands, and pushes toast, status, and log lines.\"\n}\n"
+    },
+    {
+      "path": "<probe>/argo-probe/hooks/hooks.json",
+      "contents": "{\n  \"description\": \"Argonauts live-check probe\",\n  \"modules\": [\"./register.js\"]\n}\n"
+    },
+    {
+      "path": "<probe>/argo-probe/hooks/register.js",
+      "contents": "// Argonauts live check. Every effect carries a marker word,\n// so the stream and the model's answer show which hooks ran.\nexport function register(on) {\n  let lateRegistered = false\n\n  on('session.start', async ($, e, next) => {\n    $.ui.log('PROBE-LOG-START session.start ran')\n    $.ui.toast('PROBE-TOAST-START')\n    await $.command.register({\n      name: 'probe-cmd',\n      description: 'Argonauts probe: answers with a fixed line',\n    })\n    return next(e)\n  })\n\n  // Context added to every turn: a block next to claudeMd and currentDate.\n  on('prompt.context', async ($, e, next) =>\n    next({\n      ...e,\n      blocks: [...e.blocks, { name: 'argoProbe', text: 'Probe code word: KESTREL-29.' }],\n    }),\n  )\n\n  // The prompt as typed, with one more line.\n  on('prompt.submit', async ($, e, next) =>\n    next({ ...e, text: `${e.text}\\n\\n(Probe code word: HERON-41.)` }),\n  )\n\n  on('command.run', { command: 'probe-cmd' }, async $ => {\n    $.ui.toast('PROBE-TOAST-CMD')\n    $.ui.status('PROBE-STATUS-CMD')\n    $.ui.log('PROBE-LOG-CMD')\n    return { text: 'PROBE-CMD-OUTPUT probe-cmd ran' }\n  })\n\n  on('command.run', { command: 'probe-late' }, async () => ({ text: 'PROBE-LATE-OUTPUT' }))\n\n  // Registered mid-session, to see whether Claude Code reports commands_changed.\n  on('turn.complete', async ($, e, next) => {\n    if (!lateRegistered) {\n      lateRegistered = true\n      await $.command.register({\n        name: 'probe-late',\n        description: 'Argonauts probe: registered after the first turn',\n      })\n    }\n    return next(e)\n  })\n}\n"
+    }
+  ],
+  "files_after": [
+    "README.md"
+  ],
+  "note": "An isolated read-only session with the isolation keys on top of the user's settings (Claude Code's sandbox off, as on macOS), plus a test plugin loaded with --plugin-dir whose hooks module adds context through prompt.context (KESTREL-29) and prompt.submit (HERON-41), and pushes and registers /probe-cmd at session.start. init lists only argo-probe@inline (loaded by the flag) and the built-ins cc-plugin-agents-md, cc-plugin-telemetry, and cc-plugin-plugin-authoring: the plugins the user settings enable are gone, and so is cc-plugin-you-should-know. 19 skills, none anthropic-skills:. No ui_* push, no probe-cmd in the initialize reply or slash_commands, and the model answered NONE. Claude Code's debug log said: 'hooks module argo-probe@inline not loaded: only managed plugins and built-in plugins run (allowManagedHooksOnly / disableAllHooks)'. The built-in mods' modules still load. A first run of the same call, with a looser question, spent 14.6k thinking tokens and ended in error_max_budget_usd; it isn't kept."
+}

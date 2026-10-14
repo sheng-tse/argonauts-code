@@ -1,24 +1,25 @@
-//! `argonauts_setup`: the main session sets Argonauts up from what you say. It fills this form,
-//! Argonauts checks it the way it checks a settings file, and you see it as one card. Nothing
-//! is written until you pick where it applies. Only the main session is offered the tool, so
-//! no agent of a crew changes your setup by itself.
+//! `argonauts_setup`: the main session sets Argonauts Code up from what you say. It fills this
+//! form, Argonauts Code checks it the way it checks a settings file, and you see it as one
+//! question. Nothing is written until you pick where it applies. Only the main session is offered
+//! the tool, so no agent of a crew changes your setup by itself.
 //!
 //! The settings half of the form is made from the catalog `/config` is drawn from, so the
 //! form names every setting and the values each takes, and is never out of date.
 
-use argonauts_core::prompt_parts::{CrewRole, finer_roles};
+use argonauts_core::prompt_parts::finer_roles;
+use argonauts_core::settings::crew::CrewRole;
 use serde_json::{Value, json};
 
 pub const NAME: &str = "argonauts_setup";
 
-pub const DESCRIPTION: &str = "Proposes a change to the user's Argonauts setup: the crew and \
-    each role's model, the workflow and steps every workflow must contain, a role's \
-    instructions, any prompt, goals, limits, fallbacks and mods. Call it only when the user asks for a change, never when they only \
-    talk about their setup. Argonauts checks the form: a wrong value comes back as an error \
-    for you to fix. A valid one is shown to the user as one card, and nothing is written \
-    until they pick where it applies, so say in a line what you would set and that nothing \
-    has changed yet. The answer says what they picked. For what a setting does, or for the \
-    fields of a workflow, role or mod file, open the guide first.";
+pub const DESCRIPTION: &str = "Proposes a change to the user's Argonauts Code setup: the crew and \
+    each role's model, the workflow and steps every workflow must contain, a role's instructions, \
+    any prompt, goals, limits, fallbacks and mods. Call it only when the user asks for a change, \
+    never when they only talk about their setup. Argonauts Code checks the form: a wrong value \
+    comes back as an error for you to fix. A valid one is shown to the user as one question, and \
+    nothing is written until they pick where it applies, so say in a line what you would set and \
+    that nothing has changed yet. The answer says what they picked. For what a setting does, or \
+    for the fields of a workflow, role or mod file, open the guide first.";
 
 /// It writes files once you pick, so a CLI asks before it calls it where it asks at all.
 pub const READ_ONLY: bool = false;
@@ -66,7 +67,7 @@ pub fn input_schema() -> Value {
             "prompts": {
                 "type": "array",
                 "description": "A built-in prompt replaced by the user's own text: its id as \
-                                /prompts lists it, such as review/review or frames/reviewers, \
+                                /prompts lists it, such as review/review or frames/reviewer, \
                                 and the whole new text.",
                 "items": {
                     "type": "object",
@@ -121,7 +122,7 @@ pub fn input_schema() -> Value {
                                 message: \"for this one\" is request, \"from now on\" is \
                                 conversation unless they name this repository or all their \
                                 repositories, \"save that\" is repository. Otherwise ask, \
-                                the default: the card asks them."
+                                the default: the question asks them."
             },
             "keep_says": {
                 "type": "string",
@@ -165,7 +166,7 @@ mod tests {
         let roles = schema["properties"]["roles"]["items"]["properties"]["role"]["enum"]
             .as_array()
             .expect("role names");
-        for crew in ["main", "orchestrator", "workers", "reviewers", "judge"] {
+        for crew in ["main", "orchestrator", "worker", "reviewer", "judge"] {
             assert!(roles.iter().any(|role| role == crew), "{crew}");
         }
         assert!(roles.iter().any(|role| role == "critic"), "a finer role");

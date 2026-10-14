@@ -13,9 +13,9 @@ use ratatui::layout::{Rect, Size};
 
 use super::golden::theme;
 use super::{OverviewView, Tab, UsageWatch, sample};
+use crate::kit::bars::touching_bar;
 use crate::state::AppState;
 use crate::views::{View, ViewCtx};
-use crate::widgets::bars::touching_bar;
 use crossterm::event::KeyCode;
 
 /// The crew's numbers with every window at an edge and long names wherever a name goes.
@@ -162,22 +162,25 @@ fn square_touching(line: &str) -> Option<usize> {
 
 #[test]
 fn no_number_or_name_touches_a_bar_in_any_stats_view_opened_or_not() {
-    use crossterm::event::KeyCode::{Char, Down, Enter};
+    use crossterm::event::KeyCode::{Char, Down, Enter, Left};
     let state = crowded();
     let views: [(&str, Vec<KeyCode>); 6] = [
         ("By CLI", vec![]),
         ("a CLI card opened", vec![Enter]),
         ("By model", vec![Char('m')]),
-        ("By model, the next row", vec![Char('m'), Down]),
-        ("By role", vec![Char('r')]),
-        ("By role, the next row", vec![Char('r'), Down]),
+        ("a model opened", vec![Char('m'), Enter]),
+        ("By role", vec![Down, Left]),
+        ("a role opened", vec![Down, Left, Enter]),
     ];
     let mut touching = Vec::new();
     for (name, keys) in &views {
         for width in [80, 100, 118, 140] {
             let rows = drawn_after(&state, width, keys);
-            if *name != "By CLI" {
-                let opened = rows.iter().any(|row| row.contains("opened with enter"));
+            if name.ends_with("opened") {
+                // A CLI and a role say so; a model says the roles it worked as.
+                let opened = rows
+                    .iter()
+                    .any(|row| row.contains("opened with enter") || row.contains(" · as "));
                 assert!(
                     opened,
                     "{name} at {width} opens something:\n{}",

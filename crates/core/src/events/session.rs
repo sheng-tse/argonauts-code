@@ -8,24 +8,24 @@ use time::OffsetDateTime;
 
 use super::run::Party;
 use crate::input::MentionTarget;
-use crate::limits::QuotaReading;
-use crate::names::{MessageId, RoleName, VendorId, WorkerRef};
+use crate::limits::PlanUsageReading;
+use crate::names::{AgentId, MessageId, ModelRef, RoleName};
+use crate::session_runner::{Access, RunnerKind};
 use crate::settings::sessions::SessionLifetime;
 use crate::steps::StepName;
-use crate::worker::{Access, WorkerKind};
 use crate::workflow::StepRef;
-use crate::{BudgetDimension, BudgetStatus, ErrorCategory, Spend};
+use crate::{ErrorCategory, LimitDimension, Spend, SpendStatus};
 
 /// A session's life. Agent output itself arrives as `RunEventKind::Agent`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum SessionEvent {
     Started(Box<SessionStarted>),
-    /// Exactly what Argonauts sent. Emitted at start with every part, and after each delivered
+    /// Exactly what Argonauts Code sent. Emitted at start with every part, and after each delivered
     /// message with only the new parts, so the journal never repeats a prompt.
     Input(Box<SessionInput>),
-    VendorSession {
-        /// The vendor's id, used to resume and take over.
+    CliSession {
+        /// The agent's id, used to resume and take over.
         id: String,
         transcript: Option<PathBuf>,
     },
@@ -35,7 +35,7 @@ pub enum SessionEvent {
         message: MessageId,
         via: Delivery,
     },
-    /// A file changed; the conductor diffed it against the last commit, for the live preview.
+    /// A file changed; Argonauts Code diffed it against the last commit, for the live preview.
     FileDiff(FileDiff),
     Limit(LimitEvent),
     Ended(Box<SessionEnd>),
@@ -43,29 +43,29 @@ pub enum SessionEvent {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionStarted {
-    pub worker: WorkerRef,
-    pub vendor: VendorId,
-    pub family: String,
-    pub kind: WorkerKind,
+    pub worker: ModelRef,
+    pub agent_id: AgentId,
+    pub provider: String,
+    pub kind: RunnerKind,
     pub role: RoleName,
     pub step: Option<StepName>,
     pub access: Access,
     pub lifetime: SessionLifetime,
-    /// The earlier vendor session it resumes.
+    /// The earlier CLI session it resumes.
     pub resumed_from: Option<String>,
     /// The key number the UI shows in `[1]`, stable while the session runs.
     pub follow_key: Option<u8>,
     /// The workflow step it works for, which places it in the workflow view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_step: Option<StepRef>,
-    /// Its name in the chat, the panel, and the workflow view, such as `fix:slugify`, unique
-    /// in the run. Card ids stay in Ctrl+O and commands.
+    /// Its name in the conversation, the panel, and the workflow view, such as `fix:slugify`,
+    /// unique in the run. Task ids stay in Ctrl+O and commands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// The worker its step asked, when another agent runs it in that worker's place because
+    /// The model its step asked, when another runs it in that model's place because
     /// the asked one was out. The step finds the session again by it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub asked: Option<WorkerRef>,
+    pub asked: Option<ModelRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -123,7 +123,7 @@ pub struct InputPart {
 pub enum InputPartKind {
     /// The role's instructions.
     Prompt,
-    Card,
+    Task,
     Goal,
     Notes,
     Decisions,
@@ -131,12 +131,12 @@ pub enum InputPartKind {
     Rules,
     /// The live status summary, filtered for the role.
     Status,
-    Handoff,
-    /// Gate output for a retry.
-    GateOutput,
+    Fallback,
+    /// Check output for a retry.
+    CheckOutput,
     Message,
     WrapUp,
-    /// An evidence packet (approver) or digest (narrator).
+    /// An evidence packet (judge) or digest (narrator).
     Evidence,
     /// The step's input, as JSON.
     StepInput,
@@ -147,9 +147,9 @@ pub enum InputPartKind {
     /// of its answer.
     Frame,
     /// What the agent is asked to do, by whoever wrote it: the orchestrator, a model you
-    /// named, or Argonauts' own template.
+    /// named, or Argonauts Code's own template.
     Instructions,
-    /// Your own file for the role, such as `.argonauts/roles/reviewers.md`.
+    /// Your own file for the role, such as `.argonauts/roles/reviewer.md`.
     RoleFile,
     /// What your request said for the role.
     Request,
@@ -174,7 +174,7 @@ pub struct QueuedMessage {
     pub from: Party,
     /// As typed.
     pub to: MentionTarget,
-    /// A blind drafter or reviewer gets only this, nothing attached.
+    /// A blind drafting agent or reviewer gets only this, nothing attached.
     pub text: String,
     #[serde(with = "time::serde::rfc3339")]
     pub queued_at: OffsetDateTime,
@@ -186,13 +186,13 @@ pub struct QueuedMessage {
 pub enum Delivery {
     /// `s` in the session view: after the current tool call, in the same session.
     Steer,
-    /// At the agent's next turn, which for an owner can be the end of its card.
+    /// At the agent's next turn, which for a worker can be the end of its task.
     NextTurn,
     /// At the next session start (blackboard delivery point).
     SessionStart,
 }
 
-/// One file's change, diffed by the conductor, so previews look the same for every vendor.
+/// One file's change, diffed by Argonauts Code, so previews look the same for every agent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileDiff {
     /// Relative to the worktree.
@@ -210,12 +210,12 @@ pub struct FileDiff {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LimitEvent {
     /// The meter's state, at most once a second per session.
-    Budget(BudgetStatus),
+    Spend(SpendStatus),
     /// The fixed wrap-up message was sent at the soft stop.
     WrapUpSent {
         via: WrapUpVia,
         /// Which limit was at 85%.
-        dimension: BudgetDimension,
+        dimension: LimitDimension,
     },
     /// The same tool call repeated; the agent got a note.
     Nudged {
@@ -234,14 +234,14 @@ pub enum WrapUpVia {
     Input,
     /// Interrupt, then resume the same session with the message (Codex).
     InterruptResume,
-    /// Interrupt only; the harness can't take more input.
+    /// Interrupt only; the CLI can't take more input.
     Interrupt,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionEnd {
-    pub vendor_session: Option<String>,
-    /// Harnesses only.
+    pub cli_session: Option<String>,
+    /// CLIs only.
     pub exit_code: Option<i32>,
     pub signal: Option<i32>,
     /// Wall time.
@@ -255,7 +255,7 @@ pub struct SessionEnd {
     pub structured: Option<Value>,
     /// The last complete top-level message.
     pub last_message: Option<String>,
-    /// Argonauts' raw copy of the vendor's output lines, for `r`.
+    /// Argonauts Code's raw copy of the agent's output lines, for `r`.
     pub raw_log: Option<PathBuf>,
 }
 
@@ -266,8 +266,8 @@ pub struct SessionEnd {
 pub enum EndReason {
     Completed,
     /// The meter stopped it at 100% of a limit.
-    BudgetHit {
-        dimension: BudgetDimension,
+    LimitHit {
+        dimension: LimitDimension,
     },
     /// Stopped after its tool call because the run paused.
     Paused,
@@ -281,10 +281,10 @@ pub enum EndReason {
         #[serde(with = "time::serde::rfc3339::option")]
         resets_at: Option<OffsetDateTime>,
     },
-    /// Rate limited for longer than the card's time budget allows.
+    /// Rate limited for longer than the task's time limit allows.
     RateLimited,
-    /// Overloaded or a server error that the harness gave up on.
-    VendorError {
+    /// Overloaded or a server error that the CLI gave up on.
+    CliError {
         category: ErrorCategory,
         message: String,
     },
@@ -302,7 +302,7 @@ pub enum EndReason {
     ModelUnavailable {
         model: String,
     },
-    /// The harness produced output outside the adapter's tested range.
+    /// The CLI produced output outside the adapter's tested range.
     AdapterBroken {
         detail: String,
     },
@@ -344,16 +344,16 @@ pub fn loaded_words(plugins: &[String], skills: &[String]) -> String {
 }
 
 impl EndReason {
-    /// The vendor's side ended it: a login, a limit, an outage, a crash, or the network, or its
+    /// The agent's side ended it: a login, a limit, an outage, a crash, or the network, or its
     /// CLI loaded your plugins into a session that must keep them out. Such an ending never
     /// ends a run; the step tries again or another agent takes the role.
-    pub fn is_vendor_failure(&self) -> bool {
+    pub fn is_agent_failure(&self) -> bool {
         matches!(
             self,
             Self::Stuck { .. }
                 | Self::UsageLimit { .. }
                 | Self::RateLimited
-                | Self::VendorError { .. }
+                | Self::CliError { .. }
                 | Self::Auth { .. }
                 | Self::Billing { .. }
                 | Self::ModelUnavailable { .. }
@@ -364,12 +364,12 @@ impl EndReason {
         )
     }
 
-    /// The vendor refused the agent's sign-in, which its CLI's own login check tells apart from a
+    /// The agent's service refused its sign-in, which its CLI's own login check tells apart from a
     /// passing error.
     pub fn is_sign_in_error(&self) -> bool {
         match self {
             Self::Auth { .. } => true,
-            Self::VendorError { category, .. } => *category == ErrorCategory::Auth,
+            Self::CliError { category, .. } => *category == ErrorCategory::Auth,
             _ => false,
         }
     }
@@ -383,7 +383,7 @@ impl EndReason {
     pub fn may_pass(&self) -> bool {
         match self {
             Self::RateLimited | Self::Crashed { .. } => true,
-            Self::VendorError { category, .. } => matches!(
+            Self::CliError { category, .. } => matches!(
                 category,
                 ErrorCategory::RateLimit
                     | ErrorCategory::Overloaded
@@ -407,7 +407,7 @@ pub enum Watchdog {
     Repeat,
 }
 
-/// A vendor subagent, workflow, or thread changed state. Added to `AgentEvent` as
+/// An agent's subagent, workflow, or thread changed state. Added to `AgentEvent` as
 /// `Subagent { update }`, emitted by adapters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubagentUpdate {
@@ -448,17 +448,17 @@ pub enum SubagentStatus {
     Running,
     Done,
     Failed,
-    /// The vendor didn't say.
+    /// The agent didn't say.
     Unknown,
 }
 
 /// A workflow an agent's own CLI runs, as its stream reports it: Claude Code's dynamic
 /// workflows (`task_type: local_workflow`). Each update carries the whole state, replacing the
-/// last one of the same id, so the views can draw it like one of Argonauts' own, with whatever
-/// names it uses.
+/// last one of the same id, so the views can draw it like one of Argonauts Code's own, with
+/// whatever names it uses.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VendorWorkflow {
-    /// The vendor's task id.
+pub struct CliWorkflowRun {
+    /// The agent's task id.
     pub id: String,
     /// The tool call that started it, which is also its subagent id.
     pub call: Option<String>,
@@ -467,9 +467,9 @@ pub struct VendorWorkflow {
     /// The script's `meta.description`.
     pub description: String,
     /// In the order declared, from the script's `meta.phases` and then the progress reports.
-    pub phases: Vec<VendorPhase>,
+    pub phases: Vec<CliPhase>,
     /// In the order they started.
-    pub agents: Vec<VendorAgent>,
+    pub agents: Vec<CliAgent>,
     pub status: SubagentStatus,
     /// The whole workflow's totals, as last reported.
     pub tokens: u64,
@@ -477,58 +477,97 @@ pub struct VendorWorkflow {
     pub duration_ms: u64,
     /// What it's doing now, or how it ended.
     pub summary: Option<String>,
-    /// When Argonauts first saw it, in milliseconds since the epoch. Its time counts from here
-    /// while it runs, on Argonauts' own clock, so a replayed stream reads right too.
+    /// When Argonauts Code first saw it, in milliseconds since the epoch. Its time counts from here
+    /// while it runs, on Argonauts Code's own clock, so a replayed stream reads right too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VendorPhase {
-    /// From 1, as the vendor numbers them.
+pub struct CliPhase {
+    /// From 1, as the agent numbers them.
     pub index: u32,
     pub title: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub detail: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VendorAgent {
-    /// From 1, in the order the vendor started them.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CliAgent {
+    /// From 1, in the order the agent started them.
     pub index: u32,
     /// The script's label, such as `fix:slugify`.
     pub label: String,
-    /// The phase it belongs to, by the vendor's index.
+    /// The phase it belongs to, by the agent's index.
     pub phase: Option<u32>,
     pub model: Option<String>,
-    pub state: VendorAgentState,
+    pub state: CliAgentState,
     pub tokens: u64,
     pub tool_calls: u32,
     pub duration_ms: u64,
     /// Unix milliseconds.
     pub started_at_ms: Option<u64>,
     /// 1 the first time.
-    pub attempt: u32,
+    pub try_number: u32,
     /// Shortened.
     pub prompt: Option<String>,
     /// The start of its answer, once done.
     pub result: Option<String>,
+    /// The kind of agent its CLI runs it as, such as `Explore`, where the script names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    /// Where it works apart from the session's own folder, such as `worktree`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<String>,
+    /// The model that took over from `model`, once one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_model: Option<String>,
+    /// The tool it called last. Its CLI counts the others and lists none of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tool: Option<CliTool>,
+    /// Why it failed or was blocked, in its CLI's words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// A tool call as a CLI names it of one of its own agents: the tool, and what it was called
+/// with in a few words, such as `Read` and `src/cli.js`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliTool {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum VendorAgentState {
+pub enum CliAgentState {
+    #[default]
     Queued,
     Running,
     Done,
     Failed,
-    /// A state this version of Argonauts doesn't know yet.
+    /// Passed over before it finished, as Claude Code's skip does. Nothing went wrong.
+    Skipped,
+    /// Never started: its CLI refused its prompt, as a safety check does.
+    Blocked,
+    /// A state this version of Argonauts Code doesn't know yet.
     Other,
 }
 
-impl VendorWorkflow {
-    /// The agents of one phase, by the vendor's index.
-    pub fn agents_in(&self, phase: u32) -> impl Iterator<Item = &VendorAgent> {
+impl CliAgentState {
+    /// Whether the agent is over, however it ended.
+    pub fn ended(self) -> bool {
+        matches!(
+            self,
+            Self::Done | Self::Failed | Self::Skipped | Self::Blocked
+        )
+    }
+}
+
+impl CliWorkflowRun {
+    /// The agents of one phase, by the agent's index.
+    pub fn agents_in(&self, phase: u32) -> impl Iterator<Item = &CliAgent> {
         self.agents
             .iter()
             .filter(move |agent| agent.phase == Some(phase))
@@ -537,7 +576,7 @@ impl VendorWorkflow {
     /// Done of all, for a phase with agents. `None` for one that hasn't started.
     pub fn count(&self, phase: u32) -> Option<(u32, u32)> {
         let (done, total) = self.agents_in(phase).fold((0, 0), |(done, total), agent| {
-            let finished = matches!(agent.state, VendorAgentState::Done);
+            let finished = matches!(agent.state, CliAgentState::Done);
             (done + u32::from(finished), total + 1)
         });
         (total > 0).then_some((done, total))
@@ -546,6 +585,12 @@ impl VendorWorkflow {
     /// Whether it's over, done or failed.
     pub fn ended(&self) -> bool {
         matches!(self.status, SubagentStatus::Done | SubagentStatus::Failed)
+    }
+
+    /// Whether `agent` was still going when the workflow ended, and so was stopped with it:
+    /// its CLI reports no end of its own for it.
+    pub fn stopped_with_it(&self, agent: &CliAgent) -> bool {
+        self.ended() && !agent.state.ended()
     }
 
     /// Ends it with its session, which stopped before the workflow said it ended: it and every
@@ -557,11 +602,8 @@ impl VendorWorkflow {
         self.status = SubagentStatus::Failed;
         self.summary = Some(why.to_owned());
         for agent in &mut self.agents {
-            if !matches!(
-                agent.state,
-                VendorAgentState::Done | VendorAgentState::Failed
-            ) {
-                agent.state = VendorAgentState::Failed;
+            if !agent.state.ended() {
+                agent.state = CliAgentState::Failed;
             }
         }
     }
@@ -577,13 +619,11 @@ impl VendorWorkflow {
 
     /// How long `agent` has run by `now_ms`: its own total once it ends, which is all the
     /// stream reports. While it runs, from the workflow's start here plus how much later than
-    /// the first agent the stream says it began, so the vendor's clock never has to agree with
-    /// ours.
-    pub fn agent_elapsed_ms(&self, agent: &VendorAgent, now_ms: Option<u64>) -> u64 {
-        let running = matches!(
-            agent.state,
-            VendorAgentState::Running | VendorAgentState::Other
-        );
+    /// the first agent the stream says it began, so the agent's clock never has to agree with
+    /// ours. One still going when its workflow ended ran until then.
+    pub fn agent_elapsed_ms(&self, agent: &CliAgent, now_ms: Option<u64>) -> u64 {
+        let running =
+            !self.ended() && matches!(agent.state, CliAgentState::Running | CliAgentState::Other);
         let first = self
             .agents
             .iter()
@@ -599,13 +639,19 @@ impl VendorWorkflow {
             (true, Some(start), Some(began), Some(first), Some(now)) => now
                 .saturating_sub(start + began.saturating_sub(first))
                 .max(agent.duration_ms),
+            // Stopped with the workflow, it reported no total of its own: it ran from when
+            // it began until the workflow ended.
+            (false, _, Some(began), Some(first), _) if self.stopped_with_it(agent) => self
+                .duration_ms
+                .saturating_sub(began.saturating_sub(first))
+                .max(agent.duration_ms),
             _ => agent.duration_ms,
         }
     }
 }
 
-/// A normalized quota reading, added to `AgentEvent` as `Quota { reading }`.
-pub type AgentQuota = QuotaReading;
+/// A normalized plan usage reading, added to `AgentEvent` as `PlanUsage { reading }`.
+pub type AgentPlanUsage = PlanUsageReading;
 
 #[cfg(test)]
 mod tests {

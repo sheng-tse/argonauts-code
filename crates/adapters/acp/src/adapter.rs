@@ -1,4 +1,4 @@
-//! The adapter for a `[[harness]]` entry with `transport = "acp"`: the launch command, with its
+//! The adapter for a `[[cli]]` entry with `transport = "acp"`: the launch command, with its
 //! per-session home, and the session driver that reads the pipes.
 
 use std::path::{Path, PathBuf};
@@ -8,11 +8,11 @@ use anyhow::{Context as _, bail};
 use argonauts_core::adapter::Transport;
 use argonauts_core::driver::SessionDriver;
 use argonauts_core::layout::session_files::HOME;
-use argonauts_core::layout::user_files::HARNESSES;
+use argonauts_core::layout::user_files::CLIS;
 use argonauts_core::paths::Paths;
-use argonauts_core::registry::HarnessManifest;
+use argonauts_core::registry::CliManifest;
 use argonauts_core::registry::acp::{AcpProfile, SteerRoute, UsageSource};
-use argonauts_core::registry::harness::HomeKeep;
+use argonauts_core::registry::cli::HomeKeep;
 use argonauts_core::{
     Adapter, AgentEvent, Capabilities, CommandSpec, SessionRequest, SessionRole, StopPlan,
     StreamParser, env_remove_except, extract_version,
@@ -23,8 +23,8 @@ use crate::errors::ErrorRules;
 use crate::hermes;
 use crate::home::home_files;
 
-/// The adapter for a `[[harness]]` entry with `transport = "acp"`.
-pub fn acp_adapter(manifest: HarnessManifest) -> Arc<dyn Adapter> {
+/// The adapter for a `[[cli]]` entry with `transport = "acp"`.
+pub fn acp_adapter(manifest: CliManifest) -> Arc<dyn Adapter> {
     Arc::new(AcpAdapter::new(manifest, None))
 }
 
@@ -34,10 +34,10 @@ pub(crate) struct AcpAdapter {
     id: &'static str,
     display_name: &'static str,
     binary: &'static str,
-    family: &'static str,
+    provider: &'static str,
     version_args: &'static [&'static str],
     tested_versions: &'static [&'static str],
-    manifest: HarnessManifest,
+    manifest: CliManifest,
     profile: Arc<DriverProfile>,
     /// Where home templates live. `None` reads `ARGONAUTS_HOME` at launch.
     argonauts_home: Option<PathBuf>,
@@ -53,7 +53,7 @@ fn leak_all(texts: &[String]) -> &'static [&'static str] {
 }
 
 impl AcpAdapter {
-    pub(crate) fn new(manifest: HarnessManifest, argonauts_home: Option<PathBuf>) -> Self {
+    pub(crate) fn new(manifest: CliManifest, argonauts_home: Option<PathBuf>) -> Self {
         let profile = DriverProfile::new(
             manifest.acp.clone().unwrap_or_default(),
             ErrorRules::compile(&manifest.errors),
@@ -62,7 +62,7 @@ impl AcpAdapter {
             id: leak(&manifest.id),
             display_name: leak(&manifest.display_name),
             binary: leak(&manifest.binary),
-            family: leak(&manifest.family),
+            provider: leak(&manifest.provider),
             version_args: leak_all(&manifest.version_args),
             tested_versions: leak_all(&manifest.tested_versions),
             profile: Arc::new(profile),
@@ -101,7 +101,7 @@ impl Adapter for AcpAdapter {
         if template.env != hermes::HOME_ENV {
             return None;
         }
-        let root = self.templates_home().ok()?.join(HARNESSES);
+        let root = self.templates_home().ok()?.join(CLIS);
         hermes::model_base_url(&root.join(&template.template))
     }
 
@@ -118,8 +118,8 @@ impl Adapter for AcpAdapter {
         }
         let home = match &self.manifest.home {
             Some(template) => {
-                let home = match (template.keep, card_home(req)) {
-                    (HomeKeep::Card, Some(card_home)) => card_home,
+                let home = match (template.keep, task_home(req)) {
+                    (HomeKeep::Task, Some(task_home)) => task_home,
                     _ => {
                         let Some(scratch) = &req.scratch_dir else {
                             bail!("{}: a per-session home needs the session's folder", self.id);
@@ -212,9 +212,7 @@ impl Adapter for AcpAdapter {
             return default;
         };
         match (waits.after_interrupt.parse(), waits.after_terminate.parse()) {
-            (Ok(Some(interrupt)), Ok(Some(terminate))) => {
-                StopPlan::escalating(interrupt, terminate)
-            }
+            (Ok(Some(interrupt)), Ok(Some(terminate))) => StopPlan::stepped(interrupt, terminate),
             _ => default,
         }
     }
@@ -258,8 +256,8 @@ impl Adapter for AcpAdapter {
         Some(CommandSpec::new(self.binary, workdir).args(args))
     }
 
-    fn default_family(&self) -> &'static str {
-        self.family
+    fn default_provider(&self) -> &'static str {
+        self.provider
     }
 
     fn transport(&self) -> Transport {
@@ -271,9 +269,9 @@ impl Adapter for AcpAdapter {
     }
 }
 
-/// The folder the worker passes for a home kept for the card, when the session is on one. A
-/// later session of the card, such as a resume, gets the same folder and finds its session there.
-fn card_home(req: &SessionRequest) -> Option<PathBuf> {
+/// The folder the worker passes for a home kept for the task, when the session is on one. A
+/// later session of the task, such as a resume, gets the same folder and finds its session there.
+fn task_home(req: &SessionRequest) -> Option<PathBuf> {
     let folder = Path::new(req.project.as_deref()?);
     folder.is_absolute().then(|| folder.to_path_buf())
 }
@@ -340,14 +338,14 @@ impl StreamParser for KeepEverything {
 mod tests {
     use std::collections::BTreeMap;
 
-    use argonauts_core::VENDOR_KEY_ENV_VARS;
-    use argonauts_core::registry::harness::{HomeKeep, HomeTemplate};
+    use argonauts_core::PROVIDER_KEY_ENV_VARS;
+    use argonauts_core::registry::cli::{HomeKeep, HomeTemplate};
     use argonauts_core::settings::sessions::NativeFanout;
 
     use super::*;
 
-    fn hermes(home: Option<HomeTemplate>) -> HarnessManifest {
-        HarnessManifest {
+    fn hermes(home: Option<HomeTemplate>) -> CliManifest {
+        CliManifest {
             id: "hermes".into(),
             display_name: "Hermes Agent".into(),
             binary: "/opt/hermes/bin/hermes".into(),
@@ -355,7 +353,7 @@ mod tests {
             tested_versions: vec!["0.21.5".into()],
             read_only_args: vec!["acp".into()],
             build_args: vec!["acp".into(), "--cwd={workdir}".into()],
-            family: "from-model".into(),
+            provider: "from-model".into(),
             transport: Transport::Acp,
             env_set: BTreeMap::from([("HERMES_ACP_SKIP_CONFIGURED_MCP".into(), "1".into())]),
             home,
@@ -365,7 +363,7 @@ mod tests {
                 usage: vec![UsageSource::EndTurn, UsageSource::UsageUpdate],
                 ..AcpProfile::default()
             }),
-            ..HarnessManifest::default()
+            ..CliManifest::default()
         }
     }
 
@@ -373,14 +371,14 @@ mod tests {
         HomeTemplate {
             env: "HERMES_HOME".into(),
             template: "hermes".into(),
-            keep: HomeKeep::Card,
+            keep: HomeKeep::Task,
         }
     }
 
     #[test]
     fn acp_home_made_per_session() {
         let argonauts = tempfile::tempdir().unwrap();
-        let template_dir = argonauts.path().join("harnesses/hermes");
+        let template_dir = argonauts.path().join("clis/hermes");
         std::fs::create_dir_all(template_dir.join("skills")).unwrap();
         std::fs::write(template_dir.join("config.yaml"), "fallback_providers: []\n").unwrap();
         std::fs::write(template_dir.join("skills/README.md"), "No skills.\n").unwrap();
@@ -482,9 +480,9 @@ mod tests {
     }
 
     #[test]
-    fn a_home_kept_for_the_card_lives_in_the_cards_folder() {
+    fn a_home_kept_for_the_task_lives_in_the_tasks_folder() {
         let argonauts = tempfile::tempdir().unwrap();
-        let template_dir = argonauts.path().join("harnesses/hermes");
+        let template_dir = argonauts.path().join("clis/hermes");
         std::fs::create_dir_all(&template_dir).unwrap();
         std::fs::write(template_dir.join("config.yaml"), "fallback_providers: []\n").unwrap();
         let request = |scratch: &str, project: Option<&str>| SessionRequest {
@@ -502,10 +500,10 @@ mod tests {
                 .map(|(_, value)| value.clone())
         };
 
-        let card = AcpAdapter::new(hermes(Some(template())), Some(argonauts.path().to_owned()));
-        let folder = "/state/cards/c-001/homes/main/hermes";
-        let first = card.command(&request("/state/s1", Some(folder))).unwrap();
-        let resumed = card.command(&request("/state/s2", Some(folder))).unwrap();
+        let task = AcpAdapter::new(hermes(Some(template())), Some(argonauts.path().to_owned()));
+        let folder = "/state/tasks/c-001/homes/main/hermes";
+        let first = task.command(&request("/state/s1", Some(folder))).unwrap();
+        let resumed = task.command(&request("/state/s2", Some(folder))).unwrap();
         assert_eq!(home_of(&first).as_deref(), Some(folder));
         assert_eq!(home_of(&resumed).as_deref(), Some(folder));
         assert_eq!(
@@ -518,13 +516,13 @@ mod tests {
                 .contains("max_concurrent_children: 2")
         );
 
-        // Off a card, or with a name that isn't a folder, the session's own folder holds it.
-        let chat = card.command(&request("/state/s3", None)).unwrap();
-        assert_eq!(home_of(&chat).as_deref(), Some("/state/s3/home"));
-        let named = card.command(&request("/state/s4", Some("run-7"))).unwrap();
+        // Off a task, or with a name that isn't a folder, the session's own folder holds it.
+        let conversation = task.command(&request("/state/s3", None)).unwrap();
+        assert_eq!(home_of(&conversation).as_deref(), Some("/state/s3/home"));
+        let named = task.command(&request("/state/s4", Some("run-7"))).unwrap();
         assert_eq!(home_of(&named).as_deref(), Some("/state/s4/home"));
 
-        // A home kept for the session never moves to the card's folder.
+        // A home kept for the session never moves to the task's folder.
         let session = AcpAdapter::new(
             hermes(Some(HomeTemplate {
                 keep: HomeKeep::Session,
@@ -550,14 +548,14 @@ mod tests {
     }
 
     #[test]
-    fn acp_command_scrubs_vendor_keys() {
+    fn acp_command_scrubs_agent_keys() {
         let request = SessionRequest {
             workdir: "/repo/wt".into(),
             env_set: vec![("HERMES_ACP_SKIP_CONFIGURED_MCP".into(), "0".into())],
             ..SessionRequest::default()
         };
         let spec = acp_adapter(hermes(None)).command(&request).unwrap();
-        for name in VENDOR_KEY_ENV_VARS {
+        for name in PROVIDER_KEY_ENV_VARS {
             assert!(
                 spec.env_remove.iter().any(|removed| removed == name),
                 "{name}"
@@ -573,7 +571,7 @@ mod tests {
         let mut openrouter = hermes(None);
         openrouter.env = vec!["OPENROUTER_API_KEY".into()];
         let spec = acp_adapter(openrouter).command(&request).unwrap();
-        for name in VENDOR_KEY_ENV_VARS {
+        for name in PROVIDER_KEY_ENV_VARS {
             let removed = spec.env_remove.iter().any(|removed| removed == name);
             assert_eq!(removed, *name != "OPENROUTER_API_KEY", "{name}");
         }
@@ -586,7 +584,7 @@ mod tests {
         assert_eq!(adapter.transport(), Transport::Acp);
         assert_eq!(adapter.tested_versions(), ["0.21.5"]);
         assert_eq!(adapter.version_args(), ["--version"]);
-        assert_eq!(adapter.default_family(), "from-model");
+        assert_eq!(adapter.default_provider(), "from-model");
         assert!(!adapter.capabilities().enforces_read_only);
         assert!(adapter.capabilities().reports_cost);
         assert!(adapter.session_driver().is_some());

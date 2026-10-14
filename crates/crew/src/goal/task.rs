@@ -1,36 +1,36 @@
 //! A task worked as a goal: its agent tries, the check runs, and what still fails goes back to
 //! the same session as the next try, inside the task's own phase. A role works its tasks this
-//! way when `[roles.<role>] goal` says so, and a solo run's one task does when the run has a
+//! way when `[roles.<role>] goal` says so, and a Captain run's one task does when the run has a
 //! goal.
 //!
-//! Who keeps it going is the CLI's own goal where it has one and you asked for it (`cli`, which
-//! is Codex's), else Argonauts. Either way Argonauts runs the check after each try: the task's
-//! own checks first, then the goal's lines. When it holds the task goes to review like any
+//! Who keeps it going is the CLI's own goal where it has one and you asked for it (`cli`, which is
+//! Codex's), else Argonauts Code. Either way Argonauts Code runs the check after each try: the
+//! task's own checks first, then the goal's lines. When it holds the task goes to review like any
 //! other. Stuck, it changes approach once, then stops being sent round and says why.
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::card::{CardKind, GateKind, GateOutcome};
 use argonauts_core::events::goal::{
     CliGoalSaid, Criterion, CriterionCheck, GoalChecked, GoalEvent, GoalRun, GoalStatus,
 };
 use argonauts_core::events::run::{Party, RunMode};
 use argonauts_core::events::session::InputPart;
+use argonauts_core::events::task::{CheckKind, CheckOutcome, TaskKind};
 use argonauts_core::goal::keep::{self, Limits, Next};
 use argonauts_core::goal::{GoalDefault, GoalFrom, GoalScope, GoalSpec, KeptBy, RoleGoal};
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::card::{CardReport, ReportStatus};
+use argonauts_core::steps::task::{ReportStatus, TaskReport};
 
-use crate::card::prompt;
-use crate::card::support::{owner_of, record_of};
-use crate::card::worktree;
 use crate::engine::host::Host;
 use crate::error::EngineResult;
-use crate::integrate::final_check::FinalCheck;
 use crate::labels;
+use crate::merge::final_check::FinalCheck;
 use crate::state::RunState;
-use crate::state::cards::CardRecord;
+use crate::state::tasks::TaskEntry;
+use crate::task::prompt;
+use crate::task::support::{record_of, worker_of};
+use crate::task::worktree;
 use crate::workflow::{StepAt, runner};
 
 use super::check::{self, Place};
@@ -49,7 +49,7 @@ pub enum AfterTry {
 }
 
 /// Whether `task` is worked as a goal right now: set, and still pursued.
-pub fn pursued(state: &RunState, task: &CardId) -> bool {
+pub fn pursued(state: &RunState, task: &TaskId) -> bool {
     state
         .goal
         .tasks
@@ -60,7 +60,7 @@ pub fn pursued(state: &RunState, task: &CardId) -> bool {
 /// Before a session of `task` starts. A task whose role works tasks as goals takes its goal
 /// here, and a task whose worker changed takes the keeper that worker has. Returns what a fresh
 /// session is told about the goal.
-pub fn brief(host: &Host, task: &CardId, owner: &WorkerRef) -> EngineResult<Option<InputPart>> {
+pub fn brief(host: &Host, task: &TaskId, worker: &ModelRef) -> EngineResult<Option<InputPart>> {
     let record = record_of(host, task)?;
     let kept = host.read(|state| state.goal.tasks.get(task).map(|kept| kept.goal.clone()));
     let goal = match kept {
@@ -68,11 +68,11 @@ pub fn brief(host: &Host, task: &CardId, owner: &WorkerRef) -> EngineResult<Opti
         Some(mut goal) => {
             let asked = match goal.kept_by {
                 KeptBy::Cli => RoleGoal::Cli,
-                // A goal Argonauts took over from a CLI goes back to a CLI that has one.
+                // A goal Argonauts Code keeps in a CLI's place goes back to a CLI that has one.
                 KeptBy::Argonauts if goal.kept_note.is_some() => RoleGoal::Cli,
                 KeptBy::Argonauts => RoleGoal::Argonauts,
             };
-            let (by, note) = keeper(owner, asked);
+            let (by, note) = keeper(worker, asked);
             if by != goal.kept_by || note != goal.kept_note {
                 goal.kept_by = by;
                 goal.kept_note = note;
@@ -86,7 +86,7 @@ pub fn brief(host: &Host, task: &CardId, owner: &WorkerRef) -> EngineResult<Opti
             else {
                 return Ok(None);
             };
-            begin(host, task, owner, &spec, asked, scope)?
+            begin(host, task, worker, &spec, asked, scope)?
         }
     };
     let spec = goal.spec();
@@ -105,7 +105,7 @@ pub fn brief(host: &Host, task: &CardId, owner: &WorkerRef) -> EngineResult<Opti
                 ));
             }
             text.push_str(
-                "\nArgonauts runs the check itself after you report done, and sends back what \
+                "\nArgonauts Code runs the check itself after you report done, and sends back what \
                  still fails.",
             );
             text
@@ -117,25 +117,25 @@ pub fn brief(host: &Host, task: &CardId, owner: &WorkerRef) -> EngineResult<Opti
 /// A step's `until`, with its `kept_by`: `task` is worked as `spec` whatever its role's
 /// setting says. For the workflow runner, before the task's first session. A task that
 /// already has a goal keeps it.
-pub fn work_as(host: &Host, task: &CardId, spec: &GoalSpec, asked: RoleGoal) -> EngineResult<()> {
+pub fn work_as(host: &Host, task: &TaskId, spec: &GoalSpec, asked: RoleGoal) -> EngineResult<()> {
     if asked == RoleGoal::Off || host.read(|state| state.goal.tasks.contains_key(task)) {
         return Ok(());
     }
-    let owner = owner_of(host, &record_of(host, task)?);
-    begin(host, task, &owner, spec, asked, GoalScope::Step)?;
+    let worker = worker_of(host, &record_of(host, task)?);
+    begin(host, task, &worker, spec, asked, GoalScope::Step)?;
     Ok(())
 }
 
 /// Sets `task`'s goal and starts its first try.
 fn begin(
     host: &Host,
-    task: &CardId,
-    owner: &WorkerRef,
+    task: &TaskId,
+    worker: &ModelRef,
     spec: &GoalSpec,
     asked: RoleGoal,
     scope: GoalScope,
 ) -> EngineResult<GoalRun> {
-    let (by, note) = keeper(owner, asked);
+    let (by, note) = keeper(worker, asked);
     let mut goal = GoalRun::new(spec, scope, by);
     goal.task = Some(task.clone());
     goal.kept_note = note;
@@ -146,22 +146,22 @@ fn begin(
 }
 
 /// The goal `record`'s task is worked as, who was asked to keep it, and what it sits around:
-/// a solo run's goal for its one task, or the task's own done-when lines where its role works
+/// a Captain run's goal for its one task, or the task's own done-when lines where its role works
 /// tasks as goals.
 fn wanted(
     state: &RunState,
     settings: &Settings,
-    record: &CardRecord,
+    record: &TaskEntry,
 ) -> Option<(GoalSpec, RoleGoal, GoalScope)> {
     let works = matches!(
         record.spec.kind,
-        CardKind::Solo | CardKind::Build | CardKind::Chore | CardKind::Docs
+        TaskKind::Captain | TaskKind::Build | TaskKind::Chore | TaskKind::Docs
     );
     if !works {
         return None;
     }
     let role = |role: RoleName| settings.roles.get(&role).and_then(|role| role.goal);
-    if runner::run_mode(state) == Some(RunMode::Solo) {
+    if runner::run_mode(state) == Some(RunMode::Captain) {
         let asked = role(RoleName::Main).unwrap_or(RoleGoal::Cli);
         if asked == RoleGoal::Off {
             return None;
@@ -184,7 +184,7 @@ fn wanted(
             }
             None => return None,
         };
-        return Some((spec, asked, GoalScope::Solo));
+        return Some((spec, asked, GoalScope::Captain));
     }
     let asked = role(RoleName::Worker).filter(|asked| *asked != RoleGoal::Off)?;
     let lines = own_lines(state, settings, record);
@@ -200,7 +200,7 @@ fn wanted(
 /// A task's own done-when lines: the criteria it serves, as the plan wrote them. A task that
 /// names none is done when its own tests pass, which the project's checks decide where there
 /// are some and the judge reads where there aren't.
-fn own_lines(state: &RunState, settings: &Settings, record: &CardRecord) -> Vec<Criterion> {
+fn own_lines(state: &RunState, settings: &Settings, record: &TaskEntry) -> Vec<Criterion> {
     let known = pursue::planned_criteria(state);
     let lines: Vec<Criterion> = record
         .spec
@@ -220,13 +220,13 @@ fn own_lines(state: &RunState, settings: &Settings, record: &CardRecord) -> Vec<
     vec![line]
 }
 
-/// Who keeps a goal `asked` of `owner`'s CLI, and why it's Argonauts when the CLI was asked.
-fn keeper(owner: &WorkerRef, asked: RoleGoal) -> (KeptBy, Option<String>) {
+/// Who keeps a goal `asked` of `worker`'s CLI, and why it's Argonauts Code when the CLI was asked.
+fn keeper(worker: &ModelRef, asked: RoleGoal) -> (KeptBy, Option<String>) {
     match asked {
-        RoleGoal::Cli if cli::has_own_goal(owner) => (KeptBy::Cli, None),
+        RoleGoal::Cli if cli::has_own_goal(worker) => (KeptBy::Cli, None),
         RoleGoal::Cli => (
             KeptBy::Argonauts,
-            Some(format!("{} has no goal of its own", cli::name(owner))),
+            Some(format!("{} has no goal of its own", cli::name(worker))),
         ),
         RoleGoal::Argonauts | RoleGoal::Off => (KeptBy::Argonauts, None),
     }
@@ -237,19 +237,19 @@ fn keeper(owner: &WorkerRef, asked: RoleGoal) -> (KeptBy, Option<String>) {
 /// on, which this returns.
 pub fn after_report(
     host: &Host,
-    task: &CardId,
-    report: &CardReport,
+    task: &TaskId,
+    report: &TaskReport,
 ) -> EngineResult<Option<InputPart>> {
-    let Some((owner, continues)) = host.read(|state| {
+    let Some((worker, continues)) = host.read(|state| {
         let kept = state.goal.tasks.get(task)?;
         let by_cli = kept.goal.status == GoalStatus::Pursuing && kept.goal.kept_by == KeptBy::Cli;
-        let record = state.cards.get(task)?;
-        by_cli.then(|| (owner_of(host, record), kept.continues))
+        let record = state.tasks.get(task)?;
+        by_cli.then(|| (worker_of(host, record), kept.continues))
     }) else {
         return Ok(None);
     };
     let Some(said) =
-        cli::said(&owner, &report.summary).or_else(|| cli::said(&owner, &report.answer))
+        cli::said(&worker, &report.summary).or_else(|| cli::said(&worker, &report.answer))
     else {
         return Ok(None);
     };
@@ -263,7 +263,7 @@ pub fn after_report(
 /// After a try, with the task's own checks run: checks the goal and says what follows.
 pub async fn after_try(
     host: &Host,
-    task: &CardId,
+    task: &TaskId,
     at: &StepAt,
     checks_passed: bool,
 ) -> EngineResult<AfterTry> {
@@ -277,7 +277,7 @@ pub async fn after_try(
     }) else {
         return Ok(AfterTry::GaveUp);
     };
-    let n = goal.attempts.last().map_or(1, |attempt| attempt.n);
+    let n = goal.tries.last().map_or(1, |a_try| a_try.n);
     // A check already recorded for this try stands, so a re-entered task never asks again.
     let recorded = host.read(|state| {
         state
@@ -285,7 +285,7 @@ pub async fn after_try(
             .checks
             .iter()
             .rev()
-            .find(|checked| checked.attempt == n && checked.task.as_ref() == Some(task))
+            .find(|checked| checked.try_number == n && checked.task.as_ref() == Some(task))
             .cloned()
     });
     let checked = match recorded {
@@ -305,7 +305,7 @@ pub async fn after_try(
     });
     let change = match next {
         Next::Met => {
-            status(host, task, GoalStatus::Met, Party::Conductor, None)?;
+            status(host, task, GoalStatus::Met, Party::ArgonautsCode, None)?;
             return Ok(AfterTry::Holds);
         }
         Next::Stop { why } => {
@@ -313,10 +313,10 @@ pub async fn after_try(
                 host,
                 task,
                 GoalStatus::Stuck,
-                Party::Conductor,
+                Party::ArgonautsCode,
                 Some(why.clone()),
             )?;
-            let label = host.read(|state| labels::card_label(state, task));
+            let label = host.read(|state| labels::task_label(state, task));
             pursue::note(host, format!("The goal of {label} is stuck: {why}"))?;
             return Ok(AfterTry::GaveUp);
         }
@@ -356,7 +356,7 @@ fn send_back(goal: &GoalRun, checked: &GoalChecked, change: Option<&str>) -> Inp
 /// aren't run again, and the goal doesn't hold while they fail.
 async fn check_try(
     host: &Host,
-    task: &CardId,
+    task: &TaskId,
     at: &StepAt,
     goal: &GoalRun,
     n: u32,
@@ -368,7 +368,7 @@ async fn check_try(
         base: Some(tree.base.clone()),
         task: Some(task.clone()),
         at: Some(at.clone()),
-        authors: vec![owner_of(host, &record)],
+        authors: vec![worker_of(host, &record)],
         project: Some(own_checks(&record, checks_passed)),
         ..Place::new(tree.path, n)
     };
@@ -377,9 +377,9 @@ async fn check_try(
 
 /// The task's own checks as they last ran: each command's newest outcome, and any built-in
 /// check that failed.
-fn own_checks(record: &CardRecord, passed: bool) -> FinalCheck {
-    let mut newest: Vec<&GateOutcome> = Vec::new();
-    for outcome in record.gates.iter().rev() {
+fn own_checks(record: &TaskEntry, passed: bool) -> FinalCheck {
+    let mut newest: Vec<&CheckOutcome> = Vec::new();
+    for outcome in record.checks.iter().rev() {
         if !newest.iter().any(|seen| seen.name == outcome.name) {
             newest.push(outcome);
         }
@@ -387,10 +387,10 @@ fn own_checks(record: &CardRecord, passed: bool) -> FinalCheck {
     newest.reverse();
     FinalCheck {
         passed,
-        gates: newest
+        checks: newest
             .into_iter()
             .filter(|outcome| !outcome.skipped)
-            .filter(|outcome| outcome.kind == GateKind::Command || !outcome.passed)
+            .filter(|outcome| outcome.kind == CheckKind::Command || !outcome.passed)
             .cloned()
             .collect(),
         problem: None,
@@ -399,7 +399,7 @@ fn own_checks(record: &CardRecord, passed: bool) -> FinalCheck {
 
 /// `p` on a task's goal: its try finishes and is checked by the task's own checks alone, and
 /// nothing is sent back until it's resumed.
-pub fn pause(host: &Host, task: &CardId) -> EngineResult<()> {
+pub fn pause(host: &Host, task: &TaskId) -> EngineResult<()> {
     if host.read(|state| pursued(state, task)) {
         status(
             host,
@@ -412,7 +412,7 @@ pub fn pause(host: &Host, task: &CardId) -> EngineResult<()> {
     Ok(())
 }
 
-pub fn resume(host: &Host, task: &CardId) -> EngineResult<()> {
+pub fn resume(host: &Host, task: &TaskId) -> EngineResult<()> {
     let paused = host.read(|state| {
         state
             .goal
@@ -426,7 +426,7 @@ pub fn resume(host: &Host, task: &CardId) -> EngineResult<()> {
     Ok(())
 }
 
-fn set(host: &Host, task: &CardId, goal: GoalRun) -> EngineResult<()> {
+fn set(host: &Host, task: &TaskId, goal: GoalRun) -> EngineResult<()> {
     host.record(
         Some(task),
         None,
@@ -435,11 +435,11 @@ fn set(host: &Host, task: &CardId, goal: GoalRun) -> EngineResult<()> {
     Ok(())
 }
 
-fn try_started(host: &Host, task: &CardId, n: u32) -> EngineResult<()> {
+fn try_started(host: &Host, task: &TaskId, n: u32) -> EngineResult<()> {
     host.record(
         Some(task),
         None,
-        RunEventKind::Goal(GoalEvent::AttemptStarted {
+        RunEventKind::Goal(GoalEvent::TryStarted {
             n,
             title: format!("try {n}"),
             phase: 0,
@@ -449,7 +449,7 @@ fn try_started(host: &Host, task: &CardId, n: u32) -> EngineResult<()> {
     Ok(())
 }
 
-fn cli_said(host: &Host, task: &CardId, said: CliGoalSaid) -> EngineResult<()> {
+fn cli_said(host: &Host, task: &TaskId, said: CliGoalSaid) -> EngineResult<()> {
     host.record(
         Some(task),
         None,
@@ -463,7 +463,7 @@ fn cli_said(host: &Host, task: &CardId, said: CliGoalSaid) -> EngineResult<()> {
 
 fn status(
     host: &Host,
-    task: &CardId,
+    task: &TaskId,
     status: GoalStatus,
     by: Party,
     why: Option<String>,
@@ -487,8 +487,8 @@ mod tests {
 
     #[test]
     fn the_cli_keeps_a_goal_only_where_it_has_one() {
-        let codex: WorkerRef = "codex/gpt-5.6-luna".parse().expect("a worker");
-        let claude: WorkerRef = "claude-code/haiku".parse().expect("a worker");
+        let codex: ModelRef = "codex/gpt-5.6-luna".parse().expect("a model");
+        let claude: ModelRef = "claude-code/haiku".parse().expect("a model");
         assert_eq!(keeper(&codex, RoleGoal::Cli), (KeptBy::Cli, None));
         assert_eq!(
             keeper(&claude, RoleGoal::Cli),
@@ -497,7 +497,8 @@ mod tests {
                 Some("Claude Code has no goal of its own".to_owned())
             )
         );
-        // Asked of Argonauts, it's Argonauts' on any CLI, and there's nothing to explain.
+        // Asked of Argonauts Code, it's Argonauts Code's on any CLI, and there's nothing to
+        // explain.
         assert_eq!(
             keeper(&codex, RoleGoal::Argonauts),
             (KeptBy::Argonauts, None)

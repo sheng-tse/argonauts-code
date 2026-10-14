@@ -31,13 +31,13 @@ fn notes(range: std::ops::RangeInclusive<u32>) -> Vec<AppEvent> {
         .collect()
 }
 
-fn raw_text(harness: &Harness) -> String {
-    String::from_utf8_lossy(&harness.raw()).into_owned()
+fn raw_text(driver: &TestDriver) -> String {
+    String::from_utf8_lossy(&driver.raw()).into_owned()
 }
 
 /// Whether the last screen switch the app wrote left the terminal on the alternate screen.
-fn on_alternate(harness: &Harness) -> bool {
-    let raw = raw_text(harness);
+fn on_alternate(driver: &TestDriver) -> bool {
+    let raw = raw_text(driver);
     match (raw.rfind(ENTER), raw.rfind(LEAVE)) {
         (Some(enter), Some(leave)) => enter > leave,
         (Some(_), None) => true,
@@ -45,7 +45,7 @@ fn on_alternate(harness: &Harness) -> bool {
     }
 }
 
-/// The input's top rule, the input, its bottom rule, and the mode line on the last row.
+/// The input's top rule, the input, its bottom rule, and the bottom line on the last row.
 fn assert_input_at_bottom(screen: &Screen) {
     let rule = expect_row(screen, TOP_RULE);
     assert!(
@@ -61,19 +61,19 @@ fn assert_input_at_bottom(screen: &Screen) {
     assert_eq!(
         screen.visible.len() - rule,
         4,
-        "only the mode line is under the input:\n{}",
+        "only the bottom line is under the input:\n{}",
         screen.visible_text()
     );
 }
 
 /// Started from a shell that printed [`SHELL_LINE`], and exited by now: the main screen shows
 /// that line, then `after`, and nothing else, and the mouse is the terminal's again.
-fn assert_shell_as_it_was(harness: &Harness, after: &[&str]) {
-    assert!(!on_alternate(harness), "the alternate screen was left");
-    let raw = raw_text(harness);
+fn assert_shell_as_it_was(driver: &TestDriver, after: &[&str]) {
+    assert!(!on_alternate(driver), "the alternate screen was left");
+    let raw = raw_text(driver);
     let off = raw.rfind(MOUSE_OFF).expect("the mouse is given back");
     assert!(off > raw.rfind(MOUSE_ON).unwrap_or(0));
-    let screen = harness.screen();
+    let screen = driver.screen();
     assert!(screen.scrollback.is_empty(), "{}", screen.text());
     let mut expected = vec![SHELL_LINE.to_owned()];
     expected.extend(after.iter().map(|line| (*line).to_owned()));
@@ -87,16 +87,18 @@ fn assert_shell_as_it_was(harness: &Harness, after: &[&str]) {
     assert_eq!(screen.visible[0], SHELL_LINE, "{}", screen.visible_text());
 }
 
-fn start_from_shell(script: Script) -> Harness {
-    Harness::launch(script).after_shell_line(SHELL_LINE).start()
+fn start_from_shell(script: Script) -> TestDriver {
+    TestDriver::launch(script)
+        .after_shell_line(SHELL_LINE)
+        .start()
 }
 
 #[test]
 fn the_start_takes_the_alternate_screen_with_the_header_on_top() {
-    let harness = start_from_shell(Script::idle());
-    let screen = harness.wait_visible(MODE_IDLE);
-    assert!(on_alternate(&harness));
-    assert!(raw_text(&harness).contains(MOUSE_ON));
+    let driver = start_from_shell(Script::idle());
+    let screen = driver.wait_visible(MODE_IDLE);
+    assert!(on_alternate(&driver));
+    assert!(raw_text(&driver).contains(MOUSE_ON));
     assert!(screen.visible[0].is_empty(), "{}", screen.visible_text());
     assert_eq!(expect_row(&screen, HEADER), 1, "{}", screen.visible_text());
     assert_input_at_bottom(&screen);
@@ -111,8 +113,8 @@ fn the_conversation_scrolls_inside_the_app() {
         .all(0, notes(1..=60))
         .await_signal("more")
         .all(0, notes(61..=64));
-    let mut harness = Harness::start(script);
-    let screen = harness.wait_visible("note 60");
+    let mut driver = TestDriver::start(script);
+    let screen = driver.wait_visible("note 60");
     assert!(screen.scrollback.is_empty(), "{}", screen.text());
     assert!(row_of(&screen, "note 01").is_none());
     assert!(
@@ -120,11 +122,11 @@ fn the_conversation_scrolls_inside_the_app() {
         "{}",
         screen.visible_text()
     );
-    harness.shot("bottom");
+    driver.shot("bottom");
 
     // PgUp goes back a page at a time, as far as the header.
-    harness.press(Key::PageUp);
-    let screen = harness.wait_visible(BELOW);
+    driver.press(Key::PageUp);
+    let screen = driver.wait_visible(BELOW);
     assert!(
         row_of(&screen, "note 60").is_none(),
         "{}",
@@ -132,56 +134,56 @@ fn the_conversation_scrolls_inside_the_app() {
     );
     assert_input_at_bottom(&screen);
     for _ in 0..4 {
-        harness.press(Key::PageUp);
+        driver.press(Key::PageUp);
     }
-    let screen = harness.wait_visible(HEADER);
+    let screen = driver.wait_visible(HEADER);
     assert!(
         row_of(&screen, "note 01").is_some(),
         "{}",
         screen.visible_text()
     );
-    harness.shot("top");
+    driver.shot("top");
 
     // Output that arrives while you read back leaves the view where it is.
     let before = screen.visible.clone();
-    harness.signal("more");
-    let screen = harness.wait_visible("New output below");
+    driver.signal("more");
+    let screen = driver.wait_visible("New output below");
     let rule = expect_row(&screen, TOP_RULE);
     assert_eq!(screen.visible[..rule - 2], before[..rule - 2]);
     assert!(row_of(&screen, "note 64").is_none());
 
     // The wheel scrolls too, and back at the bottom new output shows again.
-    harness.send(WHEEL_DOWN);
+    driver.send(WHEEL_DOWN);
     for _ in 0..40 {
-        harness.send(WHEEL_DOWN);
+        driver.send(WHEEL_DOWN);
     }
-    let screen = harness.wait_visible("note 64");
+    let screen = driver.wait_visible("note 64");
     assert!(
         row_of(&screen, BELOW).is_none(),
         "{}",
         screen.visible_text()
     );
-    harness.send(WHEEL_UP);
-    let screen = harness.wait_visible(r"3 rows below · pgdn to scroll");
+    driver.send(WHEEL_UP);
+    let screen = driver.wait_visible(r"3 rows below · pgdn to scroll");
     assert!(
         row_of(&screen, "note 64").is_none(),
         "{}",
         screen.visible_text()
     );
-    harness.press(Key::PageDown);
-    harness.wait_gone(BELOW);
-    harness.wait_visible("note 64");
+    driver.press(Key::PageDown);
+    driver.wait_gone(BELOW);
+    driver.wait_visible("note 64");
 }
 
 #[test]
 fn sending_a_message_jumps_back_to_the_bottom() {
     let script = Script::idle().all(0, notes(1..=60));
-    let mut harness = Harness::start(script);
-    harness.wait_visible("note 60");
-    harness.press(Key::PageUp);
-    harness.wait_visible(BELOW);
-    harness.submit("hello");
-    let screen = harness.wait_visible("note 60");
+    let mut driver = TestDriver::start(script);
+    driver.wait_visible("note 60");
+    driver.press(Key::PageUp);
+    driver.wait_visible(BELOW);
+    driver.submit("hello");
+    let screen = driver.wait_visible("note 60");
     assert!(
         row_of(&screen, BELOW).is_none(),
         "{}",
@@ -191,13 +193,13 @@ fn sending_a_message_jumps_back_to_the_bottom() {
 
 #[test]
 fn ctrl_o_shows_the_full_transcript_and_comes_back() {
-    let mut harness = Harness::start(Script::idle().all(0, notes(1..=3)));
-    harness.wait_visible("note 03");
-    harness.press(Key::Ctrl('o'));
-    harness.wait_visible("Showing detailed transcript");
-    harness.press(Key::Esc);
-    let screen = harness.wait_gone("Showing detailed transcript");
-    assert!(on_alternate(&harness));
+    let mut driver = TestDriver::start(Script::idle().all(0, notes(1..=3)));
+    driver.wait_visible("note 03");
+    driver.press(Key::Ctrl('o'));
+    driver.wait_visible("Showing detailed transcript");
+    driver.press(Key::Esc);
+    let screen = driver.wait_gone("Showing detailed transcript");
+    assert!(on_alternate(&driver));
     assert!(
         row_of(&screen, "note 03").is_some(),
         "{}",
@@ -208,49 +210,49 @@ fn ctrl_o_shows_the_full_transcript_and_comes_back() {
 
 #[test]
 fn ctrl_c_twice_gives_the_shell_back_as_it_was() {
-    let mut harness = start_from_shell(Script::idle().all(0, notes(1..=3)));
-    harness.wait_visible("note 03");
-    harness.press(Key::Ctrl('c'));
-    harness.wait_visible("Press Ctrl-C again to exit");
-    harness.press(Key::Ctrl('c'));
-    assert_eq!(harness.wait_exit(), 0);
-    harness.shot("after");
-    assert_shell_as_it_was(&harness, &[]);
+    let mut driver = start_from_shell(Script::idle().all(0, notes(1..=3)));
+    driver.wait_visible("note 03");
+    driver.press(Key::Ctrl('c'));
+    driver.wait_visible("Press Ctrl-C again to exit");
+    driver.press(Key::Ctrl('c'));
+    assert_eq!(driver.wait_exit(), 0);
+    driver.shot("after");
+    assert_shell_as_it_was(&driver, &[]);
 }
 
 #[test]
 fn slash_exit_gives_the_shell_back_as_it_was() {
-    let mut harness = start_from_shell(Script::idle().all(0, notes(1..=3)));
-    harness.wait_visible("note 03");
-    harness.send("/exit");
-    harness.press(Key::Enter);
-    assert_eq!(harness.wait_exit(), 0);
-    assert_shell_as_it_was(&harness, &[]);
+    let mut driver = start_from_shell(Script::idle().all(0, notes(1..=3)));
+    driver.wait_visible("note 03");
+    driver.send("/exit");
+    driver.press(Key::Enter);
+    assert_eq!(driver.wait_exit(), 0);
+    assert_shell_as_it_was(&driver, &[]);
 }
 
 #[test]
 fn a_message_that_says_exit_or_quit_leaves() {
     for word in ["exit", " quit "] {
-        let mut harness = start_from_shell(Script::idle());
-        harness.wait_visible(MODE_IDLE);
-        harness.send(word);
-        harness.press(Key::Enter);
-        assert_eq!(harness.wait_exit(), 0, "{word:?}");
-        harness.assert_no_command("submit");
-        assert_shell_as_it_was(&harness, &[]);
+        let mut driver = start_from_shell(Script::idle());
+        driver.wait_visible(MODE_IDLE);
+        driver.send(word);
+        driver.press(Key::Enter);
+        assert_eq!(driver.wait_exit(), 0, "{word:?}");
+        driver.assert_no_command("submit");
+        assert_shell_as_it_was(&driver, &[]);
     }
 }
 
 #[test]
 fn runs_that_keep_going_leave_one_line_naming_how_to_watch_them() {
     let (_, _, events) = crew_run(1);
-    let mut harness = start_from_shell(Script::idle().all(0, events));
-    harness.wait_visible(WORKING);
-    harness.send("/exit");
-    harness.press(Key::Enter);
-    assert_eq!(harness.wait_exit(), 0);
+    let mut driver = start_from_shell(Script::idle().all(0, events));
+    driver.wait_visible(WORKING);
+    driver.send("/exit");
+    driver.press(Key::Enter);
+    assert_eq!(driver.wait_exit(), 0);
     assert_shell_as_it_was(
-        &harness,
+        &driver,
         &["run-01 keeps going · watch it with: argonauts resume run-01"],
     );
 }
@@ -260,13 +262,13 @@ fn a_panic_gives_the_terminal_back_before_its_message() {
     let script = Script::idle()
         .await_signal("boom")
         .panic("the CLI crashed on purpose");
-    let mut harness = start_from_shell(script);
-    harness.wait_visible(MODE_IDLE);
-    assert!(on_alternate(&harness));
-    harness.signal("boom");
-    harness.wait_exit();
-    assert!(!on_alternate(&harness));
-    let raw = raw_text(&harness);
+    let mut driver = start_from_shell(script);
+    driver.wait_visible(MODE_IDLE);
+    assert!(on_alternate(&driver));
+    driver.signal("boom");
+    driver.wait_exit();
+    assert!(!on_alternate(&driver));
+    let raw = raw_text(&driver);
     let message = raw
         .find("the CLI crashed on purpose")
         .expect("the panic printed");
@@ -274,7 +276,7 @@ fn a_panic_gives_the_terminal_back_before_its_message() {
         raw.rfind(LEAVE).is_some_and(|left| left < message),
         "{raw:?}"
     );
-    let screen = harness.screen();
+    let screen = driver.screen();
     assert_eq!(screen.visible[0], SHELL_LINE, "{}", screen.visible_text());
     assert!(
         row_of(&screen, HEADER).is_none(),
@@ -286,14 +288,14 @@ fn a_panic_gives_the_terminal_back_before_its_message() {
 
 #[test]
 fn sigterm_gives_the_terminal_back() {
-    let mut harness = Harness::start(Script::idle().all(0, notes(1..=3)));
-    harness.wait_visible("note 03");
-    assert!(on_alternate(&harness));
-    let pid = i32::try_from(harness.pid()).expect("a pid fits an i32");
+    let mut driver = TestDriver::start(Script::idle().all(0, notes(1..=3)));
+    driver.wait_visible("note 03");
+    assert!(on_alternate(&driver));
+    let pid = i32::try_from(driver.pid()).expect("a pid fits an i32");
     kill(Pid::from_raw(pid), Signal::SIGTERM).expect("signalling the CLI");
-    harness.wait_exit();
-    assert!(!on_alternate(&harness));
-    let screen = harness.screen();
+    driver.wait_exit();
+    assert!(!on_alternate(&driver));
+    let screen = driver.screen();
     assert!(
         screen.visible.iter().all(String::is_empty),
         "{}",
@@ -303,22 +305,22 @@ fn sigterm_gives_the_terminal_back() {
 
 #[test]
 fn the_inline_screen_never_takes_the_alternate_screen() {
-    let mut harness = Harness::launch(Script::idle().all(0, notes(1..=3)))
+    let mut driver = TestDriver::launch(Script::idle().all(0, notes(1..=3)))
         .inline()
         .after_shell_line(SHELL_LINE)
         .start();
-    harness.wait_visible("note 03");
-    assert!(!raw_text(&harness).contains(ENTER));
-    assert!(!raw_text(&harness).contains(MOUSE_ON));
-    harness.press(Key::Ctrl('c'));
-    harness.wait_visible("Press Ctrl-C again to exit");
-    harness.press(Key::Ctrl('c'));
-    assert_eq!(harness.wait_exit(), 0);
-    // The chat stays in the terminal, under the shell's line.
-    let text = harness.text();
+    driver.wait_visible("note 03");
+    assert!(!raw_text(&driver).contains(ENTER));
+    assert!(!raw_text(&driver).contains(MOUSE_ON));
+    driver.press(Key::Ctrl('c'));
+    driver.wait_visible("Press Ctrl-C again to exit");
+    driver.press(Key::Ctrl('c'));
+    assert_eq!(driver.wait_exit(), 0);
+    // The conversation stays in the terminal, under the shell's line.
+    let text = driver.text();
     assert!(text.contains(SHELL_LINE), "{text}");
     assert!(text.contains("note 03"), "{text}");
-    assert_eq!(count_rows(&harness.screen(), HEADER), 1, "{text}");
+    assert_eq!(count_rows(&driver.screen(), HEADER), 1, "{text}");
 }
 
 /// A stop signal closes the inline screen the way `/exit` does: the terminal gets its modes
@@ -328,15 +330,15 @@ fn stop_signals_give_the_inline_screen_the_terminal_back() {
     for signal in [Signal::SIGTERM, Signal::SIGHUP, Signal::SIGINT] {
         let (_, _, run) = crew_run(1);
         let script = Script::idle().all(0, notes(1..=3)).all(0, run);
-        let mut harness = Harness::launch(script)
+        let mut driver = TestDriver::launch(script)
             .inline()
             .name(&format!("inline_{signal}"))
             .start();
-        harness.wait_visible(WORKING);
-        let pid = i32::try_from(harness.pid()).expect("a pid fits an i32");
+        driver.wait_visible(WORKING);
+        let pid = i32::try_from(driver.pid()).expect("a pid fits an i32");
         kill(Pid::from_raw(pid), signal).expect("signalling the CLI");
-        assert_eq!(harness.wait_exit(), 0, "{signal} closes the screen cleanly");
-        let raw = raw_text(&harness);
+        assert_eq!(driver.wait_exit(), 0, "{signal} closes the screen cleanly");
+        let raw = raw_text(&driver);
         assert!(!raw.contains(ENTER), "{signal}: {raw:?}");
         for (on, off) in [(PASTE_ON, PASTE_OFF), (FOCUS_ON, FOCUS_OFF)] {
             let given_back = raw
@@ -345,8 +347,8 @@ fn stop_signals_give_the_inline_screen_the_terminal_back() {
             assert!(given_back, "{signal} turns {on:?} off: {raw:?}");
         }
         assert!(raw.ends_with(CURSOR_DEFAULT), "{signal}: {raw:?}");
-        // As after any other exit, the chat stays in the terminal.
-        let text = harness.text();
+        // As after any other exit, the conversation stays in the terminal.
+        let text = driver.text();
         assert!(text.contains("note 03"), "{signal}: {text}");
         for line in [
             "run-01 keeps going · 1 agent working",
@@ -362,17 +364,17 @@ fn stop_signals_give_the_inline_screen_the_terminal_back() {
 #[test]
 fn a_stop_signal_during_the_start_up_probes_gives_the_terminal_back() {
     const KEYBOARD_QUERY: &str = "\x1b[?u";
-    let mut harness = Harness::launch(Script::idle().all(0, notes(1..=3)))
+    let mut driver = TestDriver::launch(Script::idle().all(0, notes(1..=3)))
         .inline()
         .unanswered()
         .start();
-    harness.wait_until("the keyboard query, sent in raw mode", |_| {
-        raw_text(&harness).contains(KEYBOARD_QUERY)
+    driver.wait_until("the keyboard query, sent in raw mode", |_| {
+        raw_text(&driver).contains(KEYBOARD_QUERY)
     });
-    let pid = i32::try_from(harness.pid()).expect("a pid fits an i32");
+    let pid = i32::try_from(driver.pid()).expect("a pid fits an i32");
     kill(Pid::from_raw(pid), Signal::SIGTERM).expect("signalling the CLI");
-    assert_eq!(harness.wait_exit(), 0, "the screen closed it");
-    let raw = raw_text(&harness);
+    assert_eq!(driver.wait_exit(), 0, "the screen closed it");
+    let raw = raw_text(&driver);
     for (on, off) in [(PASTE_ON, PASTE_OFF), (FOCUS_ON, FOCUS_OFF)] {
         let given_back = raw
             .rfind(off)
@@ -393,30 +395,30 @@ fn ctrl_c_in_a_handed_over_program_leaves_the_app_running() {
                 .to_vec(),
             cwd: std::env::temp_dir(),
         };
-        let launch = Harness::launch(Script::idle().at(0, notice("info", "note 01")).at(0, run));
+        let launch = TestDriver::launch(Script::idle().at(0, notice("info", "note 01")).at(0, run));
         let launch = if inline { launch.inline() } else { launch };
-        let mut harness = launch
+        let mut driver = launch
             .name(&format!("handed_over_ctrl_c_inline_{inline}"))
             .start();
-        harness.wait_visible("Back from");
-        harness.submit("still here");
-        harness.press(Key::Ctrl('c'));
-        harness.wait_visible("Press Ctrl-C again to exit");
-        harness.press(Key::Ctrl('c'));
-        assert_eq!(harness.wait_exit(), 0);
+        driver.wait_visible("Back from");
+        driver.submit("still here");
+        driver.press(Key::Ctrl('c'));
+        driver.wait_visible("Press Ctrl-C again to exit");
+        driver.press(Key::Ctrl('c'));
+        assert_eq!(driver.wait_exit(), 0);
     }
 }
 
 #[test]
 fn the_frame_holds_at_every_width_while_scrolled() {
     for cols in [80, 100, 120, 200] {
-        let mut harness = Harness::launch(Script::idle().all(0, notes(1..=60)))
+        let mut driver = TestDriver::launch(Script::idle().all(0, notes(1..=60)))
             .size(ROWS, cols)
             .name(&format!("fullscreen_scrolled_{cols}"))
             .start();
-        harness.wait_visible("note 60");
-        harness.press(Key::PageUp);
-        let screen = harness.wait_visible(BELOW);
+        driver.wait_visible("note 60");
+        driver.press(Key::PageUp);
+        let screen = driver.wait_visible(BELOW);
         assert_frames(&screen, cols);
         assert_input_at_bottom(&screen);
         let rule = expect_row(&screen, TOP_RULE);
@@ -446,7 +448,7 @@ fn base64(bytes: &[u8]) -> String {
 fn a_drag_copies_the_text_through_the_terminal_and_the_system() {
     use std::os::unix::fs::PermissionsExt;
 
-    // Stand-ins for the system's copy commands, so the test never touches the real clipboard.
+    // Fakes of the system's copy commands, so the test never touches the real clipboard.
     let fake = tempfile::tempdir().unwrap();
     let clipboard = fake.path().join("clipboard.txt");
     for name in ["pbcopy", "wl-copy", "xclip"] {
@@ -464,33 +466,33 @@ fn a_drag_copies_the_text_through_the_terminal_and_the_system() {
     let answer = "First line of the answer.\n\n- one\n- two";
     let script = Script::idle()
         .await_command("submit")
-        .timed(chat_turn("t-001", "hi", answer, 5));
-    let mut harness = Harness::launch(script).env("PATH", path).start();
-    harness.wait_visible(MODE_IDLE);
-    harness.submit("hi");
-    let screen = harness.wait_visible("- two");
+        .timed(conversation_turn("t-001", "hi", answer, 5));
+    let mut driver = TestDriver::launch(script).env("PATH", path).start();
+    driver.wait_visible(MODE_IDLE);
+    driver.submit("hi");
+    let screen = driver.wait_visible("- two");
     let first = expect_row(&screen, "First line of the answer");
     let last = expect_row(&screen, "- two");
 
     // SGR reports count from 1: press on the answer's first letter, drag, and let go.
-    harness.send(&format!("\x1b[<0;3;{}M", first + 1));
-    harness.send(&format!("\x1b[<32;6;{}M", first + 2));
-    harness.send(&format!("\x1b[<32;9;{}M", last + 1));
-    harness.send(&format!("\x1b[<0;9;{}m", last + 1));
-    harness.wait_visible("Copied");
-    harness.shot("copied");
+    driver.send(&format!("\x1b[<0;3;{}M", first + 1));
+    driver.send(&format!("\x1b[<32;6;{}M", first + 2));
+    driver.send(&format!("\x1b[<32;9;{}M", last + 1));
+    driver.send(&format!("\x1b[<0;9;{}m", last + 1));
+    driver.wait_visible("Copied");
+    driver.shot("copied");
     assert_eq!(std::fs::read_to_string(&clipboard).unwrap(), answer);
     let osc52 = format!("\x1b]52;c;{}\x07", base64(answer.as_bytes()));
     assert!(
-        raw_text(&harness).contains(&osc52),
+        raw_text(&driver).contains(&osc52),
         "OSC 52 carries the text"
     );
 
     // A click selects nothing and copies nothing.
     std::fs::remove_file(&clipboard).unwrap();
-    harness.send(&format!("\x1b[<0;3;{}M", first + 1));
-    harness.send(&format!("\x1b[<0;3;{}m", first + 1));
+    driver.send(&format!("\x1b[<0;3;{}M", first + 1));
+    driver.send(&format!("\x1b[<0;3;{}m", first + 1));
     // Keys come in order, so once this is sent the click was taken.
-    harness.submit("still here");
+    driver.submit("still here");
     assert!(!clipboard.exists());
 }

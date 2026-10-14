@@ -2,7 +2,7 @@
 source: crates/tui/src/a11y/tests.rs
 expression: "queued.lines.join(\"\\n\")"
 ---
-approval: cp-001 decided on its own, queued for a spot check
+approval: approval-001 decided on its own, queued for a spot check
 spot check: merge, run-01
   Approved merging run-01 into main, decided by your rules
   Was this the right call?

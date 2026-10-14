@@ -8,6 +8,7 @@ use argonauts_core::workflow::{Workflow, WorkflowRef};
 
 use super::check::{MAX_DEPTH, check_workflow};
 use super::list::known_names;
+use super::name::is_workflow_name;
 use super::parse::{parse_workflow, workflow_version};
 use super::{BUILT_IN, FoundWorkflow, WorkflowDirs, WorkflowError, builtin_label};
 
@@ -138,7 +139,7 @@ pub(super) fn locate(name: &str, dirs: &WorkflowDirs<'_>) -> Result<Located, Wor
 }
 
 /// `<dir>/<name>.yaml`, if it's there. A Starlark file of that name is refused, since it
-/// would shadow the workflows further down.
+/// would hide the workflows further down.
 fn in_folder(dir: &Path, name: &str) -> Result<Option<Located>, WorkflowError> {
     let path = dir.join(format!("{name}.{YAML}"));
     match std::fs::read_to_string(&path) {
@@ -154,15 +155,6 @@ fn in_folder(dir: &Path, name: &str) -> Result<Option<Located>, WorkflowError> {
         )));
     }
     Ok(None)
-}
-
-/// A name is a file stem in the workflows folder, so it can't reach outside it.
-pub(super) fn is_workflow_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with('.')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 pub(super) fn io_error(path: &Path, error: &std::io::Error) -> WorkflowError {

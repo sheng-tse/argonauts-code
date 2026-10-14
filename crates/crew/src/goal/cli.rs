@@ -1,41 +1,41 @@
 //! A CLI's own goal. Codex has one: told to, it sets an objective with its own goal tool and
 //! works until it believes the objective is achieved. Checked live on Codex 0.160.0, driven
-//! the way Argonauts drives it (`codex exec --json`, the prompt on stdin):
+//! the way Argonauts Code drives it (`codex exec --json`, the prompt on stdin):
 //!
 //! - It takes the goal, and the goal stays with the session: resumed, it still reads back as
 //!   "active" with its objective.
 //! - It doesn't go from one turn to the next by itself. Each `codex exec` call runs one turn
-//!   and exits, goal active or not, so Argonauts resumes the session while Codex says its goal
+//!   and exits, goal active or not, so Argonauts Code resumes the session while Codex says its goal
 //!   is still active.
 //! - The stream carries no event for the goal or its tool calls. What Codex says about its
 //!   goal is only in its messages, so the prompt asks for one last line, `goal: <status> ·
 //!   <note>`, read back from its goal tool.
 //!
-//! Claude Code and Antigravity CLI have no goal of their own, so Argonauts keeps theirs. Either
-//! way Argonauts runs the check itself: a CLI saying "complete" is never enough.
+//! Claude Code and Antigravity CLI have no goal of their own, so Argonauts Code keeps theirs.
+//! Either way Argonauts Code runs the check itself: a CLI saying "complete" is never enough.
 
-use argonauts_core::display_names::builtin_harness_name;
+use argonauts_core::display_names::builtin_cli_name;
 use argonauts_core::events::goal::{CliGoalSaid, Criterion};
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 
-/// The CLIs whose own goal Argonauts can hand a task to.
+/// The CLIs whose own goal Argonauts Code can hand a task to.
 const WITH_OWN_GOAL: &[&str] = &["codex"];
 
 /// How often in a row a CLI may end a turn with its goal still active before the check runs
 /// anyway. The check decides, so this only bounds a CLI that never says it's done.
 pub const MAX_CONTINUES: u32 = 3;
 
-pub fn has_own_goal(worker: &WorkerRef) -> bool {
-    WITH_OWN_GOAL.contains(&worker.worker.as_str())
+pub fn has_own_goal(worker: &ModelRef) -> bool {
+    WITH_OWN_GOAL.contains(&worker.agent.as_str())
 }
 
 /// `Codex`, for `Codex's own goal` and `Codex says`.
-pub fn name(worker: &WorkerRef) -> String {
-    builtin_harness_name(&worker.worker).map_or_else(|| worker.worker.clone(), str::to_owned)
+pub fn name(worker: &ModelRef) -> String {
+    builtin_cli_name(&worker.agent).map_or_else(|| worker.agent.clone(), str::to_owned)
 }
 
-/// Where a CLI says where its goal stands: in the report a task ends with, or at the end of
-/// its answer when it works alone in the chat.
+/// Where a CLI says how far its goal is: in the report a task ends with, or at the end of
+/// its answer when it works alone in the conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Says {
     InReport,
@@ -57,7 +57,7 @@ pub fn brief(lines: &[Criterion], says: Says) -> String {
         text.push_str(&format!("- {}\n", line.text));
     }
     text.push_str(&format!(
-        "\nArgonauts runs the check itself after you say the goal is achieved, and sends back \
+        "\nArgonauts Code runs the check itself after you say the goal is achieved, and sends back \
          what still fails.\n\n{}",
         say_where_it_stands(says)
     ));
@@ -95,7 +95,7 @@ fn say_where_it_stands(says: Says) -> String {
 const GOAL_LINE: &str = "goal:";
 
 /// What the CLI says about its goal, from the last `goal: <status> · <note>` line of `text`.
-pub fn said(worker: &WorkerRef, text: &str) -> Option<CliGoalSaid> {
+pub fn said(worker: &ModelRef, text: &str) -> Option<CliGoalSaid> {
     let line = text.lines().rev().map(str::trim).find(|line| {
         line.get(..GOAL_LINE.len())
             .is_some_and(|head| head.eq_ignore_ascii_case(GOAL_LINE))
@@ -111,7 +111,7 @@ pub fn said(worker: &WorkerRef, text: &str) -> Option<CliGoalSaid> {
         return None;
     }
     Some(CliGoalSaid {
-        cli: worker.worker.clone(),
+        cli: worker.agent.clone(),
         status,
         note: note.trim().trim_matches('"').to_owned(),
         turns: None,
@@ -131,15 +131,15 @@ pub fn still_going(said: &CliGoalSaid) -> bool {
 mod tests {
     use super::*;
 
-    fn codex() -> WorkerRef {
-        "codex/gpt-5.6-luna".parse().expect("a worker")
+    fn codex() -> ModelRef {
+        "codex/gpt-5.6-luna".parse().expect("a model")
     }
 
     #[test]
     fn only_codex_has_a_goal_of_its_own() {
         assert!(has_own_goal(&codex()));
         for other in ["claude-code/haiku", "antigravity-cli", "opencode"] {
-            let worker: WorkerRef = other.parse().expect("a worker");
+            let worker: ModelRef = other.parse().expect("a model");
             assert!(!has_own_goal(&worker), "{other}");
         }
         assert_eq!(name(&codex()), "Codex");
@@ -188,7 +188,7 @@ mod tests {
         assert!(text.contains("- every test in tests/overdue.rs passes\n"));
         assert!(text.contains("End the `summary` of your report with one last line"));
         assert!(text.contains("goal: <its status> · <one line on where it stands>"));
-        // Alone in the chat there's no report, so the line ends the answer.
+        // Alone in the conversation there's no report, so the line ends the answer.
         let alone = brief(&lines, Says::InAnswer);
         assert!(alone.starts_with("This request is worked as a goal"));
         assert!(alone.contains("End your answer with one last line"));

@@ -1,12 +1,14 @@
 //! The row of choices under the panel's tabs, such as Stats' By CLI, By model and By role or
 //! the Overview's periods, and which row the keys are on. Focus shows by fill alone: the
 //! chosen item filled while its row has the keys, the open tab in the accent and a choice
-//! under it in orange, on the grey band while it doesn't, and never a drawn box.
+//! under it in orange, on the grey band while it doesn't, and never a drawn box. Tab moves
+//! the sub-tabs from the cards too, so there they stay orange, as Claude Code's /stats keeps
+//! its tab filled while Tab switches it.
 
 use ratatui::text::Span;
 
+use crate::kit::Kit;
 use crate::theme::Role;
-use crate::widgets::Kit;
 
 /// The blank cells between two tabs or two choices on a row.
 pub const TAB_GAP: &str = "  ";
@@ -39,6 +41,11 @@ impl Level {
             Level::SubTabs | Level::Tabs => Level::Tabs,
         }
     }
+
+    /// Tab moves the sub-tabs from here: from their own row and from the cards under it.
+    pub fn moves_sub_tabs(self) -> bool {
+        self != Level::Tabs
+    }
 }
 
 /// `items` side by side, the one `at` filled as [`chosen_sub_tab`] fills it.
@@ -60,7 +67,7 @@ pub fn row(kit: &Kit<'_>, items: &[&str], at: usize, focused: bool) -> Vec<Span<
 /// The open tab: filled in the accent while the tabs have the keys, and on the grey band while
 /// they are elsewhere. Without colour, brackets say which row has the keys.
 pub fn chosen(kit: &Kit<'_>, name: &str, focused: bool) -> Span<'static> {
-    filled(kit, name, focused, Role::Card)
+    filled(kit, name, focused, Role::Question)
 }
 
 /// The chosen item of a row under the tabs: filled in orange while its row has the keys, so it
@@ -115,7 +122,7 @@ mod tests {
         // The open tab above the row fills in the accent instead.
         assert_eq!(
             chosen(&kit, "Stats", true).style.bg,
-            theme.color(Role::Card)
+            theme.color(Role::Question)
         );
         assert_eq!(
             chosen(&kit, "Stats", false).style.bg,
@@ -144,5 +151,7 @@ mod tests {
         assert_eq!(Level::Tabs.up(), Level::Tabs);
         assert_eq!(Level::Tabs.down(), Level::SubTabs);
         assert_eq!(Level::Tabs.down().down().down(), Level::Cards);
+        assert!(!Level::Tabs.moves_sub_tabs());
+        assert!(Level::SubTabs.moves_sub_tabs() && Level::Cards.moves_sub_tabs());
     }
 }

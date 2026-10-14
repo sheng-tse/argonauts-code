@@ -1,4 +1,4 @@
-//! Quota, vendor health, recovery after a stop, handoffs, and gates, all decided in code.
+//! Plan usage, agent health, recovery after a stop, fallbacks, and checks, all decided in code.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -8,43 +8,43 @@ use serde_json::Value;
 use time::OffsetDateTime;
 use tokio::sync::broadcast;
 
-use crate::events::card::{CardSpec, CardState, GateOutcome};
-use crate::events::run::ParkReason;
+use crate::events::run::WaitReason;
 use crate::events::session::SessionEnd;
-use crate::events::{RunEvent, VendorEvent};
+use crate::events::task::{CheckOutcome, TaskSpec, TaskState};
+use crate::events::{AgentStatusEvent, RunEvent};
+use crate::fallback::CheckpointTag;
 use crate::future::BoxFuture;
-use crate::handoff::CheckpointTag;
-use crate::names::{RoleName, SessionKey, VendorId, WorkerRef};
-use crate::settings::budget::{BudgetAmount, OnHit};
-use crate::settings::handoff::{FallbackEntry, HandoffStrategy, Pick};
-use crate::steps::card::CardReport;
-use crate::worker::{SandboxProfile, SessionLimits};
-use crate::{CardId, ErrorCategory, RetryReason, RunId, TodoItem};
+use crate::names::{AgentId, ModelRef, RoleName, SessionKey};
+use crate::session_runner::{SandboxProfile, SessionLimits};
+use crate::settings::fallback::{FallbackEntry, FallbackStrategy, Pick};
+use crate::settings::limit::{LimitAmount, OnHit};
+use crate::steps::task::TaskReport;
+use crate::{ErrorCategory, RetryReason, RunId, TaskId, TodoItem};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct QuotaReading {
-    pub vendor: VendorId,
-    pub status: QuotaStatus,
-    /// Share of the current window used, 0 to 1, where the vendor reports it.
+pub struct PlanUsageReading {
+    pub agent_id: AgentId,
+    pub status: PlanUsageStatus,
+    /// Share of the current window used, 0 to 1, where the agent reports it.
     pub used: Option<f64>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub resets_at: Option<OffsetDateTime>,
     /// Such as `five_hour` or `weekly`.
     pub window: Option<String>,
-    pub source: QuotaSource,
+    pub source: PlanUsageSource,
     #[serde(with = "time::serde::rfc3339")]
     pub observed_at: OffsetDateTime,
-    /// The vendor's payload, for the raw view.
+    /// The agent's payload, for the raw view.
     pub detail: Option<Value>,
-    /// Out of quota, but the running session finishes on a small allowance, as Claude Code
-    /// does at a five-hour limit. Nothing hands its work off, and new work goes elsewhere.
+    /// Out of plan usage, but the running session finishes on a small allowance, as Claude Code
+    /// does at a five-hour limit. Nothing falls back, and new work goes elsewhere.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub wrap_up: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum QuotaStatus {
+pub enum PlanUsageStatus {
     Allowed,
     Warning,
     Rejected,
@@ -53,7 +53,7 @@ pub enum QuotaStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum QuotaSource {
+pub enum PlanUsageSource {
     /// Claude Code's `rate_limit_event`.
     RateLimitEvent,
     /// `agy -p "/usage" --output-format json`, which spends nothing.
@@ -68,10 +68,10 @@ pub enum QuotaSource {
     GetUsage,
 }
 
-/// What a quota probe read: every window the vendor reports, and its plan when it names one.
+/// What a plan usage probe read: every window the agent reports, and its plan when it names one.
 #[derive(Debug, Clone, PartialEq)]
-pub struct QuotaAnswer {
-    pub windows: Vec<QuotaReading>,
+pub struct PlanUsageAnswer {
+    pub windows: Vec<PlanUsageReading>,
     pub plan: Option<String>,
     /// The whole reading with the account it was read for, where the CLI names one.
     pub live: Option<crate::plan_usage::LiveUsage>,
@@ -79,7 +79,7 @@ pub struct QuotaAnswer {
     pub failed: Option<String>,
 }
 
-impl QuotaAnswer {
+impl PlanUsageAnswer {
     /// An error in place of a reading. It names no account, so it leaves every reading kept.
     pub fn failed(message: impl Into<String>) -> Self {
         Self {
@@ -90,29 +90,29 @@ impl QuotaAnswer {
         }
     }
 
-    /// The window that binds soonest, which is what one number per vendor shows.
-    pub fn binding(&self) -> Option<&QuotaReading> {
+    /// The window that binds soonest, which is what one number per agent shows.
+    pub fn binding(&self) -> Option<&PlanUsageReading> {
         binding_reading(&self.windows)
     }
 }
 
-/// A vendor's readings, the newest of each window. A reading that names no window speaks for
-/// the vendor as a whole, so it replaces every window, and the next windowed one replaces it.
+/// An agent's readings, the newest of each window. A reading that names no window speaks for
+/// the agent as a whole, so it replaces every window, and the next windowed one replaces it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct QuotaWindows(Vec<QuotaReading>);
+pub struct PlanWindows(Vec<PlanUsageReading>);
 
-impl QuotaWindows {
+impl PlanWindows {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    pub fn readings(&self) -> &[QuotaReading] {
+    pub fn readings(&self) -> &[PlanUsageReading] {
         &self.0
     }
 
     /// Keeps `reading` unless its window has a newer one. Says whether it was kept.
-    pub fn observe(&mut self, reading: QuotaReading) -> bool {
+    pub fn observe(&mut self, reading: PlanUsageReading) -> bool {
         let newer = self
             .0
             .iter()
@@ -124,7 +124,7 @@ impl QuotaWindows {
     }
 
     /// Keeps `reading` whatever its age.
-    pub fn put(&mut self, reading: QuotaReading) {
+    pub fn put(&mut self, reading: PlanUsageReading) {
         if reading.window.is_none() {
             self.0.clear();
         } else {
@@ -135,21 +135,21 @@ impl QuotaWindows {
     }
 
     /// The window that binds soonest, as [`binding_reading`] picks it.
-    pub fn binding(&self) -> Option<&QuotaReading> {
+    pub fn binding(&self) -> Option<&PlanUsageReading> {
         binding_reading(&self.0)
     }
 }
 
-fn same_window(a: &QuotaReading, b: &QuotaReading) -> bool {
+fn same_window(a: &PlanUsageReading, b: &PlanUsageReading) -> bool {
     a.window.is_none() || b.window.is_none() || a.window == b.window
 }
 
 /// The reading that binds soonest: one that refused work, else the fullest. Between two as
 /// full, the later reset is the one you'd wait for, then the newer reading.
-pub fn binding_reading(readings: &[QuotaReading]) -> Option<&QuotaReading> {
+pub fn binding_reading(readings: &[PlanUsageReading]) -> Option<&PlanUsageReading> {
     readings.iter().max_by(|a, b| {
-        let refused = |r: &QuotaReading| r.status == QuotaStatus::Rejected;
-        let used = |r: &QuotaReading| r.used.unwrap_or(-1.0);
+        let refused = |r: &PlanUsageReading| r.status == PlanUsageStatus::Rejected;
+        let used = |r: &PlanUsageReading| r.used.unwrap_or(-1.0);
         refused(a)
             .cmp(&refused(b))
             .then(used(a).total_cmp(&used(b)))
@@ -163,71 +163,155 @@ pub fn binding_reading(readings: &[QuotaReading]) -> Option<&QuotaReading> {
 #[serde(rename_all = "snake_case")]
 pub enum HealthState {
     Healthy,
-    /// New cards go elsewhere when another agent fits.
+    /// New tasks go elsewhere when another agent fits.
     Degraded,
-    /// Its cards pause with work committed; new cards go elsewhere.
+    /// Its tasks pause with work committed; new tasks go elsewhere.
     Down,
-    /// One test card goes to it.
+    /// One test task goes to it.
     Testing,
 }
 
-/// Why a vendor reads healthy again after its test task succeeded: the one way back from an
+/// Why an agent reads healthy again after its test task succeeded: the one way back from an
 /// outage that a check stands behind, where errors that stopped coming back say less.
 pub const TEST_TASK_SUCCEEDED: &str = "the test task succeeded";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VendorHealth {
-    pub vendor: VendorId,
+pub struct AgentHealth {
+    pub agent_id: AgentId,
     pub state: HealthState,
     #[serde(with = "time::serde::rfc3339")]
     pub since: OffsetDateTime,
     pub reason: Option<String>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub next_test_at: Option<OffsetDateTime>,
-    /// Why it's disabled for new cards, such as an untested CLI version.
+    /// Why it's disabled for new tasks, such as an untested CLI version.
     pub disabled: Option<String>,
+}
+
+/// One model's own state on its CLI. An overload or a server error is about the model it came
+/// from, so the CLI's other models stay usable while one is out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelState {
+    Healthy,
+    /// New work goes to another model first.
+    Degraded,
+    /// Out: a fallback takes its work, or the work waits for it.
+    Out,
+    /// One test task decides whether it's healthy or out again.
+    Testing,
+}
+
+/// What took a model out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Trouble {
+    Overload,
+    ServerErrors,
+}
+
+impl Trouble {
+    /// The trouble an error of `category` is for the model it came from. `None` for an error
+    /// that says nothing about one model, such as the network or the account.
+    pub fn of(category: ErrorCategory) -> Option<Self> {
+        match category {
+            ErrorCategory::Overloaded => Some(Self::Overload),
+            ErrorCategory::Server => Some(Self::ServerErrors),
+            _ => None,
+        }
+    }
+
+    /// `overloaded`, `server errors`: what the model is said to have.
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::Overload => "overloaded",
+            Self::ServerErrors => "server errors",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelHealth {
+    pub model: ModelRef,
+    pub state: ModelState,
+    #[serde(with = "time::serde::rfc3339")]
+    pub since: OffsetDateTime,
+    pub reason: Option<String>,
+    /// What took it out, kept while it's out or under test.
+    pub trouble: Option<Trouble>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub next_test_at: Option<OffsetDateTime>,
+}
+
+impl ModelHealth {
+    /// A model nothing was ever said against.
+    pub fn healthy(model: &ModelRef) -> Self {
+        Self {
+            model: model.clone(),
+            state: ModelState::Healthy,
+            since: OffsetDateTime::UNIX_EPOCH,
+            reason: None,
+            trouble: None,
+            next_test_at: None,
+        }
+    }
+
+    /// Whether a fallback may go to it. A model under test takes only work asked of it, as its
+    /// one test task, so a batch of stopped work can't all land on it.
+    pub fn takes_fallbacks(&self) -> bool {
+        matches!(self.state, ModelState::Healthy | ModelState::Degraded)
+    }
+
+    /// Whether work asked of it may start on it: anything but out.
+    pub fn takes_its_own_work(&self) -> bool {
+        self.state != ModelState::Out
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HealthSignal {
     Retry {
-        vendor: VendorId,
+        agent_id: AgentId,
+        /// The model the session runs, `None` for the agent's default.
+        model: Option<String>,
         session: SessionKey,
         reason: RetryReason,
     },
     Error {
-        vendor: VendorId,
+        agent_id: AgentId,
+        model: Option<String>,
         session: SessionKey,
         category: ErrorCategory,
     },
     Success {
-        vendor: VendorId,
+        agent_id: AgentId,
+        model: Option<String>,
         session: SessionKey,
     },
     /// Unknown events piled up or the startup check failed.
-    AdapterBroken { vendor: VendorId, detail: String },
+    AdapterBroken { agent_id: AgentId, detail: String },
 }
 
-/// Quota across every run and the app, persisted in `~/.argonauts/vendors.json`.
-pub trait QuotaBoard: Send + Sync {
-    /// Keeps the reading as its vendor's for its window.
-    fn observe(&self, reading: QuotaReading);
-    /// The vendor's window that binds soonest, for what wants one number per vendor: the
-    /// handoff, the planner, and the mode line's chip.
-    fn get(&self, vendor: &VendorId) -> Option<QuotaReading>;
-    /// One reading per vendor, as `get` gives it.
-    fn all(&self) -> Vec<QuotaReading>;
-    /// Every window the vendor reported, one reading each.
-    fn windows(&self, vendor: &VendorId) -> Vec<QuotaReading> {
-        self.get(vendor).into_iter().collect()
+/// Plan usage across every run and the app, persisted in `~/.argonauts/agents.json`.
+pub trait PlanUsageBoard: Send + Sync {
+    /// Keeps the reading as its agent's for its window.
+    fn observe(&self, reading: PlanUsageReading);
+    /// The agent's window that binds soonest, for what wants one number per agent: the
+    /// fallback, the planner, and the bottom line's chip.
+    fn get(&self, agent_id: &AgentId) -> Option<PlanUsageReading>;
+    /// One reading per agent, as `get` gives it.
+    fn all(&self) -> Vec<PlanUsageReading>;
+    /// Every window the agent reported, one reading each.
+    fn windows(&self, agent_id: &AgentId) -> Vec<PlanUsageReading> {
+        self.get(agent_id).into_iter().collect()
     }
     /// The account's plan, as the CLI names it.
-    fn plan(&self, vendor: &VendorId) -> Option<String> {
-        let _ = vendor;
+    fn plan(&self, agent_id: &AgentId) -> Option<String> {
+        let _ = agent_id;
         None
     }
-    fn observe_plan(&self, vendor: &VendorId, plan: String) {
-        let _ = (vendor, plan);
+    fn observe_plan(&self, agent_id: &AgentId, plan: String) {
+        let _ = (agent_id, plan);
     }
     /// Keeps a live reading as its account's. A reading of another account than the last
     /// one's means the CLI was signed in again, and only the new account's numbers show.
@@ -236,54 +320,71 @@ pub trait QuotaBoard: Send + Sync {
     }
     /// The CLI's newest live reading, for the account it was last signed in as. What shows
     /// it checks [`LiveUsage::shown_at`](crate::plan_usage::LiveUsage::shown_at) first.
-    fn live(&self, vendor: &VendorId) -> Option<crate::plan_usage::LiveUsage> {
-        let _ = vendor;
+    fn live(&self, agent_id: &AgentId) -> Option<crate::plan_usage::LiveUsage> {
+        let _ = agent_id;
         None
     }
     /// Why this process's last live read of the CLI got no reading, in words for the screen.
     /// `None` once a reading lands.
-    fn failed(&self, vendor: &VendorId) -> Option<String> {
-        let _ = vendor;
+    fn failed(&self, agent_id: &AgentId) -> Option<String> {
+        let _ = agent_id;
         None
     }
     /// When this process last had cause to doubt the CLI's live reading: a read that failed,
     /// or a sign-in or sign-out since. A reading from before then may be another account's,
     /// so it no longer stands as the CLI's own.
-    fn doubted_at(&self, vendor: &VendorId) -> Option<OffsetDateTime> {
-        let _ = vendor;
+    fn doubted_at(&self, agent_id: &AgentId) -> Option<OffsetDateTime> {
+        let _ = agent_id;
         None
     }
     /// The CLI was signed in or out, so its live reading may be another account's until it
     /// is read again.
-    fn doubt(&self, vendor: &VendorId) {
-        let _ = vendor;
+    fn doubt(&self, agent_id: &AgentId) {
+        let _ = agent_id;
     }
-    /// Reads quota without spending any, where the vendor allows it (agy `/usage`).
-    fn probe(&self, vendor: &VendorId) -> BoxFuture<'_, Option<QuotaReading>>;
+    /// Reads plan usage without spending any, where the agent allows it (agy `/usage`).
+    fn probe(&self, agent_id: &AgentId) -> BoxFuture<'_, Option<PlanUsageReading>>;
 }
 
-/// Vendor health and the circuit breaker, shared like [`QuotaBoard`].
+/// Agent health and the circuit breaker, shared like [`PlanUsageBoard`].
 pub trait HealthBoard: Send + Sync {
     fn observe(&self, signal: HealthSignal);
-    fn state(&self, vendor: &VendorId) -> VendorHealth;
-    fn all(&self) -> Vec<VendorHealth>;
-    fn subscribe(&self) -> broadcast::Receiver<VendorEvent>;
-    fn test_result(&self, vendor: &VendorId, ok: bool);
+    fn state(&self, agent_id: &AgentId) -> AgentHealth;
+    fn all(&self) -> Vec<AgentHealth>;
+    fn subscribe(&self) -> broadcast::Receiver<AgentStatusEvent>;
+    fn test_result(&self, agent_id: &AgentId, ok: bool);
+    /// One model's own health. A board that keeps none per model says healthy.
+    fn model(&self, model: &ModelRef) -> ModelHealth {
+        ModelHealth::healthy(model)
+    }
+    /// Every model of the agent the board has heard anything against, by name.
+    fn models(&self, agent_id: &AgentId) -> Vec<ModelHealth> {
+        let _ = agent_id;
+        Vec::new()
+    }
+}
+
+/// Whether a fallback may go to `model` as far as health goes: its CLI is up and the model
+/// itself isn't out or under test.
+pub fn takes_fallbacks(board: &dyn HealthBoard, model: &ModelRef) -> bool {
+    let cli = board.state(&model.agent_id()).state;
+    matches!(cli, HealthState::Healthy | HealthState::Degraded)
+        && board.model(model).takes_fallbacks()
 }
 
 #[derive(Debug, Clone)]
 pub struct StopContext {
     pub run: RunId,
-    pub card: CardSpec,
-    pub state: CardState,
+    pub task: TaskSpec,
+    pub state: TaskState,
     pub role: RoleName,
-    pub worker: WorkerRef,
+    pub worker: ModelRef,
     pub end: SessionEnd,
     /// Oldest first, one line each.
-    pub attempts: Vec<String>,
+    pub tries: Vec<String>,
     pub reassigned_once: bool,
     pub events: PathBuf,
-    /// What the stopped worker's CLI says of its login, asked after a sign-in error: `Some(false)`
+    /// What the stopped agent's CLI says of its login, asked after a sign-in error: `Some(false)`
     /// when it says it's logged out, the only time a login is the fix.
     pub logged_in: Option<bool>,
 }
@@ -294,60 +395,62 @@ pub enum RecoveryAction {
     /// Treat the result as final.
     Proceed,
     ResumeSame {
-        /// Such as the gate output or a nudge.
+        /// Such as the check output or a nudge.
         message: String,
     },
-    /// Same worker, fresh session, with a handoff note (context full).
-    Rotate { packet: Box<HandoffPacket> },
-    /// Another worker chosen by the rules (handoff mode `auto`, retry ladder).
-    HandOff {
-        to: WorkerRef,
-        packet: Box<HandoffPacket>,
-        /// Tag the committed work as this before the new worker starts.
+    /// Same model, fresh session, with a fallback note (context full).
+    Rotate { note: Box<FallbackNote> },
+    /// Another model chosen by the rules (fallback mode `auto`, retry ladder).
+    Fallback {
+        to: ModelRef,
+        note: Box<FallbackNote>,
+        /// Tag the committed work as this before the fallback starts.
         checkpoint: Option<CheckpointTag>,
     },
-    /// Several workers at once, each in its own worktree, sharing the card's remaining budget.
+    /// Several models at once, each in its own worktree, sharing the task's remaining limit.
     /// `pick` says how their results combine.
     Race {
-        to: Vec<WorkerRef>,
+        to: Vec<ModelRef>,
         pick: Pick,
-        packet: Box<HandoffPacket>,
+        note: Box<FallbackNote>,
         checkpoint: Option<CheckpointTag>,
     },
-    /// Open a handoff checkpoint.
-    Ask(Box<crate::events::vendor::HandoffPlan>),
-    /// Keep the card in `NeedsDecision` until the vendor is back.
+    /// Open a fallback approval.
+    Ask(Box<crate::events::agent_status::FallbackPlan>),
+    /// Keep the task in `NeedsDecision` until the agent is back.
     Wait {
-        vendor: VendorId,
+        agent_id: AgentId,
         until: Option<OffsetDateTime>,
+        /// The CLI that would have taken it, where `fallback.same_cli` is why it waits.
+        kept_off: Option<AgentId>,
     },
     /// Apply `limits.when_reached`.
-    BudgetHit(OnHit),
-    /// Out of attempts.
-    Escalate { reason: String },
+    LimitHit(OnHit),
+    /// Out of tries.
+    AskYou { reason: String },
     /// Nothing can continue anywhere.
-    Park(ParkReason),
+    RunWaits(WaitReason),
 }
 
-/// The vendor-neutral packet a new agent gets. Built by code from the log, at no token cost.
+/// The CLI-neutral note a new agent gets. Built by code from the log, at no token cost.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct HandoffPacket {
-    pub card: CardSpec,
+pub struct FallbackNote {
+    pub task: TaskSpec,
     pub goal_sha256: Option<String>,
     pub notes: Vec<String>,
     pub work: WorkSoFar,
     /// Files read and edited, commands run and their results, one line each.
     pub happened: Vec<String>,
     pub last_todo: Vec<TodoItem>,
-    pub gates: Vec<GateOutcome>,
+    pub checks: Vec<CheckOutcome>,
     pub why_stopped: String,
     /// The previous agent's own report, if it wrote one.
-    pub last_words: Option<CardReport>,
+    pub last_words: Option<TaskReport>,
     /// What the stopped session said last. Without a report, it is often the only word on
     /// where the work stands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message: Option<String>,
-    pub budget_left: Option<BudgetAmount>,
+    pub limit_left: Option<LimitAmount>,
     /// The old session as Markdown, written for `note+transcript` and `note+summary`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript: Option<TranscriptPaths>,
@@ -356,41 +459,41 @@ pub struct HandoffPacket {
     pub summary: Option<String>,
 }
 
-/// Where a handoff's transcript was written. Code builds it from the card's events in the
-/// run's log, so it reads the same for every vendor.
+/// Where a fallback's transcript was written. Code builds it from the task's events in the
+/// run's log, so it reads the same for every agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptPaths {
-    /// `<card worktree>/.argonauts/handoff/<n>/transcript.md`, the copy the note names. Every
-    /// harness can read it without extra flags, and the worktree's git exclude file keeps it
+    /// `<task worktree>/.argonauts/fallback/<n>/transcript.md`, the copy the note names. Every
+    /// CLI can read it without extra flags, and the worktree's git exclude file keeps it
     /// out of commits.
     pub worktree: PathBuf,
-    /// `runs/<run>/cards/<card>/handoff-<n>/transcript.md`, the run's own copy, kept for you.
+    /// `runs/<run>/tasks/<task>/fallback-<n>/transcript.md`, the run's own worktree, kept for you.
     pub run: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkSoFar {
-    /// `argonauts/<run>/<card>`.
+    /// `argonauts/<run>/<task>`.
     pub branch: String,
     pub commit: Option<String>,
-    /// Against the card's base.
+    /// Against the task's base.
     pub stat: crate::DiffStat,
 }
 
-pub trait HandoffPlanner: Send + Sync {
-    /// Valid candidates, best first: the role's rules (family, blindness), vendor health, and
-    /// quota left. Each carries its quota, track record, and cost estimate.
+pub trait FallbackPlanner: Send + Sync {
+    /// Valid candidates, best first: the role's rules (provider, blindness), agent health, and
+    /// plan usage left. Each carries its plan usage, track record, and cost estimate.
     fn candidates(&self, query: &CandidateQuery) -> Vec<Candidate>;
-    /// Built from that card's own events (the engine filters them), so its cost stays small
+    /// Built from that task's own events (the engine filters them), so its cost stays small
     /// however long the run is.
-    fn packet(&self, card: &CardSpec, events: &[RunEvent]) -> HandoffPacket;
+    fn note(&self, task: &TaskSpec, events: &[RunEvent]) -> FallbackNote;
 
-    /// The candidates from the most specific replacement list for the card's role and the
-    /// stopped vendor, with the strategy and race count that apply, both from
-    /// [`HandoffSettings::applied`](crate::settings::handoff::HandoffSettings::applied).
+    /// The candidates from the most specific fallback list for the task's role and the
+    /// stopped agent, with the strategy and race count that apply, both from
+    /// [`FallbackTable::applied`](crate::settings::fallback::FallbackTable::applied).
     fn shortlist(&self, query: &CandidateQuery) -> Shortlist {
         Shortlist {
-            strategy: HandoffStrategy::First,
+            strategy: FallbackStrategy::First,
             race_count: 1,
             pick: Pick::default_for(query.role),
             candidates: self.candidates(query),
@@ -400,7 +503,7 @@ pub trait HandoffPlanner: Send + Sync {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Shortlist {
-    pub strategy: HandoffStrategy,
+    pub strategy: FallbackStrategy,
     /// How many fallbacks take the task at once (`together`).
     pub race_count: u32,
     /// How their results combine.
@@ -410,23 +513,23 @@ pub struct Shortlist {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CandidateQuery {
-    pub card: CardSpec,
+    pub task: TaskSpec,
     pub role: RoleName,
-    pub stopped: WorkerRef,
-    /// Such as the owner's for a reviewer.
-    pub exclude_families: Vec<String>,
+    pub stopped: ModelRef,
+    /// Such as the worker's for a reviewer.
+    pub exclude_providers: Vec<String>,
     pub fallback: Vec<FallbackEntry>,
-    /// List every valid worker, not only the fallback list.
+    /// List every valid model, not only the fallback list.
     pub all_valid: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Candidate {
-    pub worker: WorkerRef,
+    pub worker: ModelRef,
     /// 0 to 1, where known.
-    pub quota_left: Option<f64>,
+    pub plan_usage_left: Option<f64>,
     /// Such as "62%", or "API key".
-    pub quota_text: String,
+    pub plan_usage_text: String,
     pub track_record: Option<TrackRecord>,
     pub cost: CostEstimate,
     /// Moving to a paid API needs your OK.
@@ -434,7 +537,7 @@ pub struct Candidate {
     pub may_run_out: bool,
 }
 
-/// A track record on similar cards.
+/// A track record on similar tasks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackRecord {
     pub passed: u32,
@@ -446,45 +549,49 @@ pub struct TrackRecord {
 pub enum CostEstimate {
     Usd(f64),
     /// Share of a subscription window.
-    Quota(f64),
+    PlanUsage(f64),
     Free,
     Unknown,
 }
 
 /// Derived from the outcome log.
 pub trait TrackRecords: Send + Sync {
-    fn get(&self, worker: &WorkerRef, task_type: &str) -> Option<TrackRecord>;
+    fn get(&self, worker: &ModelRef, task_type: &str) -> Option<TrackRecord>;
 }
 
 pub trait LimitsService: Send + Sync {
-    fn session_limits(&self, card: Option<&CardSpec>, role: RoleName) -> SessionLimits;
+    fn session_limits(&self, task: Option<&TaskSpec>, role: RoleName) -> SessionLimits;
     fn after_stop<'a>(&'a self, context: &'a StopContext) -> BoxFuture<'a, RecoveryAction>;
-    /// Whether every candidate for the remaining work is down or out of quota.
-    fn all_out(&self, workers: &[WorkerRef]) -> Option<ParkReason>;
+    /// Whether every candidate for the remaining work is down or out of plan usage.
+    fn all_out(&self, workers: &[ModelRef]) -> Option<WaitReason>;
 }
 
+/// What the checks run on the starting code go by in a request's and an event's `task`, in a
+/// task's place: they are the run's own, made before any task exists.
+pub const START_CHECKS: &str = "start";
+
 /// The environment is an allowlist: `PATH`, `LANG`, `TERM`, `TMPDIR`, `HOME` set to a temp
-/// directory, and `CI=1`. No vendor key, and nothing named `*_KEY`, `*_TOKEN`, `*_SECRET`, or
-/// `*_PASSWORD`, reaches a gate, since tests an agent edited can print their environment.
+/// directory, and `CI=1`. No agent key, and nothing named `*_KEY`, `*_TOKEN`, `*_SECRET`, or
+/// `*_PASSWORD`, reaches a check, since tests an agent edited can print their environment.
 #[derive(Debug, Clone, PartialEq)]
-pub struct GateRequest {
+pub struct CheckRequest {
     pub run: RunId,
-    pub card: CardId,
+    pub task: TaskId,
     pub name: String,
     /// An argument vector from protected config.
     pub command: Vec<String>,
     pub workdir: PathBuf,
     pub sandbox: SandboxProfile,
     pub timeout: Duration,
-    /// A `gates.setup` command: runs once per worktree before the first gate, outside the
+    /// A `checks.setup` command: runs once per worktree before the first check, outside the
     /// agent's sandbox, with network for installs from the lockfile and install scripts off
     /// where the tool allows it.
     pub setup: bool,
 }
 
 /// Fails closed when the sandbox is missing.
-pub trait GateRunner: Send + Sync {
-    fn run(&self, request: GateRequest) -> BoxFuture<'_, GateOutcome>;
+pub trait CheckRunner: Send + Sync {
+    fn run(&self, request: CheckRequest) -> BoxFuture<'_, CheckOutcome>;
 }
 
 #[cfg(test)]
@@ -492,21 +599,21 @@ mod tests {
     use super::*;
     use time::macros::datetime;
 
-    fn reading(window: Option<&str>, used: f64, minute: u8) -> QuotaReading {
-        QuotaReading {
-            vendor: VendorId("codex".into()),
-            status: QuotaStatus::Allowed,
+    fn reading(window: Option<&str>, used: f64, minute: u8) -> PlanUsageReading {
+        PlanUsageReading {
+            agent_id: AgentId("codex".into()),
+            status: PlanUsageStatus::Allowed,
             used: Some(used),
             resets_at: None,
             window: window.map(str::to_owned),
-            source: QuotaSource::AppServer,
+            source: PlanUsageSource::AppServer,
             observed_at: datetime!(2026-10-04 12:00 UTC) + time::Duration::minutes(minute.into()),
             detail: None,
             wrap_up: false,
         }
     }
 
-    fn windows_of(windows: &QuotaWindows) -> Vec<(Option<&str>, Option<f64>)> {
+    fn windows_of(windows: &PlanWindows) -> Vec<(Option<&str>, Option<f64>)> {
         windows
             .readings()
             .iter()
@@ -516,7 +623,7 @@ mod tests {
 
     #[test]
     fn each_window_keeps_its_newest_reading() {
-        let mut windows = QuotaWindows::default();
+        let mut windows = PlanWindows::default();
         assert!(windows.observe(reading(Some("five_hour"), 0.5, 1)));
         assert!(windows.observe(reading(Some("weekly"), 0.4, 1)));
         assert!(windows.observe(reading(Some("five_hour"), 0.6, 2)));
@@ -529,8 +636,8 @@ mod tests {
     }
 
     #[test]
-    fn a_reading_with_no_window_speaks_for_the_whole_vendor() {
-        let mut windows = QuotaWindows::default();
+    fn a_reading_with_no_window_speaks_for_the_whole_agent() {
+        let mut windows = PlanWindows::default();
         windows.observe(reading(Some("five_hour"), 0.5, 1));
         windows.observe(reading(Some("weekly"), 0.4, 1));
         windows.observe(reading(None, 1.0, 2));
@@ -542,7 +649,7 @@ mod tests {
     #[test]
     fn a_refused_window_binds_before_a_fuller_one() {
         let mut refused = reading(Some("weekly"), 0.3, 1);
-        refused.status = QuotaStatus::Rejected;
+        refused.status = PlanUsageStatus::Rejected;
         let readings = [reading(Some("five_hour"), 0.9, 1), refused];
         assert_eq!(
             binding_reading(&readings).unwrap().window.as_deref(),

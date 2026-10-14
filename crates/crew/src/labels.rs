@@ -1,16 +1,17 @@
-//! Every session's label, such as `fix:slugify` or `read:claude`: from its step's pattern, or
-//! the kind's default when the lead left it out, filled with the card's item, the family, and
-//! the round. A card's item is the name its plan gave it (the planner's key, or the lead's),
-//! else its title's first words, and never its id. A card's later sessions (a handoff, a retry,
-//! a resume) keep its label, so a row never changes name; anyone else who'd share one gets
+//! Every session's label, such as `fix:slugify` or `read:anthropic`: from its step's pattern, or
+//! the kind's default when the main agent left it out, filled with the task's item, the provider,
+//! and the round. A task's item is the name its plan gave it (the planner's key, or the main
+//! agent's), else its title's first words, and never its id. A task's later sessions (a fallback, a
+//! retry, a resume) keep its label, so a row never changes name; anyone else who'd share one gets
 //! `-2`.
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::labels::{self, LabelParts};
-use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName, SessionKey};
 use argonauts_core::steps::StepName;
 use argonauts_core::workflow::{StepKind, StepRef};
 
+use crate::merge::merger;
 use crate::state::RunState;
 
 /// Who a new session is, as far as its label goes.
@@ -21,27 +22,27 @@ pub struct Asking<'a> {
     pub round: u32,
     pub role: RoleName,
     pub step_name: Option<StepName>,
-    pub card: Option<&'a CardId>,
-    /// The card's item when no card record holds it yet, as for a prediction made while the
+    pub task: Option<&'a TaskId>,
+    /// The task's item when no task record holds it yet, as for a prediction made while the
     /// plan is divided.
     pub item: Option<&'a str>,
-    pub worker: &'a WorkerRef,
-    pub family: &'a str,
+    pub worker: &'a ModelRef,
+    pub provider: &'a str,
 }
 
-/// What a card goes by where it asks you something: its owner's label, such as `build:flag`,
-/// else `build:` and its item. Its id shows only for a card with neither.
-pub fn card_label(state: &RunState, card: &CardId) -> String {
-    let owner = state
+/// What a task goes by where it asks you something: its worker's label, such as `build:flag`,
+/// else `build:` and its item. Its id shows only for a task with neither.
+pub fn task_label(state: &RunState, task: &TaskId) -> String {
+    let worker = state
         .sessions
         .in_order()
         .into_iter()
-        .filter(|session| session.card.as_ref() == Some(card))
+        .filter(|session| session.task.as_ref() == Some(task))
         .find(|session| session.started.step == Some(StepName::Build))
         .and_then(|session| session.started.label.clone());
-    owner
+    worker
         .or_else(|| {
-            let record = state.cards.get(card)?;
+            let record = state.tasks.get(task)?;
             let item = record
                 .spec
                 .item
@@ -50,12 +51,13 @@ pub fn card_label(state: &RunState, card: &CardId) -> String {
                 .unwrap_or_else(|| labels::item_from_title(&record.spec.title, "build"));
             (!item.is_empty()).then(|| format!("build:{item}"))
         })
-        .unwrap_or_else(|| card.to_string())
+        .unwrap_or_else(|| task.to_string())
 }
 
 /// The session's label, unique in the run.
 pub fn session_label(state: &RunState, asking: &Asking<'_>) -> String {
-    if let Some(kept) = earlier_label(state, asking) {
+    let round = round_of(state, asking);
+    if let Some(kept) = earlier_label(state, asking, round) {
         return kept;
     }
     let phase = asking.step.and_then(|step| {
@@ -70,8 +72,8 @@ pub fn session_label(state: &RunState, asking: &Asking<'_>) -> String {
         None => (String::new(), None),
     };
     let item = asking
-        .card
-        .and_then(|card| state.cards.get(card))
+        .task
+        .and_then(|task| state.tasks.get(task))
         .and_then(|record| {
             record
                 .spec
@@ -99,15 +101,15 @@ pub fn session_label(state: &RunState, asking: &Asking<'_>) -> String {
             &phase
         },
         item: item.as_deref(),
-        family: Some(asking.family),
+        provider: Some(asking.provider),
         n: Some(n),
-        round: asking.round,
-        attempt: state
+        round,
+        try_number: state
             .goal
             .pursuit
             .as_ref()
-            .and_then(|goal| goal.attempts.last())
-            .map(|attempt| attempt.n),
+            .and_then(|goal| goal.tries.last())
+            .map(|a_try| a_try.n),
         branch: branch.as_deref(),
     };
     let label = labels::fill(&pattern, &parts);
@@ -128,25 +130,26 @@ pub fn given_label(state: &RunState, key: &SessionKey, given: &str) -> String {
 }
 
 /// The pattern for this session: the step's own for the agent the step is about, else what its
-/// role does on a card (a reviewer reviews, an adjudicator settles), else the step's default.
+/// role does on a task (a reviewer reviews, the judge settles), else the step's default.
 fn pattern(
     asking: &Asking<'_>,
     step: Option<(StepKind, Option<RoleName>, Option<&str>)>,
 ) -> String {
-    // Work a step's own agents do beside it: a card's tests, review, and settling, and the
-    // lead's and code's own asks.
+    // Work a step's own agents do beside it: a task's tests, review, and settling, and the
+    // main agent's and code's own asks.
     let beside = match (asking.step_name, asking.role) {
         (Some(StepName::DesignWorkflow), _) => Some("main:design"),
-        (Some(StepName::PlanAttempt), _) => Some("main:attempt"),
+        (Some(StepName::PlanTry), _) => Some("main:try"),
         (Some(StepName::AcceptanceTests), _) => Some("accept:{item}"),
         (Some(StepName::Predict), _) => Some("predict:{item}"),
-        (Some(StepName::ResolveConflict), _) => Some("resolve:{item}"),
-        (Some(StepName::HandoffSummary), _) => Some("handoff:{item}"),
-        (Some(StepName::PickAttempt), _) => Some("pick:{item}"),
+        // Named for the job, as every session of the merger's is.
+        (Some(StepName::ResolveConflict), _) => Some(merger::SETTLE_CONFLICT),
+        (Some(StepName::FallbackSummary), _) => Some("fallback:{item}"),
+        (Some(StepName::PickTry), _) => Some("pick:{item}"),
         (Some(StepName::WriteInstructions), _) => Some("write:{item}"),
-        (_, RoleName::Reviewer) if asking.card.is_some() => Some("review:{item}"),
-        (_, RoleName::Adjudicator) if asking.card.is_some() => Some("settle:{item}"),
-        (_, RoleName::Spike) => Some("experiment:{item}"),
+        (_, RoleName::Reviewer) if asking.task.is_some() => Some("review:{item}"),
+        (Some(StepName::Settle), _) if asking.task.is_some() => Some("settle:{item}"),
+        (_, RoleName::Experiment) => Some("experiment:{item}"),
         _ => None,
     };
     if let Some(pattern) = beside {
@@ -157,18 +160,20 @@ fn pattern(
         Some((kind, role, None)) => {
             labels::default_pattern(kind, role.or(Some(asking.role))).to_owned()
         }
-        None if asking.card.is_some() => format!("{}:{{item}}", asking.role.as_str()),
+        None if asking.task.is_some() => format!("{}:{{item}}", asking.role.as_str()),
         None => asking.role.as_str().to_owned(),
     }
 }
 
-/// A card keeps its label through handoffs and retries, and any session keeps its own when it
-/// resumes. Sessions without a card are told apart by their worker too, so two readers in one
+/// A task keeps its label through fallbacks and retries, and any session keeps its own when it
+/// resumes. Sessions without a task are told apart by their worker too, so two readers in one
 /// step get two labels.
-fn earlier_label(state: &RunState, asking: &Asking<'_>) -> Option<String> {
+fn earlier_label(state: &RunState, asking: &Asking<'_>, round: u32) -> Option<String> {
     if let Some(own) = state.sessions.get(asking.key) {
         return own.started.label.clone();
     }
+    // A review after changes is a new row, `review:median:r2`, never the first review's.
+    let same_round = |label: &str| asking.role != RoleName::Reviewer || round_in(label) == round;
     state
         .sessions
         .in_order()
@@ -179,10 +184,31 @@ fn earlier_label(state: &RunState, asking: &Asking<'_>) -> Option<String> {
             let same = started.workflow_step.as_ref() == asking.step
                 && started.role == asking.role
                 && started.step == asking.step_name
-                && session.card.as_ref() == asking.card
-                && asking.card.is_some();
-            same.then(|| started.label.clone()).flatten()
+                && session.task.as_ref() == asking.task
+                && asking.task.is_some();
+            same.then(|| started.label.clone())
+                .flatten()
+                .filter(|label| same_round(label))
         })
+}
+
+/// The round a session's label says: a task's review counts the rounds that asked for changes,
+/// and everything else is in its step's round.
+fn round_of(state: &RunState, asking: &Asking<'_>) -> u32 {
+    match (asking.role, asking.task) {
+        (RoleName::Reviewer, Some(task)) => {
+            (state.tasks.progress(task).change_rounds + 1).max(asking.round)
+        }
+        _ => asking.round,
+    }
+}
+
+/// The round a label ends with, 1 when it names none.
+fn round_in(label: &str) -> u32 {
+    label
+        .rsplit_once(":r")
+        .and_then(|(_, round)| round.parse().ok())
+        .unwrap_or(1)
 }
 
 /// Earlier agents of the same step, round, and role, for `{n}`.
@@ -220,12 +246,12 @@ mod tests {
 
     use crate::state::tests as testing;
 
-    fn worker(name: &str) -> WorkerRef {
-        WorkerRef::new(name, None)
+    fn worker(name: &str) -> ModelRef {
+        ModelRef::new(name, None)
     }
 
     #[test]
-    fn readers_take_their_family_and_repeats_get_a_number() {
+    fn readers_take_their_provider_and_repeats_get_a_number() {
         let mut state = RunState::default();
         let key = SessionKey::numbered(1);
         let claude = worker("claude-code");
@@ -233,17 +259,17 @@ mod tests {
             key: &key,
             step: None,
             round: 1,
-            role: RoleName::Restater,
-            step_name: Some(StepName::Restate),
-            card: None,
+            role: RoleName::Reader,
+            step_name: Some(StepName::Read),
+            task: None,
             item: None,
             worker: &claude,
-            family: "claude",
+            provider: "anthropic",
         };
-        assert_eq!(session_label(&state, &asking), "restater");
+        assert_eq!(session_label(&state, &asking), "reader");
 
-        let mut started = testing::session_started(&claude, RoleName::Restater);
-        started.label = Some("restater".to_owned());
+        let mut started = testing::session_started(&claude, RoleName::Reader);
+        started.label = Some("reader".to_owned());
         state.apply(&testing::envelope(
             1,
             None,
@@ -251,16 +277,16 @@ mod tests {
             RunEventKind::Session(SessionEvent::Started(Box::new(started))),
         ));
         // Its own resume keeps the label.
-        assert_eq!(session_label(&state, &asking), "restater");
+        assert_eq!(session_label(&state, &asking), "reader");
         // Another session that would share it doesn't.
         let other = SessionKey::numbered(2);
         let codex = worker("codex");
         let second = Asking {
             key: &other,
             worker: &codex,
-            family: "gpt",
+            provider: "openai",
             ..asking
         };
-        assert_eq!(session_label(&state, &second), "restater-2");
+        assert_eq!(session_label(&state, &second), "reader-2");
     }
 }

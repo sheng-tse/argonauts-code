@@ -1,5 +1,5 @@
-//! Secret patterns shared by the secret gate and the event sink, which redacts before anything
-//! reaches the journal, a subscriber, a reviewer, or an approver.
+//! Secret patterns shared by the secret check and the event sink, which redacts before anything
+//! reaches the journal, a subscriber, a reviewer, or a judge.
 
 use std::borrow::Cow;
 use std::ops::Range;

@@ -2,22 +2,22 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use argonauts_core::api::{RunState as RunStatus, RunSummary};
-use argonauts_core::app::{AppEvent, ChatEvent, ReplayTurn, TurnReply};
-use argonauts_core::events::RetroEvent;
-use argonauts_core::events::card::{AttemptCause, CardEvent, CardState, GateKind, GateOutcome};
+use argonauts_core::app::{AppEvent, ConversationEvent, ReplayTurn, TurnReply};
+use argonauts_core::events::RunReviewEvent;
 use argonauts_core::events::run::{
-    ChangedFile, CheckLine, ClosingAnswer, ParkReason, Party, PhaseChange, RunLifecycle, RunMode,
-    RunOutcome, RunPhase, RunStarted,
+    ChangedFile, CheckLine, ClosingAnswer, Party, PhaseChange, RunLifecycle, RunMode, RunOutcome,
+    RunPhase, RunStarted, WaitReason,
 };
+use argonauts_core::events::task::{CheckKind, CheckOutcome, TaskEvent, TaskState, TryCause};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::log::RETRO_FAILED;
-use argonauts_core::names::{TurnId, WorkerRef};
+use argonauts_core::log::RUN_REVIEW_FAILED;
+use argonauts_core::names::{ModelRef, TurnId};
 use argonauts_core::policy::{NarratorLine, NarratorLineKind};
 use argonauts_core::settings::ui::UiSettings;
-use argonauts_core::{AgentEvent, CardId, Note, NoteLevel, PhaseStatus, RunId, Spend, Verbosity};
+use argonauts_core::{AgentEvent, Note, NoteLevel, PhaseStatus, RunId, Spend, TaskId, Verbosity};
 use time::macros::datetime;
 
-use super::{ChatTurns, Transcript};
+use super::{ConversationTurns, Transcript};
 use crate::bridge::{Cx, Effects};
 use crate::cell::{Cell, HistoryCell, ToolKind};
 use crate::format::WallClock;
@@ -27,18 +27,18 @@ use crate::state::{AppState, Replay};
 use crate::text::plain_text;
 use crate::theme::{Glyphs, Theme};
 
-struct Harness {
+struct TestDriver {
     model: ViewModel,
     state: AppState,
     settings: UiSettings,
     transcript: Transcript,
 }
 
-impl Harness {
+impl TestDriver {
     fn new() -> Self {
         let mut transcript =
             Transcript::with_clock(WallClock::pinned(datetime!(2026-09-30 10:42 UTC)));
-        transcript.chat = ChatTurns::with_tool_kinds(|_, name| match name {
+        transcript.conversation = ConversationTurns::with_tool_kinds(|_, name| match name {
             "Read" => ToolKind::Read,
             _ => ToolKind::Other,
         });
@@ -88,8 +88,8 @@ fn run_id() -> RunId {
     RunId::new("run-01").expect("a valid run id")
 }
 
-fn card_id() -> CardId {
-    CardId::new("task-001").expect("a valid task id")
+fn task_id() -> TaskId {
+    TaskId::new("task-001").expect("a valid task id")
 }
 
 fn run_event(kind: RunEventKind) -> AppEvent {
@@ -98,9 +98,9 @@ fn run_event(kind: RunEventKind) -> AppEvent {
             seq: 0,
             ts: datetime!(2026-09-30 10:00 UTC),
             run_id: run_id(),
-            card_id: Some(card_id()),
+            task_id: Some(task_id()),
             session: None,
-            source: "conductor".into(),
+            source: "argonauts-code".into(),
             kind,
         }),
     }
@@ -118,12 +118,12 @@ fn started() -> AppEvent {
         RunStarted {
             request: "add a --json flag".into(),
             title: "Add a --json flag".into(),
-            mode: RunMode::Solo,
+            mode: RunMode::Captain,
             forced: false,
             workflow: "council".into(),
             estimate: None,
-            triage: None,
-            chat_turn: None,
+            captain_or_crew: None,
+            conversation_turn: None,
             continues: None,
             repo_root: PathBuf::from("/repo"),
             base_branch: Some("main".into()),
@@ -133,19 +133,19 @@ fn started() -> AppEvent {
             settings_sha256: String::new(),
             settings: serde_json::Value::Null,
             overrides: vec![],
-            harness_versions: Default::default(),
+            cli_versions: Default::default(),
             version: "0.0.1".into(),
-            front_end: None,
+            outside_agent: None,
             instructions: Vec::new(),
             required_steps: Vec::new(),
         },
     ))))
 }
 
-fn gate(name: &str, passed: bool) -> AppEvent {
-    run_event(RunEventKind::Gate(GateOutcome {
+fn check(name: &str, passed: bool) -> AppEvent {
+    run_event(RunEventKind::Check(CheckOutcome {
         name: name.into(),
-        kind: GateKind::Command,
+        kind: CheckKind::Command,
         passed,
         command: None,
         exit_code: None,
@@ -158,10 +158,10 @@ fn gate(name: &str, passed: bool) -> AppEvent {
     }))
 }
 
-fn gated() -> AppEvent {
-    run_event(RunEventKind::Card(CardEvent::State {
-        from: Some(CardState::Gating),
-        to: CardState::InReview,
+fn checks_passed() -> AppEvent {
+    run_event(RunEventKind::Task(TaskEvent::State {
+        from: Some(TaskState::Checking),
+        to: TaskState::InReview,
         reason: String::new(),
     }))
 }
@@ -169,25 +169,25 @@ fn gated() -> AppEvent {
 fn paused() -> AppEvent {
     run_event(RunEventKind::Run(RunLifecycle::Paused {
         sessions_stopped: 1,
-        committed: vec![card_id()],
+        committed: vec![task_id()],
     }))
 }
 
-fn chat_turn(n: u32, question: &str, answer: &str) -> Vec<AppEvent> {
+fn conversation_turn(n: u32, question: &str, answer: &str) -> Vec<AppEvent> {
     let turn = TurnId::numbered(n);
-    let chat = |event| AppEvent::Chat { event };
+    let conversation = |event| AppEvent::Conversation { event };
     vec![
-        chat(ChatEvent::TurnStarted {
+        conversation(ConversationEvent::TurnStarted {
             turn: turn.clone(),
             text: question.into(),
-            worker: WorkerRef::new("claude-code", Some("haiku".into())),
+            worker: ModelRef::new("claude-code", Some("haiku".into())),
             read_only: true,
             commit: "8b41d07".into(),
             uncommitted: vec![],
             settings_sha256: None,
             continues: false,
         }),
-        chat(ChatEvent::Agent {
+        conversation(ConversationEvent::Agent {
             turn: turn.clone(),
             event: AgentEvent::ToolStarted {
                 id: "tool-1".into(),
@@ -196,7 +196,7 @@ fn chat_turn(n: u32, question: &str, answer: &str) -> Vec<AppEvent> {
                 parent: None,
             },
         }),
-        chat(ChatEvent::Agent {
+        conversation(ConversationEvent::Agent {
             turn: turn.clone(),
             event: AgentEvent::ToolFinished {
                 id: "tool-1".into(),
@@ -205,14 +205,14 @@ fn chat_turn(n: u32, question: &str, answer: &str) -> Vec<AppEvent> {
                 parent: None,
             },
         }),
-        chat(ChatEvent::Agent {
+        conversation(ConversationEvent::Agent {
             turn: turn.clone(),
             event: AgentEvent::TextDelta {
                 text: answer.into(),
                 parent: None,
             },
         }),
-        chat(ChatEvent::TurnFinished {
+        conversation(ConversationEvent::TurnFinished {
             turn,
             reply: TurnReply::Answer {
                 markdown: answer.into(),
@@ -225,14 +225,14 @@ fn chat_turn(n: u32, question: &str, answer: &str) -> Vec<AppEvent> {
 
 #[test]
 fn replay_prints_summaries_only() {
-    let mut harness = Harness::new();
-    harness.send(AppEvent::Attached {
+    let mut driver = TestDriver::new();
+    driver.send(AppEvent::Attached {
         summary: RunSummary {
             run: run_id(),
             title: "Add a --json flag".into(),
             mode: RunMode::Crew,
             workflow: "council".into(),
-            state: RunStatus::Parked,
+            state: RunStatus::Waiting,
             stopped_at: "plan approval, waiting for you".into(),
             updated: datetime!(2026-09-30 10:00 UTC),
             spent: Spend::default(),
@@ -244,80 +244,78 @@ fn replay_prints_summaries_only() {
         },
         started_here: false,
     });
-    harness.send(started());
+    driver.send(started());
     for n in 0..400 {
-        harness.send(note(NoteLevel::Info, &format!("replayed note {n}")));
-        harness.send(gate("tests", true));
-        harness.send(gated());
+        driver.send(note(NoteLevel::Info, &format!("replayed note {n}")));
+        driver.send(check("tests", true));
+        driver.send(checks_passed());
     }
-    for event in chat_turn(1, "what does export do?", "It writes CSV.") {
-        harness.send(event);
+    for event in conversation_turn(1, "what does export do?", "It writes CSV.") {
+        driver.send(event);
     }
-    harness.send(paused());
-    let kept = harness.model.history.cells().len();
+    driver.send(paused());
+    let kept = driver.model.history.cells().len();
     assert!(kept > 800, "every replayed item stays for Ctrl+O: {kept}");
-    assert_eq!(
-        harness.printed(),
-        "",
-        "nothing prints while the run replays"
-    );
+    assert_eq!(driver.printed(), "", "nothing prints while the run replays");
 
-    harness.send(AppEvent::CondensedReplay {
+    driver.send(AppEvent::CondensedReplay {
         run: run_id(),
         turns: vec![
             ReplayTurn {
                 from: Party::User,
                 text: "add a --json flag".into(),
+                steps: Vec::new(),
             },
             ReplayTurn {
                 from: Party::Agent {
                     session: argonauts_core::names::SessionKey::parse("s-1")
                         .expect("a valid session key"),
-                    worker: WorkerRef::new("claude-code", Some("opus".into())),
+                    worker: ModelRef::new("claude-code", Some("opus".into())),
                 },
                 text: "I'll run it with the crew.".into(),
+                steps: Vec::new(),
             },
         ],
         milestones: vec!["Goal approved · 3 criteria".into(), "Plan drafted".into()],
         recap: "The plan waits for you.".into(),
         recap_model: None,
     });
-    harness.send(AppEvent::ReplayDone {
+    driver.send(AppEvent::ReplayDone {
         run: run_id(),
         seq: 1_200,
     });
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert_eq!(
         printed,
         "● Add a --json flag\n  ⎿  Waiting · plan approval, waiting for you · $0.00 spent · 2 sessions to\n     resume\n     ctrl+o shows the whole history\n\n❯ add a --json flag\n\n● I'll run it with the crew.\n\n● So far in this run\n  ⎿  Goal approved · 3 criteria\n     Plan drafted\n\n※ recap: The plan waits for you. (disable recaps in /config)"
     );
     assert!(!printed.contains("replayed note"));
-    assert!(harness.model.history.cells().len() > kept);
+    assert!(driver.model.history.cells().len() > kept);
 
     // Live events print again.
-    harness.send(paused());
-    assert!(harness.printed().contains("Paused the run"));
+    driver.send(paused());
+    assert!(driver.printed().contains("Paused the run"));
 }
 
-/// A run nobody could take a seat over in says so, not that every agent is out, and promises to
-/// go on by itself only when a retry is set.
+/// A run with nobody to fall back to for a job says so, not that every agent is out, and
+/// promises to go on by itself only when a retry is set.
 #[test]
-fn a_park_nobody_could_take_a_seat_in_says_so_and_when_it_tries_again() {
-    let parked = |until| {
-        run_event(RunEventKind::Run(RunLifecycle::Parked {
-            reason: ParkReason::NoStandIn {
-                detail: "nobody could take over as the main agent".into(),
+fn a_wait_with_nobody_to_fall_back_to_says_so_and_when_it_tries_again() {
+    let waiting = |until| {
+        run_event(RunEventKind::Run(RunLifecycle::Waiting {
+            reason: WaitReason::NoFallback {
+                detail: "nobody to fall back to as the main agent".into(),
                 until,
             },
             waiting_on: Vec::new(),
         }))
     };
-    let mut harness = Harness::new();
-    harness.send(started());
-    harness.send(parked(Some(datetime!(2026-09-30 10:47 UTC))));
-    let retrying = harness.printed();
+    let mut driver = TestDriver::new();
+    driver.send(started());
+    driver.send(waiting(Some(datetime!(2026-09-30 10:47 UTC))));
+    let retrying = driver.printed();
     assert!(
-        retrying.contains("The run waits · nobody could take over as the main agent"),
+        retrying.contains("The run waits · nobody to fall back to as the main agent"),
         "{retrying}"
     );
     assert!(retrying.contains("It tries again at "), "{retrying}");
@@ -325,8 +323,8 @@ fn a_park_nobody_could_take_a_seat_in_says_so_and_when_it_tries_again() {
     assert!(!retrying.contains("every agent is out"), "{retrying}");
     assert!(!retrying.contains("when one is back"), "{retrying}");
 
-    harness.send(parked(None));
-    let given_up = harness.printed();
+    driver.send(waiting(None));
+    let given_up = driver.printed();
     assert!(given_up.contains("/resume tries again"), "{given_up}");
     assert!(!given_up.contains("tries again at"), "{given_up}");
 }
@@ -351,41 +349,41 @@ fn running_summary() -> RunSummary {
 
 #[test]
 fn a_run_started_here_prints_no_header() {
-    let mut harness = Harness::new();
-    harness.send(AppEvent::Attached {
+    let mut driver = TestDriver::new();
+    driver.send(AppEvent::Attached {
         summary: running_summary(),
         started_here: true,
     });
-    harness.send(AppEvent::ReplayDone {
+    driver.send(AppEvent::ReplayDone {
         run: run_id(),
         seq: 0,
     });
     // The prompt that started it is right above, so a `● <title>` row would only repeat it.
-    assert_eq!(harness.printed().trim(), "");
+    assert_eq!(driver.printed().trim(), "");
 
     // A run opened again with no history still gets its header.
-    harness.send(AppEvent::Attached {
+    driver.send(AppEvent::Attached {
         summary: running_summary(),
         started_here: false,
     });
-    harness.send(AppEvent::ReplayDone {
+    driver.send(AppEvent::ReplayDone {
         run: run_id(),
         seq: 0,
     });
     assert!(
-        harness
+        driver
             .printed()
             .starts_with("● Add a --json flag\n  ⎿  Running · working · $0.00 spent"),
     );
 }
 
 #[test]
-fn an_empty_gates_run_is_not_a_failed_gate() {
-    let mut harness = Harness::new();
-    // What the engine records when `gates.run` is empty: skipped, and no command ran.
-    harness.send(run_event(RunEventKind::Gate(GateOutcome {
+fn an_empty_checks_run_is_not_a_failed_check() {
+    let mut driver = TestDriver::new();
+    // What the engine records when `checks.run` is empty: skipped, and no command ran.
+    driver.send(run_event(RunEventKind::Check(CheckOutcome {
         name: "checks.run".into(),
-        kind: GateKind::Command,
+        kind: CheckKind::Command,
         passed: true,
         command: None,
         exit_code: None,
@@ -396,8 +394,8 @@ fn an_empty_gates_run_is_not_a_failed_gate() {
         sandboxed: false,
         skipped: true,
     })));
-    harness.send(gated());
-    let printed = harness.printed();
+    driver.send(checks_passed());
+    let printed = driver.printed();
     assert!(
         printed.contains("built-in checks)\n  ⎿  No command checks set · /config checks.run"),
         "{printed}"
@@ -405,33 +403,33 @@ fn an_empty_gates_run_is_not_a_failed_gate() {
     assert!(!printed.contains("failed"), "{printed}");
 }
 
-fn retro_phase(status: PhaseStatus, summary: Option<&str>) -> AppEvent {
+fn run_review_phase(status: PhaseStatus, summary: Option<&str>) -> AppEvent {
     run_event(RunEventKind::Phase(PhaseChange {
-        phase: RunPhase::Retro,
+        phase: RunPhase::RunReview,
         status,
         summary: summary.map(Into::into),
     }))
 }
 
 #[test]
-fn a_failed_retro_is_said_once_and_not_called_saved() {
-    let mut harness = Harness::new();
-    harness.send(started());
-    harness.send(retro_phase(PhaseStatus::Started, None));
-    harness.send(run_event(RunEventKind::Retro(RetroEvent::Scored {
-        card: card_id(),
-        metric: "p_pass_gates_first_try".into(),
+fn a_failed_run_review_is_said_once_and_not_called_saved() {
+    let mut driver = TestDriver::new();
+    driver.send(started());
+    driver.send(run_review_phase(PhaseStatus::Started, None));
+    driver.send(run_event(RunEventKind::RunReview(RunReviewEvent::Scored {
+        task: task_id(),
+        metric: "p_pass_checks_first_try".into(),
         predicted: 0.8,
         outcome: true,
         brier: 0.04,
     })));
-    harness.send(retro_phase(PhaseStatus::Failed, Some(SCHEMA_MISS)));
-    harness.send(note(NoteLevel::Warn, RETRO_FAILED));
-    harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+    driver.send(run_review_phase(PhaseStatus::Failed, Some(SCHEMA_MISS)));
+    driver.send(note(NoteLevel::Warn, RUN_REVIEW_FAILED));
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
         outcome: RunOutcome::Merged,
         detail: None,
     })));
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert_eq!(
         printed.matches("The run review failed").count(),
         1,
@@ -463,21 +461,22 @@ fn closing() -> ClosingAnswer {
             "No test covers huge amounts.".to_owned(),
             "The README is out of date.".to_owned(),
         ],
+        decided: Vec::new(),
     }
 }
 
 fn ended_with_closing(verbosity: Verbosity) -> String {
-    let mut harness = Harness::new();
-    harness.settings.verbosity = verbosity;
-    harness.send(started());
-    harness.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
+    let mut driver = TestDriver::new();
+    driver.settings.verbosity = verbosity;
+    driver.send(started());
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
         Box::new(closing()),
     ))));
-    harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
         outcome: RunOutcome::Merged,
         detail: None,
     })));
-    harness.printed()
+    driver.printed()
 }
 
 #[test]
@@ -517,19 +516,60 @@ fn quiet_keeps_the_closing_words_and_full_keeps_every_list() {
     }
 }
 
+/// What a run on autopilot decided in your place is listed under its closing answer, each with
+/// whose call it was, and never as a question.
+#[test]
+fn a_closing_answer_lists_what_autopilot_decided() {
+    use argonauts_core::events::run::DecidedAlone;
+
+    let mut answer = closing();
+    answer.left.clear();
+    answer.decided = vec![DecidedAlone {
+        what: "negative amounts round half toward +∞, as apply_discount already does".to_owned(),
+        whose: "the worker's call".to_owned(),
+    }];
+    let mut driver = TestDriver::new();
+    driver.send(started());
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
+        Box::new(answer),
+    ))));
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+        outcome: RunOutcome::Merged,
+        detail: None,
+    })));
+    let printed = driver.printed_at(100);
+    let lines: Vec<&str> = printed.lines().map(str::trim_end).collect();
+    let at = lines
+        .iter()
+        .position(|line| line.contains("Decided on autopilot: negative amounts round half"))
+        .expect(&printed);
+    assert_eq!(
+        lines[at],
+        "  - Decided on autopilot: negative amounts round half toward +∞, as apply_discount \
+         already does",
+        "{printed}"
+    );
+    assert_eq!(
+        lines[at + 1],
+        "    (the worker's call; ask for a change if you want otherwise)",
+        "{printed}"
+    );
+    assert!(!printed.contains('?'), "nothing is asked: {printed}");
+}
+
 const SCHEMA_MISS: &str =
     "step: output didn't match the schema: [\"Additional properties are not allowed\"]";
 
-/// A schema miss is plumbing: the main view says the retro failed in plain words, and the
+/// A schema miss is plumbing: the main view says the run review failed in plain words, and the
 /// reason waits for Ctrl+O.
 #[test]
-fn a_failed_retro_keeps_its_raw_reason_for_ctrl_o() {
-    let mut harness = Harness::new();
-    harness.send(started());
-    harness.send(retro_phase(PhaseStatus::Started, None));
-    harness.send(retro_phase(PhaseStatus::Failed, Some(SCHEMA_MISS)));
-    harness.send(note(NoteLevel::Warn, RETRO_FAILED));
-    let printed = harness.printed();
+fn a_failed_run_review_keeps_its_raw_reason_for_ctrl_o() {
+    let mut driver = TestDriver::new();
+    driver.send(started());
+    driver.send(run_review_phase(PhaseStatus::Started, None));
+    driver.send(run_review_phase(PhaseStatus::Failed, Some(SCHEMA_MISS)));
+    driver.send(note(NoteLevel::Warn, RUN_REVIEW_FAILED));
+    let printed = driver.printed();
     assert!(
         printed.contains("● The run review failed. The run's result stands. (ctrl+o to expand)"),
         "{printed}"
@@ -539,7 +579,7 @@ fn a_failed_retro_keeps_its_raw_reason_for_ctrl_o() {
     let mut theme = Theme::dark();
     theme.glyphs = Glyphs::UNICODE;
     let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now())).with_expanded(true);
-    let expanded: String = harness
+    let expanded: String = driver
         .model
         .history
         .cells()
@@ -554,18 +594,18 @@ fn a_failed_retro_keeps_its_raw_reason_for_ctrl_o() {
 }
 
 /// A run's note says what happened in its first line, and the lines after it, such as what the
-/// validator said of the lead's design, wait for Ctrl+O.
+/// validator said of the main agent's design, wait for Ctrl+O.
 #[test]
 fn a_notes_detail_waits_for_ctrl_o() {
-    let mut harness = Harness::new();
-    harness.send(started());
+    let mut driver = TestDriver::new();
+    driver.send(started());
     let incomplete = Note::with_detail(
         NoteLevel::Warn,
         "The main agent's design came back incomplete, so orchestrator runs as written.",
         "output didn't match the schema:\n\"based_on\" is a required property",
     );
-    harness.send(note(NoteLevel::Warn, &incomplete.text));
-    let printed = harness.printed();
+    driver.send(note(NoteLevel::Warn, &incomplete.text));
+    let printed = driver.printed();
     assert!(
         printed.contains(
             "● The main agent's design came back incomplete, so orchestrator runs as written."
@@ -578,7 +618,7 @@ fn a_notes_detail_waits_for_ctrl_o() {
     let mut theme = Theme::dark();
     theme.glyphs = Glyphs::UNICODE;
     let drawn = |ctx: &RenderCtx<'_>| -> String {
-        harness
+        driver
             .model
             .history
             .cells()
@@ -604,20 +644,20 @@ fn a_notes_detail_waits_for_ctrl_o() {
     );
 }
 
-/// Another run's failed retro is said again, though its note is word for word the same.
+/// Another run's failed run review is said again, though its note is word for word the same.
 #[test]
-fn each_runs_failed_retro_is_said() {
-    let mut harness = Harness::new();
+fn each_runs_failed_run_review_is_said() {
+    let mut driver = TestDriver::new();
     for _ in 0..2 {
-        harness.send(started());
-        harness.send(retro_phase(PhaseStatus::Failed, None));
-        harness.send(note(NoteLevel::Warn, RETRO_FAILED));
-        harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+        driver.send(started());
+        driver.send(run_review_phase(PhaseStatus::Failed, None));
+        driver.send(note(NoteLevel::Warn, RUN_REVIEW_FAILED));
+        driver.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
             outcome: RunOutcome::Merged,
             detail: None,
         })));
     }
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert_eq!(
         printed.matches("The run review failed").count(),
         2,
@@ -628,48 +668,166 @@ fn each_runs_failed_retro_is_said() {
 
 #[test]
 fn warning_notice_shows_once() {
-    let mut harness = Harness::new();
+    let mut driver = TestDriver::new();
     let warning = "An always-on agent is running · approvals stay yours";
-    harness.send(AppEvent::Notice {
+    driver.send(AppEvent::Notice {
         level: NoteLevel::Warn,
         text: warning.into(),
     });
-    harness.send(note(NoteLevel::Warn, warning));
-    harness.send(AppEvent::Notice {
+    driver.send(note(NoteLevel::Warn, warning));
+    driver.send(AppEvent::Notice {
         level: NoteLevel::Warn,
         text: format!("  {warning}  "),
     });
-    harness.send(AppEvent::Notice {
+    driver.send(AppEvent::Notice {
         level: NoteLevel::Info,
         text: "Saved.".into(),
     });
-    harness.send(AppEvent::Notice {
+    driver.send(AppEvent::Notice {
         level: NoteLevel::Info,
         text: "Saved.".into(),
     });
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert_eq!(printed.matches(warning).count(), 1, "{printed}");
     assert_eq!(printed.matches("Saved.").count(), 2, "{printed}");
 }
 
 #[test]
-fn a_takeover_without_a_retry_names_who_steps_in_plainly_and_why_dimly() {
-    let mut harness = Harness::new();
+fn a_fallback_without_a_retry_names_who_steps_in_plainly_and_why_dimly() {
+    let mut driver = TestDriver::new();
     let line = format!(
-        "Claude Code takes over as reviewer · {}",
+        "Fell back to Claude Code as reviewer · {}",
         argonauts_core::log::NO_SECOND_TRY
     );
-    harness.send(note(NoteLevel::Warn, &line));
-    let Some(Cell::Notice(notice)) = harness.model.history.cells().last() else {
-        panic!("the takeover is a notice");
+    driver.send(note(NoteLevel::Warn, &line));
+    let Some(Cell::Notice(notice)) = driver.model.history.cells().last() else {
+        panic!("the fallback is a notice");
     };
-    assert_eq!(notice.text, "Claude Code takes over as reviewer");
+    assert_eq!(notice.text, "Fell back to Claude Code as reviewer");
     assert_eq!(
         notice.decided.as_deref(),
         Some(argonauts_core::log::NO_SECOND_TRY)
     );
     assert!(notice.plain_words);
-    assert!(harness.printed_at(120).contains(&line));
+    assert!(driver.printed_at(120).contains(&line));
+}
+
+/// The run the fallback picture tells of: `build:due-flag` building on Sonnet 5.5, and
+/// `review:due-tests` done by Sonnet 5.5 in Opus 5.5's place.
+fn due_dates_run(driver: &mut TestDriver) {
+    use argonauts_core::model_catalog::ModelCatalog;
+    use argonauts_core::names::{RoleName, SessionKey};
+
+    use crate::state::{RunState, SessionState, SessionStatus, TaskRow};
+
+    let catalog = serde_json::json!({ "model": [
+        { "id": "claude-code/claude-opus-5-5", "name": "Opus 5.5", "aliases": ["opus"] },
+        { "id": "claude-code/claude-sonnet-5-5", "name": "Sonnet 5.5", "aliases": ["sonnet"] },
+        { "id": "claude-code/claude-haiku-5-5", "name": "Haiku 5.5", "aliases": ["haiku"] },
+    ]});
+    let catalog: ModelCatalog = serde_json::from_value(catalog).expect("a catalog");
+    driver.state.names.catalog = catalog;
+
+    let sonnet: ModelRef = "claude-code/sonnet".parse().expect("a model");
+    let mut run = RunState::new(run_id());
+    let mut build = TaskRow::new(task_id(), "The --due flag");
+    build.item = Some("due-flag".into());
+    build.worker = Some(sonnet.clone());
+    build.state = Some(TaskState::Running);
+    run.tasks.insert(task_id(), build);
+    let key = SessionKey::numbered(2);
+    let mut review = SessionState::new(
+        key.clone(),
+        sonnet,
+        "claude-code",
+        RoleName::Reviewer,
+        datetime!(2026-09-30 13:58 UTC),
+    );
+    review.label = Some("review:due-tests".into());
+    review.fallback_for = Some("claude-code/opus".parse().expect("a model"));
+    review.status = SessionStatus::Done;
+    run.sessions.insert(key.clone(), review);
+    run.session_order.push(key);
+    driver.state.runs.insert(run_id(), run);
+}
+
+/// The lines a model's outage, its CLI's, and their returns put in the conversation, as the
+/// picture of fallbacks that stay on one CLI has them: every row the conversation itself
+/// writes there, in order. The picture's session rows (`● review:due-tests · …` and
+/// `↷ review:due-tests · …`) belong to the workflow's own rows.
+#[test]
+fn an_outage_that_stays_on_one_cli_reads_as_its_picture() {
+    use argonauts_core::events::AgentStatusEvent;
+    use argonauts_core::events::agent_status::FallbackEvent;
+    use argonauts_core::limits::{
+        AgentHealth, HealthState, ModelHealth, ModelState, TEST_TASK_SUCCEEDED, Trouble,
+    };
+    use argonauts_core::names::AgentId;
+
+    let claude = AgentId("claude-code".into());
+    let model = |name: &str, state: ModelState, trouble: Option<Trouble>| {
+        let health = ModelHealth {
+            state,
+            trouble,
+            reason: trouble.map(|_| "2 errors in a row".to_owned()),
+            next_test_at: trouble.map(|_| datetime!(2026-09-30 14:03 UTC)),
+            ..ModelHealth::healthy(&ModelRef::new("claude-code", Some(name.to_owned())))
+        };
+        run_event(RunEventKind::AgentStatus(AgentStatusEvent::Model(health)))
+    };
+    let whole = |state: HealthState, reason: &str| {
+        run_event(RunEventKind::AgentStatus(AgentStatusEvent::Health(
+            AgentHealth {
+                agent_id: claude.clone(),
+                state,
+                since: datetime!(2026-09-30 10:00 UTC),
+                reason: Some(reason.to_owned()),
+                next_test_at: None,
+                disabled: None,
+            },
+        )))
+    };
+    let mut driver = TestDriver::new();
+    driver.send(started());
+    due_dates_run(&mut driver);
+    // The state hears each event before the conversation does, as in the app.
+    let mut hear = |event: AppEvent| {
+        driver.state.apply(&event);
+        driver.send(event);
+    };
+
+    // Opus 5.5 is overloaded: another Claude Code model takes the review, and Opus goes out.
+    hear(note(
+        NoteLevel::Warn,
+        "Still overloaded · fell back to Sonnet 5.5 on Claude Code as reviewer\n\
+         same_cli is on, so Codex isn't asked",
+    ));
+    hear(model("opus", ModelState::Out, Some(Trouble::Overload)));
+    // Sonnet 5.5 fails too, which takes Claude Code down, and the build task waits for it.
+    hear(model(
+        "sonnet",
+        ModelState::Out,
+        Some(Trouble::ServerErrors),
+    ));
+    hear(whole(HealthState::Down, "two of its models are out"));
+    hear(run_event(RunEventKind::Fallback(FallbackEvent::Waiting {
+        task: task_id(),
+        agent_id: claude.clone(),
+        until: Some(datetime!(2026-09-30 14:05 UTC)),
+        kept_off: Some(AgentId("codex".into())),
+    })));
+    // Claude Code's test task passes on Sonnet 5.5, then Opus 5.5's own does.
+    hear(whole(HealthState::Testing, "under test"));
+    hear(model("sonnet", ModelState::Healthy, None));
+    hear(whole(HealthState::Healthy, TEST_TASK_SUCCEEDED));
+    hear(model("opus", ModelState::Testing, None));
+    hear(model("opus", ModelState::Healthy, None));
+
+    let printed = driver.printed_at(120);
+    let rows: Vec<&str> = printed.lines().map(str::trim_end).collect();
+    let drawn = rows.join("\n");
+    let picture = include_str!("pictures/fallback_same_cli.txt");
+    assert_eq!(drawn.trim(), picture.trim(), "{drawn}");
 }
 
 fn chatter() -> Vec<AppEvent> {
@@ -681,10 +839,10 @@ fn chatter() -> Vec<AppEvent> {
                 ts: datetime!(2026-09-30 10:05 UTC),
                 run: Some(run_id()),
                 kind: NarratorLineKind::PhaseEnd {
-                    phase: argonauts_core::events::run::RunPhase::Goal,
+                    phase: argonauts_core::events::run::RunPhase::Understand,
                 },
                 text: "The goal is settled.".into(),
-                model: WorkerRef::new("claude-code", Some("haiku".into())),
+                model: ModelRef::new("claude-code", Some("haiku".into())),
                 spend: Spend::default(),
             },
         },
@@ -692,17 +850,17 @@ fn chatter() -> Vec<AppEvent> {
             text: "Work goes on.".into(),
             model: None,
         },
-        gate("tests", false),
-        gated(),
+        check("tests", false),
+        checks_passed(),
         paused(),
     ];
-    events.extend(chat_turn(1, "hi", "Hello."));
+    events.extend(conversation_turn(1, "hi", "Hello."));
     events
 }
 
 #[test]
 fn quiet_shows_milestones_only() {
-    let mut quiet = Harness::new();
+    let mut quiet = TestDriver::new();
     quiet.settings.verbosity = Verbosity::Quiet;
     for event in chatter() {
         quiet.send(event);
@@ -723,16 +881,15 @@ fn quiet_shows_milestones_only() {
         (Verbosity::Normal, "Read 1 file"),
         (Verbosity::Full, "Read(src/cli.rs)"),
     ] {
-        let mut harness = Harness::new();
-        harness.settings.verbosity = level;
+        let mut driver = TestDriver::new();
+        driver.settings.verbosity = level;
         for event in chatter() {
-            harness.send(event);
+            driver.send(event);
         }
-        let printed = harness.printed();
+        let printed = driver.printed();
         for shown in ["Worktree ready", "narrator:", "recap:", call] {
             assert!(printed.contains(shown), "{shown} missing at {level:?}");
         }
-        assert!(!printed.contains("Triage"), "a triage row at {level:?}");
     }
 }
 
@@ -743,27 +900,27 @@ fn notice(level: NoteLevel, text: &str) -> AppEvent {
     }
 }
 
-fn welcome_with(agent: &str, preset: &str) -> AppEvent {
+fn welcome_with(agent: &str, chosen: &str) -> AppEvent {
     AppEvent::Welcome {
         version: "0.0.1".into(),
         repo: "~/github/argonauts".into(),
-        workflow: preset.into(),
+        workflow: chosen.into(),
         agents: vec![],
         runs_going: 0,
         runs_need_you: 0,
         example_prompt: None,
-        main_agent: Some(WorkerRef::new(agent, None)),
+        main_agent: Some(ModelRef::new(agent, None)),
         effort: None,
     }
 }
 
 #[test]
 fn a_repeated_welcome_prints_one_header() {
-    let mut harness = Harness::new();
-    harness.send(welcome_with("claude-code", "council"));
-    harness.send(welcome_with("claude-code", "council"));
-    harness.send(note(NoteLevel::Warn, "codex is logged out"));
-    let cells = harness.model.history.cells();
+    let mut driver = TestDriver::new();
+    driver.send(welcome_with("claude-code", "council"));
+    driver.send(welcome_with("claude-code", "council"));
+    driver.send(note(NoteLevel::Warn, "codex is logged out"));
+    let cells = driver.model.history.cells();
     assert!(
         matches!(
             cells,
@@ -773,8 +930,8 @@ fn a_repeated_welcome_prints_one_header() {
     );
 }
 
-fn headers(harness: &Harness) -> usize {
-    harness
+fn headers(driver: &TestDriver) -> usize {
+    driver
         .model
         .history
         .cells()
@@ -787,72 +944,91 @@ fn headers(harness: &Harness) -> usize {
 /// notices take the bullet.
 #[test]
 fn an_aside_takes_the_reference_mark() {
-    let mut harness = Harness::new();
-    harness.send(notice(NoteLevel::Aside, "This folder has no git."));
-    harness.send(notice(NoteLevel::Info, "Saved."));
-    let printed = harness.printed();
+    let mut driver = TestDriver::new();
+    driver.send(notice(NoteLevel::Aside, "This folder has no git."));
+    driver.send(notice(NoteLevel::Info, "Saved."));
+    let printed = driver.printed();
     assert!(printed.contains("※ This folder has no git."), "{printed}");
     assert!(printed.contains("● Saved."), "{printed}");
+}
+
+/// A quiet line, such as a newer version of a CLI being out, has no mark at all: its words
+/// start where a marked line's do, as the versions picture draws it.
+#[test]
+fn a_quiet_line_has_no_mark() {
+    let mut driver = TestDriver::new();
+    driver.send(notice(
+        NoteLevel::Quiet,
+        "Claude Code 2.1.297 is out · claude update · shown once for this version",
+    ));
+    let printed = driver.printed();
+    let picture = include_str!("../../overview/pictures/versions.txt");
+    let drawn = picture.lines().nth(9).unwrap();
+    assert!(
+        printed.lines().any(|line| line.trim_end() == drawn),
+        "{printed}"
+    );
+    assert!(!printed.contains('●'), "{printed}");
 }
 
 /// Once the setup saves, the header changes where it stands instead of printing a second one
 /// under the setup's answers. A warning it repeats shows once.
 #[test]
 fn the_header_changes_in_place_when_the_setup_saves() {
-    let mut harness = Harness::new();
-    harness.send(welcome_with("claude-code", "council"));
-    harness.send(notice(NoteLevel::Warn, "a typo in your settings"));
-    harness.printed();
-    harness.send(welcome_with("antigravity-cli", "solo"));
-    harness.send(notice(NoteLevel::Warn, "a typo in your settings"));
+    let mut driver = TestDriver::new();
+    driver.send(welcome_with("claude-code", "council"));
+    driver.send(notice(NoteLevel::Warn, "a typo in your settings"));
+    driver.printed();
+    driver.send(welcome_with("antigravity-cli", "captain"));
+    driver.send(notice(NoteLevel::Warn, "a typo in your settings"));
 
-    assert_eq!(harness.printed(), "", "nothing prints under the old header");
-    let redrawn = harness
+    assert_eq!(driver.printed(), "", "nothing prints under the old header");
+    let redrawn = driver
         .model
         .history
         .take_header_redrawn()
         .expect("the header, redrawn");
     let redrawn = plain_text(&redrawn);
-    assert!(redrawn.contains("Antigravity CLI · Solo"), "{redrawn}");
+    assert!(redrawn.contains("Antigravity CLI · Captain"), "{redrawn}");
     assert!(!redrawn.contains("Claude Code"), "{redrawn}");
-    assert_eq!(headers(&harness), 1, "the transcript keeps one header");
+    assert_eq!(headers(&driver), 1, "the transcript keeps one header");
 }
 
 /// After the conversation starts, the header still changes where it stands rather than
-/// printing again under the chat.
+/// printing again under the conversation.
 #[test]
 fn a_header_after_the_conversation_starts_never_prints_twice() {
-    let mut harness = Harness::new();
-    harness.send(welcome_with("claude-code", "council"));
-    harness.send(AppEvent::Report {
+    let mut driver = TestDriver::new();
+    driver.send(welcome_with("claude-code", "council"));
+    driver.send(AppEvent::Report {
         title: "Doctor".into(),
         lines: vec!["git 2.50.1".into()],
     });
-    harness.printed();
-    harness.send(welcome_with("codex", "solo"));
-    let printed = harness.printed();
-    assert!(!printed.contains("Codex · Solo"), "{printed}");
-    let redrawn = harness.model.history.take_header_redrawn();
+    driver.printed();
+    driver.send(welcome_with("codex", "captain"));
+    let printed = driver.printed();
+    assert!(!printed.contains("Codex · Captain"), "{printed}");
+    let redrawn = driver.model.history.take_header_redrawn();
     assert!(
-        redrawn.is_some_and(|lines| plain_text(&lines).contains("Codex · Solo")),
+        redrawn.is_some_and(|lines| plain_text(&lines).contains("Codex · Captain")),
         "the header on screen changes"
     );
-    assert_eq!(headers(&harness), 1);
+    assert_eq!(headers(&driver), 1);
 
     // The same header again changes nothing.
-    harness.send(welcome_with("codex", "solo"));
-    harness.printed();
-    assert_eq!(harness.model.history.take_header_redrawn(), None);
+    driver.send(welcome_with("codex", "captain"));
+    driver.printed();
+    assert_eq!(driver.model.history.take_header_redrawn(), None);
 }
 
 #[test]
 fn the_header_waits_for_the_main_agent() {
-    use argonauts_core::app::StatusLine;
+    use argonauts_core::app::HeaderAndBottomLine;
     use argonauts_core::settings::approvals::ApprovalMode;
     use argonauts_core::settings::ui::NarratorMode;
 
-    let mut harness = Harness::new();
-    harness.send(AppEvent::Welcome {
+    let mut driver = TestDriver::new();
+    driver.send(AppEvent::Welcome {
         version: "0.0.1".into(),
         repo: "~/github/argonauts".into(),
         workflow: "council".into(),
@@ -863,17 +1039,17 @@ fn the_header_waits_for_the_main_agent() {
         main_agent: None,
         effort: None,
     });
-    assert!(harness.model.history.cells().is_empty());
-    assert_eq!(harness.model.history.active_cells().count(), 1);
-    harness.send(AppEvent::Status {
-        status: StatusLine {
+    assert!(driver.model.history.cells().is_empty());
+    assert_eq!(driver.model.history.active_cells().count(), 1);
+    driver.send(AppEvent::Status {
+        status: HeaderAndBottomLine {
             title: "argonauts".into(),
             repo: "~/github/argonauts".into(),
             workflow: "council".into(),
             ultracode: false,
             run: None,
-            main_agent: WorkerRef::new("claude-code", Some("haiku".into())),
-            quotas: vec![],
+            main_agent: ModelRef::new("claude-code", Some("haiku".into())),
+            plan_chips: vec![],
             line: Default::default(),
             spent: None,
             limit: None,
@@ -882,8 +1058,8 @@ fn the_header_waits_for_the_main_agent() {
             awake: None,
         },
     });
-    assert_eq!(harness.model.history.active_cells().count(), 0);
-    let printed = harness.printed();
+    assert_eq!(driver.model.history.active_cells().count(), 0);
+    let printed = driver.printed();
     assert!(
         printed.contains("Claude Code · Haiku · Council"),
         "{printed}"
@@ -906,11 +1082,11 @@ fn a_welcome_naming_the_agent_and_effort_prints_the_header_at_once() {
         },
         ..DisplayNames::default()
     };
-    let mut harness = Harness::new();
-    harness.state.apply(&AppEvent::Names {
+    let mut driver = TestDriver::new();
+    driver.state.apply(&AppEvent::Names {
         names: Box::new(names),
     });
-    harness.send(AppEvent::Welcome {
+    driver.send(AppEvent::Welcome {
         version: "0.0.1".into(),
         repo: "~/github/argonauts".into(),
         workflow: "council".into(),
@@ -918,11 +1094,11 @@ fn a_welcome_naming_the_agent_and_effort_prints_the_header_at_once() {
         runs_going: 0,
         runs_need_you: 0,
         example_prompt: None,
-        main_agent: Some(WorkerRef::new("claude-code", Some("opus".into()))),
+        main_agent: Some(ModelRef::new("claude-code", Some("opus".into()))),
         effort: Some("xhigh".into()),
     });
-    assert_eq!(harness.model.history.active_cells().count(), 0);
-    let printed = harness.printed();
+    assert_eq!(driver.model.history.active_cells().count(), 0);
+    let printed = driver.printed();
     assert!(
         printed.contains("Claude Code · Opus 5.5 with xhigh effort · Council"),
         "{printed}"
@@ -931,20 +1107,20 @@ fn a_welcome_naming_the_agent_and_effort_prints_the_header_at_once() {
 
 #[test]
 fn a_queued_prompt_gets_its_own_echo() {
-    let mut harness = Harness::new();
+    let mut driver = TestDriver::new();
     // The composer echoed the first prompt, grey until its turn starts.
-    let pending = harness
+    let pending = driver
         .model
         .history
         .push_active(crate::cell::UserMessage::pending("hi"));
-    for event in chat_turn(1, "hi", "Hello.") {
-        harness.send(event);
+    for event in conversation_turn(1, "hi", "Hello.") {
+        driver.send(event);
     }
-    assert!(harness.model.history.active(pending).is_none());
-    for event in chat_turn(2, "and then?", "Then it ends.") {
-        harness.send(event);
+    assert!(driver.model.history.active(pending).is_none());
+    for event in conversation_turn(2, "and then?", "Then it ends.") {
+        driver.send(event);
     }
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert_eq!(printed.matches("❯ hi").count(), 1, "{printed}");
     assert_eq!(printed.matches("❯ and then?").count(), 1, "{printed}");
 }
@@ -957,20 +1133,20 @@ fn the_echo_draws_the_keywords_of_the_cli_that_took_the_turn() {
 
     let ultrathink = Keyword::new("ultrathink", KeywordLook::Rainbow, true);
     for (worker, kept) in [("claude-code", true), ("codex", false)] {
-        let mut harness = Harness::new();
-        harness.state.vendor_commands = Some(
+        let mut driver = TestDriver::new();
+        driver.state.cli_commands = Some(
             crate::commands::tests::claude_commands()
                 .with_keywords(std::slice::from_ref(&ultrathink)),
         );
-        harness.model.history.push_active(
+        driver.model.history.push_active(
             crate::cell::UserMessage::pending("please ultrathink")
                 .with_keywords(std::slice::from_ref(&ultrathink)),
         );
-        harness.send(AppEvent::Chat {
-            event: ChatEvent::TurnStarted {
+        driver.send(AppEvent::Conversation {
+            event: ConversationEvent::TurnStarted {
                 turn: TurnId::numbered(1),
                 text: "please ultrathink".into(),
-                worker: WorkerRef::new(worker, None),
+                worker: ModelRef::new(worker, None),
                 read_only: false,
                 commit: "8b41d07".into(),
                 uncommitted: vec![],
@@ -978,7 +1154,7 @@ fn the_echo_draws_the_keywords_of_the_cli_that_took_the_turn() {
                 continues: false,
             },
         });
-        let echoed = harness
+        let echoed = driver
             .model
             .history
             .cells()
@@ -995,16 +1171,16 @@ fn the_echo_draws_the_keywords_of_the_cli_that_took_the_turn() {
 
 #[test]
 fn a_notice_before_the_turn_starts_prints_the_prompt_once() {
-    let mut harness = Harness::new();
-    harness
+    let mut driver = TestDriver::new();
+    driver
         .model
         .history
         .push_active(crate::cell::UserMessage::pending("hi"));
-    harness.send(note(NoteLevel::Warn, "codex is logged out"));
-    for event in chat_turn(1, "hi", "Hello.") {
-        harness.send(event);
+    driver.send(note(NoteLevel::Warn, "codex is logged out"));
+    for event in conversation_turn(1, "hi", "Hello.") {
+        driver.send(event);
     }
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert_eq!(printed.matches("❯ hi").count(), 1, "{printed}");
     assert!(
         printed.find("codex is logged out") < printed.find("❯ hi"),
@@ -1014,12 +1190,12 @@ fn a_notice_before_the_turn_starts_prints_the_prompt_once() {
 
 #[test]
 fn a_whole_message_after_deltas_is_not_repeated() {
-    let mut harness = Harness::new();
+    let mut driver = TestDriver::new();
     let turn = TurnId::numbered(1);
-    let mut events = chat_turn(1, "hi", "Hello there.");
+    let mut events = conversation_turn(1, "hi", "Hello there.");
     let finished = events.pop().expect("the turn's end");
-    events.push(AppEvent::Chat {
-        event: ChatEvent::Agent {
+    events.push(AppEvent::Conversation {
+        event: ConversationEvent::Agent {
             turn,
             event: AgentEvent::Message {
                 text: "Hello there.".into(),
@@ -1029,17 +1205,17 @@ fn a_whole_message_after_deltas_is_not_repeated() {
     });
     events.push(finished);
     for event in events {
-        harness.send(event);
+        driver.send(event);
     }
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert_eq!(printed.matches("Hello there.").count(), 1, "{printed}");
 }
 
 #[test]
 fn status_answers_print_as_one_item() {
-    use argonauts_core::api::{CardBrief, StatusSummary};
+    use argonauts_core::api::{StatusSummary, TaskBrief};
 
-    let mut harness = Harness::new();
+    let mut driver = TestDriver::new();
     let summary = StatusSummary {
         run: Some(run_id()),
         goal: vec![
@@ -1047,35 +1223,35 @@ fn status_answers_print_as_one_item() {
             "G1 export --json writes JSON lines".into(),
         ],
         plan: Some("Plan 1, 2 tasks".into()),
-        cards: vec![CardBrief {
-            card: card_id(),
+        tasks: vec![TaskBrief {
+            task: task_id(),
             title: "Parse the flag".into(),
-            state: CardState::Running,
-            owner: Some(WorkerRef::new("codex", Some("gpt-5.6".into()))),
+            state: TaskState::Running,
+            worker: Some(ModelRef::new("codex", Some("gpt-5.6".into()))),
             note: "6m 12s · 38k tok".into(),
         }],
         recent: (1..=8).map(|n| format!("event {n}")).collect(),
         waiting: vec!["plan approval".into()],
         ..StatusSummary::default()
     };
-    harness.send(AppEvent::View {
+    driver.send(AppEvent::View {
         data: Box::new(argonauts_core::app::ViewData::Status { summary }),
     });
     assert_eq!(
-        harness.printed(),
+        driver.printed(),
         "● Status(run-01)\n  ⎿  Goal: Add a --json flag\n     G1 export --json writes JSON lines\n     Plan: Plan 1, 2 tasks\n     task-001 Parse the flag · running · GPT 5.6 on Codex · 6m 12s · 38k tok\n     event 4\n     event 5\n     event 6\n     event 7\n     event 8\n     Waiting on you: plan approval"
     );
     let empty = super::status_cells(&StatusSummary::default(), &Default::default());
     assert_eq!(empty.len(), 1);
 }
 
-/// A greeting answered the way the chat agent does: it checks the run status, streams the
+/// A greeting answered the way the main agent does: it checks the run status, streams the
 /// answer, then sends the report.
 fn greeting_with_own_calls() -> Vec<AppEvent> {
     let turn = TurnId::numbered(1);
     let answer = "Hi! What would you like to do?";
-    let agent = |event| AppEvent::Chat {
-        event: ChatEvent::Agent {
+    let agent = |event| AppEvent::Conversation {
+        event: ConversationEvent::Agent {
             turn: turn.clone(),
             event,
         },
@@ -1096,11 +1272,11 @@ fn greeting_with_own_calls() -> Vec<AppEvent> {
             }),
         ]
     };
-    let mut events = vec![AppEvent::Chat {
-        event: ChatEvent::TurnStarted {
+    let mut events = vec![AppEvent::Conversation {
+        event: ConversationEvent::TurnStarted {
             turn: turn.clone(),
             text: "hi".into(),
-            worker: WorkerRef::new("claude-code", Some("haiku".into())),
+            worker: ModelRef::new("claude-code", Some("haiku".into())),
             read_only: true,
             commit: "8b41d07".into(),
             uncommitted: vec![],
@@ -1131,8 +1307,8 @@ fn greeting_with_own_calls() -> Vec<AppEvent> {
         "StructuredOutput",
         serde_json::json!({ "status": "done", "answer_markdown": answer }),
     ));
-    events.push(AppEvent::Chat {
-        event: ChatEvent::TurnFinished {
+    events.push(AppEvent::Conversation {
+        event: ConversationEvent::TurnFinished {
             turn,
             reply: TurnReply::Answer {
                 markdown: answer.into(),
@@ -1147,12 +1323,12 @@ fn greeting_with_own_calls() -> Vec<AppEvent> {
 #[test]
 fn argonauts_own_calls_stay_out_of_the_transcript() {
     for level in [Verbosity::Full, Verbosity::Normal, Verbosity::Quiet] {
-        let mut harness = Harness::new();
-        harness.settings.verbosity = level;
+        let mut driver = TestDriver::new();
+        driver.settings.verbosity = level;
         for event in greeting_with_own_calls() {
-            harness.send(event);
+            driver.send(event);
         }
-        let printed = harness.printed();
+        let printed = driver.printed();
         assert!(!printed.contains("Report"), "{level:?}: {printed}");
         assert!(
             !printed.contains("argonauts_status"),
@@ -1166,7 +1342,7 @@ fn argonauts_own_calls_stay_out_of_the_transcript() {
         );
 
         // Ctrl+O shows them done, the report after the answer it sent.
-        let cells = harness.model.history.cells();
+        let cells = driver.model.history.cells();
         let titles: Vec<String> = cells
             .iter()
             .filter_map(|cell| match cell {
@@ -1196,21 +1372,21 @@ fn argonauts_own_calls_stay_out_of_the_transcript() {
 
 #[test]
 fn an_own_call_still_running_when_the_turn_ends_is_kept_stopped() {
-    let mut harness = Harness::new();
+    let mut driver = TestDriver::new();
     let mut events = greeting_with_own_calls();
     // Drop the report's end.
     let report_end = events
         .iter()
         .position(|event| {
-            matches!(event, AppEvent::Chat { event: ChatEvent::Agent { event: AgentEvent::ToolFinished { id, .. }, .. } } if id == "report-1")
+            matches!(event, AppEvent::Conversation { event: ConversationEvent::Agent { event: AgentEvent::ToolFinished { id, .. }, .. } } if id == "report-1")
         })
         .expect("the report's end");
     events.remove(report_end);
     for event in events {
-        harness.send(event);
+        driver.send(event);
     }
-    assert!(!harness.printed().contains("Report"));
-    let report = harness
+    assert!(!driver.printed().contains("Report"));
+    let report = driver
         .model
         .history
         .cells()
@@ -1225,14 +1401,14 @@ fn an_own_call_still_running_when_the_turn_ends_is_kept_stopped() {
 
 #[test]
 fn a_rotation_prints_a_line() {
-    let mut harness = Harness::new();
-    harness.send(started());
-    harness.send(run_event(RunEventKind::Card(CardEvent::Attempt {
-        attempt: 2,
-        worker: WorkerRef::new("claude-code", None),
-        cause: AttemptCause::Rotation,
+    let mut driver = TestDriver::new();
+    driver.send(started());
+    driver.send(run_event(RunEventKind::Task(TaskEvent::Try {
+        try_number: 2,
+        worker: ModelRef::new("claude-code", None),
+        cause: TryCause::Rotation,
     })));
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert!(
         printed.contains("task-001 rotated to a fresh Claude Code session"),
         "{printed}"
@@ -1240,14 +1416,31 @@ fn a_rotation_prints_a_line() {
 }
 
 #[test]
+fn a_restart_prints_a_line() {
+    let mut driver = TestDriver::new();
+    driver.send(started());
+    driver.send(run_event(RunEventKind::Task(TaskEvent::Try {
+        try_number: 2,
+        worker: ModelRef::new("claude-code", None),
+        cause: TryCause::Restarted,
+    })));
+    let printed = driver.printed();
+    assert!(
+        printed.contains("task-001 restarted in a new Claude Code session"),
+        "{printed}"
+    );
+    assert!(printed.contains("its work so far is kept"), "{printed}");
+}
+
+#[test]
 fn a_model_you_pick_is_named_as_its_list_named_it() {
-    let mut harness = Harness::new();
+    let mut driver = TestDriver::new();
     let choice = |worker: &str, name: &str| argonauts_core::app::ModelChoice {
         worker: worker.parse().unwrap(),
-        family: "gpt".into(),
+        provider: "openai".into(),
         access: argonauts_core::registry::ModelAccess::Subscription,
         cost: argonauts_core::limits::CostEstimate::Unknown,
-        quota: None,
+        plan_usage: None,
         efforts: Vec::new(),
         strengths: Vec::new(),
         current: false,
@@ -1262,23 +1455,23 @@ fn a_model_you_pick_is_named_as_its_list_named_it() {
         alias: false,
         runs: None,
     };
-    harness.state.model_words.insert(
+    driver.state.model_words.insert(
         "codex/gpt-6-sol".to_owned(),
         crate::format::choice_words(&choice("codex/gpt-6-sol", "GPT-6-Sol")),
     );
-    harness.send(AppEvent::SettingChanged {
-        key: "main_agent".into(),
+    driver.send(AppEvent::SettingChanged {
+        key: "crew.main".into(),
         value: "\"codex/gpt-6-sol\"".into(),
         scope: argonauts_core::settings::SettingScope::Global,
         previous: Some("\"claude-code/claude-opus-5-5\"".into()),
         reset: false,
     });
     // What the switch carried hangs under it, with no row between.
-    harness.send(AppEvent::Continued {
+    driver.send(AppEvent::Continued {
         text: "Carried over: a summary of 14 exchanges, the last 6 in full".into(),
     });
     assert_eq!(
-        harness.printed().trim_end(),
+        driver.printed().trim_end(),
         "  ⎿  Set model to GPT-6-Sol on Codex · everywhere · was Opus 5.5 on Claude Code\n     \
          Carried over: a summary of 14 exchanges, the last 6 in full"
     );
@@ -1287,24 +1480,24 @@ fn a_model_you_pick_is_named_as_its_list_named_it() {
 /// A CLI's default reads as the model it runs when the line names the CLI anyway.
 #[test]
 fn a_default_left_for_another_cli_is_named_by_its_model() {
-    let mut harness = Harness::new();
-    harness.state.model_words.insert(
+    let mut driver = TestDriver::new();
+    driver.state.model_words.insert(
         "claude-code".to_owned(),
         "Claude Code's default (Opus 5.5)".to_owned(),
     );
-    harness
+    driver
         .state
         .model_words
         .insert("codex/gpt-6-sol".to_owned(), "GPT-6-Sol".to_owned());
-    harness.send(AppEvent::SettingChanged {
-        key: "main_agent".into(),
+    driver.send(AppEvent::SettingChanged {
+        key: "crew.main".into(),
         value: "\"codex/gpt-6-sol\"".into(),
         scope: argonauts_core::settings::SettingScope::Global,
         previous: Some("\"claude-code\"".into()),
         reset: false,
     });
     assert_eq!(
-        harness.printed().trim_end(),
+        driver.printed().trim_end(),
         "  ⎿  Set model to GPT-6-Sol on Codex · everywhere · was Opus 5.5 on Claude Code"
     );
 }
@@ -1313,13 +1506,13 @@ fn a_default_left_for_another_cli_is_named_by_its_model() {
 /// rest behind Ctrl+O.
 #[test]
 fn a_folded_summary_keeps_the_rest_for_ctrl_o() {
-    let mut harness = Harness::new();
-    harness.send(AppEvent::Folded {
+    let mut driver = TestDriver::new();
+    driver.send(AppEvent::Folded {
         title: "Summary for GPT-6.1-Sol · written by Opus 5.5 · 212 words".into(),
         lines: vec!["Asked: due dates.".into(), "Done: the store.".into()],
         more: vec!["Open: the overdue tests.".into()],
     });
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert!(
         printed.contains(
             "● Summary for GPT-6.1-Sol · written by Opus 5.5 · 212 words (ctrl+o to expand)\n  ⎿  \
@@ -1332,7 +1525,7 @@ fn a_folded_summary_keeps_the_rest_for_ctrl_o() {
     let mut theme = Theme::dark();
     theme.glyphs = Glyphs::UNICODE;
     let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now())).with_expanded(true);
-    let expanded: String = harness
+    let expanded: String = driver
         .model
         .history
         .cells()
@@ -1355,33 +1548,33 @@ fn a_change_made_mid_answer_says_it_applies_at_the_next_request() {
         previous: None,
         reset: false,
     };
-    let mut harness = Harness::new();
-    harness.send(changed("workflow", "\"council\""));
+    let mut driver = TestDriver::new();
+    driver.send(changed("workflow", "\"council\""));
     assert_eq!(
-        harness.printed().trim(),
+        driver.printed().trim(),
         "● Set workflow = council · everywhere"
     );
 
-    harness.model.bottom.working = Some(crate::bottom::WorkingLine::new("Rowing", Instant::now()));
-    harness.send(changed("workflow", "\"solo\""));
+    driver.model.bottom.working = Some(crate::bottom::WorkingLine::new("Rowing", Instant::now()));
+    driver.send(changed("workflow", "\"captain\""));
     assert_eq!(
-        harness.printed().trim(),
-        "● Set workflow = solo · everywhere · applies at the next request"
+        driver.printed().trim(),
+        "● Set workflow = captain · everywhere · applies at the next request"
     );
-    harness.send(changed("roles.main.effort", "\"high\""));
+    driver.send(changed("roles.main.effort", "\"high\""));
     assert_eq!(
-        harness.printed().trim(),
+        driver.printed().trim(),
         "⎿  Set effort to high · everywhere · applies at the next request"
     );
-    harness.send(changed("ui.theme", "\"dark\""));
+    driver.send(changed("ui.theme", "\"dark\""));
     assert_eq!(
-        harness.printed().trim(),
+        driver.printed().trim(),
         "● Set ui.theme = dark · everywhere",
         "a look applies at once"
     );
 }
 
-/// `/effort`'s All hands toggle reads as a result line, not as its key.
+/// `/effort`'s Ultracode toggle reads as a result line, not as its key.
 #[test]
 fn ultracode_saved_reads_as_turned_on_or_off() {
     for (value, scope, line) in [
@@ -1396,27 +1589,26 @@ fn ultracode_saved_reads_as_turned_on_or_off() {
             "  ⎿  Turned Ultracode off · this session",
         ),
     ] {
-        let mut harness = Harness::new();
-        harness.send(AppEvent::SettingChanged {
+        let mut driver = TestDriver::new();
+        driver.send(AppEvent::SettingChanged {
             key: "ultracode".into(),
             value: value.into(),
             scope,
             previous: None,
             reset: false,
         });
-        assert_eq!(harness.printed().trim_end(), line);
+        assert_eq!(driver.printed().trim_end(), line);
     }
 }
 
-/// A run's start prints no Triage row and no plumbing. It says only what you
+/// A run's start prints no row of its own and no plumbing. It says only what you
 /// would otherwise never hear, such as the files it left out.
 #[test]
-fn a_run_starts_without_a_triage_row() {
-    let mut harness = Harness::new();
-    harness.send(started());
-    let printed = harness.printed();
+fn a_run_starts_without_a_row_of_its_own() {
+    let mut driver = TestDriver::new();
+    driver.send(started());
+    let printed = driver.printed();
     for gone in [
-        "Triage",
         "Starts from",
         "Goal: your prompt as you wrote it",
         "8b41d07",
@@ -1425,19 +1617,18 @@ fn a_run_starts_without_a_triage_row() {
         assert!(!printed.contains(gone), "{gone} in:\n{printed}");
     }
 
-    let mut harness = Harness::new();
-    harness.send(run_event(RunEventKind::Run(RunLifecycle::Started(
+    let mut driver = TestDriver::new();
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::Started(
         Box::new(RunStarted {
             uncommitted: vec!["notes.txt".into(), "draft.md".into()],
             ..started_fields()
         }),
     ))));
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert!(
         printed.contains("2 uncommitted files left out"),
         "{printed}"
     );
-    assert!(!printed.contains("Triage"), "{printed}");
 }
 
 /// `● Resume(<title>)` names the run as people know it.
@@ -1445,26 +1636,26 @@ fn a_run_starts_without_a_triage_row() {
 fn resume_names_the_run_by_its_title() {
     use argonauts_core::events::run::{ResumeCause, RunResumed};
 
-    let mut harness = Harness::new();
+    let mut driver = TestDriver::new();
     let start = started();
-    harness.state.apply(&start);
-    harness.send(start);
-    harness.printed();
-    harness.send(run_event(RunEventKind::Run(RunLifecycle::Resumed(
+    driver.state.apply(&start);
+    driver.send(start);
+    driver.printed();
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::Resumed(
         RunResumed {
             cause: ResumeCause::User,
             settings_changed: false,
-            harness_versions_changed: Vec::new(),
+            cli_versions_changed: Vec::new(),
             main_moved_by: None,
             sessions: Vec::new(),
         },
     ))));
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert!(printed.contains("● Resume(Add a --json flag)"), "{printed}");
     assert!(!printed.contains("run-01"), "{printed}");
 }
 
-/// A card's wait prints nothing, so your answer moving the run on prints nothing either, unless
+/// A question's wait prints nothing, so your answer moving the run on prints nothing either, unless
 /// something changed while it waited.
 #[test]
 fn an_answer_resumes_the_run_without_a_line() {
@@ -1474,20 +1665,20 @@ fn an_answer_resumes_the_run_without_a_line() {
         run_event(RunEventKind::Run(RunLifecycle::Resumed(RunResumed {
             cause: ResumeCause::Answer,
             settings_changed,
-            harness_versions_changed: Vec::new(),
+            cli_versions_changed: Vec::new(),
             main_moved_by: None,
             sessions: Vec::new(),
         })))
     };
-    let mut harness = Harness::new();
+    let mut driver = TestDriver::new();
     let start = started();
-    harness.state.apply(&start);
-    harness.send(start);
-    harness.printed();
-    harness.send(resumed(false));
-    assert_eq!(harness.printed().trim(), "");
-    harness.send(resumed(true));
-    let printed = harness.printed();
+    driver.state.apply(&start);
+    driver.send(start);
+    driver.printed();
+    driver.send(resumed(false));
+    assert_eq!(driver.printed().trim(), "");
+    driver.send(resumed(true));
+    let printed = driver.printed();
     assert!(printed.contains("● Resume(Add a --json flag)"), "{printed}");
     assert!(printed.contains("After your answer"), "{printed}");
     assert!(
@@ -1496,38 +1687,38 @@ fn an_answer_resumes_the_run_without_a_line() {
     );
 }
 
-/// What the merge card put up for the merge, as `RunState` keeps it.
-fn merge_opened(cards: usize, combined: argonauts_core::DiffStat) -> AppEvent {
-    use argonauts_core::events::card::CardKind;
-    use argonauts_core::events::checkpoint::{
-        CheckpointEvent, CheckpointKind, CheckpointOpened, CheckpointPacket, FreeText, MergePacket,
+/// What the merge question put up for the merge, as `RunState` keeps it.
+fn merge_opened(tasks: usize, combined: argonauts_core::DiffStat) -> AppEvent {
+    use argonauts_core::events::approval::{
+        ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket, FreeText, MergePacket,
         MergeRow,
     };
-    use argonauts_core::names::CheckpointId;
+    use argonauts_core::events::task::TaskKind;
+    use argonauts_core::names::ApprovalId;
     use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 
-    let rows = (1..=cards)
+    let rows = (1..=tasks)
         .map(|n| MergeRow {
-            card: CardId::new(format!("task-{n:03}")).unwrap(),
+            task: TaskId::new(format!("task-{n:03}")).unwrap(),
             title: format!("Task {n}"),
-            kind: CardKind::Build,
+            kind: TaskKind::Build,
             stat: argonauts_core::DiffStat {
                 files_changed: 1,
                 insertions: 3,
                 deletions: 0,
             },
-            owner: None,
-            gates_passed: true,
+            worker: None,
+            checks_passed: true,
             review: None,
             debt: Vec::new(),
         })
         .collect();
     let packet = MergePacket {
         target: Some("main".into()),
-        branch: "argonauts/run-01/integration".into(),
+        branch: "argonauts/run-01/merged".into(),
         rows,
         suite_passed_on_latest_main: true,
-        gates: Vec::new(),
+        checks: Vec::new(),
         combined,
         conductor: Default::default(),
         diff_path: PathBuf::from("/nonexistent/run-01.diff"),
@@ -1538,14 +1729,17 @@ fn merge_opened(cards: usize, combined: argonauts_core::DiffStat) -> AppEvent {
         in_the_way: Vec::new(),
         edited: Vec::new(),
         refused: None,
+        both_changed: Vec::new(),
+        asks_which_branch: false,
+        again: None,
     };
-    run_event(RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(
-        CheckpointOpened {
-            id: CheckpointId::numbered(1),
-            kind: CheckpointKind::Merge,
+    run_event(RunEventKind::Approval(ApprovalEvent::Opened(Box::new(
+        ApprovalOpened {
+            id: ApprovalId::numbered(1),
+            kind: ApprovalKind::Merge,
             title: "Merge this run into main?".into(),
-            card: None,
-            packet: CheckpointPacket::Merge(packet),
+            task: None,
+            packet: ApprovalPacket::Merge(packet),
             evidence_sha256: "0".repeat(64),
             mode: ApprovalMode::Supervised,
             decide_with: DecideWith::Rules,
@@ -1556,37 +1750,37 @@ fn merge_opened(cards: usize, combined: argonauts_core::DiffStat) -> AppEvent {
     ))))
 }
 
-/// The line after a merge says what the merge card said, and the spend the mode line shows.
+/// The line after a merge says what the merge question said, and the spend the bottom line shows.
 #[test]
-fn the_finish_line_says_what_the_merge_card_said() {
-    let mut harness = Harness::new();
-    let fold = |harness: &mut Harness, event: AppEvent| {
-        harness.state.apply(&event);
-        harness.send(event);
+fn the_finish_line_says_what_the_merge_question_said() {
+    let mut driver = TestDriver::new();
+    let fold = |driver: &mut TestDriver, event: AppEvent| {
+        driver.state.apply(&event);
+        driver.send(event);
     };
-    fold(&mut harness, started());
-    // More cards than the merge took, with their own diffs.
+    fold(&mut driver, started());
+    // More tasks than the merge took, with their own diffs.
     for n in 1..=10 {
-        let mut event = run_event(RunEventKind::Card(CardEvent::Diff {
+        let mut event = run_event(RunEventKind::Task(TaskEvent::Diff {
             stat: argonauts_core::DiffStat {
                 files_changed: 1,
                 insertions: 2,
                 deletions: 0,
             },
-            path: PathBuf::from("/nonexistent/card.diff"),
+            path: PathBuf::from("/nonexistent/task.diff"),
         }));
         if let AppEvent::Run { event } = &mut event {
-            event.card_id = Some(CardId::new(format!("task-{n:03}")).unwrap());
+            event.task_id = Some(TaskId::new(format!("task-{n:03}")).unwrap());
         }
-        fold(&mut harness, event);
+        fold(&mut driver, event);
     }
     let combined = argonauts_core::DiffStat {
         files_changed: 13,
         insertions: 78,
         deletions: 1,
     };
-    fold(&mut harness, merge_opened(8, combined));
-    // A session reports more than the budget has counted yet.
+    fold(&mut driver, merge_opened(8, combined));
+    // A session reports more than the limit has counted yet.
     let mut session = crate::state::SessionState::new(
         argonauts_core::names::SessionKey::numbered(1),
         "claude-code".parse().unwrap(),
@@ -1595,21 +1789,21 @@ fn the_finish_line_says_what_the_merge_card_said() {
         datetime!(2026-09-30 10:00 UTC),
     );
     session.cost_usd = Some(0.26);
-    let run = harness.state.runs.get_mut(&run_id()).unwrap();
+    let run = driver.state.runs.get_mut(&run_id()).unwrap();
     run.sessions.insert(session.key.clone(), session);
     fold(
-        &mut harness,
+        &mut driver,
         run_event(RunEventKind::Run(RunLifecycle::Finished {
             outcome: RunOutcome::Merged,
             detail: None,
         })),
     );
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert!(
         printed.contains("Merged the run into main (8 tasks, 13 files, +78 -1)"),
         "{printed}"
     );
-    let run = &harness.state.runs[&run_id()];
+    let run = &driver.state.runs[&run_id()];
     let spent = format!("· {}", crate::format::usd(run.cost_usd()));
     let finished = printed
         .lines()
@@ -1619,12 +1813,78 @@ fn the_finish_line_says_what_the_merge_card_said() {
     assert!(finished.contains("$0.26"), "{printed}");
 }
 
+/// The last two rows of a run in a folder without git, as the picture of that folder has
+/// them: where the work went, and that the run's copies are gone.
+#[test]
+fn a_run_written_into_a_folder_without_git_ends_as_its_picture_does() {
+    use argonauts_core::events::task::MergeEvent;
+    use argonauts_core::log::COPIES_REMOVED;
+
+    let picture = include_str!("../../../tests/golden/no_git_fixes.txt");
+    let at = picture
+        .lines()
+        .position(|row| row.starts_with("● Written into your folder"))
+        .expect("the picture has the closing rows");
+    let closing: Vec<&str> = picture.lines().skip(at).take(2).collect();
+
+    let mut driver = TestDriver::new();
+    let fold = |driver: &mut TestDriver, event: AppEvent| {
+        driver.state.apply(&event);
+        driver.send(event);
+    };
+    let later = |mut event: AppEvent| {
+        if let AppEvent::Run { event } = &mut event {
+            event.ts = datetime!(2026-09-30 10:06:20 UTC);
+        }
+        event
+    };
+    fold(&mut driver, started());
+    let combined = argonauts_core::DiffStat {
+        files_changed: 4,
+        insertions: 52,
+        deletions: 6,
+    };
+    fold(&mut driver, merge_opened(2, combined));
+    fold(
+        &mut driver,
+        run_event(RunEventKind::Merge(MergeEvent::RunMerged {
+            target: argonauts_core::hidden_git::BRANCH.to_owned(),
+            sha: "3fa2c1d".to_owned(),
+            fast_forward: true,
+        })),
+    );
+    fold(
+        &mut driver,
+        run_event(RunEventKind::Note(Note {
+            level: NoteLevel::Info,
+            text: format!("{COPIES_REMOVED}base, 2 tasks, merge"),
+        })),
+    );
+    fold(
+        &mut driver,
+        later(run_event(RunEventKind::Run(RunLifecycle::Finished {
+            outcome: RunOutcome::Merged,
+            detail: None,
+        }))),
+    );
+    let printed = driver.printed_at(118);
+    let rows: Vec<&str> = printed.lines().map(str::trim_end).collect();
+    let first = rows
+        .iter()
+        .position(|row| *row == closing[0])
+        .unwrap_or_else(|| panic!("{printed}"));
+    // The picture leaves out what every run's last row says in the transcript's own way: how
+    // long it took, spelled as on the line under it, and what it spent.
+    let last = closing[1].replace("6m20s", "6m 20s · $0.00");
+    assert_eq!(rows[first + 1], last, "{printed}");
+}
+
 #[test]
 fn a_shell_command_runs_live_and_prints_once_it_ends() {
     use argonauts_core::app::ShellEvent;
 
     let shell = |event| AppEvent::Shell { event };
-    let mut h = Harness::new();
+    let mut h = TestDriver::new();
     h.send(shell(ShellEvent::Started {
         id: 1,
         command: "echo hi".into(),
@@ -1660,14 +1920,14 @@ fn a_shell_command_runs_live_and_prints_once_it_ends() {
 }
 
 #[test]
-fn the_goal_line_counts_the_leads_answers_apart() {
+fn the_goal_line_counts_the_main_agents_answers_apart() {
     use argonauts_core::events::goal::{
-        Assumption, Criterion, GoalEvent, GoalFile, GoalSource, LEAD_ANSWER,
+        Assumption, Criterion, GoalEvent, GoalFile, GoalSource, MAIN_AGENT_ANSWER,
     };
 
-    let mut harness = Harness::new();
-    harness.send(started());
-    harness.send(note(
+    let mut driver = TestDriver::new();
+    driver.send(started());
+    driver.send(note(
         NoteLevel::Info,
         "The main agent answered 1 of the goal's questions for you. Its answers are assumptions in \
          the goal, which Ctrl+O and /status show",
@@ -1677,7 +1937,7 @@ fn the_goal_line_counts_the_leads_answers_apart() {
         basis,
         by: None,
     };
-    harness.send(run_event(RunEventKind::Goal(GoalEvent::Approved {
+    driver.send(run_event(RunEventKind::Goal(GoalEvent::Approved {
         file: GoalFile {
             run: run_id(),
             version: 1,
@@ -1688,18 +1948,18 @@ fn the_goal_line_counts_the_leads_answers_apart() {
             assumptions: vec![
                 assumption(
                     "Which log level: trace",
-                    format!("{LEAD_ANSWER}: the README"),
+                    format!("{MAIN_AGENT_ANSWER}: the README"),
                 ),
                 assumption("the flag's name: --verbose", "a detail".into()),
             ],
             answers: vec![],
-            source: GoalSource::Restatements,
+            source: GoalSource::Readings,
             path: PathBuf::from("goal.md"),
             sha256: String::new(),
         },
         by: Party::User,
     })));
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert!(
         printed.contains("The main agent answered 1 of the goal's questions for you"),
         "{printed}"
@@ -1711,14 +1971,14 @@ fn the_goal_line_counts_the_leads_answers_apart() {
 }
 
 /// A crew run named `fix-slugify-median` that declared its workflow, ready to end.
-fn crew_workflow_harness() -> Harness {
+fn crew_workflow_driver() -> TestDriver {
     use argonauts_core::events::run::RunNamed;
     use argonauts_core::events::workflow::{DeclaredPhase, WorkflowDeclared, WorkflowEvent};
     use argonauts_core::names::WorkflowId;
     use argonauts_core::settings::workflows::RunStyle;
     use argonauts_core::workflow::StandardPhase;
 
-    let mut harness = Harness::new();
+    let mut driver = TestDriver::new();
     let id = WorkflowId::numbered(1);
     let mut run = crate::state::RunState::new(run_id());
     run.workflows.push(crate::state::WorkflowState {
@@ -1737,23 +1997,23 @@ fn crew_workflow_harness() -> Harness {
         based_on: Some("council".into()),
         done_when: Vec::new(),
     });
-    harness.state.runs.insert(run_id(), run);
+    driver.state.runs.insert(run_id(), run);
     if let AppEvent::Run { event } = &mut started()
         && let RunEventKind::Run(RunLifecycle::Started(started)) = &mut event.kind
     {
         let mut crew = (**started).clone();
         crew.mode = RunMode::Crew;
-        harness.send(run_event(RunEventKind::Run(RunLifecycle::Started(
+        driver.send(run_event(RunEventKind::Run(RunLifecycle::Started(
             Box::new(crew),
         ))));
     }
     let phase = |index: u32, title: &str, detail: &str| DeclaredPhase {
         index,
-        title: title.into(),
+        name: title.into(),
         detail: detail.into(),
         standard: StandardPhase::Do,
     };
-    harness.send(run_event(RunEventKind::Workflow(WorkflowEvent::Declared(
+    driver.send(run_event(RunEventKind::Workflow(WorkflowEvent::Declared(
         Box::new(WorkflowDeclared {
             id,
             name: "council".into(),
@@ -1765,7 +2025,7 @@ fn crew_workflow_harness() -> Harness {
             required: Vec::new(),
         }),
     ))));
-    harness
+    driver
 }
 
 /// A crew run's workflow prints `● Workflow(<name>)` with
@@ -1773,33 +2033,35 @@ fn crew_workflow_harness() -> Harness {
 /// · done` before the run's end.
 #[test]
 fn a_crew_workflow_prints_its_start_and_its_end() {
-    let mut harness = crew_workflow_harness();
-    harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+    let mut driver = crew_workflow_driver();
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
         outcome: RunOutcome::Merged,
         detail: None,
     })));
-    let printed = harness.printed();
+    let printed = driver.printed();
+    let call = "● Workflow(fix-slugify-median · council workflow)\n";
     assert!(
-        printed.contains(
-            "● Workflow(fix-slugify-median) · started from council · ctrl+t to open\n  ⎿  ◐ Fix · Merge"
-        ),
+        printed.contains(&format!(
+            "{call}  ⎿  Running in background · /workflows to monitor and save"
+        )),
         "{printed}"
     );
     assert!(
-        printed.contains("● Workflow(fix-slugify-median) · done"),
+        printed.contains(&format!("{call}  ⎿  ✔ Completed in ")),
         "{printed}"
     );
     assert!(!printed.contains("Workflow(council)"), "{printed}");
 }
 
-/// The phases read on one line however long their details, which the workflow view shows.
+/// The start says where to watch the workflow, as Claude Code's does. Its phases and who does
+/// them are the workflow view's to show.
 #[test]
-fn the_phases_read_on_one_line_however_long_their_details() {
+fn the_start_says_where_to_watch_it_and_leaves_the_phases_to_the_view() {
     use argonauts_core::events::workflow::{DeclaredPhase, WorkflowDeclared, WorkflowEvent};
     use argonauts_core::names::WorkflowId;
     use argonauts_core::workflow::StandardPhase;
 
-    let mut harness = Harness::new();
+    let mut driver = TestDriver::new();
     let id = WorkflowId::numbered(1);
     let mut run = crate::state::RunState::new(run_id());
     run.workflows.push(crate::state::WorkflowState {
@@ -1811,23 +2073,23 @@ fn the_phases_read_on_one_line_however_long_their_details() {
         parent: None,
         steps: Vec::new(),
     });
-    harness.state.runs.insert(run_id(), run);
+    driver.state.runs.insert(run_id(), run);
     if let AppEvent::Run { event } = &mut started()
         && let RunEventKind::Run(RunLifecycle::Started(started)) = &mut event.kind
     {
         let mut crew = (**started).clone();
         crew.mode = RunMode::Crew;
-        harness.send(run_event(RunEventKind::Run(RunLifecycle::Started(
+        driver.send(run_event(RunEventKind::Run(RunLifecycle::Started(
             Box::new(crew),
         ))));
     }
     let phase = |index: u32, title: &str, detail: &str| DeclaredPhase {
         index,
-        title: title.into(),
+        name: title.into(),
         detail: detail.into(),
         standard: StandardPhase::Do,
     };
-    harness.send(run_event(RunEventKind::Workflow(WorkflowEvent::Declared(
+    driver.send(run_event(RunEventKind::Workflow(WorkflowEvent::Declared(
         Box::new(WorkflowDeclared {
             id,
             name: "council".into(),
@@ -1843,25 +2105,49 @@ fn the_phases_read_on_one_line_however_long_their_details() {
             required: Vec::new(),
         }),
     ))));
-    let printed = harness.printed_at(60);
-    assert!(printed.ends_with("  ⎿  ◐ Fix · Merge"), "{printed}");
+    let printed = driver.printed_at(60);
+    assert!(
+        printed.ends_with("  ⎿  Running in background · /workflows to monitor and save"),
+        "{printed}"
+    );
+    assert!(!printed.contains("Fix · Merge"), "{printed}");
     assert!(!printed.contains("each with a test"), "{printed}");
 }
 
-/// A run's end reads one way everywhere it shows: a failed run's workflow ends `· failed` above
-/// "The run failed", as its panel row does, never `· done`, and a stopped one `· stopped`.
+/// A run's end reads one way everywhere it shows: a stopped run's workflow reads `✘ Stopped in`,
+/// as its panel row is stopped, never completed. A failed run is one block, "The run failed".
 #[test]
 fn a_workflow_ends_as_its_run_did() {
     use crate::bottom::WorkflowRowState;
 
-    for (outcome, word, end) in [
-        (RunOutcome::Failed, "failed", "The run failed"),
-        (RunOutcome::Stopped, "stopped", "Stopped the run"),
-        (RunOutcome::Abandoned, "stopped", "Abandoned the run"),
-        (RunOutcome::Merged, "done", "Merged the run"),
+    for (outcome, word, ended, end) in [
+        (
+            RunOutcome::Failed,
+            "failed",
+            "✘ Failed in",
+            "The run failed",
+        ),
+        (
+            RunOutcome::Stopped,
+            "stopped",
+            "✘ Stopped in",
+            "Stopped the run",
+        ),
+        (
+            RunOutcome::Abandoned,
+            "stopped",
+            "✘ Stopped in",
+            "Abandoned the run",
+        ),
+        (
+            RunOutcome::Merged,
+            "done",
+            "✔ Completed in",
+            "Merged the run",
+        ),
     ] {
-        let mut harness = crew_workflow_harness();
-        harness.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
+        let mut driver = crew_workflow_driver();
+        driver.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
             Box::new(ClosingAnswer {
                 text: "The run ended after 9 of its 10 agents reported.".into(),
                 by: None,
@@ -1869,14 +2155,15 @@ fn a_workflow_ends_as_its_run_did() {
                 checks: Vec::new(),
                 tests: Vec::new(),
                 left: Vec::new(),
+                decided: Vec::new(),
             }),
         ))));
-        harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+        driver.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
             outcome,
             detail: None,
         })));
-        let printed = harness.printed();
-        let item = format!("● Workflow(fix-slugify-median) · {word}");
+        let printed = driver.printed();
+        let item = format!("  ⎿  {ended} ");
         // A failed run is one block, "The run failed", with no row for its workflow.
         assert_eq!(
             printed.contains(&item),
@@ -1885,8 +2172,8 @@ fn a_workflow_ends_as_its_run_did() {
         );
         assert!(printed.contains(end), "{printed}");
         assert_eq!(WorkflowRowState::ended(outcome).word(), word);
-        if outcome == RunOutcome::Failed {
-            assert!(!printed.contains("· done"), "{printed}");
+        if outcome != RunOutcome::Merged {
+            assert!(!printed.contains("Completed in"), "{printed}");
         }
     }
 }
@@ -1895,8 +2182,8 @@ fn a_workflow_ends_as_its_run_did() {
 /// time and spend on the same row, and never the failure again in the run's last word.
 #[test]
 fn a_failed_run_says_what_failed_once() {
-    let mut harness = crew_workflow_harness();
-    harness.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
+    let mut driver = crew_workflow_driver();
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
         Box::new(ClosingAnswer {
             text: "The run failed before any agent reported.".into(),
             by: None,
@@ -1904,14 +2191,15 @@ fn a_failed_run_says_what_failed_once() {
             checks: Vec::new(),
             tests: Vec::new(),
             left: Vec::new(),
+            decided: Vec::new(),
         }),
     ))));
     let git = "{\"message\":\"The following paths are ignored by one of your .gitignore files:\\n.argonauts\"}";
-    harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
         outcome: RunOutcome::Failed,
         detail: Some(git.into()),
     })));
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert_eq!(printed.matches("The run failed").count(), 1, "{printed}");
     assert_eq!(
         printed.matches("are ignored by one of your").count(),
@@ -1923,52 +2211,52 @@ fn a_failed_run_says_what_failed_once() {
     // git's whole text waits behind `r`, as the line says.
     let words = printed.split_whitespace().collect::<Vec<_>>().join(" ");
     assert_eq!(words.matches("· r shows it all").count(), 1, "{printed}");
-    let raw = harness
+    let raw = driver
         .model
         .raw_failure
         .as_ref()
         .expect("the raw text is kept");
     assert_eq!(raw.text, git);
     // The session's own line about the failure, with no message of yours, leaves `r` to it.
-    let mut told = chat_turn(1, "", "The council workflow didn't start. Want me to look?");
-    if let AppEvent::Chat {
-        event: ChatEvent::TurnStarted { continues, .. },
+    let mut told = conversation_turn(1, "", "The council workflow didn't start. Want me to look?");
+    if let AppEvent::Conversation {
+        event: ConversationEvent::TurnStarted { continues, .. },
     } = &mut told[0]
     {
         *continues = true;
     }
     for event in told {
-        harness.send(event);
+        driver.send(event);
     }
-    assert!(harness.model.raw_failure.is_some());
+    assert!(driver.model.raw_failure.is_some());
     // Once your next message starts a turn, `r` is a letter again.
-    for event in chat_turn(2, "retry with Sonnet", "Retrying.") {
-        harness.send(event);
+    for event in conversation_turn(2, "retry with Sonnet", "Retrying.") {
+        driver.send(event);
     }
-    assert_eq!(harness.model.raw_failure, None);
+    assert_eq!(driver.model.raw_failure, None);
 }
 
 /// A run that failed with nothing more to say than its one line hints at no raw text.
 #[test]
 fn a_failed_run_that_said_it_all_has_no_raw_hint() {
-    let mut harness = crew_workflow_harness();
-    harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+    let mut driver = crew_workflow_driver();
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
         outcome: RunOutcome::Failed,
         detail: Some("the merge was refused".into()),
     })));
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert!(printed.contains("the merge was refused"), "{printed}");
     assert!(!printed.contains("r shows"), "{printed}");
-    assert_eq!(harness.model.raw_failure, None);
+    assert_eq!(driver.model.raw_failure, None);
 }
 
-/// A crew run whose request named who coordinates and who reviews: one quiet item says what
-/// was followed, the workflow the lead declared prints under it as Claude Code prints its own,
-/// and the closing answer comes last, after `Workflow(<name>) · done` and the merge.
+/// A crew run whose request named who orchestrates and who reviews: one quiet item says what
+/// was followed, the workflow the main agent declared prints under it as Claude Code prints its
+/// own, and the closing answer comes last, after `Workflow(<name>) · done` and the merge.
 #[test]
 fn a_run_as_you_asked_says_so_then_prints_its_workflow_then_its_closing_answer() {
     use argonauts_core::events::run::{
-        CheckedInstruction, InstructionOutcome, RunNamed, TriageDecision,
+        CaptainOrCrewDecision, CheckedInstruction, InstructionOutcome, RunNamed,
     };
     use argonauts_core::events::workflow::{DeclaredPhase, WorkflowDeclared, WorkflowEvent};
     use argonauts_core::names::WorkflowId;
@@ -1984,7 +2272,7 @@ fn a_run_as_you_asked_says_so_then_prints_its_workflow_then_its_closing_answer()
             note: None,
         },
     };
-    let mut harness = Harness::new();
+    let mut driver = TestDriver::new();
     let id = WorkflowId::numbered(1);
     let mut run = crate::state::RunState::new(run_id());
     run.workflows.push(crate::state::WorkflowState {
@@ -2003,22 +2291,22 @@ fn a_run_as_you_asked_says_so_then_prints_its_workflow_then_its_closing_answer()
         based_on: Some("orchestrator".into()),
         done_when: Vec::new(),
     });
-    harness.state.runs.insert(run_id(), run);
-    harness.send(run_event(RunEventKind::Run(RunLifecycle::Started(
+    driver.state.runs.insert(run_id(), run);
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::Started(
         Box::new(RunStarted {
             mode: RunMode::Crew,
-            triage: Some(TriageDecision {
+            captain_or_crew: Some(CaptainOrCrewDecision {
                 mode: RunMode::Crew,
-                escalate_to_crew: false,
-                rule: TriageDecision::AS_YOU_ASKED.into(),
+                move_to_crew: false,
+                rule: CaptainOrCrewDecision::AS_YOU_ASKED.into(),
                 reason: String::new(),
-                solo: None,
+                captain: None,
             }),
             instructions: vec![
                 followed(
-                    "have codex coordinate",
-                    InstructionKind::Coordinate,
-                    "Codex coordinates",
+                    "have codex orchestrate",
+                    InstructionKind::Orchestrate,
+                    "Codex orchestrates",
                 ),
                 followed(
                     "claude review it",
@@ -2031,11 +2319,11 @@ fn a_run_as_you_asked_says_so_then_prints_its_workflow_then_its_closing_answer()
     ))));
     let phase = |index: u32, title: &str, detail: &str| DeclaredPhase {
         index,
-        title: title.into(),
+        name: title.into(),
         detail: detail.into(),
         standard: StandardPhase::Do,
     };
-    harness.send(run_event(RunEventKind::Workflow(WorkflowEvent::Declared(
+    driver.send(run_event(RunEventKind::Workflow(WorkflowEvent::Declared(
         Box::new(WorkflowDeclared {
             id,
             name: "orchestrator".into(),
@@ -2047,38 +2335,37 @@ fn a_run_as_you_asked_says_so_then_prints_its_workflow_then_its_closing_answer()
             required: Vec::new(),
         }),
     ))));
-    harness.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
         Box::new(closing()),
     ))));
-    harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
         outcome: RunOutcome::Merged,
         detail: None,
     })));
-    let printed = harness.printed();
+    let printed = driver.printed();
     let at = |shown: &str| {
         printed
             .find(shown)
             .unwrap_or_else(|| panic!("{shown} missing from:\n{printed}"))
     };
-    assert!(!printed.contains("Triage"), "{printed}");
     let order = [
-        at("As you asked: Codex coordinates · Claude Code reviews"),
-        at(
-            "● Workflow(add-due-dates) · started from orchestrator · ctrl+t to open\n  ⎿  ◐ Build · Review",
-        ),
-        at("● Workflow(add-due-dates) · done"),
+        at("As you asked: Codex orchestrates · Claude Code reviews"),
+        at("● Workflow(add-due-dates · orchestrator workflow)\n  ⎿  Running in background"),
+        at("● Workflow(add-due-dates · orchestrator workflow)\n  ⎿  ✔ Completed in"),
         at("Merged the run"),
         at("● Fixed parse()"),
     ];
     assert!(order.is_sorted(), "{order:?}\n{printed}");
-    assert_eq!(printed.matches("● Workflow(add-due-dates)").count(), 2);
+    assert_eq!(printed.matches("● Workflow(add-due-dates · ").count(), 2);
 }
 
 /// A run whose request said how to run it, with a long instruction
 /// and one in Chinese, at 80, 100, and 120 columns.
 #[test]
 fn a_run_s_start_says_what_was_followed_and_what_was_not() {
-    use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome, TriageDecision};
+    use argonauts_core::events::run::{
+        CaptainOrCrewDecision, CheckedInstruction, InstructionOutcome,
+    };
     use argonauts_core::steps::intake::{ChangeEstimate, InstructionKind};
     use unicode_width::UnicodeWidthStr;
 
@@ -2097,9 +2384,9 @@ fn a_run_s_start_says_what_was_followed_and_what_was_not() {
     };
     let instructions = vec![
         followed(
-            "have codex coordinate",
-            InstructionKind::Coordinate,
-            "Codex coordinates",
+            "have codex orchestrate",
+            InstructionKind::Orchestrate,
+            "Codex orchestrates",
             None,
         ),
         followed(
@@ -2131,8 +2418,8 @@ fn a_run_s_start_says_what_was_followed_and_what_was_not() {
         },
     ];
     for width in [80u16, 100, 120] {
-        let mut harness = Harness::new();
-        harness.send(run_event(RunEventKind::Run(RunLifecycle::Started(
+        let mut driver = TestDriver::new();
+        driver.send(run_event(RunEventKind::Run(RunLifecycle::Started(
             Box::new(RunStarted {
                 mode: RunMode::Crew,
                 estimate: Some(ChangeEstimate {
@@ -2144,20 +2431,20 @@ fn a_run_s_start_says_what_was_followed_and_what_was_not() {
                     tests_exist: true,
                     unknowns: Vec::new(),
                 }),
-                triage: Some(TriageDecision {
+                captain_or_crew: Some(CaptainOrCrewDecision {
                     mode: RunMode::Crew,
-                    escalate_to_crew: false,
-                    rule: TriageDecision::AS_YOU_ASKED.into(),
+                    move_to_crew: false,
+                    rule: CaptainOrCrewDecision::AS_YOU_ASKED.into(),
                     reason: String::new(),
-                    solo: None,
+                    captain: None,
                 }),
                 instructions: instructions.clone(),
                 ..started_fields()
             }),
         ))));
-        let printed = harness.printed_at(width);
+        let printed = driver.printed_at(width);
         for shown in [
-            "As you asked: Codex coordinates · Claude Code reviews with Opus 5.5, high effort",
+            "As you asked: Codex orchestrates · Claude Code reviews with Opus 5.5, high effort",
             "Grok Build isn't installed, so the crew's workers build",
             "\"and while you are at it please merge th…\"",
             "Codex has no model named opus",
@@ -2172,27 +2459,28 @@ fn a_run_s_start_says_what_was_followed_and_what_was_not() {
             !printed.contains("README"),
             "a dropped instruction shows only in Ctrl+O"
         );
-        assert!(!printed.contains("Triage"), "{width}: {printed}");
         for line in printed.lines() {
             assert!(line.width() <= usize::from(width), "{width}: {line:?}");
         }
     }
 }
 
-/// A solo that works in your checkout has no run and no Triage row. The reply says what your
+/// A Captain that works in your checkout has no run and no row of its own. The reply says what your
 /// words asked when there is something to say, and the turn that goes ahead shows your message
 /// only once.
 #[test]
-fn a_direct_solo_says_so_and_goes_ahead_without_repeating_your_message() {
-    use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome, TriageDecision};
-    use argonauts_core::settings::protocol::SoloStyle;
+fn a_direct_captain_says_so_and_goes_ahead_without_repeating_your_message() {
+    use argonauts_core::events::run::{
+        CaptainOrCrewDecision, CheckedInstruction, InstructionOutcome,
+    };
+    use argonauts_core::settings::protocol::CaptainKind;
     use argonauts_core::steps::intake::{ChangeEstimate, InstructionKind};
 
     let request = "Fix the rounding in invoice/money.py, just do it yourself.";
-    let mut events = chat_turn(1, request, "The sign is applied too late.");
+    let mut events = conversation_turn(1, request, "The sign is applied too late.");
     events.pop();
-    events.push(AppEvent::Chat {
-        event: ChatEvent::TurnFinished {
+    events.push(AppEvent::Conversation {
+        event: ConversationEvent::TurnFinished {
             turn: TurnId::numbered(1),
             reply: TurnReply::Change {
                 markdown: "The sign is applied too late.".into(),
@@ -2205,12 +2493,12 @@ fn a_direct_solo_says_so_and_goes_ahead_without_repeating_your_message() {
                     tests_exist: true,
                     unknowns: Vec::new(),
                 },
-                triage: TriageDecision {
-                    mode: RunMode::Solo,
-                    escalate_to_crew: false,
-                    rule: TriageDecision::AS_YOU_ASKED.into(),
+                captain_or_crew: CaptainOrCrewDecision {
+                    mode: RunMode::Captain,
+                    move_to_crew: false,
+                    rule: CaptainOrCrewDecision::AS_YOU_ASKED.into(),
                     reason: String::new(),
-                    solo: Some(SoloStyle::Direct),
+                    captain: Some(CaptainKind::Direct),
                 },
                 instructions: vec![CheckedInstruction {
                     says: "just do it yourself".into(),
@@ -2225,20 +2513,19 @@ fn a_direct_solo_says_so_and_goes_ahead_without_repeating_your_message() {
             elapsed_ms: 2_000,
         },
     });
-    let mut going = chat_turn(2, request, "Fixed it. All 6 tests pass.");
-    if let AppEvent::Chat {
-        event: ChatEvent::TurnStarted { continues, .. },
+    let mut going = conversation_turn(2, request, "Fixed it. All 6 tests pass.");
+    if let AppEvent::Conversation {
+        event: ConversationEvent::TurnStarted { continues, .. },
     } = &mut going[0]
     {
         *continues = true;
     }
     events.extend(going);
-    let mut harness = Harness::new();
+    let mut driver = TestDriver::new();
     for event in events {
-        harness.send(event);
+        driver.send(event);
     }
-    let printed = harness.printed_at(100);
-    assert!(!printed.contains("Triage"), "{printed}");
+    let printed = driver.printed_at(100);
     assert!(!printed.contains("Estimate:"), "{printed}");
     assert!(
         printed.contains("As you asked: the main agent does it"),
@@ -2252,29 +2539,31 @@ fn a_direct_solo_says_so_and_goes_ahead_without_repeating_your_message() {
     assert!(printed.contains("Fixed it. All 6 tests pass."), "{printed}");
 }
 
-/// Your words chose a solo run checked in a copy, and its start says what was followed.
+/// Your words chose a Captain run checked in a worktree, and its start says what was followed.
 #[test]
-fn a_solo_the_words_checked_says_so() {
-    use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome, TriageDecision};
-    use argonauts_core::settings::protocol::SoloStyle;
+fn a_captain_the_words_checked_says_so() {
+    use argonauts_core::events::run::{
+        CaptainOrCrewDecision, CheckedInstruction, InstructionOutcome,
+    };
+    use argonauts_core::settings::protocol::CaptainKind;
     use argonauts_core::steps::intake::InstructionKind;
 
-    let mut harness = Harness::new();
-    harness.send(run_event(RunEventKind::Run(RunLifecycle::Started(
+    let mut driver = TestDriver::new();
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::Started(
         Box::new(RunStarted {
-            triage: Some(TriageDecision {
-                mode: RunMode::Solo,
-                escalate_to_crew: false,
-                rule: TriageDecision::AS_YOU_ASKED.into(),
+            captain_or_crew: Some(CaptainOrCrewDecision {
+                mode: RunMode::Captain,
+                move_to_crew: false,
+                rule: CaptainOrCrewDecision::AS_YOU_ASKED.into(),
                 reason: String::new(),
-                solo: Some(SoloStyle::Checked),
+                captain: Some(CaptainKind::Checked),
             }),
             instructions: vec![
                 CheckedInstruction {
                     says: "check it in a copy first".into(),
                     kind: InstructionKind::Isolation,
                     outcome: InstructionOutcome::Followed {
-                        said: "checked in a copy".into(),
+                        said: "checked in a worktree".into(),
                         note: None,
                     },
                 },
@@ -2290,10 +2579,9 @@ fn a_solo_the_words_checked_says_so() {
             ..started_fields()
         }),
     ))));
-    let printed = harness.printed_at(100);
-    assert!(!printed.contains("Triage"), "{printed}");
+    let printed = driver.printed_at(100);
     assert!(
-        printed.contains("As you asked: checked in a copy · Codex reviews"),
+        printed.contains("As you asked: checked in a worktree · Codex reviews"),
         "{printed}"
     );
 }
@@ -2312,43 +2600,43 @@ fn started_fields() -> RunStarted {
 /// hangs dim under the plugin's name, and Claude Code's own workflow shows as the workflow it
 /// reports, never as the script it ran.
 #[test]
-fn a_joined_message_a_mods_log_and_a_mirrored_workflow_in_the_chat() {
-    use argonauts_core::ModOutputKind;
-    use argonauts_core::events::session::{SubagentStatus, VendorWorkflow};
+fn a_joined_message_a_mods_log_and_a_mirrored_workflow_in_the_conversation() {
+    use argonauts_core::PluginOutputKind;
+    use argonauts_core::events::session::{CliWorkflowRun, SubagentStatus};
 
-    let mut harness = Harness::new();
+    let mut driver = TestDriver::new();
     let turn = TurnId::numbered(1);
-    let chat = |event| AppEvent::Chat { event };
+    let conversation = |event| AppEvent::Conversation { event };
     let agent = |event| {
-        chat(ChatEvent::Agent {
+        conversation(ConversationEvent::Agent {
             turn: turn.clone(),
             event,
         })
     };
-    harness.send(chat(ChatEvent::TurnStarted {
+    driver.send(conversation(ConversationEvent::TurnStarted {
         turn: turn.clone(),
         text: "check release.md, then run ./slow-test.sh".into(),
-        worker: WorkerRef::new("claude-code", Some("opus".into())),
+        worker: ModelRef::new("claude-code", Some("opus".into())),
         read_only: false,
         commit: "8b41d07".into(),
         uncommitted: vec![],
         settings_sha256: None,
         continues: false,
     }));
-    harness.send(agent(AgentEvent::ModOutput {
-        kind: ModOutputKind::Log,
+    driver.send(agent(AgentEvent::PluginOutput {
+        kind: PluginOutputKind::Log,
         plugin: Some("pr-tools".into()),
         text: Some("3 reviewers asked".into()),
         timeout_ms: None,
     }));
-    harness.send(agent(AgentEvent::ToolStarted {
+    driver.send(agent(AgentEvent::ToolStarted {
         id: "wf-call".into(),
         name: "Workflow".into(),
         input: serde_json::json!({ "script": "export const meta = {}" }),
         parent: None,
     }));
-    harness.send(agent(AgentEvent::Workflow {
-        workflow: Box::new(VendorWorkflow {
+    driver.send(agent(AgentEvent::Workflow {
+        workflow: Box::new(CliWorkflowRun {
             id: "w4d273qmn".into(),
             call: Some("wf-call".into()),
             name: "release-check".into(),
@@ -2363,17 +2651,20 @@ fn a_joined_message_a_mods_log_and_a_mirrored_workflow_in_the_chat() {
             started_at_ms: None,
         }),
     }));
-    harness.send(chat(ChatEvent::Joined {
+    driver.send(conversation(ConversationEvent::Joined {
         turn: turn.clone(),
         text: "also check the changelog".into(),
     }));
-    let printed = harness.printed_at(100);
+    let printed = driver.printed_at(100);
     assert!(
         printed.contains("⎿  pr-tools: 3 reviewers asked"),
         "{printed}"
     );
     assert!(
-        printed.contains("Workflow(release-check) · Claude Code's own · ctrl+t to open"),
+        printed.contains(
+            "● Workflow(release-check · Reads the release notes and runs the slow test)\n  \
+             ⎿  Running in background · /workflows to monitor and save"
+        ),
         "{printed}"
     );
     assert!(
@@ -2389,11 +2680,11 @@ fn a_joined_message_a_mods_log_and_a_mirrored_workflow_in_the_chat() {
 /// prints below, and a turn that ends with nothing more doesn't get the line twice.
 #[test]
 fn a_turn_stopped_alone_leaves_the_interrupted_line_once() {
-    const LINE: &str = "⎿  Interrupted · What should Argonauts do instead?";
+    const LINE: &str = "⎿  Interrupted · What should Argonauts Code do instead?";
     let turn = TurnId::numbered(1);
-    let chat = |event| AppEvent::Chat { event };
+    let conversation = |event| AppEvent::Conversation { event };
     let said = |event| {
-        chat(ChatEvent::Agent {
+        conversation(ConversationEvent::Agent {
             turn: TurnId::numbered(1),
             event,
         })
@@ -2412,10 +2703,10 @@ fn a_turn_stopped_alone_leaves_the_interrupted_line_once() {
         })
     };
     let started = || {
-        chat(ChatEvent::TurnStarted {
+        conversation(ConversationEvent::TurnStarted {
             turn: TurnId::numbered(1),
             text: "count in the background".into(),
-            worker: WorkerRef::new("claude-code", Some("haiku".into())),
+            worker: ModelRef::new("claude-code", Some("haiku".into())),
             read_only: true,
             commit: "8b41d07".into(),
             uncommitted: vec![],
@@ -2424,17 +2715,17 @@ fn a_turn_stopped_alone_leaves_the_interrupted_line_once() {
         })
     };
 
-    let mut harness = Harness::new();
-    harness.send(started());
-    harness.send(writes("The count runs on its own while I"));
-    harness.send(stopped());
-    let printed = harness.printed();
+    let mut driver = TestDriver::new();
+    driver.send(started());
+    driver.send(writes("The count runs on its own while I"));
+    driver.send(stopped());
+    let printed = driver.printed();
     assert!(
         printed.ends_with(&format!("● The count runs on its own while I\n  {LINE}")),
         "{printed}"
     );
-    harness.send(writes("The count reached four hundred."));
-    harness.send(chat(ChatEvent::TurnFinished {
+    driver.send(writes("The count reached four hundred."));
+    driver.send(conversation(ConversationEvent::TurnFinished {
         turn: turn.clone(),
         reply: TurnReply::Answer {
             markdown: "The count reached four hundred.".into(),
@@ -2442,32 +2733,32 @@ fn a_turn_stopped_alone_leaves_the_interrupted_line_once() {
         spend: Spend::default(),
         elapsed_ms: 3_000,
     }));
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert!(
         printed.contains("● The count reached four hundred."),
         "{printed}"
     );
     assert!(!printed.contains("Interrupted"), "{printed}");
 
-    let mut harness = Harness::new();
-    harness.send(started());
-    harness.send(writes("The count runs on its own while I"));
-    harness.send(stopped());
-    harness.send(chat(ChatEvent::TurnCancelled { turn }));
-    let printed = harness.printed();
+    let mut driver = TestDriver::new();
+    driver.send(started());
+    driver.send(writes("The count runs on its own while I"));
+    driver.send(stopped());
+    driver.send(conversation(ConversationEvent::TurnCancelled { turn }));
+    let printed = driver.printed();
     assert_eq!(printed.matches("Interrupted").count(), 1, "{printed}");
 }
 
 /// A crew run named `switch-reads` whose one step runs another workflow's steps, and whose own
 /// phases say only that: Work, then Merge. Benchmark is a step you require.
-fn handed_over_harness() -> (Harness, argonauts_core::names::WorkflowId) {
+fn handed_over_driver() -> (TestDriver, argonauts_core::names::WorkflowId) {
     use argonauts_core::events::run::RunNamed;
     use argonauts_core::events::workflow::{DeclaredPhase, WorkflowDeclared, WorkflowEvent};
     use argonauts_core::names::WorkflowId;
     use argonauts_core::settings::workflows::RunStyle;
     use argonauts_core::workflow::StandardPhase;
 
-    let mut harness = Harness::new();
+    let mut driver = TestDriver::new();
     let id = WorkflowId::numbered(1);
     let mut run = crate::state::RunState::new(run_id());
     run.workflows.push(crate::state::WorkflowState {
@@ -2487,23 +2778,23 @@ fn handed_over_harness() -> (Harness, argonauts_core::names::WorkflowId) {
         based_on: None,
         done_when: Vec::new(),
     });
-    harness.state.runs.insert(run_id(), run);
+    driver.state.runs.insert(run_id(), run);
     if let AppEvent::Run { event } = &mut started()
         && let RunEventKind::Run(RunLifecycle::Started(started)) = &mut event.kind
     {
         let mut crew = (**started).clone();
         crew.mode = RunMode::Crew;
-        harness.send(run_event(RunEventKind::Run(RunLifecycle::Started(
+        driver.send(run_event(RunEventKind::Run(RunLifecycle::Started(
             Box::new(crew),
         ))));
     }
     let phase = |index: u32, title: &str| DeclaredPhase {
         index,
-        title: title.into(),
+        name: title.into(),
         detail: String::new(),
         standard: StandardPhase::Do,
     };
-    harness.send(run_event(RunEventKind::Workflow(WorkflowEvent::Declared(
+    driver.send(run_event(RunEventKind::Workflow(WorkflowEvent::Declared(
         Box::new(WorkflowDeclared {
             id: id.clone(),
             name: "script".into(),
@@ -2512,32 +2803,33 @@ fn handed_over_harness() -> (Harness, argonauts_core::names::WorkflowId) {
             required: vec!["benchmark".into()],
         }),
     ))));
-    (harness, id)
+    (driver, id)
 }
 
 /// What the workflow the Work step runs reports: its phases in its order, and an agent at work.
 fn report_of(id: &argonauts_core::names::WorkflowId, phases: &[&str]) -> RunEventKind {
     use argonauts_core::events::session::{
-        SubagentStatus, VendorAgent, VendorAgentState, VendorPhase, VendorWorkflow,
+        CliAgent, CliAgentState, CliPhase, CliWorkflowRun, SubagentStatus,
     };
     use argonauts_core::events::workflow::{WorkflowEvent, WorkflowReport};
     use argonauts_core::workflow::StepRef;
 
     let agents = phases
         .first()
-        .map(|_| VendorAgent {
+        .map(|_| CliAgent {
             index: 1,
             label: "plan:orchestrator".into(),
             phase: Some(1),
             model: None,
-            state: VendorAgentState::Running,
+            state: CliAgentState::Running,
             tokens: 0,
             tool_calls: 0,
             duration_ms: 0,
             started_at_ms: None,
-            attempt: 1,
+            try_number: 1,
             prompt: None,
             result: None,
+            ..CliAgent::default()
         })
         .into_iter()
         .collect();
@@ -2547,7 +2839,7 @@ fn report_of(id: &argonauts_core::names::WorkflowId, phases: &[&str]) -> RunEven
             phase: 0,
             path: vec![0],
         },
-        workflow: VendorWorkflow {
+        workflow: CliWorkflowRun {
             id: "wf-steps".into(),
             call: None,
             name: "orchestrator".into(),
@@ -2555,7 +2847,7 @@ fn report_of(id: &argonauts_core::names::WorkflowId, phases: &[&str]) -> RunEven
             phases: phases
                 .iter()
                 .zip(1..)
-                .map(|(title, index)| VendorPhase {
+                .map(|(title, index)| CliPhase {
                     index,
                     title: (*title).into(),
                     detail: String::new(),
@@ -2574,33 +2866,32 @@ fn report_of(id: &argonauts_core::names::WorkflowId, phases: &[&str]) -> RunEven
     })))
 }
 
-/// The run's start item waits until the workflow its step runs names its phases, then lists
-/// them in their order in place of Work, however many there are and whatever they repeat, with
-/// the step you require marked. It prints once.
+/// The run's start item waits until the workflow its step runs reports, so nothing shows of a
+/// workflow whose script doesn't exist yet. It prints once, however often the workflow reports.
 #[test]
-fn a_workflow_a_step_runs_prints_with_the_phases_it_reports() {
-    let (mut harness, id) = handed_over_harness();
+fn a_workflow_a_step_runs_prints_once_it_reports() {
+    let (mut driver, id) = handed_over_driver();
     assert!(
-        !harness.printed().contains("Workflow("),
+        !driver.printed().contains("Workflow("),
         "{}",
-        harness.printed()
+        driver.printed()
     );
 
     // Nothing reported yet: still waiting.
-    harness.send(run_event(report_of(&id, &[])));
+    driver.send(run_event(report_of(&id, &[])));
     assert!(
-        !harness.printed().contains("Workflow("),
+        !driver.printed().contains("Workflow("),
         "{}",
-        harness.printed()
+        driver.printed()
     );
 
     let mut titles: Vec<String> = (1..=10).map(|n| format!("Shelf {n}")).collect();
     titles.insert(3, "Benchmark".into());
     titles.push("Shelf 1".into());
     let titles: Vec<&str> = titles.iter().map(String::as_str).collect();
-    harness.send(run_event(report_of(&id, &titles)));
-    harness.send(run_event(report_of(&id, &titles)));
-    let printed = harness.printed_at(100);
+    driver.send(run_event(report_of(&id, &titles)));
+    driver.send(run_event(report_of(&id, &titles)));
+    let printed = driver.printed_at(100);
     assert_eq!(
         printed.matches("Workflow(switch-reads)").count(),
         1,
@@ -2608,13 +2899,11 @@ fn a_workflow_a_step_runs_prints_with_the_phases_it_reports() {
     );
     assert!(
         printed.contains(
-            "● Workflow(switch-reads) · ctrl+t to open\n  ⎿  ◐ Shelf 1 · Shelf 2 · Shelf 3 · ★ Benchmark · "
+            "● Workflow(switch-reads)\n  ⎿  Running in background · /workflows to monitor and save"
         ),
         "{printed}"
     );
-    assert!(printed.contains("Shelf 1 · Merge\n"), "{printed}");
-    assert!(printed.contains("★ a step you require"), "{printed}");
-    assert!(!printed.contains("Work "), "{printed}");
+    assert!(!printed.contains("Shelf 1"), "{printed}");
 }
 
 /// The size your request asked for, which the orchestrator keeps to, is the first line under
@@ -2623,16 +2912,17 @@ fn a_workflow_a_step_runs_prints_with_the_phases_it_reports() {
 fn the_size_you_asked_for_is_said_under_the_workflows_row() {
     use argonauts_core::events::workflow::WorkflowEvent;
 
-    let (mut harness, id) = handed_over_harness();
+    let (mut driver, id) = handed_over_driver();
     let mut reported = report_of(&id, &["Shelf 1"]);
     if let RunEventKind::Workflow(WorkflowEvent::Reported(report)) = &mut reported {
         report.size_asked = Some("a small workflow, 5 agents at most".into());
     }
-    harness.send(run_event(reported));
-    let printed = harness.printed_at(100);
+    driver.send(run_event(reported));
+    let printed = driver.printed_at(100);
     assert!(
         printed.contains(
-            "● Workflow(switch-reads) · ctrl+t to open\n  ⎿  As you asked: a small workflow, 5 agents at most\n     ◐ Shelf 1 · Merge"
+            "● Workflow(switch-reads)\n  ⎿  Running in background · /workflows to monitor and save\n     \
+             As you asked: a small workflow, 5 agents at most"
         ),
         "{printed}"
     );
@@ -2642,52 +2932,50 @@ fn the_size_you_asked_for_is_said_under_the_workflows_row() {
 /// reports anything still prints its start, as declared, ahead of its end.
 #[test]
 fn a_workflow_of_one_phase_or_none_reported_still_prints_its_start() {
-    let (mut harness, id) = handed_over_harness();
-    harness.send(run_event(report_of(&id, &["Sort the boxes"])));
-    let printed = harness.printed_at(100);
+    let (mut driver, id) = handed_over_driver();
+    driver.send(run_event(report_of(&id, &["Sort the boxes"])));
+    let printed = driver.printed_at(100);
     assert!(
-        printed.contains("  ⎿  ◐ Sort the boxes · Merge"),
+        printed.contains("● Workflow(switch-reads)\n  ⎿  Running in background"),
         "{printed}"
     );
 
-    let (mut harness, _) = handed_over_harness();
-    harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+    let (mut driver, _) = handed_over_driver();
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
         outcome: RunOutcome::Failed,
         detail: None,
     })));
-    let printed = harness.printed_at(100);
-    let start = printed
-        .find("● Workflow(switch-reads) · ctrl+t to open\n")
-        .expect(&printed);
+    let printed = driver.printed_at(100);
+    let start = printed.find("● Workflow(switch-reads)\n").expect(&printed);
     // A failed run is one block: no second row for its workflow.
-    assert!(
-        !printed.contains("Workflow(switch-reads) · failed"),
+    assert_eq!(
+        printed.matches("Workflow(switch-reads)").count(),
+        1,
         "{printed}"
     );
     let end = printed.find("The run failed").expect(&printed);
     assert!(start < end, "{printed}");
-    assert!(printed.contains("◐ Work · Merge"), "{printed}");
 }
 
 #[test]
-fn an_edit_in_the_chat_shows_the_file_numbers_its_result_reported() {
-    let mut harness = Harness::new();
-    harness.transcript.chat = ChatTurns::with_tool_kinds(|_, name| match name {
+fn an_edit_in_the_conversation_shows_the_file_numbers_its_result_reported() {
+    let mut driver = TestDriver::new();
+    driver.transcript.conversation = ConversationTurns::with_tool_kinds(|_, name| match name {
         "Edit" => ToolKind::Edit,
         _ => ToolKind::Other,
     });
     let turn = TurnId::numbered(1);
-    let agent = |event| AppEvent::Chat {
-        event: ChatEvent::Agent {
+    let agent = |event| AppEvent::Conversation {
+        event: ConversationEvent::Agent {
             turn: turn.clone(),
             event,
         },
     };
-    harness.send(AppEvent::Chat {
-        event: ChatEvent::TurnStarted {
+    driver.send(AppEvent::Conversation {
+        event: ConversationEvent::TurnStarted {
             turn: turn.clone(),
             text: "fix the count".into(),
-            worker: WorkerRef::new("claude-code", Some("haiku".into())),
+            worker: ModelRef::new("claude-code", Some("haiku".into())),
             read_only: false,
             commit: "8b41d07".into(),
             uncommitted: vec![],
@@ -2695,41 +2983,41 @@ fn an_edit_in_the_chat_shows_the_file_numbers_its_result_reported() {
             continues: false,
         },
     });
-    harness.printed();
-    harness.send(agent(AgentEvent::ToolStarted {
+    driver.printed();
+    driver.send(agent(AgentEvent::ToolStarted {
         id: "edit-1".into(),
         name: "Edit".into(),
         input: serde_json::json!({"file_path": "src/lib.rs", "old_string": "let count = 0;",
                                   "new_string": "let mut count = 0;"}),
         parent: None,
     }));
-    harness.send(agent(AgentEvent::FilePatch {
+    driver.send(agent(AgentEvent::FilePatch {
         id: "edit-1".into(),
         path: "src/lib.rs".into(),
         hunks: "@@ -11,3 +11,3 @@\n fn total() -> u32 {\n-    let count = 0;\n+    let mut count = 0;\n     count\n"
             .into(),
         parent: None,
     }));
-    harness.send(agent(AgentEvent::ToolFinished {
+    driver.send(agent(AgentEvent::ToolFinished {
         id: "edit-1".into(),
         ok: true,
         output: Some("The file src/lib.rs has been updated.".into()),
         parent: None,
     }));
     assert_eq!(
-        harness.printed(),
+        driver.printed(),
         "\n● Update(src/lib.rs)\n  ⎿  Added 1 line, removed 1 line\n      11  fn total() -> u32 {\n      12 -    let count = 0;\n      12 +    let mut count = 0;\n      13      count"
     );
 }
 
 /// With a second workflow on screen, the first's events still print, and its closing answer
-/// still ends it in the chat.
+/// still ends it in the conversation.
 #[test]
 fn a_run_off_screen_still_ends_with_its_closing_answer() {
-    let mut harness = Harness::new();
-    harness.send(started());
+    let mut driver = TestDriver::new();
+    driver.send(started());
     let second = RunId::new("run-02").expect("a valid run id");
-    harness.send(AppEvent::Attached {
+    driver.send(AppEvent::Attached {
         summary: RunSummary {
             run: second.clone(),
             title: "Fix the median".into(),
@@ -2737,19 +3025,19 @@ fn a_run_off_screen_still_ends_with_its_closing_answer() {
         },
         started_here: true,
     });
-    harness.send(AppEvent::ReplayDone {
+    driver.send(AppEvent::ReplayDone {
         run: second,
         seq: 0,
     });
-    harness.printed();
-    harness.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
+    driver.printed();
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
         Box::new(closing()),
     ))));
-    harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+    driver.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
         outcome: RunOutcome::Merged,
         detail: None,
     })));
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert!(printed.contains("Merged the run"), "{printed}");
     assert!(printed.contains("● Fixed parse()"), "{printed}");
 }
@@ -2759,15 +3047,15 @@ fn a_run_off_screen_still_ends_with_its_closing_answer() {
 #[test]
 fn a_run_off_screen_prints_its_ending_while_the_one_on_screen_replays() {
     // Through the state, which tells the replay's events from the rest.
-    fn send(harness: &mut Harness, event: AppEvent) {
-        harness.state.apply(&event);
-        harness.send(event);
+    fn send(driver: &mut TestDriver, event: AppEvent) {
+        driver.state.apply(&event);
+        driver.send(event);
     }
-    let mut harness = Harness::new();
-    send(&mut harness, started());
+    let mut driver = TestDriver::new();
+    send(&mut driver, started());
     let second = RunId::new("run-02").expect("a valid run id");
     send(
-        &mut harness,
+        &mut driver,
         AppEvent::Attached {
             summary: RunSummary {
                 run: second.clone(),
@@ -2777,7 +3065,7 @@ fn a_run_off_screen_prints_its_ending_while_the_one_on_screen_replays() {
             started_here: false,
         },
     );
-    harness.printed();
+    driver.printed();
     let replayed = |kind| match run_event(kind) {
         AppEvent::Run { mut event } => {
             event.run_id = second.clone();
@@ -2786,33 +3074,33 @@ fn a_run_off_screen_prints_its_ending_while_the_one_on_screen_replays() {
         _ => unreachable!(),
     };
     send(
-        &mut harness,
+        &mut driver,
         replayed(RunEventKind::Note(Note {
             level: NoteLevel::Warn,
             text: "An old warning".into(),
         })),
     );
     send(
-        &mut harness,
+        &mut driver,
         run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(Box::new(
             closing(),
         )))),
     );
     send(
-        &mut harness,
+        &mut driver,
         run_event(RunEventKind::Run(RunLifecycle::Finished {
             outcome: RunOutcome::Merged,
             detail: None,
         })),
     );
     send(
-        &mut harness,
+        &mut driver,
         AppEvent::Recap {
             text: "The json flag is in.".into(),
             model: None,
         },
     );
-    let printed = harness.printed();
+    let printed = driver.printed();
     assert!(printed.contains("● Fixed parse()"), "{printed}");
     assert!(printed.contains("Merged the run"), "{printed}");
     assert!(printed.contains("The json flag is in."), "{printed}");
@@ -2824,9 +3112,9 @@ fn a_run_off_screen_prints_its_ending_while_the_one_on_screen_replays() {
 #[test]
 fn an_answer_asked_for_again_prints_once() {
     let turn = TurnId::numbered(1);
-    let chat = |event| AppEvent::Chat { event };
+    let conversation = |event| AppEvent::Conversation { event };
     let writes = |text: &str| {
-        chat(ChatEvent::Agent {
+        conversation(ConversationEvent::Agent {
             turn: TurnId::numbered(1),
             event: AgentEvent::TextDelta {
                 text: text.into(),
@@ -2835,10 +3123,10 @@ fn an_answer_asked_for_again_prints_once() {
         })
     };
     let started = || {
-        chat(ChatEvent::TurnStarted {
+        conversation(ConversationEvent::TurnStarted {
             turn: TurnId::numbered(1),
             text: "what does the limit do".into(),
-            worker: WorkerRef::new("claude-code", Some("haiku".into())),
+            worker: ModelRef::new("claude-code", Some("haiku".into())),
             read_only: true,
             commit: "8b41d07".into(),
             uncommitted: vec![],
@@ -2847,7 +3135,7 @@ fn an_answer_asked_for_again_prints_once() {
         })
     };
     let finished = || {
-        chat(ChatEvent::TurnFinished {
+        conversation(ConversationEvent::TurnFinished {
             turn: TurnId::numbered(1),
             reply: TurnReply::Answer {
                 markdown: "It caps each client at 10 requests a second.".into(),
@@ -2859,26 +3147,28 @@ fn an_answer_asked_for_again_prints_once() {
     const ANSWER: &str = "It caps each client at 10 requests a second.";
 
     // Nothing printed yet, so the first try goes and the reply prints once.
-    let mut harness = Harness::new();
-    harness.send(started());
-    harness.send(writes("It caps each client at ten"));
-    harness.send(chat(ChatEvent::AnswerRetried { turn: turn.clone() }));
-    harness.send(writes(ANSWER));
-    harness.send(finished());
-    let printed = harness.printed();
+    let mut driver = TestDriver::new();
+    driver.send(started());
+    driver.send(writes("It caps each client at ten"));
+    driver.send(conversation(ConversationEvent::AnswerRetried {
+        turn: turn.clone(),
+    }));
+    driver.send(writes(ANSWER));
+    driver.send(finished());
+    let printed = driver.printed();
     assert_eq!(printed.matches(ANSWER).count(), 1, "{printed}");
     assert!(!printed.contains("at ten"), "{printed}");
 
     // Its rows printed already, so they stay and the same answer isn't printed again.
-    let mut harness = Harness::new();
-    harness.send(started());
-    harness.send(writes(&format!("{ANSWER}\n\n")));
-    let mut printed = harness.printed();
+    let mut driver = TestDriver::new();
+    driver.send(started());
+    driver.send(writes(&format!("{ANSWER}\n\n")));
+    let mut printed = driver.printed();
     assert!(printed.contains(ANSWER), "{printed}");
-    harness.send(chat(ChatEvent::AnswerRetried { turn }));
-    harness.send(writes(ANSWER));
-    harness.send(finished());
-    printed.push_str(&harness.printed());
+    driver.send(conversation(ConversationEvent::AnswerRetried { turn }));
+    driver.send(writes(ANSWER));
+    driver.send(finished());
+    printed.push_str(&driver.printed());
     assert_eq!(printed.matches(ANSWER).count(), 1, "{printed}");
     assert!(printed.contains("✻ Sailed for 2s"), "{printed}");
 }

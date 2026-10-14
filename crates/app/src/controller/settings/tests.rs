@@ -8,12 +8,12 @@ use argonauts_core::app::{
     AnswerTarget, AppChoice, AppEvent, ChoiceKind, SettingRow, UiCommand, ViewData, ViewRequest,
 };
 use argonauts_core::clock::SystemClock;
-use argonauts_core::events::checkpoint::AnswerAction;
+use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::input::{
-    AgentsAction, NarratorChange, PERMISSION_KEYS, PresetAction, ROLE_SANDBOX_KEYS, SlashCommand,
+    AgentsAction, NarratorChange, PERMISSION_KEYS, ROLE_SANDBOX_KEYS, SlashCommand, WorkflowVerb,
 };
 use argonauts_core::model_picker::UltracodeToggle;
-use argonauts_core::names::{ChoiceId, RoleName, WorkerRef};
+use argonauts_core::names::{ChoiceId, ModelRef, RoleName};
 use argonauts_core::registry::{ModelEntry, ModelRegistry};
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::ui::NarratorMode;
@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 
 use super::*;
 use crate::app_settings::AppSettings;
-use crate::controller::test_support::{FakeConductor, Harness, HarnessOptions};
+use crate::controller::test_support::{CliOptions, FakeConductor, TestDriver};
 use crate::controller::{AppServices, Internal, Outbox};
 use crate::env::AppEnv;
 use crate::trace::Trace;
@@ -57,7 +57,7 @@ impl Fixture {
         env.user_home = Some(repo.user_home().to_owned());
         let env = Arc::new(env);
         let settings = AppSettings::load(&env, Vec::new(), interactive).unwrap();
-        let (quota, health) = argonauts_conductor::boards(&paths);
+        let (plan_usage, health) = argonauts_conductor::boards(&paths);
         let services = AppServices {
             conductor: Arc::new(FakeConductor::default()),
             approvals: None,
@@ -67,7 +67,7 @@ impl Fixture {
                 settings.settings(),
                 repo.root(),
             ),
-            quota,
+            plan_usage,
             health,
             clock: Arc::new(SystemClock),
         };
@@ -108,25 +108,25 @@ impl Fixture {
     }
 }
 
-fn harness_options(prepare: impl FnOnce(&TempRepo) + 'static) -> HarnessOptions {
-    HarnessOptions {
+fn cli_options(prepare: impl FnOnce(&TempRepo) + 'static) -> CliOptions {
+    CliOptions {
         prepare: Some(Box::new(prepare)),
-        ..HarnessOptions::default()
+        ..CliOptions::default()
     }
 }
 
-async fn slash(harness: &Harness, command: SlashCommand) {
-    harness.send(UiCommand::Slash { command }).await;
+async fn slash(driver: &TestDriver, command: SlashCommand) {
+    driver.send(UiCommand::Slash { command }).await;
 }
 
-async fn answer(harness: &Harness, id: &ChoiceId, action: AnswerAction, text: Option<&str>) {
-    harness
+async fn answer(driver: &TestDriver, id: &ChoiceId, action: AnswerAction, text: Option<&str>) {
+    driver
         .send(UiCommand::Answer {
             to: AnswerTarget::Choice { id: id.clone() },
             action,
             text: text.map(str::to_owned),
             evidence_sha256: None,
-            cards: Vec::new(),
+            tasks: Vec::new(),
             remember: false,
         })
         .await;
@@ -136,8 +136,8 @@ fn choose(scope: SettingScope) -> AnswerAction {
     choices::choose(choices::scope_value(scope))
 }
 
-async fn next_choice(harness: &mut Harness, kind: ChoiceKind) -> AppChoice {
-    let event = harness
+async fn next_choice(driver: &mut TestDriver, kind: ChoiceKind) -> AppChoice {
+    let event = driver
         .until(|event| matches!(event, AppEvent::Choice { choice } if choice.kind == kind))
         .await;
     match event {
@@ -146,8 +146,8 @@ async fn next_choice(harness: &mut Harness, kind: ChoiceKind) -> AppChoice {
     }
 }
 
-async fn next_view(harness: &mut Harness) -> ViewData {
-    let event = harness
+async fn next_view(driver: &mut TestDriver) -> ViewData {
+    let event = driver
         .until(|event| matches!(event, AppEvent::View { .. }))
         .await;
     match event {
@@ -158,9 +158,9 @@ async fn next_view(harness: &mut Harness) -> ViewData {
 
 /// `(key, value, scope, previous, reset)` of the next `SettingChanged`.
 async fn next_change(
-    harness: &mut Harness,
+    driver: &mut TestDriver,
 ) -> (String, String, SettingScope, Option<String>, bool) {
-    let event = harness
+    let event = driver
         .until(|event| matches!(event, AppEvent::SettingChanged { .. }))
         .await;
     match event {
@@ -175,8 +175,8 @@ async fn next_change(
     }
 }
 
-async fn next_notice(harness: &mut Harness) -> String {
-    let event = harness
+async fn next_notice(driver: &mut TestDriver) -> String {
+    let event = driver
         .until(|event| matches!(event, AppEvent::Notice { .. }))
         .await;
     match event {
@@ -219,10 +219,10 @@ const GLOBAL_WITH_COMMENTS: &str = "# Mine, keep these notes.\n[ui]\nbell = true
 #[tokio::test]
 async fn each_command_opens_its_picker_with_its_default_scopes() {
     use SettingScope::*;
-    let mut harness = Harness::start().await;
+    let mut driver = TestDriver::start().await;
 
     slash(
-        &harness,
+        &driver,
         SlashCommand::Model {
             role: None,
             worker: None,
@@ -230,22 +230,22 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         },
     )
     .await;
-    let ViewData::Settings { rows, command, .. } = next_view(&mut harness).await else {
+    let ViewData::Settings { rows, command, .. } = next_view(&mut driver).await else {
         panic!("/model answers with rows");
     };
     assert_eq!(command.as_deref(), Some("model"));
-    assert_eq!(row(&rows, "main_agent").default_scope, ProjectLocal);
-    assert_eq!(row(&rows, "main_agent").value, "\"claude-code\"");
+    assert_eq!(row(&rows, "crew.main").default_scope, ProjectLocal);
+    assert_eq!(row(&rows, "crew.main").value, "\"claude-code\"");
     assert_eq!(
-        row(&rows, "roles.reviewer.workers").default_scope,
+        row(&rows, "roles.reviewer.models").default_scope,
         ProjectLocal
     );
     assert_eq!(row(&rows, "narrator.model").default_scope, Global);
     assert_eq!(row(&rows, "narrator.model").value, "");
-    assert_eq!(row(&rows, "approvals.decides").default_scope, Project);
+    assert_eq!(row(&rows, "roles.judge.models").default_scope, ProjectLocal);
 
     slash(
-        &harness,
+        &driver,
         SlashCommand::Model {
             role: Some(RoleName::Reviewer),
             worker: None,
@@ -253,13 +253,13 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         },
     )
     .await;
-    let ViewData::Models { role, .. } = next_view(&mut harness).await else {
+    let ViewData::Models { role, .. } = next_view(&mut driver).await else {
         panic!("/model reviewer lists models");
     };
     assert_eq!(role, Some(RoleName::Reviewer));
 
     slash(
-        &harness,
+        &driver,
         SlashCommand::Effort {
             role: None,
             level: None,
@@ -267,7 +267,7 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         },
     )
     .await;
-    let ViewData::Effort { slider } = next_view(&mut harness).await else {
+    let ViewData::Effort { slider } = next_view(&mut driver).await else {
         panic!("/effort answers with its slider");
     };
     assert_eq!(slider.role, None);
@@ -284,12 +284,12 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
     assert_eq!(slider.level(), Some("xhigh"));
     assert!(slider.is_default() && !slider.cli_default);
 
-    harness
+    driver
         .send(UiCommand::Request {
             view: ViewRequest::Models { role: None },
         })
         .await;
-    let ViewData::Models { choices, role, .. } = next_view(&mut harness).await else {
+    let ViewData::Models { choices, role, .. } = next_view(&mut driver).await else {
         panic!("the main agent's models");
     };
     assert_eq!(role, None);
@@ -301,17 +301,17 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
     assert_eq!(current, vec!["claude-code".to_owned()], "{choices:#?}");
 
     slash(
-        &harness,
+        &driver,
         SlashCommand::Agents {
             action: AgentsAction::List,
         },
     )
     .await;
-    let ViewData::Settings { rows, command, .. } = next_view(&mut harness).await else {
+    let ViewData::Settings { rows, command, .. } = next_view(&mut driver).await else {
         panic!("/agents answers with rows");
     };
     assert_eq!(command.as_deref(), Some("agents"));
-    assert_eq!(row(&rows, "crew.workers").default_scope, Project);
+    assert_eq!(row(&rows, "crew.worker").default_scope, Project);
     assert_eq!(row(&rows, "agents.opencode-acp.binary").layer, "built-in");
     assert!(
         !rows.iter().any(|row| row.key.starts_with("agents.hermes.")),
@@ -319,33 +319,33 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
     );
 
     slash(
-        &harness,
+        &driver,
         SlashCommand::Workflow {
             name: None,
-            action: PresetAction::Use,
+            action: WorkflowVerb::Use,
         },
     )
     .await;
-    let ViewData::Settings { rows, command, .. } = next_view(&mut harness).await else {
+    let ViewData::Settings { rows, command, .. } = next_view(&mut driver).await else {
         panic!("/workflow answers with rows");
     };
     assert_eq!(command.as_deref(), Some("workflow"));
-    let peer = rows
+    let council = rows
         .iter()
         .find(|row| row.value == "\"council\"")
         .expect("the built-in council");
     assert_eq!(
-        (peer.key.as_str(), peer.default_scope),
+        (council.key.as_str(), council.default_scope),
         ("workflow", Project)
     );
     assert!(rows.iter().any(|row| row.value == "\"orchestrator\""));
 
     // With no run on screen, /workflows opens the workflow view's Library tab alone.
-    slash(&harness, SlashCommand::Workflows).await;
-    let ViewData::WorkflowLibrary { workflows, refresh } = next_view(&mut harness).await else {
+    slash(&driver, SlashCommand::Workflows).await;
+    let ViewData::WorkflowLibrary { workflows, refresh } = next_view(&mut driver).await else {
         panic!("/workflows answers with the library when no run is on screen");
     };
-    for builtin in ["solo", "best-of-n", "draft-and-vote"] {
+    for builtin in ["captain", "best-of-n", "draft-and-vote"] {
         let found = workflows
             .iter()
             .find(|file| file.name == builtin)
@@ -363,15 +363,11 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
     assert!(rows.iter().all(|row| row.key.starts_with("approvals.")));
     assert_eq!(row(&rows, "approvals.merge.mode").default_scope, Project);
     assert_eq!(row(&rows, "approvals.decides").default_scope, Project);
-    // Full auto's settings are all there with their values: the switch, who answers, the
-    // second approver, and what a hard limit does at each checkpoint.
+    // Autopilot's settings are all there with their values: the switch, who answers, the
+    // second judge, and what a hard limit does at each approval.
     assert_eq!(row(&rows, "approvals.autopilot").value, "false");
     assert!(row(&rows, "approvals.answers").allowed.is_empty());
-    assert!(
-        row(&rows, "approvals.approver.second_model")
-            .value
-            .is_empty()
-    );
+    assert!(row(&rows, "approvals.judge.second_model").value.is_empty());
     let merge = row(&rows, "approvals.merge.at_hard_limit");
     assert_eq!(merge.value, "\"stop\"");
     assert!(merge.allowed.contains(&"\"open_pull_request\"".to_owned()));
@@ -383,22 +379,22 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
     );
 
     slash(
-        &harness,
-        SlashCommand::Budget {
+        &driver,
+        SlashCommand::Limits {
             key: None,
             value: None,
             action: Default::default(),
         },
     )
     .await;
-    let ViewData::Settings { rows, .. } = next_view(&mut harness).await else {
+    let ViewData::Settings { rows, .. } = next_view(&mut driver).await else {
         panic!("/limits answers with rows");
     };
     assert!(rows.iter().all(|row| row.key.starts_with("limits.")));
     assert_eq!(row(&rows, "limits.spend_per_run").default_scope, Project);
 
     slash(
-        &harness,
+        &driver,
         SlashCommand::Fallback {
             role: Some(RoleName::Reviewer),
             key: None,
@@ -406,14 +402,14 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         },
     )
     .await;
-    let ViewData::Settings { rows, section, .. } = next_view(&mut harness).await else {
+    let ViewData::Settings { rows, section, .. } = next_view(&mut driver).await else {
         panic!("/fallback answers with rows");
     };
-    assert_eq!(section.as_deref(), Some("fallback.reviewers"));
-    assert_eq!(row(&rows, "fallback.reviewers.mode").default_scope, Project);
+    assert_eq!(section.as_deref(), Some("fallback.reviewer"));
+    assert_eq!(row(&rows, "fallback.reviewer.mode").default_scope, Project);
 
     slash(
-        &harness,
+        &driver,
         SlashCommand::Permissions {
             role: None,
             key: None,
@@ -421,11 +417,11 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         },
     )
     .await;
-    let ViewData::Settings { rows, .. } = next_view(&mut harness).await else {
+    let ViewData::Settings { rows, .. } = next_view(&mut driver).await else {
         panic!("/permissions answers with rows");
     };
     let keys: Vec<&str> = rows.iter().map(|row| row.key.as_str()).collect();
-    // The keys a role can set lead every agent's sandbox, the rest of it follows, then the
+    // The keys a role can set main agent every agent's sandbox, the rest of it follows, then the
     // limits, then each role's own sandbox.
     assert_eq!(&keys[..4], &PERMISSION_KEYS[..4]);
     assert!(keys.contains(&"sandbox.fail_closed"), "{keys:?}");
@@ -449,10 +445,10 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
     );
     assert_eq!(row(&rows, "sandbox.agents_commit").value, "true");
     assert_eq!(row(&rows, "limits.spend_per_day").default_scope, Global);
-    // What a direct turn asks you, and where solo works, are here too.
-    assert_eq!(row(&rows, "solo.asks").value, "\"like_cli\"");
-    assert!(row(&rows, "solo.asks").safety);
-    assert_eq!(row(&rows, "solo.kind").value, "\"direct\"");
+    // What a direct turn asks you, and where Captain works, are here too.
+    assert_eq!(row(&rows, "captain.asks").value, "\"like_cli\"");
+    assert!(row(&rows, "captain.asks").safety);
+    assert_eq!(row(&rows, "captain.kind").value, "\"direct\"");
     // A role's own key is unset until you set it, and takes the same values.
     let own = row(&rows, "roles.reviewer.sandbox.mode");
     assert_eq!((own.value.as_str(), own.default_scope), ("", Project));
@@ -464,7 +460,7 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
 
     // A role first shows only that role's sandbox.
     slash(
-        &harness,
+        &driver,
         SlashCommand::Permissions {
             role: Some(RoleName::Reviewer),
             key: None,
@@ -472,7 +468,7 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         },
     )
     .await;
-    let ViewData::Settings { rows, section, .. } = next_view(&mut harness).await else {
+    let ViewData::Settings { rows, section, .. } = next_view(&mut driver).await else {
         panic!("/permissions reviewer answers with rows");
     };
     assert_eq!(section.as_deref(), Some("roles.reviewer.sandbox"));
@@ -489,21 +485,21 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
     );
     assert_eq!(keys, want);
 
-    slash(&harness, SlashCommand::Narrator { change: None }).await;
-    let ViewData::Settings { rows, .. } = next_view(&mut harness).await else {
+    slash(&driver, SlashCommand::Narrator { change: None }).await;
+    let ViewData::Settings { rows, .. } = next_view(&mut driver).await else {
         panic!("/narrator answers with rows");
     };
     assert!(rows.iter().all(|row| row.default_scope == Global));
     assert_eq!(rows.len(), 4);
 
-    slash(&harness, SlashCommand::Theme { name: None }).await;
-    let ViewData::Settings { rows, .. } = next_view(&mut harness).await else {
+    slash(&driver, SlashCommand::Theme { name: None }).await;
+    let ViewData::Settings { rows, .. } = next_view(&mut driver).await else {
         panic!("/theme answers with rows");
     };
     assert_eq!(row(&rows, "ui.theme").default_scope, Global);
 
     slash(
-        &harness,
+        &driver,
         SlashCommand::Config {
             key: None,
             value: None,
@@ -511,7 +507,7 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         },
     )
     .await;
-    let ViewData::Settings { rows, command, .. } = next_view(&mut harness).await else {
+    let ViewData::Settings { rows, command, .. } = next_view(&mut driver).await else {
         panic!("/config answers with rows");
     };
     assert_eq!(command.as_deref(), Some("config"));
@@ -519,7 +515,7 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
     assert_eq!(row(&rows, "ui.keys").default_scope, Global);
     assert_eq!(row(&rows, "ui.keys").layer, "built-in");
 
-    harness
+    driver
         .send(UiCommand::Request {
             view: ViewRequest::Settings {
                 section: Some("ui".to_owned()),
@@ -531,19 +527,19 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         command,
         section,
         ..
-    } = next_view(&mut harness).await
+    } = next_view(&mut driver).await
     else {
         panic!("a request answers with rows");
     };
     assert_eq!((command, section.as_deref()), (None, Some("ui")));
     assert!(rows.iter().all(|row| row.key.starts_with("ui.")));
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
     use SettingScope::*;
-    let codex: WorkerRef = "codex/gpt-5.6".parse().unwrap();
+    let codex: ModelRef = "codex/gpt-5.6".parse().unwrap();
     // The command, the key it sets, the value saved, and the scope it recommends.
     let cases: Vec<(SlashCommand, &str, &str, SettingScope)> = vec![
         (
@@ -552,7 +548,7 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
                 worker: Some(codex.clone()),
                 effort: None,
             },
-            "roles.reviewer.workers",
+            "roles.reviewer.models",
             "[\"codex/gpt-5.6\"]",
             ProjectLocal,
         ),
@@ -572,14 +568,14 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
                 worker: Some("codex".parse().unwrap()),
                 effort: None,
             },
-            "main_agent",
+            "crew.main",
             "\"codex\"",
             ProjectLocal,
         ),
         (
             SlashCommand::Workflow {
                 name: Some("council".to_owned()),
-                action: PresetAction::Use,
+                action: WorkflowVerb::Use,
             },
             "workflow",
             "\"council\"",
@@ -595,7 +591,7 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             Project,
         ),
         (
-            SlashCommand::Budget {
+            SlashCommand::Limits {
                 key: Some("spend_per_run".to_owned()),
                 value: Some("5.0".to_owned()),
                 action: Default::default(),
@@ -610,7 +606,7 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
                 key: Some("mode".to_owned()),
                 value: Some("wait".to_owned()),
             },
-            "fallback.reviewers.mode",
+            "fallback.reviewer.mode",
             "\"wait\"",
             Project,
         ),
@@ -630,7 +626,7 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
                 key: Some("summarizer".to_owned()),
                 value: Some("claude-code/haiku".to_owned()),
             },
-            "fallback.reviewers.summarizer",
+            "fallback.reviewer.summarizer",
             "\"claude-code/haiku\"",
             Project,
         ),
@@ -693,27 +689,27 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             Global,
         ),
     ];
-    let mut harness = Harness::start_with(harness_options(|repo| {
+    let mut driver = TestDriver::start_with(cli_options(|repo| {
         std::fs::write(repo.global_config(), GLOBAL_WITH_COMMENTS).unwrap();
     }))
     .await;
-    let global = harness.repo.global_config();
+    let global = driver.repo.global_config();
     for (command, key, value, scope) in cases {
-        slash(&harness, command).await;
-        let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
+        slash(&driver, command).await;
+        let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
         assert_eq!(recommended(&question), choose(scope), "{key}");
         assert_eq!(question.body[0], format!("{key} = {value}"));
-        answer(&harness, &question.id, choose(Global), None).await;
+        answer(&driver, &question.id, choose(Global), None).await;
         let safety = !argonauts_registry::safety_keys_in(key, value).is_empty();
         if safety {
-            let confirm = next_choice(&mut harness, ChoiceKind::ConfirmSafetySetting).await;
+            let confirm = next_choice(&mut driver, ChoiceKind::ConfirmSafetySetting).await;
             assert!(
                 confirm.body[0].starts_with(&format!("{key}: now ")),
                 "{confirm:#?}"
             );
-            answer(&harness, &confirm.id, AnswerAction::Approve, None).await;
+            answer(&driver, &confirm.id, AnswerAction::Approve, None).await;
         }
-        let (changed, saved, saved_scope, _, reset) = next_change(&mut harness).await;
+        let (changed, saved, saved_scope, _, reset) = next_change(&mut driver).await;
         assert_eq!(
             (changed.as_str(), saved.as_str(), saved_scope, reset),
             (key, value, Global, false)
@@ -722,7 +718,7 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
         assert!(text.contains("# Mine, keep these notes.\n[ui]\n"), "{text}");
         assert!(text.contains("bell = true  # I like it"), "{text}");
     }
-    harness.exit().await;
+    driver.exit().await;
 }
 
 /// A registry whose catalog has Claude Code's default running Sonnet 5.5, which starts at
@@ -730,18 +726,18 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
 struct DefaultRunsSonnet(StaticRegistry);
 
 impl ModelRegistry for DefaultRunsSonnet {
-    fn get(&self, worker: &WorkerRef) -> Option<ModelEntry> {
+    fn get(&self, worker: &ModelRef) -> Option<ModelEntry> {
         self.0.get(worker)
     }
-    fn family(&self, worker: &WorkerRef) -> String {
-        self.0.family(worker)
+    fn provider(&self, worker: &ModelRef) -> String {
+        self.0.provider(worker)
     }
     fn list(&self) -> Vec<ModelEntry> {
         self.0.list()
     }
     fn estimate(
         &self,
-        worker: &WorkerRef,
+        worker: &ModelRef,
         input: u64,
         output: u64,
     ) -> argonauts_core::limits::CostEstimate {
@@ -773,13 +769,13 @@ impl ModelRegistry for DefaultRunsSonnet {
 /// high for Sonnet 5.5.
 #[tokio::test]
 async fn the_effort_slider_starts_where_the_clis_default_model_does() {
-    let mut harness = Harness::start_with(HarnessOptions {
+    let mut driver = TestDriver::start_with(CliOptions {
         registry: Some(Arc::new(DefaultRunsSonnet(StaticRegistry::default()))),
-        ..HarnessOptions::default()
+        ..CliOptions::default()
     })
     .await;
     slash(
-        &harness,
+        &driver,
         SlashCommand::Effort {
             role: None,
             level: None,
@@ -787,35 +783,35 @@ async fn the_effort_slider_starts_where_the_clis_default_model_does() {
         },
     )
     .await;
-    let ViewData::Effort { slider } = next_view(&mut harness).await else {
+    let ViewData::Effort { slider } = next_view(&mut driver).await else {
         panic!("/effort answers with its slider");
     };
     assert_eq!(slider.worker, "claude-code".parse().unwrap());
     assert_eq!(slider.level(), Some("high"));
     assert!(slider.is_default() && !slider.cli_default);
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn an_effort_level_the_model_lacks_is_refused_naming_the_ones_it_takes() {
     let registry = registry_with(&[serde_json::json!({
         "id": "claude-code/haiku",
-        "family": "claude",
-        "kind": "harness",
+        "provider": "anthropic",
+        "kind": "cli",
         "access": "subscription",
-        "cost": { "unit": "quota" },
+        "cost": { "unit": "plan_usage" },
         "efforts": ["low", "medium", "high"],
     })]);
-    let mut harness = Harness::start_with(HarnessOptions {
+    let mut driver = TestDriver::start_with(CliOptions {
         registry: Some(registry),
         prepare: Some(Box::new(|repo: &TempRepo| {
-            std::fs::write(repo.global_config(), "main_agent = \"claude-code/haiku\"\n").unwrap();
+            std::fs::write(repo.global_config(), "crew.main = \"claude-code/haiku\"\n").unwrap();
         })),
-        ..HarnessOptions::default()
+        ..CliOptions::default()
     })
     .await;
     slash(
-        &harness,
+        &driver,
         SlashCommand::Effort {
             role: None,
             level: Some("max".to_owned()),
@@ -823,14 +819,14 @@ async fn an_effort_level_the_model_lacks_is_refused_naming_the_ones_it_takes() {
         },
     )
     .await;
-    let refusal = next_notice(&mut harness).await;
+    let refusal = next_notice(&mut driver).await;
     assert_eq!(
         refusal,
         "claude-code/haiku doesn't take max effort; it takes low, medium, high"
     );
 
     slash(
-        &harness,
+        &driver,
         SlashCommand::Effort {
             role: None,
             level: None,
@@ -838,7 +834,7 @@ async fn an_effort_level_the_model_lacks_is_refused_naming_the_ones_it_takes() {
         },
     )
     .await;
-    let ViewData::Effort { slider } = next_view(&mut harness).await else {
+    let ViewData::Effort { slider } = next_view(&mut driver).await else {
         panic!("/effort answers with its slider");
     };
     let levels: Vec<&str> = slider
@@ -848,7 +844,7 @@ async fn an_effort_level_the_model_lacks_is_refused_naming_the_ones_it_takes() {
         .collect();
     assert_eq!(levels, ["low", "medium", "high"]);
     assert_eq!(slider.worker, "claude-code/haiku".parse().unwrap());
-    harness.exit().await;
+    driver.exit().await;
 }
 
 /// agy's level-named models take their own level only, so another is refused with why.
@@ -856,27 +852,27 @@ async fn an_effort_level_the_model_lacks_is_refused_naming_the_ones_it_takes() {
 async fn another_level_for_a_model_fixed_at_one_is_refused_saying_so() {
     let registry = registry_with(&[serde_json::json!({
         "id": "antigravity-cli/gemini-3.8-flash-high",
-        "family": "gemini",
-        "kind": "harness",
+        "provider": "google",
+        "kind": "cli",
         "access": "subscription",
-        "cost": { "unit": "quota" },
+        "cost": { "unit": "plan_usage" },
         "efforts": ["high"],
         "default_effort": "high",
     })]);
-    let mut harness = Harness::start_with(HarnessOptions {
+    let mut driver = TestDriver::start_with(CliOptions {
         registry: Some(registry),
         prepare: Some(Box::new(|repo: &TempRepo| {
             std::fs::write(
                 repo.global_config(),
-                "main_agent = \"antigravity-cli/gemini-3.8-flash-high\"\n",
+                "crew.main = \"antigravity-cli/gemini-3.8-flash-high\"\n",
             )
             .unwrap();
         })),
-        ..HarnessOptions::default()
+        ..CliOptions::default()
     })
     .await;
     slash(
-        &harness,
+        &driver,
         SlashCommand::Effort {
             role: None,
             level: Some("low".to_owned()),
@@ -885,47 +881,47 @@ async fn another_level_for_a_model_fixed_at_one_is_refused_saying_so() {
     )
     .await;
     assert_eq!(
-        next_notice(&mut harness).await,
+        next_notice(&mut driver).await,
         "antigravity-cli/gemini-3.8-flash-high takes only high effort, fixed by the model"
     );
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn a_model_picked_with_an_effort_saves_both_where_you_choose() {
     let registry = registry_with(&[serde_json::json!({
         "id": "claude-code/haiku",
-        "family": "claude",
-        "kind": "harness",
+        "provider": "anthropic",
+        "kind": "cli",
         "access": "subscription",
-        "cost": { "unit": "quota" },
+        "cost": { "unit": "plan_usage" },
         "efforts": ["low", "medium", "high"],
     })]);
-    let mut harness = Harness::start_with(HarnessOptions {
+    let mut driver = TestDriver::start_with(CliOptions {
         registry: Some(registry),
-        ..HarnessOptions::default()
+        ..CliOptions::default()
     })
     .await;
-    let haiku: WorkerRef = "claude-code/haiku".parse().unwrap();
+    let haiku: ModelRef = "claude-code/haiku".parse().unwrap();
     let pick = |effort: &str| SlashCommand::Model {
         role: None,
         worker: Some(haiku.clone()),
         effort: Some(effort.to_owned()),
     };
-    slash(&harness, pick("max")).await;
+    slash(&driver, pick("max")).await;
     assert_eq!(
-        next_notice(&mut harness).await,
+        next_notice(&mut driver).await,
         "claude-code/haiku doesn't take max effort; it takes low, medium, high"
     );
 
-    slash(&harness, pick("high")).await;
-    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
-    assert_eq!(question.body[0], "main_agent = \"claude-code/haiku\"");
+    slash(&driver, pick("high")).await;
+    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
+    assert_eq!(question.body[0], "crew.main = \"claude-code/haiku\"");
     assert_eq!(question.body[1], "roles.main.effort = \"high\"");
-    answer(&harness, &question.id, choose(SettingScope::Global), None).await;
+    answer(&driver, &question.id, choose(SettingScope::Global), None).await;
     let mut saved = Vec::new();
     for _ in 0..2 {
-        let (key, value, scope, _, _) = next_change(&mut harness).await;
+        let (key, value, scope, _, _) = next_change(&mut driver).await;
         assert_eq!(scope, SettingScope::Global);
         saved.push((key, value));
     }
@@ -933,24 +929,28 @@ async fn a_model_picked_with_an_effort_saves_both_where_you_choose() {
     assert_eq!(
         saved,
         [
-            ("main_agent".to_owned(), "\"claude-code/haiku\"".to_owned()),
+            ("crew.main".to_owned(), "\"claude-code/haiku\"".to_owned()),
             ("roles.main.effort".to_owned(), "\"high\"".to_owned()),
         ]
     );
-    let global = std::fs::read_to_string(harness.repo.global_config()).unwrap();
+    let global = std::fs::read_to_string(driver.repo.global_config()).unwrap();
+    // The key is written under its help line, as the catalog words it.
+    let help = argonauts_registry::setting_meta("crew.main")
+        .expect("a catalog entry")
+        .description;
     assert!(
-        global.contains("main_agent = \"claude-code/haiku\""),
+        global.contains(&format!("[crew]\n# {help}\nmain = \"claude-code/haiku\"")),
         "{global}"
     );
     assert!(global.contains("effort = \"high\""), "{global}");
 
     // The models level starts each model's effort line on the level now set.
-    harness
+    driver
         .send(UiCommand::Request {
             view: ViewRequest::Models { role: None },
         })
         .await;
-    let ViewData::Models { choices, .. } = next_view(&mut harness).await else {
+    let ViewData::Models { choices, .. } = next_view(&mut driver).await else {
         panic!("the main agent's models");
     };
     assert!(
@@ -959,17 +959,17 @@ async fn a_model_picked_with_an_effort_saves_both_where_you_choose() {
             .all(|choice| choice.effort.as_deref() == Some("high")),
         "{choices:#?}"
     );
-    harness.exit().await;
+    driver.exit().await;
 }
 
-/// `/effort`'s All hands toggle. The default agent's slider offers it as it is now and a role's
+/// `/effort`'s Ultracode toggle. The main agent's slider offers it as it is now and a role's
 /// doesn't. The toggle alone asks where to save and writes only `ultracode`, which the
 /// status then carries for the input rule; with a level, both are saved together. `/config`
 /// lists it.
 #[tokio::test]
 async fn ultracode_from_the_effort_slider_saves_where_you_choose() {
-    let mut harness = Harness::start_with(harness_options(|repo| {
-        let reviewer = "[roles.reviewer]\nworkers = [\"claude-code\"]\n";
+    let mut driver = TestDriver::start_with(cli_options(|repo| {
+        let reviewer = "[roles.reviewer]\nmodels = [\"claude-code\"]\n";
         std::fs::write(repo.global_config(), reviewer).unwrap();
     }))
     .await;
@@ -980,19 +980,19 @@ async fn ultracode_from_the_effort_slider_saves_where_you_choose() {
             ultracode,
         }
     };
-    slash(&harness, effort(None, None, None)).await;
-    let ViewData::Effort { slider } = next_view(&mut harness).await else {
+    slash(&driver, effort(None, None, None)).await;
+    let ViewData::Effort { slider } = next_view(&mut driver).await else {
         panic!("/effort answers with its slider");
     };
     assert_eq!(slider.ultracode, Some(UltracodeToggle::new(false)));
-    slash(&harness, effort(Some(RoleName::Reviewer), None, None)).await;
-    let ViewData::Effort { slider } = next_view(&mut harness).await else {
+    slash(&driver, effort(Some(RoleName::Reviewer), None, None)).await;
+    let ViewData::Effort { slider } = next_view(&mut driver).await else {
         panic!("/effort reviewer answers with its slider");
     };
     assert_eq!(slider.ultracode, None, "a role's slider has no toggle");
 
-    slash(&harness, effort(None, None, Some(true))).await;
-    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
+    slash(&driver, effort(None, None, Some(true))).await;
+    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
     assert_eq!(question.body[0], "ultracode = true");
     assert!(
         !question.body.iter().any(|line| line.contains("effort")),
@@ -1003,13 +1003,13 @@ async fn ultracode_from_the_effort_slider_saves_where_you_choose() {
         choose(SettingScope::ProjectLocal),
         "saved for just you, as /effort saves"
     );
-    answer(&harness, &question.id, choose(SettingScope::Project), None).await;
-    let (key, value, scope, _, _) = next_change(&mut harness).await;
+    answer(&driver, &question.id, choose(SettingScope::Project), None).await;
+    let (key, value, scope, _, _) = next_change(&mut driver).await;
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
         ("ultracode", "true", SettingScope::Project)
     );
-    let event = harness
+    let event = driver
         .until(|event| matches!(event, AppEvent::Status { .. }))
         .await;
     let AppEvent::Status { status } = event else {
@@ -1017,18 +1017,18 @@ async fn ultracode_from_the_effort_slider_saves_where_you_choose() {
     };
     assert!(status.ultracode, "the input rule's label shows it");
     let project =
-        std::fs::read_to_string(harness.repo.root().join(".argonauts/config.toml")).unwrap();
+        std::fs::read_to_string(driver.repo.root().join(".argonauts/config.toml")).unwrap();
     assert!(project.contains("ultracode = true"), "{project}");
     assert!(!project.contains("effort"), "{project}");
 
-    slash(&harness, effort(None, None, None)).await;
-    let ViewData::Effort { slider } = next_view(&mut harness).await else {
+    slash(&driver, effort(None, None, None)).await;
+    let ViewData::Effort { slider } = next_view(&mut driver).await else {
         panic!("/effort answers with its slider");
     };
     assert_eq!(slider.ultracode, Some(UltracodeToggle::new(true)));
 
-    slash(&harness, effort(None, Some("high"), Some(false))).await;
-    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
+    slash(&driver, effort(None, Some("high"), Some(false))).await;
+    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
     assert_eq!(
         question.body[..2],
         [
@@ -1036,10 +1036,10 @@ async fn ultracode_from_the_effort_slider_saves_where_you_choose() {
             "ultracode = false".to_owned()
         ]
     );
-    answer(&harness, &question.id, choose(SettingScope::Project), None).await;
+    answer(&driver, &question.id, choose(SettingScope::Project), None).await;
     let mut saved = Vec::new();
     for _ in 0..2 {
-        let (key, value, _, _, _) = next_change(&mut harness).await;
+        let (key, value, _, _, _) = next_change(&mut driver).await;
         saved.push((key, value));
     }
     saved.sort();
@@ -1050,7 +1050,7 @@ async fn ultracode_from_the_effort_slider_saves_where_you_choose() {
             ("ultracode".to_owned(), "false".to_owned()),
         ]
     );
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
@@ -1074,7 +1074,7 @@ async fn config_lists_ultracode_off_by_default() {
 
 #[tokio::test]
 async fn a_reset_falls_back_a_layer() {
-    let mut harness = Harness::start_with(harness_options(|repo| {
+    let mut driver = TestDriver::start_with(cli_options(|repo| {
         repo.write(".argonauts/config.toml", "[ui]\ntheme = \"light\"\n")
             .unwrap();
         repo.write(
@@ -1085,7 +1085,7 @@ async fn a_reset_falls_back_a_layer() {
     }))
     .await;
     slash(
-        &harness,
+        &driver,
         SlashCommand::Config {
             key: Some("ui.theme".to_owned()),
             value: None,
@@ -1093,7 +1093,7 @@ async fn a_reset_falls_back_a_layer() {
         },
     )
     .await;
-    let (key, value, scope, previous, reset) = next_change(&mut harness).await;
+    let (key, value, scope, previous, reset) = next_change(&mut driver).await;
     assert_eq!(
         (
             key.as_str(),
@@ -1111,13 +1111,13 @@ async fn a_reset_falls_back_a_layer() {
         )
     );
     let local =
-        std::fs::read_to_string(harness.repo.root().join(".argonauts/config.local.toml")).unwrap();
+        std::fs::read_to_string(driver.repo.root().join(".argonauts/config.local.toml")).unwrap();
     assert!(!local.contains("theme"), "{local}");
     assert!(
         local.contains("# just me") && local.contains("motion"),
         "{local}"
     );
-    let ui = harness
+    let ui = driver
         .until(|event| matches!(event, AppEvent::UiSettings { .. }))
         .await;
     let AppEvent::UiSettings { ui: Some(ui), .. } = ui else {
@@ -1129,13 +1129,13 @@ async fn a_reset_falls_back_a_layer() {
     );
 
     // A picker's Reset row names its layer; the shared file's value goes too, to the built-in.
-    harness
+    driver
         .send(UiCommand::ResetSetting {
             key: "ui.theme".to_owned(),
             scope: SettingScope::Project,
         })
         .await;
-    let (_, value, scope, _, reset) = next_change(&mut harness).await;
+    let (_, value, scope, _, reset) = next_change(&mut driver).await;
     assert_eq!(
         (value.as_str(), scope, reset),
         ("\"auto\"", SettingScope::Project, true)
@@ -1143,7 +1143,7 @@ async fn a_reset_falls_back_a_layer() {
 
     // Nothing sets it now but the built-in.
     slash(
-        &harness,
+        &driver,
         SlashCommand::Config {
             key: Some("ui.theme".to_owned()),
             value: None,
@@ -1152,40 +1152,40 @@ async fn a_reset_falls_back_a_layer() {
     )
     .await;
     assert_eq!(
-        next_notice(&mut harness).await,
+        next_notice(&mut driver).await,
         "ui.theme is already the built-in default."
     );
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn vim_is_saved_globally() {
-    let mut harness = Harness::start_with(harness_options(|repo| {
+    let mut driver = TestDriver::start_with(cli_options(|repo| {
         std::fs::write(repo.global_config(), GLOBAL_WITH_COMMENTS).unwrap();
     }))
     .await;
-    slash(&harness, SlashCommand::Vim).await;
-    let (key, value, scope, _, _) = next_change(&mut harness).await;
+    slash(&driver, SlashCommand::Vim).await;
+    let (key, value, scope, _, _) = next_change(&mut driver).await;
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
         ("ui.keys", "\"vim\"", SettingScope::Global)
     );
-    let AppEvent::UiSettings { vim, .. } = harness
+    let AppEvent::UiSettings { vim, .. } = driver
         .until(|event| matches!(event, AppEvent::UiSettings { .. }))
         .await
     else {
         unreachable!()
     };
     assert!(vim);
-    let text = std::fs::read_to_string(harness.repo.global_config()).unwrap();
+    let text = std::fs::read_to_string(driver.repo.global_config()).unwrap();
     assert!(
         text.contains("keys = \"vim\"") && text.contains("# I like it"),
         "{text}"
     );
 
     // `/vim` again turns it off.
-    slash(&harness, SlashCommand::Vim).await;
-    let (_, value, _, previous, _) = next_change(&mut harness).await;
+    slash(&driver, SlashCommand::Vim).await;
+    let (_, value, _, previous, _) = next_change(&mut driver).await;
     assert_eq!(
         (value.as_str(), previous.as_deref()),
         ("\"default\"", Some("\"vim\""))
@@ -1193,51 +1193,51 @@ async fn vim_is_saved_globally() {
 
     // `/verbosity quiet`, then `/verbosity normal`.
     let level = |level| SlashCommand::Verbosity { level: Some(level) };
-    slash(&harness, level(Verbosity::Quiet)).await;
-    let (key, value, ..) = next_change(&mut harness).await;
+    slash(&driver, level(Verbosity::Quiet)).await;
+    let (key, value, ..) = next_change(&mut driver).await;
     assert_eq!(
         (key.as_str(), value.as_str()),
         ("ui.verbosity", "\"quiet\"")
     );
-    slash(&harness, level(Verbosity::Normal)).await;
-    let (_, value, ..) = next_change(&mut harness).await;
+    slash(&driver, level(Verbosity::Normal)).await;
+    let (_, value, ..) = next_change(&mut driver).await;
     assert_eq!(value, "\"normal\"");
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn vim_is_held_for_the_session_when_the_project_file_sets_it() {
-    let mut harness = Harness::start_with(harness_options(|repo| {
+    let mut driver = TestDriver::start_with(cli_options(|repo| {
         repo.write(".argonauts/config.toml", "[ui]\nkeys = \"default\"\n")
             .unwrap();
     }))
     .await;
-    slash(&harness, SlashCommand::Vim).await;
-    let (key, value, scope, ..) = next_change(&mut harness).await;
+    slash(&driver, SlashCommand::Vim).await;
+    let (key, value, scope, ..) = next_change(&mut driver).await;
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
         ("ui.keys", "\"vim\"", SettingScope::Session)
     );
-    let notice = next_notice(&mut harness).await;
+    let notice = next_notice(&mut driver).await;
     assert!(
         notice.starts_with("This project's file sets ui.keys"),
         "{notice}"
     );
-    assert!(!harness.repo.global_config().exists());
+    assert!(!driver.repo.global_config().exists());
 
     // The session holds it, and the next toggle still knows the project file is under it.
-    slash(&harness, SlashCommand::Vim).await;
-    let (_, value, scope, ..) = next_change(&mut harness).await;
+    slash(&driver, SlashCommand::Vim).await;
+    let (_, value, scope, ..) = next_change(&mut driver).await;
     assert_eq!(
         (value.as_str(), scope),
         ("\"default\"", SettingScope::Session)
     );
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn write_to_untrusted_project_file_keeps_it_untrusted() {
-    let mut harness = Harness::start_with(harness_options(|repo| {
+    let mut driver = TestDriver::start_with(cli_options(|repo| {
         repo.write(
             ".argonauts/config.local.toml",
             "[sandbox]\nmode = \"container\"\n",
@@ -1246,7 +1246,7 @@ async fn write_to_untrusted_project_file_keeps_it_untrusted() {
     }))
     .await;
     slash(
-        &harness,
+        &driver,
         SlashCommand::Effort {
             role: None,
             level: Some("high".to_owned()),
@@ -1254,16 +1254,16 @@ async fn write_to_untrusted_project_file_keeps_it_untrusted() {
         },
     )
     .await;
-    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
+    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
     assert_eq!(recommended(&question), choose(SettingScope::ProjectLocal));
     answer(
-        &harness,
+        &driver,
         &question.id,
         choose(SettingScope::ProjectLocal),
         None,
     )
     .await;
-    let trust = next_choice(&mut harness, ChoiceKind::TrustProject).await;
+    let trust = next_choice(&mut driver, ChoiceKind::TrustProject).await;
     assert!(
         trust
             .body
@@ -1271,26 +1271,26 @@ async fn write_to_untrusted_project_file_keeps_it_untrusted() {
             .any(|line| line.trim() == "sandbox.mode = \"container\""),
         "{trust:#?}"
     );
-    answer(&harness, &trust.id, AnswerAction::Cancel, None).await;
-    let (key, value, scope, ..) = next_change(&mut harness).await;
+    answer(&driver, &trust.id, AnswerAction::Cancel, None).await;
+    let (key, value, scope, ..) = next_change(&mut driver).await;
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
         ("roles.main.effort", "\"high\"", SettingScope::ProjectLocal)
     );
 
-    let file = harness.repo.root().join(".argonauts/config.local.toml");
+    let file = driver.repo.root().join(".argonauts/config.local.toml");
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(
         text.contains("mode = \"container\"") && text.contains("effort = \"high\""),
         "{text}"
     );
-    assert!(!TrustStore::load(&state_dir(&harness.repo)).is_trusted(&file));
-    harness
+    assert!(!TrustStore::load(&state_dir(&driver.repo)).is_trusted(&file));
+    driver
         .send(UiCommand::Request {
             view: ViewRequest::Config,
         })
         .await;
-    let ViewData::Config { entries } = next_view(&mut harness).await else {
+    let ViewData::Config { entries } = next_view(&mut driver).await else {
         panic!("/config's plain list");
     };
     let mode = entries
@@ -1304,11 +1304,11 @@ async fn write_to_untrusted_project_file_keeps_it_untrusted() {
         .find(|entry| entry.key == "roles.main.effort")
         .unwrap();
     assert_eq!(effort.layer, "project-local");
-    harness.exit().await;
+    driver.exit().await;
 }
 
-async fn next_closed(harness: &mut Harness, id: &ChoiceId) -> String {
-    let event = harness
+async fn next_closed(driver: &mut TestDriver, id: &ChoiceId) -> String {
+    let event = driver
         .until(|event| matches!(event, AppEvent::ChoiceClosed { id: closed, .. } if closed == id))
         .await;
     match event {
@@ -1317,13 +1317,13 @@ async fn next_closed(harness: &mut Harness, id: &ChoiceId) -> String {
     }
 }
 
-async fn sandbox_mode(harness: &mut Harness) -> (String, String) {
-    harness
+async fn sandbox_mode(driver: &mut TestDriver) -> (String, String) {
+    driver
         .send(UiCommand::Request {
             view: ViewRequest::Config,
         })
         .await;
-    let ViewData::Config { entries } = next_view(harness).await else {
+    let ViewData::Config { entries } = next_view(driver).await else {
         panic!("/config's plain list");
     };
     let mode = entries
@@ -1337,12 +1337,12 @@ const UNSAFE_PROJECT: &str = "[sandbox]\nmode = \"container\"\n\n[roles.main]\ne
 
 #[tokio::test]
 async fn untrusted_safety_keys_are_asked_about_at_start() {
-    let mut harness = Harness::start_with(harness_options(|repo| {
+    let mut driver = TestDriver::start_with(cli_options(|repo| {
         repo.write(".argonauts/config.toml", UNSAFE_PROJECT)
             .unwrap();
     }))
     .await;
-    let trust = next_choice(&mut harness, ChoiceKind::TrustProject).await;
+    let trust = next_choice(&mut driver, ChoiceKind::TrustProject).await;
     assert_eq!(trust.title, "Trust .argonauts/config.toml?");
     assert!(
         trust
@@ -1351,63 +1351,63 @@ async fn untrusted_safety_keys_are_asked_about_at_start() {
             .any(|line| line.trim() == "sandbox.mode = \"container\""),
         "{trust:#?}"
     );
-    answer(&harness, &trust.id, AnswerAction::Cancel, None).await;
-    let outcome = next_closed(&mut harness, &trust.id).await;
+    answer(&driver, &trust.id, AnswerAction::Cancel, None).await;
+    let outcome = next_closed(&mut driver, &trust.id).await;
     assert!(outcome.contains("stays untrusted"), "{outcome}");
-    let file = harness.repo.root().join(".argonauts/config.toml");
-    assert!(!TrustStore::load(&state_dir(&harness.repo)).is_trusted(&file));
-    assert_eq!(sandbox_mode(&mut harness).await.1, "built-in");
-    harness.exit().await;
+    let file = driver.repo.root().join(".argonauts/config.toml");
+    assert!(!TrustStore::load(&state_dir(&driver.repo)).is_trusted(&file));
+    assert_eq!(sandbox_mode(&mut driver).await.1, "built-in");
+    driver.exit().await;
 
-    let mut harness = Harness::start_with(harness_options(|repo| {
+    let mut driver = TestDriver::start_with(cli_options(|repo| {
         repo.write(".argonauts/config.toml", UNSAFE_PROJECT)
             .unwrap();
     }))
     .await;
-    let trust = next_choice(&mut harness, ChoiceKind::TrustProject).await;
-    answer(&harness, &trust.id, AnswerAction::Approve, None).await;
-    let outcome = next_closed(&mut harness, &trust.id).await;
+    let trust = next_choice(&mut driver, ChoiceKind::TrustProject).await;
+    answer(&driver, &trust.id, AnswerAction::Approve, None).await;
+    let outcome = next_closed(&mut driver, &trust.id).await;
     assert_eq!(outcome, "Trusted .argonauts/config.toml.");
-    let file = harness.repo.root().join(".argonauts/config.toml");
-    assert!(TrustStore::load(&state_dir(&harness.repo)).is_trusted(&file));
+    let file = driver.repo.root().join(".argonauts/config.toml");
+    assert!(TrustStore::load(&state_dir(&driver.repo)).is_trusted(&file));
     assert_eq!(
-        sandbox_mode(&mut harness).await,
+        sandbox_mode(&mut driver).await,
         ("\"container\"".to_owned(), "project".to_owned())
     );
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn a_file_changed_after_the_start_question_stays_untrusted() {
-    let mut harness = Harness::start_with(harness_options(|repo| {
+    let mut driver = TestDriver::start_with(cli_options(|repo| {
         repo.write(".argonauts/config.local.toml", UNSAFE_PROJECT)
             .unwrap();
     }))
     .await;
-    let trust = next_choice(&mut harness, ChoiceKind::TrustProject).await;
-    let file = harness.repo.root().join(".argonauts/config.local.toml");
+    let trust = next_choice(&mut driver, ChoiceKind::TrustProject).await;
+    let file = driver.repo.root().join(".argonauts/config.local.toml");
     std::fs::write(&file, "[sandbox]\nmode = \"container\"\nnetwork = true\n").unwrap();
-    answer(&harness, &trust.id, AnswerAction::Approve, None).await;
-    let outcome = next_closed(&mut harness, &trust.id).await;
+    answer(&driver, &trust.id, AnswerAction::Approve, None).await;
+    let outcome = next_closed(&mut driver, &trust.id).await;
     assert!(
         outcome.contains("changed since you were asked"),
         "{outcome}"
     );
-    assert!(!TrustStore::load(&state_dir(&harness.repo)).is_trusted(&file));
-    harness.exit().await;
+    assert!(!TrustStore::load(&state_dir(&driver.repo)).is_trusted(&file));
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn files_without_untrusted_safety_keys_ask_nothing_at_start() {
-    let mut harness = Harness::start_with(harness_options(|repo| {
+    let mut driver = TestDriver::start_with(cli_options(|repo| {
         repo.write(".argonauts/config.toml", "[roles.main]\neffort = \"low\"\n")
             .unwrap();
     }))
     .await;
-    harness
+    driver
         .until(|event| matches!(event, AppEvent::Status { .. }))
         .await;
-    let events = harness.exit().await;
+    let events = driver.exit().await;
     assert!(
         !events
             .iter()
@@ -1416,23 +1416,23 @@ async fn files_without_untrusted_safety_keys_ask_nothing_at_start() {
     );
 }
 
-/// The file the decision was made from: a gate written as a string, beside a safety key.
-const GATE_AS_STRING: &str =
+/// The file the decision was made from: a check written as a string, beside a safety key.
+const CHECK_AS_STRING: &str =
     "[limits]\nspend_per_run = 1.0\n\n[checks]\nrun = [\"python3 -m unittest -q\"]\n";
 
 #[tokio::test]
 async fn a_file_that_needs_a_fix_says_what_to_fix_instead_of_asking_for_trust() {
-    let mut harness = Harness::start_with(harness_options(|repo| {
-        repo.write(".argonauts/config.local.toml", GATE_AS_STRING)
+    let mut driver = TestDriver::start_with(cli_options(|repo| {
+        repo.write(".argonauts/config.local.toml", CHECK_AS_STRING)
             .unwrap();
     }))
     .await;
-    harness
+    driver
         .until(|event| matches!(event, AppEvent::Status { .. }))
         .await;
-    let file = harness.repo.root().join(".argonauts/config.local.toml");
-    assert!(!TrustStore::load(&state_dir(&harness.repo)).is_trusted(&file));
-    let events = harness.exit().await;
+    let file = driver.repo.root().join(".argonauts/config.local.toml");
+    assert!(!TrustStore::load(&state_dir(&driver.repo)).is_trusted(&file));
+    let events = driver.exit().await;
     assert!(
         !events
             .iter()
@@ -1463,19 +1463,19 @@ async fn a_file_that_needs_a_fix_says_what_to_fix_instead_of_asking_for_trust() 
 
 #[tokio::test]
 async fn a_yes_that_cannot_resolve_keeps_nothing_trusted_and_says_why_once() {
-    let mut harness = Harness::start_with(harness_options(|repo| {
+    let mut driver = TestDriver::start_with(cli_options(|repo| {
         repo.write(".argonauts/config.toml", UNSAFE_PROJECT)
             .unwrap();
     }))
     .await;
-    let trust = next_choice(&mut harness, ChoiceKind::TrustProject).await;
+    let trust = next_choice(&mut driver, ChoiceKind::TrustProject).await;
     // Your global file breaks while the question is open.
-    let global = harness.repo.global_config();
+    let global = driver.repo.global_config();
     std::fs::write(&global, "[ui\n").unwrap();
-    answer(&harness, &trust.id, AnswerAction::Approve, None).await;
-    let outcome = next_closed(&mut harness, &trust.id).await;
+    answer(&driver, &trust.id, AnswerAction::Approve, None).await;
+    let outcome = next_closed(&mut driver, &trust.id).await;
     assert_eq!(outcome, NOT_CHANGED);
-    let notice = next_notice(&mut harness).await;
+    let notice = next_notice(&mut driver).await;
     assert_eq!(
         notice,
         format!(
@@ -1484,10 +1484,10 @@ async fn a_yes_that_cannot_resolve_keeps_nothing_trusted_and_says_why_once() {
             global.display()
         )
     );
-    let file = harness.repo.root().join(".argonauts/config.toml");
-    assert!(!TrustStore::load(&state_dir(&harness.repo)).is_trusted(&file));
+    let file = driver.repo.root().join(".argonauts/config.toml");
+    assert!(!TrustStore::load(&state_dir(&driver.repo)).is_trusted(&file));
     std::fs::remove_file(&global).unwrap();
-    let events = harness.exit().await;
+    let events = driver.exit().await;
     assert!(
         !events.iter().any(|event| matches!(
             event,
@@ -1499,23 +1499,23 @@ async fn a_yes_that_cannot_resolve_keeps_nothing_trusted_and_says_why_once() {
 
 #[tokio::test]
 async fn a_trusted_or_new_project_file_stays_trusted_after_a_write() {
-    let mut harness = Harness::start().await;
+    let mut driver = TestDriver::start().await;
     slash(
-        &harness,
+        &driver,
         SlashCommand::Theme {
             name: Some("dark".to_owned()),
         },
     )
     .await;
-    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
-    answer(&harness, &question.id, choose(SettingScope::Project), None).await;
-    next_change(&mut harness).await;
-    let file = harness.repo.root().join(".argonauts/config.toml");
-    assert!(TrustStore::load(&state_dir(&harness.repo)).is_trusted(&file));
+    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
+    answer(&driver, &question.id, choose(SettingScope::Project), None).await;
+    next_change(&mut driver).await;
+    let file = driver.repo.root().join(".argonauts/config.toml");
+    assert!(TrustStore::load(&state_dir(&driver.repo)).is_trusted(&file));
 
     // A confirmed safety key lands in the file you trusted and applies.
     slash(
-        &harness,
+        &driver,
         SlashCommand::Permissions {
             role: None,
             key: Some("sandbox.network".to_owned()),
@@ -1523,21 +1523,21 @@ async fn a_trusted_or_new_project_file_stays_trusted_after_a_write() {
         },
     )
     .await;
-    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
-    answer(&harness, &question.id, choose(SettingScope::Project), None).await;
-    let confirm = next_choice(&mut harness, ChoiceKind::ConfirmSafetySetting).await;
-    answer(&harness, &confirm.id, AnswerAction::Approve, None).await;
-    let (key, value, ..) = next_change(&mut harness).await;
+    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
+    answer(&driver, &question.id, choose(SettingScope::Project), None).await;
+    let confirm = next_choice(&mut driver, ChoiceKind::ConfirmSafetySetting).await;
+    answer(&driver, &confirm.id, AnswerAction::Approve, None).await;
+    let (key, value, ..) = next_change(&mut driver).await;
     assert_eq!((key.as_str(), value.as_str()), ("sandbox.network", "true"));
-    assert!(TrustStore::load(&state_dir(&harness.repo)).is_trusted(&file));
-    harness.exit().await;
+    assert!(TrustStore::load(&state_dir(&driver.repo)).is_trusted(&file));
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn a_safety_confirm_declined_changes_nothing() {
-    let mut harness = Harness::start().await;
+    let mut driver = TestDriver::start().await;
     slash(
-        &harness,
+        &driver,
         SlashCommand::Config {
             key: Some("approvals.merge.mode".to_owned()),
             value: Some("auto".to_owned()),
@@ -1545,58 +1545,58 @@ async fn a_safety_confirm_declined_changes_nothing() {
         },
     )
     .await;
-    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
-    answer(&harness, &question.id, choose(SettingScope::Global), None).await;
-    let confirm = next_choice(&mut harness, ChoiceKind::ConfirmSafetySetting).await;
+    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
+    answer(&driver, &question.id, choose(SettingScope::Global), None).await;
+    let confirm = next_choice(&mut driver, ChoiceKind::ConfirmSafetySetting).await;
     assert!(
         confirm.body[0].starts_with("approvals.merge.mode: now "),
         "{confirm:#?}"
     );
-    answer(&harness, &confirm.id, AnswerAction::Cancel, None).await;
-    let closed = harness
+    answer(&driver, &confirm.id, AnswerAction::Cancel, None).await;
+    let closed = driver
         .until(|event| matches!(event, AppEvent::ChoiceClosed { id, .. } if *id == confirm.id))
         .await;
     assert!(matches!(closed, AppEvent::ChoiceClosed { outcome, .. } if outcome == "Not changed."));
-    assert!(!harness.repo.global_config().exists());
+    assert!(!driver.repo.global_config().exists());
 
     // Esc on the scope question closes it the same way.
     slash(
-        &harness,
+        &driver,
         SlashCommand::Theme {
             name: Some("dark".to_owned()),
         },
     )
     .await;
-    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
-    harness
+    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
+    driver
         .send(UiCommand::SetAside {
             to: AnswerTarget::Choice {
                 id: question.id.clone(),
             },
         })
         .await;
-    let closed = harness
+    let closed = driver
         .until(|event| matches!(event, AppEvent::ChoiceClosed { id, .. } if *id == question.id))
         .await;
     assert!(matches!(closed, AppEvent::ChoiceClosed { outcome, .. } if outcome == "Not changed."));
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn the_scope_question_warns_when_a_higher_layer_wins() {
-    let mut harness = Harness::start_with(harness_options(|repo| {
+    let mut driver = TestDriver::start_with(cli_options(|repo| {
         repo.write(".argonauts/config.toml", "[ui]\ntheme = \"light\"\n")
             .unwrap();
     }))
     .await;
     slash(
-        &harness,
+        &driver,
         SlashCommand::Theme {
             name: Some("dark".to_owned()),
         },
     )
     .await;
-    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
+    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
     let everywhere = question
         .options
         .iter()
@@ -1618,31 +1618,31 @@ async fn the_scope_question_warns_when_a_higher_layer_wins() {
         question.body[1],
         "Now \"light\", from this project's shared file."
     );
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
-async fn the_coordinator_is_asked_for_and_saved_with_the_preset() {
-    let mut harness = Harness::start().await;
+async fn the_orchestrator_is_asked_for_and_saved_with_the_workflow() {
+    let mut driver = TestDriver::start().await;
     slash(
-        &harness,
+        &driver,
         SlashCommand::Workflow {
             name: Some("orchestrator".to_owned()),
-            action: PresetAction::Use,
+            action: WorkflowVerb::Use,
         },
     )
     .await;
-    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
-    answer(&harness, &question.id, choose(SettingScope::Project), None).await;
-    let ViewData::Models { role, .. } = next_view(&mut harness).await else {
+    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
+    answer(&driver, &question.id, choose(SettingScope::Project), None).await;
+    let ViewData::Models { role, .. } = next_view(&mut driver).await else {
         panic!("the orchestrator's picker");
     };
     assert_eq!(role, Some(RoleName::Orchestrator));
 
-    // The pick saves both keys to the preset's scope without asking again.
-    let worker: WorkerRef = "codex/gpt-5.6".parse().unwrap();
+    // The pick saves both keys to the workflow's scope without asking again.
+    let worker: ModelRef = "codex/gpt-5.6".parse().unwrap();
     slash(
-        &harness,
+        &driver,
         SlashCommand::Model {
             role: Some(RoleName::Orchestrator),
             worker: Some(worker.clone()),
@@ -1650,53 +1650,52 @@ async fn the_coordinator_is_asked_for_and_saved_with_the_preset() {
         },
     )
     .await;
-    let (key, value, scope, ..) = next_change(&mut harness).await;
+    let (key, value, scope, ..) = next_change(&mut driver).await;
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
         ("workflow", "\"orchestrator\"", SettingScope::Project)
     );
-    let (key, value, scope, ..) = next_change(&mut harness).await;
+    let (key, value, scope, ..) = next_change(&mut driver).await;
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
         (
-            "roles.orchestrator.workers",
+            "roles.orchestrator.models",
             "[\"codex/gpt-5.6\"]",
             SettingScope::Project
         )
     );
-    let saved =
-        std::fs::read_to_string(harness.repo.root().join(".argonauts/config.toml")).unwrap();
+    let saved = std::fs::read_to_string(driver.repo.root().join(".argonauts/config.toml")).unwrap();
     assert!(
         saved.contains("orchestrator") && saved.contains("codex/gpt-5.6"),
         "{saved}"
     );
-    let questions = harness
+    let questions = driver
         .seen()
         .iter()
         .filter(|event| matches!(event, AppEvent::Choice { .. }))
         .count();
-    assert_eq!(questions, 1, "no second question: {:#?}", harness.seen());
+    assert_eq!(questions, 1, "no second question: {:#?}", driver.seen());
 
-    harness.exit().await;
+    driver.exit().await;
 
-    // Anything else first drops the hold, so a later coordinator pick is a plain /model. A
-    // fresh repo, since this one now has its coordinator.
-    let mut harness = Harness::start().await;
+    // Anything else first drops the hold, so a later orchestrator pick is a plain /model. A
+    // fresh repo, since this one now has its orchestrator.
+    let mut driver = TestDriver::start().await;
     slash(
-        &harness,
+        &driver,
         SlashCommand::Workflow {
             name: Some("orchestrator".to_owned()),
-            action: PresetAction::Use,
+            action: WorkflowVerb::Use,
         },
     )
     .await;
-    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
-    answer(&harness, &question.id, choose(SettingScope::Project), None).await;
-    next_view(&mut harness).await;
-    slash(&harness, SlashCommand::Theme { name: None }).await;
-    next_view(&mut harness).await;
+    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
+    answer(&driver, &question.id, choose(SettingScope::Project), None).await;
+    next_view(&mut driver).await;
+    slash(&driver, SlashCommand::Theme { name: None }).await;
+    next_view(&mut driver).await;
     slash(
-        &harness,
+        &driver,
         SlashCommand::Model {
             role: Some(RoleName::Orchestrator),
             worker: Some(worker),
@@ -1704,33 +1703,33 @@ async fn the_coordinator_is_asked_for_and_saved_with_the_preset() {
         },
     )
     .await;
-    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
+    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
     assert_eq!(
         question.body[0],
-        "roles.orchestrator.workers = [\"codex/gpt-5.6\"]"
+        "roles.orchestrator.models = [\"codex/gpt-5.6\"]"
     );
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
-async fn a_command_outside_settings_drops_the_coordinator_hold() {
-    let mut harness = Harness::start().await;
+async fn a_command_outside_settings_drops_the_orchestrator_hold() {
+    let mut driver = TestDriver::start().await;
     slash(
-        &harness,
+        &driver,
         SlashCommand::Workflow {
             name: Some("orchestrator".to_owned()),
-            action: PresetAction::Use,
+            action: WorkflowVerb::Use,
         },
     )
     .await;
-    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
-    answer(&harness, &question.id, choose(SettingScope::Project), None).await;
-    next_view(&mut harness).await;
+    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
+    answer(&driver, &question.id, choose(SettingScope::Project), None).await;
+    next_view(&mut driver).await;
 
     // The screen answers /help itself, so the controller only sees that you moved on.
-    slash(&harness, SlashCommand::Help).await;
+    slash(&driver, SlashCommand::Help).await;
     slash(
-        &harness,
+        &driver,
         SlashCommand::Model {
             role: Some(RoleName::Orchestrator),
             worker: Some("codex/gpt-5.6".parse().unwrap()),
@@ -1738,23 +1737,23 @@ async fn a_command_outside_settings_drops_the_coordinator_hold() {
         },
     )
     .await;
-    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
+    let question = next_choice(&mut driver, ChoiceKind::SettingScope).await;
     assert_eq!(
         question.body[0],
-        "roles.orchestrator.workers = [\"codex/gpt-5.6\"]"
+        "roles.orchestrator.models = [\"codex/gpt-5.6\"]"
     );
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[test]
-fn the_coordinator_pick_carries_the_preset() {
-    let worker: WorkerRef = "codex/gpt-5.6".parse().unwrap();
+fn the_orchestrator_pick_carries_the_workflow() {
+    let worker: ModelRef = "codex/gpt-5.6".parse().unwrap();
     assert_eq!(
-        coordinator_change(&worker),
+        orchestrator_change(&worker),
         Change::Set(vec![
             ("workflow".to_owned(), "\"orchestrator\"".to_owned()),
             (
-                "roles.orchestrator.workers".to_owned(),
+                "roles.orchestrator.models".to_owned(),
                 "[\"codex/gpt-5.6\"]".to_owned()
             ),
         ])
@@ -1833,9 +1832,9 @@ async fn set_setting_safety_key_refused_in_agent_session() {
 /// pick, `/config`, and a reset.
 #[tokio::test]
 async fn safety_changes_are_refused_without_a_terminal() {
-    let mut harness = Harness::start_with(HarnessOptions {
+    let mut driver = TestDriver::start_with(CliOptions {
         interactive: false,
-        ..harness_options(|repo| {
+        ..cli_options(|repo| {
             std::fs::write(repo.global_config(), "[sandbox]\nnetwork = true\n").unwrap();
         })
     })
@@ -1847,13 +1846,13 @@ async fn safety_changes_are_refused_without_a_terminal() {
                 if text.contains("needs you at a terminal")
         )
     };
-    let refusal = async |harness: &mut Harness| match harness.until(refused).await {
+    let refusal = async |driver: &mut TestDriver| match driver.until(refused).await {
         AppEvent::Notice { text, .. } => text,
         _ => unreachable!(),
     };
 
     slash(
-        &harness,
+        &driver,
         SlashCommand::Permissions {
             role: None,
             key: Some("sandbox.network".to_owned()),
@@ -1861,17 +1860,17 @@ async fn safety_changes_are_refused_without_a_terminal() {
         },
     )
     .await;
-    assert!(refusal(&mut harness).await.contains("sandbox.network"));
-    harness
+    assert!(refusal(&mut driver).await.contains("sandbox.network"));
+    driver
         .send(UiCommand::SetSetting {
             key: "sandbox.network".to_owned(),
             value: "false".to_owned(),
             scope: SettingScope::Session,
         })
         .await;
-    assert!(refusal(&mut harness).await.contains("sandbox.network"));
+    assert!(refusal(&mut driver).await.contains("sandbox.network"));
     slash(
-        &harness,
+        &driver,
         SlashCommand::Config {
             key: Some("approvals.merge.mode".to_owned()),
             value: Some("auto".to_owned()),
@@ -1879,27 +1878,27 @@ async fn safety_changes_are_refused_without_a_terminal() {
         },
     )
     .await;
-    assert!(refusal(&mut harness).await.contains("approvals.merge.mode"));
-    harness
+    assert!(refusal(&mut driver).await.contains("approvals.merge.mode"));
+    driver
         .send(UiCommand::ResetSetting {
             key: "sandbox.network".to_owned(),
             scope: SettingScope::Global,
         })
         .await;
-    assert!(refusal(&mut harness).await.contains("sandbox.network"));
+    assert!(refusal(&mut driver).await.contains("sandbox.network"));
 
     // Keys that aren't safety keys still change.
     slash(
-        &harness,
+        &driver,
         SlashCommand::Theme {
             name: Some("dark".to_owned()),
         },
     )
     .await;
-    next_choice(&mut harness, ChoiceKind::SettingScope).await;
-    let global = std::fs::read_to_string(harness.repo.global_config()).unwrap();
+    next_choice(&mut driver, ChoiceKind::SettingScope).await;
+    let global = std::fs::read_to_string(driver.repo.global_config()).unwrap();
     assert_eq!(global, "[sandbox]\nnetwork = true\n");
-    let events = harness.exit().await;
+    let events = driver.exit().await;
     assert!(
         !events.iter().any(|event| match event {
             AppEvent::SettingChanged { .. } => true,
@@ -1911,12 +1910,12 @@ async fn safety_changes_are_refused_without_a_terminal() {
 }
 
 #[tokio::test]
-async fn gates_are_not_offered_without_a_terminal() {
+async fn checks_are_not_offered_without_a_terminal() {
     let mut fixture = Fixture::with_terminal(false, false, |repo| {
         repo.write("Cargo.toml", "[package]\nname = \"x\"\n")
             .unwrap();
     });
-    offer_gates(&mut fixture.ctx, &mut fixture.state)
+    offer_checks(&mut fixture.ctx, &mut fixture.state)
         .await
         .unwrap();
     assert!(
@@ -1927,17 +1926,78 @@ async fn gates_are_not_offered_without_a_terminal() {
     );
 }
 
+/// On autopilot the checks found in the folder aren't offered: one line names them, once, and
+/// the question is still there for a run started off autopilot.
 #[tokio::test]
-async fn gates_are_offered_once() {
+async fn checks_are_named_and_not_offered_on_autopilot() {
     let mut fixture = Fixture::new(false, |repo| {
         repo.write("Cargo.toml", "[package]\nname = \"x\"\n")
             .unwrap();
     });
-    offer_gates(&mut fixture.ctx, &mut fixture.state)
+    assert!(follow_mode(&mut fixture.state, true), "autopilot came on");
+    for _ in 0..2 {
+        offer_checks(&mut fixture.ctx, &mut fixture.state)
+            .await
+            .unwrap();
+    }
+    let said: Vec<String> = fixture
+        .drain()
+        .into_iter()
+        .map(|event| match event {
+            AppEvent::Notice { text, .. } => text,
+            other => panic!("only a line is said: {other:?}"),
+        })
+        .collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].starts_with(CHECKS_ON_AUTOPILOT), "{said:?}");
+    assert!(said[0].contains("cargo test"), "{said:?}");
+
+    assert!(!follow_mode(&mut fixture.state, false));
+    offer_checks(&mut fixture.ctx, &mut fixture.state)
+        .await
+        .unwrap();
+    assert_eq!(fixture.only_choice().kind, ChoiceKind::DetectedChecks);
+    // Coming on is seen each time, and staying on isn't.
+    assert!(follow_mode(&mut fixture.state, true));
+    assert!(!follow_mode(&mut fixture.state, true));
+}
+
+/// The offer open when autopilot comes on closes, since saving check commands is yours to
+/// confirm, and a run started off autopilot is offered them again.
+#[tokio::test]
+async fn autopilot_coming_on_closes_the_checks_offer_for_a_later_run() {
+    let mut fixture = Fixture::new(false, |repo| {
+        repo.write("Cargo.toml", "[package]\nname = \"x\"\n")
+            .unwrap();
+    });
+    offer_checks(&mut fixture.ctx, &mut fixture.state)
         .await
         .unwrap();
     let offer = fixture.only_choice();
-    assert_eq!(offer.kind, ChoiceKind::DetectedGates);
+    settle_on_autopilot(&fixture.ctx, &mut fixture.state);
+    let closed = fixture.drain();
+    assert!(
+        matches!(closed.as_slice(), [AppEvent::ChoiceClosed { id, outcome }]
+            if id == &offer.id && outcome.starts_with("Decided on autopilot · not saved")),
+        "{closed:?}"
+    );
+    offer_checks(&mut fixture.ctx, &mut fixture.state)
+        .await
+        .unwrap();
+    assert_eq!(fixture.only_choice().kind, ChoiceKind::DetectedChecks);
+}
+
+#[tokio::test]
+async fn checks_are_offered_once() {
+    let mut fixture = Fixture::new(false, |repo| {
+        repo.write("Cargo.toml", "[package]\nname = \"x\"\n")
+            .unwrap();
+    });
+    offer_checks(&mut fixture.ctx, &mut fixture.state)
+        .await
+        .unwrap();
+    let offer = fixture.only_choice();
+    assert_eq!(offer.kind, ChoiceKind::DetectedChecks);
     assert!(offer.body.iter().any(|line| line.trim() == "cargo test"));
     assert!(
         offer
@@ -1946,14 +2006,14 @@ async fn gates_are_offered_once() {
             .any(|line| line.contains("safety setting"))
     );
     // Not again while it's open.
-    offer_gates(&mut fixture.ctx, &mut fixture.state)
+    offer_checks(&mut fixture.ctx, &mut fixture.state)
         .await
         .unwrap();
     assert!(fixture.drain().is_empty());
 
     // Esc leaves it for the next run.
     set_aside(&mut fixture.ctx, &mut fixture.state, offer.id.clone()).unwrap();
-    offer_gates(&mut fixture.ctx, &mut fixture.state)
+    offer_checks(&mut fixture.ctx, &mut fixture.state)
         .await
         .unwrap();
     let offer = fixture.only_choice();
@@ -1976,7 +2036,7 @@ async fn gates_are_offered_once() {
         fixture.ctx.settings().checks.run[0].command,
         vec!["cargo", "test", "--workspace"]
     );
-    offer_gates(&mut fixture.ctx, &mut fixture.state)
+    offer_checks(&mut fixture.ctx, &mut fixture.state)
         .await
         .unwrap();
     assert!(
@@ -1988,11 +2048,11 @@ async fn gates_are_offered_once() {
 }
 
 #[tokio::test]
-async fn skipping_the_gates_offer_is_remembered_in_the_repo() {
+async fn skipping_the_checks_offer_is_remembered_in_the_repo() {
     let mut fixture = Fixture::new(false, |repo| {
         repo.write("pyproject.toml", "").unwrap();
     });
-    offer_gates(&mut fixture.ctx, &mut fixture.state)
+    offer_checks(&mut fixture.ctx, &mut fixture.state)
         .await
         .unwrap();
     let offer = fixture.only_choice();
@@ -2007,7 +2067,7 @@ async fn skipping_the_gates_offer_is_remembered_in_the_repo() {
     .unwrap();
     // A new app session in the same repo doesn't ask again.
     let mut state = SettingsState::new(&fixture.ctx);
-    offer_gates(&mut fixture.ctx, &mut state).await.unwrap();
+    offer_checks(&mut fixture.ctx, &mut state).await.unwrap();
     assert!(
         fixture
             .drain()
@@ -2059,19 +2119,19 @@ async fn a_session_value_joins_the_app_and_later_runs() {
 }
 
 #[tokio::test]
-async fn a_new_main_agent_starts_a_fresh_chat() {
+async fn a_new_main_agent_starts_a_fresh_conversation() {
     let mut fixture = Fixture::new(false, |_| {});
     let effects = set(
         &mut fixture.ctx,
         &mut fixture.state,
-        "main_agent".to_owned(),
+        "crew.main".to_owned(),
         "\"codex\"".to_owned(),
         SettingScope::Session,
     )
     .await
     .unwrap();
     assert!(
-        matches!(effects.first(), Some(Effect::FreshChat)),
+        matches!(effects.first(), Some(Effect::FreshConversation)),
         "{effects:?}"
     );
 }
@@ -2158,7 +2218,7 @@ async fn a_key_the_catalog_lacks_is_kept_only_when_resolve_knows_it() {
         ["\"first_passing\"", "\"judge\"", "\"merge\""]
     );
     assert!(rows.iter().any(|row| row.key == "fallback.together"));
-    assert!(rows.iter().any(|row| row.key == "fallback.reviewers.pick"));
+    assert!(rows.iter().any(|row| row.key == "fallback.reviewer.pick"));
 }
 
 /// Sets `key` through the same path as a picker's scope answer.
@@ -2179,13 +2239,13 @@ fn keys_of(rows: &[SettingRow]) -> Vec<&str> {
 }
 
 #[tokio::test]
-async fn handoff_shows_what_the_replacement_is_told_and_a_summarizer_once_it_needs_one() {
+async fn fallback_shows_what_a_fallback_is_told_and_a_summarizer_once_it_needs_one() {
     let mut fixture = Fixture::new(false, |_| {});
-    let handoff = |fixture: &Fixture, section: Option<&str>| {
+    let fallback = |fixture: &Fixture, section: Option<&str>| {
         rows::rows(&fixture.ctx.settings, Some("fallback"), section)
     };
 
-    let rows = handoff(&fixture, None);
+    let rows = fallback(&fixture, None);
     let context = row(&rows, "fallback.context");
     assert_eq!(context.value, "\"note+transcript\"");
     assert_eq!(
@@ -2220,15 +2280,15 @@ async fn handoff_shows_what_the_replacement_is_told_and_a_summarizer_once_it_nee
         SettingScope::Project,
     )
     .await;
-    let rows = handoff(&fixture, None);
+    let rows = fallback(&fixture, None);
     let summarizer = row(&rows, "fallback.summarizer");
     assert_eq!(summarizer.value, "");
     assert!(summarizer.allowed.is_empty());
     assert_eq!(summarizer.default_scope, SettingScope::Project);
     assert!(keys_of(&rows).contains(&"fallback.main.summarizer"));
-    let reviewer = handoff(&fixture, Some("fallback.reviewers"));
-    assert!(keys_of(&reviewer).contains(&"fallback.reviewers.summarizer"));
-    assert!(keys_of(&reviewer).contains(&"fallback.reviewers.context"));
+    let reviewer = fallback(&fixture, Some("fallback.reviewer"));
+    assert!(keys_of(&reviewer).contains(&"fallback.reviewer.summarizer"));
+    assert!(keys_of(&reviewer).contains(&"fallback.reviewer.context"));
 
     // One role told note+summary needs its own, and the top-level one that serves it.
     set_at(
@@ -2240,26 +2300,26 @@ async fn handoff_shows_what_the_replacement_is_told_and_a_summarizer_once_it_nee
     .await;
     set_at(
         &mut fixture,
-        "fallback.reviewers.context",
+        "fallback.reviewer.context",
         "note+summary",
         SettingScope::Project,
     )
     .await;
-    let reviewer = handoff(&fixture, Some("fallback.reviewers"));
-    assert!(keys_of(&reviewer).contains(&"fallback.reviewers.summarizer"));
-    let rows = handoff(&fixture, None);
+    let reviewer = fallback(&fixture, Some("fallback.reviewer"));
+    assert!(keys_of(&reviewer).contains(&"fallback.reviewer.summarizer"));
+    let rows = fallback(&fixture, None);
     assert!(keys_of(&rows).contains(&"fallback.summarizer"));
     assert!(!keys_of(&rows).contains(&"fallback.main.summarizer"));
 
-    // So does a vendor's replacements being told note+summary.
+    // So does an agent's fallbacks being told note+summary.
     set_at(
         &mut fixture,
-        "fallback.reviewers.context",
+        "fallback.reviewer.context",
         "fresh",
         SettingScope::Project,
     )
     .await;
-    let rows = handoff(&fixture, None);
+    let rows = fallback(&fixture, None);
     assert!(!keys_of(&rows).contains(&"fallback.summarizer"));
     set_at(
         &mut fixture,
@@ -2268,7 +2328,7 @@ async fn handoff_shows_what_the_replacement_is_told_and_a_summarizer_once_it_nee
         SettingScope::Project,
     )
     .await;
-    let rows = handoff(&fixture, None);
+    let rows = fallback(&fixture, None);
     assert!(keys_of(&rows).contains(&"fallback.summarizer"));
 
     // A summarizer you set stays listed, so you can change or reset it.
@@ -2286,7 +2346,7 @@ async fn handoff_shows_what_the_replacement_is_told_and_a_summarizer_once_it_nee
         SettingScope::Project,
     )
     .await;
-    let rows = handoff(&fixture, None);
+    let rows = fallback(&fixture, None);
     let summarizer = row(&rows, "fallback.summarizer");
     assert_eq!(
         (summarizer.value.as_str(), summarizer.layer.as_str()),
@@ -2301,7 +2361,7 @@ async fn handoff_shows_what_the_replacement_is_told_and_a_summarizer_once_it_nee
 }
 
 #[tokio::test]
-async fn the_handoff_context_saves_at_each_scope() {
+async fn the_fallback_context_saves_at_each_scope() {
     use SettingScope::*;
     let mut fixture = Fixture::new(false, |_| {});
     let layer = |fixture: &Fixture, key: &str| {
@@ -2334,7 +2394,7 @@ async fn the_handoff_context_saves_at_each_scope() {
     assert!(local.contains("context = \"note+summary\""), "{local}");
 
     // A role's own, and the summarizer, the same way.
-    set_at(&mut fixture, "fallback.reviewers.context", "fresh", Project).await;
+    set_at(&mut fixture, "fallback.reviewer.context", "fresh", Project).await;
     set_at(
         &mut fixture,
         "fallback.summarizer",
@@ -2345,9 +2405,9 @@ async fn the_handoff_context_saves_at_each_scope() {
     let rows = rows::rows(
         &fixture.ctx.settings,
         Some("fallback"),
-        Some("fallback.reviewers"),
+        Some("fallback.reviewer"),
     );
-    let context = row(&rows, "fallback.reviewers.context");
+    let context = row(&rows, "fallback.reviewer.context");
     assert_eq!(
         (context.value.as_str(), context.layer.as_str()),
         ("\"fresh\"", "project")
@@ -2375,7 +2435,7 @@ async fn the_handoff_context_saves_at_each_scope() {
 }
 
 #[tokio::test]
-async fn config_lists_the_handoff_context_and_summarizer_with_their_layers() {
+async fn config_lists_the_fallback_context_and_summarizer_with_their_layers() {
     let mut fixture = Fixture::new(false, |_| {});
     let config = |fixture: &Fixture| rows::rows(&fixture.ctx.settings, Some("config"), None);
     let rows = config(&fixture);
@@ -2400,7 +2460,7 @@ async fn config_lists_the_handoff_context_and_summarizer_with_their_layers() {
     .await;
     set_at(
         &mut fixture,
-        "fallback.workers.context",
+        "fallback.worker.context",
         "fresh",
         SettingScope::Project,
     )
@@ -2411,13 +2471,13 @@ async fn config_lists_the_handoff_context_and_summarizer_with_their_layers() {
         (summarizer.value.as_str(), summarizer.layer.as_str()),
         ("\"claude-code/haiku\"", "project-local")
     );
-    let owner = row(&rows, "fallback.workers.context");
+    let worker = row(&rows, "fallback.worker.context");
     assert_eq!(
-        (owner.value.as_str(), owner.layer.as_str()),
+        (worker.value.as_str(), worker.layer.as_str()),
         ("\"fresh\"", "project")
     );
-    assert!(keys_of(&rows).contains(&"fallback.workers.summarizer"));
-    // `/config handoff` is the section on its own.
+    assert!(keys_of(&rows).contains(&"fallback.worker.summarizer"));
+    // `/config fallback` is the section on its own.
     let section = rows::rows(&fixture.ctx.settings, Some("config"), Some("fallback"));
     assert!(keys_of(&section).contains(&"fallback.context"));
     assert!(keys_of(&section).contains(&"fallback.summarizer"));
@@ -2432,19 +2492,19 @@ async fn agents_lists_the_clis_that_are_not_installed_with_how_to_add_them() {
         .map(|id| format!(r#"agents.{id}.binary="/nowhere/{id}""#))
         .collect();
     flags.push(format!(r#"agents.codex.binary="{}""#, present.display()));
-    let mut harness = Harness::start_with(HarnessOptions {
+    let mut driver = TestDriver::start_with(CliOptions {
         flags,
-        ..HarnessOptions::default()
+        ..CliOptions::default()
     })
     .await;
     slash(
-        &harness,
+        &driver,
         SlashCommand::Agents {
             action: AgentsAction::List,
         },
     )
     .await;
-    let ViewData::Settings { not_installed, .. } = next_view(&mut harness).await else {
+    let ViewData::Settings { not_installed, .. } = next_view(&mut driver).await else {
         panic!("/agents answers with rows");
     };
     let ids: Vec<&str> = not_installed.iter().map(|cli| cli.id.as_str()).collect();
@@ -2466,16 +2526,16 @@ async fn agents_lists_the_clis_that_are_not_installed_with_how_to_add_them() {
 
     // Other settings commands carry none.
     slash(
-        &harness,
+        &driver,
         SlashCommand::Workflow {
             name: None,
-            action: PresetAction::Use,
+            action: WorkflowVerb::Use,
         },
     )
     .await;
-    let ViewData::Settings { not_installed, .. } = next_view(&mut harness).await else {
+    let ViewData::Settings { not_installed, .. } = next_view(&mut driver).await else {
         panic!("/workflow answers with rows");
     };
     assert!(not_installed.is_empty());
-    harness.exit().await;
+    driver.exit().await;
 }

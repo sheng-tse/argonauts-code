@@ -1,7 +1,7 @@
 //! Fixture replays. A fixture folder holds `meta.json` (the profile, the session start, and
 //! whether it's synthetic or what recorded it), `transcript.jsonl`, and `expected.json` (the
 //! events and the end). Made-up transcripts live in `synthetic/`, and ones recorded from a real
-//! agent in `recorded/<agent>-<version>/`.
+//! agent in `recorded/<agent>/`, with the version in its `meta.json`.
 //! Each transcript line is one of:
 //! - `{"out": frame}`: the driver must send a frame that holds every field of `frame`;
 //! - `{"in": frame}`: the agent sends `frame`;
@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use argonauts_core::driver::{DriverControl, DriverStart};
 use argonauts_core::registry::acp::AcpProfile;
-use argonauts_core::registry::harness::ErrorPattern;
+use argonauts_core::registry::cli::ErrorPattern;
 use serde_json::Value;
 
 use crate::driver::DriverProfile;
@@ -206,10 +206,10 @@ async fn acp_hermes_transcript_replays() {
 
 #[tokio::test]
 async fn recorded_opencode_transcript_replays() {
-    replay("recorded/opencode-1.18.34").await;
+    replay("recorded/opencode").await;
 }
 
 #[tokio::test]
 async fn recorded_hermes_transcript_replays() {
-    replay("recorded/hermes-0.19.0").await;
+    replay("recorded/hermes").await;
 }

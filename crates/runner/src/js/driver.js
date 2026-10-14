@@ -38,8 +38,8 @@
   const ASKS = {
     main: 'Do this.',
     orchestrator: 'Plan the work for this request.',
-    workers: 'Do the work.',
-    reviewers: 'Review the change. Accept it, or list what must change.',
+    worker: 'Do the work.',
+    reviewer: 'Review the change. Accept it, or list what must change.',
     judge: 'Check the result against what done means.',
   };
   // Enough of an earlier answer to work from, without one long answer crowding out the rest.
@@ -53,12 +53,12 @@
   const words = (text, most) =>
     String(text).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).slice(0, most).join('-');
   const slug = (title) => words(title, 3) || 'task';
-  const labelOf = (step, task, seat, of) => {
+  const labelOf = (step, task, nth, of) => {
     const base = words(step.name, 2).slice(0, 12) || 'step';
-    const seated = of > 1 ? ':' + (seat + 1) : '';
-    if (!task) return base + seated;
-    const room = Math.max(3, WIDTH - base.length - 1 - seated.length);
-    return base + ':' + task.id.slice(0, room).replace(/-+$/, '') + seated;
+    const numbered = of > 1 ? ':' + (nth + 1) : '';
+    if (!task) return base + numbered;
+    const room = Math.max(3, WIDTH - base.length - 1 - numbered.length);
+    return base + ':' + task.id.slice(0, room).replace(/-+$/, '') + numbered;
   };
   const shown = (value) => {
     const said = typeof value === 'string' ? value : JSON.stringify(value);
@@ -69,7 +69,7 @@
   async function steps(file, args) {
     const all = file.steps;
     const request = String((args && args.request) || '');
-    const seats = (args && args.crew) || {};
+    const crew = (args && args.crew) || {};
     const fixed = args && Array.isArray(args.tasks) && args.tasks.length ? args.tasks : null;
     const place = new Map(all.map((step, index) => [step.name, index]));
     // What the whole-flow steps said, newest last, for the steps after them.
@@ -120,28 +120,28 @@
     };
 
     const count = (step) => {
-      if (step.count === 'all') return Math.max(1, Number(seats[step.role]) || 1);
+      if (step.count === 'all') return Math.max(1, Number(crew[step.role]) || 1);
       return Math.max(1, Number(step.count) || 1);
     };
 
     // One agent of a step, kept going while the step's `until` doesn't hold.
-    async function one(step, index, task, seat, of, feedback, round, schema, isPlanner) {
-      const label = labelOf(step, task, seat, of);
+    async function one(step, index, task, nth, of, feedback, round, schema, isPlanner) {
+      const label = labelOf(step, task, nth, of);
       let pressed = feedback;
-      for (let attempt = 1; ; attempt++) {
+      for (let tryNumber = 1; ; tryNumber++) {
         const answer = await agent(prompt(step, task, pressed, isPlanner), {
           role: step.role,
           label,
           phase: step.name,
           schema,
-          model: step.model,
+          // A step that names a model runs on it, and otherwise each agent on one of the role's.
+          model: step.model || nth,
           task: task ? task.id : undefined,
           // Until the tasks are listed, workers think and write plans. A step that judges reads.
           access: step.send_back_to || (file.planner !== null && index <= file.planner) ? 'read' : undefined,
           // Several workers on one piece of work each need a worktree of their own.
-          isolation: step.attempts ? 'worktree' : undefined,
-          seat,
-          attempt: (round - 1) + attempt,
+          isolation: step.tries ? 'worktree' : undefined,
+          tryNumber: (round - 1) + tryNumber,
           independent: step.independent || undefined,
           notTheAuthor: step.not_the_author || undefined,
           keptBy: step.kept_by,
@@ -156,10 +156,10 @@
           task: task ? task.id : undefined,
           label,
           keptBy: step.kept_by,
-          attempt,
+          tryNumber,
         });
         if (!checked || checked.holds) return answer;
-        if (checked.stop || (step.max_rounds && attempt >= step.max_rounds)) {
+        if (checked.stop || (step.max_rounds && tryNumber >= step.max_rounds)) {
           notes.push(`${label} stopped before "${goal}" held`);
           log(`${label}: stopped before "${goal}" held`);
           return answer;
@@ -180,13 +180,13 @@
       }
       const isPlanner = index === file.planner && !task;
       const earlier = index > 0 ? all[index - 1] : null;
-      const picks = step.role === 'judge' && !step.send_back_to && earlier && earlier.attempts;
+      const picks = step.role === 'judge' && !step.send_back_to && earlier && earlier.tries;
       const schema = step.send_back_to ? VERDICT : isPlanner ? TASKS : picks ? PICK : undefined;
       const of = count(step);
-      step.attempts = step.role === 'workers' && of > 1 && !file.per_task[index] ? of : 0;
+      step.tries = step.role === 'worker' && of > 1 && !file.per_task[index] ? of : 0;
       const calls = [];
-      for (let seat = 0; seat < of; seat++) {
-        calls.push(() => one(step, index, task, seat, of, feedback, round, schema, isPlanner));
+      for (let nth = 0; nth < of; nth++) {
+        calls.push(() => one(step, index, task, nth, of, feedback, round, schema, isPlanner));
       }
       const answers = of === 1 ? [await calls[0]()] : await parallel(calls);
       const given = answers.filter((answer) => answer !== null && answer !== undefined);
@@ -196,13 +196,13 @@
         tasks = name(listed.length ? listed : [request || step.name]);
       }
       if (picks && given[0] && Number.isInteger(given[0].keep)) {
-        const seat = given[0].keep - 1;
-        const label = labelOf(earlier, null, seat, earlier.attempts);
-        send('keep', { step: earlier.name, seat, label, why: given[0].why });
+        const nth = given[0].keep - 1;
+        const label = labelOf(earlier, null, nth, earlier.tries);
+        send('keep', { step: earlier.name, model_index: nth, label, why: given[0].why });
       }
       if (!task) {
-        const texts = given.map((answer, seat) =>
-          (given.length > 1 ? `${seat + 1}) ` : '') + shown(answer && answer.summary ? answer.summary : answer));
+        const texts = given.map((answer, nth) =>
+          (given.length > 1 ? `${nth + 1}) ` : '') + shown(answer && answer.summary ? answer.summary : answer));
         if (texts.length) said = said.filter((s) => s.step !== step.name).concat({ step: step.name, text: texts.join('\n') });
       }
 

@@ -13,7 +13,7 @@ use agent_client_protocol::schema::v1::{
 use argonauts_core::{AgentEvent, TodoItem, TodoStatus};
 use serde_json::Value;
 
-pub(crate) struct Mapper {
+pub(crate) struct Mapping {
     cwd: PathBuf,
     /// Cost comes from `usage_update` only when the profile lists it as a usage source.
     cost_from_usage_update: bool,
@@ -30,7 +30,7 @@ pub(crate) struct Mapper {
     cost: f64,
 }
 
-impl Mapper {
+impl Mapping {
     pub fn new(cwd: &Path, cost_from_usage_update: bool) -> Self {
         Self {
             cwd: cwd.to_owned(),
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn acp_updates_map_to_agent_events() {
-        let mut mapper = Mapper::new(Path::new("/w"), true);
+        let mut mapping = Mapping::new(Path::new("/w"), true);
         let mut events = Vec::new();
         let updates = [
             json!({ "sessionUpdate": "agent_thought_chunk", "content": { "type": "text", "text": "Plan first." } }),
@@ -363,7 +363,7 @@ mod tests {
             json!({ "sessionUpdate": "usage_update", "used": 1600, "size": 0, "cost": { "amount": 3.0, "currency": "EUR" } }),
             json!({ "sessionUpdate": "available_commands_update", "availableCommands": [] }),
             json!({ "sessionUpdate": "user_message_chunk", "content": { "type": "text", "text": "replayed" } }),
-            json!({ "sessionUpdate": "something_new", "_meta": { "vendor": 1 } }),
+            json!({ "sessionUpdate": "something_new", "_meta": { "agent_id": 1 } }),
             json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "image", "data": "", "mimeType": "image/png" } }),
             json!({ "sessionUpdate": "agent_thought_chunk", "content": { "type": "image", "data": "", "mimeType": "image/png" } }),
             json!({ "sessionUpdate": "current_mode_update", "currentModeId": "default" }),
@@ -371,13 +371,13 @@ mod tests {
             json!({ "sessionUpdate": "session_info_update", "title": "Fix the bug" }),
         ];
         for update in &updates {
-            events.extend(mapper.update(update));
+            events.extend(mapping.update(update));
         }
-        assert!(mapper.tools_running(), "t3 is still running");
-        events.extend(mapper.end_turn());
-        assert!(!mapper.tools_running());
+        assert!(mapping.tools_running(), "t3 is still running");
+        events.extend(mapping.end_turn());
+        assert!(!mapping.tools_running());
         // An update for a tool the turn's end closed is ignored.
-        assert_eq!(mapper.update(&updates[9]), []);
+        assert_eq!(mapping.update(&updates[9]), []);
 
         let unknown = |index: usize| AgentEvent::Unknown {
             raw: updates[index].clone(),
@@ -495,7 +495,7 @@ mod tests {
             },
         ];
         assert_eq!(events, expected);
-        assert_eq!(mapper.last_message(), Some("Next."));
+        assert_eq!(mapping.last_message(), Some("Next."));
 
         let result = json!({ "stopReason": "end_turn", "usage": {
             "inputTokens": 900, "outputTokens": 40, "cachedReadTokens": 600, "totalTokens": 940 } });
@@ -511,7 +511,7 @@ mod tests {
         );
         assert_eq!(end_turn_usage(&json!({ "stopReason": "end_turn" })), None);
 
-        let mut without_cost = Mapper::new(Path::new("/w"), false);
+        let mut without_cost = Mapping::new(Path::new("/w"), false);
         assert_eq!(
             without_cost.update(&updates[11]),
             vec![AgentEvent::ContextFill {

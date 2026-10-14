@@ -1,0 +1,43 @@
+{
+  "adapter": "claude-code",
+  "program": "claude",
+  "name": "you_should_know",
+  "args": [
+    "-p",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--model",
+    "haiku",
+    "--effort",
+    "low",
+    "--max-budget-usd",
+    "0.10",
+    "--strict-mcp-config",
+    "--no-session-persistence",
+    "--permission-mode",
+    "default",
+    "--settings",
+    "{\"enabledPlugins\": {\"cc-plugin-you-should-know@builtin\": true}}",
+    "--allowedTools",
+    "Bash(echo:*)",
+    "Bash(./slow-test.sh)",
+    "Read"
+  ],
+  "date": "2026-10-04T01:44:47Z",
+  "exit_code": 0,
+  "sanitized": "absolute paths replaced with <workdir> (the throwaway repo) and <live> (its check folder), Claude Code's folder slug with <workdir-slug>, the temp folder with <tmp>, the home directory with ~, and email addresses with <email>",
+  "cli_version": "2.1.289",
+  "also_matches": [],
+  "model": "haiku",
+  "effort": "low",
+  "env_added": {
+    "CLAUDE_CODE_YOU_SHOULD_KNOW_DEBUG": "1"
+  },
+  "keep_input_open": true,
+  "stdin": "{\"_t\": 0.0, \"type\": \"control_request\", \"request_id\": \"init-1\", \"request\": {\"subtype\": \"initialize\"}}\n{\"_t\": 0.47, \"type\": \"control_request\", \"request_id\": \"attach-1\", \"request\": {\"subtype\": \"ui_attach\", \"surface\": \"desktop\", \"client_id\": \"argoprobe\"}}\n{\"_t\": 0.47, \"type\": \"control_request\", \"request_id\": \"render-1\", \"request\": {\"subtype\": \"ui_render\", \"surface\": \"desktop\", \"client_id\": \"argoprobe\", \"component\": \"AbovePrompt\", \"instance_id\": \"above-prompt\", \"props\": {}}}\n{\"_t\": 0.47, \"type\": \"user\", \"message\": {\"role\": \"user\", \"content\": \"Do these steps one at a time, each as its own tool call, waiting for each result before the next, in this order, and do not batch them: 1) Read README.md. 2) Read release.md. 3) Bash: echo step3. 4) Bash: echo step4. 5) Bash: echo step5. 6) Bash: echo step6. 7) Bash: echo step7. 8) Bash, in the foreground: ./slow-test.sh (it takes about a minute; wait for it). Then say in one sentence whether release 1.4.0 can go out today.\"}, \"parent_tool_use_id\": null, \"session_id\": \"\", \"uuid\": \"b4166426-04b0-4930-9439-57b80133642e\", \"origin\": {\"kind\": \"human\"}}\n{\"_t\": 18.07, \"type\": \"user\", \"message\": {\"role\": \"user\", \"content\": \"Reply with only the word PONG.\"}, \"parent_tool_use_id\": null, \"session_id\": \"\", \"uuid\": \"bdeb6d64-33fd-4a03-8a6a-eda25f8ed001\", \"origin\": {\"kind\": \"human\"}}\n{\"_t\": 20.07, \"type\": \"control_request\", \"request_id\": \"send-now-1\", \"request\": {\"subtype\": \"interrupt\", \"send_now\": true, \"message_uuid\": \"bdeb6d64-33fd-4a03-8a6a-eda25f8ed001\"}}\n{\"_t\": 44.64, \"type\": \"control_request\", \"request_id\": \"render-2\", \"request\": {\"subtype\": \"ui_render\", \"surface\": \"desktop\", \"client_id\": \"argoprobe\", \"component\": \"AbovePrompt\", \"instance_id\": \"above-prompt\", \"props\": {}}}\n{\"_t\": 44.74, \"type\": \"control_request\", \"request_id\": \"render-3\", \"request\": {\"subtype\": \"ui_render\", \"surface\": \"desktop\", \"client_id\": \"argoprobe\", \"component\": \"AbovePrompt\", \"instance_id\": \"above-prompt\", \"props\": {}}}\n{\"_t\": 125.27, \"type\": \"control_request\", \"request_id\": \"render-4\", \"request\": {\"subtype\": \"ui_render\", \"surface\": \"desktop\", \"client_id\": \"argoprobe\", \"component\": \"AbovePrompt\", \"instance_id\": \"above-prompt\", \"props\": {}}}\n",
+  "cost_usd": 0.0848,
+  "note": "You should know turned on and attached as a desktop screen. A heads-up came at step 6; a message sent during ./slow-test.sh was queued, interrupt with send_now answered delivering, and the command moved to the background. Task events, ui_invalidate, and tool_progress included. $0.08."
+}

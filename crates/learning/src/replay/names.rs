@@ -21,7 +21,7 @@ const BINARY_SNIFF: usize = 8000;
 
 /// Test files the change added or edited, by the usual naming: a `test`, `tests`, `__tests__`,
 /// or `spec` folder, a `test_` prefix, or `_test.`, `.test.`, `.spec.`, or `_spec.` in the name.
-/// Used when the run recorded no acceptance tests of its own, as a solo run doesn't.
+/// Used when the run recorded no acceptance tests of its own, as a Captain run doesn't.
 pub(super) fn changed_test_files(repo: &Path, base: &str, merged: &str) -> Result<Vec<String>> {
     let listed = git::run(
         repo,

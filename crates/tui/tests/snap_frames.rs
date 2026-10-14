@@ -1,4 +1,4 @@
-//! The frame checker over every view, card, picker, live region, and the transcript overlay,
+//! The frame checker over every view, question, picker, live region, and the transcript overlay,
 //! at every width from 40 to 200 columns, with CJK, emoji, long unbroken strings, long paths,
 //! and empty content. Each view keeps its instance across the widths, as a resize would.
 
@@ -7,26 +7,28 @@ mod pty_support;
 use std::time::Instant;
 
 use argonauts_core::app::{AppChoice, AppEvent, ModelChoice, SettingRow, ViewData};
-use argonauts_core::events::checkpoint::CheckpointOpened;
-use argonauts_core::events::{RunEventKind, checkpoint::CheckpointEvent};
+use argonauts_core::events::approval::ApprovalOpened;
+use argonauts_core::events::{RunEventKind, approval::ApprovalEvent};
 use argonauts_core::input::MentionTarget;
 use argonauts_core::limits::CostEstimate;
 use argonauts_core::names::{RoleName, SessionKey};
 use argonauts_core::registry::ModelAccess;
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::ui::{Glyphs as GlyphChoice, UiSettings};
-use argonauts_core::{CardId, RunId};
+use argonauts_core::{RunId, TaskId};
 use argonauts_tui::HistoryCell;
 use argonauts_tui::app::TranscriptOverlay;
-use argonauts_tui::bottom::{BottomState, CardPrompt, OptionKind, Picker, PickerRow, WorkingLine};
+use argonauts_tui::bottom::{
+    BottomState, OptionKind, Picker, PickerRow, QuestionPrompt, WorkingLine,
+};
 use argonauts_tui::bridge::transcript::Transcript;
 use argonauts_tui::bridge::{Cx, Effects};
-use argonauts_tui::cards::{
-    about_cells, checkpoint_card, choice_card, confirm_take_over, spot_check_card,
-};
 use argonauts_tui::keymap::Keymap;
 use argonauts_tui::mentions::MentionPicker;
 use argonauts_tui::model::ViewModel;
+use argonauts_tui::questions::{
+    about_cells, approval_question, choice_question, confirm_take_over, spot_check_question,
+};
 use argonauts_tui::render::{Clock, RenderCtx};
 use argonauts_tui::stability::{
     UNSTABLE_GLYPHS, WIDTHS, assert_frames, assert_lines, buffer_text, check, check_glyphs,
@@ -36,7 +38,7 @@ use argonauts_tui::state::{AppState, RunState};
 use argonauts_tui::text::{plain_text, width_with};
 use argonauts_tui::theme::{Glyphs, Theme};
 use argonauts_tui::views::agent::AgentView;
-use argonauts_tui::views::crew::CrewView;
+use argonauts_tui::views::crew::AgentPanelView;
 use argonauts_tui::views::help::HelpView;
 use argonauts_tui::views::pager::Pager;
 use argonauts_tui::views::resume::ResumePicker;
@@ -71,12 +73,12 @@ const TEXT_KEYS: [&str; 15] = [
     "note",
     "detail",
     "tool",
-    "family",
+    "provider",
     "branch",
 ];
 
 /// Keys whose arrays of strings get the sample as one more line.
-const LINE_KEYS: [&str; 5] = ["body", "lines", "strengths", "attempts", "agreements"];
+const LINE_KEYS: [&str; 5] = ["body", "lines", "strengths", "tries", "agreements"];
 
 fn hostile(value: &mut Value, sample: &str) {
     match value {
@@ -115,11 +117,11 @@ fn view_data(event: &AppEvent) -> ViewData {
     }
 }
 
-fn opened(event: &AppEvent) -> CheckpointOpened {
+fn opened(event: &AppEvent) -> ApprovalOpened {
     match event {
         AppEvent::Run { event } => match &event.kind {
-            RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) => (**opened).clone(),
-            other => panic!("not an opened checkpoint: {other:?}"),
+            RunEventKind::Approval(ApprovalEvent::Opened(opened)) => (**opened).clone(),
+            other => panic!("not an opened approval: {other:?}"),
         },
         other => panic!("not a run event: {other:?}"),
     }
@@ -153,21 +155,21 @@ fn crew_state(sample: &str) -> (AppState, Vec<Agent>) {
     for event in events {
         state.apply(&with_sample(&event, sample));
     }
-    state.apply(&with_sample(&crew_panel_view(sample), sample));
+    state.apply(&with_sample(&agent_panel_rows(sample), sample));
     (state, crew)
 }
 
-/// The crew panel's rows from the controller, with `sample` in their text: a conversation, a
+/// The agent panel's rows from the controller, with `sample` in their text: a conversation, a
 /// CLI session, and a run in a repo with a long path.
-fn crew_panel_view(sample: &str) -> AppEvent {
+fn agent_panel_rows(sample: &str) -> AppEvent {
     let panel = json!({
         "repo": "~/code/export",
         "rows": [
-            {"target": {"kind": "conversation", "chat": "chat-001"}, "state": "ready",
+            {"target": {"kind": "conversation", "conversation": "conversation-001"}, "state": "ready",
              "title": "How does the export pick a format?", "repo": "~/code/export",
              "worker": "claude-code/opus", "latest": sample, "updated": "2026-09-30T11:00:00Z",
              "details": {"last_message": sample, "prompt": "Pick a format"}},
-            {"target": {"kind": "vendor_session", "session": {"vendor": "codex", "id": "019a2f"}},
+            {"target": {"kind": "cli_session", "session": {"agent_id": "codex", "id": "019a2f"}},
              "state": "ready", "title": "Explain the input handling", "repo": "~/code/export",
              "worker": "codex/gpt-5.6", "latest": sample, "updated": "2026-09-29T11:00:00Z",
              "details": {"branch": "main"}},
@@ -179,7 +181,7 @@ fn crew_panel_view(sample: &str) -> AppEvent {
     });
     AppEvent::View {
         data: Box::new(ViewData::Crew {
-            panel: serde_json::from_value(panel).expect("a crew panel"),
+            panel: serde_json::from_value(panel).expect("an agent panel"),
         }),
     }
 }
@@ -190,7 +192,7 @@ fn approvals_data() -> Value {
          "misses": 0, "suggest_auto": true},
         {"kind": "plan", "mode": "auto", "decide_with": "rules_and_model",
          "matches_in_a_row": 0, "misses": 2, "suggest_auto": false}
-    ], "spot_checks_waiting": 3, "approver": "claude-code/opus"})
+    ], "spot_checks_waiting": 3, "judge": "claude-code/opus"})
 }
 
 /// Every full-screen view, filled with `sample`.
@@ -213,7 +215,7 @@ fn every_view(
     };
     let runs = vec![
         run_summary(RUN, "Add a --json flag to export", "running", false),
-        run_summary("run-02", "Fix the flaky export test", "parked", true),
+        run_summary("run-02", "Fix the flaky export test", "waiting", true),
     ];
     let resume = match event(runs_view(runs.clone())) {
         ViewData::Runs { runs, .. } => runs,
@@ -267,14 +269,14 @@ fn every_view(
                 vec![sample.to_owned(), String::new(), "done".to_owned()],
             )),
         ),
-        ("crew", Box::new(CrewView::new(state))),
+        ("crew", Box::new(AgentPanelView::new(state))),
         (
             "crew details",
-            Box::new(crew_view(state, |view| view.details = true)),
+            Box::new(agent_panel_view(state, |view| view.details = true)),
         ),
         (
             "crew keys",
-            Box::new(crew_view(state, |view| view.keys = true)),
+            Box::new(agent_panel_view(state, |view| view.keys = true)),
         ),
         ("help", Box::new(HelpView::new(Keymap::default()))),
         (
@@ -301,8 +303,8 @@ fn every_view(
     ]
 }
 
-fn crew_view(state: &AppState, set: impl Fn(&mut CrewView)) -> CrewView {
-    let mut view = CrewView::new(state);
+fn agent_panel_view(state: &AppState, set: impl Fn(&mut AgentPanelView)) -> AgentPanelView {
+    let mut view = AgentPanelView::new(state);
     set(&mut view);
     view
 }
@@ -319,31 +321,34 @@ fn draw(view: &mut dyn View, width: u16, state: &AppState, theme: &Theme) -> Buf
     buf
 }
 
-/// Every card and what it puts in the conversation, filled with `sample`, drawn `width` wide.
-fn every_card(sample: &str, width: u16, theme: &Theme) -> Vec<(String, Vec<Line<'static>>)> {
+/// Every question and what it puts in the conversation, filled with `sample`, drawn `width` wide.
+fn every_question(sample: &str, width: u16, theme: &Theme) -> Vec<(String, Vec<Line<'static>>)> {
     let mut run = RunScript::new(RUN);
     let agent = Agent::numbered(1);
     let run_state = RunState::new(run_id());
     let ctx = RenderCtx::new(width, theme, Clock::still(Instant::now()));
-    let mut cards = Vec::new();
-    let checkpoints = [
-        ("merge", run.merge_checkpoint("cp-001")),
-        ("question", run.question_checkpoint("cp-002", &agent)),
-        ("plan", run.plan_checkpoint("cp-003")),
-        ("take over return", run.take_over_return("cp-004", &agent)),
+    let mut questions = Vec::new();
+    let approvals = [
+        ("merge", run.merge_approval("approval-001")),
+        ("question", run.question_approval("approval-002", &agent)),
+        ("plan", run.plan_approval("approval-003")),
+        (
+            "take over return",
+            run.take_over_return("approval-004", &agent),
+        ),
     ];
-    for (name, event) in checkpoints {
+    for (name, event) in approvals {
         let opened = opened(&with_sample(&event, sample));
         let mut lines = Vec::new();
         for cell in about_cells(&opened, Some(&run_state)) {
             lines.extend(cell.lines(&ctx));
         }
-        let mut prompt = checkpoint_card(1, &opened, Some(&run_state));
+        let mut prompt = approval_question(1, &opened, Some(&run_state));
         prompt.focus();
         lines.extend(prompt.lines(&ctx));
-        cards.push((format!("{name} task"), lines));
-        let spot = spot_check_card(2, &opened, None, Some(&run_id()), &Default::default());
-        cards.push((format!("{name} spot check"), spot.lines(&ctx)));
+        questions.push((format!("{name} question"), lines));
+        let spot = spot_check_question(2, &opened, None, Some(&run_id()), &Default::default());
+        questions.push((format!("{name} spot check"), spot.lines(&ctx)));
     }
     let choices = [
         ("start work", start_work_choice("ch-001")),
@@ -354,19 +359,19 @@ fn every_card(sample: &str, width: u16, theme: &Theme) -> Vec<(String, Vec<Line<
     ];
     for (name, event) in choices {
         let choice = app_choice(&with_sample(&event, sample));
-        let mut prompt = choice_card(3, &choice);
+        let mut prompt = choice_question(3, &choice);
         prompt.focus();
-        cards.push((format!("{name} choice"), prompt.lines(&ctx)));
+        questions.push((format!("{name} choice"), prompt.lines(&ctx)));
     }
-    let card: CardId = parse(json!(format!("task-002")));
+    let task: TaskId = parse(json!(format!("task-002")));
     let agent_name = format!("claude-code/opus {sample}");
-    cards.push((
+    questions.push((
         "take over".into(),
-        confirm_take_over(4, &run_id(), &card, &agent_name).lines(&ctx),
+        confirm_take_over(4, &run_id(), &task, &agent_name).lines(&ctx),
     ));
     let working = WorkingLine::new(format!("Checking {sample}"), Instant::now());
-    cards.push(("working line".into(), vec![working.line(&ctx)]));
-    cards
+    questions.push(("working line".into(), vec![working.line(&ctx)]));
+    questions
 }
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -378,7 +383,7 @@ fn setting(key: &str, value: &str, allowed: &[String], description: &str) -> Set
         key: key.to_owned(),
         value: value.to_owned(),
         layer: "project".to_owned(),
-        preset_from: None,
+        workflow_from: None,
         default_scope: SettingScope::Global,
         safety: false,
         allowed: allowed.to_vec(),
@@ -388,11 +393,11 @@ fn setting(key: &str, value: &str, allowed: &[String], description: &str) -> Set
 
 fn model(worker: &str, sample: &str, current: bool) -> ModelChoice {
     ModelChoice {
-        worker: worker.parse().expect("a worker"),
-        family: sample.to_owned(),
+        worker: worker.parse().expect("a model"),
+        provider: sample.to_owned(),
         access: ModelAccess::ApiKey,
         cost: CostEstimate::Usd(0.38),
-        quota: None,
+        plan_usage: None,
         efforts: Vec::new(),
         strengths: vec![sample.to_owned(), "tests".to_owned()],
         current,
@@ -490,25 +495,26 @@ fn every_picker(sample: &str) -> Vec<(&'static str, Picker)> {
     ]
 }
 
-/// The live region with a card in each state it can take, and with a picker open, filled
+/// The live region with a question in each state it can take, and with a picker open, filled
 /// with `sample`.
 fn every_bottom(sample: &str) -> Vec<(&'static str, BottomState)> {
     let mut run = RunScript::new(RUN);
     let agent = Agent::numbered(1);
     let run_state = RunState::new(run_id());
-    let card = |event: AppEvent| -> CardPrompt {
+    let question = |event: AppEvent| -> QuestionPrompt {
         let opened = opened(&with_sample(&event, sample));
-        let mut card = checkpoint_card(1, &opened, Some(&run_state));
-        card.focus();
-        card
+        let mut question = approval_question(1, &opened, Some(&run_state));
+        question.focus();
+        question
     };
-    let merge = card(run.merge_checkpoint("cp-001"));
-    let question = card(run.question_checkpoint("cp-002", &agent));
-    let option_of = |card: &CardPrompt, kind: OptionKind| {
-        card.options
+    let merge = question(run.merge_approval("approval-001"));
+    let question = question(run.question_approval("approval-002", &agent));
+    let option_of = |question: &QuestionPrompt, kind: OptionKind| {
+        question
+            .options
             .iter()
             .position(|option| option.kind == kind)
-            .unwrap_or_else(|| panic!("a {kind:?} option on {}", card.title))
+            .unwrap_or_else(|| panic!("a {kind:?} option on {}", question.title))
     };
     let number = |option: usize| char::from_digit(option as u32 + 1, 10).expect("one digit");
 
@@ -538,8 +544,8 @@ fn every_bottom(sample: &str) -> Vec<(&'static str, BottomState)> {
     let mut armed = merge.clone();
     let option = option_of(&armed, OptionKind::Irreversible);
     armed.handle_key(key(KeyCode::Char(number(option))));
-    let mut handed_on = merge.clone();
-    handed_on.dismiss();
+    let mut passed_on = merge.clone();
+    passed_on.dismiss();
     let mut waiting = merge;
     waiting.focused = false;
 
@@ -548,12 +554,12 @@ fn every_bottom(sample: &str) -> Vec<(&'static str, BottomState)> {
         bottom.composer.label = Some(format!("council {sample}"));
         bottom
     };
-    let with_card = |card: CardPrompt| {
+    let with_question = |question: QuestionPrompt| {
         let mut bottom = idle();
-        bottom.card = Some(card);
+        bottom.question = Some(question);
         bottom
     };
-    let mut under_work = with_card(waiting);
+    let mut under_work = with_question(waiting);
     under_work.working = Some(WorkingLine::new(
         format!("Building {sample}"),
         Instant::now(),
@@ -566,29 +572,29 @@ fn every_bottom(sample: &str) -> Vec<(&'static str, BottomState)> {
         .find(|(name, _)| *name == "scope question")
         .map(|(_, picker)| picker);
     vec![
-        ("task with a note", with_card(noted)),
-        ("task checklist", with_card(checklist)),
-        ("task own answer", with_card(answer)),
-        ("task armed", with_card(armed)),
-        ("task handed on", with_card(handed_on)),
-        ("task waiting", under_work),
+        ("question with a note", with_question(noted)),
+        ("question checklist", with_question(checklist)),
+        ("question own answer", with_question(answer)),
+        ("question armed", with_question(armed)),
+        ("question passed on", with_question(passed_on)),
+        ("question waiting", under_work),
         ("picker open", picking),
     ]
 }
 
-/// The history a crew run and a chat turn leave, with `sample` in their text.
+/// The history a crew run and a conversation turn leave, with `sample` in their text.
 fn transcript_model(sample: &str) -> ViewModel {
     let (mut run, crew, mut events) = crew_run(3);
     events.push(run.message(&crew[0], &format!("Wrote the writer {sample}")));
     events.push(run.note("warn", sample));
     events.push(turn_started("t-001", sample));
-    events.push(chat_tool_started(
+    events.push(conversation_tool_started(
         "t-001",
         "tool-1",
         "Read",
         json!({"file_path": samples::LONG_PATH}),
     ));
-    events.push(chat_tool_finished("t-001", "tool-1", sample));
+    events.push(conversation_tool_finished("t-001", "tool-1", sample));
     events.push(turn_finished("t-001", &format!("Done. {sample}"), 3_000));
     events.push(notice("warn", sample));
     let mut model = ViewModel::default();
@@ -611,10 +617,10 @@ fn transcript_model(sample: &str) -> ViewModel {
     model
 }
 
-/// The Ctrl+O transcript, and the overlay a card opens to show what it asks about.
+/// The Ctrl+O transcript, and the overlay a question opens to show what it asks about.
 fn every_overlay(sample: &str) -> Vec<(&'static str, TranscriptOverlay)> {
     let mut run = RunScript::new(RUN);
-    let opened = opened(&with_sample(&run.merge_checkpoint("cp-001"), sample));
+    let opened = opened(&with_sample(&run.merge_approval("approval-001"), sample));
     let cells = about_cells(&opened, Some(&RunState::new(run_id())));
     vec![
         ("transcript overlay", TranscriptOverlay::new()),
@@ -637,19 +643,19 @@ fn assert_inline(name: &str, lines: &[Line<'_>], width: u16, sample: &str) {
 }
 
 /// A main agent's commands whose descriptions and names carry `sample`.
-fn cli_commands(sample: &str) -> argonauts_core::vendor_commands::VendorCommandSet {
-    use argonauts_core::names::VendorId;
-    use argonauts_core::vendor_commands::{
-        BuiltinCommand, BuiltinKind, CommandKind, CommandScope, CommandSource, VendorCommand,
-        VendorCommandSet,
+fn cli_commands(sample: &str) -> argonauts_core::cli_commands::CliCommandSet {
+    use argonauts_core::cli_commands::{
+        BuiltinCommand, BuiltinKind, CliCommand, CliCommandSet, CommandKind, CommandScope,
+        CommandSource,
     };
+    use argonauts_core::names::AgentId;
     const TABLE: &[BuiltinCommand] = &[
         BuiltinCommand {
             name: "batch",
             aliases: &[],
             args: "<instruction>",
             help: "One change across many files, in parallel",
-            kind: BuiltinKind::Vendor,
+            kind: BuiltinKind::Cli,
         },
         BuiltinCommand {
             name: "voice",
@@ -659,19 +665,19 @@ fn cli_commands(sample: &str) -> argonauts_core::vendor_commands::VendorCommandS
             kind: BuiltinKind::ScreenOnly,
         },
     ];
-    let custom = VendorCommand {
+    let custom = CliCommand {
         name: format!("ship-{}", sample.split_whitespace().next().unwrap_or("x")),
         aliases: Vec::new(),
         args: "[branch]".into(),
         help: format!("Ship it {sample}"),
-        kind: CommandKind::Vendor,
+        kind: CommandKind::Cli,
         source: CommandSource::Custom {
             scope: CommandScope::Project,
             path: "/repo/.claude/commands/ship.md".into(),
         },
     };
-    VendorCommandSet::new(
-        VendorId("claude-code".into()),
+    CliCommandSet::new(
+        AgentId("claude-code".into()),
         "Claude Code",
         TABLE,
         vec![custom],
@@ -703,7 +709,7 @@ fn frames_aligned_all_views() {
     let theme = theme(Glyphs::UNICODE);
     for sample in samples::all() {
         for width in WIDTHS {
-            for (name, lines) in every_card(&sample, width, &theme) {
+            for (name, lines) in every_question(&sample, width, &theme) {
                 let result = std::panic::catch_unwind(|| assert_lines(&lines, width));
                 assert!(
                     result.is_ok(),
@@ -775,7 +781,7 @@ fn ascii_glyphs_and_ambiguous_width() {
         assert_eq!(width_with(glyph, 1), width_with(glyph, 2), "{name}");
     }
 
-    // With it, no frame or card holds a glyph whose width depends on the terminal.
+    // With it, no frame or question holds a glyph whose width depends on the terminal.
     let theme = theme(Glyphs::for_settings(GlyphChoice::Unicode, 2));
     let mut found = Vec::new();
     for sample in [samples::EMPTY.to_owned(), samples::CJK.to_owned()] {
@@ -794,7 +800,7 @@ fn ascii_glyphs_and_ambiguous_width() {
             }
         }
         for width in [40, 120] {
-            for (name, lines) in every_card(&sample, width, &theme) {
+            for (name, lines) in every_question(&sample, width, &theme) {
                 let issues = check_line_glyphs(&lines, &UNSTABLE_GLYPHS);
                 if !issues.is_empty() {
                     found.push(format!("{name} at {width}: {issues:?}"));

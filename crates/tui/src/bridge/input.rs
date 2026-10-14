@@ -1,5 +1,5 @@
 //! What you type: plain text, `/commands`, and `@mentions`, routed by the app mode. Text typed
-//! at the prompt never answers a card; see [`typed_text_answers_card`].
+//! at the prompt never answers a question; see [`typed_text_answers_question`].
 
 use std::time::{Duration, Instant};
 
@@ -36,8 +36,8 @@ pub struct InputRouter {
     load_error: Option<String>,
     /// The composer has the saved history and the `/` menu has its commands.
     prepared: bool,
-    /// `/status` ran, so its answer opens the status view rather than printing in the chat as
-    /// "where are we?" does. The next thing you send clears it.
+    /// `/status` ran, so its answer opens the status view rather than printing in the conversation
+    /// as "where are we?" does. The next thing you send clears it.
     pub status_view: bool,
     /// `/context all` ran, so the Context tab its answer opens lists every item of every
     /// category. The next thing you send clears it.
@@ -103,8 +103,8 @@ impl InputRouter {
                 cx.model.bottom.composer.restore(texts);
                 cx.model.bottom.menus.text_changed();
             }
-            AppEvent::ChatCleared => cx.model.bottom.composer.start_conversation(),
-            AppEvent::ChatResumed { earlier, turns, .. } => {
+            AppEvent::ConversationCleared => cx.model.bottom.composer.start_conversation(),
+            AppEvent::ConversationResumed { earlier, turns, .. } => {
                 let yours = earlier
                     .iter()
                     .chain(turns)
@@ -112,7 +112,7 @@ impl InputRouter {
                     .map(|turn| turn.text.as_str());
                 cx.model.bottom.composer.resume_conversation(yours);
             }
-            AppEvent::VendorCommands { set } => {
+            AppEvent::CliCommands { set } => {
                 cx.model.bottom.menus.commands = command_items(Some(set));
                 cx.model.bottom.composer.keywords.clone_from(&set.keywords);
             }
@@ -128,8 +128,9 @@ impl InputRouter {
         }
     }
 
-    /// Takes `Submit` (parsed with `parse_input_with` and the main agent's commands into `Submit`, `Slash`, or `Mention`, or run
-    /// here for `Ui` and `Both` commands), `TakeBack`, `OpenHelp`, and `SearchHistory`.
+    /// Takes `Submit` (parsed with `parse_input_with` and the main agent's commands into `Submit`,
+    /// `Slash`, or `Mention`, or run here for `Ui` and `Both` commands), `TakeBack`, `OpenHelp`,
+    /// and `SearchHistory`.
     pub fn on_action(&mut self, action: &UiAction, cx: &mut Cx<'_>) -> bool {
         self.prepare_with(cx);
         match action {
@@ -183,7 +184,7 @@ impl InputRouter {
         let workflow = cx.model.bottom.composer.take_workflow_request();
         // Taken for every prompt too, so a command never leaves its pictures for the next.
         let pictures = cx.model.bottom.composer.take_sent_pictures();
-        let parsed = parse_input_with(text, cx.state.vendor_commands.as_ref());
+        let parsed = parse_input_with(text, cx.state.cli_commands.as_ref());
         // A mod of yours is a command by its name, when nothing else has that name.
         let parsed = match (
             parsed,
@@ -191,6 +192,14 @@ impl InputRouter {
         ) {
             (Err(argonauts_core::input::InputError::UnknownCommand(_)), Some(command)) => {
                 Ok(ParsedInput::Slash { command })
+            }
+            // A prompt may start with a path of one word, such as `/tmp`.
+            (Err(argonauts_core::input::InputError::UnknownCommand(_)), None)
+                if starts_with_a_path(text) =>
+            {
+                Ok(ParsedInput::Plain {
+                    text: text.trim().to_owned(),
+                })
             }
             (parsed, _) => parsed,
         };
@@ -224,7 +233,7 @@ impl InputRouter {
         match parsed {
             Ok(ParsedInput::Empty) => empty_enter(cx),
             Ok(ParsedInput::Plain { text }) => plain(text, shown, workflow, pictures, cx),
-            Ok(ParsedInput::Mention { .. }) if cx.model.bottom.menus.leads_with_file(text) => {
+            Ok(ParsedInput::Mention { .. }) if cx.model.bottom.menus.starts_with_file(text) => {
                 plain(text.trim().to_owned(), shown, workflow, pictures, cx);
             }
             Ok(ParsedInput::Mention {
@@ -281,7 +290,8 @@ impl InputRouter {
 /// the controller will refuse, which then says so.
 fn usage_period(word: Option<&str>) -> Option<UsagePeriod> {
     match word.map(str::to_ascii_lowercase).as_deref() {
-        None | Some("day" | "daily" | "today") => Some(UsagePeriod::Today),
+        None => Some(UsagePeriod::OPENS_ON),
+        Some("day" | "daily" | "today") => Some(UsagePeriod::Today),
         Some("week" | "weekly") => Some(UsagePeriod::Week),
         Some("month" | "monthly") => Some(UsagePeriod::Month),
         Some("all" | "cumulative" | "total") => Some(UsagePeriod::All),
@@ -298,17 +308,24 @@ fn answer_running(cx: &Cx<'_>) -> bool {
         )
 }
 
-/// The one place that decides whether text typed at the prompt can answer a focused card.
+/// The one place that decides whether text typed at the prompt can answer a focused question.
 /// It never can; notes go through Tab. Flip this to change the rule.
-pub fn typed_text_answers_card() -> bool {
+pub fn typed_text_answers_question() -> bool {
     false
 }
 
-/// Enter on an empty prompt cancels a pause or resumes a parked run; the controller decides.
+/// Whether the first word of `text` is something on this computer.
+fn starts_with_a_path(text: &str) -> bool {
+    text.split_whitespace()
+        .next()
+        .is_some_and(crate::bottom::is_on_disk)
+}
+
+/// Enter on an empty prompt cancels a pause or resumes a waiting run; the controller decides.
 fn empty_enter(cx: &mut Cx<'_>) {
     if matches!(
         cx.state.mode,
-        Some(AppMode::Pausing { .. } | AppMode::Parked { .. })
+        Some(AppMode::Pausing { .. } | AppMode::Waiting { .. })
     ) {
         cx.out.send(UiCommand::Submit {
             text: String::new(),
@@ -318,7 +335,7 @@ fn empty_enter(cx: &mut Cx<'_>) {
     }
 }
 
-/// Plain text goes by the app mode, whatever card waits (see [`typed_text_answers_card`]).
+/// Plain text goes by the app mode, whatever question waits (see [`typed_text_answers_question`]).
 /// With nothing going, it shows as your message at once, grey until its turn starts and prints
 /// it; otherwise it shows grey from state until it's delivered. `workflow_requested` says this
 /// one request goes through a workflow, which the engine reads.
@@ -367,7 +384,7 @@ fn mention(target: MentionTarget, message: String, typed: &str, cx: &mut Cx<'_>)
         .to_owned();
     let run_going = matches!(
         cx.state.mode,
-        Some(AppMode::Working { .. } | AppMode::Pausing { .. } | AppMode::Parked { .. })
+        Some(AppMode::Working { .. } | AppMode::Pausing { .. } | AppMode::Waiting { .. })
     );
     if !run_going {
         notice(
@@ -419,11 +436,11 @@ fn as_its_tab_opens(command: SlashCommand, ui: &UiSettings) -> SlashCommand {
         SlashCommand::Context { all, action } if action == open && prints(views.context.open) => {
             SlashCommand::Context { all, action: print }
         }
-        SlashCommand::Budget {
+        SlashCommand::Limits {
             key: None,
             value: None,
             action,
-        } if action == open && prints(views.budget.open) => SlashCommand::Budget {
+        } if action == open && prints(views.limits.open) => SlashCommand::Limits {
             key: None,
             value: None,
             action: print,
@@ -439,7 +456,7 @@ fn slash(command: SlashCommand, typed: &str, cx: &mut Cx<'_>) {
         .split_whitespace()
         .next()
         .unwrap_or_default();
-    let handler = commands::handler(name, cx.state.vendor_commands.as_ref());
+    let handler = commands::handler(name, cx.state.cli_commands.as_ref());
     match (handler, command) {
         (Handler::Ui, SlashCommand::Workflows) => super::keys::open_tree(cx),
         (Handler::Ui, SlashCommand::Copy { nth }) => copy_answer(nth, cx),
@@ -507,10 +524,10 @@ fn slash(command: SlashCommand, typed: &str, cx: &mut Cx<'_>) {
         // `/mods stats`: the stats mod's page is the Stats tab's own.
         (
             _,
-            SlashCommand::Widgets {
+            SlashCommand::Mods {
                 action:
-                    argonauts_core::input::WidgetsAction::Page {
-                        widget: argonauts_core::settings::ui::WidgetName::Stats,
+                    argonauts_core::input::ModsAction::Page {
+                        the_mod: argonauts_core::settings::ui::ModName::Stats,
                     },
                 scope: None,
             },
@@ -519,7 +536,7 @@ fn slash(command: SlashCommand, typed: &str, cx: &mut Cx<'_>) {
         // limits themselves. A limit to set, or one the tab opens, goes to the controller.
         (
             _,
-            SlashCommand::Budget {
+            SlashCommand::Limits {
                 key: None,
                 value: None,
                 action: ViewAction::Open,
@@ -590,7 +607,7 @@ fn open_help(cx: &mut Cx<'_>) {
     // A bad `ui.keymap` is reported where the settings load; help still shows the defaults.
     let keymap = Keymap::from_settings(&cx.settings.keymap).unwrap_or_default();
     cx.out
-        .open(HelpView::new(keymap).with_commands(cx.state.vendor_commands.clone()));
+        .open(HelpView::new(keymap).with_commands(cx.state.cli_commands.clone()));
 }
 
 /// ↑ takes back every message of yours the attached run hasn't delivered yet. The texts come
@@ -604,10 +621,10 @@ fn take_back(cx: &mut Cx<'_>) {
         .filter(|message| message.from == Party::User)
         .map(|message| message.id.clone())
         .collect();
-    // Chat text waiting for its turn, or in a session that hasn't read it yet.
+    // Conversation text waiting for its turn, or in a session that hasn't read it yet.
     if messages.is_empty() {
-        if !cx.state.chat.queued.is_empty() {
-            cx.out.send(UiCommand::TakeBackChat);
+        if !cx.state.conversation.queued.is_empty() {
+            cx.out.send(UiCommand::TakeBackConversation);
         }
         return;
     }
@@ -642,12 +659,12 @@ mod tests {
 
     use argonauts_core::events::session::{Delivery, QueuedMessage};
     use argonauts_core::names::MessageId;
-    use argonauts_core::names::WorkerRef;
+    use argonauts_core::names::ModelRef;
     use argonauts_core::settings::ui::UiSettings;
     use time::OffsetDateTime;
 
     use super::*;
-    use crate::bottom::{CardOption, CardPrompt, VimMode};
+    use crate::bottom::{QuestionOption, QuestionPrompt, VimMode};
     use crate::bridge::Effects;
     use crate::cell::Cell;
     use crate::mentions::fixture;
@@ -738,17 +755,17 @@ mod tests {
     fn the_main_agents_commands_join_the_menu_and_parse() {
         let mut screen = Screen::idle();
         let set = crate::commands::tests::claude_commands();
-        screen.event(AppEvent::VendorCommands { set: set.clone() });
+        screen.event(AppEvent::CliCommands { set: set.clone() });
         let menu = &screen.model.bottom.menus.commands;
         assert!(
             menu.iter()
                 .any(|item| item.name == "ship" && item.group.as_deref() == Some("Claude Code"))
         );
-        screen.state.vendor_commands = Some(set);
+        screen.state.cli_commands = Some(set);
 
         assert_eq!(
             screen.submit("/ship  main").commands,
-            [slash(SlashCommand::Vendor {
+            [slash(SlashCommand::Cli {
                 name: "ship".into(),
                 args: "main".into()
             })]
@@ -870,8 +887,8 @@ mod tests {
             })]
         );
         assert_eq!(
-            screen.submit("/solo fix the export").commands,
-            [slash(SlashCommand::Solo {
+            screen.submit("/captain fix the export").commands,
+            [slash(SlashCommand::Captain {
                 task: "fix the export".into()
             })]
         );
@@ -894,6 +911,24 @@ mod tests {
         );
         assert_eq!(screen.model.bottom.composer.text(), "something else");
         assert!(screen.model.history.cells().is_empty());
+    }
+
+    /// A prompt that starts with a one-word path goes to the agent whole, where a name that
+    /// is neither a command nor on the disk is refused.
+    #[test]
+    fn a_prompt_that_starts_with_a_one_word_path_is_submitted() {
+        let mut screen = Screen::idle();
+        let out = screen.submit("/tmp is full, clean it");
+        assert_eq!(
+            out.commands,
+            [UiCommand::Submit {
+                text: "/tmp is full, clean it".into(),
+                workflow_requested: false,
+                pictures: Vec::new(),
+            }]
+        );
+        let out = screen.submit("/no-such-folder-here is full");
+        assert!(out.commands.is_empty(), "{:?}", out.commands);
     }
 
     #[test]
@@ -998,12 +1033,12 @@ mod tests {
         let mut screen = Screen::idle();
         let set = crate::commands::tests::claude_commands()
             .with_keywords(std::slice::from_ref(&ultrathink));
-        screen.event(AppEvent::VendorCommands { set: set.clone() });
+        screen.event(AppEvent::CliCommands { set: set.clone() });
         assert_eq!(
             screen.model.bottom.composer.keywords,
             std::slice::from_ref(&ultrathink)
         );
-        screen.state.vendor_commands = Some(set);
+        screen.state.cli_commands = Some(set);
 
         let out = screen.submit("please ultrathink about this");
         assert_eq!(
@@ -1028,7 +1063,7 @@ mod tests {
         assert_eq!(
             screen.submit("@claude-code check the schema").commands,
             [UiCommand::Mention {
-                target: MentionTarget::Worker(WorkerRef::new("claude-code", None)),
+                target: MentionTarget::Worker(ModelRef::new("claude-code", None)),
                 text: "check the schema".into(),
             }]
         );
@@ -1126,17 +1161,17 @@ mod tests {
     }
 
     #[test]
-    fn typed_text_never_answers_card_routing() {
-        assert!(!typed_text_answers_card());
+    fn typed_text_never_answers_question_routing() {
+        assert!(!typed_text_answers_question());
         let mut screen = Screen::new(fixture::working_state());
-        let mut card = CardPrompt::new(
+        let mut question = QuestionPrompt::new(
             7,
             "Merge task-002 into main?",
             "Merge task-002?",
-            vec![CardOption::new("Merge")],
+            vec![QuestionOption::new("Merge")],
         );
-        card.focus();
-        screen.model.bottom.card = Some(card);
+        question.focus();
+        screen.model.bottom.question = Some(question);
         let out = screen.submit("yes, merge it");
         assert_eq!(
             out.commands,
@@ -1146,7 +1181,7 @@ mod tests {
                 pictures: Vec::new(),
             }]
         );
-        assert!(screen.model.bottom.card.is_some());
+        assert!(screen.model.bottom.question.is_some());
     }
 
     #[test]
@@ -1193,7 +1228,7 @@ mod tests {
                 .menus
                 .commands
                 .iter()
-                .any(|c| c.name == "solo" && c.needs_argument)
+                .any(|c| c.name == "captain" && c.needs_argument)
         );
         assert_eq!(bottom.menus.mentions, mentions::candidates(&screen.state));
 
@@ -1411,5 +1446,14 @@ mod tests {
         );
         assert_eq!(screen.submit("/copy 3").clipboard, None);
         assert_eq!(screen.notice(), Some("There are only 2 answers on screen."));
+    }
+
+    /// `/usage` with no word opens on All, as every tab does; a word still picks its period.
+    #[test]
+    fn bare_usage_opens_on_all() {
+        assert_eq!(usage_period(None), Some(UsagePeriod::All));
+        assert_eq!(usage_period(Some("today")), Some(UsagePeriod::Today));
+        assert_eq!(usage_period(Some("WEEKLY")), Some(UsagePeriod::Week));
+        assert_eq!(usage_period(Some("yearly")), None);
     }
 }

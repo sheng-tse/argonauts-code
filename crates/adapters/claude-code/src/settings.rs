@@ -58,14 +58,14 @@ pub enum Allowed {
 #[serde(rename_all = "camelCase")]
 struct SessionSettings {
     /// A `-p` session otherwise takes messages from your other Claude Code sessions at once,
-    /// which would let two blind drafters reach each other.
+    /// which would let two blind drafting agents reach each other.
     cross_session_inbound: &'static str,
     /// Agents never write git state, and commits carry no tool attribution lines.
     attribution: Attribution,
     sandbox: Sandbox,
     #[serde(skip_serializing_if = "Option::is_none")]
     permissions: Option<Permissions>,
-    /// The hooks in every settings file, and the mods of every installed plugin.
+    /// The hooks in every settings file, and those of every installed plugin.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     disable_all_hooks: bool,
     /// What your claude.ai account syncs, hidden for this session only.
@@ -111,7 +111,7 @@ fn size_guideline(size: WorkflowSize) -> &'static str {
 /// What a session leaves out of your own Claude Code setup.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LeftOut {
-    /// Your hooks, and with them every installed plugin's mod.
+    /// Your hooks, and with them every installed plugin's.
     pub hooks: bool,
     /// Everything synced from your claude.ai account, and these plugins by name.
     pub plugins: Option<Vec<String>>,
@@ -168,7 +168,7 @@ struct Permissions {
     deny: Vec<String>,
 }
 
-/// The main session never edits Argonauts' own files in your checkout: a setup changes them,
+/// The main session never edits Argonauts Code's own files in your checkout: a setup changes them,
 /// after you pick where it's kept. Deny rules hold in every permission mode,
 /// auto included.
 const SETUP_DENIED: [&str; 3] = [

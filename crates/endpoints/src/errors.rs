@@ -1,7 +1,7 @@
 //! HTTP failures to end reasons. 401 and 403 are `Auth`, 402 `Billing`, a 429 with
-//! `Retry-After` waits and retries within the time budget unless its error code says the credits
-//! ran out, quota or credit messages are `UsageLimit` or `Billing`, 5xx and timeouts
-//! `VendorError`, context-length errors `ContextFull`, and an unknown model `ModelUnavailable`.
+//! `Retry-After` waits and retries within the time limit unless its error code says the credits
+//! ran out, used-up plan or credit messages are `UsageLimit` or `Billing`, 5xx and timeouts
+//! `AgentError`, context-length errors `ContextFull`, and an unknown model `ModelUnavailable`.
 //! Whatever the endpoint sends back is cleaned of the session's credentials before it's kept.
 
 use std::time::Duration;
@@ -16,7 +16,7 @@ use time::{OffsetDateTime, SignedDuration};
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Failure {
     End(EndReason),
-    /// Rate limited: wait this long, if the session's time budget allows, then send again.
+    /// Rate limited: wait this long, if the session's time limit allows, then send again.
     Retry {
         after: Duration,
     },
@@ -98,8 +98,8 @@ pub(crate) fn classify(
     let error = parsed.as_ref().map(error_object);
     let message = error_message(error, body, secrets);
     let end = |reason| Failure::End(reason);
-    let vendor = |category| {
-        end(EndReason::VendorError {
+    let agent_id = |category| {
+        end(EndReason::CliError {
             category,
             message: with_status(status, &message),
         })
@@ -131,14 +131,14 @@ pub(crate) fn classify(
             resets_at: retry_after.and_then(|after| reset_time(OffsetDateTime::now_utc(), after)),
         }),
         429 => end(EndReason::RateLimited),
-        408 | 504 => vendor(ErrorCategory::Timeout),
-        503 | 529 => vendor(ErrorCategory::Overloaded),
+        408 | 504 => agent_id(ErrorCategory::Timeout),
+        503 | 529 => agent_id(ErrorCategory::Overloaded),
         _ if (status >= 500 || status == 0) && text.contains("overloaded") => {
-            vendor(ErrorCategory::Overloaded)
+            agent_id(ErrorCategory::Overloaded)
         }
-        0 | 500..=599 => vendor(ErrorCategory::Server),
-        400..=499 => vendor(ErrorCategory::InvalidRequest),
-        _ => vendor(ErrorCategory::Unknown),
+        0 | 500..=599 => agent_id(ErrorCategory::Server),
+        400..=499 => agent_id(ErrorCategory::InvalidRequest),
+        _ => agent_id(ErrorCategory::Unknown),
     }
 }
 
@@ -278,8 +278,8 @@ pub(crate) fn category(reason: &EndReason) -> ErrorCategory {
         EndReason::RateLimited => ErrorCategory::RateLimit,
         EndReason::ContextFull => ErrorCategory::ContextFull,
         EndReason::ModelUnavailable { .. } => ErrorCategory::ModelUnavailable,
-        EndReason::VendorError { category, .. } => *category,
-        EndReason::BudgetHit { .. } => ErrorCategory::Budget,
+        EndReason::CliError { category, .. } => *category,
+        EndReason::LimitHit { .. } => ErrorCategory::Limit,
         EndReason::Stopped | EndReason::Paused => ErrorCategory::Interrupted,
         _ => ErrorCategory::Unknown,
     }
@@ -325,11 +325,14 @@ mod tests {
             end(402, &openai("pay", "x")),
             EndReason::Billing { .. }
         ));
-        let openai_quota = openai(
+        let openai_plan_usage = openai(
             "You exceeded your current quota, please check your plan and billing details.",
             "insufficient_quota",
         );
-        assert!(matches!(end(429, &openai_quota), EndReason::Billing { .. }));
+        assert!(matches!(
+            end(429, &openai_plan_usage),
+            EndReason::Billing { .. }
+        ));
         let per_day = openai(
             "Rate limit exceeded: free-models-per-day. Add 10 credits",
             "429",
@@ -356,25 +359,25 @@ mod tests {
         );
         assert!(matches!(
             end(503, &openai("busy", "x")),
-            EndReason::VendorError {
+            EndReason::CliError {
                 category: ErrorCategory::Overloaded,
                 ..
             }
         ));
         assert!(matches!(
             end(500, &openai("boom", "server_error")),
-            EndReason::VendorError { category: ErrorCategory::Server, message } if message == "HTTP 500: boom"
+            EndReason::CliError { category: ErrorCategory::Server, message } if message == "HTTP 500: boom"
         ));
         assert!(matches!(
             end(504, &json!("")),
-            EndReason::VendorError {
+            EndReason::CliError {
                 category: ErrorCategory::Timeout,
                 ..
             }
         ));
         assert!(matches!(
             end(422, &openai("bad field", "x")),
-            EndReason::VendorError {
+            EndReason::CliError {
                 category: ErrorCategory::InvalidRequest,
                 ..
             }
@@ -415,9 +418,9 @@ mod tests {
     #[test]
     fn a_spent_credit_code_ends_even_with_retry_after() {
         let after = Duration::from_secs(2);
-        let openai_quota = openai("You exceeded your current quota.", "insufficient_quota");
+        let used_up = openai("You exceeded your current quota.", "insufficient_quota");
         assert!(matches!(
-            classify_429(&openai_quota, after),
+            classify_429(&used_up, after),
             Failure::End(EndReason::Billing { .. })
         ));
         let openrouter = json!({"error": {"code": 402, "message": "Insufficient credits"}});
@@ -471,7 +474,7 @@ mod tests {
         );
         // A plain body with the key across the cut.
         let body = format!("{}{KEY}{}", "x".repeat(495), "y".repeat(100));
-        let Failure::End(EndReason::VendorError { message, .. }) =
+        let Failure::End(EndReason::CliError { message, .. }) =
             classify(502, None, &body, "m", &secrets)
         else {
             panic!("expected an agent error");

@@ -1,0 +1,42 @@
+name  = "captain"
+about = "The CLI you talk to does the work itself; ask in your own words for a reviewer or a workflow"
+
+[captain_or_crew]
+force = "captain"
+
+# Its phases.
+[[phases]]
+name     = "Understand"
+detail   = "your prompt is the goal, unless captain.understand_first asks the agent to read it back"
+standard = "understand"
+
+  [[phases.steps]]
+  kind  = "read"
+  name  = "reading"
+  role  = "main"
+  label = "read:{provider}"
+
+  [[phases.steps]]
+  kind     = "approval"
+  approval = "understand"
+  when     = "understand_first"
+
+[[phases]]
+name     = "Build"
+detail   = "the main agent builds the task in its own worktree, then its checks"
+standard = "do"
+
+  [[phases.steps]]
+  kind  = "build"
+  role  = "worker"
+  input = "goal"
+  label = "build:{item}"
+
+[[phases]]
+name     = "Merge"
+detail   = "the final check, then the merge into your branch"
+standard = "decide"
+
+  [[phases.steps]]
+  kind  = "merge"
+  label = "merge:{branch}"

@@ -104,7 +104,7 @@ impl StreamParser for OpenCodeParser {
 }
 
 /// OpenCode stores `input` without cache reads and writes, and `output` without reasoning, so
-/// both are added back for Argonauts' totals. Each step's numbers add to the last.
+/// both are added back for Argonauts Code's totals. Each step's numbers add to the last.
 fn step_finish(part: &Value) -> Option<Vec<AgentEvent>> {
     let tokens = &part["tokens"];
     let count = |value: &Value| value.as_f64().map_or(0, |n| n.max(0.0) as u64);

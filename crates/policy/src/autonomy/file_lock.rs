@@ -1,4 +1,4 @@
-//! File locks that are waited for only so long. A stopped supervisor or a hung network home can
+//! File locks that are waited for only so long. A stopped run host or a hung network home can
 //! hold one forever, and the engine must not wait with it.
 
 use std::fs::{File, TryLockError};
@@ -6,7 +6,7 @@ use std::io;
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Long enough for another supervisor's read and write, however many are running.
+/// Long enough for another run host's read and write, however many are running.
 pub const RECORDS_WAIT: Duration = Duration::from_secs(2);
 /// Shorter than [`RECORDS_WAIT`], since a reservation waits for the ledger while it holds the
 /// records.

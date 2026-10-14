@@ -1,4 +1,4 @@
-//! Shared steps for the app scenarios: a repo with the fake vendors, the app started and
+//! Shared steps for the app scenarios: a repo with the fake agents, the app started and
 //! typed at, and the trace, fake log, settings files, and journals read back.
 // Each `app_*.rs` test crate uses a different part of this module.
 #![allow(dead_code, unused_imports)]
@@ -13,93 +13,90 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
-use argonauts_core::app::{AppChoice, AppEvent, AppMode, ChatEvent, ChoiceKind, UiCommand};
+use argonauts_core::app::{AppChoice, AppEvent, AppMode, ChoiceKind, ConversationEvent, UiCommand};
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::checkpoint::{
-    AnswerOption, CheckpointEvent, CheckpointKind, CheckpointOpened,
-};
+use argonauts_core::events::approval::{AnswerOption, ApprovalEvent, ApprovalKind, ApprovalOpened};
 use argonauts_core::layout::run_files;
 use argonauts_core::names::ChoiceId;
-use argonauts_scenarios::{COLS, ROWS, Scenario, WAIT, past_the_card_guard};
+use argonauts_scenarios::{COLS, ROWS, Scenario, WAIT, past_the_question_guard};
 use argonauts_testkit::{Invocation, Key, Pty, PtyCommand, argonauts_bin};
 
 pub use files::{TomlEntry, json_at, same_toml, toml_entries, toml_value};
 pub use journal::{
-    ParkedRun, branch_files, fabricate_parked_run, run_branches, run_events, run_id, run_settings,
-    run_started, wait_journal,
+    WaitingRun, branch_files, fabricate_waiting_run, run_branches, run_events, run_id,
+    run_settings, run_started, wait_journal,
 };
 
 /// The fake `claude`, `codex`, and `agy` every app scenario plays.
-pub const VENDORS: &str = "app/vendors.toml";
+pub const AGENTS: &str = "app/agents.toml";
 
-/// Keeps the guided setup closed and vim keys off, and parks runs quickly.
+/// Keeps the guided setup closed and vim keys off, and gives a waiting run a short wait grace.
 pub const GLOBAL_CONFIG: &str = "\
 # Written by the scenario test, kept through every change.
-main_agent = \"claude-code\"
-
 [crew]
-workers = [\"claude-code\", \"codex\", \"antigravity-cli\"]
-reviewers = [\"claude-code\", \"codex\", \"antigravity-cli\"]
+main = \"claude-code\"
+worker = [\"claude-code\", \"codex\", \"antigravity-cli\"]
+reviewer = [\"claude-code\", \"codex\", \"antigravity-cli\"]
 judge = [\"claude-code\", \"codex\", \"antigravity-cli\"]
 
 [ui]
 keys = \"default\"
 # These scenarios wait for an agent's words while it works, which its live block shows.
-agents_in_chat = \"as_they_work\"
+agents_in_conversation = \"as_they_work\"
 
 # The fake CLIs write files directly, with none of their edit tools' events, so every new file
 # counts as their work.
 [commit]
 unclaimed = \"keep\"
 
-[supervisor]
+[run_host]
 wait_grace = \"1s\"
 
-# These scenarios follow solo runs in a checked copy.
-[solo]
+# These scenarios follow Captain runs in a checked worktree.
+[captain]
 kind = \"checked\"
 
 # Their crew runs answer the fixed phases, so a built-in workflow runs those.
 [workflows]
 adapt_with = \"phases\"
 
-# And the verdict that ends each chat reply, which a CLI that takes no tools keeps.
+# And the verdict that ends each conversation reply, which a CLI that takes no tools keeps.
 # `app_main_session.rs` plays the main session with its tools.
 [main_session]
 tools = false
 ";
 
-/// One gate that always passes, for scenarios that reach the merge card.
-pub const PASSING_GATE: &str = "
+/// One check that always passes, for scenarios that reach the merge question.
+pub const PASSING_CHECK: &str = "
 [[checks.run]]
 name = \"tests\"
 command = [\"true\"]
 ";
 
-/// Requests the fake vendors answer, one per path through the chat.
+/// Requests the fake agents answer, one per path through the conversation.
 pub mod requests {
     /// Answered, no run.
     pub const HI: &str = "hi";
-    /// Unclear; triage would pick crew.
+    /// Unclear; the rules would pick crew.
     pub const QUESTION_COULD_BE_TASK: &str = "how should we add rate limiting?";
-    /// A one-file docs change, so triage picks solo.
+    /// A one-file docs change, so the rules pick Captain.
     pub const SMALL_FIX: &str =
         "the install command in README.md is wrong, it should be npm install @acme/api";
-    /// A security-labeled feature, so triage picks crew.
+    /// A security-labeled feature, so the rules pick crew.
     pub const CREW_TASK: &str = "add per-key rate limiting to the public API";
     /// Two files, no tests, and a migration label, so the labels pick crew.
     pub const LABELED_TASK: &str = "move sessions to the new storage backend";
-    /// Unclear; triage would pick solo.
+    /// Unclear; the rules would pick Captain.
     pub const UNCLEAR_SMALL: &str = "tidy the changelog";
-    /// A solo change whose owner works until stopped.
+    /// A Captain change whose worker works until stopped.
     pub const SLOW_TASK: &str = "rename the config loader everywhere";
-    /// A solo change whose owner takes a few seconds, then reports.
+    /// A Captain change whose worker takes a few seconds, then reports.
     pub const TIMED_TASK: &str = "rename the settings reader in a few seconds";
-    /// A chat turn the fake never finishes.
+    /// A conversation turn the fake never finishes.
     pub const HANGING_TURN: &str = "take your time with this one";
     /// Answered only; for `/ask`.
     pub const ASK: &str = "should we split the storage module and add a cache?";
-    /// The guidance the resumed owner's prompt must carry.
+    /// The guidance the resumed worker's prompt must carry.
     pub const GUIDANCE: &str = "use the name loadSettings";
 }
 
@@ -114,27 +111,27 @@ impl std::ops::Deref for AppScenario {
     }
 }
 
-/// A repo with the fake vendors and the global config above.
+/// A repo with the fake agents and the global config above.
 pub fn scenario() -> anyhow::Result<AppScenario> {
     scenario_with(GLOBAL_CONFIG)
 }
 
-/// A repo with the fake vendors and this global config.
+/// A repo with the fake agents and this global config.
 pub fn scenario_with(global_config: &str) -> anyhow::Result<AppScenario> {
-    let scenario = AppScenario(Scenario::new(VENDORS)?);
+    let scenario = AppScenario(Scenario::new(AGENTS)?);
     std::fs::write(scenario.repo.global_config(), global_config)
         .context("writing the global config")?;
     Ok(scenario)
 }
 
-/// A repo with the fake vendors and no global config, so the guided setup opens.
+/// A repo with the fake agents and no global config, so the guided setup opens.
 pub fn first_run_scenario() -> anyhow::Result<AppScenario> {
-    Ok(AppScenario(Scenario::new(VENDORS)?))
+    Ok(AppScenario(Scenario::new(AGENTS)?))
 }
 
-/// A repo whose fakes play `vendors`, such as a changed copy of [`VENDORS`].
-pub fn scenario_playing(vendors: &Path) -> anyhow::Result<AppScenario> {
-    Ok(AppScenario(Scenario::from_file(vendors)?))
+/// A repo whose fakes play `agents`, such as a changed copy of [`AGENTS`].
+pub fn scenario_playing(fakes: &Path) -> anyhow::Result<AppScenario> {
+    Ok(AppScenario(Scenario::from_file(fakes)?))
 }
 
 /// `GLOBAL_CONFIG` with more `[workflows]` keys, each on a line of its own.
@@ -142,11 +139,11 @@ pub fn config_with_workflows(keys: &str) -> String {
     GLOBAL_CONFIG.replace("[workflows]\n", &format!("[workflows]\n{keys}"))
 }
 
-/// `GLOBAL_CONFIG` with another default agent, an adapter id such as `codex`.
+/// `GLOBAL_CONFIG` with another main agent, an adapter id such as `codex`.
 pub fn config_with_main_agent(agent: &str) -> String {
     GLOBAL_CONFIG.replace(
-        "main_agent = \"claude-code\"",
-        &format!("main_agent = \"{agent}\""),
+        "[crew]\nmain = \"claude-code\"",
+        &format!("[crew]\nmain = \"{agent}\""),
     )
 }
 
@@ -156,8 +153,8 @@ fn first_number(text: &str) -> Option<u32> {
         .and_then(|part| part.parse().ok())
 }
 
-/// The supervisor pid a run recorded.
-pub fn supervisor_pid(run_dir: &Path) -> anyhow::Result<u32> {
+/// The run host pid a run recorded.
+pub fn run_host_pid(run_dir: &Path) -> anyhow::Result<u32> {
     let path = run_dir.join(run_files::PID);
     let text = read(&path)?;
     first_number(&text).with_context(|| format!("no pid in {}", path.display()))
@@ -193,8 +190,8 @@ pub fn start_with(scenario: &Scenario, args: &[&str]) -> anyhow::Result<Pty> {
     Ok(pty)
 }
 
-/// The app said hello and the mode line is up without vim's INSERT label, or a card that needs
-/// you has the keys.
+/// The app said hello and the bottom line is up without vim's INSERT label, or a question that
+/// needs you has the keys.
 pub fn wait_ready(scenario: &Scenario, pty: &Pty) -> anyhow::Result<()> {
     scenario
         .trace
@@ -203,25 +200,29 @@ pub fn wait_ready(scenario: &Scenario, pty: &Pty) -> anyhow::Result<()> {
     check_ready(pty)
 }
 
-/// Before typing: the mode line shows, vim's INSERT or NORMAL label doesn't, and nothing looks
+/// Before typing: the bottom line shows, vim's INSERT or NORMAL label doesn't, and nothing looks
 /// like a history search, which could resend old prompts.
-pub fn check_mode_line(pty: &Pty) -> anyhow::Result<()> {
+pub fn check_bottom_row(pty: &Pty) -> anyhow::Result<()> {
     check_screen_for(pty, r"shift\+tab to cycle")
 }
 
-/// [`check_mode_line`], or a card that needs you holding the keys, as a parked run's question
+/// [`check_bottom_row`], or a question that needs you holding the keys, as a waiting run's question
 /// does once you open its run.
 fn check_ready(pty: &Pty) -> anyhow::Result<()> {
-    check_screen_for(pty, &format!(r"shift\+tab to cycle|{CARD_HAS_THE_KEYS}"))
+    check_screen_for(
+        pty,
+        &format!(r"shift\+tab to cycle|{QUESTION_HAS_THE_KEYS}"),
+    )
 }
 
-/// The key line of a card that has the keys, which then stands in for the input.
-const CARD_HAS_THE_KEYS: &str = r"(?m)^  Enter to \w+.* · Esc to ";
+/// The key line of a question that has the keys, which then stands in for the input.
+const QUESTION_HAS_THE_KEYS: &str = r"(?m)^  Enter to \w+.* · Esc to ";
 
 fn check_screen_for(pty: &Pty, ready: &str) -> anyhow::Result<()> {
     let screen = pty.wait_for(ready, WAIT)?;
     let text = screen.visible_text();
-    if text.contains("-- INSERT --") || text.contains("-- NORMAL --") {
+    // The app starts vim keys in INSERT, and NORMAL has no label to see.
+    if text.contains("-- INSERT --") || text.contains("-- VISUAL --") {
         bail!("vim keys are on in the app under test:\n{text}");
     }
     check_no_history_search(pty)
@@ -244,13 +245,13 @@ pub fn check_no_history_search(pty: &Pty) -> anyhow::Result<()> {
 
 /// Types a line at the prompt and presses Enter.
 pub fn submit(pty: &mut Pty, text: &str) -> anyhow::Result<()> {
-    check_mode_line(pty)?;
+    check_bottom_row(pty)?;
     pty.send(text)?;
     check_no_history_search(pty)?;
     pty.press(Key::Enter)
 }
 
-/// The number the card shows beside the option the event gives `key`. The letters stay in the
+/// The number the question shows beside the option the event gives `key`. The letters stay in the
 /// protocol, and the screen answers to numbers only.
 pub fn number_of(options: &[AnswerOption], key: char) -> char {
     let index = options
@@ -260,36 +261,36 @@ pub fn number_of(options: &[AnswerOption], key: char) -> char {
     char::from_digit(index as u32 + 1, 10).expect("at most 9 options")
 }
 
-/// Gives a waiting card focus, then presses option `number`. ↑ on a card you set off, which
+/// Gives a waiting question focus, then presses option `number`. ↑ on a question you set off, which
 /// already has focus, only moves its pointer, and the number answers either way. An option
 /// that can't be undone only moves the pointer, so it also needs `confirm`.
-pub fn answer_card(pty: &mut Pty, number: char) -> anyhow::Result<()> {
+pub fn answer_question(pty: &mut Pty, number: char) -> anyhow::Result<()> {
     assert!(
         number.is_ascii_digit(),
         "tasks answer to numbers, not `{number}`"
     );
     check_no_history_search(pty)?;
-    // The trace has the card before the screen does, and an Up that comes first recalls the
-    // last prompt instead. A card opens focused on an option.
+    // The trace has the question before the screen does, and an Up that comes first recalls the
+    // last prompt instead. A question opens focused on an option.
     pty.wait_for(r"❯ \d+\. ", WAIT)?;
-    past_the_card_guard();
+    past_the_question_guard();
     pty.press(Key::Up)?;
     pty.press(Key::Char(number))
 }
 
-/// A card that needs you takes the keys as it shows, so a command typed while it waits needs
-/// Esc first, which hands the card on and leaves a line saying who decides it now.
-pub fn hand_card_on(pty: &mut Pty) -> anyhow::Result<()> {
-    pty.wait_for(CARD_HAS_THE_KEYS, WAIT)?;
-    past_the_card_guard();
+/// A question that needs you takes the keys as it shows, so a command typed while it waits needs
+/// Esc first, which hands the question on and leaves a line saying who decides it now.
+pub fn pass_task_on(pty: &mut Pty) -> anyhow::Result<()> {
+    pty.wait_for(QUESTION_HAS_THE_KEYS, WAIT)?;
+    past_the_question_guard();
     pty.press(Key::Esc)?;
     pty.wait_for(r"left to the (main )?agent · you, ", WAIT)
         .map(drop)
 }
 
 /// For Merge, Abandon, and the other options that wait for Enter after their number.
-pub fn answer_card_and_confirm(pty: &mut Pty, number: char) -> anyhow::Result<()> {
-    answer_card(pty, number)?;
+pub fn answer_question_and_confirm(pty: &mut Pty, number: char) -> anyhow::Result<()> {
+    answer_question(pty, number)?;
     pty.press(Key::Enter)
 }
 
@@ -345,14 +346,14 @@ pub fn wait_until<T>(
     }
 }
 
-/// Every chat turn started so far, as (text, settings hash, uncommitted paths).
+/// Every conversation turn started so far, as (text, settings hash, uncommitted paths).
 pub fn turns_started(scenario: &Scenario) -> anyhow::Result<Vec<TurnStart>> {
     Ok(events(scenario)?
         .into_iter()
         .filter_map(|event| match event {
-            AppEvent::Chat {
+            AppEvent::Conversation {
                 event:
-                    ChatEvent::TurnStarted {
+                    ConversationEvent::TurnStarted {
                         text,
                         read_only,
                         uncommitted,
@@ -381,15 +382,21 @@ pub struct TurnStart {
 pub fn is_turn_finished(event: &AppEvent) -> bool {
     matches!(
         event,
-        AppEvent::Chat {
-            event: ChatEvent::TurnFinished { .. }
+        AppEvent::Conversation {
+            event: ConversationEvent::TurnFinished { .. }
         }
     )
 }
 
 /// The `n`th turn to finish, counting from 1.
 pub fn wait_turns_finished(scenario: &Scenario, n: usize) -> anyhow::Result<()> {
-    wait_events(scenario, "a chat turn to finish", n, is_turn_finished).map(|_| ())
+    wait_events(
+        scenario,
+        "a conversation turn to finish",
+        n,
+        is_turn_finished,
+    )
+    .map(|_| ())
 }
 
 /// The newest app choice of `kind` that is still open.
@@ -462,16 +469,13 @@ pub fn setting_changes(scenario: &Scenario) -> anyhow::Result<Vec<(String, Strin
 /// Invocations of `program`, oldest first.
 pub fn invocations_of(scenario: &Scenario, program: &str) -> anyhow::Result<Vec<Invocation>> {
     Ok(scenario
-        .vendors
+        .clis
         .invocations()?
         .into_iter()
         .filter(|invocation| invocation.argv0 == program)
         .collect())
 }
 
-/// Invocations that ran a model session: every one but `--version`, the `--help` doctor reads
-/// for flags, login checks, the model lists `/model` refreshes, and the quota reads
-/// (`codex app-server`, `agy -p /usage`), which start no turn.
 /// How Claude Code is asked for its plan usage live: initialize and get_usage on stdin, and no
 /// prompt, so no model runs.
 const CLAUDE_USAGE_PROBE: &[&str] = &[
@@ -486,6 +490,26 @@ const CLAUDE_USAGE_PROBE: &[&str] = &[
     "",
 ];
 
+/// Whether `args` are the plan usage read's, alone or with the model it names after them.
+fn claude_usage_probe(args: &[String]) -> bool {
+    let Some((read, named)) = args.split_at_checked(CLAUDE_USAGE_PROBE.len()) else {
+        return false;
+    };
+    let reads_usage = read
+        .iter()
+        .map(String::as_str)
+        .eq(CLAUDE_USAGE_PROBE.iter().copied());
+    reads_usage
+        && match named {
+            [] => true,
+            [flag, _model] => flag == "--model",
+            _ => false,
+        }
+}
+
+/// Invocations that ran a model session: every one but `--version`, the `--help` doctor reads
+/// for flags, login checks, the model lists `/model` refreshes, and the plan usage reads
+/// (`codex app-server`, `agy -p /usage`, Claude Code's probe), which start no turn.
 pub fn sessions_of(scenario: &Scenario, program: &str) -> anyhow::Result<Vec<Invocation>> {
     Ok(invocations_of(scenario, program)?
         .into_iter()
@@ -493,20 +517,23 @@ pub fn sessions_of(scenario: &Scenario, program: &str) -> anyhow::Result<Vec<Inv
             let args = &invocation.args;
             let model_list =
                 args == &["debug", "models"] || args == &["--output-format", "json", "models"];
-            let quota_read = args.first().is_some_and(|arg| arg == "app-server")
+            let plan_usage_read = args.first().is_some_and(|arg| arg == "app-server")
                 || has_flag(args, "-p", "/usage")
-                || args
-                    .iter()
-                    .map(String::as_str)
-                    .eq(CLAUDE_USAGE_PROBE.iter().copied());
+                || claude_usage_probe(args);
             let login_check = args == &["auth", "status"];
             // agy started with nothing to do shows its start-up screen, which names the
             // account; nothing is sent.
             let account_read = program == "agy" && args.is_empty();
+            // OpenCode asked which providers it has, what they offer and its default model.
+            let providers_read = program == "opencode"
+                && (args == &["auth", "list"]
+                    || args == &["models"]
+                    || args == &["debug", "config"]);
             !model_list
-                && !quota_read
+                && !plan_usage_read
                 && !login_check
                 && !account_read
+                && !providers_read
                 && !args
                     .iter()
                     .any(|arg| matches!(arg.as_str(), "--version" | "--help" | "login"))
@@ -514,7 +541,7 @@ pub fn sessions_of(scenario: &Scenario, program: &str) -> anyhow::Result<Vec<Inv
         .collect())
 }
 
-/// Model sessions of every vendor.
+/// Model sessions of every agent.
 pub fn all_sessions(scenario: &Scenario) -> anyhow::Result<Vec<Invocation>> {
     let mut all = Vec::new();
     for program in ["claude", "codex", "agy", "opencode"] {
@@ -660,17 +687,12 @@ pub fn wait_run_dir(scenario: &Scenario) -> anyhow::Result<PathBuf> {
     wait_until("a run directory", || Ok(run_dirs(scenario).pop()))
 }
 
-/// A run's card or question, as the app forwarded it.
-pub fn wait_checkpoint(
-    scenario: &Scenario,
-    kind: CheckpointKind,
-) -> anyhow::Result<CheckpointOpened> {
+/// A run's approval, as the app forwarded it.
+pub fn wait_approval(scenario: &Scenario, kind: ApprovalKind) -> anyhow::Result<ApprovalOpened> {
     wait_until(&format!("a {kind:?} approval"), || {
         Ok(events(scenario)?.into_iter().find_map(|event| match event {
             AppEvent::Run { event } => match event.kind {
-                RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
-                    if opened.kind == kind =>
-                {
+                RunEventKind::Approval(ApprovalEvent::Opened(opened)) if opened.kind == kind => {
                     Some(*opened)
                 }
                 _ => None,
@@ -696,8 +718,8 @@ pub fn wait_mode(
     }
 }
 
-/// The run is working and its owner has started: returns the owner's fake pid.
-pub fn wait_owner_started(scenario: &Scenario) -> anyhow::Result<u32> {
+/// The run is working and its worker has started: returns the worker's fake pid.
+pub fn wait_worker_started(scenario: &Scenario) -> anyhow::Result<u32> {
     wait_until("the worker to start", || {
         Ok(claude_sessions(scenario, "acceptEdits")?
             .first()
@@ -714,11 +736,11 @@ pub fn answer_scope(
     confirm: Option<char>,
 ) -> anyhow::Result<()> {
     let question = wait_open_choice(scenario, ChoiceKind::SettingScope)?;
-    answer_card(pty, number_of(&question.options, scope))?;
+    answer_question(pty, number_of(&question.options, scope))?;
     wait_choice_closed(scenario, &question.id)?;
     if let Some(answer) = confirm {
         let safety = wait_open_choice(scenario, ChoiceKind::ConfirmSafetySetting)?;
-        answer_card(pty, number_of(&safety.options, answer))?;
+        answer_question(pty, number_of(&safety.options, answer))?;
         wait_choice_closed(scenario, &safety.id)?;
     }
     Ok(())
@@ -737,34 +759,34 @@ pub fn wait_setting_changed(scenario: &Scenario, key: &str, n: usize) -> anyhow:
     Ok(changes[n - 1].clone())
 }
 
-/// `GLOBAL_CONFIG` with a gate that passes, for runs that reach the merge card.
+/// `GLOBAL_CONFIG` with a check that passes, for runs that reach the merge question.
 pub fn run_config() -> String {
-    format!("{GLOBAL_CONFIG}{PASSING_GATE}")
+    format!("{GLOBAL_CONFIG}{PASSING_CHECK}")
 }
 
-/// Starts `task` with `/solo` and returns the new run's directory.
-pub fn start_solo(scenario: &Scenario, pty: &mut Pty, task: &str) -> anyhow::Result<PathBuf> {
+/// Starts `task` with `/captain` and returns the new run's directory.
+pub fn start_captain(scenario: &Scenario, pty: &mut Pty, task: &str) -> anyhow::Result<PathBuf> {
     let before = run_dirs(scenario).len();
-    submit(pty, &format!("/solo {task}"))?;
+    submit(pty, &format!("/captain {task}"))?;
     wait_until("the run to start", || {
         let dirs = run_dirs(scenario);
         Ok((dirs.len() > before).then(|| dirs[dirs.len() - 1].clone()))
     })
 }
 
-/// Runs the small fix solo up to its merge card.
-pub fn reach_merge_card(
+/// Runs the small fix Captain up to its merge question.
+pub fn reach_merge_question(
     scenario: &Scenario,
     pty: &mut Pty,
-) -> anyhow::Result<(PathBuf, CheckpointOpened)> {
-    let run_dir = start_solo(scenario, pty, requests::SMALL_FIX)?;
-    let merge = wait_checkpoint(scenario, CheckpointKind::Merge)?;
+) -> anyhow::Result<(PathBuf, ApprovalOpened)> {
+    let run_dir = start_captain(scenario, pty, requests::SMALL_FIX)?;
+    let merge = wait_approval(scenario, ApprovalKind::Merge)?;
     Ok((run_dir, merge))
 }
 
-/// Presses Merge on the waiting merge card and waits for the run to finish merged.
+/// Presses Merge on the waiting merge question and waits for the run to finish merged.
 pub fn merge(pty: &mut Pty, run_dir: &Path) -> anyhow::Result<()> {
-    answer_card_and_confirm(pty, '1')?;
+    answer_question_and_confirm(pty, '1')?;
     wait_journal(run_dir, "the run to finish merged", |event| {
         matches!(
             event.kind,
@@ -794,6 +816,6 @@ pub fn toggle_vim_on_and_off(scenario: &Scenario, pty: &mut Pty) -> anyhow::Resu
     check_no_history_search(pty)?;
     pty.press(Key::Enter)?;
     let off = wait_setting_changed(scenario, "ui.keys", before + 2)?;
-    check_mode_line(pty)?;
+    check_bottom_row(pty)?;
     Ok([on, off])
 }

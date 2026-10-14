@@ -1,0 +1,74 @@
+{
+  "adapter": "antigravity-cli",
+  "args": [
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--sandbox",
+    "--disable-slash-commands",
+    "--mode",
+    "accept-edits",
+    "--project",
+    "argonauts-live-build_subagent",
+    "--model",
+    "gemini-3.6-flash-low",
+    "--effort",
+    "low",
+    "--log-file",
+    "<live>/logs/build_subagent.agy.log"
+  ],
+  "cli_version": "1.2.13",
+  "also_matches": [],
+  "date": "2026-09-30T04:22:45.345896Z",
+  "duration_ms": 59005,
+  "env_removed": [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "CODEX_ACCESS_TOKEN",
+    "AZURE_OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "XAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT"
+  ],
+  "env_set": [
+    [
+      "AGY_CLI_DISABLE_AUTO_UPDATE",
+      "true"
+    ]
+  ],
+  "exit_code": 0,
+  "files": [],
+  "files_after": [
+    "README.md",
+    "notes.txt"
+  ],
+  "keep_stdin_open": false,
+  "name": "build_subagent",
+  "program": "agy",
+  "prompt": "Use the invoke_subagent tool to start one research subagent that reads notes.txt and reports its first line. Then reply with that line.",
+  "role": "build",
+  "sanitized": "absolute paths replaced with <workdir> and <live>, the home directory with ~, and email addresses with <email>",
+  "stdin": [
+    {
+      "after_ms": 0,
+      "line": "{\"event\":\"user\",\"message\":{\"content\":\"Use the invoke_subagent tool to start one research subagent that reads notes.txt and reports its first line. Then reply with that line.\"}}"
+    }
+  ],
+  "note": "invoke_subagent arrives as step_type subagent: ACTIVE without the child's conversation_id, then DONE with conversation_id and log_uri as soon as the child launches. The child's own steps don't stream; a system_message step follows when its reply reaches the parent."
+}

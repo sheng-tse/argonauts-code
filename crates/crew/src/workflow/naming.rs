@@ -1,17 +1,19 @@
 //! The run's name, description, and style, recorded as `Run::Named` before anything runs. A
-//! run the lead designs takes its brief's. Any other (solo, or a template that runs as
+//! run the main agent designs takes its brief's. Any other (Captain, or a template that runs as
 //! written) takes intake's one-line summary as its description and its first words as its
-//! name, or your request's when the mode was forced and intake never ran. Its workflow carries
+//! name. Where intake never ran (the mode was forced, or your words chose it), they come from
+//! the main session's account of the work when it handed the request over, else from your
+//! request, whose first words may say how to run it and not what it is. Its workflow carries
 //! the same name, so no view shows a template's.
 //!
 //! Intake's schema stays as it is: its answers are checked against it strictly, so a new
-//! field would turn every recorded triage answer into a mismatch.
+//! field would turn every recorded estimate into a mismatch.
 
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use argonauts_core::events::run::{RunLifecycle, RunNamed};
+use argonauts_core::events::run::{RunLifecycle, RunNamed, account_in};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::layout;
 use argonauts_core::settings::workflows::RunStyle;
@@ -23,7 +25,7 @@ use crate::state::RunState;
 use crate::workflow::brief;
 
 /// Every run is a workflow. A goal is a condition around it, which the run takes from how it
-/// was started (`goal::pursue`), and no longer a kind of run the lead's CLI picks.
+/// was started (`goal::pursue`), and no longer a kind of run the main agent's CLI picks.
 pub fn style(_host: &Host) -> RunStyle {
     RunStyle::Workflow
 }
@@ -40,6 +42,7 @@ pub fn name_from_intake(host: &Host) -> EngineResult<()> {
             .as_ref()
             .map(|estimate| estimate.summary.as_str())
             .filter(|summary| !summary.trim().is_empty())
+            .or_else(|| account_in(&started.request))
             .unwrap_or(&started.request);
         Some((brief::name_from(words), brief::fit_description(words)))
     }) else {
@@ -127,7 +130,7 @@ fn take(names: &Path, name: &str, run: &str) -> Taken {
         }
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
             match std::fs::read_to_string(&path) {
-                Ok(owner) if owner == run => Taken::Ours,
+                Ok(worker) if worker == run => Taken::Ours,
                 _ => Taken::Others,
             }
         }
@@ -229,9 +232,9 @@ mod tests {
             seq: 0,
             ts: time::OffsetDateTime::UNIX_EPOCH,
             run_id: argonauts_core::RunId::new(folder).unwrap(),
-            card_id: None,
+            task_id: None,
             session: None,
-            source: "conductor".to_owned(),
+            source: "argonauts-code".to_owned(),
             kind: RunEventKind::Run(RunLifecycle::Named(RunNamed {
                 name: name.to_owned(),
                 description: String::new(),

@@ -4,9 +4,9 @@ use argonauts_core::display_names::DisplayNames;
 use argonauts_tui::app::compose_live;
 use argonauts_tui::bottom::PanelEvent;
 use argonauts_tui::model::{
-    Activity, AgentRow, AgentState, BottomState, CardNote, CardOption, CardPrompt, DiffView, Hint,
-    History, LinePart, Tone, ToolCall, ToolItem, ToolKind, ToolState, VimMode, WindowUse,
-    WorkingLine,
+    Activity, AgentRow, AgentState, BottomState, DiffView, Hint, History, LinePart, QuestionNote,
+    QuestionOption, QuestionPrompt, Tone, ToolCall, ToolItem, ToolKind, ToolState, VimMode,
+    WindowUse, WorkingLine,
 };
 use argonauts_tui::model::{AddedPart, CliUse};
 use argonauts_tui::stability;
@@ -79,23 +79,24 @@ fn agent(
     row
 }
 
-fn merge_card() -> CardPrompt {
+fn merge_question() -> QuestionPrompt {
     let options = vec![
-        CardOption::irreversible("Merge"),
-        CardOption::new("Open a pull request"),
-        CardOption::checklist(
+        QuestionOption::irreversible("Merge"),
+        QuestionOption::new("Open a pull request"),
+        QuestionOption::checklist(
             "Request changes on some tasks",
             vec!["task-002 Add the JSON writer".into()],
         ),
-        CardOption::new("Keep the branch"),
-        CardOption::irreversible("Abandon the run"),
-        CardOption::view("Show the diff"),
+        QuestionOption::new("Keep the branch"),
+        QuestionOption::irreversible("Abandon the run"),
+        QuestionOption::view("Show the diff"),
     ];
-    let mut card = CardPrompt::new(2, "Merge task-002 into main?", "Merge task-002?", options);
-    card.detail = vec!["3 files · +48 -6 · tests passed · agy reviewed it and approved".into()];
-    card.allow_note = true;
-    card.focus();
-    card
+    let mut question =
+        QuestionPrompt::new(2, "Merge task-002 into main?", "Merge task-002?", options);
+    question.detail = vec!["3 files · +48 -6 · tests passed · agy reviewed it and approved".into()];
+    question.allow_note = true;
+    question.focus();
+    question
 }
 
 /// Snapshots at 80 and 120 columns, and the frame check at every width.
@@ -121,7 +122,7 @@ fn idle_prompt() {
     assert_eq!(
         rows.len(),
         4,
-        "rule, input, rule, mode line:\n{}",
+        "rule, input, rule, bottom line:\n{}",
         rows.join("\n")
     );
     assert!(
@@ -237,10 +238,10 @@ fn the_working_line_reads_like_claude_code() {
 }
 
 #[test]
-fn card_expanded() {
+fn question_expanded() {
     let mut bottom = idle();
-    bottom.card = Some(merge_card());
-    snapshot_widths("card_expanded", &bottom);
+    bottom.question = Some(merge_question());
+    snapshot_widths("question_expanded", &bottom);
     let theme = theme();
     let view = bottom.render(&ctx(&theme, 80, NOW));
     let all = text(&view.lines);
@@ -265,28 +266,28 @@ fn card_expanded() {
     );
     assert!(
         !all.contains("council ─"),
-        "the task stands in for the input while it has the keys: {all}"
+        "the question stands in for the input while it has the keys: {all}"
     );
 }
 
-/// A card that needs you, under the working line, took the keys as it showed. Letters typed
+/// A question that needs you, under the working line, took the keys as it showed. Letters typed
 /// at it change its key line, and nothing offers to guide the run.
 #[test]
-fn a_card_that_needs_you_holds_the_keys() {
+fn a_question_that_needs_you_holds_the_keys() {
     let mut bottom = crew();
-    let mut card = merge_card();
-    card.focused = false;
-    card.needs_you = true;
-    bottom.card = Some(card);
-    assert!(bottom.hand_keys_to_card(std::time::Instant::now()));
-    snapshot_widths("card_needs_you", &bottom);
+    let mut question = merge_question();
+    question.focused = false;
+    question.needs_you = true;
+    bottom.question = Some(question);
+    assert!(bottom.hand_keys_to_question(std::time::Instant::now()));
+    snapshot_widths("question_needs_you", &bottom);
     let view = bottom.render(&ctx(&theme(), 80, NOW));
     let all = text(&view.lines);
     assert!(all.contains("❯ 1. Merge"), "{all}");
     assert!(!all.contains("guide the run"), "{all}");
 
-    bottom.card.as_mut().unwrap().stray_typing = true;
-    snapshot_widths("card_needs_you_typed_at", &bottom);
+    bottom.question.as_mut().unwrap().stray_typing = true;
+    snapshot_widths("question_needs_you_typed_at", &bottom);
     let view = bottom.render(&ctx(&theme(), 80, NOW));
     assert!(
         text(&view.lines).contains(
@@ -297,18 +298,18 @@ fn a_card_that_needs_you_holds_the_keys() {
     );
 }
 
-/// Handed on while work runs, the card leaves the screen whole and the input guides the run.
-/// No card that asks waits above the input, open or as a line.
+/// Passed on while work runs, the question leaves the screen whole and the input guides the run.
+/// No question that asks waits above the input, open or as a line.
 #[test]
-fn a_card_handed_on_under_the_working_line_leaves_the_input_to_the_run() {
+fn a_question_passed_on_under_the_working_line_leaves_the_input_to_the_run() {
     let mut bottom = crew();
-    let mut card = merge_card();
-    card.needs_you = true;
-    card.focus();
-    card.dismiss();
-    bottom.card = Some(card);
-    assert!(!bottom.hand_keys_to_card(std::time::Instant::now()));
-    snapshot_widths("card_handed_on_working", &bottom);
+    let mut question = merge_question();
+    question.needs_you = true;
+    question.focus();
+    question.dismiss();
+    bottom.question = Some(question);
+    assert!(!bottom.hand_keys_to_question(std::time::Instant::now()));
+    snapshot_widths("question_passed_on_working", &bottom);
     let view = bottom.render(&ctx(&theme(), 80, NOW));
     let all = text(&view.lines);
     assert!(!all.contains("Merge"), "{all}");
@@ -317,13 +318,13 @@ fn a_card_handed_on_under_the_working_line_leaves_the_input_to_the_run() {
 }
 
 #[test]
-fn card_with_a_note() {
+fn question_with_a_note() {
     let mut bottom = idle();
-    let mut card = merge_card();
-    card.selected = 1;
-    card.note = Some(CardNote::with_text(1, "squash the commits first"));
-    bottom.card = Some(card);
-    snapshot_widths("card_note", &bottom);
+    let mut question = merge_question();
+    question.selected = 1;
+    question.note = Some(QuestionNote::with_text(1, "squash the commits first"));
+    bottom.question = Some(question);
+    snapshot_widths("question_note", &bottom);
     let view = bottom.render(&ctx(&theme(), 80, NOW));
     let all = text(&view.lines);
     let option = all.find("2. Open a pull request").unwrap();
@@ -448,7 +449,7 @@ fn bottom_line() {
         LinePart::Added(AddedPart::words("spend", "$0.46 today", Tone::Dim)),
     ];
     snapshot_widths("bottom_line", &bottom);
-    // The mode line is the bottom row, with the chips against its right edge.
+    // The bottom line is the bottom row, with the chips against its right edge.
     let view = bottom.render(&ctx(&theme(), 120, NOW));
     let all = text(&view.lines);
     let last = all.lines().last().unwrap();
@@ -457,7 +458,7 @@ fn bottom_line() {
     assert!(last.ends_with(" 92% resets 4:40pm  $0.46 today"), "{all}");
     assert_eq!(
         style_of(&view.lines, "92%").and_then(|s| s.fg),
-        fg(Role::Warning)
+        fg(Role::Warn)
     );
     // A narrow screen takes the hints and the added part first, and keeps every CLI: the one
     // near its limit in words, the one in use with its fuller window.
@@ -479,7 +480,7 @@ fn the_focused_agent_panel_marks_its_row() {
     snapshot_widths("agents_focused", &bottom);
     let view = bottom.render(&ctx(&theme(), 100, NOW));
     // The selected agent has the filled dot, the rule over the input names it, the input
-    // offers to message it, and the list's keys take the mode line.
+    // offers to message it, and the list's keys take the bottom line.
     let codex = row_text(row_with(&view.lines, "task-003").unwrap());
     assert!(codex.starts_with("  ● codex/gpt-5.6"), "{codex}");
     let all = text(&view.lines);
@@ -493,7 +494,7 @@ fn the_focused_agent_panel_marks_its_row() {
         ),
         "{all}"
     );
-    // `x` asks on the mode line, like Ctrl+C's double press, and no card comes up.
+    // `x` asks on the bottom line, like Ctrl+C's double press, and no question comes up.
     let key = crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('x'));
     assert_eq!(bottom.panel_key(key), PanelEvent::StopAsked);
     let all = text(&bottom.render(&ctx(&theme(), 100, NOW)).lines);
@@ -501,7 +502,7 @@ fn the_focused_agent_panel_marks_its_row() {
         all.contains("x again to stop codex/gpt-5.6 · esc to keep"),
         "{all}"
     );
-    assert!(bottom.card.is_none(), "{all}");
+    assert!(bottom.question.is_none(), "{all}");
     let PanelEvent::Stop { name, .. } = bottom.panel_key(key) else {
         panic!("a second x on an agent row stops it");
     };
@@ -514,7 +515,7 @@ fn the_focused_agent_panel_marks_its_row() {
 fn live_blocks_share_a_short_screen() {
     let theme = theme();
     let mut history = History::new();
-    for (key, harness, model, role, task, file) in [
+    for (key, cli, model, role, task, file) in [
         (
             "builder",
             "claude-code",
@@ -533,7 +534,7 @@ fn live_blocks_share_a_short_screen() {
         ),
     ] {
         let mut block = ToolCall::agent(
-            DisplayNames::default().agent(harness, Some(model)),
+            DisplayNames::default().agent(cli, Some(model)),
             None,
             role,
             task,
@@ -579,7 +580,7 @@ fn live_blocks_share_a_short_screen() {
     insta::assert_snapshot!("live_tight_100", text(&tight.lines));
 
     let all = text(&tight.lines);
-    // Every block shrinks before any is hidden; the composer and mode line always show.
+    // Every block shrinks before any is hidden; the composer and bottom line always show.
     assert!(
         all.contains("● Opus on Claude Code · worker · task-002"),
         "{all}"
@@ -599,23 +600,23 @@ fn live_blocks_share_a_short_screen() {
     assert_eq!(usize::from(row), input);
 
     let mut waiting = crew();
-    waiting.card = Some(merge_card());
-    let with_card = compose_live(
+    waiting.question = Some(merge_question());
+    let with_question = compose_live(
         &history.live_blocks(&ctx(&theme, 100, NOW)),
         &history,
         &waiting,
         &ctx(&theme, 100, NOW),
         24,
     );
-    let all = text(&with_card.lines);
-    assert!(with_card.lines.len() <= 24);
+    let all = text(&with_question.lines);
+    assert!(with_question.lines.len() <= 24);
     assert!(all.contains("6. Show the diff"), "{all}");
     assert!(
         !all.contains("council ─"),
-        "the task stands in for the input: {all}"
+        "the question stands in for the input: {all}"
     );
     assert!(
-        style_of(&with_card.lines, "Merge task-002 into main?")
+        style_of(&with_question.lines, "Merge task-002 into main?")
             .is_some_and(|s| s.add_modifier.contains(Modifier::BOLD) || s.fg.is_some())
     );
 }

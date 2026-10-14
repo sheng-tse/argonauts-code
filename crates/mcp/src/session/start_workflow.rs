@@ -1,6 +1,6 @@
-//! `argonauts_start_workflow`: the main session hands work to the crew. Argonauts starts the
+//! `argonauts_start_workflow`: the main session hands work to the crew. Argonauts Code starts the
 //! workflow you chose, its agents do the work, and its closing answer lands in the
-//! conversation. The app decides whether a call may start one: with solo in use, only when your
+//! conversation. The app decides whether a call may start one: with Captain in use, only when your
 //! own words asked for it.
 
 use argonauts_core::steps::intake::InstructionKind;
@@ -10,8 +10,8 @@ use super::main_tools::MainTool;
 
 pub const NAME: &str = "argonauts_start_workflow";
 
-const DESCRIPTION: &str = "Hands work to the user's crew. Argonauts starts the workflow the user \
-    chose: other agents plan, build and review the work in their own worktrees while the user \
+const DESCRIPTION: &str = "Hands work to the user's crew. Argonauts Code starts the workflow the \
+    user chose: other agents plan, build and review the work in their own worktrees while the user \
     keeps talking to you, and its closing answer lands in this conversation. Call it for real \
     work, or when the user asks for the crew, for other agents or for a workflow. Never call it \
     for a question, or while the user is only talking something over. When it says the workflow \
@@ -58,7 +58,7 @@ fn schema() -> Value {
                         "effort": {"type": "string"},
                         "value": {
                             "type": "string",
-                            "description": "For `mode`, `solo` or `crew`. For other kinds, \
+                            "description": "For `mode`, `captain` or `crew`. For other kinds, \
                                             what was asked, such as \"$2\"."
                         },
                         "scope": {"type": "string"}
@@ -129,12 +129,13 @@ mod tests {
             .iter()
             .filter_map(Value::as_str)
             .collect();
-        for kind in ["mode", "review", "judge", "others", "for_the_lead"] {
+        for kind in ["mode", "review", "judge", "others", "for_the_main_agent"] {
             assert!(names.contains(&kind), "{kind} in {names:?}");
         }
         let meanings = kinds["description"].as_str().unwrap();
         assert!(
-            meanings.contains("others: Who fills every other seat"),
+            meanings
+                .contains("others: The model every agent but the one the user talks to runs on"),
             "{meanings}"
         );
     }

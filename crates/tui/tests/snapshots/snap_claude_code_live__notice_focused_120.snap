@@ -1,0 +1,13 @@
+---
+source: crates/tui/tests/snap_claude_code_live.rs
+expression: text(&view.lines)
+---
+✶ Rowing… (38s · ↓ 2.9k tokens)
+
+✦ Heads up · Release 1.4.0 requires Dana's security sign-off, and Dana is away until Monday.
+  1 Learn more   2 Knew this already   0 Dismiss
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── captain ─
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ←/→ to choose · enter to press · esc for the input                                              ● Claude 5h ▄▄▄▄▄▄ 53%

@@ -1,5 +1,5 @@
 [package]
-name = "argonauts-cli"
+name = "argonauts-code"
 description = "The argonauts command line tool."
 version.workspace = true
 edition.workspace = true

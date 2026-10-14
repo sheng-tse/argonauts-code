@@ -1,4 +1,4 @@
-//! Files in a run's directory that the client writes and the supervisor reads back:
+//! Files in a run's directory that the client writes and the run host reads back:
 //! `start.json`, `settings.json`, `approve.token`, and `pending-answers.jsonl`. Also where to
 //! reach the run's control socket.
 
@@ -22,7 +22,7 @@ use nix::unistd::geteuid;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-/// What `start` asked for. The supervisor writes `RunStarted` from it.
+/// What `start` asked for. The run host writes `RunStarted` from it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct StartRecord {
     pub run: RunId,
@@ -32,7 +32,7 @@ pub(crate) struct StartRecord {
     pub overrides: Vec<String>,
     /// Whether a person at a terminal vetted `overrides`, so a safety key among them applies.
     pub interactive: bool,
-    /// One of the evolution loop's replays, whose goal and plan checkpoints follow your rules
+    /// One of the evolution loop's replays, whose goal and plan approvals follow your rules
     /// at every reload too, since nobody answers a replay.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub replay: bool,
@@ -203,7 +203,7 @@ fn point_link(link: &Path, run_dir: &Path) -> io::Result<()> {
     }
 }
 
-/// Appends one request for the next supervisor. The caller holds the run lock.
+/// Appends one request for the next run host. The caller holds the run lock.
 pub(crate) fn append_pending(run_dir: &Path, request: &ControlRequest) -> anyhow::Result<()> {
     let path = run_dir.join(run_files::PENDING_ANSWERS);
     let mut line = serde_json::to_vec(request)?;
@@ -218,11 +218,11 @@ pub(crate) fn append_pending(run_dir: &Path, request: &ControlRequest) -> anyhow
         .with_context(|| format!("writing {}", path.display()))
 }
 
-/// Where a supervisor keeps pending requests while it feeds them to its engine. Until they're
-/// all in, a supervisor that crashes leaves them here for the next one.
+/// Where a run host keeps pending requests while it feeds them to its engine. Until they're
+/// all in, a run host that crashes leaves them here for the next one.
 const PENDING_TAKEN: &str = "pending-answers.taking";
 
-/// The pending requests one supervisor took, oldest first.
+/// The pending requests one run host took, oldest first.
 #[derive(Debug)]
 pub(crate) struct Pending {
     pub requests: Vec<ControlRequest>,
@@ -249,7 +249,7 @@ impl Pending {
 }
 
 /// Sets the pending requests aside and reads them, leaving them on disk until `delivered`.
-/// Requests an earlier supervisor set aside come first. The caller holds the run lock.
+/// Requests an earlier run host set aside come first. The caller holds the run lock.
 pub(crate) fn set_aside_pending(run_dir: &Path) -> anyhow::Result<Pending> {
     let fresh = run_dir.join(run_files::PENDING_ANSWERS);
     let taken = run_dir.join(PENDING_TAKEN);
@@ -320,7 +320,7 @@ mod tests {
     fn guidance(text: &str) -> ControlRequest {
         ControlRequest::Guidance {
             text: text.to_owned(),
-            front_end: None,
+            outside_agent: None,
         }
     }
 

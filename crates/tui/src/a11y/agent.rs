@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::bridge::tools::{finish_call, is_own, is_tool_lookup, start_call};
 use crate::bridge::transcript::own_calls::{Own, turned_down};
-use crate::cell::{PhaseLine, ToolItem, ToolTitle};
+use crate::cell::{PhaseLine, ToolItem, ToolTitle, WorkflowEnd, WorkflowResult};
 use crate::state::AppState;
 use crate::text::sanitize_line;
 
@@ -22,12 +22,12 @@ pub struct StartedCall<'a> {
     pub input: &'a Value,
 }
 
-/// Lines for `event` from `who`. `vendor` is the adapter id, which names its tools. `said` is
-/// the last whole message already spoken, so a result that repeats it stays quiet. Argonauts'
+/// Lines for `event` from `who`. `agent` is the adapter id, which names its tools. `said` is
+/// the last whole message already spoken, so a result that repeats it stays quiet. Argonauts Code's
 /// own calls, such as the report, say nothing.
 pub fn agent_lines(
     who: &str,
-    vendor: &str,
+    agent_id: &str,
     event: &AgentEvent,
     state: &AppState,
     call: Option<StartedCall<'_>>,
@@ -52,14 +52,14 @@ pub fn agent_lines(
             parent,
             ..
         } if normal && (parent.is_none() || full) && !is_own(name) && !is_tool_lookup(name) => {
-            // What the session asks of Argonauts reads as its plain line, as on screen.
+            // What the session asks of Argonauts Code reads as its plain line, as on screen.
             let own = Own::named(name);
             if own == Some(Own::StartWorkflow) {
                 return Vec::new();
             }
             let call = own
                 .and_then(|own| own.line(input))
-                .unwrap_or_else(|| start_call(vendor, name, input));
+                .unwrap_or_else(|| start_call(agent_id, name, input));
             let title = match &call.title {
                 ToolTitle::Call { name, args } if args.is_empty() => name.clone(),
                 ToolTitle::Call { name, args } => format!("{name} {args}"),
@@ -78,7 +78,7 @@ pub fn agent_lines(
                 return Vec::new();
             }
             // An answer to one of the session's own calls is the session's to read; only a
-            // start Argonauts turned down is said.
+            // start Argonauts Code turned down is said.
             if let Some(own) = call.as_ref().and_then(|call| Own::named(call.name)) {
                 return match own {
                     Own::StartWorkflow => turned_down(*ok, output.as_deref())
@@ -88,7 +88,7 @@ pub fn agent_lines(
                     _ => Vec::new(),
                 };
             }
-            tool_result(vendor, call, *ok, output.as_deref())
+            tool_result(agent_id, call, *ok, output.as_deref())
         }
         AgentEvent::FileChanged { path, kind } if full => vec![format!(
             "{who}: {} {}",
@@ -156,7 +156,7 @@ pub fn agent_lines(
 
 /// `tool: Read 42 lines`, or `tool error: cat: missing.txt: No such file or directory`.
 fn tool_result(
-    vendor: &str,
+    agent_id: &str,
     call: Option<StartedCall<'_>>,
     ok: bool,
     output: Option<&str>,
@@ -169,7 +169,7 @@ fn tool_result(
     };
     let said = match call {
         Some(call) => {
-            let mut drawn = start_call(vendor, call.name, call.input);
+            let mut drawn = start_call(agent_id, call.name, call.input);
             finish_call(&mut drawn, ok, output);
             let mut lines: Vec<String> = drawn.body.iter().flat_map(item_lines).collect();
             let changed = drawn
@@ -216,6 +216,17 @@ fn item_lines(item: &ToolItem) -> Vec<String> {
             }
             lines
         }
+        ToolItem::Workflow(WorkflowResult::Running) => {
+            vec!["Running in background. /workflows opens it.".to_owned()]
+        }
+        ToolItem::Workflow(WorkflowResult::Ended { how, counts }) => {
+            let word = match how {
+                WorkflowEnd::Completed => "Completed",
+                WorkflowEnd::Failed => "Failed",
+                WorkflowEnd::Stopped => "Stopped",
+            };
+            vec![format!("{word} in {}", sanitize_line(counts).trim())]
+        }
         _ => Vec::new(),
     }
 }
@@ -227,7 +238,7 @@ fn phase_line((i, phase): (usize, &PhaseLine)) -> String {
     } else {
         ""
     };
-    let said = format!("{}. {}{yours}", i + 1, sanitize_line(&phase.title).trim());
+    let said = format!("{}. {}{yours}", i + 1, sanitize_line(&phase.name).trim());
     match sanitize_line(&phase.detail).trim() {
         "" => said,
         detail => format!("{said}: {detail}"),
@@ -313,7 +324,7 @@ mod own_call_tests {
         );
         assert_eq!(
             said,
-            ["Claude Code: Looked up reviews in Argonauts' records"]
+            ["Claude Code: Looked up reviews in Argonauts Code's records"]
         );
         let input = json!({"what": "reviews"});
         let answer = AgentEvent::ToolFinished {

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::structured;
 
 /// The full URL for `settings.api` under `base_url`. The settings are the registry's merged
-/// ones, so a preset such as `ollama` already carries its address.
+/// ones, so a known endpoint such as `ollama` already carries its address.
 pub(crate) fn url(id: &str, settings: &EndpointSettings) -> Result<String, String> {
     let base = settings.base_url.as_deref().ok_or_else(|| {
         format!("the {id} endpoint has no base_url. Set one under [endpoints.{id}]")
@@ -39,7 +39,7 @@ pub(crate) enum Effort {
 }
 
 impl Effort {
-    /// OpenAI-compatible APIs define only some of Argonauts' levels, and a model that doesn't
+    /// OpenAI-compatible APIs define only some of Argonauts Code's levels, and a model that doesn't
     /// reason rejects the field, so only a level the registry lists for the model goes out.
     pub fn choose(asked: Option<&str>, listed: &[String]) -> Self {
         let Some(asked) = asked else {
@@ -315,7 +315,7 @@ mod tests {
     fn the_role_prompt_is_the_system_part() {
         let parts = [
             part(InputPartKind::Prompt, "You review. "),
-            part(InputPartKind::Card, "Task 1. "),
+            part(InputPartKind::Task, "Task 1. "),
             part(InputPartKind::Prompt, "Late rule."),
         ];
         let prompt = split_prompt(&parts);

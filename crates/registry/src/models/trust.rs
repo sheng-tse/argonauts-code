@@ -1,5 +1,5 @@
 //! Trust for the project's `models.toml`. Its `[[model]]` entries carry launch hints, prices,
-//! access, families, and tiers, and its `[[harness]]` entries name programs to run, so a file a
+//! access, providers, and tiers, and its `[[cli]]` entries name programs to run, so a file a
 //! cloned repo carries counts only once you trust it as it is.
 
 use std::io::ErrorKind;

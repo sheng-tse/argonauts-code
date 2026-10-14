@@ -191,7 +191,7 @@ pub fn tested_range_label(tested: &[&str]) -> Option<String> {
 }
 
 /// `major.minor.patch`, with missing parts as 0 and anything after the numbers ignored.
-fn numbers(version: &str) -> Option<(u64, u64, u64)> {
+pub(crate) fn numbers(version: &str) -> Option<(u64, u64, u64)> {
     let version = version.trim().trim_start_matches('v');
     let end = version
         .find(|c: char| !c.is_ascii_digit() && c != '.')
@@ -289,7 +289,7 @@ mod tests {
     fn rerecord_fixtures_script_uses_cheapest_models() {
         let script = include_str!("../../scripts/rerecord-fixtures.sh");
 
-        // Every vendor call goes through a shim that allows only these.
+        // Every CLI call goes through a shim that allows only these.
         let shims: Vec<Vec<String>> = script
             .lines()
             .filter(|line| line.starts_with("write_shim "))
@@ -310,7 +310,7 @@ mod tests {
                 "codex",
                 "exec",
                 "-m --model",
-                "gpt-5.6-luna",
+                "gpt-6-luna",
                 "-c --config",
                 "model_reasoning_effort=\"low\"",
             ],
@@ -319,7 +319,7 @@ mod tests {
                 "agy",
                 "",
                 "--model",
-                "gemini-3.6-flash-low",
+                "gemini-3.8-flash-low",
                 "--effort",
                 "low",
             ],
@@ -327,8 +327,8 @@ mod tests {
         assert_eq!(shims, expected);
         for cheapest in [
             "claude --model haiku --effort low",
-            "codex exec -m gpt-5.6-luna -c model_reasoning_effort=\"low\"",
-            "agy --model gemini-3.6-flash-low --effort low",
+            "codex exec -m gpt-6-luna -c model_reasoning_effort=\"low\"",
+            "agy --model gemini-3.8-flash-low --effort low",
         ] {
             assert!(script.contains(cheapest), "{cheapest}");
         }
@@ -340,7 +340,7 @@ mod tests {
             .filter(|line| !line.starts_with('#') && !line.starts_with("write_shim "))
             .collect();
         for line in &code {
-            for model in ["opus", "sonnet", "gpt-5", "gemini-3", "--model ", "-m "] {
+            for model in ["opus", "sonnet", "gpt-", "gemini-3", "--model ", "-m "] {
                 assert!(!line.contains(model), "{line}");
             }
         }

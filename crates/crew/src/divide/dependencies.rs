@@ -1,7 +1,7 @@
 //! New dependencies: any package in the plan's `new_dependencies` not on
 //! `limits.dependency_allowlist` blocks plan approval until you allowlist it or send the plan
-//! back. After approval and before any build card, the conductor adds them on the integration
-//! branch with install scripts off, in one conductor commit (`Integration::DependenciesAdded`).
+//! back. After approval and before any build task, Argonauts Code adds them on the merge
+//! branch with install scripts off, in one commit of Argonauts Code's (`Merge::DependenciesAdded`).
 
 use std::path::Path;
 use std::time::Duration;
@@ -9,11 +9,11 @@ use std::time::Duration;
 use tokio::process::Command;
 
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::card::IntegrationEvent;
+use argonauts_core::events::task::MergeEvent;
 
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
-use crate::integrate::{branch, conductor};
+use crate::merge::{branch, conductor};
 
 /// A package manager that hangs this long on the network is given up on.
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
@@ -33,15 +33,15 @@ pub fn unlisted(new: &[String], allowlist: &[String]) -> Vec<String> {
     out
 }
 
-/// Adds the packages on the integration branch and commits the manifest and lockfile change as
-/// the conductor. Returns the commit, or the branch head when they were already there.
+/// Adds the packages on the run branch and commits the manifest and lockfile change as
+/// Argonauts Code. Returns the commit, or the branch head when they were already there.
 pub async fn add(host: &Host, packages: &[String]) -> EngineResult<String> {
     if let Some(bad) = packages.iter().find(|package| !valid_package(package)) {
         return Err(EngineError::Refused(format!(
-            "`{bad}` isn't a package name the conductor will pass to a package manager."
+            "`{bad}` isn't a package name Argonauts Code will pass to a package manager."
         )));
     }
-    let worktree = branch::ensure_integration(host).await?;
+    let worktree = branch::ensure_run_branch(host).await?;
     let installer = installer(&root_files(&worktree)?, packages).map_err(EngineError::Refused)?;
     match &installer.run {
         Run::Command(argv) => run(host, &worktree, argv).await?,
@@ -50,8 +50,7 @@ pub async fn add(host: &Host, packages: &[String]) -> EngineResult<String> {
     let changed = porcelain_paths(&host.git().status_of(&worktree, installer.files).await?);
     if changed.is_empty() {
         let head = host.git().head_commit(&worktree).await?;
-        return head
-            .ok_or_else(|| EngineError::Refused("the integration branch has no commit".into()));
+        return head.ok_or_else(|| EngineError::Refused("the run branch has no commit".into()));
     }
     let subject = format!("Add dependencies: {}", packages.join(", "));
     let files: Vec<&str> = changed.iter().map(String::as_str).collect();
@@ -59,7 +58,7 @@ pub async fn add(host: &Host, packages: &[String]) -> EngineResult<String> {
     host.record(
         None,
         None,
-        RunEventKind::Integration(IntegrationEvent::DependenciesAdded {
+        RunEventKind::Merge(MergeEvent::DependenciesAdded {
             packages: packages.to_vec(),
             sha: sha.clone(),
         }),
@@ -67,7 +66,7 @@ pub async fn add(host: &Host, packages: &[String]) -> EngineResult<String> {
     Ok(sha)
 }
 
-/// Why the conductor couldn't add these packages, checked against the repository root before
+/// Why Argonauts Code couldn't add these packages, checked against the repository root before
 /// you approve, so you can add them yourself instead.
 pub fn problem(root: &Path, packages: &[String]) -> EngineResult<Option<String>> {
     if packages.is_empty() {
@@ -75,7 +74,7 @@ pub fn problem(root: &Path, packages: &[String]) -> EngineResult<Option<String>>
     }
     if let Some(bad) = packages.iter().find(|package| !valid_package(package)) {
         return Ok(Some(format!(
-            "`{bad}` isn't a package name the conductor will pass to a package manager."
+            "`{bad}` isn't a package name Argonauts Code will pass to a package manager."
         )));
     }
     Ok(installer(&root_files(root)?, packages).err())

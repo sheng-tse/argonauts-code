@@ -5,17 +5,17 @@
 
 use std::collections::BTreeSet;
 
-use argonauts_core::events::checkpoint::{AnswerAction, CheckpointKind};
+use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
 use argonauts_core::policy::{EvidencePacket, Verdict};
 use argonauts_core::settings::approvals::{
-    ApprovalMode, ApprovalSettings, ApproverSettings, CheckpointSettings, DecideWith, Decides,
+    ApprovalMode, ApprovalPointSettings, ApprovalSettings, DecideWith, Decides, JudgeSettings,
 };
 use argonauts_core::{canonical_json, sha256_hex};
 use serde::Serialize;
 use time::{Duration, OffsetDateTime};
 
 use super::records::{Answer, Basis, Event, Outcome, Record};
-use crate::approver::render::rules_label;
+use crate::judge::render::rules_label;
 
 /// A merge's match counts once it has stayed unreverted this long.
 pub const REVERT_WINDOW: Duration = Duration::days(7);
@@ -24,24 +24,24 @@ pub const REVERT_WINDOW: Duration = Duration::days(7);
 pub struct Tally {
     pub matches_in_a_row: u32,
     pub misses: u32,
-    /// Auto lowered to shadow until you reinstate the kind. Matches alone never lift it.
+    /// Auto lowered to auto preview until you reinstate the kind. Matches alone never lift it.
     pub demoted: bool,
 }
 
 /// Which records of a kind count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope<'a> {
-    /// One recipe's, or those of runs without a recipe.
-    Recipe(Option<&'a str>),
-    /// Every recipe's, as `/approvals` shows a kind.
-    AllRecipes,
+    /// One learned workflow's, or those of runs without a learned workflow.
+    LearnedWorkflow(Option<&'a str>),
+    /// Every learned workflow's, as `/approvals` shows a kind.
+    AllLearnedWorkflows,
 }
 
 impl Scope<'_> {
-    fn covers(self, recipe: Option<&str>) -> bool {
+    fn covers(self, learned_workflow: Option<&str>) -> bool {
         match self {
-            Scope::Recipe(wanted) => wanted == recipe,
-            Scope::AllRecipes => true,
+            Scope::LearnedWorkflow(wanted) => wanted == learned_workflow,
+            Scope::AllLearnedWorkflows => true,
         }
     }
 }
@@ -51,26 +51,26 @@ impl Scope<'_> {
 pub struct PointSettings {
     pub mode: ApprovalMode,
     pub decide_with: DecideWith,
-    /// Changes with the rules, `decide_with`, or the approver it uses, never with `mode` or
+    /// Changes with the rules, `decide_with`, or the judge it uses, never with `mode` or
     /// `otherwise`.
     pub fingerprint: String,
 }
 
 /// `None` for kinds without approval settings, which never earn auto.
-pub fn point_settings(approvals: &ApprovalSettings, kind: CheckpointKind) -> Option<PointSettings> {
-    use CheckpointKind as Kind;
+pub fn point_settings(approvals: &ApprovalSettings, kind: ApprovalKind) -> Option<PointSettings> {
+    use ApprovalKind as Kind;
     let rules = &approvals.rules;
-    let promotion = approvals.workflow_promotion.as_checkpoint();
+    let promotion = approvals.workflow_promotion.as_approval();
     Some(match kind {
-        Kind::Goal => of(&approvals.goal, &NoRules {}, approvals),
+        Kind::Understand => of(&approvals.understand, &NoRules {}, approvals),
         Kind::Plan => of(&approvals.plan, &rules.plan, approvals),
         Kind::Merge => of(&approvals.merge, &rules.merge, approvals),
         Kind::WorkflowPromotion => of(&promotion, &rules.workflow_promotion, approvals),
-        Kind::Escalation => of(&approvals.escalation, &rules.escalation, approvals),
-        Kind::Budget => of(&approvals.budget, &rules.budget, approvals),
+        Kind::Stuck => of(&approvals.stuck, &rules.stuck, approvals),
+        Kind::Limit => of(&approvals.limit, &rules.limit, approvals),
         Kind::ChangeRequest => of(&approvals.change_request, &NoRules {}, approvals),
-        Kind::Handoff
-        | Kind::VendorDown
+        Kind::Fallback
+        | Kind::AgentDown
         | Kind::GoalChange
         | Kind::TakeOverReturn
         | Kind::Question
@@ -88,11 +88,11 @@ struct Fingerprinted<'a, R> {
     decide_with: DecideWith,
     /// Who judges, and by which rules file, where a model has a say.
     decides: Option<&'a Decides>,
-    approver: Option<&'a ApproverSettings>,
+    judge: Option<&'a JudgeSettings>,
 }
 
 fn of<R: Serialize>(
-    point: &CheckpointSettings,
+    point: &ApprovalPointSettings,
     rules: &R,
     approvals: &ApprovalSettings,
 ) -> PointSettings {
@@ -101,7 +101,7 @@ fn of<R: Serialize>(
         rules,
         decide_with: point.decide_with,
         decides: uses_model.then_some(&approvals.decides),
-        approver: uses_model.then_some(&approvals.approver),
+        judge: uses_model.then_some(&approvals.judge),
     })
     // Plain settings data can't fail to serialize.
     .unwrap_or_default();
@@ -112,9 +112,9 @@ fn of<R: Serialize>(
     }
 }
 
-/// The SHA-256 of your rules document when the approver model reads it for this kind, since
+/// The SHA-256 of your rules document when the judge reads it for this kind, since
 /// changing that document restarts the count as changing the settings does. `None` when rules
-/// alone decide, or the document isn't in the evidence, where the approver escalates anyway.
+/// alone decide, or the document isn't in the evidence, where the judge asks you anyway.
 pub fn rules_document(
     approvals: &ApprovalSettings,
     point: &PointSettings,
@@ -123,7 +123,7 @@ pub fn rules_document(
     if point.decide_with == DecideWith::Rules {
         return None;
     }
-    let label = rules_label(&approvals.approver.model_rules);
+    let label = rules_label(&approvals.judge.model_rules);
     let document = evidence
         .documents
         .iter()
@@ -135,7 +135,7 @@ pub fn rules_document(
 }
 
 /// Only an unedited approve or merge agrees with auto's approval. Every other answer decides
-/// the checkpoint some other way, except the few that decide nothing.
+/// the approval some other way, except the few that decide nothing.
 pub fn answer(action: &AnswerAction, edited: bool) -> Answer {
     use AnswerAction as Action;
     match action {
@@ -165,11 +165,11 @@ impl Basis<'_> {
 
 /// With `fingerprint`, a streak scored under other settings reads as restarted. A change of
 /// your rules document restarts it once a record scored under the new document arrives. A
-/// wrong spot check on any recipe of the kind restarts every recipe's streak and demotes the
-/// kind until you reinstate it, and each recipe then counts on its own.
+/// wrong spot check on any learned workflow of the kind restarts every learned workflow's streak
+/// and demotes the kind until you reinstate it, and each learned workflow then counts on its own.
 pub fn tally(
     records: &[Record],
-    kind: CheckpointKind,
+    kind: ApprovalKind,
     scope: Scope<'_>,
     fingerprint: Option<&str>,
     now: OffsetDateTime,
@@ -185,7 +185,7 @@ pub fn tally(
     let mut demoted = false;
 
     for record in of_kind() {
-        let covered = scope.covers(record.recipe.as_deref());
+        let covered = scope.covers(record.learned_workflow.as_deref());
         match &record.event {
             Event::Scored {
                 fingerprint: scored_under,
@@ -214,7 +214,7 @@ pub fn tally(
                 };
                 match outcome {
                     Outcome::Match
-                        if kind == CheckpointKind::Merge && record.at + REVERT_WINDOW > now => {}
+                        if kind == ApprovalKind::Merge && record.at + REVERT_WINDOW > now => {}
                     Outcome::Match => streak = streak.saturating_add(1),
                     Outcome::Miss => {
                         streak = 0;
@@ -260,7 +260,7 @@ pub fn tally(
 #[cfg(test)]
 mod tests {
     use argonauts_core::RunId;
-    use argonauts_core::names::CheckpointId;
+    use argonauts_core::names::ApprovalId;
     use time::macros::datetime;
 
     use super::*;
@@ -268,49 +268,49 @@ mod tests {
     const NOW: OffsetDateTime = datetime!(2026-09-29 10:00 UTC);
 
     fn record(
-        kind: CheckpointKind,
-        recipe: Option<&str>,
+        kind: ApprovalKind,
+        learned_workflow: Option<&str>,
         at: OffsetDateTime,
         event: Event,
     ) -> Record {
         Record {
             at,
             run: Some(RunId::new("run-a").expect("run id")),
-            checkpoint: Some(CheckpointId::numbered(1)),
+            approval: Some(ApprovalId::numbered(1)),
             kind,
-            recipe: recipe.map(str::to_owned),
+            learned_workflow: learned_workflow.map(str::to_owned),
             event,
         }
     }
 
-    fn scored(recipe: Option<&str>, fingerprint: &str, outcome: Outcome) -> Record {
-        scored_with_rules(fingerprint, None, outcome, recipe)
+    fn scored(learned_workflow: Option<&str>, fingerprint: &str, outcome: Outcome) -> Record {
+        scored_with_rules(fingerprint, None, outcome, learned_workflow)
     }
 
     fn scored_with_rules(
         fingerprint: &str,
         rules: Option<&str>,
         outcome: Outcome,
-        recipe: Option<&str>,
+        learned_workflow: Option<&str>,
     ) -> Record {
         let event = Event::Scored {
             fingerprint: fingerprint.to_owned(),
             rules: rules.map(str::to_owned),
             outcome,
         };
-        record(CheckpointKind::Plan, recipe, NOW, event)
+        record(ApprovalKind::Plan, learned_workflow, NOW, event)
     }
 
-    fn wrong(recipe: Option<&str>) -> Record {
+    fn wrong(learned_workflow: Option<&str>) -> Record {
         let event = Event::SpotChecked {
             fingerprint: Some("a".to_owned()),
             correct: false,
         };
-        record(CheckpointKind::Plan, recipe, NOW, event)
+        record(ApprovalKind::Plan, learned_workflow, NOW, event)
     }
 
     #[test]
-    fn recipes_count_apart_and_a_demotion_covers_the_kind() {
+    fn learned_workflows_count_apart_and_a_demotion_covers_the_kind() {
         let records = [
             scored(Some("easy"), "a", Outcome::Match),
             scored(Some("easy"), "a", Outcome::Match),
@@ -318,12 +318,24 @@ mod tests {
             wrong(Some("risky")),
             scored(Some("easy"), "a", Outcome::Match),
         ];
-        let plan = CheckpointKind::Plan;
-        let easy = tally(&records, plan, Scope::Recipe(Some("easy")), Some("a"), NOW);
+        let plan = ApprovalKind::Plan;
+        let easy = tally(
+            &records,
+            plan,
+            Scope::LearnedWorkflow(Some("easy")),
+            Some("a"),
+            NOW,
+        );
         assert_eq!(easy.matches_in_a_row, 1);
         assert_eq!(easy.misses, 0);
         assert!(easy.demoted);
-        let risky = tally(&records, plan, Scope::Recipe(Some("risky")), Some("a"), NOW);
+        let risky = tally(
+            &records,
+            plan,
+            Scope::LearnedWorkflow(Some("risky")),
+            Some("a"),
+            NOW,
+        );
         assert_eq!((risky.matches_in_a_row, risky.misses), (0, 1));
 
         // Matches never lift a demotion. Only reinstating the kind does.
@@ -331,56 +343,74 @@ mod tests {
         for _ in 0..5 {
             records.push(scored(Some("easy"), "a", Outcome::Match));
         }
-        let easy = tally(&records, plan, Scope::Recipe(Some("easy")), Some("a"), NOW);
+        let easy = tally(
+            &records,
+            plan,
+            Scope::LearnedWorkflow(Some("easy")),
+            Some("a"),
+            NOW,
+        );
         assert_eq!(easy.matches_in_a_row, 6);
         assert!(easy.demoted);
         records.push(Record::for_kind(plan, NOW, Event::Reinstated));
-        for recipe in ["easy", "risky"] {
-            let after = tally(&records, plan, Scope::Recipe(Some(recipe)), Some("a"), NOW);
+        for learned_workflow in ["easy", "risky"] {
+            let after = tally(
+                &records,
+                plan,
+                Scope::LearnedWorkflow(Some(learned_workflow)),
+                Some("a"),
+                NOW,
+            );
             assert!(!after.demoted);
         }
         records.push(wrong(Some("easy")));
-        let easy = tally(&records, plan, Scope::Recipe(Some("easy")), Some("a"), NOW);
+        let easy = tally(
+            &records,
+            plan,
+            Scope::LearnedWorkflow(Some("easy")),
+            Some("a"),
+            NOW,
+        );
         assert!(easy.demoted);
     }
 
     #[test]
     fn a_new_rules_document_restarts_the_streak() {
-        let plan = CheckpointKind::Plan;
+        let plan = ApprovalKind::Plan;
         let mut records = vec![
             scored_with_rules("a", Some("r1"), Outcome::Match, None),
             scored_with_rules("a", None, Outcome::Match, None),
             scored_with_rules("a", Some("r1"), Outcome::Match, None),
         ];
-        let before = tally(&records, plan, Scope::Recipe(None), Some("a"), NOW);
+        let before = tally(&records, plan, Scope::LearnedWorkflow(None), Some("a"), NOW);
         assert_eq!(before.matches_in_a_row, 3);
         records.push(scored_with_rules("a", Some("r2"), Outcome::Match, None));
-        let after = tally(&records, plan, Scope::Recipe(None), Some("a"), NOW);
+        let after = tally(&records, plan, Scope::LearnedWorkflow(None), Some("a"), NOW);
         assert_eq!((after.matches_in_a_row, after.misses), (1, 0));
     }
 
     #[test]
     fn a_reverted_match_counts_as_a_miss() {
-        let plan = CheckpointKind::Plan;
+        let plan = ApprovalKind::Plan;
         let mut records = vec![scored(None, "a", Outcome::Match)];
         let mut second = scored(None, "a", Outcome::Match);
-        second.checkpoint = Some(CheckpointId::numbered(2));
+        second.approval = Some(ApprovalId::numbered(2));
         records.push(second.clone());
         records.push(scored(None, "a", Outcome::Match));
         assert_eq!(
-            tally(&records, plan, Scope::Recipe(None), None, NOW).matches_in_a_row,
+            tally(&records, plan, Scope::LearnedWorkflow(None), None, NOW).matches_in_a_row,
             3
         );
         second.event = Event::Reverted;
         records.push(second);
-        let reverted = tally(&records, plan, Scope::Recipe(None), None, NOW);
+        let reverted = tally(&records, plan, Scope::LearnedWorkflow(None), None, NOW);
         assert_eq!((reverted.matches_in_a_row, reverted.misses), (1, 1));
         assert!(!reverted.demoted);
     }
 
     #[test]
     fn only_approvals_score() {
-        assert_eq!(score(Verdict::Escalate, Answer::Approved), None);
+        assert_eq!(score(Verdict::AskYou, Answer::Approved), None);
         assert_eq!(score(Verdict::Reject, Answer::Corrected), None);
         assert_eq!(score(Verdict::Approve, Answer::Other), None);
         assert_eq!(answer(&AnswerAction::Merge, false), Answer::Approved);
@@ -389,7 +419,7 @@ mod tests {
         for declined in [
             AnswerAction::PullRequest,
             AnswerAction::KeepBranch,
-            AnswerAction::SwitchToSolo,
+            AnswerAction::SwitchToCaptain,
             AnswerAction::Wait,
             AnswerAction::UpgradeReview,
         ] {
@@ -402,19 +432,19 @@ mod tests {
     #[test]
     fn mode_and_otherwise_leave_the_fingerprint_alone() {
         let mut approvals = ApprovalSettings::default();
-        let before = point_settings(&approvals, CheckpointKind::Merge).expect("merge");
+        let before = point_settings(&approvals, ApprovalKind::Merge).expect("merge");
         approvals.merge.mode = ApprovalMode::Auto;
         approvals.merge.otherwise = argonauts_core::settings::approvals::Otherwise::SendBack;
-        approvals.approver.second_model = Some("codex".parse().expect("worker"));
-        let after = point_settings(&approvals, CheckpointKind::Merge).expect("merge");
+        approvals.judge.second_model = Some("codex".parse().expect("worker"));
+        let after = point_settings(&approvals, ApprovalKind::Merge).expect("merge");
         assert_eq!(before.fingerprint, after.fingerprint);
 
         approvals.merge.decide_with = DecideWith::Model;
-        let model = point_settings(&approvals, CheckpointKind::Merge).expect("merge");
+        let model = point_settings(&approvals, ApprovalKind::Merge).expect("merge");
         assert_ne!(model.fingerprint, after.fingerprint);
-        approvals.approver.second_model = None;
-        let other_approver = point_settings(&approvals, CheckpointKind::Merge).expect("merge");
-        assert_ne!(model.fingerprint, other_approver.fingerprint);
-        assert_eq!(point_settings(&approvals, CheckpointKind::Question), None);
+        approvals.judge.second_model = None;
+        let other_judge = point_settings(&approvals, ApprovalKind::Merge).expect("merge");
+        assert_ne!(model.fingerprint, other_judge.fingerprint);
+        assert_eq!(point_settings(&approvals, ApprovalKind::Question), None);
     }
 }

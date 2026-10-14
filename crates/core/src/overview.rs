@@ -104,7 +104,7 @@ pub struct CliSource {
     #[serde(default, with = "day_format::option")]
     pub since: Option<Date>,
     /// Its history came from its own session files. Otherwise only what ran through
-    /// Argonauts counts.
+    /// Argonauts Code counts.
     pub imported: bool,
     /// Its sessions in the period.
     pub sessions: u32,
@@ -151,6 +151,27 @@ pub struct OverviewModel {
     pub sessions: u32,
 }
 
+/// A model's tokens on this computer in all, under the name one record gave it. A model
+/// recorded under two names is two of these, which a screen adds up by the name it shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelTokens {
+    pub agent: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub tokens: u64,
+}
+
+/// What Claude Code's own /stats adds up for a period. It comes to fewer tokens than are
+/// counted here where its workflows ran agents, which it leaves out, and to more where an
+/// answer streamed over several lines, each of which it counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnCount {
+    pub tokens: u64,
+    /// The last day it has counted.
+    #[serde(with = "day_format")]
+    pub through: Date,
+}
+
 /// One day of the Models chart: the tokens of each of the period's top three models that day,
 /// in the order `models` lists them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,7 +190,7 @@ pub struct OverviewMonth {
     pub by_cli: Vec<(String, u64)>,
 }
 
-/// What ran through Argonauts itself, from the work ledger.
+/// What ran through Argonauts Code itself, from the work ledger.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ThroughArgonauts {
     /// The first day the work ledger holds.
@@ -241,6 +262,15 @@ pub struct OverviewData {
     /// The period's days with work, oldest first, for the Models chart.
     #[serde(default)]
     pub model_days: Vec<ModelDay>,
+    /// Every model that has run here with its tokens in all, the most first, whatever the
+    /// period. A model's place among its CLI's models picks its shade, so every tab given
+    /// the same list draws a model in the same color.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub all_time_models: Vec<ModelTokens>,
+    /// Claude Code's own count of the period's tokens, once its history is imported and its
+    /// /stats has kept one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_stats: Option<OwnCount>,
 }
 
 impl OverviewData {
@@ -273,6 +303,8 @@ impl OverviewData {
             year_colors: YearColors::default(),
             peak_day: None,
             model_days: Vec::new(),
+            all_time_models: Vec::new(),
+            claude_stats: None,
         }
     }
 

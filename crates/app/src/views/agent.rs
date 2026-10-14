@@ -1,5 +1,5 @@
-use argonauts_core::events::card::CardEvent;
 use argonauts_core::events::session::SessionEnd;
+use argonauts_core::events::task::TaskEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::SessionKey;
 use argonauts_core::sanitize::sanitize_for_terminal;
@@ -55,7 +55,7 @@ pub(crate) fn agent_view(
     let activity = main_calls[main_calls.len().saturating_sub(ACTIVITY_LINES)..]
         .iter()
         .map(|call| {
-            let (tool, summary) = titled(&this.started.vendor.0, call, this.cwd.as_deref());
+            let (tool, summary) = titled(&this.started.agent_id.0, call, this.cwd.as_deref());
             ActivityLine {
                 tool,
                 summary,
@@ -77,6 +77,9 @@ pub(crate) fn agent_view(
         subagents: subagents_of(this),
         outcome: this.ended.as_ref().and_then(outcome_of),
         plan: this.ended.as_ref().and_then(plan_of),
+        facts: facts.verdicts.facts(this),
+        to_fix: facts.verdicts.to_fix(&facts, this),
+        review: facts.verdicts.given(this),
     })
 }
 
@@ -95,7 +98,7 @@ fn plan_of(end: &SessionEnd) -> Option<Value> {
             .and_then(Value::as_array)
             .is_some_and(|items| !items.is_empty())
     };
-    (lists("cards") || lists("pieces")).then_some(result)
+    (lists("tasks") || lists("pieces")).then_some(result)
 }
 
 /// What the agent ended with, in its own words: its report as Markdown, else its final text.
@@ -133,7 +136,7 @@ fn words_before_report(text: &str) -> &str {
         .trim()
 }
 
-/// A report's summary, or a chat step's answer, then the lists a person reads in it.
+/// A report's summary, or a conversation step's answer, then the lists a person reads in it.
 fn report_markdown(report: &Value) -> Option<String> {
     let text = ["summary", "answer_markdown"]
         .iter()
@@ -171,21 +174,21 @@ fn list_item(value: &Value) -> Option<String> {
     (!line.is_empty()).then_some(line)
 }
 
-/// The card's latest diff. A card with a worktree and no diff yet shows an empty one. While
-/// the session runs, what it changed since the last commit counts too; the conductor commits
+/// The task's latest diff. A task with a worktree and no diff yet shows an empty one. While
+/// the session runs, what it changed since the last commit counts too; Argonauts Code commits
 /// it when the session ends.
 fn diff_of(events: &[RunEvent], session: &SessionFacts) -> Option<DiffStat> {
-    let card = session.card.as_ref()?;
+    let task = session.task.as_ref()?;
     let mut diff = None;
     for event in events
         .iter()
-        .filter(|event| event.card_id.as_ref() == Some(card))
+        .filter(|event| event.task_id.as_ref() == Some(task))
     {
         match &event.kind {
-            RunEventKind::Card(CardEvent::Worktree { .. }) => {
+            RunEventKind::Task(TaskEvent::Worktree { .. }) => {
                 diff.get_or_insert_with(DiffStat::default);
             }
-            RunEventKind::Card(CardEvent::Diff { stat, .. }) => diff = Some(*stat),
+            RunEventKind::Task(TaskEvent::Diff { stat, .. }) => diff = Some(*stat),
             _ => {}
         }
     }
@@ -206,7 +209,7 @@ fn subagents_of(session: &SessionFacts) -> Option<SubagentsSection> {
     if session.subagents.is_empty() {
         return None;
     }
-    let threads = session.started.vendor.0 == "codex";
+    let threads = session.started.agent_id.0 == "codex";
     let hidden_steps = session.subagents.iter().any(|child| !child.steps_visible);
     Some(SubagentsSection {
         title: if threads { "Threads" } else { "Subagents" }.to_owned(),
@@ -222,8 +225,8 @@ fn subagents_of(session: &SessionFacts) -> Option<SubagentsSection> {
 
 /// The call as the transcript titles it, such as `Bash(ls)` for Codex's `command_execution`,
 /// with paths inside the session's folder written from there.
-fn titled(vendor: &str, call: &ToolCall, cwd: Option<&Path>) -> (String, String) {
-    match start_call(vendor, &call.name, &call.input).title {
+fn titled(agent_id: &str, call: &ToolCall, cwd: Option<&Path>) -> (String, String) {
+    match start_call(agent_id, &call.name, &call.input).title {
         ToolTitle::Call { name, args } => {
             let args = match cwd.map(|cwd| format!("{}/", cwd.display())) {
                 Some(prefix) => args.replace(&prefix, ""),
@@ -258,19 +261,19 @@ fn summarize(input: &Value) -> String {
 mod tests {
     use super::*;
     use crate::client::test_support::{
-        agent, card_event, input, run_id, session_ended, session_event, session_started,
+        agent, input, run_id, session_ended, session_event, session_started, task_event,
     };
     use argonauts_core::AgentEvent;
-    use argonauts_core::budget::{BudgetAction, BudgetLimit, BudgetStatus};
-    use argonauts_core::events::card::{AttemptCause, CardState};
     use argonauts_core::events::session::{
         EndReason, SubagentKind, SubagentStatus, SubagentUpdate,
     };
     use argonauts_core::events::session::{FileDiff, LimitEvent, SessionEvent};
-    use argonauts_core::names::{RoleName, WorkerRef};
+    use argonauts_core::events::task::{TaskState, TryCause};
+    use argonauts_core::meter::{MeterAction, MeterLimit, SpendStatus};
+    use argonauts_core::names::{ModelRef, RoleName};
     use argonauts_core::steps::StepName;
     use argonauts_core::views::RowStatus;
-    use argonauts_core::{CardId, Spend};
+    use argonauts_core::{Spend, TaskId};
 
     fn tool(id: &str, command: &str) -> AgentEvent {
         AgentEvent::ToolStarted {
@@ -283,7 +286,7 @@ mod tests {
 
     #[test]
     fn the_agent_view_shows_prompt_latest_activity_diff_subagents_and_outcome() {
-        let card = argonauts_core::CardId::new("task-002").unwrap();
+        let task = argonauts_core::TaskId::new("task-002").unwrap();
         let key = SessionKey::numbered(1);
         let child = SubagentUpdate {
             id: "thread-1".to_owned(),
@@ -298,12 +301,12 @@ mod tests {
             tokens: None,
         };
         let events = vec![
-            session_started(0, &key, Some(&card), RoleName::Worker, "codex"),
+            session_started(0, &key, Some(&task), RoleName::Worker, "codex"),
             input(1, &key, "Build the export.\n"),
-            card_event(
+            task_event(
                 2,
-                &card,
-                CardEvent::Worktree {
+                &task,
+                TaskEvent::Worktree {
                     path: "/tmp/wt".into(),
                     branch: "argonauts/run/task-002".to_owned(),
                     base: "abc".to_owned(),
@@ -356,8 +359,8 @@ mod tests {
         assert!(agent_view(&events, &run_id(), &SessionKey::numbered(9)).is_none());
     }
 
-    fn owner_started(seq: u64, key: &SessionKey, card: &CardId, worker: &str) -> RunEvent {
-        let mut event = session_started(seq, key, Some(card), RoleName::Worker, worker);
+    fn worker_started(seq: u64, key: &SessionKey, task: &TaskId, worker: &str) -> RunEvent {
+        let mut event = session_started(seq, key, Some(task), RoleName::Worker, worker);
         if let RunEventKind::Session(SessionEvent::Started(started)) = &mut event.kind {
             started.step = Some(StepName::Build);
         }
@@ -381,10 +384,10 @@ mod tests {
     /// the shell around them, and paths read from the session's folder.
     #[test]
     fn activity_reads_as_the_transcript_names_calls() {
-        let card = CardId::new("task-001").unwrap();
+        let task = TaskId::new("task-001").unwrap();
         let (codex, claude) = (SessionKey::numbered(1), SessionKey::numbered(2));
         let events = vec![
-            owner_started(0, &codex, &card, "codex"),
+            worker_started(0, &codex, &task, "codex"),
             input(1, &codex, "Build it.\n"),
             called(
                 2,
@@ -393,7 +396,7 @@ mod tests {
                 "command_execution",
                 serde_json::json!({"command": "/bin/zsh -lc 'rg --files | head -50'"}),
             ),
-            owner_started(3, &claude, &card, "claude-code"),
+            worker_started(3, &claude, &task, "claude-code"),
             input(4, &claude, "Build it.\n"),
             called(
                 5,
@@ -412,17 +415,17 @@ mod tests {
         assert_eq!(line(&claude), "Update(src/mathutil.py)");
     }
 
-    /// While the owner works, the Diff counts what it changed since the worktree's last
-    /// commit, the latest diff of each file; once it ends, the conductor's commit counts.
+    /// While the worker works, the Diff counts what it changed since the worktree's last
+    /// commit, the latest diff of each file; once it ends, Argonauts Code's commit counts.
     #[test]
-    fn a_working_owners_diff_counts_its_changes_so_far() {
-        let card = CardId::new("task-001").unwrap();
+    fn a_working_workers_diff_counts_its_changes_so_far() {
+        let task = TaskId::new("task-001").unwrap();
         let key = SessionKey::numbered(1);
         let changed = |seq, path: &str, added, removed| {
             session_event(
                 seq,
                 &key,
-                Some(&card),
+                Some(&task),
                 RunEventKind::Session(SessionEvent::FileDiff(FileDiff {
                     path: path.to_owned(),
                     added,
@@ -433,11 +436,11 @@ mod tests {
             )
         };
         let mut events = vec![
-            owner_started(0, &key, &card, "claude-code"),
-            card_event(
+            worker_started(0, &key, &task, "claude-code"),
+            task_event(
                 1,
-                &card,
-                CardEvent::Worktree {
+                &task,
+                TaskEvent::Worktree {
                     path: "/tmp/wt".into(),
                     branch: "argonauts/run/task-001".to_owned(),
                     base: "abc".to_owned(),
@@ -459,12 +462,12 @@ mod tests {
             deletions: 2,
         };
         events.push(session_ended(5, &key, EndReason::Completed, 1_000));
-        events.push(card_event(
+        events.push(task_event(
             6,
-            &card,
-            CardEvent::Diff {
+            &task,
+            TaskEvent::Diff {
                 stat: committed,
-                path: "diffs/card.diff".into(),
+                path: "diffs/task.diff".into(),
             },
         ));
         assert_eq!(
@@ -474,7 +477,7 @@ mod tests {
     }
 
     /// A stream with no dollars, as Claude Code's is until it ends, is priced by the meter, as
-    /// the run's budget prices it.
+    /// the run's limit prices it.
     #[test]
     fn a_working_agent_is_priced_by_its_meter() {
         let key = SessionKey::numbered(1);
@@ -511,9 +514,9 @@ mod tests {
             2,
             &key,
             None,
-            RunEventKind::Session(SessionEvent::Limit(LimitEvent::Budget(BudgetStatus {
-                level: BudgetAction::Continue,
-                limit: BudgetLimit::None,
+            RunEventKind::Session(SessionEvent::Limit(LimitEvent::Spend(SpendStatus {
+                level: MeterAction::Continue,
+                limit: MeterLimit::None,
                 spend: metered,
                 fraction_used: None,
                 work: Default::default(),
@@ -526,28 +529,28 @@ mod tests {
         assert_eq!(row.tokens, 42_000);
     }
 
-    /// A retry reads as its attempt, and an attempt that ended as if done but never reported,
-    /// so that its card failed, reads as failed.
+    /// A retry reads as its try, and a try that ended as if done but never reported,
+    /// so that its task failed, reads as failed.
     #[test]
-    fn a_retry_reads_as_its_attempt_and_a_silent_end_as_failed() {
-        let card = CardId::new("task-001").unwrap();
+    fn a_retry_reads_as_its_try_and_a_silent_end_as_failed() {
+        let task = TaskId::new("task-001").unwrap();
         let (first, second) = (SessionKey::numbered(1), SessionKey::numbered(2));
-        let attempt = |seq, attempt, cause| {
-            card_event(
+        let try_event = |seq, try_number, cause| {
+            task_event(
                 seq,
-                &card,
-                CardEvent::Attempt {
-                    attempt,
-                    worker: WorkerRef::new("opencode", None),
+                &task,
+                TaskEvent::Try {
+                    try_number,
+                    worker: ModelRef::new("opencode", None),
                     cause,
                 },
             )
         };
         let state = |seq, to| {
-            card_event(
+            task_event(
                 seq,
-                &card,
-                CardEvent::State {
+                &task,
+                TaskEvent::State {
                     from: None,
                     to,
                     reason: String::new(),
@@ -555,18 +558,18 @@ mod tests {
             )
         };
         let events = vec![
-            attempt(0, 1, AttemptCause::First),
-            owner_started(1, &first, &card, "opencode-acp"),
+            try_event(0, 1, TryCause::First),
+            worker_started(1, &first, &task, "opencode-acp"),
             session_ended(2, &first, EndReason::Completed, 1_000),
-            state(3, CardState::Failed),
-            attempt(4, 2, AttemptCause::AfterFailure),
-            owner_started(5, &second, &card, "opencode"),
+            state(3, TaskState::Failed),
+            try_event(4, 2, TryCause::AfterFailure),
+            worker_started(5, &second, &task, "opencode"),
             session_ended(6, &second, EndReason::Completed, 1_000),
         ];
         let row = |key: &SessionKey| agent_view(&events, &run_id(), key).unwrap().row;
         assert_eq!(row(&first).label, "worker · task-001");
         assert_eq!(row(&first).status, RowStatus::Failed);
-        assert_eq!(row(&second).label, "worker · task-001 · attempt 2");
+        assert_eq!(row(&second).label, "worker · task-001 · try 2");
         assert_eq!(
             row(&second).status,
             RowStatus::Done,
@@ -574,10 +577,10 @@ mod tests {
         );
 
         let mut reported = events.clone();
-        reported.push(card_event(
+        reported.push(task_event(
             7,
-            &card,
-            CardEvent::Reported(Box::new(
+            &task,
+            TaskEvent::Reported(Box::new(
                 serde_json::from_value(serde_json::json!({
                     "status": "done", "summary": "Fixed add.", "files_changed": [],
                     "tests_run": [], "concerns": []
@@ -585,9 +588,75 @@ mod tests {
                 .unwrap(),
             )),
         ));
-        reported.push(state(8, CardState::Failed));
+        reported.push(state(8, TaskState::Failed));
         let view = agent_view(&reported, &run_id(), &second).unwrap();
         assert_eq!(view.row.status, RowStatus::Done, "it reported");
+    }
+
+    /// The session of a try you started with `r` says so after its role.
+    #[test]
+    fn a_try_you_restarted_says_so() {
+        let task = TaskId::new("task-001").unwrap();
+        let (first, second) = (SessionKey::numbered(1), SessionKey::numbered(2));
+        let try_event = |seq, try_number, cause| {
+            task_event(
+                seq,
+                &task,
+                TaskEvent::Try {
+                    try_number,
+                    worker: ModelRef::new("opencode", None),
+                    cause,
+                },
+            )
+        };
+        let events = vec![
+            try_event(0, 1, TryCause::First),
+            worker_started(1, &first, &task, "opencode"),
+            session_ended(2, &first, EndReason::Stopped, 1_000),
+            try_event(3, 2, TryCause::Restarted),
+            worker_started(4, &second, &task, "opencode"),
+        ];
+        let facts = |key: &SessionKey| agent_view(&events, &run_id(), key).unwrap().facts;
+        assert_eq!(facts(&first), ["worker"]);
+        assert_eq!(facts(&second), ["worker", "try 2 (restarted)"]);
+    }
+
+    /// A workflow can have its workers review each other's work. Such a session reads as what
+    /// it is there, and says what it may touch from how it was started, not from its role.
+    #[test]
+    fn a_worker_asked_to_review_reads_as_a_read_only_reviewer() {
+        use argonauts_core::session_runner::Access;
+
+        let asked = |seq, key: &SessionKey, label: &str, access| {
+            let mut event = session_started(seq, key, None, RoleName::Worker, "codex");
+            if let RunEventKind::Session(SessionEvent::Started(started)) = &mut event.kind {
+                started.label = Some(label.to_owned());
+                started.access = access;
+            }
+            event
+        };
+        let (reviewer, judge, builder) = (
+            SessionKey::numbered(1),
+            SessionKey::numbered(2),
+            SessionKey::numbered(3),
+        );
+        let events = vec![
+            asked(0, &reviewer, "review:rate-limit", Access::ReadOnly),
+            asked(1, &judge, "sign-off:all", Access::ReadOnly),
+            asked(2, &builder, "build:rate-limit", Access::Build),
+        ];
+        let facts = |key: &SessionKey| agent_view(&events, &run_id(), key).unwrap().facts;
+        assert_eq!(facts(&reviewer), ["reviewer", "read-only"]);
+        assert_eq!(facts(&judge), ["judge", "read-only"]);
+        assert_eq!(facts(&builder), ["worker"]);
+
+        // A reviewer by role that an endpoint runs has no tools at all, and says that.
+        let mut endpoint = session_started(0, &reviewer, None, RoleName::Reviewer, "ollama");
+        if let RunEventKind::Session(SessionEvent::Started(started)) = &mut endpoint.kind {
+            started.access = Access::NoTools;
+        }
+        let view = agent_view(&[endpoint], &run_id(), &reviewer).unwrap();
+        assert_eq!(view.facts, ["reviewer", "no tools"]);
     }
 
     fn ended(
@@ -596,7 +665,7 @@ mod tests {
         last_message: Option<&str>,
     ) -> SessionEnd {
         SessionEnd {
-            vendor_session: None,
+            cli_session: None,
             exit_code: Some(0),
             signal: None,
             duration_ms: 1_000,
@@ -655,8 +724,8 @@ mod tests {
     fn a_plan_is_kept_for_the_table_and_a_report_is_not_one() {
         let plan = serde_json::json!({
             "plan": {"summary": "Two tasks."},
-            "cards": [{"key": "iface", "title": "Due-date stubs"}],
-            "assignments": [{"card": "iface", "owner": "codex", "reviewers": []}]
+            "tasks": [{"key": "iface", "title": "Due-date stubs"}],
+            "assignments": [{"task": "iface", "worker": "codex", "reviewers": []}]
         });
         let text = plan.to_string();
         assert_eq!(
@@ -669,7 +738,7 @@ mod tests {
         let draft = serde_json::json!({"summary": "One piece.", "pieces": [{"name": "store"}]});
         assert!(plan_of(&ended(None, Some(draft), None)).is_some());
 
-        let report = serde_json::json!({"status": "done", "summary": "Built it.", "cards": []});
+        let report = serde_json::json!({"status": "done", "summary": "Built it.", "tasks": []});
         assert_eq!(plan_of(&ended(None, Some(report), None)), None);
         assert_eq!(plan_of(&ended(Some("All done."), None, None)), None);
     }
@@ -728,7 +797,7 @@ mod tests {
         // The structured output wins over the text, and a report with nothing to read shows
         // no JSON either.
         let events = vec![
-            session_started(0, &key, None, RoleName::Drafter, "codex"),
+            session_started(0, &key, None, RoleName::Draft, "codex"),
             ended_with(
                 &key,
                 "{\"plan\": []}",
@@ -738,7 +807,7 @@ mod tests {
         let view = agent_view(&events, &run_id(), &key).unwrap();
         assert_eq!(view.outcome.as_deref(), Some("Counters in Redis."));
         let events = vec![
-            session_started(0, &key, None, RoleName::Drafter, "codex"),
+            session_started(0, &key, None, RoleName::Draft, "codex"),
             ended_with(&key, "{\"plan\": []}", None),
         ];
         assert_eq!(agent_view(&events, &run_id(), &key).unwrap().outcome, None);

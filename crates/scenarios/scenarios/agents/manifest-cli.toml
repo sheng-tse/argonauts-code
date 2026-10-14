@@ -1,0 +1,7 @@
+# The worker is the JSONL plugin from the manifest adapter's fixtures, run for real, so no fake
+# agent plays a part. The versions let the app find the fakes it looks for at start.
+
+[version]
+claude = "2.1.284 (Claude Code)"
+codex = "codex-cli 0.158.0"
+agy = "1.2.13"

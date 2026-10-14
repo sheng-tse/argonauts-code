@@ -2,17 +2,17 @@ use std::path::Path;
 use std::sync::Arc;
 
 use argonauts_core::RunId;
-use argonauts_core::events::card::CardSpec;
-use argonauts_core::events::checkpoint::CheckpointKind;
-use argonauts_core::names::CheckpointId;
+use argonauts_core::events::approval::ApprovalKind;
+use argonauts_core::events::task::TaskSpec;
+use argonauts_core::names::ApprovalId;
 use argonauts_core::policy::{
     DecisionPoint, EvidenceFacts, EvidencePacket, EvidenceSubject, HardLimit, HardLimits, Violation,
 };
+use argonauts_core::session_runner::{Access, RunnerDirectory, SandboxMode};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxChoice;
-use argonauts_core::worker::{Access, SandboxMode, WorkerDirectory};
-use argonauts_testkit::worker::session_spec;
-use argonauts_testkit::{FakeDirectory, FakeWorker};
+use argonauts_testkit::runner::session_spec;
+use argonauts_testkit::{FakeDirectory, FakeRunner};
 use serde_json::json;
 
 use super::BuiltinLimits;
@@ -33,14 +33,14 @@ const INSTRUCTION_FILES: &str = include_str!("../../tests/fixtures/diffs/instruc
 const BINARY_FILES: &str = include_str!("../../tests/fixtures/diffs/binary_files.diff");
 
 /// Settings with the OS sandbox on, so only the limit a test is about shows up. The default
-/// is off for now, and off makes every checkpoint ask.
+/// is off for now, and off makes every approval ask.
 fn sandboxed() -> Settings {
     let mut settings = Settings::default();
     settings.sandbox.mode = SandboxChoice::Os;
     settings
 }
 
-fn limits_with(settings: Settings, workers: Arc<dyn WorkerDirectory>) -> BuiltinLimits {
+fn limits_with(settings: Settings, workers: Arc<dyn RunnerDirectory>) -> BuiltinLimits {
     let reload: SettingsReloader = Arc::new(|| None);
     BuiltinLimits::new(SettingsSource::new(Arc::new(settings), reload), workers)
 }
@@ -49,32 +49,32 @@ fn limits(settings: Settings) -> BuiltinLimits {
     limits_with(settings, Arc::new(FakeDirectory::new()))
 }
 
-fn card(forbidden: &[&str]) -> CardSpec {
+fn task(forbidden: &[&str]) -> TaskSpec {
     serde_json::from_value(json!({
         "id": "task-001", "title": "Parser", "task": "Trim fields", "kind": {"kind": "build"},
         "owned_paths": ["src/**"], "read_only_paths": [], "forbidden_paths": forbidden,
-        "hidden_paths": [], "depends_on": [], "criteria": ["G1"], "owner": "claude-code/haiku",
+        "hidden_paths": [], "depends_on": [], "criteria": ["G1"], "worker": "claude-code/haiku",
         "reviewers": [],
-        "budget": {"limit": null, "max_minutes": null, "max_tool_calls": null,
+        "limit": {"limit": null, "max_minutes": null, "max_tool_calls": null,
                    "inactivity_min": null},
         "predictions": null,
     }))
     .unwrap()
 }
 
-fn point(kind: CheckpointKind) -> DecisionPoint {
+fn point(kind: ApprovalKind) -> DecisionPoint {
     DecisionPoint {
         run: RunId::new("run-01").unwrap(),
-        checkpoint: CheckpointId::numbered(1),
+        approval: ApprovalId::numbered(1),
         kind,
-        recipe: None,
+        learned_workflow: None,
         authors: Vec::new(),
         mode_override: None,
-        lead: None,
+        main_agent: None,
     }
 }
 
-fn evidence(kind: CheckpointKind, facts: EvidenceFacts) -> EvidencePacket {
+fn evidence(kind: ApprovalKind, facts: EvidenceFacts) -> EvidencePacket {
     EvidencePacket {
         kind,
         goal: None,
@@ -96,7 +96,7 @@ fn subject() -> Option<EvidenceSubject> {
 fn good_merge() -> EvidenceFacts {
     EvidenceFacts {
         subject: subject(),
-        gates_passed: Some(true),
+        checks_passed: Some(true),
         acceptance_tests_valid: Some(true),
         tamper_flags: Some(0),
         agent_paths: vec!["src/parser.rs".to_owned(), "tests/parser.rs".to_owned()],
@@ -115,7 +115,7 @@ fn only(violations: &[Violation], limit: HardLimit) -> Vec<&Violation> {
     violations.iter().filter(|v| v.limit == limit).collect()
 }
 
-fn check_point(settings: Settings, kind: CheckpointKind, facts: EvidenceFacts) -> Vec<Violation> {
+fn check_point(settings: Settings, kind: ApprovalKind, facts: EvidenceFacts) -> Vec<Violation> {
     limits(settings).check_point(&point(kind), &evidence(kind, facts))
 }
 
@@ -138,32 +138,32 @@ fn adding(path: &str, added: &[&str]) -> String {
 }
 
 #[test]
-fn builtin_gates_detect_secrets_tamper_deps_paths() {
+fn builtin_checks_detect_secrets_tamper_deps_paths() {
     let mut settings = sandboxed();
     settings.limits.dependency_allowlist = vec!["left-pad".to_owned(), "serde".to_owned()];
     let limits = limits(settings);
-    let card = card(&["src/api/**"]);
+    let task = task(&["src/api/**"]);
 
-    assert_eq!(limits.check_card_diff(&card, CLEAN), Vec::new());
-    assert_eq!(limits.check_card_diff(&card, ""), Vec::new());
+    assert_eq!(limits.check_task_diff(&task, CLEAN), Vec::new());
+    assert_eq!(limits.check_task_diff(&task, ""), Vec::new());
 
-    let deleted = limits.check_card_diff(&card, DELETED_TEST);
+    let deleted = limits.check_task_diff(&task, DELETED_TEST);
     let removed = only(&deleted, HardLimit::TestDeleted);
     assert_eq!(removed.len(), 1);
     assert_eq!(removed[0].paths, vec!["tests/login.test.ts"]);
 
-    let focused = limits.check_card_diff(&card, ADDED_ONLY);
+    let focused = limits.check_task_diff(&task, ADDED_ONLY);
     assert_eq!(kinds(&focused), vec![HardLimit::SkipMarker]);
     assert_eq!(focused[0].paths, vec!["src/cart.test.js"]);
 
-    let lock = limits.check_card_diff(&card, LOCKFILE_EDIT);
+    let lock = limits.check_task_diff(&task, LOCKFILE_EDIT);
     assert_eq!(
         kinds(&lock),
         vec![HardLimit::Lockfile, HardLimit::ProtectedPath]
     );
     assert!(lock.iter().all(|v| v.paths == vec!["Cargo.lock"]));
 
-    let deps = limits.check_card_diff(&card, NEW_DEPENDENCY);
+    let deps = limits.check_task_diff(&task, NEW_DEPENDENCY);
     assert_eq!(kinds(&deps), vec![HardLimit::Dependency]);
     assert_eq!(deps[0].paths, vec!["package.json", "Cargo.toml"]);
     assert!(
@@ -173,19 +173,19 @@ fn builtin_gates_detect_secrets_tamper_deps_paths() {
     );
     assert!(!deps[0].detail.contains("left-pad") && !deps[0].detail.contains("express"));
 
-    let protected = limits.check_card_diff(&card, PROTECTED_PATH);
+    let protected = limits.check_task_diff(&task, PROTECTED_PATH);
     assert_eq!(kinds(&protected), vec![HardLimit::ProtectedPath]);
     assert_eq!(
         protected[0].paths,
         vec![".argonauts/goal.md", ".github/workflows/ci.yml"]
     );
 
-    let forbidden = limits.check_card_diff(&card, FORBIDDEN_PATH);
+    let forbidden = limits.check_task_diff(&task, FORBIDDEN_PATH);
     assert_eq!(kinds(&forbidden), vec![HardLimit::ProtectedPath]);
     assert_eq!(forbidden[0].paths, vec!["src/api/frozen.rs"]);
     assert!(forbidden[0].detail.contains("task-001"));
     assert_eq!(
-        limits.check_card_diff(&self::card(&[]), FORBIDDEN_PATH),
+        limits.check_task_diff(&self::task(&[]), FORBIDDEN_PATH),
         Vec::new()
     );
 
@@ -198,7 +198,7 @@ fn builtin_gates_detect_secrets_tamper_deps_paths() {
         (assigned, "assigned secret"),
         (key, "private key"),
     ] {
-        let found = limits.check_card_diff(&card, &adding("src/config.rs", &[&line]));
+        let found = limits.check_task_diff(&task, &adding("src/config.rs", &[&line]));
         assert_eq!(kinds(&found), vec![HardLimit::Secret], "{kind}");
         assert_eq!(found[0].paths, vec!["src/config.rs"]);
         assert!(found[0].detail.contains(kind), "{}", found[0].detail);
@@ -211,12 +211,12 @@ fn builtin_gates_detect_secrets_tamper_deps_paths() {
     let removal = format!(
         "diff --git a/.env b/.env\n--- a/.env\n+++ b/.env\n@@ -1 +0,0 @@\n-TOKEN={token}\n"
     );
-    assert_eq!(limits.check_card_diff(&card, &removal), Vec::new());
+    assert_eq!(limits.check_task_diff(&task, &removal), Vec::new());
 }
 
 #[test]
-fn binary_files_the_scan_cannot_read_stop_the_card() {
-    let found = limits(sandboxed()).check_card_diff(&card(&[]), BINARY_FILES);
+fn binary_files_the_scan_cannot_read_stop_the_task() {
+    let found = limits(sandboxed()).check_task_diff(&task(&[]), BINARY_FILES);
     assert_eq!(kinds(&found), vec![HardLimit::Secret]);
     assert_eq!(found.len(), 2, "{found:?}");
     assert_eq!(found[0].paths, vec!["keys/client.p12"]);
@@ -234,9 +234,9 @@ fn binary_files_the_scan_cannot_read_stop_the_card() {
 }
 
 #[test]
-fn builtin_gates_fail_closed_on_a_diff_they_cannot_read() {
+fn builtin_checks_fail_closed_on_a_diff_they_cannot_read() {
     let limits = limits(sandboxed());
-    let card = card(&[]);
+    let task = task(&[]);
     let broken = [
         // More lines than the header says.
         "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n+c\n",
@@ -248,8 +248,8 @@ fn builtin_gates_fail_closed_on_a_diff_they_cannot_read() {
         "some prose\n",
     ];
     for diff in broken {
-        let violations = limits.check_card_diff(&card, diff);
-        assert_eq!(kinds(&violations), vec![HardLimit::GatesFailed], "{diff}");
+        let violations = limits.check_task_diff(&task, diff);
+        assert_eq!(kinds(&violations), vec![HardLimit::ChecksFailed], "{diff}");
         assert!(!violations[0].detail.contains("prose"));
     }
 }
@@ -261,7 +261,7 @@ fn diffs_parse_renames_binaries_quotes_and_plain_diffs() {
     assert_eq!(changes[0].status, FileStatus::Renamed);
     assert_eq!(changes[0].path, "pkg/a.go");
     assert_eq!(changes[0].old_path.as_deref(), Some("tests/a_test.go"));
-    let violations = limits(sandboxed()).check_card_diff(&card(&[]), renamed);
+    let violations = limits(sandboxed()).check_task_diff(&task(&[]), renamed);
     assert_eq!(kinds(&violations), vec![HardLimit::TestDeleted]);
 
     let binary = "diff --git a/img/logo.png b/img/logo.png\nnew file mode 100644\nindex 0000000..1234567\nBinary files /dev/null and b/img/logo.png differ\ndiff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n";
@@ -318,7 +318,7 @@ fn protected_globs_read_like_gitignore_and_ignore_case() {
     let touched = |path: &str| {
         let diff = adding(path, &["x"]);
         !only(
-            &limits.check_card_diff(&card(&[]), &diff),
+            &limits.check_task_diff(&task(&[]), &diff),
             HardLimit::ProtectedPath,
         )
         .is_empty()
@@ -333,7 +333,7 @@ fn protected_globs_read_like_gitignore_and_ignore_case() {
 
     let mut bad = sandboxed();
     bad.limits.protected_paths = vec!["src/[".to_owned()];
-    let found = self::limits(bad).check_card_diff(&card(&[]), CLEAN);
+    let found = self::limits(bad).check_task_diff(&task(&[]), CLEAN);
     assert_eq!(kinds(&found), vec![HardLimit::ProtectedPath]);
     assert!(found[0].detail.contains("src/["));
 
@@ -352,8 +352,11 @@ fn dependency_entries_are_read_from_every_manifest() {
     ];
     let limits = limits(settings);
     let names = |diff: &str| -> Vec<String> {
-        let found = limits.check_card_diff(&card(&[]), diff);
-        assert!(only(&found, HardLimit::GatesFailed).is_empty(), "{found:?}");
+        let found = limits.check_task_diff(&task(&[]), diff);
+        assert!(
+            only(&found, HardLimit::ChecksFailed).is_empty(),
+            "{found:?}"
+        );
         match only(&found, HardLimit::Dependency).first() {
             Some(v) => v
                 .detail
@@ -454,7 +457,7 @@ fn skip_markers_are_words_not_substrings() {
 #[test]
 fn test_config_and_weakened_tests_are_caught() {
     let limits = limits(sandboxed());
-    let check = |diff: &str| limits.check_card_diff(&card(&[]), diff);
+    let check = |diff: &str| limits.check_task_diff(&task(&[]), diff);
 
     for diff in [
         adding("jest.config.ts", &["  bail: true,"]),
@@ -501,7 +504,7 @@ fn claude_code_config_in_a_diff_blocks_auto_merge() {
         ".claude/agents/x.md",
         ".claude/commands/x.md",
         ".claude/skills/r/scripts/publish.sh",
-        // The plugin's hooks module and its mod, beside its `.claude-plugin/`.
+        // The plugin's hooks file and the module it registers, beside its `.claude-plugin/`.
         "tools/p/hooks/hooks.json",
         "tools/p/register.js",
     ];
@@ -514,7 +517,7 @@ fn claude_code_config_in_a_diff_blocks_auto_merge() {
             )
         })
         .collect();
-    let found = limits.check_card_diff(&card(&[]), &diff);
+    let found = limits.check_task_diff(&task(&[]), &diff);
     assert_eq!(kinds(&found), vec![HardLimit::InstructionFile]);
     let mut expected = paths.map(str::to_owned).to_vec();
     expected.sort();
@@ -523,7 +526,7 @@ fn claude_code_config_in_a_diff_blocks_auto_merge() {
         assert!(found[0].detail.contains(path), "{}", found[0].detail);
     }
     let unrelated = "diff --git a/src/claude/settings.json b/src/claude/settings.json\nnew file mode 100644\n--- /dev/null\n+++ b/src/claude/settings.json\n@@ -0,0 +1 @@\n+x\n";
-    assert!(limits.check_card_diff(&card(&[]), unrelated).is_empty());
+    assert!(limits.check_task_diff(&task(&[]), unrelated).is_empty());
 }
 
 fn new_files(paths: &[&str]) -> String {
@@ -538,7 +541,7 @@ fn new_files(paths: &[&str]) -> String {
         .collect()
 }
 
-/// A plugin already in the repository shows by its `.claude-plugin/` folder in the card's tree,
+/// A plugin already in the repository shows by its `.claude-plugin/` folder in the task's tree,
 /// so a change to its hooks module or its MCP server code alone waits for you too. What Claude
 /// Code keeps under `.claude/` for itself doesn't.
 #[test]
@@ -552,14 +555,14 @@ fn a_change_inside_a_plugin_the_tree_holds_blocks_auto_merge() {
         "tools/other/index.js",
         ".claude/worktrees/w/notes.txt",
     ]);
-    let found = limits.check_card_tree_diff(&card(&[]), &diff, tree.path());
+    let found = limits.check_task_tree_diff(&task(&[]), &diff, tree.path());
     assert_eq!(kinds(&found), vec![HardLimit::InstructionFile]);
     assert_eq!(
         found[0].paths,
         vec!["tools/q/hooks/register.js", "tools/q/server/index.js"]
     );
     // Without the tree, nothing shows the plugin.
-    assert!(limits.check_card_diff(&card(&[]), &diff).is_empty());
+    assert!(limits.check_task_diff(&task(&[]), &diff).is_empty());
 
     // At the merge, the agents' own paths show the root.
     let mut facts = good_merge();
@@ -568,8 +571,8 @@ fn a_change_inside_a_plugin_the_tree_holds_blocks_auto_merge() {
         "tools/p/hooks/register.js".to_owned(),
     ]);
     let found = limits.check_point(
-        &point(CheckpointKind::Merge),
-        &evidence(CheckpointKind::Merge, facts),
+        &point(ApprovalKind::Merge),
+        &evidence(ApprovalKind::Merge, facts),
     );
     assert_eq!(kinds(&found), vec![HardLimit::InstructionFile]);
     assert_eq!(
@@ -584,37 +587,37 @@ fn a_change_inside_a_plugin_the_tree_holds_blocks_auto_merge() {
 #[test]
 fn instruction_files_in_diff_block_auto_merge() {
     let limits = limits(sandboxed());
-    let found = limits.check_card_diff(&card(&[]), INSTRUCTION_FILES);
-    // A flag for the merge, not a failure that stops the card.
+    let found = limits.check_task_diff(&task(&[]), INSTRUCTION_FILES);
+    // A flag for the merge, not a failure that stops the task.
     assert_eq!(kinds(&found), vec![HardLimit::InstructionFile]);
     assert_eq!(found[0].paths, vec!["CLAUDE.md", "skills/deploy/SKILL.md"]);
     assert!(found[0].detail.contains("skills/deploy/SKILL.md"));
 
     let deleted = "diff --git a/docs/agents.md b/docs/agents.md\ndeleted file mode 100644\n--- a/docs/agents.md\n+++ /dev/null\n@@ -1 +0,0 @@\n-Be careful.\n";
-    let found = limits.check_card_diff(&card(&[]), deleted);
+    let found = limits.check_task_diff(&task(&[]), deleted);
     assert_eq!(kinds(&found), vec![HardLimit::InstructionFile]);
 
     let mut facts = good_merge();
     facts.agent_paths.push("sub/GEMINI.md".to_owned());
     let found = limits.check_point(
-        &point(CheckpointKind::Merge),
-        &evidence(CheckpointKind::Merge, facts.clone()),
+        &point(ApprovalKind::Merge),
+        &evidence(ApprovalKind::Merge, facts.clone()),
     );
     assert_eq!(kinds(&found), vec![HardLimit::InstructionFile]);
     assert_eq!(found[0].paths, vec!["sub/GEMINI.md"]);
     assert!(found[0].detail.contains("sub/GEMINI.md"));
 
-    // Conductor-only instruction files and non-merge points aren't flagged.
+    // Instruction files only Argonauts Code committed, and non-merge points, aren't flagged.
     facts.agent_paths.pop();
     facts.conductor_paths.push("CLAUDE.md".to_owned());
     assert_eq!(
-        check_point(sandboxed(), CheckpointKind::Merge, facts),
+        check_point(sandboxed(), ApprovalKind::Merge, facts),
         Vec::new()
     );
 }
 
 #[test]
-fn conductor_only_commit_is_not_a_violation() {
+fn a_commit_only_argonauts_code_made_is_not_a_violation() {
     let mut facts = good_merge();
     facts.conductor_paths = vec![
         ".argonauts/goal.md".to_owned(),
@@ -624,12 +627,12 @@ fn conductor_only_commit_is_not_a_violation() {
         "AGENTS.md".to_owned(),
     ];
     assert_eq!(
-        check_point(sandboxed(), CheckpointKind::Merge, facts.clone()),
+        check_point(sandboxed(), ApprovalKind::Merge, facts.clone()),
         Vec::new()
     );
     // The same paths from an agent are violations.
     facts.agent_paths.extend(facts.conductor_paths.clone());
-    let found = check_point(sandboxed(), CheckpointKind::Merge, facts);
+    let found = check_point(sandboxed(), ApprovalKind::Merge, facts);
     assert_eq!(
         kinds(&found),
         vec![
@@ -651,7 +654,7 @@ fn conductor_only_commit_is_not_a_violation() {
 
 #[test]
 fn plan_or_merge_without_subject_fails() {
-    for kind in [CheckpointKind::Plan, CheckpointKind::Merge] {
+    for kind in [ApprovalKind::Plan, ApprovalKind::Merge] {
         let mut facts = good_merge();
         facts.subject = None;
         let found = check_point(sandboxed(), kind, facts);
@@ -661,7 +664,7 @@ fn plan_or_merge_without_subject_fails() {
         assert_eq!(empty[0].detail, "the evidence names no commits");
     }
     // Other points name no commits and don't need to.
-    for kind in [CheckpointKind::Goal, CheckpointKind::Escalation] {
+    for kind in [ApprovalKind::Understand, ApprovalKind::Stuck] {
         assert_eq!(
             check_point(sandboxed(), kind, EvidenceFacts::default()),
             Vec::new(),
@@ -670,30 +673,30 @@ fn plan_or_merge_without_subject_fails() {
     }
     // Evidence built for another point covers nothing here.
     let found = limits(sandboxed()).check_point(
-        &point(CheckpointKind::Merge),
-        &evidence(CheckpointKind::Goal, good_merge()),
+        &point(ApprovalKind::Merge),
+        &evidence(ApprovalKind::Understand, good_merge()),
     );
     assert_eq!(kinds(&found), vec![HardLimit::HeadMoved]);
 }
 
 #[test]
-fn sandbox_off_makes_every_checkpoint_ask() {
+fn sandbox_off_makes_every_approval_ask() {
     let mut settings = Settings::default();
     settings.sandbox.mode = SandboxChoice::Tool;
     let every = [
-        CheckpointKind::Goal,
-        CheckpointKind::Plan,
-        CheckpointKind::Merge,
-        CheckpointKind::Handoff,
-        CheckpointKind::VendorDown,
-        CheckpointKind::Escalation,
-        CheckpointKind::Budget,
-        CheckpointKind::ChangeRequest,
-        CheckpointKind::GoalChange,
-        CheckpointKind::WorkflowPromotion,
-        CheckpointKind::TakeOverReturn,
-        CheckpointKind::Question,
-        CheckpointKind::OriginalReturned,
+        ApprovalKind::Understand,
+        ApprovalKind::Plan,
+        ApprovalKind::Merge,
+        ApprovalKind::Fallback,
+        ApprovalKind::AgentDown,
+        ApprovalKind::Stuck,
+        ApprovalKind::Limit,
+        ApprovalKind::ChangeRequest,
+        ApprovalKind::GoalChange,
+        ApprovalKind::WorkflowPromotion,
+        ApprovalKind::TakeOverReturn,
+        ApprovalKind::Question,
+        ApprovalKind::OriginalReturned,
     ];
     for kind in every {
         let found = check_point(settings.clone(), kind, good_merge());
@@ -702,7 +705,7 @@ fn sandbox_off_makes_every_checkpoint_ask() {
 
     // Its sessions start without a sandbox, and the violation says why.
     let directory = FakeDirectory::new();
-    directory.add(FakeWorker::harness("claude-code/haiku", "claude"));
+    directory.add(FakeRunner::cli("claude-code/haiku", "anthropic"));
     let limits = limits_with(settings, Arc::new(directory));
     let mut spec = session_spec("claude-code/haiku", Access::ReadOnly, Path::new("work"));
     spec.sandbox.mode = SandboxMode::None;
@@ -720,12 +723,12 @@ fn sandbox_turned_on_mid_run_still_asks() {
     // New sessions get the sandbox the files now ask for.
     assert_eq!(source.current().sandbox.mode, SandboxChoice::Os);
 
-    // The sessions that already ran had none, so every checkpoint of the run still asks.
+    // The sessions that already ran had none, so every approval of the run still asks.
     let limits = BuiltinLimits::new(source, Arc::new(FakeDirectory::new()));
     for kind in [
-        CheckpointKind::Goal,
-        CheckpointKind::Plan,
-        CheckpointKind::Merge,
+        ApprovalKind::Understand,
+        ApprovalKind::Plan,
+        ApprovalKind::Merge,
     ] {
         let found = limits.check_point(&point(kind), &evidence(kind, good_merge()));
         assert_eq!(kinds(&found), vec![HardLimit::NoSandbox], "{kind:?}");
@@ -738,7 +741,7 @@ fn sandbox_turned_on_mid_run_still_asks() {
     let reload: SettingsReloader = Arc::new(move || Some(off.clone()));
     let source = SettingsSource::new(Arc::new(sandboxed()), reload);
     let limits = BuiltinLimits::new(source, Arc::new(FakeDirectory::new()));
-    let merge = CheckpointKind::Merge;
+    let merge = ApprovalKind::Merge;
     assert_eq!(
         limits.check_point(&point(merge), &evidence(merge, good_merge())),
         Vec::new()
@@ -748,11 +751,11 @@ fn sandbox_turned_on_mid_run_still_asks() {
 #[test]
 fn check_session_needs_sandbox_and_goal_hash() {
     let directory = FakeDirectory::new();
-    directory.add(FakeWorker::harness("claude-code/haiku", "claude"));
+    directory.add(FakeRunner::cli("claude-code/haiku", "anthropic"));
     let limits = limits_with(sandboxed(), Arc::new(directory));
     let spec = |access: Access| session_spec("claude-code/haiku", access, Path::new("work"));
 
-    for access in [Access::Build, Access::Spike] {
+    for access in [Access::Build, Access::Experiment] {
         let found = limits.check_session(&spec(access));
         assert_eq!(kinds(&found), vec![HardLimit::NoGoalHash], "{access:?}");
 
@@ -784,10 +787,10 @@ fn check_session_needs_sandbox_and_goal_hash() {
 }
 
 #[test]
-fn check_session_refuses_unsandboxed_harness() {
+fn check_session_refuses_unsandboxed_cli() {
     let directory = FakeDirectory::new();
-    directory.add(FakeWorker::harness("claude-code/haiku", "claude"));
-    directory.add(FakeWorker::endpoint("ollama/llama3.2", "llama"));
+    directory.add(FakeRunner::cli("claude-code/haiku", "anthropic"));
+    directory.add(FakeRunner::endpoint("ollama/llama3.2", "meta"));
     let limits = limits_with(sandboxed(), Arc::new(directory));
     let unsandboxed = |worker: &str, access: Access| {
         let mut spec = session_spec(worker, access, Path::new("work"));
@@ -795,15 +798,15 @@ fn check_session_refuses_unsandboxed_harness() {
         limits.check_session(&spec)
     };
 
-    let harness = unsandboxed("claude-code/haiku", Access::ReadOnly);
-    assert_eq!(kinds(&harness), vec![HardLimit::NoSandbox]);
-    assert!(harness[0].detail.contains("claude-code/haiku"));
+    let cli = unsandboxed("claude-code/haiku", Access::ReadOnly);
+    assert_eq!(kinds(&cli), vec![HardLimit::NoSandbox]);
+    assert!(cli[0].detail.contains("claude-code/haiku"));
     assert_eq!(
         kinds(&unsandboxed("claude-code/haiku", Access::NoTools)),
         vec![HardLimit::NoSandbox]
     );
     assert_eq!(unsandboxed("ollama/llama3.2", Access::NoTools), Vec::new());
-    // A worker the directory doesn't know is held to a harness's rules.
+    // A worker the directory doesn't know is held to a CLI's rules.
     assert_eq!(
         kinds(&unsandboxed("mystery/model", Access::ReadOnly)),
         vec![HardLimit::NoSandbox]
@@ -816,24 +819,24 @@ fn decision_points_check_every_limit_the_evidence_shows() {
     settings.limits.dependency_allowlist = vec!["serde".to_owned(), "lodash@4.17.21".to_owned()];
     settings.limits.spend_per_day = Some(40.0);
     settings.limits.auto_merges_per_day = Some(3);
-    let merge = |facts: EvidenceFacts| check_point(settings.clone(), CheckpointKind::Merge, facts);
+    let merge = |facts: EvidenceFacts| check_point(settings.clone(), ApprovalKind::Merge, facts);
 
     assert_eq!(merge(good_merge()), Vec::new());
 
     let cases: Vec<(EvidenceFacts, HardLimit)> = vec![
         (
             EvidenceFacts {
-                gates_passed: None,
+                checks_passed: None,
                 ..good_merge()
             },
-            HardLimit::GatesFailed,
+            HardLimit::ChecksFailed,
         ),
         (
             EvidenceFacts {
-                gates_passed: Some(false),
+                checks_passed: Some(false),
                 ..good_merge()
             },
-            HardLimit::GatesFailed,
+            HardLimit::ChecksFailed,
         ),
         (
             EvidenceFacts {
@@ -917,7 +920,7 @@ fn decision_points_check_every_limit_the_evidence_shows() {
     uncapped.limits.auto_merges_per_day = None;
     let found = check_point(
         uncapped,
-        CheckpointKind::Merge,
+        ApprovalKind::Merge,
         EvidenceFacts {
             auto_merges_today: 500,
             ..good_merge()
@@ -938,7 +941,7 @@ fn decision_points_check_every_limit_the_evidence_shows() {
     };
     assert_eq!(merge(allowed), Vec::new());
 
-    // A plan checks the paths its cards own, globs included, but not broad ones.
+    // A plan checks the paths its tasks own, globs included, but not broad ones.
     let plan = |owned: &[&str]| {
         let facts = EvidenceFacts {
             subject: subject(),
@@ -946,7 +949,7 @@ fn decision_points_check_every_limit_the_evidence_shows() {
             auto_merges_today: 99,
             ..EvidenceFacts::default()
         };
-        kinds(&check_point(settings.clone(), CheckpointKind::Plan, facts))
+        kinds(&check_point(settings.clone(), ApprovalKind::Plan, facts))
     };
     assert_eq!(plan(&["src/**", "**", "tests/*.rs"]), Vec::new());
     assert_eq!(plan(&[".github/**"]), vec![HardLimit::ProtectedPath]);
@@ -962,7 +965,7 @@ fn decision_points_check_every_limit_the_evidence_shows() {
         ..good_merge()
     };
     assert_eq!(
-        check_point(unlimited, CheckpointKind::Merge, spent),
+        check_point(unlimited, ApprovalKind::Merge, spent),
         Vec::new()
     );
 }

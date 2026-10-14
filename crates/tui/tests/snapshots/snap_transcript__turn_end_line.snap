@@ -5,7 +5,7 @@ expression: text(&lines)
 ❯ hi
 
 ● Hi! I'm the main agent (claude-code/haiku). Ask me about this repo, or
-  describe a change and I'll run it solo or with the crew.
+  describe a change and I'll run it as Captain or with the crew.
 
 ✻ Sailed for 3s · done 10:42 AM
 

@@ -91,7 +91,7 @@ fn slash_menu_under_input() {
     for line in &lines {
         assert!(line.width() <= 80, "one row each: {line:?}");
     }
-    // Like the mode line it covers, the menu leaves the last column empty.
+    // Like the bottom line it covers, the menu leaves the last column empty.
     for row in rows[rule + 1..].iter() {
         assert!(row.trim_end().chars().count() < 80, "{row:?}");
     }
@@ -107,20 +107,20 @@ fn slash_menu_under_input() {
 
 #[test]
 fn slash_menu_with_the_main_agents_commands() {
-    use argonauts_core::names::VendorId;
-    use argonauts_core::vendor_commands::{
-        CommandKind, CommandScope, CommandSource, VendorCommand, VendorCommandSet,
+    use argonauts_core::cli_commands::{
+        CliCommand, CliCommandSet, CommandKind, CommandScope, CommandSource,
     };
-    let command = |name: &str, args: &str, help: &str, source: CommandSource| VendorCommand {
+    use argonauts_core::names::AgentId;
+    let command = |name: &str, args: &str, help: &str, source: CommandSource| CliCommand {
         name: name.into(),
         aliases: Vec::new(),
         args: args.into(),
         help: help.into(),
-        kind: CommandKind::Vendor,
+        kind: CommandKind::Cli,
         source,
     };
-    let set = VendorCommandSet::new(
-        VendorId("claude-code".into()),
+    let set = CliCommandSet::new(
+        AgentId("claude-code".into()),
         "Claude Code",
         &[],
         vec![
@@ -187,9 +187,9 @@ fn in_shell_mode(command: &str) -> BottomState {
     bottom
 }
 
-/// Claude Code's bash mode: a pink `!` and rules, and a mode line that says only that.
+/// Claude Code's bash mode: a pink `!` and rules, and a bottom line that says only that.
 #[test]
-fn shell_mode_input_and_mode_line() {
+fn shell_mode_input_and_bottom_row() {
     let empty = in_shell_mode("");
     assert!(empty.composer.is_shell());
     snapshot_widths("shell_mode_empty", &empty);
@@ -201,7 +201,7 @@ fn shell_mode_input_and_mode_line() {
     let pink = common::fg(argonauts_tui::theme::Role::Shell);
     let marker = common::style_of(&lines, "! ").expect("the input row");
     assert_eq!(marker.fg, pink, "the ! is pink");
-    let mode = common::style_of(&lines, "! for shell mode").expect("the mode line");
+    let mode = common::style_of(&lines, "! for shell mode").expect("the bottom line");
     assert_eq!(mode.fg, pink);
     let rules: Vec<_> = lines
         .iter()

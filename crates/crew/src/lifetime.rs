@@ -1,11 +1,11 @@
-//! Session lifetimes per role: `card` (fresh per card, resumed for its retries), `run` (one
+//! Session lifetimes per role: `task` (fresh per task, resumed for its retries), `run` (one
 //! session per role per run), and `project` (the role's main session, used only when it isn't
 //! busy, and rotated when full). Blind roles are always fresh.
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::session::EndReason;
 use argonauts_core::main_sessions::{MainSession, MainSessionLease, MainSessions};
-use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName, SessionKey};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::sessions::SessionLifetime;
 
@@ -17,17 +17,17 @@ use crate::state::sessions::SessionRecord;
 #[derive(Debug)]
 pub enum Reuse {
     Fresh,
-    /// An earlier session of this run: the card's own for its retries, or the role's for `run`.
+    /// An earlier session of this run: the task's own for its retries, or the role's for `run`.
     Resume {
         key: SessionKey,
-        vendor_session: String,
+        cli_session: String,
     },
     /// The role's main session across runs, held with its lease while this run uses it.
-    /// `vendor_session` is `None` when the main session was full and starts over with a
-    /// handoff note.
+    /// `agent_session` is `None` when the main session was full and starts over with a
+    /// fallback note.
     Main {
         lease: MainSessionLease,
-        vendor_session: Option<String>,
+        cli_session: Option<String>,
     },
 }
 
@@ -39,15 +39,15 @@ pub fn lifetime(settings: &Settings, role: RoleName) -> SessionLifetime {
         .unwrap_or(settings.sessions.lifetime)
 }
 
-/// Picks how the next session of this role, worker, and card starts. A session does one thing
+/// Picks how the next session of this role, worker, and task starts. A session does one thing
 /// at a time, so a busy one is never picked and the work runs in a fresh session instead.
 pub fn choose(
     state: &RunState,
     settings: &Settings,
     mains: &MainSessions,
     role: RoleName,
-    worker: &WorkerRef,
-    card: Option<&CardId>,
+    worker: &ModelRef,
+    task: Option<&TaskId>,
     blind: bool,
 ) -> EngineResult<Reuse> {
     if blind {
@@ -64,23 +64,20 @@ pub fn choose(
             })
             .cloned()
     };
-    // A full session rotates, so the next one starts fresh with a handoff note.
+    // A full session rotates, so the next one starts fresh with a fallback note.
     let reuse = |session: Option<SessionRecord>| match session {
         Some(session) if was_full(&session, settings) => Reuse::Fresh,
         Some(SessionRecord {
             key,
-            vendor_session: Some(vendor_session),
+            cli_session: Some(cli_session),
             end: Some(_),
             ..
-        }) => Reuse::Resume {
-            key,
-            vendor_session,
-        },
+        }) => Reuse::Resume { key, cli_session },
         _ => Reuse::Fresh,
     };
     match lifetime(settings, role) {
-        SessionLifetime::Task => Ok(match card {
-            Some(card) => reuse(newest(&|session| session.card.as_ref() == Some(card))),
+        SessionLifetime::Task => Ok(match task {
+            Some(task) => reuse(newest(&|session| session.task.as_ref() == Some(task))),
             None => Reuse::Fresh,
         }),
         SessionLifetime::Run => Ok(reuse(newest(&|_| true))),
@@ -88,17 +85,14 @@ pub fn choose(
             let Some(lease) = mains.lease(role, worker)? else {
                 return Ok(Reuse::Fresh);
             };
-            let vendor_session = continue_main(state, settings, mains.get(role, worker));
-            Ok(Reuse::Main {
-                lease,
-                vendor_session,
-            })
+            let cli_session = continue_main(state, settings, mains.get(role, worker));
+            Ok(Reuse::Main { lease, cli_session })
         }
     }
 }
 
-/// The main session's vendor session, or `None` when there is none or this run's log saw it
-/// fill up, so it starts over with a handoff note.
+/// The main session's CLI session, or `None` when there is none or this run's log saw it
+/// fill up, so it starts over with a fallback note.
 fn continue_main(
     state: &RunState,
     settings: &Settings,
@@ -109,9 +103,9 @@ fn continue_main(
         .sessions
         .by_key
         .values()
-        .filter(|session| session.vendor_session.as_ref() == Some(&main.vendor_session))
+        .filter(|session| session.cli_session.as_ref() == Some(&main.cli_session))
         .any(|session| passed_the_cap(session, settings));
-    (!full).then_some(main.vendor_session)
+    (!full).then_some(main.cli_session)
 }
 
 /// Whether the session ended with its context full, or this run's log saw it pass the cap.
@@ -179,11 +173,11 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let mains = MainSessions::open(dir.path());
-        let worker = WorkerRef::new("claude-code", None);
+        let worker = ModelRef::new("claude-code", None);
         let main = MainSession {
             role: RoleName::Consultant,
             worker: worker.clone(),
-            vendor_session: "vendor-main".to_owned(),
+            cli_session: "cli-main".to_owned(),
             started: OffsetDateTime::UNIX_EPOCH,
             runs: 3,
         };
@@ -200,9 +194,9 @@ mod tests {
             false,
         ) {
             Ok(Reuse::Main {
-                vendor_session: Some(vendor),
+                cli_session: Some(agent_id),
                 ..
-            }) => assert_eq!(vendor, "vendor-main"),
+            }) => assert_eq!(agent_id, "cli-main"),
             other => panic!("{other:?}"),
         }
 
@@ -210,13 +204,13 @@ mod tests {
         let mut state = RunState::default();
         let mut record =
             crate::state::tests::session_record("s-001", &worker, RoleName::Consultant);
-        record.vendor_session = Some("vendor-main".to_owned());
+        record.cli_session = Some("cli-main".to_owned());
         record.context_window = Some(200_000);
         record.context_used = Some(150_000);
         state.sessions.by_key.insert(record.key.clone(), record);
         assert_eq!(
             continue_main(&state, &settings, Some(main.clone())).as_deref(),
-            Some("vendor-main")
+            Some("cli-main")
         );
         if let Some(record) = state.sessions.by_key.values_mut().next() {
             record.context_used = Some(210_000);
@@ -230,7 +224,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mains = MainSessions::open(dir.path());
         let settings = project_settings();
-        let worker = WorkerRef::new("claude-code", None);
+        let worker = ModelRef::new("claude-code", None);
         let state = RunState::default();
         let held = choose(
             &state,
@@ -255,17 +249,17 @@ mod tests {
     }
 
     #[test]
-    fn a_full_card_session_rotates_instead_of_resuming() {
+    fn a_full_task_session_rotates_instead_of_resuming() {
         let dir = tempfile::tempdir().unwrap();
         let mains = MainSessions::open(dir.path());
         let settings = Settings::default();
-        let worker = WorkerRef::new("codex", None);
-        let card = CardId::numbered(1);
+        let worker = ModelRef::new("codex", None);
+        let task = TaskId::numbered(1);
         let mut record = crate::state::tests::session_record("s-001", &worker, RoleName::Worker);
-        record.card = Some(card.clone());
-        record.vendor_session = Some("vendor-1".to_owned());
-        let vendor = Some("vendor-1");
-        record.end = Some(crate::state::tests::end(EndReason::Completed, vendor));
+        record.task = Some(task.clone());
+        record.cli_session = Some("cli-1".to_owned());
+        let agent_id = Some("cli-1");
+        record.end = Some(crate::state::tests::end(EndReason::Completed, agent_id));
         let mut state = RunState::default();
         state
             .sessions
@@ -278,20 +272,20 @@ mod tests {
                 &mains,
                 RoleName::Worker,
                 &worker,
-                Some(&card),
+                Some(&task),
                 false,
             )
         };
         assert!(matches!(pick(&state), Ok(Reuse::Resume { .. })));
 
-        record.end = Some(crate::state::tests::end(EndReason::ContextFull, vendor));
+        record.end = Some(crate::state::tests::end(EndReason::ContextFull, agent_id));
         state
             .sessions
             .by_key
             .insert(record.key.clone(), record.clone());
         assert!(matches!(pick(&state), Ok(Reuse::Fresh)));
 
-        record.end = Some(crate::state::tests::end(EndReason::Stopped, vendor));
+        record.end = Some(crate::state::tests::end(EndReason::Stopped, agent_id));
         record.context_window = Some(200_000);
         record.context_used = Some(250_000);
         state.sessions.by_key.insert(record.key.clone(), record);
@@ -303,7 +297,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mains = MainSessions::open(dir.path());
         let settings = project_settings();
-        let worker = WorkerRef::new("claude-code", None);
+        let worker = ModelRef::new("claude-code", None);
         let chosen = choose(
             &RunState::default(),
             &settings,

@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-adapter-codex"
-description = "Codex adapter for Argonauts."
+description = "Codex adapter for Argonauts Code."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,6 +15,9 @@ serde.workspace = true
 serde_json.workspace = true
 time.workspace = true
 toml.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

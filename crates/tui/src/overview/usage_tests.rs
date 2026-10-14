@@ -3,12 +3,12 @@ use std::time::Instant;
 
 use argonauts_core::api::{PlanUsage, UsageSummary};
 use argonauts_core::app::ViewRequest;
-use argonauts_core::limits::QuotaSource;
-use argonauts_core::names::VendorId;
+use argonauts_core::limits::PlanUsageSource;
+use argonauts_core::names::AgentId;
 use argonauts_core::plan_usage::{
     Behavior, Behaviors, ExtraUsage, LiveUsage, LiveWindow, UsageReport, UsageShare,
 };
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Rect, Size};
 use time::macros::datetime;
@@ -35,7 +35,7 @@ fn window(key: &str, label: &str, title: &str, used: f64, resets: OffsetDateTime
 }
 
 fn live(agent: &str, plan: &str, windows: Vec<LiveWindow>) -> LiveUsage {
-    let mut live = LiveUsage::new(VendorId(agent.into()), QuotaSource::AppServer, NOW);
+    let mut live = LiveUsage::new(AgentId(agent.into()), PlanUsageSource::AppServer, NOW);
     live.account = Some("me@example.com".into());
     live.plan = Some(plan.into());
     live.windows = windows;
@@ -48,7 +48,7 @@ fn plan(agent: &str, name: &str, live: LiveUsage, in_use: bool) -> PlanUsage {
         name: name.into(),
         plan: live.plan.clone(),
         in_use,
-        windows: live.quota_readings(),
+        windows: live.plan_usage_readings(),
         live: Some(live),
         ..PlanUsage::default()
     }
@@ -306,7 +306,7 @@ fn a_wide_panel_draws_the_three_cards_side_by_side_as_the_picture() {
     let rows = rows(&mut usage_view(), &state, 140);
     assert!(rows[1].ends_with("Today  Week  Month  All"), "{rows:#?}");
     assert!(
-        rows[2].ends_with("read live 8:12pm · r reads again"),
+        rows[2].ends_with("read live 8:12pm · ctrl+r reads again"),
         "{rows:#?}"
     );
     assert!(
@@ -359,9 +359,9 @@ fn a_wide_panel_draws_the_three_cards_side_by_side_as_the_picture() {
         "{rows:#?}"
     );
     assert!(
-        rows.last()
-            .unwrap()
-            .starts_with(" tab · ←→ tabs · ↓ CLIs · 1-4 period · r reads again · esc closes"),
+        rows.last().unwrap().starts_with(
+            " r to cycle dates · tab · ←→ tabs · ↓ CLIs · ctrl+r reads again · esc closes"
+        ),
         "{rows:#?}"
     );
 }
@@ -414,7 +414,7 @@ fn a_cli_sub_tab_lays_out_like_claude_codes_usage() {
     assert!(
         page.last()
             .unwrap()
-            .starts_with(" tab · ←→ CLIs · ↓ into the cards · ↑ tabs"),
+            .starts_with(" r to cycle dates · tab · ←→ CLIs · ↓ into the cards · ↑ tabs"),
         "{page:#?}"
     );
     // ←→ wrap around the sub-tabs.
@@ -429,12 +429,23 @@ fn a_cli_sub_tab_lays_out_like_claude_codes_usage() {
 }
 
 #[test]
-fn r_reads_again_and_opening_the_tab_does_too() {
+fn ctrl_r_reads_again_and_opening_the_tab_does_too() {
     let state = state();
     let mut view = usage_view();
+    let ctx = ViewCtx {
+        theme: &plain(),
+        state: &state,
+        now: Instant::now(),
+    };
+    let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+    assert!(matches!(
+        view.handle_key(ctrl_r, &ctx),
+        ViewOutcome::Request(ViewRequest::ReadPlanUsage)
+    ));
+    // `r` alone is the period's, here as on every tab that has one.
     assert!(matches!(
         key(&mut view, &state, KeyCode::Char('r')),
-        ViewOutcome::Request(ViewRequest::ReadPlanUsage)
+        ViewOutcome::Request(ViewRequest::Usage { .. })
     ));
     let mut other = OverviewView::new(Tab::Status, UsageWatch::default()).at(NOW);
     assert!(matches!(
@@ -594,7 +605,7 @@ fn a_read_on_its_way_and_no_reading_say_so() {
     state.usage = Some(Arc::new(usage));
     let rows = rows(&mut usage_view(), &state, 140);
     assert!(
-        rows[2].ends_with("reading live… · r reads again"),
+        rows[2].ends_with("reading live… · ctrl+r reads again"),
         "{rows:#?}"
     );
     find(&rows, "reading live…");

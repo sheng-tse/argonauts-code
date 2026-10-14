@@ -1,0 +1,17 @@
+{
+  "adapter": "opencode",
+  "synthetic": true,
+  "source": "written by hand from the event shapes in packages/opencode/src/cli/cmd/run.ts and packages/schema/src/v1/session.ts at v1.18.33; not a recording",
+  "cli_version": "1.18.33",
+  "also_matches": [],
+  "program": "opencode",
+  "args": ["run", "--format", "json", "--model", "ollama/llama3.2", "--thinking"],
+  "stdin": "<prompt>",
+  "env_set": ["OPENCODE_CONFIG_CONTENT", "OPENCODE_DISABLE_AUTOUPDATE"],
+  "role": "build",
+  "model": "ollama/llama3.2",
+  "prompt": "Create a file named hello.txt containing the word hi. Then reply with: done",
+  "exit_code": 0,
+  "why": "OpenCode wasn't installed when this was written, so it is built by hand and not recorded from a run",
+  "written": "2026-09-29"
+}

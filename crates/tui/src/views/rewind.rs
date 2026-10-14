@@ -1,9 +1,10 @@
-//! `/rewind`: a card's handoff checkpoints, or every card's, oldest first. Enter goes back to
-//! the picked one, after a confirm card in the chat. The work after it stays on a side branch.
+//! `/rewind`: a task's fallback checkpoints, or every task's, oldest first. Enter goes back to
+//! the picked one, after a confirm question in the conversation. The work after it stays on a side
+//! branch.
 
 use argonauts_core::app::{UiCommand, ViewData};
 use argonauts_core::views::CheckpointRow;
-use argonauts_core::{CardId, RunId};
+use argonauts_core::{RunId, TaskId};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -26,8 +27,8 @@ const SHORT_COMMIT: usize = 7;
 #[derive(Debug)]
 pub struct RewindPicker {
     pub run: RunId,
-    /// The card `/rewind` named, or `None` for every card's.
-    pub card: Option<CardId>,
+    /// The task `/rewind` named, or `None` for every task's.
+    pub task: Option<TaskId>,
     pub rows: Vec<CheckpointRow>,
     pub list: ListState,
     /// Shows times like `2h ago`; tests pin it.
@@ -37,14 +38,14 @@ pub struct RewindPicker {
 
 impl RewindPicker {
     /// Opens on the newest checkpoint, the one you most likely want back.
-    pub fn new(run: RunId, card: Option<CardId>, rows: Vec<CheckpointRow>) -> Self {
+    pub fn new(run: RunId, task: Option<TaskId>, rows: Vec<CheckpointRow>) -> Self {
         let list = ListState {
             selected: rows.len().saturating_sub(1),
             offset: 0,
         };
         Self {
             run,
-            card,
+            task,
             rows,
             list,
             clock: WallClock::local(),
@@ -62,15 +63,15 @@ impl RewindPicker {
         let columns = vec![
             Column::new(
                 "Checkpoint",
-                cells(&|row| match &self.card {
+                cells(&|row| match &self.task {
                     Some(_) => format!("fallback-{}", row.n),
-                    None => format!("{} fallback-{}", sanitize_line(row.card.as_str()), row.n),
+                    None => format!("{} fallback-{}", sanitize_line(row.task.as_str()), row.n),
                 }),
             ),
             Column::new("When", cells(&|row| ago(row.at, now)))
                 .numeric()
                 .keep(3),
-            Column::new("Fallback", cells(&handed)).keep(4),
+            Column::new("Fallback", cells(&from_to)).keep(4),
             Column::new("Why", cells(&|row| clean(&row.reason))).flex(),
             Column::new(
                 "Commit",
@@ -80,8 +81,8 @@ impl RewindPicker {
             Column::new(
                 "",
                 cells(&|row| {
-                    if row.reverted_here {
-                        "reverted here".to_owned()
+                    if row.rewound_here {
+                        "rewound here".to_owned()
                     } else {
                         String::new()
                     }
@@ -95,9 +96,9 @@ impl RewindPicker {
     fn lines(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let marks = Marks::for_theme(theme);
         let dim = theme.style(Role::Dim);
-        let lead = 2;
-        let columns = self.columns(width.saturating_sub(lead));
-        let mut heading = vec![Span::raw(" ".repeat(lead))];
+        let margin = 2;
+        let columns = self.columns(width.saturating_sub(margin));
+        let mut heading = vec![Span::raw(" ".repeat(margin))];
         for (i, column) in columns.iter().enumerate() {
             if i > 0 {
                 heading.push(Span::raw(" ".repeat(GAP)));
@@ -108,7 +109,7 @@ impl RewindPicker {
         for i in 0..self.rows.len() {
             let selected = i == self.list.selected;
             let mut spans = vec![if selected {
-                Span::styled(format!("{} ", marks.selected), theme.style(Role::Card))
+                Span::styled(format!("{} ", marks.selected), theme.style(Role::Question))
             } else {
                 Span::raw("  ")
             }];
@@ -117,7 +118,7 @@ impl RewindPicker {
                     spans.push(Span::raw(" ".repeat(GAP)));
                 }
                 let style = match column.heading {
-                    "Checkpoint" if selected => theme.style(Role::Card),
+                    "Checkpoint" if selected => theme.style(Role::Question),
                     "Checkpoint" | "Why" => theme.style(Role::Text),
                     _ => dim,
                 };
@@ -130,8 +131,8 @@ impl RewindPicker {
 
     fn pick(&self) -> ViewOutcome {
         match self.selected() {
-            Some(row) => ViewOutcome::SendToChat(UiCommand::Rewind {
-                card: row.card.clone(),
+            Some(row) => ViewOutcome::SendToConversation(UiCommand::Rewind {
+                task: row.task.clone(),
                 checkpoint: row.n,
             }),
             None => ViewOutcome::Consumed,
@@ -139,7 +140,7 @@ impl RewindPicker {
     }
 }
 
-fn handed(row: &CheckpointRow) -> String {
+fn from_to(row: &CheckpointRow) -> String {
     let to: Vec<String> = row.to.iter().map(ToString::to_string).collect();
     clean(&format!("{} → {}", row.from, to.join(", ")))
 }
@@ -152,9 +153,9 @@ impl View for RewindPicker {
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>) {
         let theme = ctx.theme;
         let mut title = vec![Span::styled("Rewind", theme.style(Role::Label))];
-        if let Some(card) = &self.card {
+        if let Some(task) = &self.task {
             title.push(Span::styled(
-                format!(" {}", sanitize_line(card.as_str())),
+                format!(" {}", sanitize_line(task.as_str())),
                 theme.style(Role::Dim),
             ));
         }
@@ -209,25 +210,25 @@ impl View for RewindPicker {
     }
 
     fn accept(&mut self, data: &ViewData) -> bool {
-        // A fresh list for the same run and card replaces this one, keeping the selection.
+        // A fresh list for the same run and task replaces this one, keeping the selection.
         let ViewData::Checkpoints {
             run,
-            card,
+            task,
             checkpoints,
         } = data
         else {
             return false;
         };
-        if *run != self.run || *card != self.card {
+        if *run != self.run || *task != self.task {
             return false;
         }
-        let picked = self.selected().map(|row| (row.card.clone(), row.n));
+        let picked = self.selected().map(|row| (row.task.clone(), row.n));
         self.rows = checkpoints.clone();
         let index = picked
-            .and_then(|(card, n)| {
+            .and_then(|(task, n)| {
                 self.rows
                     .iter()
-                    .position(|row| row.card == card && row.n == n)
+                    .position(|row| row.task == task && row.n == n)
             })
             .unwrap_or(self.rows.len().saturating_sub(1));
         self.list.move_to(index, self.rows.len(), self.page);
@@ -239,30 +240,30 @@ impl View for RewindPicker {
 mod tests {
     use std::time::Instant;
 
-    use argonauts_core::names::WorkerRef;
+    use argonauts_core::names::ModelRef;
     use time::macros::datetime;
 
     use super::*;
     use crate::state::AppState;
     use crate::theme::Theme;
 
-    fn row(card: &str, n: u32, to: &str) -> CheckpointRow {
+    fn row(task: &str, n: u32, to: &str) -> CheckpointRow {
         CheckpointRow {
-            card: CardId::new(card).unwrap(),
+            task: TaskId::new(task).unwrap(),
             n,
             at: datetime!(2026-09-30 10:15 UTC),
             commit: "0123456789abcdef".to_owned(),
-            from: WorkerRef::new("claude-code", Some("opus".to_owned())),
-            to: vec![WorkerRef::new(to, None)],
+            from: ModelRef::new("claude-code", Some("opus".to_owned())),
+            to: vec![ModelRef::new(to, None)],
             reason: "usage limit, resets at 3:45 PM".to_owned(),
-            reverted_here: n == 1,
+            rewound_here: n == 1,
         }
     }
 
-    fn picker(card: Option<&str>) -> RewindPicker {
+    fn picker(task: Option<&str>) -> RewindPicker {
         let mut picker = RewindPicker::new(
             RunId::new("run-02").unwrap(),
-            card.map(|card| CardId::new(card).unwrap()),
+            task.map(|task| TaskId::new(task).unwrap()),
             vec![row("task-001", 1, "codex"), row("task-001", 2, "opencode")],
         );
         picker.clock = WallClock::pinned(datetime!(2026-09-30 12:15 UTC));
@@ -295,8 +296,8 @@ mod tests {
         };
         let mut view = picker(Some("task-001"));
         let rewind = |outcome: ViewOutcome| match outcome {
-            ViewOutcome::SendToChat(UiCommand::Rewind { card, checkpoint }) => {
-                (card.to_string(), checkpoint)
+            ViewOutcome::SendToConversation(UiCommand::Rewind { task, checkpoint }) => {
+                (task.to_string(), checkpoint)
             }
             other => panic!("{other:?}"),
         };
@@ -310,31 +311,31 @@ mod tests {
     }
 
     #[test]
-    fn rows_name_the_card_only_when_rewind_named_none() {
+    fn rows_name_the_task_only_when_rewind_named_none() {
         let one = text(&picker(Some("task-001")), 120);
         assert!(one[1].contains("fallback-1"), "{one:?}");
         assert!(!one[1].contains("task-001"), "{one:?}");
         assert!(one[1].contains("2h ago"), "{one:?}");
         assert!(one[1].contains("claude-code/opus → codex"), "{one:?}");
         assert!(one[1].contains("0123456"), "{one:?}");
-        assert!(one[1].contains("reverted here"), "{one:?}");
-        assert!(!one[2].contains("reverted here"), "{one:?}");
+        assert!(one[1].contains("rewound here"), "{one:?}");
+        assert!(!one[2].contains("rewound here"), "{one:?}");
         let all = text(&picker(None), 120);
         assert!(all[1].contains("task-001 fallback-1"), "{all:?}");
     }
 
     #[test]
-    fn a_fresh_list_for_another_card_is_not_this_ones() {
+    fn a_fresh_list_for_another_task_is_not_this_ones() {
         let mut view = picker(Some("task-001"));
         let other = ViewData::Checkpoints {
             run: RunId::new("run-02").unwrap(),
-            card: Some(CardId::new("task-002").unwrap()),
+            task: Some(TaskId::new("task-002").unwrap()),
             checkpoints: vec![row("task-002", 1, "codex")],
         };
         assert!(!view.accept(&other));
         let same = ViewData::Checkpoints {
             run: RunId::new("run-02").unwrap(),
-            card: Some(CardId::new("task-001").unwrap()),
+            task: Some(TaskId::new("task-001").unwrap()),
             checkpoints: vec![row("task-001", 1, "codex")],
         };
         assert!(view.accept(&same));

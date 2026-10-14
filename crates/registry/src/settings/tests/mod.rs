@@ -2,9 +2,9 @@
 
 mod checks;
 mod passing_over;
-mod presets;
 mod roles;
 mod ui;
+mod workflow_files;
 
 use std::fs;
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ use argonauts_core::settings::Settings;
 
 use crate::{ResolvedSettings, SettingsError, SettingsSources};
 
-/// `home/config.toml` and `repo/.argonauts/`, each with a `presets/` folder. Files are
+/// `home/config.toml` and `repo/.argonauts/`, each with a `workflows/` folder. Files are
 /// written on demand, and a missing one is fine.
 struct Repo {
     dir: TempDir,
@@ -58,13 +58,13 @@ impl Repo {
         fs::write(self.dot().join("config.local.toml"), text).unwrap();
     }
 
-    fn global_preset(&self, name: &str, text: &str) -> PathBuf {
+    fn global_workflow(&self, name: &str, text: &str) -> PathBuf {
         let path = self.home().join(format!("workflows/{name}.toml"));
         fs::write(&path, text).unwrap();
         path
     }
 
-    fn project_preset(&self, name: &str, text: &str) -> PathBuf {
+    fn project_workflow(&self, name: &str, text: &str) -> PathBuf {
         let path = self.dot().join(format!("workflows/{name}.toml"));
         fs::write(&path, text).unwrap();
         path

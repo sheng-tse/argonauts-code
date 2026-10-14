@@ -1,6 +1,6 @@
 //! A direct turn's questions, from the session's MCP server to the app: one JSON line each way
 //! over the loopback connection the app listens on for that turn. The server holds the tool
-//! call until the answer comes, so a card waits as long as you take.
+//! call until the answer comes, so a question waits as long as you take.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -61,7 +61,7 @@ pub enum Ask {
         #[serde(default)]
         arguments: Value,
     },
-    /// `argonauts_ask_reviewers` or `argonauts_ask_judge`: a role of the crew, on its own
+    /// `argonauts_ask_reviewer` or `argonauts_ask_judge`: a role of the crew, on its own
     /// model, reads the change in the session's folder and answers.
     Role {
         role: crate::settings::crew::CrewRole,

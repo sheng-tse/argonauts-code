@@ -5,50 +5,68 @@
 //! row above or the cell beside it; a blank cell always sits between a bar or squares and
 //! the words after them.
 
+use argonauts_core::crew_stats::StatsRole;
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 
+use crate::kit::{Kit, merge};
+pub(in crate::overview) use crate::overview::shades::shade;
 use crate::text::spans_width;
-use crate::theme::{Brightness, ColorLevel, Role, Theme, nearest_ansi256};
-use crate::widgets::{Kit, merge};
+use crate::theme::{Brightness, ColorLevel, Role, nearest_ansi256};
+use crate::views::layout::cut;
 
-/// How far each further model of a CLI is mixed toward the paper: its first model is the
-/// CLI's own color, its second a light shade, and so on.
-const SHADES: [f64; 4] = [0.0, 0.55, 0.3, 0.75];
+/// The most cells of a model's name on a card or in a legend, the longest the drawings write
+/// whole. A longer one is cut with `…`, as a provider's own id for a model often has to be.
+pub(super) const MODEL_NAME: usize = 16;
 
-/// The color a CLI's `nth` model draws in: the CLI's own for the first, then lighter shades
-/// on a dark screen and darker ones on a light screen. Sixteen colors and none have no
-/// shades, so every model draws in the CLI's color and its name tells them apart.
-pub(in crate::overview) fn shade(kit: &Kit<'_>, base: Role, nth: usize) -> Style {
-    let own = kit.fg(base);
-    let mix = SHADES[nth % SHADES.len()];
-    let theme = kit.theme;
-    if mix == 0.0 || matches!(theme.level, ColorLevel::Ansi16 | ColorLevel::None) {
-        return own;
-    }
-    let rgb = match theme.color(base) {
-        Some(Color::Rgb(r, g, b)) => (r, g, b),
-        _ => match Theme::for_brightness(theme.brightness).color(base) {
-            Some(Color::Rgb(r, g, b)) => (r, g, b),
-            _ => return own,
-        },
-    };
-    let paper = match theme.brightness {
-        Brightness::Dark => 255.0,
-        Brightness::Light => 0.0,
-    };
-    let toward = |c: u8| (f64::from(c) + (paper - f64::from(c)) * mix).round() as u8;
-    let mixed = (toward(rgb.0), toward(rgb.1), toward(rgb.2));
-    let color = match theme.level {
-        ColorLevel::TrueColor => Color::Rgb(mixed.0, mixed.1, mixed.2),
-        _ => Color::Indexed(nearest_ansi256(mixed)),
-    };
-    Style::new().fg(color)
+/// The fewest cells of a name a legend keeps on a row too narrow for the whole entry.
+const LEAST_LEGEND_NAME: usize = 4;
+
+/// A model's name as a legend writes it.
+pub(super) fn model_name(name: &str) -> String {
+    cut(name, MODEL_NAME)
 }
 
-/// Cells for each part of `total` in `cells`, largest remainder first. Every part over
-/// nothing gets a cell, taken from the largest.
-pub(in crate::overview) fn cells_of(values: &[u64], total: u64, cells: usize) -> Vec<usize> {
+/// The colour a role draws in wherever Stats shows the roles side by side. The workers, the
+/// reviewers, the judge and the merger take four of the theme's agent colours. Main's lime
+/// and the orchestrator's pink are Stats' own: they stay apart from the green and the red of
+/// how work fared, which the theme's green and pink don't.
+pub(super) fn role_style(kit: &Kit<'_>, role: StatsRole) -> Style {
+    match role {
+        StatsRole::Main => own(
+            kit,
+            (0xa3, 0xd9, 0x77),
+            (0x4d, 0x7c, 0x0f),
+            Role::AgentGreen,
+        ),
+        StatsRole::Orchestrator => {
+            own(kit, (0xff, 0x7a, 0xb6), (0xbe, 0x18, 0x5d), Role::AgentPink)
+        }
+        StatsRole::Worker => kit.fg(Role::AgentOrange),
+        StatsRole::Reviewer => kit.fg(Role::AgentBlue),
+        StatsRole::Judge => kit.fg(Role::AgentPurple),
+        StatsRole::Merger => kit.fg(Role::AgentCyan),
+    }
+}
+
+/// A colour outside the theme, `dark` on a dark screen and `light` on a light one, as near
+/// as the terminal's colours come. With sixteen colours or none it's `fallback`'s.
+fn own(kit: &Kit<'_>, dark: (u8, u8, u8), light: (u8, u8, u8), fallback: Role) -> Style {
+    let theme = kit.theme;
+    let rgb = match theme.brightness {
+        Brightness::Dark => dark,
+        Brightness::Light => light,
+    };
+    match theme.level {
+        ColorLevel::TrueColor => Style::new().fg(Color::Rgb(rgb.0, rgb.1, rgb.2)),
+        ColorLevel::Ansi256 => Style::new().fg(Color::Indexed(nearest_ansi256(rgb))),
+        ColorLevel::Ansi16 | ColorLevel::None => kit.fg(fallback),
+    }
+}
+
+/// Cells for each part of `total` in `cells`: each part its share rounded down, and the cells
+/// left over to the parts that lost the most by it, the largest remainder first.
+fn by_largest_remainder(values: &[u64], total: u64, cells: usize) -> Vec<usize> {
     if total == 0 || cells == 0 {
         return vec![0; values.len()];
     }
@@ -73,6 +91,13 @@ pub(in crate::overview) fn cells_of(values: &[u64], total: u64, cells: usize) ->
     for &at in order.iter().take(left) {
         out[at] += 1;
     }
+    out
+}
+
+/// Cells for each part of `total` in `cells`, largest remainder first. Every part over
+/// nothing gets a cell, taken from the largest.
+pub(in crate::overview) fn cells_of(values: &[u64], total: u64, cells: usize) -> Vec<usize> {
+    let mut out = by_largest_remainder(values, total, cells);
     for at in 0..values.len() {
         if values[at] > 0 && out[at] == 0 {
             let largest = (0..values.len()).max_by_key(|&k| out[k]).unwrap_or(at);
@@ -139,7 +164,7 @@ fn cells_for(value: u64, whole: u64, cells: usize) -> usize {
 
 /// `value` of `whole` as a thin bar `cells` wide: its share rounded, at least a cell when
 /// it has any, in `style`, the rest on the faint track.
-pub(super) fn thin(
+pub(in crate::overview) fn thin(
     kit: &Kit<'_>,
     value: u64,
     whole: u64,
@@ -164,31 +189,22 @@ pub(super) fn thin(
     out
 }
 
-/// Parts side by side in one thin bar exactly `cells` wide: each part its share rounded, at
-/// least a cell when it has any and room left for each after it that has any, and the last
-/// part what's left.
-pub(super) fn stacked(kit: &Kit<'_>, parts: &[(u64, Style)], cells: usize) -> Vec<Span<'static>> {
+/// Parts side by side in one thin bar exactly `cells` wide, each its share of the cells by
+/// largest remainder. A part too small for a cell of its own has none: its number is in the
+/// legend.
+pub(in crate::overview) fn stacked(
+    kit: &Kit<'_>,
+    parts: &[(u64, Style)],
+    cells: usize,
+) -> Vec<Span<'static>> {
     let total: u64 = parts.iter().map(|(value, _)| value).sum();
     if total == 0 {
         return thin(kit, 0, 1, cells, Style::new());
     }
+    let values: Vec<u64> = parts.iter().map(|(value, _)| *value).collect();
+    let widths = by_largest_remainder(&values, total, cells);
     let mut out = Vec::new();
-    let mut used = 0;
-    for (k, (value, style)) in parts.iter().enumerate() {
-        // Each part after this one with any keeps a cell.
-        let later = parts[k + 1..]
-            .iter()
-            .filter(|(value, _)| *value > 0)
-            .count();
-        let room = (cells - used).saturating_sub(later);
-        let width = if k + 1 == parts.len() {
-            cells - used
-        } else {
-            cells_for(*value, total, cells)
-                .max(usize::from(*value > 0))
-                .min(room)
-        };
-        used += width;
+    for (k, ((_, style), width)) in parts.iter().zip(widths).enumerate() {
         if width == 0 {
             continue;
         }
@@ -225,8 +241,8 @@ pub(super) fn tenths(kit: &Kit<'_>, fared: Fared, n: usize) -> Vec<Span<'static>
     let mut out = Vec::new();
     for (count, role, plain) in [
         (first, Role::Success, "#"),
-        (once, Role::Warning, "!"),
-        (more, Role::Error, "x"),
+        (once, Role::Warn, "!"),
+        (more, Role::Danger, "x"),
     ] {
         if count == 0 {
             continue;
@@ -242,7 +258,7 @@ pub(super) fn tenths(kit: &Kit<'_>, fared: Fared, n: usize) -> Vec<Span<'static>
 
 /// A cell of a sparkline for each value, in eighths of `top`. An idle slot is the lowest
 /// cell on the grey track, and a slot still ahead is blank.
-pub(super) fn spark(
+pub(in crate::overview) fn spark(
     kit: &Kit<'_>,
     values: &[Option<u64>],
     top: u64,
@@ -273,8 +289,36 @@ pub(super) fn spark(
     merge(out)
 }
 
+/// [`spark`] with a blank cell between its cells, so each reads as a bar of its own over the
+/// letter of its day.
+pub(super) fn spark_apart(
+    kit: &Kit<'_>,
+    values: &[Option<u64>],
+    top: u64,
+    style: Style,
+) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    for (k, value) in values.iter().enumerate() {
+        if k > 0 {
+            out.push(Span::raw(" "));
+        }
+        out.extend(spark(
+            kit,
+            std::slice::from_ref(value),
+            top.max(peak(values)),
+            style,
+        ));
+    }
+    out
+}
+
+/// The most any slot of `values` holds.
+fn peak(values: &[Option<u64>]) -> u64 {
+    values.iter().flatten().copied().max().unwrap_or(0)
+}
+
 /// A legend's swatch: a square, then a blank cell before the name.
-pub(super) fn swatch(kit: &Kit<'_>, style: Style) -> Vec<Span<'static>> {
+pub(in crate::overview) fn swatch(kit: &Kit<'_>, style: Style) -> Vec<Span<'static>> {
     let square = if kit.glyphs.halves.is_some() {
         "■"
     } else {
@@ -339,7 +383,7 @@ pub(super) fn squares(kit: &Kit<'_>, fared: Fared, room: usize) -> Vec<Span<'sta
     } else {
         "#"
     };
-    let roles = [Role::Success, Role::Warning, Role::Error];
+    let roles = [Role::Success, Role::Warn, Role::Danger];
     let without = ["#", "!", "x"];
     let mut out = Vec::new();
     for ((width, role), plain) in widths.iter().zip(roles).zip(without) {
@@ -453,6 +497,29 @@ pub(super) fn legend_apart(
     }
 }
 
+/// Entries on as few rows of `width` as they need, then shared evenly between those rows, so
+/// six that need two rows read three and three. Where an even row would run over, they flow.
+pub(super) fn legend_even(
+    kit: &Kit<'_>,
+    entries: &[Entry],
+    width: usize,
+    gap: usize,
+) -> Vec<Vec<Span<'static>>> {
+    let flowed = flow(kit, entries, None, width, gap);
+    if flowed.len() < 2 {
+        return flowed;
+    }
+    let even: Vec<Vec<Span<'static>>> = entries
+        .chunks(entries.len().div_ceil(flowed.len()))
+        .flat_map(|row| flow(kit, row, None, usize::MAX, gap))
+        .collect();
+    if even.iter().all(|row| spans_width(row) <= width) {
+        even
+    } else {
+        flowed
+    }
+}
+
 fn flow(
     kit: &Kit<'_>,
     entries: &[Entry],
@@ -473,15 +540,19 @@ fn flow(
         row.extend(spans);
     };
     for entry in entries {
-        let mut spans = swatch(kit, entry.style);
-        spans.push(Span::raw(entry.name.clone()));
+        let mut numbers = Vec::new();
         if !entry.amount.is_empty() {
-            spans.push(Span::raw(" "));
-            spans.push(kit.strong(entry.amount.clone()));
+            numbers.push(Span::raw(" "));
+            numbers.push(kit.strong(entry.amount.clone()));
         }
         if !entry.note.is_empty() {
-            spans.push(kit.dim(format!(" {}", entry.note)));
+            numbers.push(kit.dim(format!(" {}", entry.note)));
         }
+        let mut spans = swatch(kit, entry.style);
+        // On a row too narrow for the whole entry the name gives way, never its numbers.
+        let room = width.saturating_sub(spans_width(&spans) + spans_width(&numbers));
+        spans.push(Span::raw(cut(&entry.name, room.max(LEAST_LEGEND_NAME))));
+        spans.extend(numbers);
         place(spans, &mut row);
     }
     if let Some(tail) = tail {
@@ -495,7 +566,10 @@ fn flow(
 
 #[cfg(test)]
 mod tests {
+    use ratatui::style::Color;
+
     use super::*;
+    use crate::theme::{ColorLevel, Theme};
 
     fn colored() -> Theme {
         let mut theme = Theme::dark().with_level(ColorLevel::TrueColor);
@@ -526,7 +600,7 @@ mod tests {
                 .collect()
         };
         let green = kit.fg(Role::Success).fg;
-        let amber = kit.fg(Role::Warning).fg;
+        let amber = kit.fg(Role::Warn).fg;
         let first = |first, once, more| Fared { first, once, more };
         assert_eq!(text(first(0, 2, 0)), [("▪".repeat(10), amber)]);
         assert_eq!(
@@ -542,20 +616,29 @@ mod tests {
     }
 
     #[test]
-    fn a_stacked_bar_is_exactly_its_width_and_a_part_with_any_shows() {
+    fn a_stacked_bar_is_exactly_its_width_with_what_is_left_over_by_largest_remainder() {
         let theme = colored();
         let kit = Kit::new(&theme);
-        let parts = [
-            (990, kit.fg(Role::Success)),
-            (9, kit.fg(Role::Warning)),
-            (1, kit.fg(Role::Error)),
-        ];
-        let bar = stacked(&kit, &parts, 20);
-        let cells: Vec<usize> = bar
-            .iter()
-            .map(|span| span.content.chars().count())
-            .collect();
-        assert_eq!(cells, [18, 1, 1]);
+        let roles = [Role::Success, Role::Warn, Role::Danger, Role::AgentBlue];
+        let cells = |values: &[u64], width: usize| -> Vec<usize> {
+            let parts: Vec<(u64, Style)> = values
+                .iter()
+                .zip(roles)
+                .map(|(value, role)| (*value, kit.fg(role)))
+                .collect();
+            stacked(&kit, &parts, width)
+                .iter()
+                .map(|span| span.content.chars().count())
+                .collect()
+        };
+        // 58.26, 1.5, 0.18 and 0.06 cells: the one cell left over goes to the 1.5, not to
+        // the last part.
+        assert_eq!(cells(&[971, 25, 3, 1], 60), [58, 2]);
+        assert_eq!(cells(&[880, 115, 5], 36), [32, 4]);
+        assert_eq!(cells(&[92, 8], 114), [105, 9]);
+        // 6.67 cells each: the first two take the two left over.
+        assert_eq!(cells(&[1, 1, 1], 20), [7, 7, 6]);
+        assert_eq!(cells(&[990, 9, 1], 20), [20]);
     }
 
     #[test]
@@ -565,22 +648,6 @@ mod tests {
         assert_eq!(cells_of(&[1, 1], 0, 10), [0, 0]);
         // Less than the whole leaves the track.
         assert_eq!(cells_of(&[25], 100, 8), [2]);
-    }
-
-    #[test]
-    fn a_second_model_is_a_lighter_shade_of_its_clis_color() {
-        let theme = Theme::dark();
-        let kit = Kit::new(&theme);
-        let own = shade(&kit, Role::AgentOrange, 0);
-        let second = shade(&kit, Role::AgentOrange, 1);
-        assert_eq!(own.fg, Some(Color::Rgb(0xfb, 0x92, 0x3c)));
-        let Some(Color::Rgb(r, g, b)) = second.fg else {
-            panic!("{second:?}");
-        };
-        assert!(r >= 0xfb && g > 0x92 && b > 0x3c, "{r} {g} {b}");
-        let plain = Theme::dark().with_level(ColorLevel::Ansi16);
-        let kit = Kit::new(&plain);
-        assert_eq!(shade(&kit, Role::AgentOrange, 1), kit.fg(Role::AgentOrange));
     }
 
     #[test]

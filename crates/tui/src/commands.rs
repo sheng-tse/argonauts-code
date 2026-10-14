@@ -1,18 +1,18 @@
-//! Every command the `/` menu, `/help`, and the screen reader list: Argonauts' own by category,
-//! then the main agent CLI's that run inside it under its name, and the ones only its own
-//! screen runs under "Open <CLI> for these". A CLI command an Argonauts one of the same name
-//! hides is left out, since typing it runs Argonauts' version.
+//! Every command the `/` menu, `/help`, and the screen reader list: Argonauts Code's own by
+//! category, then the main agent CLI's that run inside it under its name, and the ones only its own
+//! screen runs under "Open <CLI> for these". A CLI command an Argonauts Code one of the same name
+//! hides is left out, since typing it runs Argonauts Code's version.
 
+use argonauts_core::cli_commands::{
+    CliCommand, CliCommandSet, CommandKind, CommandScope, CommandSource,
+};
 use argonauts_core::input::{
     CommandCategory, Handler, SHARED_COMMANDS, SLASH_COMMANDS, SlashSpec, slash_spec,
-};
-use argonauts_core::vendor_commands::{
-    CommandKind, CommandScope, CommandSource, VendorCommand, VendorCommandSet,
 };
 
 use crate::bottom::MenuItem;
 
-/// Argonauts' commands in menu order: by category, each category's shared commands after the
+/// Argonauts Code's commands in menu order: by category, each category's shared commands after the
 /// rest of it.
 pub fn argonauts_commands() -> Vec<&'static SlashSpec> {
     let mut specs: Vec<&'static SlashSpec> = SLASH_COMMANDS.iter().chain(SHARED_COMMANDS).collect();
@@ -21,23 +21,23 @@ pub fn argonauts_commands() -> Vec<&'static SlashSpec> {
 }
 
 /// The main agent's commands that run inside it.
-pub fn vendor_menu(set: &VendorCommandSet) -> impl Iterator<Item = &VendorCommand> {
+pub fn cli_menu(set: &CliCommandSet) -> impl Iterator<Item = &CliCommand> {
     set.menu()
         .filter(|command| slash_spec(&command.name).is_none())
 }
 
 /// The main agent's commands that only its own screen runs.
-pub fn vendor_screen_only(set: &VendorCommandSet) -> impl Iterator<Item = &VendorCommand> {
+pub fn cli_screen_only(set: &CliCommandSet) -> impl Iterator<Item = &CliCommand> {
     set.screen_only()
         .filter(|command| slash_spec(&command.name).is_none())
 }
 
-/// Who handles `/typed`: the Argonauts command's own handler, also when the main agent's name
+/// Who handles `/typed`: the Argonauts Code command's own handler, also when the main agent's name
 /// for it was typed, such as `/quit` for `/exit`.
-pub fn handler(typed: &str, vendor: Option<&VendorCommandSet>) -> Handler {
-    let spec = slash_spec(typed).or_else(|| match &vendor?.find(typed)?.kind {
+pub fn handler(typed: &str, agent_id: Option<&CliCommandSet>) -> Handler {
+    let spec = slash_spec(typed).or_else(|| match &agent_id?.find(typed)?.kind {
         CommandKind::Argonauts { command } => slash_spec(command),
-        CommandKind::Vendor | CommandKind::ScreenOnly | CommandKind::Workflow => None,
+        CommandKind::Cli | CommandKind::ScreenOnly | CommandKind::Workflow => None,
     });
     spec.map_or(Handler::App, |spec| spec.handler)
 }
@@ -46,16 +46,16 @@ pub fn handler(typed: &str, vendor: Option<&VendorCommandSet>) -> Handler {
 pub const YOUR_WORKFLOWS: &str = "Your workflows";
 
 /// The `/` menu's rows, each under its category, your workflows next, the main agent's last.
-pub fn command_items(vendor: Option<&VendorCommandSet>) -> Vec<MenuItem> {
+pub fn command_items(agent_id: Option<&CliCommandSet>) -> Vec<MenuItem> {
     let mut items: Vec<MenuItem> = argonauts_commands()
         .into_iter()
-        .map(|spec| item(spec.name, spec.help, spec.args).in_group(spec.category.title()))
+        .map(|spec| own(spec).in_group(spec.category.title()))
         .collect();
-    if let Some(set) = vendor {
+    if let Some(set) = agent_id {
         items.extend(set.workflows().map(|command| {
             item(&command.name, &command.help, &command.args).in_group(YOUR_WORKFLOWS)
         }));
-        items.extend(vendor_menu(set).map(|command| {
+        items.extend(cli_menu(set).map(|command| {
             let item = item(&command.name, &command.help, &command.args).in_group(&set.title);
             match origin(command) {
                 Some(origin) => item.with_kind(origin),
@@ -70,12 +70,12 @@ pub fn command_items(vendor: Option<&VendorCommandSet>) -> Vec<MenuItem> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HelpSection {
     pub heading: String,
-    /// Argonauts' categories and the main agent's menu, not the ones its own screen runs.
+    /// Argonauts Code's categories and the main agent's menu, not the ones its own screen runs.
     pub runs_here: bool,
     pub rows: Vec<(String, String)>,
 }
 
-pub fn help_sections(vendor: Option<&VendorCommandSet>) -> Vec<HelpSection> {
+pub fn help_sections(agent_id: Option<&CliCommandSet>) -> Vec<HelpSection> {
     let mut sections: Vec<HelpSection> = Vec::new();
     let mut category: Option<CommandCategory> = None;
     for spec in argonauts_commands() {
@@ -92,10 +92,10 @@ pub fn help_sections(vendor: Option<&VendorCommandSet>) -> Vec<HelpSection> {
             }
         }
     }
-    let Some(set) = vendor else {
+    let Some(set) = agent_id else {
         return sections;
     };
-    let rows = |commands: Vec<&VendorCommand>| -> Vec<(String, String)> {
+    let rows = |commands: Vec<&CliCommand>| -> Vec<(String, String)> {
         commands
             .into_iter()
             .map(|command| {
@@ -115,7 +115,7 @@ pub fn help_sections(vendor: Option<&VendorCommandSet>) -> Vec<HelpSection> {
             rows: workflows,
         });
     }
-    let menu = rows(vendor_menu(set).collect());
+    let menu = rows(cli_menu(set).collect());
     if !menu.is_empty() {
         sections.push(HelpSection {
             heading: set.title.clone(),
@@ -123,7 +123,7 @@ pub fn help_sections(vendor: Option<&VendorCommandSet>) -> Vec<HelpSection> {
             rows: menu,
         });
     }
-    let screen = rows(vendor_screen_only(set).collect());
+    let screen = rows(cli_screen_only(set).collect());
     if !screen.is_empty() {
         sections.push(HelpSection {
             heading: set.screen_only_heading(),
@@ -143,6 +143,19 @@ pub fn usage(name: &str, args: &str) -> String {
     }
 }
 
+/// One of Argonauts Code's own commands, which says itself whether it needs an argument: a
+/// word it can't go without counts too, as in `/runs archive [run]`.
+fn own(spec: &SlashSpec) -> MenuItem {
+    let item = MenuItem::new(spec.name, spec.help);
+    if spec.needs_argument() {
+        item.needing_argument()
+    } else {
+        item
+    }
+}
+
+/// A workflow of yours or a CLI's command, whose hint is its own words: only `<...>` outside
+/// `[...]` says an argument is needed.
 fn item(name: &str, help: &str, args: &str) -> MenuItem {
     let item = MenuItem::new(name, help);
     if needs_argument(args) {
@@ -152,7 +165,7 @@ fn item(name: &str, help: &str, args: &str) -> MenuItem {
     }
 }
 
-/// As [`SlashSpec::needs_argument`]: an argument outside `[...]`.
+/// A `<...>` argument outside `[...]`.
 fn needs_argument(args: &str) -> bool {
     let mut optional = 0_usize;
     for c in args.chars() {
@@ -168,7 +181,7 @@ fn needs_argument(args: &str) -> bool {
 
 /// Where a discovered command comes from, as Claude Code marks it: `project`, `user`, or the
 /// plugin's name.
-fn origin(command: &VendorCommand) -> Option<String> {
+fn origin(command: &CliCommand) -> Option<String> {
     match &command.source {
         CommandSource::BuiltIn => None,
         CommandSource::Custom { scope, .. } | CommandSource::Skill { scope, .. } => {
@@ -186,8 +199,8 @@ fn origin(command: &VendorCommand) -> Option<String> {
 pub(crate) mod tests {
     use std::path::PathBuf;
 
-    use argonauts_core::names::VendorId;
-    use argonauts_core::vendor_commands::{BuiltinCommand, BuiltinKind};
+    use argonauts_core::cli_commands::{BuiltinCommand, BuiltinKind};
+    use argonauts_core::names::AgentId;
 
     use super::*;
 
@@ -211,14 +224,14 @@ pub(crate) mod tests {
             aliases: &[],
             args: "<instruction>",
             help: "One change across many files",
-            kind: BuiltinKind::Vendor,
+            kind: BuiltinKind::Cli,
         },
         BuiltinCommand {
             name: "simplify",
             aliases: &[],
             args: "",
             help: "Clean up the changed code",
-            kind: BuiltinKind::Vendor,
+            kind: BuiltinKind::Cli,
         },
         BuiltinCommand {
             name: "voice",
@@ -230,22 +243,22 @@ pub(crate) mod tests {
     ];
 
     /// Claude Code's commands as a small table, a project command, a plugin's, and a custom
-    /// `status` that Argonauts' own hides.
-    pub(crate) fn claude_commands() -> VendorCommandSet {
-        let custom = |name: &str, help: &str, source: CommandSource| VendorCommand {
+    /// `status` that Argonauts Code's own hides.
+    pub(crate) fn claude_commands() -> CliCommandSet {
+        let custom = |name: &str, help: &str, source: CommandSource| CliCommand {
             name: name.into(),
             aliases: Vec::new(),
             args: String::new(),
             help: help.into(),
-            kind: CommandKind::Vendor,
+            kind: CommandKind::Cli,
             source,
         };
         let project = |name: &str| CommandSource::Custom {
             scope: CommandScope::Project,
             path: PathBuf::from(format!("/repo/.claude/commands/{name}.md")),
         };
-        VendorCommandSet::new(
-            VendorId("claude-code".into()),
+        CliCommandSet::new(
+            AgentId("claude-code".into()),
             "Claude Code",
             TABLE,
             vec![
@@ -318,8 +331,21 @@ pub(crate) mod tests {
                 ("ship", Some("project"), false),
                 ("commit-commands:commit", Some("commit-commands"), false),
             ],
-            "what runs inside Claude Code, less what Argonauts' own names hide"
+            "what runs inside Claude Code, less what Argonauts Code's own names hide"
         );
+    }
+
+    #[test]
+    fn the_menu_waits_for_a_word_a_command_cant_go_without() {
+        let items = command_items(None);
+        let waits = |name: &str| {
+            items
+                .iter()
+                .any(|item| item.name == name && item.needs_argument)
+        };
+        assert!(waits("runs"), "/runs takes archive, then a run or nothing");
+        assert!(waits("ask"));
+        assert!(!waits("stop"), "/stop [run] runs bare");
     }
 
     #[test]
@@ -327,7 +353,7 @@ pub(crate) mod tests {
         let mut set = claude_commands();
         set.commands.insert(
             0,
-            VendorCommand {
+            CliCommand {
                 name: "spec-first".into(),
                 aliases: Vec::new(),
                 args: "<request>".into(),
@@ -354,7 +380,7 @@ pub(crate) mod tests {
         };
         assert!(first_of("Setup and help") < first_of(YOUR_WORKFLOWS));
         assert!(first_of(YOUR_WORKFLOWS) < first_of("Claude Code"));
-        assert!(vendor_menu(&set).all(|command| command.name != "spec-first"));
+        assert!(cli_menu(&set).all(|command| command.name != "spec-first"));
         assert_eq!(handler("spec-first", Some(&set)), Handler::App);
         let headings: Vec<String> = help_sections(Some(&set))
             .into_iter()

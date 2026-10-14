@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 use argonauts_tui::model::{
-    ApprovalMode, AssistantMessage, CardOption, CardPrompt, ToolCall, ToolItem, ToolKind,
+    ApprovalMode, AssistantMessage, QuestionOption, QuestionPrompt, ToolCall, ToolItem, ToolKind,
     ToolState, UserMessage, ViewModel, WorkingLine,
 };
 use argonauts_tui::theme::Role;
@@ -34,13 +34,13 @@ impl Write for Screen {
 }
 
 /// Starts with the cursor at the top, as an inline app starts wherever the shell left it.
-struct Harness {
+struct TestDriver {
     ui: Ui<Screen>,
     now: Instant,
     cols: u16,
 }
 
-impl Harness {
+impl TestDriver {
     fn new(cols: u16, rows: u16) -> Self {
         // Tests may run with NO_COLOR set; the theme decides about color, not crossterm.
         crossterm::style::force_color_output(true);
@@ -103,7 +103,7 @@ impl Harness {
         self.rows().iter().position(|row| row.contains(needle))
     }
 
-    /// The live region's top row: its rule, or the working line or card above it.
+    /// The live region's top row: its rule, or the working line or question above it.
     fn live_top(&self) -> usize {
         usize::from(self.ui.terminal().viewport().y)
     }
@@ -127,7 +127,7 @@ fn dump(rows: &[String]) -> String {
 
 #[test]
 fn history_fills_down_from_the_top_and_the_prompt_keeps_the_bottom() {
-    let mut h = Harness::new(60, 20);
+    let mut h = TestDriver::new(60, 20);
     let history = &mut h.ui.model_mut().history;
     history.push(UserMessage::new("hi"));
     history.push(AssistantMessage::new("Hello there."));
@@ -169,7 +169,7 @@ fn history_fills_down_from_the_top_and_the_prompt_keeps_the_bottom() {
 
 #[test]
 fn printed_rows_keep_their_colors_to_the_edge() {
-    let mut h = Harness::new(40, 16);
+    let mut h = TestDriver::new(40, 16);
     h.ui.model_mut().history.push(UserMessage::new("hi"));
     h.ui.model_mut().history.push(
         ToolCall::call(ToolKind::Read, "Read", "src/export.rs")
@@ -203,7 +203,7 @@ fn printed_rows_keep_their_colors_to_the_edge() {
 #[test]
 fn wide_characters_keep_their_columns() {
     // CJK and emoji take two columns each, and wrapping must never split one.
-    let mut h = Harness::new(40, 20);
+    let mut h = TestDriver::new(40, 20);
     let answer = "日本語のテキストが折り返されても列がずれないことを確かめる長い文です。";
     h.ui.model_mut()
         .history
@@ -244,7 +244,7 @@ fn wide_characters_keep_their_columns() {
 
 #[test]
 fn a_full_screen_keeps_order_and_the_live_region() {
-    let mut h = Harness::new(50, 16);
+    let mut h = TestDriver::new(50, 16);
     for batch in 0..4 {
         for i in 1..=10 {
             let n = batch * 10 + i;
@@ -283,7 +283,7 @@ fn a_full_screen_keeps_order_and_the_live_region() {
 fn a_streamed_answer_prints_each_finished_line() {
     // A finished line prints once the line after it is finished too, since that one could
     // still turn it into a heading or a table row. The unfinished line stays live.
-    let mut h = Harness::new(60, 24);
+    let mut h = TestDriver::new(60, 24);
     h.ui.model_mut().history.push(UserMessage::new("hi"));
     let id = h.ui.model_mut().history.start_stream();
     h.ui.model_mut()
@@ -357,7 +357,7 @@ fn a_streamed_answer_prints_each_finished_line() {
 
 #[test]
 fn an_idle_frame_writes_nothing() {
-    let mut h = Harness::new(60, 20);
+    let mut h = TestDriver::new(60, 20);
     h.ui.model_mut().history.push(UserMessage::new("hi"));
     h.settle();
     let before = h.bytes();
@@ -378,7 +378,7 @@ fn an_idle_frame_writes_nothing() {
 
 #[test]
 fn typing_redraws_only_what_changed() {
-    let mut h = Harness::new(80, 20);
+    let mut h = TestDriver::new(80, 20);
     h.ui.model_mut()
         .history
         .push(AssistantMessage::new("Ask me anything."));
@@ -410,13 +410,13 @@ fn typing_redraws_only_what_changed() {
 /// never a frozen copy of a live block, and after the repaint each item shows once.
 #[test]
 fn a_shorter_screen_pushes_only_history_and_shows_each_item_once() {
-    let mut h = Harness::new(100, 36);
+    let mut h = TestDriver::new(100, 36);
     for i in 0..12 {
         h.ui.model_mut()
             .history
             .push(UserMessage::new(format!("message {i}")));
     }
-    for (harness, name, task) in [
+    for (driver, name, task) in [
         (
             "claude-code",
             "Opus 5.5 on Claude Code",
@@ -426,7 +426,7 @@ fn a_shorter_screen_pushes_only_history_and_shows_each_item_once() {
     ] {
         let mut block = ToolCall::agent(name, None, "worker", task);
         for line in 0..12 {
-            block.push(ToolItem::text(format!("{harness} step {line}")));
+            block.push(ToolItem::text(format!("{driver} step {line}")));
         }
         h.ui.model_mut().history.push_active(block);
     }
@@ -479,7 +479,7 @@ fn a_shorter_screen_pushes_only_history_and_shows_each_item_once() {
 
 #[test]
 fn a_resize_reflows_the_live_region() {
-    let mut h = Harness::new(80, 20);
+    let mut h = TestDriver::new(80, 20);
     h.ui.model_mut().history.push(UserMessage::new("hi"));
     h.ui.model_mut()
         .history
@@ -546,7 +546,7 @@ fn rule_rows(rows: &[String]) -> (usize, usize) {
 fn closing_the_menu_or_a_picker_leaves_one_input_rule() {
     use argonauts_tui::bottom::{MenuItem, Picker, PickerRow};
 
-    let mut h = Harness::new(80, 30);
+    let mut h = TestDriver::new(80, 30);
     h.ui.model_mut().bottom.menus.commands = (0..12)
         .map(|i| MenuItem::new(format!("command-{i}"), "Does one thing").in_group("Session"))
         .collect();
@@ -615,7 +615,7 @@ fn closing_the_menu_or_a_picker_leaves_one_input_rule() {
 
 #[test]
 fn ctrl_c_clears_and_warns_then_quits() {
-    let mut h = Harness::new(80, 20);
+    let mut h = TestDriver::new(80, 20);
     h.ui.model_mut().bottom.exit_note = Some("the run keeps going".into());
     h.settle();
     h.key(KeyCode::Char('x'));
@@ -643,7 +643,7 @@ fn ctrl_c_clears_and_warns_then_quits() {
 
 #[test]
 fn keys_do_what_the_reference_says() {
-    let mut h = Harness::new(80, 24);
+    let mut h = TestDriver::new(80, 24);
     h.settle();
     assert_eq!(
         h.key_with(KeyCode::BackTab, KeyModifiers::SHIFT),
@@ -664,10 +664,10 @@ fn keys_do_what_the_reference_says() {
     h.ui.model_mut().bottom.working = None;
 
     let options = vec![
-        CardOption::irreversible("Merge"),
-        CardOption::irreversible("Discard"),
+        QuestionOption::irreversible("Merge"),
+        QuestionOption::irreversible("Discard"),
     ];
-    h.ui.model_mut().bottom.card = Some(CardPrompt::new(
+    h.ui.model_mut().bottom.question = Some(QuestionPrompt::new(
         7,
         "Merge task-002 into main?",
         "Merge task-002?",
@@ -682,7 +682,7 @@ fn keys_do_what_the_reference_says() {
         dump(&h.rows())
     );
     assert!(h.key(KeyCode::Tab).is_empty());
-    assert_eq!(h.key(KeyCode::Esc), vec![UiAction::Dismiss { card: 7 }]);
+    assert_eq!(h.key(KeyCode::Esc), vec![UiAction::Dismiss { question: 7 }]);
     h.settle();
     assert!(
         !h.rows().iter().any(|row| row.contains("Merge task-002")),
@@ -691,8 +691,8 @@ fn keys_do_what_the_reference_says() {
     );
     // Opened again, as from the list of what needs you. Discard can't be undone, so its number
     // asks for Enter first, and the number again confirms.
-    if let Some(card) = h.ui.model_mut().bottom.card.as_mut() {
-        card.focus();
+    if let Some(question) = h.ui.model_mut().bottom.question.as_mut() {
+        question.focus();
     }
     h.settle();
     assert!(
@@ -701,10 +701,10 @@ fn keys_do_what_the_reference_says() {
         dump(&h.rows())
     );
     assert!(h.key(KeyCode::Char('x')).is_empty());
-    assert_eq!(h.ui.model().bottom.card.as_ref().unwrap().armed, None);
-    // After a letter, a number waits for a key meant for the card.
+    assert_eq!(h.ui.model().bottom.question.as_ref().unwrap().armed, None);
+    // After a letter, a number waits for a key meant for the question.
     assert!(h.key(KeyCode::Char('2')).is_empty());
-    assert_eq!(h.ui.model().bottom.card.as_ref().unwrap().armed, None);
+    assert_eq!(h.ui.model().bottom.question.as_ref().unwrap().armed, None);
     h.key(KeyCode::Up);
     assert!(h.key(KeyCode::Char('2')).is_empty());
     h.settle();
@@ -718,13 +718,13 @@ fn keys_do_what_the_reference_says() {
     assert_eq!(
         h.key(KeyCode::Char('2')),
         vec![UiAction::Answer {
-            card: 7,
+            question: 7,
             option: 1,
             note: None,
             checked: Vec::new(),
         }]
     );
-    assert!(h.ui.model().bottom.card.is_none());
+    assert!(h.ui.model().bottom.question.is_none());
 
-    assert_eq!(h.key(KeyCode::Left), vec![UiAction::OpenCrewView]);
+    assert_eq!(h.key(KeyCode::Left), vec![UiAction::OpenAgentPanel]);
 }

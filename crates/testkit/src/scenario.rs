@@ -1,4 +1,4 @@
-//! The fake vendor's scenario file and invocation log. A scenario is TOML: rules matched in
+//! The fake agent's scenario file and invocation log. A scenario is TOML: rules matched in
 //! order against each invocation, each with a script. `[[acp]]` rules script ACP sessions
 //! instead (see [`crate::acp`]).
 //!
@@ -11,7 +11,7 @@
 //! args_contain = ["-p"]
 //! prompt_contains = "hi"
 //! [[rule.step]]
-//! emit_file = "../../../adapters/claude-code/fixtures/2.1.284/chat.stdout.jsonl"
+//! emit_file = "../../../adapters/claude-code/fixtures/conversation.stdout.jsonl"
 //! [[rule.step]]
 //! exit = 0
 //! ```
@@ -273,7 +273,7 @@ argv0 = "claude"
 args_contain = ["-p"]
 prompt_contains = "hi"
 [[rule.step]]
-emit_file = "fixtures/chat.stdout.jsonl"
+emit_file = "fixtures/conversation.stdout.jsonl"
 [[rule.step]]
 sleep_ms = 20
 [[rule.step]]

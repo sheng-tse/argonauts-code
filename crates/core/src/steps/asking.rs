@@ -61,7 +61,7 @@ mod tests {
 
     fn said(text: &str) -> SessionEnd {
         SessionEnd {
-            vendor_session: Some("v-1".to_owned()),
+            cli_session: Some("v-1".to_owned()),
             exit_code: Some(0),
             signal: None,
             duration_ms: 1,

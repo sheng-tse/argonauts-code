@@ -1,5 +1,5 @@
 //! The settings pickers, in Claude Code's dialog frame under the input: an edge rule in the
-//! card color, the title with what the choice does, numbered rows with `❯`, the current value
+//! question color, the title with what the choice does, numbered rows with `❯`, the current value
 //! with `✓`, a description column, `↓` and `… +N more` when the list goes on, and key hints.
 //! The scope question after a pick uses the same frame.
 //!
@@ -28,9 +28,9 @@ mod tests;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::kit::State;
 use crate::views::list::{self, FilterKey};
 use crate::views::settings::flow::Flow;
-use crate::widgets::State;
 
 /// Rows shown at once. The rest scroll, marked with `↓` and `… +N more`.
 pub const VISIBLE_ROWS: usize = 8;
@@ -116,7 +116,7 @@ pub enum PickerEvent {
     Right,
     /// Enter where there are no rows to pick, such as on the effort slider.
     Confirmed,
-    /// Tab on the effort slider, which flips All hands beside it.
+    /// Tab on the effort slider, which flips Ultracode beside it.
     Toggled,
     Unhandled,
 }
@@ -251,7 +251,7 @@ impl Picker {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    /// The effort slider takes ←/→ (`h`/`l` with vim keys), Tab where it offers All hands,
+    /// The effort slider takes ←/→ (`h`/`l` with vim keys), Tab where it offers Ultracode,
     /// Enter, and Esc, and keeps every other plain key from the composer under it.
     fn slider_key(&mut self, key: KeyEvent, plain: bool) -> PickerEvent {
         let vim = self.vim && plain;

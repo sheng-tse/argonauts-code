@@ -2,4 +2,4 @@
 source: crates/tui/tests/snap_live.rs
 expression: styled(&render(width))
 ---
-  [fg=#999999]ǁ supervised mode on[/] [fg=#999999](shift+tab to cycle)[/][fg=#999999] · [/][fg=#999999]? for shortcuts[/][fg=#999999] · [/][fg=#999999]← 3 agents[/]               [fg=#999999]$0.21/$5.00[/]  [fg=#999999]context[/] [fg=#b1b9f9]▄▄▄▄▖[/][fg=#505370]▄[/][fg=#999999] 75%[/]
+  [fg=#999999]ǁ supervised mode on[/] [fg=#999999](shift+tab to cycle)[/][fg=#999999] · [/][fg=#999999]? for shortcuts[/][fg=#999999] · [/][fg=#999999]← 3 agents[/]             [fg=#999999]$0.21/$5.00[/]  [fg=#999999]context · [/][fg=#af87ff]worker[/] 75%

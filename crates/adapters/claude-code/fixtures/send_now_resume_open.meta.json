@@ -1,0 +1,84 @@
+{
+  "adapter": "claude-code",
+  "program": "claude",
+  "name": "send_now_resume_open",
+  "args": [
+    "-p",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--model",
+    "haiku",
+    "--effort",
+    "low",
+    "--max-budget-usd",
+    "0.08",
+    "--strict-mcp-config",
+    "--resume",
+    "4c0902c3-3b6f-479c-af46-6194e65e2279",
+    "--permission-mode",
+    "acceptEdits",
+    "--permission-prompts",
+    "none",
+    "--allowedTools",
+    "Bash(./slow-test.sh)",
+    "--disallowedTools",
+    "SendMessage",
+    "ListAgents",
+    "Agent",
+    "--settings",
+    "<live>/claude-settings.json"
+  ],
+  "date": "2026-10-04T13:30:04Z",
+  "duration_ms": 53720,
+  "exit_code": 0,
+  "sanitized": "absolute paths replaced with <workdir> (the throwaway repo), <live> (its check folder), <probe> (the folder holding the test plugin and hook), <scratch> (the scratch folder), Claude Code's folder slug with <workdir-slug>, its per-user temp folder with /tmp/claude-uid, the home directory with ~, and email addresses with <email>",
+  "cli_version": "2.1.289",
+  "also_matches": [],
+  "model": "haiku",
+  "effort": "low",
+  "env_removed": [
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_PID",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "EMPTY_VAR"
+  ],
+  "keep_input_open": true,
+  "role": "direct",
+  "stdin_file": "send_now_resume_open.stdin.jsonl",
+  "stdin_note": "each line as written, with _t seconds since the start; _stdin: closed marks where the input closed",
+  "session_id": "4c0902c3-3b6f-479c-af46-6194e65e2279",
+  "result_total_cost_usd": [
+    0.055855800000000004,
+    0.0625999
+  ],
+  "files": [
+    {
+      "path": "<live>/claude-settings.json",
+      "contents": "{\"crossSessionInbound\": \"refuse\", \"attribution\": {\"commit\": \"\", \"pr\": \"\"}, \"sandbox\": {\"enabled\": false}}\n"
+    },
+    {
+      "path": "<workdir>/slow-test.sh",
+      "contents": "#!/bin/sh\nsleep 45\necho 'slow test: 12 passed'\n"
+    }
+  ],
+  "files_after": [
+    "README.md",
+    "slow-test.sh"
+  ],
+  "note": "As send_now_resume, but the input stayed open after the result while the moved command ran. When it finished, task_notification (completed) started a turn of its own in the same process, with no user message and no command_lifecycle: Claude read the output file and said what the test printed, and a second result followed. Then the input closed and the process exited.",
+  "resume_session": "4c0902c3-3b6f-479c-af46-6194e65e2279"
+}

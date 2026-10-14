@@ -4,7 +4,7 @@
 //!
 //! ```toml
 //! form  = "fit"                    # fit, or pin bars, compact, gauges, text
-//! left  = ["mode", "artifact"]     # "mode" always stays: it says whether Argonauts will ask
+//! left  = ["mode", "artifact"]     # "mode" always stays: it says whether Argonauts Code will ask
 //! right = ["plan-usage"]
 //!
 //! [plan-usage]
@@ -26,7 +26,7 @@ use toml::Table;
 /// Where the file sits under `~/.argonauts/` and under a repository's `.argonauts/`.
 pub const FILE: &str = "mods/bottom-line.toml";
 
-/// The part that says whether Argonauts will ask. It can be moved, never left out.
+/// The part that says whether Argonauts Code will ask. It can be moved, never left out.
 pub const MODE: &str = "mode";
 /// The artifact the conversation published, shown only once there is one.
 pub const ARTIFACT: &str = "artifact";
@@ -42,7 +42,7 @@ pub const CHECKS: &str = "checks";
 pub const RUN: &str = "run";
 
 /// The parts the line draws from its own numbers before it looks for a mod of the name, and
-/// that are no built-in card. A file of yours by one of these names never shows on the line.
+/// that are no built-in mod. A file of yours by one of these names never shows on the line.
 pub const DRAWN_BY_THE_LINE: [&str; 5] = [MODE, ARTIFACT, BRANCH, AWAKE, RUN];
 
 /// The parts the line knows by name. Any other name in `left` or `right` is a mod's, such as
@@ -108,8 +108,7 @@ impl LineForm {
 pub struct PlanUsageLine {
     pub show: PlanUsageShow,
     pub windows: PlanUsageWindows,
-    #[serde(rename = "as")]
-    pub shown_as: PlanUsageAs,
+    pub r#as: PlanUsageAs,
     pub resets: PlanUsageResets,
 }
 
@@ -329,7 +328,7 @@ resets = "never"
         assert_eq!(settings.form, LineForm::Gauges);
         assert_eq!(settings.plan_usage.show, PlanUsageShow::NearLimit);
         assert_eq!(settings.plan_usage.windows, PlanUsageWindows::SevenDays);
-        assert_eq!(settings.plan_usage.shown_as, PlanUsageAs::Left);
+        assert_eq!(settings.plan_usage.r#as, PlanUsageAs::Left);
         assert_eq!(settings.plan_usage.resets, PlanUsageResets::Never);
         for (form, word) in LineForm::ALL
             .iter()
@@ -359,7 +358,7 @@ resets = "never"
     fn the_starter_file_reads_as_the_line_ships() {
         let starter = r#"# The line under the input. Each name is a mod.
 form  = "fit"                   # fit: the fullest layout the terminal has room for · or pin bars, compact, gauges, text
-left  = ["mode", "artifact"]    # "mode" always stays: it tells you whether Argonauts will ask
+left  = ["mode", "artifact"]    # "mode" always stays: it tells you whether Argonauts Code will ask
 right = ["plan-usage"]          # more for either side: branch · spend · context · tokens · awake · stats · checks, or a mod of yours
 
 [plan-usage]                    # how that mod draws when it sits on this line
@@ -386,7 +385,7 @@ drop = ["spend", "branch"]      # what goes first; then bars step down to compac
             plan_usage: PlanUsageLine {
                 show: PlanUsageShow::Main,
                 windows: PlanUsageWindows::FiveHours,
-                shown_as: PlanUsageAs::Left,
+                r#as: PlanUsageAs::Left,
                 resets: PlanUsageResets::Always,
             },
             narrow: NarrowLine {

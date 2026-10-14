@@ -6,7 +6,7 @@
     "modes": {
       "read_only": "default",
       "build": "default",
-      "spike": "default"
+      "experiment": "default"
     },
     "model": "legacy-set-model",
     "effort": "none",
@@ -17,7 +17,7 @@
       "end-turn",
       "usage-update"
     ],
-    "quota": "none",
+    "plan_usage": "none",
     "mcp_servers": true
   },
   "errors": [

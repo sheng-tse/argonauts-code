@@ -3,7 +3,7 @@ source: crates/tui/tests/snap_overlays.rs
 expression: "screen(&mut view, width, height, &state)"
 ---
 Diff · task-002
-1 file changed · +3 −1                                                    /state/cards/task-002/diff
+1 file changed · +3 −1                                                    /state/tasks/task-002/diff
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ diff --git a/src/export.rs b/src/export.rs                                                       │

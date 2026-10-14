@@ -1,6 +1,6 @@
 //! What `/setup` writes beside your answers, so every place you can change explains itself: a
 //! `README.md` in `.argonauts/` and in `workflows/`, `roles/` and `mods/`, and the starter
-//! mods. A README is Argonauts' own page and is written again when a newer version has more
+//! mods. A README is Argonauts Code's own page and is written again when a newer version has more
 //! to say, until you make it yours by deleting its first line. A starter mod is yours from the
 //! start and is never written twice, and neither is the program one of them runs.
 
@@ -13,7 +13,7 @@ use argonauts_core::settings::mods::{MODS_DIR, builtin};
 use crate::env::AppEnv;
 use crate::mods::files;
 
-/// How a README Argonauts wrote starts. A file without this line is yours and is left alone.
+/// How a README Argonauts Code wrote starts. A file without this line is yours and is left alone.
 const WRITTEN_BY: &str = "<!-- Written by Argonauts Code";
 
 /// A page of the guide: the folder it's written in, and its text.
@@ -31,7 +31,7 @@ const PAGES: [Page; 4] = [
         folder: "",
         text: include_str!("readme/argonauts.md"),
     },
-    // The runner's own page, which `/workflow new` writes beside a new workflow as well.
+    // The workflows' own page, which `/workflow new` writes beside a new workflow as well.
     Page {
         topic: "workflows",
         folder: "workflows",
@@ -40,7 +40,7 @@ const PAGES: [Page; 4] = [
     Page {
         topic: "roles",
         folder: "roles",
-        text: include_str!("readme/roles.md"),
+        text: argonauts_core::template!("roles/README.md"),
     },
     Page {
         topic: "mods",
@@ -283,7 +283,7 @@ mod tests {
         let roles = repo.home().join("roles/README.md");
         // Yours: the first line is gone.
         std::fs::write(&mods, "# My notes on mods\n").unwrap();
-        // Argonauts': an older version's page.
+        // Argonauts Code's: an older version's page.
         std::fs::write(
             &roles,
             format!("{WRITTEN_BY} 0.0.0. -->\n# Roles, as they were\n"),

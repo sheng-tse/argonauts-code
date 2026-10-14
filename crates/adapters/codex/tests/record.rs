@@ -1,4 +1,5 @@
-//! Records Codex fixtures from live runs. Each test makes one real model call and spends quota.
+//! Records Codex fixtures from live runs. Each test makes one real model call and spends plan
+//! usage.
 //!
 //! A test runs only when `ARGONAUTS_RECORD` names it and `ARGONAUTS_LIVE_DIR` is a scratch folder
 //! for throwaway repos. Run them one at a time and in order, since resume continues the build
@@ -18,10 +19,13 @@ use std::time::{Duration, Instant};
 use argonauts_adapter_codex::{CHEAPEST_EFFORT, CodexAdapter, FALLBACK_CHEAPEST_MODEL};
 use argonauts_core::settings::sessions::{Compaction, FanoutSwitch, NativeFanout};
 use argonauts_core::{
-    Adapter, AuthMode, CommandSpec, SessionRequest, SessionRole, VENDOR_KEY_ENV_VARS,
+    Adapter, AuthMode, CommandSpec, PROVIDER_KEY_ENV_VARS, SessionRequest, SessionRole,
     report_json_schema,
 };
 use serde_json::{Value, json};
+
+#[path = "../../recorded_shape.rs"]
+mod recorded_shape;
 
 const TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -97,7 +101,7 @@ fn record_3_resume_ls() {
     });
 }
 
-/// Steering: the conductor interrupts a running turn, then resumes it with a message.
+/// Steering: Argonauts Code interrupts a running turn, then resumes it with a message.
 #[test]
 #[ignore = "live Codex call; see the module docs"]
 fn record_4_interrupt_sleep() {
@@ -160,8 +164,8 @@ fn record_7_rate_limits_probe() {
     let adapter = CodexAdapter::new();
     let version = cli_version(&adapter);
     let spec = adapter
-        .quota_probe(&live_dir, None)
-        .expect("Codex has a quota probe");
+        .plan_usage_probe(&live_dir, None)
+        .expect("Codex has a plan usage probe");
     let requests = spec
         .stdin
         .clone()
@@ -192,7 +196,7 @@ fn record_7_rate_limits_probe() {
     });
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut text = String::new();
-    while adapter.parse_quota_probe(&text).is_none() {
+    while adapter.parse_plan_usage_probe(&text).is_none() {
         let left = deadline.saturating_duration_since(Instant::now());
         let line = received
             .recv_timeout(left)
@@ -212,19 +216,21 @@ fn record_7_rate_limits_probe() {
     let meta = json!({
         "adapter": adapter.id(),
         "cli_version": version,
+        "also_matches": [],
         "recorded_at": now_rfc3339(),
         "program": spec.program,
         "args": spec.args,
         "stdin": requests,
         "spends": "nothing",
     });
-    let fixtures = fixtures_dir().join(&version);
+    let fixtures = fixtures_dir();
     let base = fixtures.join("rate_limits_probe");
+    recorded_shape::report(&base.with_extension("app-server.jsonl"), &answer);
     std::fs::write(base.with_extension("app-server.jsonl"), &answer).unwrap();
     let mut meta_text = serde_json::to_string_pretty(&meta).unwrap();
     meta_text.push('\n');
     std::fs::write(base.with_extension("meta.json"), meta_text).unwrap();
-    eprintln!("{:?}", adapter.parse_quota_probe(&answer));
+    eprintln!("{:?}", adapter.parse_plan_usage_probe(&answer));
 }
 
 /// Account and installation ids identify you, so they never reach a fixture.
@@ -265,7 +271,7 @@ fn record(rec: Recording) {
     };
     let adapter = CodexAdapter::new();
     let version = cli_version(&adapter);
-    let fixtures = fixtures_dir().join(&version);
+    let fixtures = fixtures_dir();
     let repo = live_dir.join(rec.repo);
     let scratch = live_dir.join(format!("{}-scratch", rec.name));
 
@@ -310,6 +316,7 @@ fn record(rec: Recording) {
     let meta = json!({
         "adapter": adapter.id(),
         "cli_version": version,
+        "also_matches": [],
         "recorded_at": now_rfc3339(),
         "model": model,
         "effort": CHEAPEST_EFFORT,
@@ -360,6 +367,7 @@ fn write_spec_files(spec: &CommandSpec) {
 }
 
 fn write_fixture(base: &Path, stdout: &str, stderr: &str, meta: &Value) {
+    recorded_shape::report(&base.with_extension("stdout.jsonl"), stdout);
     std::fs::write(base.with_extension("stdout.jsonl"), stdout).unwrap();
     std::fs::write(base.with_extension("stderr.txt"), stderr).unwrap();
     let mut meta_text = serde_json::to_string_pretty(meta).unwrap();
@@ -440,7 +448,7 @@ fn git(repo: &Path, args: &[&str]) {
             "-c",
             "commit.gpgsign=false",
             "-c",
-            "user.name=Argonauts",
+            "user.name=Argonauts Code",
             "-c",
             "user.email=argonauts@example.invalid",
         ])
@@ -557,7 +565,7 @@ impl Redactor {
         if let Some(home) = std::env::var_os("HOME").filter(|h| h.len() > 1) {
             replacements.push((PathBuf::from(home).display().to_string(), "~".to_owned()));
         }
-        for name in VENDOR_KEY_ENV_VARS {
+        for name in PROVIDER_KEY_ENV_VARS {
             if let Some(value) = std::env::var(name).ok().filter(|v| v.len() >= 8) {
                 replacements.push((value, "<redacted>".to_owned()));
             }

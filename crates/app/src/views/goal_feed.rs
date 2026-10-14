@@ -10,7 +10,7 @@
 use argonauts_core::agent_goal::{
     AgentGoal, CliGoal, GoalCheck, GoalKeeper, GoalLine, GoalState, GoalTry,
 };
-use argonauts_core::display_names::builtin_harness_name;
+use argonauts_core::display_names::builtin_cli_name;
 use argonauts_core::events::RunEvent;
 use argonauts_core::events::goal::GoalStatus;
 use argonauts_core::goal::KeptBy;
@@ -18,17 +18,17 @@ use argonauts_core::goal::report::{
     CheckReport, CliGoalReport, GoalReport, LineReport, LineState, TryReport,
 };
 use argonauts_core::model_catalog::display_name_from_id;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::views::{AgentRow, PhaseRow, WorkflowRow};
 use argonauts_crew::goal::report::reports;
 use time::OffsetDateTime;
 
 /// Who runs every goal's checks, whoever keeps it going.
-const CHECKER: &str = "Argonauts";
+const CHECKER: &str = "Argonauts Code";
 
 /// Every agent's goal in the run as its events have it now, each under the label its agent's
 /// row has in `phases`, so the screen finds it on that row. The engine words a task's label
-/// itself, and the two can differ. A goal whose agent has no row of its own here keeps the
+/// itself, and the two can be different. A goal whose agent has no row of its own here keeps the
 /// engine's label.
 pub(crate) fn agent_goals(events: &[RunEvent], phases: &[PhaseRow]) -> Vec<AgentGoal> {
     let mut goals = goals_at(events, OffsetDateTime::now_utc());
@@ -89,7 +89,7 @@ fn agent_goal(report: GoalReport, now: OffsetDateTime) -> Option<AgentGoal> {
             GoalStatus::Pursuing => GoalState::Running,
             GoalStatus::Met => GoalState::Met,
             GoalStatus::Paused => GoalState::Paused,
-            GoalStatus::Stuck | GoalStatus::OverBudget => GoalState::Stuck,
+            GoalStatus::Stuck | GoalStatus::OverLimit => GoalState::Stuck,
             GoalStatus::Cleared => GoalState::Cleared,
         },
         stopped_because: report.ended_because,
@@ -108,10 +108,11 @@ fn agent_goal(report: GoalReport, now: OffsetDateTime) -> Option<AgentGoal> {
 }
 
 /// The CLI by the name the screen gives it, for a goal that names its worker and not its CLI.
-fn cli_of(worker: Option<&WorkerRef>) -> String {
+fn cli_of(worker: Option<&ModelRef>) -> String {
     match worker {
-        Some(worker) => builtin_harness_name(&worker.worker)
-            .map_or_else(|| worker.worker.clone(), str::to_owned),
+        Some(worker) => {
+            builtin_cli_name(&worker.agent).map_or_else(|| worker.agent.clone(), str::to_owned)
+        }
         None => "the CLI".to_owned(),
     }
 }
@@ -164,7 +165,7 @@ fn check(check: CheckReport) -> GoalCheck {
 }
 
 /// The judge by its model's name, or by its CLI's where it runs the CLI's own default.
-fn judge_name(judge: &WorkerRef) -> String {
+fn judge_name(judge: &ModelRef) -> String {
     match judge.model.as_deref().map(str::trim) {
         Some(model) if !model.is_empty() => display_name_from_id(model),
         _ => cli_of(Some(judge)),

@@ -60,10 +60,10 @@ pub enum GoalFrom {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeptBy {
-    /// Argonauts: after each try it runs the check and sends back what still fails.
+    /// Argonauts Code: after each try it runs the check and sends back what still fails.
     #[default]
     Argonauts,
-    /// The CLI's own goal, which Codex has. Argonauts still runs the check.
+    /// The CLI's own goal, which Codex has. Argonauts Code still runs the check.
     Cli,
 }
 
@@ -79,7 +79,7 @@ pub enum GoalScope {
     /// One task, worked as a goal by its role.
     Task,
     /// The main agent alone, with no workflow.
-    Solo,
+    Captain,
 }
 
 /// What a project already has that a goal's lines can be checked with.
@@ -432,9 +432,9 @@ fn split_and(clause: &str) -> Vec<String> {
 fn tidy(clause: &str) -> String {
     let clause = clause.trim().trim_end_matches(['.', ',']).trim();
     let lower = clause.to_lowercase();
-    for lead in ["until ", "that ", "then "] {
-        if lower.starts_with(lead) {
-            return clause[lead.len()..].trim().to_owned();
+    for opener in ["until ", "that ", "then "] {
+        if lower.starts_with(opener) {
+            return clause[opener.len()..].trim().to_owned();
         }
     }
     clause.to_owned()
@@ -576,7 +576,7 @@ mod tests {
     fn a_workflow_file_lists_the_commands_beside_its_goal() {
         let file = "goal  = \"every acceptance test passes\"\n\
                     check = [\"cargo test --test acceptance\", \" make lint \", \"\"]\n\n\
-                    [[step]]\nname = \"Build\"\nrole = \"workers\"\n";
+                    [[step]]\nname = \"Build\"\nrole = \"worker\"\n";
         assert_eq!(
             checks_beside(file, "every acceptance test passes"),
             ["cargo test --test acceptance", "make lint"]

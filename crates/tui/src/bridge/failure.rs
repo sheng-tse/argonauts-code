@@ -16,7 +16,7 @@ pub const RAW_ERROR_HINT: &str = "r shows the raw error";
 /// What follows a failed run's line when git or the CLI said more.
 pub const RAW_ALL_HINT: &str = "r shows it all";
 
-/// The whole text behind the newest failure in the chat. `r` opens it full screen until
+/// The whole text behind the newest failure in the conversation. `r` opens it full screen until
 /// something is typed, so the letter is only taken while its hint is the latest thing said.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawFailure {
@@ -78,7 +78,7 @@ pub fn plain(cli: &str, message: &str) -> String {
     let said = innermost(message);
     let lower = said.to_lowercase();
     let words = if refused_format(&lower) {
-        format!("{cli} refused the answer format Argonauts asked for")
+        format!("{cli} refused the answer format Argonauts Code asked for")
     } else if lower.contains("not logged in")
         || lower.contains("please run /login")
         || lower.contains("authentication")
@@ -101,7 +101,7 @@ pub fn one_line(text: &str) -> String {
     cut(first_line(&innermost(text)))
 }
 
-/// What git said, in one line, after what Argonauts was doing: `git couldn't add the run's
+/// What git said, in one line, after what Argonauts Code was doing: `git couldn't add the run's
 /// files: <its first line>`.
 pub fn plain_git(doing: &str, message: &str) -> String {
     match first_line(message) {
@@ -165,7 +165,7 @@ mod tests {
     fn a_refused_answer_format_reads_in_words() {
         assert_eq!(
             plain("Codex", CODEX_SCHEMA),
-            "Codex refused the answer format Argonauts asked for"
+            "Codex refused the answer format Argonauts Code asked for"
         );
     }
 

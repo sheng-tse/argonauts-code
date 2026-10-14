@@ -3,24 +3,28 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use argonauts_core::crew_panel::{
-    CrewDetails, CrewRow, CrewRun, CrewState, CrewTarget, SeatTry, fold_tries, seat_of,
+use argonauts_conductor::fallback::why::{category_words, stop_line};
+use argonauts_core::agent_panel::{
+    CrewDetails, CrewRow, CrewRun, CrewState, CrewTarget, LabelTry, first_label, fold_tries,
 };
-use argonauts_core::events::card::{CardEvent, CardState};
-use argonauts_core::events::checkpoint::{CheckpointEvent, CheckpointPacket};
+use argonauts_core::events::agent_status::FallbackEvent;
+use argonauts_core::events::approval::{ApprovalEvent, ApprovalPacket};
+use argonauts_core::events::context::ContextCategory;
 use argonauts_core::events::run::RunLifecycle;
 use argonauts_core::events::session::{
     EndReason, LimitEvent, SessionEnd, SessionEvent, SessionStarted, SubagentUpdate,
 };
-use argonauts_core::events::vendor::HandoffEvent;
+use argonauts_core::events::task::{TaskEvent, TaskState};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{CheckpointId, RoleName, SessionKey, WorkerRef};
+use argonauts_core::names::{ApprovalId, ModelRef, RoleName, SessionKey};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::sessions::RotateAt;
 use argonauts_core::steps::{StepName, summary_line};
-use argonauts_core::views::{AgentRow, ContextUse, RowStatus};
-use argonauts_core::{AgentEvent, CardId, Spend};
+use argonauts_core::views::{AgentRow, ContextUse, RowNote, RowStatus, Tone};
+use argonauts_core::{AgentEvent, Spend, TaskId};
 use time::OffsetDateTime;
+
+use super::verdicts::Verdicts;
 
 pub(crate) fn add_spend(total: &mut Spend, more: &Spend) {
     total.input_tokens += more.input_tokens;
@@ -51,12 +55,12 @@ pub(crate) struct ToolCall {
 
 pub(crate) struct SessionFacts {
     pub key: SessionKey,
-    pub card: Option<CardId>,
+    pub task: Option<TaskId>,
     pub started_at: OffsetDateTime,
     pub started: SessionStarted,
     /// The worker with the model the session runs: its own, else its CLI's from the run's
     /// settings, else the one it reported at its start. The screen names it by this.
-    pub worker: WorkerRef,
+    pub worker: ModelRef,
     pub ended: Option<SessionEnd>,
     /// When its end was logged.
     pub ended_at: Option<OffsetDateTime>,
@@ -64,30 +68,34 @@ pub(crate) struct SessionFacts {
     pub last_message: Option<String>,
     /// From `Usage` events, until `Ended` gives the final spend.
     pub usage: Spend,
-    /// The conductor's meter, which prices what the stream leaves unpriced.
+    /// Argonauts Code's meter, which prices what the stream leaves unpriced.
     pub metered: Option<Spend>,
     pub tools: Vec<ToolCall>,
     /// Used tokens and the window's size, from the latest `ContextFill`.
     pub context: Option<(u64, Option<u64>)>,
+    /// What fills the window by its CLI's own categories, from the latest count it gave.
+    pub context_rows: Vec<ContextCategory>,
     /// The latest update of each child, in the order they first appeared.
     pub subagents: Vec<SubagentUpdate>,
     /// Every input part, in order: the prompt, then what each delivery added.
     pub prompt: String,
     /// Where it was launched, from its first input.
     pub cwd: Option<PathBuf>,
-    /// The worker it replaced after a handoff.
-    pub standing_in_for: Option<WorkerRef>,
-    /// The card's attempt an owner session works on, 1-based.
-    pub attempt: Option<u32>,
+    /// The worker it replaced after a fallback.
+    pub fallback_for: Option<ModelRef>,
+    /// Why that worker stopped, in the one line its fallback was planned with.
+    pub fallback_why: Option<String>,
+    /// The task's try a worker session works on, 1-based.
+    pub try_number: Option<u32>,
     /// Lines added and removed in each file it changed since the worktree's last commit.
     pub file_diffs: BTreeMap<String, (u32, u32)>,
-    /// It ended as if done, but without a report, and its card failed for that.
+    /// It ended as if done, but without a report, and its task failed for that.
     pub unreported: bool,
 }
 
 impl SessionFacts {
-    /// What it spent: the end's count once it ends. Where the vendor gave no dollars, the
-    /// meter's priced count stands in, as it does in the run's budget, so a row agrees with
+    /// What it spent: the end's count once it ends. Where the agent gave no dollars, the
+    /// meter's priced count stands in, as it does in the run's limit, so a row agrees with
     /// the header.
     pub fn spent(&self) -> Spend {
         let reported = self.ended.as_ref().map_or(self.usage, |end| end.spend);
@@ -112,18 +120,18 @@ impl SessionFacts {
     }
 
     /// The label the run gave it, such as `fix:slugify`. A log from before labels has none, so
-    /// the role and the card stand in: `owner · card-001`, and `owner · card-001 · attempt 2`
-    /// for a retry, so the card's sessions read apart wherever their agents' names are cut.
+    /// the role and the task take its place: `worker · task-001`, and `worker · task-001 · try 2`
+    /// for a retry, so the task's sessions read apart wherever their agents' names are cut.
     pub fn label(&self) -> String {
         if let Some(label) = &self.started.label {
             return label.clone();
         }
         let role = self.started.role.as_str();
-        match (&self.card, self.attempt) {
-            (Some(card), Some(attempt)) if attempt > 1 => {
-                format!("{role} · {card} · attempt {attempt}")
+        match (&self.task, self.try_number) {
+            (Some(task), Some(try_number)) if try_number > 1 => {
+                format!("{role} · {task} · try {try_number}")
             }
-            (Some(card), _) => format!("{role} · {card}"),
+            (Some(task), _) => format!("{role} · {task}"),
             (None, _) => role.to_owned(),
         }
     }
@@ -132,12 +140,14 @@ impl SessionFacts {
 /// Everything the session views need, read from the events in one pass.
 pub(crate) struct RunFacts {
     pub sessions: Vec<SessionFacts>,
-    /// Open checkpoints that wait for you, with their card.
-    pub waiting: BTreeMap<CheckpointId, Option<CardId>>,
+    /// Open approvals that wait for you, with their task.
+    pub waiting: BTreeMap<ApprovalId, Option<TaskId>>,
     /// The latest event's time: "now" as far as the log knows.
     pub last_ts: Option<OffsetDateTime>,
     pub finished_at: Option<OffsetDateTime>,
     rotate_at: RotateAt,
+    /// What the run's reviews and checks decided, for the words after a row's counts.
+    pub verdicts: Verdicts,
 }
 
 impl RunFacts {
@@ -145,36 +155,36 @@ impl RunFacts {
         let mut sessions: Vec<SessionFacts> = Vec::new();
         let mut index: BTreeMap<SessionKey, usize> = BTreeMap::new();
         let mut waiting = BTreeMap::new();
-        // The worker a card's handoff stopped, and the role it worked in.
-        let mut handoffs: BTreeMap<CardId, (WorkerRef, RoleName)> = BTreeMap::new();
+        // The worker that stopped when a task fell back, and the role it worked in.
+        let mut fallbacks: BTreeMap<TaskId, (ModelRef, RoleName, String)> = BTreeMap::new();
         let mut rotate_at = Settings::default().sessions.rotate_at;
         let mut finished_at = None;
         // Each CLI's model from the run's settings (`agents.<cli>.model`).
         let mut configured: BTreeMap<String, String> = BTreeMap::new();
-        // Each card's current attempt, where its latest report is in the log, and its owner
+        // Each task's current try, where its latest report is in the log, and its worker
         // session that ended with no report yet.
-        let mut attempts: BTreeMap<CardId, u32> = BTreeMap::new();
-        let mut reported_at: BTreeMap<CardId, usize> = BTreeMap::new();
-        let mut unreported: BTreeMap<CardId, usize> = BTreeMap::new();
+        let mut tries: BTreeMap<TaskId, u32> = BTreeMap::new();
+        let mut reported_at: BTreeMap<TaskId, usize> = BTreeMap::new();
+        let mut unreported: BTreeMap<TaskId, usize> = BTreeMap::new();
         // Where each session starts in the log.
         let mut starts: Vec<usize> = Vec::new();
         for (at_event, event) in events.iter().enumerate() {
             match &event.kind {
-                RunEventKind::Card(card_event) => {
-                    let Some(card) = &event.card_id else { continue };
-                    match card_event {
-                        CardEvent::Attempt { attempt, .. } => {
-                            attempts.insert(card.clone(), *attempt);
+                RunEventKind::Task(task_event) => {
+                    let Some(task) = &event.task_id else { continue };
+                    match task_event {
+                        TaskEvent::Try { try_number, .. } => {
+                            tries.insert(task.clone(), *try_number);
                         }
-                        CardEvent::Reported(_) => {
-                            reported_at.insert(card.clone(), at_event);
-                            unreported.remove(card);
+                        TaskEvent::Reported(_) => {
+                            reported_at.insert(task.clone(), at_event);
+                            unreported.remove(task);
                         }
-                        CardEvent::State {
-                            to: CardState::Failed | CardState::Escalated,
+                        TaskEvent::State {
+                            to: TaskState::Failed | TaskState::NeedsYou,
                             ..
                         } => {
-                            if let Some(at) = unreported.remove(card)
+                            if let Some(at) = unreported.remove(task)
                                 && let Some(facts) = sessions.get_mut(at)
                             {
                                 facts.unreported = true;
@@ -201,59 +211,74 @@ impl RunFacts {
                     }
                 }
                 RunEventKind::Run(RunLifecycle::Finished { .. }) => finished_at = Some(event.ts),
-                RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) => {
+                RunEventKind::Approval(ApprovalEvent::Opened(opened)) => {
                     if opened.needs_you {
-                        let card = opened.card.clone().or_else(|| match &opened.packet {
-                            CheckpointPacket::Question(question) => Some(question.card.clone()),
+                        let task = opened.task.clone().or_else(|| match &opened.packet {
+                            ApprovalPacket::Question(question) => Some(question.task.clone()),
                             _ => None,
                         });
-                        waiting.insert(opened.id.clone(), card);
+                        waiting.insert(opened.id.clone(), task);
                     }
                 }
-                RunEventKind::Checkpoint(CheckpointEvent::Decided(decided)) => {
+                RunEventKind::Approval(ApprovalEvent::Decided(decided)) => {
                     waiting.remove(&decided.id);
                 }
-                RunEventKind::Checkpoint(CheckpointEvent::Withdrawn { id, .. }) => {
+                RunEventKind::Approval(ApprovalEvent::Withdrawn { id, .. }) => {
                     waiting.remove(id);
                 }
-                RunEventKind::Handoff(HandoffEvent::Needed(plan)) => {
+                RunEventKind::Fallback(FallbackEvent::Needed(plan)) => {
                     let stopped_role = sessions.iter().rev().find_map(|session| {
-                        (session.card.as_ref() == Some(&plan.card)
+                        (session.task.as_ref() == Some(&plan.task)
                             && session.started.worker == plan.stopped)
                             .then_some(session.started.role)
                     });
                     if let Some(role) = stopped_role {
-                        handoffs.insert(plan.card.clone(), (plan.stopped.clone(), role));
+                        let stopped = (plan.stopped.clone(), role, plan.reason.clone());
+                        fallbacks.insert(plan.task.clone(), stopped);
                     }
                 }
                 RunEventKind::Session(SessionEvent::Started(started)) => {
                     let Some(key) = &event.session else { continue };
-                    let standing_in_for = event
-                        .card_id
+                    let fallback = event
+                        .task_id
                         .as_ref()
-                        .and_then(|card| handoffs.get(card))
-                        .filter(|(stopped, role)| {
+                        .and_then(|task| fallbacks.get(task))
+                        .filter(|(stopped, role, _)| {
                             *role == started.role && *stopped != started.worker
-                        })
-                        .map(|(stopped, _)| stopped.clone());
+                        });
+                    // A step's own fallback names the model the step asked, which another
+                    // runs in place of: a review that stays on its CLI with the next model.
+                    let asked = started
+                        .asked
+                        .as_ref()
+                        .filter(|asked| **asked != started.worker);
+                    let fallback_for = fallback
+                        .map(|(stopped, ..)| stopped.clone())
+                        .or_else(|| asked.cloned());
+                    let fallback_why = fallback
+                        .map(|(.., why)| why.trim().to_owned())
+                        .filter(|why| !why.is_empty())
+                        .or_else(|| {
+                            why_it_stopped(&sessions, event.task_id.as_ref(), started, asked?)
+                        });
                     let worker = match &started.worker.model {
                         Some(_) => started.worker.clone(),
-                        None => WorkerRef::new(
-                            started.worker.worker.clone(),
-                            configured.get(&started.worker.worker).cloned(),
+                        None => ModelRef::new(
+                            started.worker.agent.clone(),
+                            configured.get(&started.worker.agent).cloned(),
                         ),
                     };
                     let owns = started.step == Some(StepName::Build);
-                    let attempt = event
-                        .card_id
+                    let try_number = event
+                        .task_id
                         .as_ref()
                         .filter(|_| owns)
-                        .and_then(|card| attempts.get(card).copied());
+                        .and_then(|task| tries.get(task).copied());
                     index.insert(key.clone(), sessions.len());
                     starts.push(at_event);
                     sessions.push(SessionFacts {
                         key: key.clone(),
-                        card: event.card_id.clone(),
+                        task: event.task_id.clone(),
                         started_at: event.ts,
                         started: (**started).clone(),
                         worker,
@@ -264,11 +289,13 @@ impl RunFacts {
                         metered: None,
                         tools: Vec::new(),
                         context: None,
+                        context_rows: Vec::new(),
                         subagents: Vec::new(),
                         prompt: String::new(),
                         cwd: None,
-                        standing_in_for,
-                        attempt,
+                        fallback_for,
+                        fallback_why,
+                        try_number,
                         file_diffs: BTreeMap::new(),
                         unreported: false,
                     });
@@ -283,15 +310,15 @@ impl RunFacts {
                     facts.ended = Some((**end).clone());
                     facts.ended_at = Some(event.ts);
                     // A report sent with a tool came before the end; one parsed from the last
-                    // answer comes after it, before the card moves on.
-                    if let Some(card) = &facts.card
+                    // answer comes after it, before the question moves on.
+                    if let Some(task) = &facts.task
                         && facts.started.step == Some(StepName::Build)
                         && end.reason == EndReason::Completed
                         && reported_at
-                            .get(card)
+                            .get(task)
                             .is_none_or(|reported| starts.get(*at).is_some_and(|s| reported < s))
                     {
-                        unreported.insert(card.clone(), *at);
+                        unreported.insert(task.clone(), *at);
                     }
                 }
                 _ => {
@@ -313,6 +340,7 @@ impl RunFacts {
             last_ts: events.last().map(|event| event.ts),
             finished_at,
             rotate_at,
+            verdicts: Verdicts::of(events),
         }
     }
 
@@ -326,14 +354,15 @@ impl RunFacts {
         match &facts.ended {
             Some(_) if facts.unreported => RowStatus::Failed,
             Some(end) => match end.reason {
-                EndReason::Completed
-                | EndReason::Paused
-                | EndReason::Stopped
-                | EndReason::ContextFull => RowStatus::Done,
+                EndReason::Completed | EndReason::ContextFull => RowStatus::Done,
+                // Held where it was, its work so far kept, until the run goes on.
+                EndReason::Paused => RowStatus::Paused,
+                // Stopped by you: it neither finished nor failed.
+                EndReason::Stopped => RowStatus::Skipped,
                 _ => RowStatus::Failed,
             },
-            None if facts.card.is_some()
-                && self.waiting.values().any(|card| card == &facts.card) =>
+            None if facts.task.is_some()
+                && self.waiting.values().any(|task| task == &facts.task) =>
             {
                 RowStatus::NeedsYou
             }
@@ -374,13 +403,19 @@ impl RunFacts {
                 let cap = self.rotate_cap(window).or(window)?;
                 Some(ContextUse { used, cap })
             }),
-            standing_in_for: facts.standing_in_for.clone(),
-            answered: None,
+            fallback_for: facts.fallback_for.clone(),
+            answered: false,
             tries: Vec::new(),
+            // A fallback's row says why it runs until it has something of its own to say.
+            note: self.verdicts.note(self, facts).or_else(|| {
+                let why = facts.fallback_why.as_deref()?;
+                Some(RowNote::new(why, Tone::Warn))
+            }),
+            inner: None,
         }
     }
 
-    /// Earlier sessions of the same card and role that ended because their context filled.
+    /// Earlier sessions of the same task and role that ended because their context filled.
     pub fn rotations(&self, facts: &SessionFacts) -> u32 {
         let count = self
             .sessions
@@ -388,7 +423,7 @@ impl RunFacts {
             .filter(|other| {
                 other.started_at <= facts.started_at
                     && other.key != facts.key
-                    && other.card == facts.card
+                    && other.task == facts.task
                     && other.started.role == facts.started.role
                     && other
                         .ended
@@ -400,9 +435,34 @@ impl RunFacts {
     }
 }
 
+/// Why the model a step asked stopped, from its last session in the same job, in the few
+/// words a fallback's row has room for: a CLI's error by its kind, such as `overloaded`. The
+/// job is the step, the role and the task, since only a task's sessions keep one label. A
+/// session that finished, or that you or a pause ended, is no reason.
+fn why_it_stopped(
+    sessions: &[SessionFacts],
+    task: Option<&TaskId>,
+    started: &SessionStarted,
+    asked: &ModelRef,
+) -> Option<String> {
+    let tried = sessions.iter().rev().find(|earlier| {
+        let before = &earlier.started;
+        before.worker == *asked
+            && earlier.task.as_ref() == task
+            && before.workflow_step == started.workflow_step
+            && before.role == started.role
+            && before.step == started.step
+    })?;
+    match &tried.ended.as_ref()?.reason {
+        EndReason::Completed | EndReason::Paused | EndReason::Stopped => None,
+        EndReason::CliError { category, .. } => Some(category_words(*category).to_owned()),
+        reason => Some(stop_line(reason)),
+    }
+}
+
 /// A run's agents as the list of everything running shows them: each by its
-/// label and last line, with a seat's retries folded into one row. `live` says the run's
-/// supervisor is up, so an agent with no end is working. Without one it waits to be resumed.
+/// label and last line, with an agent's retries folded into one row. `live` says the run's
+/// run host is up, so an agent with no end is working. Without one it waits to be resumed.
 pub(crate) fn crew_rows(
     events: &[RunEvent],
     run: &CrewRun,
@@ -439,17 +499,17 @@ pub(crate) fn crew_rows(
                     .unwrap_or(session.started_at),
                 details: CrewDetails {
                     last_message,
-                    card: session.card.clone(),
+                    task: session.task.clone(),
                     spent: Some(session.spent()),
                     context: facts.agent_row(session).context,
                     branch: None,
                     prompt: Some(session.prompt.trim().to_owned()).filter(|text| !text.is_empty()),
                 },
             };
-            SeatTry {
-                seat: match &session.card {
-                    Some(card) => format!("{card}/{label}"),
-                    None => format!("{}/{}", session.started.role.as_str(), seat_of(&label)),
+            LabelTry {
+                key: match &session.task {
+                    Some(task) => format!("{task}/{label}"),
+                    None => format!("{}/{}", session.started.role.as_str(), first_label(&label)),
                 },
                 started: session.started_at,
                 ended: session.ended_at,
@@ -468,7 +528,8 @@ fn crew_state(facts: &RunFacts, session: &SessionFacts, live: bool) -> CrewState
     match facts.status(session) {
         RowStatus::NeedsYou => CrewState::NeedsYou,
         RowStatus::Failed => CrewState::Failed,
-        RowStatus::Done if stopped => CrewState::Stopped,
+        RowStatus::Paused => CrewState::Stopped,
+        RowStatus::Done | RowStatus::Skipped if stopped => CrewState::Stopped,
         RowStatus::Done | RowStatus::Skipped => CrewState::Done,
         RowStatus::Running | RowStatus::Queued | RowStatus::Waiting if live => CrewState::Working,
         RowStatus::Running | RowStatus::Queued | RowStatus::Waiting => CrewState::Waiting,
@@ -521,7 +582,7 @@ impl SessionFacts {
                     self.prompt.push_str(&part.text);
                 }
             }
-            RunEventKind::Session(SessionEvent::Limit(LimitEvent::Budget(status))) => {
+            RunEventKind::Session(SessionEvent::Limit(LimitEvent::Spend(status))) => {
                 self.metered = Some(status.spend);
             }
             RunEventKind::Session(SessionEvent::FileDiff(diff)) => {
@@ -583,6 +644,10 @@ impl SessionFacts {
                 let window = size.or(self.context.and_then(|(_, window)| window));
                 self.context = Some((*used, window));
             }
+            // How full it is stays the fill's to say, which is what it rotates by.
+            AgentEvent::ContextBreakdown { usage } => {
+                self.context_rows.clone_from(&usage.categories);
+            }
             AgentEvent::Subagent { update } => {
                 match self
                     .subagents
@@ -603,24 +668,24 @@ mod tests {
     use super::*;
     use crate::client::test_support::{event, session_started};
     use argonauts_core::DiffStat;
-    use argonauts_core::events::vendor::HandoffPlan;
-    use argonauts_core::settings::handoff::{HandoffMode, HandoffStrategy};
+    use argonauts_core::events::agent_status::FallbackPlan;
+    use argonauts_core::settings::fallback::{FallbackMode, FallbackStrategy};
 
     #[test]
-    fn a_replacement_stands_in_for_the_stopped_worker_in_its_role() {
-        let card = CardId::new("task-001").unwrap();
-        let claude = WorkerRef::new("claude-code", None);
-        let plan = HandoffPlan {
-            card: card.clone(),
+    fn a_fallback_takes_the_place_of_the_stopped_worker_in_its_role() {
+        let task = TaskId::new("task-001").unwrap();
+        let claude = ModelRef::new("claude-code", None);
+        let plan = FallbackPlan {
+            task: task.clone(),
             title: "Export".to_owned(),
             stopped: claude.clone(),
             reason: "usage limit".to_owned(),
             resets_at: None,
             work: DiffStat::default(),
-            gates_ran: false,
+            checks_ran: false,
             candidates: Vec::new(),
-            mode: HandoffMode::Auto,
-            strategy: HandoffStrategy::First,
+            mode: FallbackMode::Auto,
+            strategy: FallbackStrategy::First,
             race_count: 1,
             also_moving: Vec::new(),
         };
@@ -630,16 +695,118 @@ mod tests {
             SessionKey::numbered(3),
         );
         let events = vec![
-            session_started(0, &s1, Some(&card), RoleName::Worker, "claude-code"),
-            event(1, RunEventKind::Handoff(HandoffEvent::Needed(plan))),
-            session_started(2, &s2, Some(&card), RoleName::Worker, "codex"),
-            session_started(3, &s3, Some(&card), RoleName::Reviewer, "antigravity-cli"),
+            session_started(0, &s1, Some(&task), RoleName::Worker, "claude-code"),
+            event(1, RunEventKind::Fallback(FallbackEvent::Needed(plan))),
+            session_started(2, &s2, Some(&task), RoleName::Worker, "codex"),
+            session_started(3, &s3, Some(&task), RoleName::Reviewer, "antigravity-cli"),
         ];
         let facts = RunFacts::of(&events);
-        let stands_in = |key| facts.session(key).unwrap().standing_in_for.clone();
-        assert_eq!(stands_in(&s1), None);
-        assert_eq!(stands_in(&s2), Some(claude));
-        assert_eq!(stands_in(&s3), None, "a reviewer replaced no one");
+        let fallback_for = |key| facts.session(key).unwrap().fallback_for.clone();
+        assert_eq!(fallback_for(&s1), None);
+        assert_eq!(fallback_for(&s2), Some(claude));
+        assert_eq!(fallback_for(&s3), None, "a reviewer replaced no one");
+
+        // The fallback's row says why the first worker stopped, and no other row does.
+        let note = |key| {
+            let row = facts.agent_row(facts.session(key).unwrap());
+            row.note.map(|note| (note.text, note.tone))
+        };
+        assert_eq!(note(&s1), None);
+        assert_eq!(note(&s2), Some(("usage limit".to_owned(), Tone::Warn)));
+        assert_eq!(note(&s3), None);
+    }
+
+    /// A step that stays on its CLI starts its fallback under the model it asked. The
+    /// fallback's row names that model and says why it stopped, in the few words its error
+    /// has, as a task's fallback does.
+    #[test]
+    fn a_steps_own_fallback_is_named_for_the_model_it_asked() {
+        use crate::client::test_support::session_ended;
+        use argonauts_core::ErrorCategory;
+
+        let task = TaskId::new("task-001").unwrap();
+        let (first, second) = (SessionKey::numbered(1), SessionKey::numbered(2));
+        let opus: ModelRef = "claude-code/claude-opus-5-5".parse().unwrap();
+        let sonnet: ModelRef = "claude-code/claude-sonnet-5-5".parse().unwrap();
+        let review = |seq, key: &SessionKey, worker: &ModelRef, asked: Option<&ModelRef>| {
+            let mut started =
+                session_started(seq, key, Some(&task), RoleName::Reviewer, "claude-code");
+            if let RunEventKind::Session(SessionEvent::Started(session)) = &mut started.kind {
+                session.worker = worker.clone();
+                session.label = Some("review:due-tests".to_owned());
+                session.asked = asked.cloned();
+            }
+            started
+        };
+        let overloaded = EndReason::CliError {
+            category: ErrorCategory::Overloaded,
+            message: "Overloaded".to_owned(),
+        };
+        let events = vec![
+            review(0, &first, &opus, None),
+            session_ended(1, &first, overloaded, 2_000),
+            review(2, &second, &sonnet, Some(&opus)),
+        ];
+        let facts = RunFacts::of(&events);
+        let row = |key| facts.agent_row(facts.session(key).unwrap());
+        assert_eq!(row(&first).fallback_for, None);
+        let fallback = row(&second);
+        assert_eq!(fallback.fallback_for, Some(opus));
+        assert_eq!(
+            fallback.note.map(|note| (note.text, note.tone)),
+            Some(("overloaded".to_owned(), Tone::Warn))
+        );
+    }
+
+    /// A job without a task gives its fallback a label of its own, so the reason comes from
+    /// the asked model's session in the same step and role. One you stopped is no reason.
+    #[test]
+    fn a_fallback_without_a_task_still_says_why_the_asked_model_stopped() {
+        use crate::client::test_support::session_ended;
+        use argonauts_core::ErrorCategory;
+        use argonauts_core::names::WorkflowId;
+        use argonauts_core::workflow::StepRef;
+
+        let opus: ModelRef = "claude-code/claude-opus-5-5".parse().unwrap();
+        let sonnet: ModelRef = "claude-code/claude-sonnet-5-5".parse().unwrap();
+        let step = |index| StepRef {
+            workflow: WorkflowId::numbered(1),
+            phase: 0,
+            path: vec![index],
+        };
+        let reading = |seq, key: u32, label: &str, at: u32, asked: Option<&ModelRef>| {
+            let key = SessionKey::numbered(key);
+            let mut started = session_started(seq, &key, None, RoleName::Reader, "claude-code");
+            if let RunEventKind::Session(SessionEvent::Started(session)) = &mut started.kind {
+                session.worker = if asked.is_some() { &sonnet } else { &opus }.clone();
+                session.label = Some(label.to_owned());
+                session.workflow_step = Some(step(at));
+                session.asked = asked.cloned();
+            }
+            started
+        };
+        let ended =
+            |seq, key: u32, reason| session_ended(seq, &SessionKey::numbered(key), reason, 2_000);
+        let overloaded = EndReason::CliError {
+            category: ErrorCategory::Overloaded,
+            message: "Overloaded".to_owned(),
+        };
+        let events = vec![
+            reading(0, 1, "read:anthropic", 0, None),
+            ended(1, 1, overloaded),
+            reading(2, 2, "read:anthropic-2", 0, Some(&opus)),
+            // Another step's reader, which you stopped before its fallback started.
+            reading(3, 3, "read:anthropic-3", 1, None),
+            ended(4, 3, EndReason::Stopped),
+            reading(5, 4, "read:anthropic-4", 1, Some(&opus)),
+        ];
+        let facts = RunFacts::of(&events);
+        let said = |key: u32| {
+            let row = facts.agent_row(facts.session(&SessionKey::numbered(key)).unwrap());
+            (row.fallback_for, row.note.map(|note| note.text))
+        };
+        assert_eq!(said(2), (Some(opus.clone()), Some("overloaded".to_owned())));
+        assert_eq!(said(4), (Some(opus), None));
     }
 
     /// The views name a session by the model it runs: its CLI's from the run's settings when
@@ -677,7 +844,7 @@ mod tests {
     }
 
     /// The list of everything running names a run's agents by their labels, says each one's
-    /// last line, and folds a seat's retries into one row.
+    /// last line, and folds an agent's retries into one row.
     #[test]
     fn a_run_s_agents_list_by_label_with_retries_folded() {
         use crate::client::test_support::{agent, base_ts, event_at, session_ended};
@@ -765,8 +932,8 @@ mod tests {
             &rows[0].target,
             CrewTarget::Agent { session, .. } if *session == key(3)
         ));
-        // With no supervisor an agent with no end isn't working: it waits to be resumed.
-        let parked = crew_rows(&events, &run, "~/app", false);
-        assert_eq!(parked[1].state, CrewState::Waiting);
+        // With no run host an agent with no end isn't working: it waits to be resumed.
+        let waiting = crew_rows(&events, &run, "~/app", false);
+        assert_eq!(waiting[1].state, CrewState::Waiting);
     }
 }

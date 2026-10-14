@@ -5,22 +5,22 @@
 //! The same cards pin above the input, where rows are dear: the run without its goal and
 //! plan and with its first few tasks, and each card folded to one line.
 
-use argonauts_core::api::{CardBrief, StatusSummary};
+use argonauts_core::api::{StatusSummary, TaskBrief};
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::card::CardState;
-use argonauts_core::events::vendor::RunBudget;
-use argonauts_core::settings::budget::{BudgetAmount, BudgetLineKind, BudgetUnit};
-use argonauts_core::settings::ui::WidgetName;
+use argonauts_core::events::agent_status::RunSpend;
+use argonauts_core::events::task::TaskState;
+use argonauts_core::settings::limit::{LimitAmount, LimitLineKind, LimitUnit};
+use argonauts_core::settings::ui::ModName;
 use ratatui::text::Span;
 
 use crate::format;
-use crate::text::{sanitize_line, str_width, truncate_spans};
-use crate::theme::Role;
-use crate::widgets::bars::Stack;
-use crate::widgets::{
+use crate::kit::bars::Stack;
+use crate::kit::{
     Badge, Drawn, Form, Frame, Header, Kit, Level, MeterRow, MeterSlots, State, States, bodies,
     ljust,
 };
+use crate::text::{sanitize_line, str_width, truncate_spans};
+use crate::theme::Role;
 
 /// From this share of a limit on, the spend shows amber.
 const NEAR_LIMIT: f64 = 0.9;
@@ -52,20 +52,20 @@ pub enum StatusCard {
 
 impl StatusCard {
     /// The card a mod's name draws, for the names these cards answer to.
-    pub fn of(name: WidgetName) -> Option<Self> {
+    pub fn of(name: ModName) -> Option<Self> {
         match name {
-            WidgetName::Run => Some(StatusCard::Run),
-            WidgetName::Budget => Some(StatusCard::Spend),
-            WidgetName::Waiting => Some(StatusCard::NeedsYou),
+            ModName::Run => Some(StatusCard::Run),
+            ModName::RunLimits => Some(StatusCard::Spend),
+            ModName::Waiting => Some(StatusCard::NeedsYou),
             _ => None,
         }
     }
 
-    pub fn name(self) -> WidgetName {
+    pub fn name(self) -> ModName {
         match self {
-            StatusCard::Run => WidgetName::Run,
-            StatusCard::Spend => WidgetName::Budget,
-            StatusCard::NeedsYou => WidgetName::Waiting,
+            StatusCard::Run => ModName::Run,
+            StatusCard::Spend => ModName::RunLimits,
+            StatusCard::NeedsYou => ModName::Waiting,
         }
     }
 }
@@ -111,10 +111,10 @@ impl StatusCards<'_> {
     /// Nothing runs and nothing is planned, so there is no card to draw.
     pub fn is_empty(&self) -> bool {
         let summary = self.summary;
-        summary.cards.is_empty()
+        summary.tasks.is_empty()
             && summary.goal.is_empty()
             && summary.plan.is_none()
-            && summary.budget.is_none()
+            && summary.spend.is_none()
             && summary.waiting.is_empty()
     }
 
@@ -122,7 +122,7 @@ impl StatusCards<'_> {
     pub fn has(&self, card: StatusCard) -> bool {
         match card {
             StatusCard::Run => self.summary.run.is_some() && !self.is_empty(),
-            StatusCard::Spend => self.summary.budget.is_some(),
+            StatusCard::Spend => self.summary.spend.is_some(),
             StatusCard::NeedsYou => !self.summary.waiting.is_empty(),
         }
     }
@@ -151,7 +151,7 @@ impl StatusCards<'_> {
     /// The folded card: its mark and name, then the one number that matters.
     pub fn line(&self, kit: &Kit<'_>, card: StatusCard, width: usize) -> Vec<Span<'static>> {
         let header = match card {
-            StatusCard::Run => self.run_header(kit, &Counts::of(&self.summary.cards)),
+            StatusCard::Run => self.run_header(kit, &Counts::of(&self.summary.tasks)),
             StatusCard::Spend => self.spend_header(true),
             StatusCard::NeedsYou => Header::new("needs you", Role::StateNeedsYou),
         };
@@ -175,7 +175,7 @@ impl StatusCards<'_> {
         let summary = self.summary;
         match card {
             StatusCard::Run => {
-                let counts = Counts::of(&summary.cards);
+                let counts = Counts::of(&summary.tasks);
                 let stands = counts.badge(!summary.waiting.is_empty());
                 let mut words = vec![kit.dim(format!(
                     "{} of {} merged",
@@ -191,13 +191,13 @@ impl StatusCards<'_> {
                 words
             }
             StatusCard::Spend => {
-                let Some(budget) = &summary.budget else {
+                let Some(spend) = &summary.spend else {
                     return Vec::new();
                 };
-                let spent = format::spend(&budget.spent);
-                match budget.limit.filter(|limit| limit.amount > 0.0) {
+                let spent = format::spend(&spend.spent);
+                match spend.limit.filter(|limit| limit.amount > 0.0) {
                     Some(limit) => {
-                        let share = used(budget, limit.unit) / limit.amount;
+                        let share = used(spend, limit.unit) / limit.amount;
                         vec![kit.span(
                             format!("{spent} of {} ({:.0}%)", amount(&limit), share * 100.0),
                             level(share).number_role(),
@@ -220,7 +220,7 @@ impl StatusCards<'_> {
     /// plan, then a row for each task, as much of it as `shape` asks for.
     pub fn run(&self, kit: &Kit<'_>, frame: Frame, shape: RunShape<'_>) -> Drawn {
         let inner = frame.inner();
-        let tasks = &self.summary.cards;
+        let tasks = &self.summary.tasks;
         let counts = Counts::of(tasks);
         let mut body = Drawn::new();
         body.push(self.run_header(kit, &counts).draw(kit, inner));
@@ -255,7 +255,7 @@ impl StatusCards<'_> {
             .map_or_else(|| "no run".to_owned(), ToString::to_string);
         let mut header = Header {
             subject: self.title.map(clean),
-            ..Header::new(title, Role::Card)
+            ..Header::new(title, Role::Question)
         };
         if counts.planned() > 0 {
             header.amount = Some(counts.count(State::Done).to_string());
@@ -287,20 +287,20 @@ impl StatusCards<'_> {
     /// gives way first on a narrow card, and under 70 cells nobody is named. More tasks than
     /// the card lists scroll under the picked one.
     fn task_rows(&self, kit: &Kit<'_>, width: usize, shape: RunShape<'_>) -> Drawn {
-        let tasks = &self.summary.cards;
+        let tasks = &self.summary.tasks;
         let picked = shape.picks.and_then(|picks| picks.at);
         let first = picked.map_or(0, |at| (at + 1).saturating_sub(shape.tasks));
         let last = (first + shape.tasks).min(tasks.len());
         let shown = &tasks[first.min(last)..last];
-        let worker = |task: &CardBrief| {
-            task.owner
+        let worker = |task: &TaskBrief| {
+            task.worker
                 .as_ref()
-                .map_or_else(String::new, |owner| clean(&self.names.worker(owner)))
+                .map_or_else(String::new, |worker| clean(&self.names.worker(worker)))
         };
         let column = |widest: usize| if widest == 0 { 0 } else { widest + 2 };
         let pick_w = if shape.picks.is_some() { 2 } else { 0 };
         let width = width.saturating_sub(pick_w);
-        let id_w = column(widest(shown, |task| task.card.to_string()));
+        let id_w = column(widest(shown, |task| task.task.to_string()));
         let worker_w = if width >= 70 {
             column(widest(shown, worker))
         } else {
@@ -321,7 +321,7 @@ impl StatusCards<'_> {
             let mut row = Vec::new();
             if let Some(picks) = shape.picks {
                 row.push(if on {
-                    kit.span(format!("{} ", picks.mark), Role::Card)
+                    kit.span(format!("{} ", picks.mark), Role::Question)
                 } else {
                     Span::raw("  ")
                 });
@@ -329,7 +329,7 @@ impl StatusCards<'_> {
             row.extend([
                 states.span(kit, state),
                 Span::raw(" "),
-                kit.dim(ljust(task.card.as_ref(), id_w)),
+                kit.dim(ljust(task.task.as_ref(), id_w)),
             ]);
             row.push(if on {
                 kit.strong(ljust(&title, title_w))
@@ -385,20 +385,20 @@ impl StatusCards<'_> {
         full: bool,
         names_run: bool,
     ) -> Option<Drawn> {
-        let budget = self.summary.budget.as_ref()?;
+        let spend = self.summary.spend.as_ref()?;
         let inner = frame.inner();
         let mut header = Header {
-            amount: Some(format::spend(&budget.spent)),
+            amount: Some(format::spend(&spend.spent)),
             ..self.spend_header(names_run)
         };
         let mut rows = Vec::new();
-        match budget.limit.filter(|limit| limit.amount > 0.0) {
+        match spend.limit.filter(|limit| limit.amount > 0.0) {
             Some(limit) => {
-                let share = used(budget, limit.unit) / limit.amount;
+                let share = used(spend, limit.unit) / limit.amount;
                 header.tail = vec![kit.dim(format!(" of {}", amount(&limit)))];
                 header.badge = Some(Badge::percent(share, level(share)));
                 rows.push(meter(unit_word(limit.unit), share));
-                let allocated = budget
+                let allocated = spend
                     .lines
                     .iter()
                     .filter(|line| full && line.allocated.amount > 0.0);
@@ -411,7 +411,7 @@ impl StatusCards<'_> {
                 header.tail = vec![kit.dim(" · no limit set")];
                 rows.push(MeterRow::Text {
                     label: "tokens".to_owned(),
-                    words: vec![kit.strong(format::tokens(budget.spent.total_tokens()))],
+                    words: vec![kit.strong(format::tokens(spend.spent.total_tokens()))],
                 });
                 if full {
                     rows.push(MeterRow::Text {
@@ -484,7 +484,7 @@ fn clean(text: &str) -> String {
     sanitize_line(text).trim().to_owned()
 }
 
-fn widest(tasks: &[CardBrief], cell: impl Fn(&CardBrief) -> String) -> usize {
+fn widest(tasks: &[TaskBrief], cell: impl Fn(&TaskBrief) -> String) -> usize {
     tasks
         .iter()
         .map(|task| str_width(&cell(task)))
@@ -497,7 +497,7 @@ fn widest(tasks: &[CardBrief], cell: impl Fn(&CardBrief) -> String) -> usize {
 struct Counts([u64; STATES.len()]);
 
 impl Counts {
-    fn of(tasks: &[CardBrief]) -> Self {
+    fn of(tasks: &[TaskBrief]) -> Self {
         let mut counts = Self::default();
         for task in tasks {
             let state = task_state(task.state);
@@ -566,16 +566,16 @@ impl Counts {
 }
 
 /// A task's state as one of the kit's seven, which pick its mark and its color.
-pub(super) fn task_state(state: CardState) -> State {
+pub(super) fn task_state(state: TaskState) -> State {
     match state {
-        CardState::Integrated => State::Done,
-        CardState::Running | CardState::Gating | CardState::InReview | CardState::Integrating => {
+        TaskState::Merged => State::Done,
+        TaskState::Running | TaskState::Checking | TaskState::InReview | TaskState::Merging => {
             State::Working
         }
-        CardState::Waiting | CardState::Ready | CardState::Deferred => State::Waiting,
-        CardState::Blocked | CardState::NeedsDecision | CardState::Escalated => State::NeedsYou,
-        CardState::Failed => State::Failed,
-        CardState::Cancelled | CardState::TakenOver => State::Stopped,
+        TaskState::Waiting | TaskState::Ready | TaskState::Deferred => State::Waiting,
+        TaskState::Blocked | TaskState::NeedsDecision | TaskState::NeedsYou => State::NeedsYou,
+        TaskState::Failed => State::Failed,
+        TaskState::Cancelled | TaskState::TakenOver => State::Stopped,
     }
 }
 
@@ -588,21 +588,21 @@ fn state_word(state: State) -> &'static str {
 }
 
 /// How a task stands, in the run's own words: its step, then its note.
-fn standing(task: &CardBrief) -> String {
+fn standing(task: &TaskBrief) -> String {
     let word = match task.state {
-        CardState::Waiting => "waiting",
-        CardState::Ready => "ready",
-        CardState::Running => "running",
-        CardState::Blocked => "asks you",
-        CardState::NeedsDecision | CardState::Escalated => "needs you",
-        CardState::Gating => "checks",
-        CardState::InReview => "in review",
-        CardState::Integrating => "merging",
-        CardState::Integrated => "merged",
-        CardState::Failed => "failed",
-        CardState::Deferred => "waiting for a limit",
-        CardState::Cancelled => "cancelled",
-        CardState::TakenOver => "taken over",
+        TaskState::Waiting => "waiting",
+        TaskState::Ready => "ready",
+        TaskState::Running => "running",
+        TaskState::Blocked => "asks you",
+        TaskState::NeedsDecision | TaskState::NeedsYou => "needs you",
+        TaskState::Checking => "checks",
+        TaskState::InReview => "in review",
+        TaskState::Merging => "merging",
+        TaskState::Merged => "merged",
+        TaskState::Failed => "failed",
+        TaskState::Deferred => "waiting for a limit",
+        TaskState::Cancelled => "cancelled",
+        TaskState::TakenOver => "taken over",
     };
     match clean(&task.note) {
         note if note.is_empty() => word.to_owned(),
@@ -632,42 +632,42 @@ fn meter(label: &str, share: f64) -> MeterRow {
 }
 
 /// What the run used so far, in the unit its limit is set in.
-fn used(budget: &RunBudget, unit: BudgetUnit) -> f64 {
+fn used(limit: &RunSpend, unit: LimitUnit) -> f64 {
     match unit {
-        BudgetUnit::Usd => budget.spent.cost_usd,
-        BudgetUnit::Tokens => budget.spent.total_tokens() as f64,
+        LimitUnit::Usd => limit.spent.cost_usd,
+        LimitUnit::Tokens => limit.spent.total_tokens() as f64,
         // Plan usage and minutes are counted by the limit's lines, not by the spend.
-        BudgetUnit::Quota | BudgetUnit::Minutes => budget.lines.iter().map(|line| line.used).sum(),
+        LimitUnit::PlanUsage | LimitUnit::Minutes => limit.lines.iter().map(|line| line.used).sum(),
     }
 }
 
-fn amount(limit: &BudgetAmount) -> String {
+fn amount(limit: &LimitAmount) -> String {
     match limit.unit {
-        BudgetUnit::Usd => format::usd(limit.amount),
-        BudgetUnit::Tokens => format!("{} tokens", format::tokens(limit.amount.max(0.0) as u64)),
-        BudgetUnit::Quota => format!("{:.0}% of plan usage", limit.amount * 100.0),
-        BudgetUnit::Minutes => format!("{:.0}m", limit.amount),
+        LimitUnit::Usd => format::usd(limit.amount),
+        LimitUnit::Tokens => format!("{} tokens", format::tokens(limit.amount.max(0.0) as u64)),
+        LimitUnit::PlanUsage => format!("{:.0}% of plan usage", limit.amount * 100.0),
+        LimitUnit::Minutes => format!("{:.0}m", limit.amount),
     }
 }
 
-fn unit_word(unit: BudgetUnit) -> &'static str {
+fn unit_word(unit: LimitUnit) -> &'static str {
     match unit {
-        BudgetUnit::Usd => "spend",
-        BudgetUnit::Tokens => "tokens",
-        BudgetUnit::Quota => "plan usage",
-        BudgetUnit::Minutes => "time",
+        LimitUnit::Usd => "spend",
+        LimitUnit::Tokens => "tokens",
+        LimitUnit::PlanUsage => "plan usage",
+        LimitUnit::Minutes => "time",
     }
 }
 
-fn line_word(line: BudgetLineKind) -> &'static str {
+fn line_word(line: LimitLineKind) -> &'static str {
     match line {
-        BudgetLineKind::GoalAndPlan => "goal and plan",
-        BudgetLineKind::Spikes => "experiments",
-        BudgetLineKind::Contracts => "contracts",
-        BudgetLineKind::Cards => "tasks",
-        BudgetLineKind::Review => "review",
-        BudgetLineKind::Integration => "merging",
-        BudgetLineKind::Reserve => "reserve",
+        LimitLineKind::GoalAndPlan => "goal and plan",
+        LimitLineKind::Experiments => "experiments",
+        LimitLineKind::Contracts => "contracts",
+        LimitLineKind::Tasks => "tasks",
+        LimitLineKind::Review => "review",
+        LimitLineKind::Merge => "merging",
+        LimitLineKind::Reserve => "reserve",
     }
 }
 

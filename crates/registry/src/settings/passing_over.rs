@@ -7,7 +7,9 @@ use argonauts_core::settings::Settings;
 use toml::{Table, Value};
 
 use crate::SettingsError;
-use crate::resolve::{GLOBAL, PRESET, PROJECT, PROJECT_LOCAL, is_plain_key, remove_leaf, value_at};
+use crate::resolve::{
+    GLOBAL, PROJECT, PROJECT_LOCAL, WORKFLOW, is_plain_key, remove_leaf, value_at,
+};
 
 /// Why one pass over the layers stopped, and the key it stopped at when that's known.
 #[derive(Debug)]
@@ -16,7 +18,12 @@ pub(crate) struct Stop {
     /// A settings or workflow file set the key, rather than a flag, a request or the built-in
     /// defaults.
     in_a_file: bool,
-    pub error: SettingsError,
+    /// Boxed, so a stop stays small enough to return.
+    pub error: Box<SettingsError>,
+    /// What else is wrong under the key, which leaving it out takes along.
+    also: Vec<SettingsError>,
+    /// What the notice says when the key is left out, where the error alone would say less.
+    notice: Option<String>,
 }
 
 impl Stop {
@@ -24,8 +31,25 @@ impl Stop {
         Self {
             key: Some(key.to_owned()),
             in_a_file,
-            error,
+            error: Box::new(error),
+            also: Vec::new(),
+            notice: None,
         }
+    }
+
+    pub fn noticed(mut self, notice: String) -> Self {
+        self.notice = Some(notice);
+        self
+    }
+
+    /// Names every other fault under the key too, so none of them goes without a notice.
+    pub fn with(mut self, also: impl IntoIterator<Item = SettingsError>) -> Self {
+        for error in also {
+            if error != *self.error && !self.also.contains(&error) {
+                self.also.push(error);
+            }
+        }
+        self
     }
 }
 
@@ -34,15 +58,17 @@ impl From<SettingsError> for Stop {
         Self {
             key: None,
             in_a_file: false,
-            error,
+            error: Box::new(error),
+            also: Vec::new(),
+            notice: None,
         }
     }
 }
 
-/// The keys left out of the files so far, each with what was wrong with it.
+/// The keys left out of the files so far, each with the notice that says what was wrong.
 #[derive(Debug, Default)]
 pub(crate) struct PassedOver {
-    keys: Vec<(String, SettingsError)>,
+    keys: Vec<(String, String)>,
 }
 
 impl PassedOver {
@@ -55,7 +81,10 @@ impl PassedOver {
         if !stop.in_a_file || self.keys.iter().any(|(out, _)| out == key) {
             return false;
         }
-        self.keys.push((key.clone(), stop.error.clone()));
+        let first = stop.notice.clone().unwrap_or_else(|| warning(&stop.error));
+        let notices = std::iter::once(first).chain(stop.also.iter().map(warning));
+        self.keys
+            .extend(notices.map(|notice| (key.clone(), notice)));
         true
     }
 
@@ -66,7 +95,7 @@ impl PassedOver {
     }
 
     pub fn warnings(&self) -> Vec<String> {
-        self.keys.iter().map(|(_, error)| warning(error)).collect()
+        self.keys.iter().map(|(_, notice)| notice.clone()).collect()
     }
 }
 
@@ -80,7 +109,7 @@ fn warning(error: &SettingsError) -> String {
 }
 
 pub(crate) fn from_a_file(layer: &str) -> bool {
-    matches!(layer, GLOBAL | PROJECT | PROJECT_LOCAL | PRESET)
+    matches!(layer, GLOBAL | PROJECT | PROJECT_LOCAL | WORKFLOW)
 }
 
 /// The key under `key` that serde refused, when `key` holds a table such as `[roles]`: each
@@ -104,6 +133,13 @@ pub(crate) fn narrowed(mut key: String, merged: &Table) -> String {
 }
 
 fn reads_alone(key: &str, name: &str, value: &Value) -> bool {
+    Value::Table(alone(key, name, value))
+        .try_into::<Settings>()
+        .is_ok()
+}
+
+/// Settings that hold only `name` under `key`.
+fn alone(key: &str, name: &str, value: &Value) -> Table {
     let mut table = Table::new();
     table.insert(name.to_owned(), value.clone());
     for segment in key.rsplit('.') {
@@ -111,7 +147,24 @@ fn reads_alone(key: &str, name: &str, value: &Value) -> bool {
         outer.insert(segment.to_owned(), Value::Table(table));
         table = outer;
     }
-    Value::Table(table).try_into::<Settings>().is_ok()
+    table
+}
+
+/// The entries of the table at `key` that can't be read even alone: each with the settings it
+/// was read from and what serde said. Leaving the table out takes them all, and serde named
+/// only the first.
+pub(crate) fn refused_alone(key: &str, merged: &Table) -> Vec<(Table, toml::de::Error)> {
+    let Some(Value::Table(entries)) = value_at(merged, key) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|(name, value)| {
+            let alone = alone(key, name, value);
+            let refused = Value::Table(alone.clone()).try_into::<Settings>().err()?;
+            Some((alone, refused))
+        })
+        .collect()
 }
 
 /// Leaves out each key whose name isn't plain, with a warning, so one odd name in a file

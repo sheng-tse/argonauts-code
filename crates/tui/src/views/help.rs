@@ -1,6 +1,6 @@
 //! `/help`: every key, from the keymap in effect, and every command under the categories the
-//! `/` menu uses, the main agent CLI's after Argonauts' own.
-use argonauts_core::vendor_commands::VendorCommandSet;
+//! `/` menu uses, the main agent CLI's after Argonauts Code's own.
+use argonauts_core::cli_commands::CliCommandSet;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -24,7 +24,7 @@ const MAX_NAME: usize = 28;
 pub struct HelpView {
     pub keymap: Keymap,
     /// The main agent CLI's own commands.
-    pub vendor: Option<VendorCommandSet>,
+    pub agent_id: Option<CliCommandSet>,
     pub offset: usize,
     page: usize,
     rows: usize,
@@ -34,15 +34,15 @@ impl HelpView {
     pub fn new(keymap: Keymap) -> Self {
         Self {
             keymap,
-            vendor: None,
+            agent_id: None,
             offset: 0,
             page: 1,
             rows: 0,
         }
     }
 
-    pub fn with_commands(mut self, vendor: Option<VendorCommandSet>) -> Self {
-        self.vendor = vendor;
+    pub fn with_commands(mut self, agent_id: Option<CliCommandSet>) -> Self {
+        self.agent_id = agent_id;
         self
     }
 
@@ -56,7 +56,7 @@ impl HelpView {
             .collect();
         let mut sections = vec![("Keys".to_owned(), keys)];
         sections.extend(
-            help_sections(self.vendor.as_ref())
+            help_sections(self.agent_id.as_ref())
                 .into_iter()
                 .map(|section| (section.heading, section.rows)),
         );

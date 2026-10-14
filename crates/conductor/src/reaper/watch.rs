@@ -1,7 +1,7 @@
-//! The exit watcher: a forked copy of the supervisor, since it has to outlive it. When the
-//! supervisor exits first, it kills the agent's whole tree the way a release does. While it
+//! The exit watcher: a forked copy of the run host, since it has to outlive it. When the
+//! run host exits first, it kills the agent's whole tree the way a release does. While it
 //! watches, it notes every process it sees in the tree, so a process that left the session and
-//! lost its parent is still killed. It keeps watching after the leader exits, for as long as the
+//! lost its parent is still killed. It keeps watching after the head exits, for as long as the
 //! group, the session, or a noted process lives. Everything here after the fork makes system
 //! calls only, since allocating in a forked child isn't safe.
 
@@ -18,10 +18,10 @@ use argonauts_core::agents::AgentGroup;
 
 /// Descriptors above this are left open in the watcher. Agents' pipes sit far below it.
 const MAX_FD_TO_CLOSE: i32 = 65_536;
-/// How often a watcher whose leader has exited checks that the group or session still has
+/// How often a watcher whose head has exited checks that the group or session still has
 /// members, in milliseconds.
 const DRAIN_TICK_MS: i32 = 250;
-/// How often a watcher whose leader runs notes the tree, in milliseconds. Each note reads the
+/// How often a watcher whose head runs notes the tree, in milliseconds. Each note reads the
 /// whole process table, so it's slower than the drain.
 const NOTE_TICK_MS: i32 = 1_000;
 /// Processes of the tree the watcher notes at most. Past that, new ones go unnoted until noted
@@ -32,10 +32,10 @@ const SWEEPS: usize = 2;
 
 #[derive(Clone, Copy)]
 struct Target<'a> {
-    supervisor: i32,
+    run_host: i32,
     /// The process that forked the watcher.
     forking: i32,
-    leader: i32,
+    head: i32,
     pgid: i32,
     /// `ARGONAUTS_LAUNCH=<id>`, or empty to skip the environment sweep. Only Linux shows other
     /// processes' environments.
@@ -43,23 +43,23 @@ struct Target<'a> {
     launch_entry: &'a [u8],
 }
 
-/// Starts watching `supervisor` on behalf of `record`'s agent. Returns the watcher's pid.
-pub fn start(supervisor: u32, record: &AgentGroup, launch_entry: &[u8]) -> io::Result<Pid> {
+/// Starts watching `run_host` on behalf of `record`'s agent. Returns the watcher's pid.
+pub fn start(run_host: u32, record: &AgentGroup, launch_entry: &[u8]) -> io::Result<Pid> {
     let out_of_range = || io::Error::new(io::ErrorKind::InvalidInput, "process id out of range");
     let target = Target {
-        supervisor: i32::try_from(supervisor).map_err(|_| out_of_range())?,
+        run_host: i32::try_from(run_host).map_err(|_| out_of_range())?,
         forking: getpid().as_raw(),
-        leader: i32::try_from(record.pid).map_err(|_| out_of_range())?,
+        head: i32::try_from(record.pid).map_err(|_| out_of_range())?,
         pgid: i32::try_from(record.pgid).map_err(|_| out_of_range())?,
         launch_entry,
     };
     // Noted before the fork, so a process that leaves the tree right away is still found.
-    let noted = Noted::of_tree(target.leader, target.pgid);
+    let noted = Noted::of_tree(target.head, target.pgid);
     // SAFETY: getdtablesize only reads a limit.
     let open_limit = unsafe { libc::getdtablesize() }.clamp(3, MAX_FD_TO_CLOSE);
     // SAFETY: the child makes plain system calls only, allocates nothing, takes no locks, and
     // ends in `_exit` without returning or unwinding. `launch_entry` stays readable there, since
-    // the child has its own copy of the memory the caller holds.
+    // the child's memory is its own, apart from what the caller holds.
     match unsafe { fork() }.map_err(io::Error::from)? {
         ForkResult::Parent { child } => Ok(child),
         ForkResult::Child => unsafe { run(&target, noted, open_limit) },
@@ -76,7 +76,7 @@ unsafe fn run(target: &Target, noted: Noted, open_limit: i32) -> ! {
         noted,
         traced: true,
     };
-    if supervisor_exits_first(target, &mut tree) {
+    if run_host_exits_first(target, &mut tree) {
         sweep(target, &mut tree);
     }
     // SAFETY: ends the forked child without running the parent's exit handlers.
@@ -86,7 +86,7 @@ unsafe fn run(target: &Target, noted: Noted, open_limit: i32) -> ! {
 /// # Safety
 /// Call only in a freshly forked child.
 unsafe fn detach(open_limit: i32) {
-    // Its own session, so the terminal's Ctrl-C and hangup that end the supervisor spare the
+    // Its own session, so the terminal's Ctrl-C and hangup that end the run host spare the
     // watcher.
     let _ = nix::unistd::setsid();
     // Copies of agents' pipes would keep an agent from ever seeing end of input, and copies of
@@ -104,22 +104,22 @@ unsafe fn detach(open_limit: i32) {
     }
 }
 
-fn supervisor_exits_first(target: &Target, tree: &mut Tree) -> bool {
+fn run_host_exits_first(target: &Target, tree: &mut Tree) -> bool {
     let mut events = match Events::watch(target) {
         Watch::Started(events) => events,
-        Watch::SupervisorGone => return true,
+        Watch::RunHostGone => return true,
         Watch::Failed => return false,
     };
-    // When the supervisor forked this watcher, a new parent means it died before its exit was
+    // When the run host forked this watcher, a new parent means it died before its exit was
     // being watched.
-    if target.supervisor == target.forking && getppid().as_raw() != target.supervisor {
+    if target.run_host == target.forking && getppid().as_raw() != target.run_host {
         return true;
     }
     loop {
         match events.wait() {
-            Wake::SupervisorExited => return true,
+            Wake::RunHostExited => return true,
             Wake::Tick if !tree.note(target) => return false,
-            Wake::Tick | Wake::LeaderExited => {}
+            Wake::Tick | Wake::HeadExited => {}
             Wake::Failed => return false,
         }
     }
@@ -129,7 +129,7 @@ fn supervisor_exits_first(target: &Target, tree: &mut Tree) -> bool {
 struct Tree {
     table: LazyTable,
     noted: Noted,
-    /// Whether the leader's session and group ids still lead to the agent's processes. Once
+    /// Whether the head's session and group ids still reach the agent's processes. Once
     /// both are empty they're free to reuse, and only the noted processes do.
     traced: bool,
 }
@@ -150,12 +150,12 @@ impl Tree {
             && !group_lives
             && !table
                 .procs()
-                .any(|proc| proc.sid == target.leader || proc.pgid == target.pgid)
+                .any(|proc| proc.sid == target.head || proc.pgid == target.pgid)
         {
             self.traced = false;
         }
         if self.traced {
-            table.mark_tree(target.leader, target.pgid);
+            table.mark_tree(target.head, target.pgid);
         }
         table.mark_noted(self.noted.procs());
         self.noted.update(table);
@@ -180,12 +180,12 @@ impl Noted {
 
     /// The tree as it is now. It reads the table into memory of its own, so call it before the
     /// fork.
-    fn of_tree(leader: i32, pgid: i32) -> Self {
+    fn of_tree(head: i32, pgid: i32) -> Self {
         let mut noted = Self::new();
         let mut storage = Storage::allocate();
         let mut table = storage.table();
         if table.read().is_ok() {
-            table.mark_tree(leader, pgid);
+            table.mark_tree(head, pgid);
             noted.update(&table);
         }
         noted
@@ -228,13 +228,13 @@ fn sweep(target: &Target, tree: &mut Tree) {
         return;
     };
     // Ids of 0 skip the session and group, which may be someone else's by now.
-    let (leader, pgid) = if tree.traced {
-        (target.leader, target.pgid)
+    let (head, pgid) = if tree.traced {
+        (target.head, target.pgid)
     } else {
         (0, 0)
     };
     for _ in 0..SWEEPS {
-        let _ = super::sweep_tree(table, leader, pgid, tree.noted.procs(), me);
+        let _ = super::sweep_tree(table, head, pgid, tree.noted.procs(), me);
         #[cfg(target_os = "linux")]
         if !target.launch_entry.is_empty() {
             let _ = super::kill_launch(table, target.launch_entry, me);
@@ -289,13 +289,13 @@ unsafe fn map_zeroed<T>(count: usize) -> Option<&'static mut [T]> {
 
 enum Watch {
     Started(Events),
-    SupervisorGone,
+    RunHostGone,
     Failed,
 }
 
 enum Wake {
-    SupervisorExited,
-    LeaderExited,
+    RunHostExited,
+    HeadExited,
     /// Time to note the tree and check that it still lives.
     Tick,
     Failed,
@@ -305,9 +305,9 @@ enum Wake {
 #[cfg(target_os = "macos")]
 struct Events {
     queue: nix::sys::event::Kqueue,
-    supervisor: i32,
-    leader: i32,
-    leader_running: bool,
+    run_host: i32,
+    head: i32,
+    head_running: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -317,20 +317,18 @@ impl Events {
         let Ok(queue) = nix::sys::event::Kqueue::new() else {
             return Watch::Failed;
         };
-        match queue.kevent(&[exit_of(target.supervisor)], &mut [], None) {
+        match queue.kevent(&[exit_of(target.run_host)], &mut [], None) {
             Ok(_) => {}
-            Err(Errno::ESRCH) => return Watch::SupervisorGone,
+            Err(Errno::ESRCH) => return Watch::RunHostGone,
             Err(_) => return Watch::Failed,
         }
-        // A leader that's gone already leaves the watcher checking for members.
-        let leader_running = queue
-            .kevent(&[exit_of(target.leader)], &mut [], None)
-            .is_ok();
+        // A head that's gone already leaves the watcher checking for members.
+        let head_running = queue.kevent(&[exit_of(target.head)], &mut [], None).is_ok();
         Watch::Started(Self {
             queue,
-            supervisor: target.supervisor,
-            leader: target.leader,
-            leader_running,
+            run_host: target.run_host,
+            head: target.head,
+            head_running,
         })
     }
 
@@ -343,7 +341,7 @@ impl Events {
             tv_sec: libc::time_t::from(NOTE_TICK_MS / 1_000),
             tv_nsec: 0,
         };
-        let timeout = Some(if self.leader_running { note } else { tick });
+        let timeout = Some(if self.head_running { note } else { tick });
         let mut fired = [exit_of(0), exit_of(0)];
         loop {
             match self.queue.kevent(&[], &mut fired, timeout) {
@@ -353,12 +351,12 @@ impl Events {
                             .iter()
                             .any(|event| event.ident() == pid as usize)
                     };
-                    if exited(self.supervisor) {
-                        return Wake::SupervisorExited;
+                    if exited(self.run_host) {
+                        return Wake::RunHostExited;
                     }
-                    if exited(self.leader) {
-                        self.leader_running = false;
-                        return Wake::LeaderExited;
+                    if exited(self.head) {
+                        self.head_running = false;
+                        return Wake::HeadExited;
                     }
                     if count == 0 {
                         return Wake::Tick;
@@ -385,11 +383,11 @@ fn exit_of(pid: i32) -> nix::sys::event::KEvent {
 }
 
 /// Exits come through pidfds, which turn readable when their process exits. Without pidfds
-/// (Linux before 5.3), the supervisor's exit shows as the watcher getting a new parent.
+/// (Linux before 5.3), the run host's exit shows as the watcher getting a new parent.
 #[cfg(target_os = "linux")]
 struct Events {
-    supervisor: Option<std::os::fd::OwnedFd>,
-    leader: Option<std::os::fd::OwnedFd>,
+    run_host: Option<std::os::fd::OwnedFd>,
+    head: Option<std::os::fd::OwnedFd>,
     parent: i32,
 }
 
@@ -397,17 +395,17 @@ struct Events {
 impl Events {
     fn watch(target: &Target) -> Watch {
         use nix::errno::Errno;
-        let supervisor = match pidfd_open(target.supervisor) {
+        let run_host = match pidfd_open(target.run_host) {
             Ok(fd) => Some(fd),
-            Err(Errno::ESRCH) => return Watch::SupervisorGone,
-            Err(_) if target.supervisor == target.forking => None,
+            Err(Errno::ESRCH) => return Watch::RunHostGone,
+            Err(_) if target.run_host == target.forking => None,
             Err(_) => return Watch::Failed,
         };
         Watch::Started(Self {
-            supervisor,
-            // A leader that's gone already leaves the watcher checking for members.
-            leader: pidfd_open(target.leader).ok(),
-            parent: target.supervisor,
+            run_host,
+            // A head that's gone already leaves the watcher checking for members.
+            head: pidfd_open(target.head).ok(),
+            parent: target.run_host,
         })
     }
 
@@ -419,8 +417,8 @@ impl Events {
             events: libc::POLLIN,
             revents: 0,
         };
-        let mut fds = [poll_of(&self.supervisor), poll_of(&self.leader)];
-        let timeout = if self.supervisor.is_some() && self.leader.is_some() {
+        let mut fds = [poll_of(&self.run_host), poll_of(&self.head)];
+        let timeout = if self.run_host.is_some() && self.head.is_some() {
             NOTE_TICK_MS
         } else {
             DRAIN_TICK_MS
@@ -435,14 +433,14 @@ impl Events {
                 return Wake::Failed;
             }
             if fds[0].revents != 0 {
-                return Wake::SupervisorExited;
+                return Wake::RunHostExited;
             }
             if fds[1].revents != 0 {
-                self.leader = None;
-                return Wake::LeaderExited;
+                self.head = None;
+                return Wake::HeadExited;
             }
-            if self.supervisor.is_none() && getppid().as_raw() != self.parent {
-                return Wake::SupervisorExited;
+            if self.run_host.is_none() && getppid().as_raw() != self.parent {
+                return Wake::RunHostExited;
             }
             return Wake::Tick;
         }

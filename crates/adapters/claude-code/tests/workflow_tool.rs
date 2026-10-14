@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use argonauts_adapter_claude_code::ClaudeCodeAdapter;
-use argonauts_core::events::session::{SubagentStatus, VendorWorkflow};
+use argonauts_core::events::session::{CliWorkflowRun, SubagentStatus};
 use argonauts_core::{Adapter, AgentEvent};
 
 const CALL: &str = "toolu_01WfAddDueDates0000000001";
@@ -14,7 +14,7 @@ const CALL: &str = "toolu_01WfAddDueDates0000000001";
 fn replay(name: &str) -> Vec<AgentEvent> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/data")
-        .join(format!("{name}-2.1.295.stdout.jsonl"));
+        .join(format!("{name}.stdout.jsonl"));
     let stdout = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let mut parser = ClaudeCodeAdapter.parser();
     let mut events: Vec<AgentEvent> = stdout
@@ -25,7 +25,7 @@ fn replay(name: &str) -> Vec<AgentEvent> {
     events
 }
 
-fn workflows(events: &[AgentEvent]) -> Vec<&VendorWorkflow> {
+fn workflows(events: &[AgentEvent]) -> Vec<&CliWorkflowRun> {
     events
         .iter()
         .filter_map(|event| match event {

@@ -70,7 +70,7 @@ impl Pager {
                     title: label(format!(
                         "{} · {}",
                         self.title,
-                        sanitize_line(diff.card.as_str())
+                        sanitize_line(diff.task.as_str())
                     )),
                     description: format!(
                         "{files} changed · +{} −{}",

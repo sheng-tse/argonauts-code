@@ -1,23 +1,23 @@
-//! The checks, a reviewer and a sign-off as the chat prints them, compared cell for cell with
-//! the drawing in `golden/review_after.txt`, from the same example: a rate limiter made per
+//! The checks, a reviewer and a sign-off as the conversation prints them, compared cell for cell
+//! with the drawing in `golden/review_after.txt`, from the same example: a rate limiter made per
 //! API key, its tests passing, one reviewer and one sign-off on Haiku 4.5.
 
 use std::path::PathBuf;
 use std::time::Instant;
 
 use argonauts_core::app::AppEvent;
-use argonauts_core::events::card::{CardEvent, CardState, GateKind, GateOutcome};
 use argonauts_core::events::run::{RunLifecycle, RunMode, RunStarted};
 use argonauts_core::events::session::{
     EndReason, InputPart, InputPartKind, LaunchRecord, PromptVia, SessionEnd, SessionEvent,
     SessionInput, SessionStarted,
 };
+use argonauts_core::events::task::{CheckKind, CheckOutcome, TaskEvent, TaskState};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{RoleName, SessionKey, VendorId};
+use argonauts_core::names::{AgentId, RoleName, SessionKey};
+use argonauts_core::session_runner::{Access, RunnerKind};
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::steps::StepName;
-use argonauts_core::worker::{Access, WorkerKind};
-use argonauts_core::{AgentEvent, CardId, RunId, Spend};
+use argonauts_core::{AgentEvent, RunId, Spend, TaskId};
 use ratatui::style::Modifier;
 use ratatui::text::Line;
 use serde_json::{Value, json};
@@ -56,9 +56,9 @@ impl Run {
                 seq: self.seq,
                 ts: datetime!(2026-10-09 16:20 UTC),
                 run_id: RunId::new("run-01").unwrap(),
-                card_id: Some(CardId::new("task-001").unwrap()),
+                task_id: Some(TaskId::new("task-001").unwrap()),
                 session: session.and_then(SessionKey::parse),
-                source: "conductor".to_owned(),
+                source: "argonauts-code".to_owned(),
                 kind,
             }),
         };
@@ -69,9 +69,9 @@ impl Run {
     fn start(&mut self, session: &str, role: RoleName, step: Option<StepName>, label: &str) {
         let started = SessionStarted {
             worker: "claude-code/claude-haiku-4-5".parse().unwrap(),
-            vendor: VendorId("claude-code".to_owned()),
-            family: "claude".to_owned(),
-            kind: WorkerKind::Harness,
+            agent_id: AgentId("claude-code".to_owned()),
+            provider: "anthropic".to_owned(),
+            kind: RunnerKind::Cli,
             role,
             step,
             access: Access::ReadOnly,
@@ -131,7 +131,7 @@ impl Run {
 
     fn end(&mut self, session: &str, answer: Value) {
         let end = SessionEnd {
-            vendor_session: None,
+            cli_session: None,
             exit_code: Some(0),
             signal: None,
             duration_ms: 13_000,
@@ -171,7 +171,7 @@ const CHANGE: &str = "diff --git a/ratelimit/bucket.py b/ratelimit/bucket.py\n+x
                       diff --git a/ratelimit/middleware.py b/ratelimit/middleware.py\n+y\n\
                       diff --git a/tests/test_middleware.py b/tests/test_middleware.py\n+z\n";
 
-const CHECKS: &str = "Argonauts ran these after the build, in the task's worktree:\n\
+const CHECKS: &str = "Argonauts Code ran these after the build, in the task's worktree:\n\
                       tests (python3 -m unittest -q) passed: 12 passed";
 
 fn reviewed_run() -> Run {
@@ -185,8 +185,8 @@ fn reviewed_run() -> Run {
             forced: false,
             workflow: "council".into(),
             estimate: None,
-            triage: None,
-            chat_turn: None,
+            captain_or_crew: None,
+            conversation_turn: None,
             continues: None,
             repo_root: PathBuf::from("/repo"),
             base_branch: Some("main".into()),
@@ -196,14 +196,14 @@ fn reviewed_run() -> Run {
             settings_sha256: String::new(),
             settings: Value::Null,
             overrides: vec![],
-            harness_versions: Default::default(),
+            cli_versions: Default::default(),
             version: "0.0.1".into(),
-            front_end: None,
+            outside_agent: None,
             instructions: Vec::new(),
             required_steps: Vec::new(),
         }))),
     );
-    // The builder is still at work, so only its label reaches the chat, on the checks' row.
+    // The builder is still at work, so only its label reaches the conversation, on the checks' row.
     run.start(
         "s-001",
         RoleName::Worker,
@@ -213,17 +213,17 @@ fn reviewed_run() -> Run {
     run.printed();
     run.send(
         None,
-        RunEventKind::Card(CardEvent::State {
-            from: Some(CardState::Running),
-            to: CardState::Gating,
+        RunEventKind::Task(TaskEvent::State {
+            from: Some(TaskState::Running),
+            to: TaskState::Checking,
             reason: String::new(),
         }),
     );
     run.send(
         None,
-        RunEventKind::Gate(GateOutcome {
+        RunEventKind::Check(CheckOutcome {
             name: "tests".into(),
-            kind: GateKind::Command,
+            kind: CheckKind::Command,
             passed: true,
             command: Some(vec![
                 "python3".into(),
@@ -242,9 +242,9 @@ fn reviewed_run() -> Run {
     );
     run.send(
         None,
-        RunEventKind::Card(CardEvent::State {
-            from: Some(CardState::Gating),
-            to: CardState::InReview,
+        RunEventKind::Task(TaskEvent::State {
+            from: Some(TaskState::Checking),
+            to: TaskState::InReview,
             reason: String::new(),
         }),
     );
@@ -254,7 +254,7 @@ fn reviewed_run() -> Run {
         vec![
             part(InputPartKind::Frame, "Frame", "You are a reviewer."),
             part(InputPartKind::Evidence, "the change", CHANGE),
-            part(InputPartKind::GateOutput, "the checks", CHECKS),
+            part(InputPartKind::CheckOutput, "the checks", CHECKS),
         ],
     );
     run.read("s-002", "t1", "ratelimit/bucket.py");
@@ -271,7 +271,7 @@ fn reviewed_run() -> Run {
         vec![
             part(InputPartKind::Frame, "Frame", "You are the judge."),
             part(InputPartKind::Evidence, "the change", CHANGE),
-            part(InputPartKind::GateOutput, "the checks", CHECKS),
+            part(InputPartKind::CheckOutput, "the checks", CHECKS),
         ],
     );
     run.end(

@@ -1,7 +1,7 @@
 //! The main session asks a role of the crew: when you ask for it, the reviewers or the judge
 //! read the change in your folder on their
 //! own model, and the answer goes back to the main session as the tool's result. Nothing
-//! merges from here, so it is their opinion, never a gate. What they spend goes to the usage
+//! merges from here, so it is their opinion, never a check. What they spend goes to the usage
 //! ledger with the conversation's turns.
 
 use std::path::{Path, PathBuf};
@@ -9,13 +9,13 @@ use std::sync::Arc;
 
 use argonauts_core::asking::AskReply;
 use argonauts_core::events::session::InputPartKind;
-use argonauts_core::names::{SessionKey, WorkerRef};
+use argonauts_core::names::{ModelRef, SessionKey};
 use argonauts_core::paths::create_private_dir_all;
+use argonauts_core::session_runner::{Access, SessionLimits, SessionRunner, SessionSpec};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::steps::{StepError, StepRequest, StepRunner};
-use argonauts_core::worker::{Access, SessionLimits, SessionSpec, Worker};
 use argonauts_crew::claude_codes::{asked_of, review_of, said, verdict_schema};
 use argonauts_crew::roles::candidates;
 use argonauts_crew::spec::{SpecInput, build};
@@ -23,20 +23,20 @@ use time::OffsetDateTime;
 use tokio::sync::oneshot;
 
 use crate::controller::Ctx;
-use crate::controller::turn::{part, vendor_out};
+use crate::controller::turn::{agent_out, part};
 use crate::controller::workspace::working_tree_diff;
-use crate::usage_ledger::UsageLedger;
+use crate::usage_ledger::{TurnNote, UsageLedger};
 
 /// The roles the main session may ask: the reviewers, when someone besides the main agent
-/// reviews, and the judge, when it has seats of its own.
+/// reviews, and the judge, when it has models of its own.
 pub(crate) fn roles(settings: &Settings) -> Vec<CrewRole> {
-    let seats = |role: CrewRole| candidates(settings, role.fine_role());
-    let main = [settings.main_agent.clone()];
-    let reviewers = seats(CrewRole::Reviewers);
-    let judge = seats(CrewRole::Judge);
+    let models = |role: CrewRole| candidates(settings, role.fine_role());
+    let main = [settings.crew.main.clone()];
+    let reviewers = models(CrewRole::Reviewer);
+    let judge = models(CrewRole::Judge);
     let mut roles = Vec::new();
     if reviewers != main {
-        roles.push(CrewRole::Reviewers);
+        roles.push(CrewRole::Reviewer);
     }
     if judge != reviewers && judge != main {
         roles.push(CrewRole::Judge);
@@ -54,19 +54,19 @@ pub(crate) struct Asked {
     pub folder: PathBuf,
 }
 
-/// Asks the role's first seat that can work now, on its own task, and answers through `reply`
+/// Asks the role's first model that can work now, on its own task, and answers through `reply`
 /// once it has read the change.
 pub(crate) fn answer(ctx: &Ctx, asked: Asked, reply: oneshot::Sender<AskReply>) {
     let settings = ctx.settings();
-    let seat = candidates(settings, asked.role.fine_role())
+    let first = candidates(settings, asked.role.fine_role())
         .into_iter()
-        .filter(|seat| !vendor_out(ctx, seat))
-        .find_map(|seat| Some((ctx.services.workers.get(&seat).ok()?, seat)));
-    let Some((handle, seat)) = seat else {
+        .filter(|model| !agent_out(ctx, model))
+        .find_map(|model| Some((ctx.services.workers.get(&model).ok()?, model)));
+    let Some((handle, model)) = first else {
         let _ = reply.send(AskReply {
             text: format!(
                 "None of the crew's {} can work now, so nobody was asked.",
-                asked.role.as_str()
+                asked.role.plural()
             ),
             is_error: true,
         });
@@ -75,7 +75,7 @@ pub(crate) fn answer(ctx: &Ctx, asked: Asked, reply: oneshot::Sender<AskReply>) 
     let settings = settings.clone();
     let steps = Arc::clone(&ctx.services.steps);
     let places = Places {
-        sessions: ctx.env.chat_dir().join("asks"),
+        sessions: ctx.env.conversation_dir().join("asks"),
         state_root: ctx
             .env
             .state_dir
@@ -85,10 +85,10 @@ pub(crate) fn answer(ctx: &Ctx, asked: Asked, reply: oneshot::Sender<AskReply>) 
         repo: ctx.env.repo_root.clone(),
     };
     tokio::spawn(async move {
-        let text = match ask(&settings, steps, handle, &seat, &asked, &places).await {
+        let text = match ask(&settings, steps, handle, &model, &asked, &places).await {
             Ok(text) => AskReply::text(text),
             Err(err) => AskReply {
-                text: format!("Argonauts couldn't ask them: {err:#}"),
+                text: format!("Argonauts Code couldn't ask them: {err:#}"),
                 is_error: true,
             },
         };
@@ -96,11 +96,11 @@ pub(crate) fn answer(ctx: &Ctx, asked: Asked, reply: oneshot::Sender<AskReply>) 
     });
 }
 
-/// Where an ask keeps its session, what the seat may not read, and where its spend goes.
+/// Where an ask keeps its session, what the asked model may not read, and where its spend goes.
 struct Places {
     /// The asks' sessions, in the conversation's folder.
     sessions: PathBuf,
-    /// Argonauts' own state.
+    /// Argonauts Code's own state.
     state_root: PathBuf,
     ledger: UsageLedger,
     /// The repository the conversation is in, which the ledger files the spend under.
@@ -110,8 +110,8 @@ struct Places {
 async fn ask(
     settings: &Settings,
     steps: Arc<dyn StepRunner>,
-    handle: Arc<dyn Worker>,
-    seat: &WorkerRef,
+    handle: Arc<dyn SessionRunner>,
+    model: &ModelRef,
     asked: &Asked,
     places: &Places,
 ) -> anyhow::Result<String> {
@@ -123,7 +123,7 @@ async fn ask(
     let spec = spec(
         settings,
         handle.as_ref(),
-        seat,
+        model,
         asked,
         &change,
         &places.sessions,
@@ -140,19 +140,23 @@ async fn ask(
     };
     if let Some(end) = end {
         let now = OffsetDateTime::now_utc();
+        let turn = TurnNote {
+            conversation: None,
+            took: end.duration_ms / 1000,
+        };
         places
             .ledger
-            .turn_ended(&places.repo, seat, &end.spend, now);
+            .turn_ended(&places.repo, model, &end.spend, turn, now);
     }
-    Ok(said(seat, &review_of(&ran?.value)))
+    Ok(said(model, &review_of(&ran?.value)))
 }
 
-/// A read-only session of the seat in the main session's folder, asked as a review or a
+/// A read-only session of the asked model in the main session's folder, asked as a review or a
 /// sign-off in Claude Code's own workflow is.
 fn spec(
     settings: &Settings,
-    handle: &dyn Worker,
-    seat: &WorkerRef,
+    handle: &dyn SessionRunner,
+    model: &ModelRef,
     asked: &Asked,
     change: &str,
     session_dir: &Path,
@@ -166,7 +170,7 @@ fn spec(
     let mut prompt = vec![
         part(
             InputPartKind::Prompt,
-            asked.role.as_str(),
+            asked.role.plural(),
             asked_of(asked.role).to_owned(),
         ),
         part(InputPartKind::Goal, "the request", asked.request.clone()),
@@ -189,9 +193,9 @@ fn spec(
             run: argonauts_core::views::conversation_run(),
             key,
             role: asked.role.fine_role(),
-            worker: seat.clone(),
+            worker: model.clone(),
             kind: handle.kind(),
-            card: None,
+            task: None,
             step: None,
             access: Access::ReadOnly,
             deny_read: vec![state_root],
@@ -221,33 +225,33 @@ mod tests {
 
     use argonauts_core::asking::{Ask, AskLine};
     use argonauts_core::settings::crew::{CrewSettings, Orchestrator};
-    use argonauts_testkit::{FakeSession, FakeWorker};
+    use argonauts_testkit::{FakeRunner, FakeSession};
     use serde_json::json;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpStream;
 
     use super::*;
-    use crate::controller::test_support::{Harness, HarnessOptions, WAIT};
+    use crate::controller::test_support::{CliOptions, TestDriver, WAIT};
 
     /// The main session's change in your checkout: Codex reviews, and its answer comes back to
     /// the main session as the tool's result, read-only and on Codex's own model.
     #[tokio::test]
     async fn the_main_session_asks_the_reviewers_about_its_change() {
-        let harness = Harness::start_with(HarnessOptions {
+        let driver = TestDriver::start_with(CliOptions {
             prepare: Some(Box::new(|repo: &argonauts_testkit::TempRepo| {
                 repo.write("money.py", "sign = 1\n").unwrap();
                 repo.commit_all("money").unwrap();
                 repo.write("money.py", "sign = -1\n").unwrap();
                 std::fs::write(
                     repo.global_config(),
-                    "[solo_or_crew]\nforce = \"solo\"\n[crew]\nreviewers = [\"codex\"]\n",
+                    "[captain_or_crew]\nforce = \"captain\"\n[crew]\nreviewer = [\"codex\"]\n",
                 )
                 .unwrap();
             })),
-            ..HarnessOptions::default()
+            ..CliOptions::default()
         })
         .await;
-        let codex = harness.directory.add(FakeWorker::harness("codex", "gpt"));
+        let codex = driver.directory.add(FakeRunner::cli("codex", "openai"));
         codex.push(
             FakeSession::structured(json!({
                 "accept": false,
@@ -261,15 +265,15 @@ mod tests {
                 ..argonauts_core::Spend::default()
             }),
         );
-        harness.agent.push(
+        driver.agent.push(
             FakeSession::completed("Asked the reviewers.").with_delay(Duration::from_secs(3)),
         );
-        harness
+        driver
             .submit("Fix the sign, then have the reviewers look")
             .await;
         let deadline = tokio::time::Instant::now() + WAIT;
         let spec = loop {
-            if let Some(spec) = harness.agent.specs().into_iter().next() {
+            if let Some(spec) = driver.agent.specs().into_iter().next() {
                 break spec;
             }
             assert!(tokio::time::Instant::now() < deadline, "no session started");
@@ -277,13 +281,13 @@ mod tests {
         };
         let asking = spec.asking.expect("the main session listens for asks");
         // The judge nobody set follows the reviewers, so there's one role to ask.
-        assert_eq!(asking.roles, [CrewRole::Reviewers]);
+        assert_eq!(asking.roles, [CrewRole::Reviewer]);
 
         let mut stream = TcpStream::connect(&asking.endpoint).await.unwrap();
         let line = AskLine {
             token: asking.token,
             ask: Ask::Role {
-                role: CrewRole::Reviewers,
+                role: CrewRole::Reviewer,
                 label: String::new(),
                 what: "Flip the sign".to_owned(),
             },
@@ -312,37 +316,37 @@ mod tests {
             .expect("the change is in the prompt");
         assert!(change.text.contains("-sign = 1"), "{}", change.text);
         // What the reviewer spent is counted with the conversation's turns.
-        let ledger = UsageLedger::new(&argonauts_core::Paths::new(harness.repo.home()));
+        let ledger = UsageLedger::new(&argonauts_core::Paths::new(driver.repo.home()));
         let lines = ledger.read_since(None);
         let spent = lines.iter().find(|line| line.agent == "codex");
         assert!(spent.is_some_and(|line| line.run.is_none()), "{lines:?}");
-        harness.exit().await;
+        driver.exit().await;
     }
 
-    fn worker(name: &str) -> WorkerRef {
+    fn worker(name: &str) -> ModelRef {
         name.parse().unwrap()
     }
 
     /// The main session is offered the reviewers when someone besides itself reviews, and the
-    /// judge only when it has seats of its own.
+    /// judge only when it has models of its own.
     #[test]
     fn the_main_session_may_ask_the_roles_someone_else_fills() {
         let mut settings = Settings {
-            main_agent: worker("claude-code/fable-5-1"),
+            crew: CrewSettings {
+                main: worker("claude-code/fable-5-1"),
+                orchestrator: Orchestrator::Main,
+                worker: Vec::new(),
+                reviewer: vec![worker("astra")],
+                judge: Vec::new(),
+                worker_workflows: false,
+                merger: Vec::new(),
+            },
             ..Settings::default()
         };
-        settings.crew = CrewSettings {
-            orchestrator: Orchestrator::Main,
-            workers: Vec::new(),
-            reviewers: vec![worker("astra")],
-            judge: Vec::new(),
-            worker_workflows: false,
-            merger: Vec::new(),
-        };
-        assert_eq!(roles(&settings), [CrewRole::Reviewers]);
+        assert_eq!(roles(&settings), [CrewRole::Reviewer]);
         settings.crew.judge = vec![worker("codex")];
-        assert_eq!(roles(&settings), [CrewRole::Reviewers, CrewRole::Judge]);
-        settings.crew.reviewers = vec![settings.main_agent.clone()];
+        assert_eq!(roles(&settings), [CrewRole::Reviewer, CrewRole::Judge]);
+        settings.crew.reviewer = vec![settings.crew.main.clone()];
         settings.crew.judge = Vec::new();
         assert!(roles(&settings).is_empty(), "nobody but itself");
     }

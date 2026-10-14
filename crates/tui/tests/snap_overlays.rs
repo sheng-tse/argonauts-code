@@ -2,29 +2,29 @@ mod common;
 
 use std::path::PathBuf;
 
+use argonauts_core::agent_panel::{AgentPanelRows, CrewTab};
 use argonauts_core::api::{DiffView, RawView, RunState as RunPhase, RunSummary};
 use argonauts_core::app::{
-    AgentReady, AnswerTarget, ChatSummary, StatusLine, UiCommand, ViewRequest,
+    AgentReady, AnswerTarget, ConversationSummary, HeaderAndBottomLine, UiCommand, ViewRequest,
 };
-use argonauts_core::crew_panel::{CrewPanel, CrewTab};
-use argonauts_core::events::checkpoint::CheckpointOpened;
+use argonauts_core::cli_sessions::CliSession;
+use argonauts_core::events::approval::ApprovalOpened;
 use argonauts_core::events::run::{Party, RunMode};
 use argonauts_core::events::session::{
     Delivery, FileDiff, QueuedMessage, SessionInput, SubagentKind, SubagentStatus, SubagentUpdate,
 };
 use argonauts_core::input::{MentionTarget, ResumeTarget, SlashCommand};
-use argonauts_core::names::{ChatId, MessageId, RoleName, SessionKey, VendorId, WorkerRef};
-use argonauts_core::vendor_sessions::VendorSession;
+use argonauts_core::names::{AgentId, ConversationId, MessageId, ModelRef, RoleName, SessionKey};
 use argonauts_core::views::ContextUse;
-use argonauts_core::{CardId, DiffStat, RunId, Spend};
+use argonauts_core::{DiffStat, RunId, Spend, TaskId};
 use argonauts_tui::format::WallClock;
 use argonauts_tui::keymap::Keymap;
 use argonauts_tui::stability::{WIDTHS, assert_frames, buffer_text, samples};
 use argonauts_tui::state::{
-    AppState, CardRow, OpenCheckpoint, RunState, SessionState, SessionStatus, ToolRecord, Welcome,
+    AppState, OpenApproval, RunState, SessionState, SessionStatus, TaskRow, ToolRecord, Welcome,
 };
 use argonauts_tui::theme::{Role, Theme};
-use argonauts_tui::views::crew::CrewView;
+use argonauts_tui::views::crew::AgentPanelView;
 use argonauts_tui::views::help::HelpView;
 use argonauts_tui::views::pager::Pager;
 use argonauts_tui::views::resume::ResumePicker;
@@ -51,7 +51,7 @@ fn key(s: &str) -> SessionKey {
     SessionKey::parse(s).unwrap()
 }
 
-fn worker(s: &str) -> WorkerRef {
+fn worker(s: &str) -> ModelRef {
     s.parse().unwrap()
 }
 
@@ -107,20 +107,20 @@ fn session(
     key_: &str,
     by: &str,
     role: RoleName,
-    card: u32,
+    task: u32,
     status: SessionStatus,
     ago_secs: i64,
 ) -> SessionState {
     let worker = worker(by);
-    let vendor = worker.worker.clone();
+    let agent_id = worker.agent.clone();
     let mut session = SessionState::new(
         key(key_),
         worker,
-        vendor,
+        agent_id,
         role,
         WALL - Duration::seconds(ago_secs),
     );
-    session.card = Some(CardId::numbered(card));
+    session.task = Some(TaskId::numbered(task));
     session.status = status;
     session
 }
@@ -136,26 +136,26 @@ fn tool(id: &str, name: &str, input: serde_json::Value, done: Option<(bool, &str
     }
 }
 
-fn reading(vendor: &str, used: f64, resets: Option<&str>) -> serde_json::Value {
-    json!({"vendor": vendor, "status": if used >= 0.9 { "warning" } else { "allowed" },
+fn reading(agent_id: &str, used: f64, resets: Option<&str>) -> serde_json::Value {
+    json!({"agent_id": agent_id, "status": if used >= 0.9 { "warning" } else { "allowed" },
            "used": used, "resets_at": resets, "window": "five_hour",
            "source": "rate_limit_event", "observed_at": "2026-09-30T11:59:00Z", "detail": null})
 }
 
-fn question(id: &str, from: &str, card: &str, text: &str) -> OpenCheckpoint {
+fn question(id: &str, from: &str, task: &str, text: &str) -> OpenApproval {
     let option = |key: &str, label: &str, recommended: bool| {
         json!({"key": key, "label": label, "action": {"action": "choose", "value": label},
                "recommended": recommended, "detail": null})
     };
-    let opened: CheckpointOpened = serde_json::from_value(json!({
-        "id": id, "kind": "question", "title": "Question approval · run-01", "card": card,
-        "packet": {"kind": "question", "from": from, "card": card, "text": text,
+    let opened: ApprovalOpened = serde_json::from_value(json!({
+        "id": id, "kind": "question", "title": "Question approval · run-01", "task": task,
+        "packet": {"kind": "question", "from": from, "task": task, "text": text,
                    "options": ["Yes, keep it", "No, JSON only"]},
         "evidence_sha256": "e3b0c442", "mode": "supervised", "decide_with": "rules",
         "options": [option("a", "Yes, keep it", true), option("b", "No, JSON only", false)],
         "free_text": "answer", "needs_you": true}))
     .unwrap();
-    OpenCheckpoint {
+    OpenApproval {
         opened: Box::new(opened),
         set_aside: false,
         replayed: false,
@@ -179,7 +179,7 @@ fn session_input(parts: &[(&str, &str)]) -> SessionInput {
 }
 
 /// A crew of four at work: one asks you `asks`, one writes, one waits on a review, and one is
-/// done and stood in for another.
+/// done and was the fallback for another.
 fn crew_state(asks: &str) -> AppState {
     let mut run = RunState::new(run_id());
     run.title = "Add a --json flag to export".into();
@@ -189,9 +189,9 @@ fn crew_state(asks: &str) -> AppState {
         (2, "Add the JSON writer"),
         (3, "Wire the --json flag"),
     ] {
-        run.cards.insert(
-            CardId::numbered(n),
-            CardRow::new(CardId::numbered(n), title),
+        run.tasks.insert(
+            TaskId::numbered(n),
+            TaskRow::new(TaskId::numbered(n), title),
         );
     }
     let mut claude = session(
@@ -248,14 +248,14 @@ fn crew_state(asks: &str) -> AppState {
     );
     done.ended = Some(WALL - Duration::seconds(190));
     done.tokens_out = 61_000;
-    done.messages = vec!["Integrated task-001.".into()];
-    done.standing_in_for = Some(worker("claude-code/opus"));
+    done.messages = vec!["Merged task-001.".into()];
+    done.fallback_for = Some(worker("claude-code/opus"));
     for session in [claude, codex, agy, done] {
         run.session_order.push(session.key.clone());
         run.sessions.insert(session.key.clone(), session);
     }
-    run.checkpoints
-        .push(question("cp-001", "codex/gpt-5.6", "task-002", asks));
+    run.approvals
+        .push(question("approval-001", "codex/gpt-5.6", "task-002", asks));
 
     let mut state = AppState::default();
     state.attached = Some(run_id());
@@ -278,10 +278,10 @@ fn crew_state(asks: &str) -> AppState {
         runs_need_you: 0,
         example_prompt: None,
     });
-    let status: StatusLine = serde_json::from_value(json!({
-        "title": "Argonauts", "repo": "~/code/export", "workflow": "council", "run": "run-01",
+    let status: HeaderAndBottomLine = serde_json::from_value(json!({
+        "title": "Argonauts Code", "repo": "~/code/export", "workflow": "council", "run": "run-01",
         "main_agent": "claude-code/opus",
-        "quotas": [
+        "plan_chips": [
             {"label": "Claude", "reading": reading("claude-code", 0.72, Some("2026-09-30T15:10:00Z")), "health": "healthy"},
             {"label": "Codex", "reading": reading("codex", 0.41, Some("2026-09-30T13:45:00Z")), "health": "healthy"},
             {"label": "agy", "reading": reading("antigravity-cli", 0.9, None), "health": "healthy"}],
@@ -306,8 +306,8 @@ fn labelled(mut state: AppState) -> AppState {
     state
 }
 
-fn open_crew(state: &AppState) -> CrewView {
-    let mut view = CrewView::new(state);
+fn open_crew(state: &AppState) -> AgentPanelView {
+    let mut view = AgentPanelView::new(state);
     view.clock = WallClock::pinned(WALL);
     view
 }
@@ -337,18 +337,18 @@ fn summary(run: &str, title: &str, state: RunPhase, remind: bool, hours_ago: i64
 /// What the controller lists beside this screen's agents: a conversation, a Codex session of
 /// its own, this run (which the screen's agents stand for), and two runs in another repo.
 /// `text` is the other repo's waiting run's title.
-fn fetched_panel(text: &str) -> CrewPanel {
+fn fetched_panel(text: &str) -> AgentPanelRows {
     serde_json::from_value(json!({
         "repo": "~/code/export",
         "rows": [
-            {"target": {"kind": "conversation", "chat": "chat-003"}, "state": "ready",
+            {"target": {"kind": "conversation", "conversation": "conversation-003"}, "state": "ready",
              "title": "How does the export pick a format?", "repo": "~/code/export",
              "worker": "claude-code/opus",
              "latest": "It reads --format, then the file's extension.",
              "updated": "2026-09-30T11:20:00Z",
              "details": {"last_message": "It reads --format first.\n\nWithout it, the file's extension picks: .json for JSON, anything else for CSV.",
                          "prompt": "How does the export pick a format?"}},
-            {"target": {"kind": "vendor_session", "session": {"vendor": "codex", "id": "019a2f"}},
+            {"target": {"kind": "cli_session", "session": {"agent_id": "codex", "id": "019a2f"}},
              "state": "ready", "title": "Explain the input handling", "repo": "~/code/export",
              "worker": "codex/gpt-5.6", "latest": "It reads keys in one loop.",
              "updated": "2026-09-29T12:00:00Z",
@@ -378,7 +378,7 @@ fn fetched_panel(text: &str) -> CrewPanel {
     .unwrap()
 }
 
-/// The crew of four, with what the controller listed, and the asking agent's card, context,
+/// The crew of four, with what the controller listed, and the asking agent's task, context,
 /// and prompt filled in for the details.
 fn panel_state(asks: &str, other: &str) -> AppState {
     let mut state = labelled(crew_state(asks));
@@ -392,37 +392,37 @@ fn panel_state(asks: &str, other: &str) -> AppState {
         "task",
         "Add a JSON writer beside the CSV one. Keep the CSV output byte for byte.",
     )])];
-    state.crew_panel = Some(fetched_panel(other));
+    state.agent_panel = Some(fetched_panel(other));
     state
 }
 
-/// The crew panel's sizes: the details sit beside the list from 120 columns.
+/// The agent panel's sizes: the details sit beside the list from 120 columns.
 const PANEL_SIZES: [(u16, u16); 4] = [(80, 24), (100, 32), (120, 32), (200, 40)];
 
 #[test]
-fn crew_view_says_what_a_run_waits_on_and_what_each_step_does() {
+fn agent_panel_view_says_what_a_run_waits_on_and_what_each_step_does() {
     let mut state = labelled(crew_state("Keep a CSV fallback?"));
     let run = state.runs.get_mut(&run_id()).unwrap();
     // A merge waits on you with no agent of its own.
     let mut merge = question(
-        "cp-009",
+        "approval-009",
         "codex/gpt-5.6",
         "task-001",
         "Merge this run into main?",
     );
-    merge.opened.card = None;
+    merge.opened.task = None;
     merge.opened.title = "Merge this run into main?".into();
-    run.checkpoints.push(merge);
-    for (key, role) in [("s-005", RoleName::Restater), ("s-006", RoleName::Drafter)] {
+    run.approvals.push(merge);
+    for (key, role) in [("s-005", RoleName::Reader), ("s-006", RoleName::Draft)] {
         let mut step = session(key, "claude-code/haiku", role, 1, SessionStatus::Done, 900);
-        step.card = None;
+        step.task = None;
         run.session_order.push(step.key.clone());
         run.sessions.insert(step.key.clone(), step);
     }
     for (width, height) in PANEL_SIZES {
         let mut view = open_crew(&state);
         insta::assert_snapshot!(
-            format!("crew_view_asks_{width}"),
+            format!("agent_panel_view_asks_{width}"),
             screen(&mut view, width, height, &state)
         );
     }
@@ -441,7 +441,7 @@ fn crew_view_says_what_a_run_waits_on_and_what_each_step_does() {
         "row and details"
     );
     assert_eq!(wide.matches("Add a --json flag to export").count(), 3);
-    for name in ["✓ restater", "✓ drafter"] {
+    for name in ["✓ reader", "✓ draft"] {
         assert!(wide.contains(name), "{name}\n{wide}");
     }
 }
@@ -452,7 +452,7 @@ fn a_session_s_title_takes_the_room_the_last_lines_leave() {
     let mut state = labelled(crew_state("Keep a CSV fallback?"));
     let mut panel = fetched_panel("Fix the login redirect");
     panel.rows[0].title = long.into();
-    state.crew_panel = Some(panel);
+    state.agent_panel = Some(panel);
     let mut view = open_crew(&state);
     let narrow = screen(&mut view, 80, 24, &state);
     assert!(!narrow.contains(long), "{narrow}");
@@ -464,19 +464,19 @@ fn a_session_s_title_takes_the_room_the_last_lines_leave() {
 }
 
 #[test]
-fn crew_view() {
+fn agent_panel_view() {
     let state = panel_state("Keep a CSV fallback?", "Fix the login redirect");
     for (width, height) in PANEL_SIZES {
         let mut view = open_crew(&state);
         insta::assert_snapshot!(
-            format!("crew_view_{width}"),
+            format!("agent_panel_view_{width}"),
             screen(&mut view, width, height, &state)
         );
     }
     let mut view = open_crew(&state);
     let text = screen(&mut view, 100, 32, &state);
 
-    // Quotas sit on one line at the top right, and the tabs count their rows.
+    // Plan usage sits on one line at the top right, and the tabs count their rows.
     let title = text.lines().next().unwrap();
     assert!(title.starts_with("argonauts › crew"), "{text}");
     assert!(
@@ -516,7 +516,7 @@ fn crew_view() {
     assert!(writing.contains("● build:json-flag"), "{text}");
     assert!(writing.contains("Opus on Claude Code") && writing.contains("5m ago"));
     assert!(row_with(&text, "◎ Explain the input").contains("Codex · enter continues"));
-    assert!(row_with(&text, "Integrated task-001.").contains("✓ build:csv-writer"));
+    assert!(row_with(&text, "Merged task-001.").contains("✓ build:csv-writer"));
     // A run with none of its agents listed is one row: its heading.
     assert!(row_with(&text, "plan approval").starts_with("◆ Fix the login"));
     assert!(text.contains("✓ tidy-readme · merged 2d ago"), "{text}");
@@ -552,7 +552,7 @@ fn crew_view() {
     // Under 120 columns Space shows them under the list, and Esc hides them first.
     press(&mut view, KeyCode::Char(' '), &state);
     let narrow = screen(&mut view, 100, 32, &state);
-    insta::assert_snapshot!("crew_view_details_100", narrow);
+    insta::assert_snapshot!("agent_panel_view_details_100", narrow);
     assert!(position(&narrow, "Explain the input") < position(&narrow, "Branch   argonauts"));
     assert!(matches!(
         press(&mut view, KeyCode::Esc, &state),
@@ -560,10 +560,10 @@ fn crew_view() {
     ));
     assert!(!screen(&mut view, 100, 32, &state).contains("Branch   argonauts"));
 
-    // Enter on the ◆ row answers its card; → on a working row opens its session.
+    // Enter on the ◆ row answers its question; → on a working row opens its session.
     let answer = press(&mut view, KeyCode::Enter, &state);
     assert!(
-        matches!(&answer, ViewOutcome::AnswerCard(AnswerTarget::Checkpoint { id, .. }) if id.as_str() == "cp-001"),
+        matches!(&answer, ViewOutcome::AnswerQuestion(AnswerTarget::Approval { id, .. }) if id.as_str() == "approval-001"),
         "{answer:?}"
     );
     press(&mut view, KeyCode::Down, &state);
@@ -614,16 +614,16 @@ fn crew_view() {
     let ready = screen(&mut view, 100, 32, &state);
     assert!(position(&ready, "How does the export") < position(&ready, "Explain the input"));
     assert!(!ready.contains("~/code/api"), "{ready}");
-    // Enter carries on a conversation or a CLI session in the chat.
-    let chat = press(&mut view, KeyCode::Enter, &state);
+    // Enter carries on a conversation or a CLI session in the conversation.
+    let conversation = press(&mut view, KeyCode::Enter, &state);
     assert!(
-        matches!(&chat, ViewOutcome::SendToChat(UiCommand::Slash { command: SlashCommand::Resume { target: Some(ResumeTarget::Conversation(chat)) } }) if chat.as_str() == "chat-003"),
-        "{chat:?}"
+        matches!(&conversation, ViewOutcome::SendToConversation(UiCommand::Slash { command: SlashCommand::Resume { target: Some(ResumeTarget::Conversation(conversation)) } }) if conversation.as_str() == "conversation-003"),
+        "{conversation:?}"
     );
     press(&mut view, KeyCode::Down, &state);
     let codex = press(&mut view, KeyCode::Enter, &state);
     assert!(
-        matches!(&codex, ViewOutcome::SendToChat(UiCommand::Slash { command: SlashCommand::Resume { target: Some(ResumeTarget::VendorSession(session)) } }) if session.to_string() == "codex:019a2f"),
+        matches!(&codex, ViewOutcome::SendToConversation(UiCommand::Slash { command: SlashCommand::Resume { target: Some(ResumeTarget::CliSession(session)) } }) if session.to_string() == "codex:019a2f"),
         "{codex:?}"
     );
     press(&mut view, KeyCode::BackTab, &state);
@@ -631,7 +631,7 @@ fn crew_view() {
     press(&mut view, KeyCode::BackTab, &state);
     assert_eq!(view.tab, CrewTab::All);
 
-    // A run in another repo says where to go; ← goes back to the chat.
+    // A run in another repo says where to go; ← goes back to the conversation.
     for _ in 0..7 {
         press(&mut view, KeyCode::Down, &state);
     }
@@ -647,7 +647,7 @@ fn crew_view() {
 }
 
 #[test]
-fn crew_view_keeps_the_highlighted_row_as_rows_move() {
+fn agent_panel_view_keeps_the_highlighted_row_as_rows_move() {
     let mut state = panel_state("Keep a CSV fallback?", "Fix the login redirect");
     let mut view = open_crew(&state);
     screen(&mut view, 100, 32, &state);
@@ -658,13 +658,13 @@ fn crew_view_keeps_the_highlighted_row_as_rows_move() {
         "{before}"
     );
     // The question is answered, so the writer moves up to the top.
-    state.runs.get_mut(&run_id()).unwrap().checkpoints.clear();
+    state.runs.get_mut(&run_id()).unwrap().approvals.clear();
     let after = screen(&mut view, 100, 32, &state);
     assert!(row_with(&after, "❯").contains("build:json-flag"), "{after}");
     assert!(after.contains("Needs you 1"), "{after}");
 
     // Before the controller answers, the panel says it's still asking.
-    state.crew_panel = None;
+    state.agent_panel = None;
     let asking = screen(&mut view, 100, 32, &state);
     assert!(
         asking.contains("Listing conversations and CLI sessions…"),
@@ -822,15 +822,15 @@ fn session_view_output() {
     );
     let diff = press(&mut view, KeyCode::Char('d'), &state);
     assert!(
-        matches!(&diff, ViewOutcome::Request(ViewRequest::Diff { card, .. }) if card.as_str() == "task-002"),
+        matches!(&diff, ViewOutcome::Request(ViewRequest::Diff { task, .. }) if task.as_str() == "task-002"),
         "{diff:?}"
     );
     let take = press(&mut view, KeyCode::Char('t'), &state);
     assert!(
-        matches!(&take, ViewOutcome::ConfirmTakeOver { card, .. } if card.as_str() == "task-002"),
+        matches!(&take, ViewOutcome::ConfirmTakeOver { task, .. } if task.as_str() == "task-002"),
         "{take:?}"
     );
-    // Opened by a follow key, ← opens the crew view in its place.
+    // Opened by a follow key, ← opens the agent panel in its place.
     assert!(matches!(
         press(&mut view, KeyCode::Left, &state),
         ViewOutcome::Replace(_)
@@ -842,15 +842,15 @@ fn session_view_output() {
     ));
 }
 
-/// Enter on a finished agent in the crew panel opens its transcript, after its run merged,
+/// Enter on a finished agent in the agent panel opens its transcript, after its run merged,
 /// and the footer offers only the keys that still act.
 #[test]
-fn the_crew_panel_opens_a_finished_agents_transcript() {
+fn the_agent_panel_opens_a_finished_agents_transcript() {
     let mut state = session_state("The JSON writer goes beside the CSV one.");
     let run = state.runs.get_mut(&run_id()).unwrap();
     run.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
     // A merged run asks nothing more.
-    run.checkpoints.clear();
+    run.approvals.clear();
     for session in run.sessions.values_mut() {
         session.status = SessionStatus::Done;
         session.ended = Some(WALL);
@@ -1007,7 +1007,7 @@ fn picker() -> ResumePicker {
         summary(
             "run-03",
             "Add a --json flag to export",
-            RunPhase::Parked,
+            RunPhase::Waiting,
             true,
             50,
         ),
@@ -1042,95 +1042,23 @@ fn resume_picker_rows() {
     }
     let mut view = picker();
     let text = screen(&mut view, 100, 32, &state);
-    assert!(text.contains("Waiting runs never expire, so resume it or stop it"));
-    let parked = row_with(&text, "Add a --json flag to export");
-    assert!(parked.contains('◆'), "{text}");
-    for cell in [
-        "run-03",
-        // The state is its glyph and its word, as every view draws it.
-        "◆ waiting",
-        "merge approval",
-        "2d ago",
-        "$0.46",
-        "2",
-    ] {
-        assert!(parked.contains(cell), "{cell}:\n{text}");
+    assert!(text.contains("Resume a run · in "), "{text}");
+    // A run that waits for you keeps its mark, and says its state where a length would be.
+    let waiting = row_with(&text, "Add a --json flag to export");
+    assert!(waiting.contains('◆'), "{text}");
+    for cell in ["Argonauts", "waiting"] {
+        assert!(waiting.contains(cell), "{cell}:\n{text}");
     }
-    let crashed = row_with(&text, "Fix the flaky export test");
+    let stopped = row_with(&text, "Fix the flaky export test");
     assert!(
-        crashed.contains("✗ crashed") && !crashed.contains('◆'),
+        stopped.contains("stopped") && !stopped.contains('◆'),
         "{text}"
     );
-    assert!(
-        row_with(&text, "Rename the CSV writer").contains("✔ merged"),
-        "{text}"
-    );
-    assert!(text.contains("⏎ resume · → agents · x stop · d diff · r raw · / search · esc back"));
-
-    press(&mut view, KeyCode::Down, &state);
-    let resume = press(&mut view, KeyCode::Enter, &state);
-    assert!(
-        matches!(&resume, ViewOutcome::SendToChat(UiCommand::Resume { run: Some(run) }) if run.as_str() == "run-02"),
-        "{resume:?}"
-    );
-    // A run that ended has nothing to stop.
-    press(&mut view, KeyCode::Down, &state);
-    assert!(matches!(
-        press(&mut view, KeyCode::Char('x'), &state),
-        ViewOutcome::Notice(text) if text == "run-01 has ended, so it has nothing to stop"
-    ));
-    // The run on screen can be stopped; another run is resumed first.
-    let mut on_screen = state.clone();
-    on_screen.attached = Some(RunId::new("run-02").unwrap());
-    press(&mut view, KeyCode::Up, &on_screen);
-    press(&mut view, KeyCode::Char('x'), &on_screen);
-    assert!(
-        screen(&mut view, 100, 32, &on_screen).contains("x again to stop run-02 · esc to keep")
-    );
-    assert!(matches!(
-        press(&mut view, KeyCode::Char('x'), &on_screen),
-        ViewOutcome::Send(UiCommand::Stop)
-    ));
-    press(&mut view, KeyCode::Up, &state);
-    press(&mut view, KeyCode::Char('x'), &state);
-    assert!(matches!(
-        press(&mut view, KeyCode::Char('x'), &state),
-        ViewOutcome::Notice(_)
-    ));
-    // Esc keeps a run a first x asked about.
-    press(&mut view, KeyCode::Char('x'), &state);
-    assert!(matches!(
-        press(&mut view, KeyCode::Esc, &state),
-        ViewOutcome::Consumed
-    ));
-    assert!(matches!(
-        press(&mut view, KeyCode::Esc, &state),
-        ViewOutcome::Close
-    ));
-
-    // d and r ask for the diff and raw log of what this screen knows of the run.
-    press(&mut view, KeyCode::Down, &state);
-    press(&mut view, KeyCode::Down, &state);
-    let diff = press(&mut view, KeyCode::Char('d'), &state);
-    assert!(
-        matches!(&diff, ViewOutcome::Request(ViewRequest::Diff { .. })),
-        "{diff:?}"
-    );
-    let raw = press(&mut view, KeyCode::Char('r'), &state);
-    assert!(
-        matches!(&raw, ViewOutcome::Request(ViewRequest::Raw { .. })),
-        "{raw:?}"
-    );
-    press(&mut view, KeyCode::Up, &state);
-    assert!(matches!(
-        press(&mut view, KeyCode::Char('r'), &state),
-        ViewOutcome::Notice(_)
-    ));
 }
 
-fn cli_session(id: &str, title: &str, branch: Option<&str>, hours_ago: i64) -> VendorSession {
-    VendorSession {
-        vendor: VendorId("claude-code".into()),
+fn cli_session(id: &str, title: &str, branch: Option<&str>, hours_ago: i64) -> CliSession {
+    CliSession {
+        agent_id: AgentId("claude-code".into()),
         id: id.into(),
         title: title.into(),
         prompt: Some(title.into()),
@@ -1139,6 +1067,7 @@ fn cli_session(id: &str, title: &str, branch: Option<&str>, hours_ago: i64) -> V
         model: Some("claude-opus-5-5".into()),
         branch: branch.map(Into::into),
         last_message: None,
+        turns: 3,
     }
 }
 
@@ -1155,13 +1084,13 @@ fn picker_with_sessions(title: &str) -> ResumePicker {
             summary(
                 "run-03",
                 "Add a --json flag to export",
-                RunPhase::Parked,
+                RunPhase::Waiting,
                 true,
                 50,
             ),
         ],
-        vec![ChatSummary {
-            chat: ChatId::numbered(2),
+        vec![ConversationSummary {
+            conversation: ConversationId::numbered(2),
             title: "what does export do?".into(),
             updated: WALL - Duration::hours(2),
             worker: Some(worker("claude-code")),
@@ -1199,18 +1128,20 @@ fn resume_picker_with_cli_sessions() {
     }
     let mut view = picker_with_sessions("Explain the input loop");
     let text = screen(&mut view, 120, 24, &state);
-    assert!(text.contains("1 conversation · 2 runs · 2 Claude Code sessions"));
-    let newest = row_with(&text, "claude-code:0a1b2c3d-1");
-    for cell in [
-        "session",
-        "Explain the in",
-        "Claude Code on main",
-        "just now",
-    ] {
+    assert!(text.contains("Resume a conversation · in "), "{text}");
+    let newest = row_with(&text, "Explain the in");
+    for cell in ["Claude Code", "just now", "3 turns"] {
         assert!(newest.contains(cell), "{cell}:\n{text}");
     }
-    assert!(position(&text, "claude-code:0a1b2c3d-1") < position(&text, "chat-002"));
-    assert!(text.contains("⏎ resume · / search · esc back"));
+    assert!(position(&text, "Explain the in") < position(&text, "Fix the flaky export test"));
+    assert!(
+        text.contains("enter continues it · b branches from it, the original untouched"),
+        "{text}"
+    );
+    // Its CLI wrote to it just now, so the first Enter asks and the second carries it on.
+    let asked = press(&mut view, KeyCode::Enter, &state);
+    assert!(matches!(&asked, ViewOutcome::Consumed), "{asked:?}");
+    assert!(screen(&mut view, 120, 24, &state).contains("may still be open there"));
     let resume = press(&mut view, KeyCode::Enter, &state);
     assert!(
         matches!(&resume, ViewOutcome::Send(UiCommand::Slash { .. })),
@@ -1228,14 +1159,14 @@ fn resume_picker_with_cli_sessions() {
 
 fn diff_data(text: &str) -> DiffView {
     DiffView {
-        card: CardId::numbered(2),
+        task: TaskId::numbered(2),
         stat: DiffStat {
             files_changed: 1,
             insertions: 3,
             deletions: 1,
         },
         text: text.into(),
-        path: PathBuf::from("/state/cards/task-002/diff"),
+        path: PathBuf::from("/state/tasks/task-002/diff"),
     }
 }
 
@@ -1310,7 +1241,7 @@ fn raw_data(lines: &[&str]) -> RawView {
         lines: lines.iter().map(|line| (*line).to_owned()).collect(),
         truncated: true,
         path: PathBuf::from("/state/raw/s-002.jsonl"),
-        vendor_transcript: None,
+        cli_transcript: None,
     }
 }
 
@@ -1400,7 +1331,7 @@ fn overlays_hold_their_frames_at_every_width() {
     for text in texts {
         let state = session_state(text);
         let mut listed = state.clone();
-        listed.crew_panel = Some(fetched_panel(text));
+        listed.agent_panel = Some(fetched_panel(text));
         let diff = format!("@@ -1 +1 @@\n-{text}\n+{text}\n {}", samples::CJK);
         let raw = [text, samples::EMOJI];
         for width in WIDTHS {
@@ -1479,15 +1410,15 @@ fn overlays_hold_their_frames_at_every_width() {
 fn rewind_picker() {
     use argonauts_core::views::CheckpointRow;
     use argonauts_tui::views::rewind::RewindPicker;
-    let row = |card: &str, n, to: &str, reverted_here| CheckpointRow {
-        card: CardId::new(card).unwrap(),
+    let row = |task: &str, n, to: &str, rewound_here| CheckpointRow {
+        task: TaskId::new(task).unwrap(),
         n,
         at: WALL - Duration::hours(2),
         commit: "0123456789abcdef".to_owned(),
         from: worker("claude-code/opus"),
         to: vec![worker(to)],
         reason: "usage limit, resets at 3:45 PM".to_owned(),
-        reverted_here,
+        rewound_here,
     };
     let state = AppState::default();
     for (width, height) in SIZES {
@@ -1508,10 +1439,10 @@ fn rewind_picker() {
     }
 }
 
-/// A part's kind by its label, as the engine sends them: the task goes as a card.
+/// A part's kind by its label, as the engine sends them: the task goes as a task.
 fn part_kind(label: &str) -> &str {
     match label {
         "goal" | "notes" | "rules" | "status" => label,
-        _ => "card",
+        _ => "task",
     }
 }

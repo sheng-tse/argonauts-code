@@ -2,19 +2,21 @@
 
 use argonauts_core::RunId;
 use argonauts_core::app::{AppMode, UiCommand};
-use argonauts_core::input::{MentionTarget, ParsedInput, SlashCommand, parse_input_with};
-use argonauts_core::vendor_commands::VendorCommandSet;
+use argonauts_core::cli_commands::CliCommandSet;
+use argonauts_core::input::{
+    InputError, MentionTarget, ParsedInput, SlashCommand, parse_input_with,
+};
 
 /// Said when a mention arrives with no run to deliver it to.
 pub(crate) const NO_RUN_FOR_MENTION: &str = "No run is going, so the mention wasn't sent.";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Route {
-    /// `Idle`: record it and run the triage estimate.
+    /// `Idle`: record it and run the estimate.
     NewRequest {
         text: String,
     },
-    /// `Answering`: queued as the next chat turn.
+    /// `Answering`: queued as the next conversation turn.
     NextTurn {
         text: String,
     },
@@ -23,14 +25,14 @@ pub(crate) enum Route {
     WorkflowRequest {
         text: String,
     },
-    /// `Working`, `Pausing`, or `Parked`: queued for every working agent's next turn.
+    /// `Working`, `Pausing`, or `Waiting`: queued for every working agent's next turn.
     Guidance {
         run: RunId,
         text: String,
     },
     /// `Pausing` and an empty Enter.
     CancelPause,
-    /// `Parked` and an empty Enter.
+    /// `Waiting` and an empty Enter.
     Resume {
         run: RunId,
     },
@@ -50,13 +52,15 @@ pub(crate) enum Route {
 }
 
 /// For `Submit` and `Mention`. Anything else routes to `Nothing`. `commands` are the main
-/// agent's own, which `/` also takes. Text that `leads_with_file`, such as `@README.md what
-/// is this?`, is about that file, so it isn't a mention.
+/// agent's own, which `/` also takes. Text that `starts_with_file`, such as `@README.md what
+/// is this?`, is about that file, so it isn't a mention. Text that `starts_with_path`, such as
+/// `/tmp is full, clean it`, is a prompt and no command, unless the word is a command's name.
 pub(crate) fn route(
     mode: &AppMode,
     command: UiCommand,
-    commands: Option<&VendorCommandSet>,
-    leads_with_file: impl Fn(&str) -> bool,
+    commands: Option<&CliCommandSet>,
+    starts_with_file: impl Fn(&str) -> bool,
+    starts_with_path: impl Fn(&str) -> bool,
 ) -> Route {
     match command {
         UiCommand::Submit {
@@ -64,10 +68,10 @@ pub(crate) fn route(
             workflow_requested,
             ..
         } => {
-            let route = if leads_with_file(&text) {
+            let route = if starts_with_file(&text) {
                 plain(mode, text.trim().to_owned())
             } else {
-                submitted(mode, &text, commands)
+                submitted(mode, &text, commands, starts_with_path)
             };
             match route {
                 Route::NewRequest { text } | Route::NextTurn { text } if workflow_requested => {
@@ -81,14 +85,23 @@ pub(crate) fn route(
     }
 }
 
-/// The screen parses what you type, but a front end may send it raw, so `/` and `@` still
+/// The screen parses what you type, but an outside agent may send it raw, so `/` and `@` still
 /// count here.
-fn submitted(mode: &AppMode, text: &str, commands: Option<&VendorCommandSet>) -> Route {
+fn submitted(
+    mode: &AppMode,
+    text: &str,
+    commands: Option<&CliCommandSet>,
+    starts_with_path: impl Fn(&str) -> bool,
+) -> Route {
     match parse_input_with(text, commands) {
         Ok(ParsedInput::Slash { command }) => Route::Slash { command },
         Ok(ParsedInput::Mention { target, text }) => mention(mode, target, text),
         Ok(ParsedInput::Plain { text }) => plain(mode, text),
         Ok(ParsedInput::Empty) => empty(mode),
+        // Only a name that is no command is looked for on the disk, so a command always wins.
+        Err(InputError::UnknownCommand(_)) if starts_with_path(text) => {
+            plain(mode, text.trim().to_owned())
+        }
         Err(err) => Route::Notice {
             text: err.to_string(),
         },
@@ -99,7 +112,7 @@ fn plain(mode: &AppMode, text: String) -> Route {
     match mode {
         AppMode::Idle => Route::NewRequest { text },
         AppMode::Answering { .. } => Route::NextTurn { text },
-        AppMode::Working { run } | AppMode::Pausing { run } | AppMode::Parked { run, .. } => {
+        AppMode::Working { run } | AppMode::Pausing { run } | AppMode::Waiting { run, .. } => {
             Route::Guidance {
                 run: run.clone(),
                 text,
@@ -111,14 +124,14 @@ fn plain(mode: &AppMode, text: String) -> Route {
 fn empty(mode: &AppMode) -> Route {
     match mode {
         AppMode::Pausing { .. } => Route::CancelPause,
-        AppMode::Parked { run, .. } => Route::Resume { run: run.clone() },
+        AppMode::Waiting { run, .. } => Route::Resume { run: run.clone() },
         AppMode::Idle | AppMode::Answering { .. } | AppMode::Working { .. } => Route::Nothing,
     }
 }
 
 fn mention(mode: &AppMode, target: MentionTarget, text: String) -> Route {
     match mode {
-        AppMode::Working { run } | AppMode::Pausing { run } | AppMode::Parked { run, .. } => {
+        AppMode::Working { run } | AppMode::Pausing { run } | AppMode::Waiting { run, .. } => {
             Route::Mention {
                 run: run.clone(),
                 target,
@@ -134,7 +147,7 @@ fn mention(mode: &AppMode, target: MentionTarget, text: String) -> Route {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::events::run::ParkReason;
+    use argonauts_core::events::run::WaitReason;
     use argonauts_core::input::parse_input;
     use argonauts_core::names::TurnId;
 
@@ -142,8 +155,8 @@ mod tests {
         RunId::new("run-001").unwrap()
     }
 
-    fn route(mode: &AppMode, command: UiCommand, commands: Option<&VendorCommandSet>) -> Route {
-        super::route(mode, command, commands, |_| false)
+    fn route(mode: &AppMode, command: UiCommand, commands: Option<&CliCommandSet>) -> Route {
+        super::route(mode, command, commands, |_| false, |_| false)
     }
 
     fn submit(text: &str) -> UiCommand {
@@ -169,9 +182,9 @@ mod tests {
             },
             AppMode::Working { run: run() },
             AppMode::Pausing { run: run() },
-            AppMode::Parked {
+            AppMode::Waiting {
                 run: run(),
-                reason: ParkReason::Checkpoint,
+                reason: WaitReason::Approval,
             },
         ]
     }
@@ -292,30 +305,80 @@ mod tests {
         let names_readme = |text: &str| text.trim_start().starts_with("@README.md");
         let text = " @README.md what is this? ";
         assert_eq!(
-            super::route(&AppMode::Idle, submit(text), None, names_readme),
+            super::route(&AppMode::Idle, submit(text), None, names_readme, |_| false),
             Route::NewRequest {
                 text: "@README.md what is this?".to_owned()
             }
         );
         let working = AppMode::Working { run: run() };
         assert_eq!(
-            super::route(&working, submit(text), None, names_readme),
+            super::route(&working, submit(text), None, names_readme, |_| false),
             Route::Guidance {
                 run: run(),
                 text: "@README.md what is this?".to_owned()
             }
         );
         assert!(matches!(
-            super::route(&working, submit("@codex look"), None, names_readme),
+            super::route(&working, submit("@codex look"), None, names_readme, |_| {
+                false
+            }),
             Route::Mention { .. }
         ));
     }
 
+    /// `/tmp` is a folder, so a prompt that starts with it is text for the agent, in every
+    /// mode. A name that is nowhere is still refused, and a command's name stays a command.
     #[test]
-    fn a_front_end_may_send_the_main_agents_own_commands_raw() {
-        use argonauts_core::names::VendorId;
-        let set = VendorCommandSet::new(
-            VendorId("claude-code".into()),
+    fn text_led_by_a_path_that_exists_is_a_prompt_and_no_command() {
+        let names_tmp = |text: &str| text.split_whitespace().next() == Some("/tmp");
+        let led_by = |mode: &AppMode, text: &str| {
+            super::route(mode, submit(text), None, |_| false, names_tmp)
+        };
+        let text = " /tmp is full, clean it ";
+        let prompt = || "/tmp is full, clean it".to_owned();
+        assert_eq!(
+            led_by(&AppMode::Idle, text),
+            Route::NewRequest { text: prompt() }
+        );
+        let answering = AppMode::Answering {
+            turn: TurnId::numbered(1),
+        };
+        assert_eq!(led_by(&answering, text), Route::NextTurn { text: prompt() });
+        let working = AppMode::Working { run: run() };
+        assert_eq!(
+            led_by(&working, text),
+            Route::Guidance {
+                run: run(),
+                text: prompt()
+            }
+        );
+        assert_eq!(
+            led_by(&AppMode::Idle, "/no-such-command"),
+            Route::Notice {
+                text: "unknown command /no-such-command".to_owned()
+            }
+        );
+
+        let everything_exists = |_: &str| true;
+        assert_eq!(
+            super::route(
+                &AppMode::Idle,
+                submit("/clear"),
+                None,
+                |_| false,
+                everything_exists
+            ),
+            Route::Slash {
+                command: SlashCommand::Clear
+            }
+        );
+    }
+
+    #[test]
+    fn a_outside_agent_may_send_the_main_agents_own_commands_raw() {
+        use argonauts_core::names::AgentId;
+        let set = CliCommandSet::new(
+            AgentId("claude-code".into()),
             "Claude Code",
             argonauts_adapter_claude_code::BUILTIN_COMMANDS,
             Vec::new(),
@@ -324,7 +387,7 @@ mod tests {
         assert_eq!(
             route(idle, submit("/simplify  the parser"), Some(&set)),
             Route::Slash {
-                command: SlashCommand::Vendor {
+                command: SlashCommand::Cli {
                     name: "simplify".into(),
                     args: "the parser".into()
                 }

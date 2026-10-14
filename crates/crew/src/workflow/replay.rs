@@ -1,18 +1,18 @@
 //! What a finished step decided for the run, read back from the log. `StepFinished` records
 //! only how a step ended, so a run that stopped right after a decision (you abandoned it, chose
-//! to run it solo, or it landed) finds the decision here instead of carrying on without it.
+//! to run it as Captain, or it merged) finds the decision here instead of carrying on without it.
 
-use argonauts_core::events::checkpoint::{AnswerAction, CheckpointKind};
+use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
 use argonauts_core::events::run::RunOutcome;
 use argonauts_core::events::workflow::StepEnd;
 use argonauts_core::workflow::{StepKind, WorkflowRef};
 
+use crate::captain;
 use crate::engine::host::Host;
-use crate::integrate::merge;
-use crate::solo;
+use crate::merge::step;
 use crate::state::RunState;
 use crate::state::workflow::{StepProgress, WorkflowRecord};
-use crate::workflow::conditions::GOAL_APPROVED;
+use crate::workflow::conditions::UNDERSTOOD;
 use crate::workflow::{Flow, runner};
 
 /// What the workflow's finished top-level steps decided. The runner stops at the first step
@@ -54,10 +54,10 @@ pub fn step(
     }
     let within = |seq: u64| seq > progress.since && seq < ended_at;
     match progress.kind {
-        StepKind::Checkpoint => checkpoint(state, host, within),
-        // A merge step always ends the run: landed, a pull request, abandoned, or kept.
+        StepKind::Approval => approval(state, host, within),
+        // A merge step always ends the run: merged, a pull request, abandoned, or kept.
         StepKind::Merge => {
-            Flow::Finish(merge::ended(&state.integration).unwrap_or(RunOutcome::BranchLeft))
+            Flow::Finish(step::ended(&state.merge).unwrap_or(RunOutcome::BranchLeft))
         }
         StepKind::Build => build(state, host, record),
         StepKind::LoopUntil | StepKind::ForEach | StepKind::FanOut => {
@@ -95,7 +95,7 @@ fn goal_out_of_rounds(state: &RunState, record: &WorkflowRecord, progress: &Step
     let goal_loop = progress.kind == StepKind::LoopUntil
         && record
             .step_definition(&progress.step)
-            .is_some_and(|step| step.until.as_deref() == Some(GOAL_APPROVED));
+            .is_some_and(|step| step.until.as_deref() == Some(UNDERSTOOD));
     if !goal_loop || state.goal.approved.is_some() {
         return false;
     }
@@ -115,16 +115,16 @@ fn first(mut flows: impl Iterator<Item = Flow>) -> Flow {
         .unwrap_or(Flow::Continue)
 }
 
-/// The goal or plan checkpoint's last answer in the round.
-fn checkpoint(state: &RunState, host: &Host, within: impl Fn(u64) -> bool) -> Flow {
+/// The Understand or plan approval's last answer in the round.
+fn approval(state: &RunState, host: &Host, within: impl Fn(u64) -> bool) -> Flow {
     let answered = state
-        .checkpoints
+        .approvals
         .by_id
         .values()
         .filter(|record| {
             matches!(
                 record.opened.kind,
-                CheckpointKind::Goal | CheckpointKind::Plan
+                ApprovalKind::Understand | ApprovalKind::Plan
             ) && record.withdrawn.is_none()
                 && within(record.since)
         })
@@ -134,22 +134,22 @@ fn checkpoint(state: &RunState, host: &Host, within: impl Fn(u64) -> bool) -> Fl
         Some((_, _, decided)) if decided.action == AnswerAction::Abandon => {
             Flow::Finish(RunOutcome::Abandoned)
         }
-        Some((_, CheckpointKind::Plan, decided))
-            if decided.action == AnswerAction::SwitchToSolo =>
+        Some((_, ApprovalKind::Plan, decided))
+            if decided.action == AnswerAction::SwitchToCaptain =>
         {
-            Flow::Switch(WorkflowRef::new(runner::solo_workflow(host.settings())))
+            Flow::Switch(WorkflowRef::new(runner::captain_workflow(host.settings())))
         }
         _ => Flow::Continue,
     }
 }
 
-/// A solo workflow's build hands the run to the crew when its card escalated. The crew's own
+/// A Captain workflow's build hands the run to the crew when its task needed you. The crew's own
 /// build never switches again.
 fn build(state: &RunState, host: &Host, record: &WorkflowRecord) -> Flow {
     let to = runner::crew_workflow(host);
     if record.from.as_ref() != Some(&to)
-        && runner::in_solo_workflow(state, &record.id)
-        && solo::escalates_to_crew(state, host)
+        && runner::in_captain_workflow(state, &record.id)
+        && captain::moves_to_crew(state, host)
     {
         Flow::Switch(to)
     } else {

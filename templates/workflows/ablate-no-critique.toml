@@ -1,0 +1,5 @@
+name  = "ablate-no-critique"
+about = "No critique round"
+
+[critique]
+rounds = 0

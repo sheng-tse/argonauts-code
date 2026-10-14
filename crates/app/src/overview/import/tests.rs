@@ -631,7 +631,7 @@ fn lines_that_cant_be_read_are_counted_not_hidden() {
     assert_eq!(world.store.state().unreadable, 2);
 }
 
-/// A stand-in for `zstd -dc -- <file>` that prints the file as it is, for made-up compressed
+/// A fake `zstd -dc -- <file>` that prints the file as it is, for made-up compressed
 /// files that are plain text inside.
 fn plain_zstd(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt as _;
@@ -784,6 +784,39 @@ fn stats_cache(days: &[(&str, u64, u64)], through: &str) -> String {
         "shotDistribution": {}
     })
     .to_string()
+}
+
+/// Claude Code's own count is the total its /stats keeps, or a period's days added up, with
+/// the last day it has counted.
+#[test]
+fn claude_codes_own_count_is_its_stats_total_or_a_periods_days() {
+    use time::macros::date;
+
+    let world = world();
+    let count = |first| claude_count(&world.locations(), first);
+    assert_eq!(count(None), None, "/stats hasn't kept a total yet");
+    std::fs::create_dir_all(&world.claude).unwrap();
+    let days = [
+        ("2026-09-20", 4_000, 1),
+        ("2026-10-02", 3_000, 2),
+        ("2026-10-03", 2_000, 1),
+    ];
+    std::fs::write(
+        world.claude.join("stats-cache.json"),
+        stats_cache(&days, "2026-10-03"),
+    )
+    .unwrap();
+    let through = date!(2026 - 10 - 03);
+    // Every day: the four kinds of each model's tokens, 10 + 40 + 900 + 50.
+    let tokens = |tokens| Some(OwnCount { tokens, through });
+    assert_eq!(count(None), tokens(1_000));
+    assert_eq!(count(Some(date!(2026 - 10 - 02))), tokens(5_000));
+    assert_eq!(count(Some(date!(2026 - 10 - 03))), tokens(2_000));
+    assert_eq!(
+        count(Some(date!(2026 - 10 - 04))),
+        None,
+        "a period it has counted no day of"
+    );
 }
 
 fn claude_day_tokens(records: &[Record], day: time::Date) -> (u64, bool) {

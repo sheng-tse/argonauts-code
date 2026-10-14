@@ -56,14 +56,14 @@ impl Default for StatsSettings {
     }
 }
 
-/// The period Stats opens on. A file may still name a week `7d` and a month `30d`.
+/// The period Stats opens on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum StatsPeriod {
     #[serde(rename = "today")]
     Today,
-    #[serde(rename = "week", alias = "7d")]
+    #[serde(rename = "week")]
     Week,
-    #[serde(rename = "month", alias = "30d")]
+    #[serde(rename = "month")]
     Month,
     #[default]
     #[serde(rename = "all")]
@@ -80,13 +80,13 @@ impl StatsPeriod {
         }
     }
 
-    /// The period `/stats` was given: `today`, `7d`, `30d`, `all`, or the words `/usage`
-    /// takes.
+    /// The period `/stats` was given: `today`, `week`, `month`, `all`, or the short words
+    /// `/usage` takes.
     pub fn parse(word: &str) -> Option<Self> {
         match word.trim().to_ascii_lowercase().as_str() {
             "today" | "day" | "t" => Some(Self::Today),
-            "7d" | "7" | "week" => Some(Self::Week),
-            "30d" | "30" | "month" => Some(Self::Month),
+            "week" => Some(Self::Week),
+            "month" => Some(Self::Month),
             "all" | "a" => Some(Self::All),
             _ => None,
         }
@@ -147,7 +147,7 @@ pub enum StatsColumn {
     Pace,
     /// Lines changed. Nothing records them per task yet, so the card leaves them out.
     Lines,
-    /// Tasks taken over from another model.
+    /// Tasks that fell back from another model.
     Fallbacks,
 }
 
@@ -286,8 +286,8 @@ impl StatsSettings {
             .map_err(|err| err.message().to_owned())
     }
 
-    /// The keys that differ from `from`, each with its value as TOML text, in the order the
-    /// file lists them: what a page saves.
+    /// The keys whose values are different from `from`, each with its value as TOML text, in the
+    /// order the file lists them: what a page saves.
     pub fn changes_from(&self, from: &Self) -> Vec<(String, String)> {
         let mut pairs = Vec::new();
         let mut add = |changed: bool, key: &str, text: String| {
@@ -344,16 +344,27 @@ mod tests {
         assert_eq!(settings, StatsSettings::default());
         assert!(problems.is_empty());
         assert_eq!(settings.period.usage(), UsagePeriod::All);
-        // A file from before still reads its week and month.
-        let old: StatsSettings = toml::from_str("period = \"7d\"").unwrap();
-        assert_eq!(old.period, StatsPeriod::Week);
+    }
+
+    /// The file `/setup` writes opens Stats on every day so far too, as no file does.
+    #[test]
+    fn the_starter_file_opens_on_every_day_so_far() {
+        let home = tempfile::tempdir().unwrap();
+        let starter = crate::settings::mods::builtin::BUILTIN
+            .iter()
+            .find(|builtin| builtin.name == crate::settings::mods::builtin::STATS)
+            .unwrap();
+        write(home.path(), starter.text);
+        let (settings, problems) = StatsSettings::read(home.path(), None);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(settings.period, StatsPeriod::All);
     }
 
     #[test]
     fn the_projects_keys_win_one_by_one() {
         let home = tempfile::tempdir().unwrap();
         let repo = tempfile::tempdir().unwrap();
-        write(home.path(), "period = \"7d\"\nmeasure = \"spend\"\n");
+        write(home.path(), "period = \"week\"\nmeasure = \"spend\"\n");
         write(
             &repo.path().join(".argonauts"),
             "measure = \"tasks\"\ngroup = \"model\"\n",
@@ -371,7 +382,7 @@ mod tests {
     fn a_bad_file_leaves_only_itself_out() {
         let home = tempfile::tempdir().unwrap();
         let repo = tempfile::tempdir().unwrap();
-        write(home.path(), "period = \"7d\"\n");
+        write(home.path(), "period = \"week\"\n");
         write(&repo.path().join(".argonauts"), "period = \"fortnight\"\n");
         let (settings, problems) = StatsSettings::read(home.path(), Some(repo.path()));
         assert_eq!(settings.period, StatsPeriod::Week);
@@ -399,7 +410,7 @@ mod tests {
         let repo = tempfile::tempdir().unwrap();
         write(
             home.path(),
-            "name = \"stats\"\nperiod = \"7d\"\nmeasure = \"spend\"\n",
+            "name = \"stats\"\nperiod = \"week\"\nmeasure = \"spend\"\n",
         );
         write(&repo.path().join(".argonauts"), "measure = \"tasks\"\n");
         let (_, sources, problems) =
@@ -431,7 +442,8 @@ mod tests {
 
     #[test]
     fn the_period_takes_the_files_words_and_the_usage_words() {
-        assert_eq!(StatsPeriod::parse("7d"), Some(StatsPeriod::Week));
+        assert_eq!(StatsPeriod::parse("week"), Some(StatsPeriod::Week));
+        assert_eq!(StatsPeriod::parse("t"), Some(StatsPeriod::Today));
         assert_eq!(StatsPeriod::parse("month"), Some(StatsPeriod::Month));
         assert_eq!(StatsPeriod::parse("soon"), None);
         assert_eq!(StatsMeasure::Spend.next(), StatsMeasure::Tokens);

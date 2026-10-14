@@ -7,7 +7,7 @@
 use argonauts_core::app::{MissingCli, ModelChoice, SettingRow, UiCommand, ViewRequest};
 use argonauts_core::input::{EFFORT_LEVELS, SLASH_COMMANDS, SlashCommand};
 use argonauts_core::model_picker::{EffortLine, EffortSlider};
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::settings::SettingScope;
 
 use super::words::{
@@ -15,10 +15,10 @@ use super::words::{
     reset_scope, role_words, row_value_words, same_value, toml_text, value_note, value_words,
     workers_words,
 };
-use super::{handoff, models, permissions};
+use super::{fallback, models, permissions};
 use crate::bottom::{Picker, PickerEvent, PickerRow};
 use crate::format::setting_value;
-use crate::widgets::State;
+use crate::kit::State;
 
 /// The keys whose values change the palette, so `/theme` shows each one as you move to it.
 pub const PALETTE_KEYS: [&str; 5] = [
@@ -62,7 +62,7 @@ pub struct Flow {
     /// levels are rebuilt from `models` instead, so a refreshed list shows through.
     pub parents: Vec<Level>,
     /// The setting a model pick fills, by its index in `settings`, when the model picker
-    /// opened from that setting's row, such as the second approver, rather than for a role.
+    /// opened from that setting's row, such as the second judge, rather than for a role.
     pub model_for: Option<usize>,
 }
 
@@ -136,14 +136,14 @@ pub enum Asked {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum Stage {
-    /// Keys, roles, or harnesses to open.
+    /// Keys, roles, or CLIs to open.
     #[default]
     Keys,
     /// The values of one key, by its index in `settings`.
     Values { key: usize },
     /// A value typed for one key.
     Typing { key: usize },
-    /// The CLIs and endpoints a role may use. `None` is the default agent.
+    /// The CLIs and endpoints a role may use. `None` is the main agent.
     Models { role: Option<RoleName> },
     /// One CLI's or endpoint's models, by its id.
     ModelsOf { role: Option<RoleName>, cli: String },
@@ -153,7 +153,7 @@ pub enum Stage {
     Endpoint,
     /// Where to save a picked value.
     Scope(Change),
-    /// `/effort`'s slider for the default agent or a role, and the level it opened on.
+    /// `/effort`'s slider for the main agent or a role, and the level it opened on.
     /// `was` is `None` when the CLI uses its own effort, with no level set.
     Effort {
         role: Option<RoleName>,
@@ -169,8 +169,8 @@ pub struct Change {
     pub value: String,
     /// The layer that sets the key now, for the warning when it would hide the change.
     pub layer: String,
-    /// Where the preset was picked, when `layer` is the preset and a file picked it.
-    pub preset_from: Option<String>,
+    /// Where the workflow was picked, when `layer` is the workflow and a file picked it.
+    pub workflow_from: Option<String>,
     /// The Kept line if you cancel.
     pub kept: Kept,
 }
@@ -202,9 +202,9 @@ impl Kept {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RowAction {
     OpenKey(usize),
-    /// The keys under a prefix, such as one harness's `agents.codex`.
+    /// The keys under a prefix, such as one CLI's `agents.codex`.
     OpenGroup(String),
-    /// `/model`'s roles, one level under the default agent's CLIs.
+    /// `/model`'s roles, one level under the main agent's CLIs.
     OpenRoles,
     AskModels(Option<RoleName>),
     /// The model picker for a setting that takes a model, listing what `role` may use.
@@ -228,7 +228,7 @@ pub enum RowAction {
     },
     Worker {
         role: Option<RoleName>,
-        worker: WorkerRef,
+        worker: ModelRef,
     },
     OtherModel {
         role: Option<RoleName>,
@@ -272,7 +272,7 @@ pub fn settings_picker_noting(
     picker.flow.command = command.to_owned();
     picker.flow.not_installed = not_installed;
     fill_settings(&mut picker, rows);
-    // `/model` opens on the default agent's CLIs, with the roles a row away.
+    // `/model` opens on the main agent's CLIs, with the roles a row away.
     if command == "model" {
         ask_models(&mut picker, None);
     }
@@ -303,7 +303,7 @@ pub fn fill_settings(picker: &mut Picker, rows: Vec<SettingRow>) {
             picker.title = capitalized(&command);
             open_key(picker, 0);
         }
-        "fallback" => handoff::list(picker),
+        "fallback" => fallback::list(picker),
         _ => key_list(picker, None),
     }
 }
@@ -431,8 +431,8 @@ fn push_level(picker: &mut Picker) {
     picker.flow.parents.push(level);
 }
 
-/// Enter on the effort slider sends the level, and All hands when Tab changed it, which then
-/// asks where to save them. With only All hands changed, the level stays as it was rather than
+/// Enter on the effort slider sends the level, and Ultracode when Tab changed it, which then
+/// asks where to save them. With only Ultracode changed, the level stays as it was rather than
 /// being saved, so flipping the toggle never pins the model's default. A model that takes one
 /// level, or none, has no level to save, so Enter sends only a changed toggle, and otherwise
 /// closes as Esc does.
@@ -461,7 +461,7 @@ fn confirmed(picker: &Picker) -> Step {
     }
 }
 
-/// `/effort`'s slider, for the default agent or a role.
+/// `/effort`'s slider, for the main agent or a role.
 pub fn effort_picker(command: &str, slider: EffortSlider) -> Picker {
     let role = slider.role.filter(|role| *role != RoleName::Main);
     let title = match role {
@@ -472,7 +472,7 @@ pub fn effort_picker(command: &str, slider: EffortSlider) -> Picker {
         Some(_) => slider.model.clone(),
         None => format!(
             "{}'s default model",
-            crate::format::vendor_label(&slider.worker.worker)
+            crate::format::agent_label(&slider.worker.agent)
         ),
     };
     let who = match role {
@@ -508,7 +508,7 @@ fn act(picker: &mut Picker, action: RowAction) -> Step {
             if picker.flow.command == "permissions" {
                 permissions::role_list(picker, &prefix);
             } else if picker.flow.command == "fallback" {
-                handoff::role_list(picker, &prefix);
+                fallback::role_list(picker, &prefix);
             } else {
                 key_list(picker, Some(&prefix));
             }
@@ -588,7 +588,7 @@ fn set_value(picker: &mut Picker, key: usize, value: String) -> Step {
         key: row.key,
         value,
         layer: row.layer,
-        preset_from: row.preset_from,
+        workflow_from: row.workflow_from,
         kept,
     };
     push_level(picker);
@@ -607,7 +607,7 @@ fn entered(picker: &mut Picker, text: &str) -> Step {
                 value: toml_text(text, &row.value),
                 key: row.key,
                 layer: row.layer,
-                preset_from: row.preset_from,
+                workflow_from: row.workflow_from,
                 kept,
             };
             push_level(picker);
@@ -620,7 +620,7 @@ fn entered(picker: &mut Picker, text: &str) -> Step {
                     key: format!("endpoints.{id}"),
                     value,
                     layer: String::new(),
-                    preset_from: None,
+                    workflow_from: None,
                     kept: kept(picker),
                 };
                 push_level(picker);
@@ -678,7 +678,7 @@ fn endpoint(text: &str) -> Result<(String, String), String> {
 fn kept(picker: &Picker) -> Kept {
     let flow = &picker.flow;
     match &flow.stage {
-        // `/effort` names the default agent's, as `/model` names its model.
+        // `/effort` names the main agent's, as `/model` names its model.
         Stage::Keys if flow.command == "effort" => flow
             .settings
             .iter()
@@ -709,7 +709,7 @@ fn kept(picker: &Picker) -> Kept {
         Stage::Models { role } | Stage::ModelsOf { role, .. } | Stage::OtherModel { role, .. } => {
             models::kept(picker, *role)
         }
-        // The model takes no effort setting, so only All hands was there to change.
+        // The model takes no effort setting, so only Ultracode was there to change.
         Stage::Effort { .. }
             if flow
                 .slider
@@ -798,14 +798,14 @@ fn key_list(picker: &mut Picker, prefix: Option<&str>) {
     picker.flow.actions = chosen.into_iter().map(RowAction::OpenKey).collect();
 }
 
-/// `/model`'s roles, each with its current worker, a level under the default agent's CLIs.
+/// `/model`'s roles, each with its current worker, a level under the main agent's CLIs.
 pub(super) fn role_list(picker: &mut Picker) {
     let settings = &picker.flow.settings;
     let mut rows = Vec::new();
     let mut actions = Vec::new();
     for (index, row) in settings.iter().enumerate() {
         match model_role(&row.key) {
-            // The default agent is the level above.
+            // The main agent is the level above.
             Some(None) => {}
             Some(role) => {
                 rows.push(PickerRow::new(role_words(role), workers_words(&row.value)));
@@ -846,7 +846,7 @@ fn ask_models(picker: &mut Picker, role: Option<RoleName>) -> Step {
 }
 
 /// Esc goes up a level: a model list back to its CLIs, and in `/model` a role's CLIs back to
-/// the roles and the roles back to the default agent's CLIs. `None` on the first level.
+/// the roles and the roles back to the main agent's CLIs. `None` on the first level.
 fn back(picker: &mut Picker) -> Option<Step> {
     if models::back(picker) {
         return Some(Step::Stay);
@@ -862,7 +862,7 @@ fn back(picker: &mut Picker) -> Option<Step> {
     models::on_roles(&picker.flow).then(|| ask_models(picker, None))
 }
 
-/// `/agents`: each harness and endpoint once, with its state, then "Add an endpoint".
+/// `/agents`: each CLI and endpoint once, with its state, then "Add an endpoint".
 fn agents_list(picker: &mut Picker) {
     let settings = &picker.flow.settings;
     let mut rows = Vec::new();
@@ -946,7 +946,7 @@ fn group_state(settings: &[SettingRow], group: &str) -> Option<State> {
     switched_on(settings, group).map(|on| if on { State::Done } else { State::Stopped })
 }
 
-/// A harness's state in a few words: on or off, model, effort, and auth.
+/// A CLI's state in a few words: on or off, model, effort, and auth.
 fn group_note(settings: &[SettingRow], group: &str) -> String {
     let value = |leaf: &str| {
         settings
@@ -1047,7 +1047,7 @@ fn open_key(picker: &mut Picker, key: usize) {
             (picker.title, picker.about) = permissions::heading(&picker.flow.settings, &row);
         }
         "fallback" if picker.flow.settings.len() > 1 => {
-            (picker.title, picker.about) = handoff::heading(&picker.flow.settings, &row);
+            (picker.title, picker.about) = fallback::heading(&picker.flow.settings, &row);
         }
         _ => {}
     }
@@ -1087,8 +1087,8 @@ fn open_key(picker: &mut Picker, key: usize) {
     }
 }
 
-/// A setting that takes a model, such as the second approver: its words, if it has any, then
-/// the model picker of every vendor's models `role` may use, then Reset.
+/// A setting that takes a model, such as the second judge: its words, if it has any, then
+/// the model picker of every agent's models `role` may use, then Reset.
 fn model_values(picker: &mut Picker, key: usize, row: &SettingRow, role: RoleName) {
     picker.about = row.description.clone();
     picker.enter_hint.clear();
@@ -1133,8 +1133,8 @@ fn model_values(picker: &mut Picker, key: usize, row: &SettingRow, role: RoleNam
 /// The settings that take a model from the model picker, with the role whose models it lists.
 pub fn model_setting(key: &str) -> Option<RoleName> {
     match key {
-        "approvals.answers" => Some(RoleName::PhaseLead),
-        "approvals.decides" | "approvals.approver.second_model" => Some(RoleName::Approver),
+        "approvals.answers" => Some(RoleName::TieBreaker),
+        "approvals.decides" | "approvals.judge.second_model" => Some(RoleName::Judge),
         _ => None,
     }
 }
@@ -1172,7 +1172,7 @@ fn typing(picker: &mut Picker, key: usize) {
         row.description.clone()
     };
     if picker.flow.command == "fallback" && picker.flow.settings.len() > 1 {
-        (picker.title, picker.about) = handoff::heading(&picker.flow.settings, &row);
+        (picker.title, picker.about) = fallback::heading(&picker.flow.settings, &row);
     }
     picker.set_rows(Vec::new());
     picker.flow.actions.clear();
@@ -1191,13 +1191,13 @@ fn typing(picker: &mut Picker, key: usize) {
 fn scope_question(picker: &mut Picker, change: Change, default: SettingScope) {
     picker.title = "Where to save it".to_owned();
     picker.about = format!("{} = {}", change.key, value_words(&change.value));
-    let preset_from = change.preset_from.as_deref();
-    let once = hidden_from_files(&change.layer, preset_from);
+    let workflow_from = change.workflow_from.as_deref();
+    let once = hidden_from_files(&change.layer, workflow_from);
     let rows = SCOPES
         .iter()
         .map(|&(scope, label, place)| PickerRow {
-            warning: (once.is_none() && scope.hidden_by_value(&change.layer, preset_from))
-                .then(|| hidden_note(&change.layer, preset_from, scope)),
+            warning: (once.is_none() && scope.hidden_by_value(&change.layer, workflow_from))
+                .then(|| hidden_note(&change.layer, workflow_from, scope)),
             ..PickerRow::new(label, place)
         })
         .collect();

@@ -1,10 +1,10 @@
 //! The interface, the narrator, and notifications.
 
-mod agents_in_chat;
+mod agents_in_conversation;
 mod check;
 mod look;
+mod mods;
 mod places;
-mod widgets;
 
 use std::collections::BTreeMap;
 
@@ -12,25 +12,43 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::Span;
-use crate::names::WorkerRef;
-use crate::{KeyScheme, Verbosity};
+use crate::names::ModelRef;
 
-pub use agents_in_chat::AgentsInChat;
+pub use agents_in_conversation::AgentsInConversation;
 pub use check::{BadValue, UiProblem, drop_bad_values};
 pub use look::{
     ClockStyle, ColorText, Crossing, DurationStyle, FormatSettings, LevelSettings, Percent,
-    QuotaWording, ResetStyle, State, StateStyle, StatesSettings, Theme, Threshold, TokenStyle,
+    PlanUsageWording, ResetStyle, State, StateStyle, StatesSettings, Theme, Threshold, TokenStyle,
+};
+pub use mods::{
+    Border, ContextCategory, ContextDetail, ContextKeys, ContextSession, HistoryKeys, LegendMarker,
+    ModLook, ModName, ModShape, ModTable, ModWidth, NoKeys, Place, PlanUsageKeys, ReceiptKeys,
+    RunLimitKind, RunLimitsKeys, RunLimitsRun, RunsKeys, SpendBy, SpendKeys, UiModsSettings, Units,
 };
 pub use places::{
     AboveInputSettings, HiddenLine, PanelBar, PanelContext, UsagePeriod, UsageTab, ViewOpen,
     ViewTab, ViewsSettings, WhenQuestion,
 };
-pub use widgets::{
-    Border, BudgetKeys, BudgetLimitKind, BudgetRun, ContextCategory, ContextDetail, ContextKeys,
-    ContextSession, HistoryKeys, LegendMarker, NoKeys, Place, QuotaKeys, ReceiptKeys, RunsKeys,
-    SpendBy, SpendKeys, Units, WidgetForm, WidgetLook, WidgetName, WidgetTable, WidgetWidth,
-    WidgetsSettings,
-};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Verbosity {
+    /// Every tool call and message.
+    Full,
+    /// Finished steps collapse to one line.
+    #[default]
+    Normal,
+    /// Phases and approvals only.
+    Quiet,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyScheme {
+    #[default]
+    Default,
+    Vim,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -39,11 +57,11 @@ pub struct UiSettings {
     pub narrator: NarratorMode,
     /// `/vim` saves this in your global config.
     pub keys: KeyScheme,
-    pub takeover: TakeoverWhere,
+    pub take_over: TakeOverWhere,
     /// `fullscreen` draws in the terminal's alternate screen and leaves no trace on exit;
-    /// `inline` prints the chat into the terminal's scrollback. Read at start.
+    /// `inline` prints the conversation into the terminal's scrollback. Read at start.
     pub screen: ScreenMode,
-    /// Rebinds: action name to key, such as `crew_view = "ctrl+left"`.
+    /// Rebinds: action name to key, such as `agent_panel_view = "ctrl+left"`.
     pub keymap: BTreeMap<String, String>,
     /// Flat labeled lines, no boxes or spinners (`--screen-reader`, `ARGONAUTS_SCREEN_READER=1`).
     pub screen_reader: bool,
@@ -52,7 +70,8 @@ pub struct UiSettings {
     pub bell: bool,
     /// Most rows the live area (live blocks, questions, prompt) may take, as a share of the screen.
     pub live_area_max: f64,
-    /// Working-line verbs: `voyage` (`Rowing…`, `Sailed for`) or `plain` (`Working…`, `Worked for`).
+    /// Working-line verbs: `voyage` (`Rowing…`, `Sailed for`) or `plain` (`Working…`, `Worked
+    /// for`).
     pub verbs: VerbTheme,
     /// Show the turn-end line, `✻ Sailed for 3s · done 10:42 AM`.
     pub turn_duration: bool,
@@ -72,8 +91,8 @@ pub struct UiSettings {
     pub states: StatesSettings,
     pub above_input: AboveInputSettings,
     pub views: ViewsSettings,
-    pub mods: WidgetsSettings,
-    /// The panel under the mode line: one row per workflow run.
+    pub mods: UiModsSettings,
+    /// The panel under the bottom line: one row per workflow run.
     pub panel: PanelSettings,
     /// The workflow view.
     pub workflow: WorkflowViewSettings,
@@ -81,19 +100,21 @@ pub struct UiSettings {
     pub glyphs: Glyphs,
     /// Cells for East Asian ambiguous-width characters, 1 or 2, like vim's `ambiwidth`.
     pub ambiguous_width: u8,
-    /// Say once when an installed agent CLI is newer than the one Argonauts was checked with.
+    /// Say once at start-up when an installed agent CLI is newer than the one Argonauts Code
+    /// was checked with, when a newer version of one is out, or when one stopped reporting
+    /// something Argonauts Code reads. Doctor and the Status tab say it either way.
     pub newer_cli_notice: bool,
-    /// What Claude Code's mods push: a toast, a status line, a log line.
-    pub mod_output: ModOutput,
+    /// What Claude Code's plugins push: a toast, a status line, a log line.
+    pub plugin_output: PluginOutput,
     /// Claude Code's You should know above the input.
-    pub heads_up: HeadsUp,
-    /// When a crew agent shows in the chat: once it finishes, or as it works.
-    pub agents_in_chat: AgentsInChat,
+    pub notices: Notices,
+    /// When a crew agent shows in the conversation: once it finishes, or as it works.
+    pub agents_in_conversation: AgentsInConversation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum ModOutput {
+pub enum PluginOutput {
     /// Where Claude Code shows it: a toast on the notice line, a status line under the input,
     /// a log line in the transcript.
     #[default]
@@ -105,7 +126,7 @@ pub enum ModOutput {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum HeadsUp {
+pub enum Notices {
     /// Shown when you've turned it on in Claude Code, which its session then lists.
     #[default]
     WhenEnabled,
@@ -115,8 +136,8 @@ pub enum HeadsUp {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct WorkflowViewSettings {
-    /// A cost column on agent rows, before the time. Cost shows in the header, the panel row,
-    /// and the agent view either way.
+    /// What each agent cost, on its row after its tokens. The view shows no cost otherwise, as
+    /// Claude Code's doesn't.
     pub row_cost: bool,
 }
 
@@ -124,8 +145,7 @@ pub struct WorkflowViewSettings {
 #[serde(default)]
 pub struct PanelSettings {
     /// What an agent's own subagents or threads show.
-    #[serde(rename = "subagents")]
-    pub vendor_internals: VendorInternals,
+    pub subagents: CliInternals,
     /// Also list running agents under each workflow row.
     pub agents: bool,
     pub max_rows: u32,
@@ -138,7 +158,7 @@ pub struct PanelSettings {
 impl Default for PanelSettings {
     fn default() -> Self {
         Self {
-            vendor_internals: VendorInternals::Discovered,
+            subagents: CliInternals::Discovered,
             agents: false,
             max_rows: 5,
             bar: PanelBar::Agents,
@@ -149,8 +169,8 @@ impl Default for PanelSettings {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum VendorInternals {
-    /// Whatever the vendor reports: each child's name, status, and tokens.
+pub enum CliInternals {
+    /// Whatever the agent reports: each child's name, status, and tokens.
     Discovered,
     /// One line.
     Summary,
@@ -177,8 +197,8 @@ impl Default for UiSettings {
         Self {
             verbosity: Verbosity::Full,
             narrator: NarratorMode::OnDemand,
-            keys: KeyScheme::Standard,
-            takeover: TakeoverWhere::Here,
+            keys: KeyScheme::Default,
+            take_over: TakeOverWhere::Here,
             screen: ScreenMode::Fullscreen,
             keymap: BTreeMap::new(),
             screen_reader: false,
@@ -198,44 +218,44 @@ impl Default for UiSettings {
             states: StatesSettings::default(),
             above_input: AboveInputSettings::default(),
             views: ViewsSettings::default(),
-            mods: WidgetsSettings::default(),
+            mods: UiModsSettings::default(),
             panel: PanelSettings::default(),
             workflow: WorkflowViewSettings::default(),
             glyphs: Glyphs::Unicode,
             ambiguous_width: 1,
             newer_cli_notice: true,
-            mod_output: ModOutput::Show,
-            heads_up: HeadsUp::WhenEnabled,
-            agents_in_chat: AgentsInChat::WhenDone,
+            plugin_output: PluginOutput::Show,
+            notices: Notices::WhenEnabled,
+            agents_in_conversation: AgentsInConversation::WhenDone,
         }
     }
 }
 
 impl UiSettings {
-    /// The widgets that show in `place`, in order.
-    pub fn place(&self, place: Place) -> &[WidgetName] {
+    /// The mods that show in `place`, in order.
+    pub fn place(&self, place: Place) -> &[ModName] {
         match place {
             Place::AboveInput => &self.above_input.mods,
             Place::Status => &self.views.status.mods,
             Place::Usage => &self.views.usage.mods,
             Place::Context => &self.views.context.mods,
-            Place::Budget => &self.views.budget.mods,
+            Place::Limits => &self.views.limits.mods,
         }
     }
 
-    pub fn place_mut(&mut self, place: Place) -> &mut Vec<WidgetName> {
+    pub fn place_mut(&mut self, place: Place) -> &mut Vec<ModName> {
         match place {
             Place::AboveInput => &mut self.above_input.mods,
             Place::Status => &mut self.views.status.mods,
             Place::Usage => &mut self.views.usage.mods,
             Place::Context => &mut self.views.context.mods,
-            Place::Budget => &mut self.views.budget.mods,
+            Place::Limits => &mut self.views.limits.mods,
         }
     }
 
-    /// `widget`'s settings with every fallback applied.
-    pub fn widget(&self, widget: WidgetName) -> WidgetLook {
-        self.mods.look(widget, &self.levels)
+    /// `mod`'s settings with every fallback applied.
+    pub fn the_mod(&self, the_mod: ModName) -> ModLook {
+        self.mods.look(the_mod, &self.levels)
     }
 }
 
@@ -251,8 +271,8 @@ pub enum NarratorMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-pub enum TakeoverWhere {
-    /// Suspend Argonauts' screen and hand over the terminal.
+pub enum TakeOverWhere {
+    /// Suspend Argonauts Code's screen and hand over the terminal.
     Here,
     TmuxSplit,
     /// A new terminal tab, where supported.
@@ -290,8 +310,8 @@ pub enum ColorChoice {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct NarratorSettings {
-    /// Any registry model; unset uses the default agent in a read-only session.
-    pub model: Option<WorkerRef>,
+    /// Any registry model; unset uses the main agent in a read-only session.
+    pub model: Option<ModelRef>,
     /// At most one live update per interval, only when something changed.
     pub interval: Span,
     /// Per run: `"0.50 usd"` or `"200k tokens"`.
@@ -314,9 +334,9 @@ pub struct NotificationSettings {
     pub bell: bool,
     /// An OS notification when something needs you and the app isn't focused.
     pub os: bool,
-    /// Only your global config may set it, since a repo could otherwise make Argonauts run a
+    /// Only your global config may set it, since a repo could otherwise make Argonauts Code run a
     /// program of its choosing.
-    pub chat: ChatSink,
+    pub conversation: ConversationSink,
 }
 
 impl Default for NotificationSettings {
@@ -324,30 +344,30 @@ impl Default for NotificationSettings {
         Self {
             bell: true,
             os: true,
-            chat: ChatSink::default(),
+            conversation: ConversationSink::default(),
         }
     }
 }
 
-/// A chat message sent through a command you set, such as `hermes send` or
+/// A message sent to you through a command you set, such as `hermes send` or
 /// `openclaw message send`. The app runs it as an argument vector with no shell. The text is a
 /// fixed template with ids and a link, and never holds agent text or a one-time code.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
-pub struct ChatSink {
+pub struct ConversationSink {
     /// An absolute program and its arguments, with `{text}` as one whole element. Empty is off.
     pub command: Vec<String>,
-    pub on: Vec<ChatTrigger>,
+    pub on: Vec<ConversationTrigger>,
 }
 
-impl Default for ChatSink {
+impl Default for ConversationSink {
     fn default() -> Self {
         Self {
             command: Vec::new(),
             on: vec![
-                ChatTrigger::NeedsYou,
-                ChatTrigger::Finished,
-                ChatTrigger::VendorDown,
+                ConversationTrigger::NeedsYou,
+                ConversationTrigger::Finished,
+                ConversationTrigger::AgentDown,
             ],
         }
     }
@@ -355,10 +375,9 @@ impl Default for ChatSink {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum ChatTrigger {
+pub enum ConversationTrigger {
     NeedsYou,
     Finished,
     /// An agent's CLI went down.
-    #[serde(rename = "agent_down")]
-    VendorDown,
+    AgentDown,
 }

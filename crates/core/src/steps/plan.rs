@@ -1,4 +1,4 @@
-//! Planning steps: drafts, the map, critique, revision, spikes, judging, and cards.
+//! Planning steps: drafts, the map, critique, revision, experiments, judging, and tasks.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -25,15 +25,15 @@ impl Step for Draft {
     type Output = PlanDraft;
 }
 
-/// What a drafter sees. Never another drafter's work.
+/// What a drafting agent sees. Never another drafting agent's work.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct DraftInput {
     pub goal: GoalBrief,
     pub notes: Vec<String>,
     pub decisions: Vec<String>,
-    /// The status summary, filtered for drafters.
+    /// The status summary, filtered for drafting agents.
     pub status: String,
-    /// Who may own and who may review the plan's cards, so its pieces suit the crew.
+    /// Who may build and who may review the plan's tasks, so its pieces suit the crew.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub crew: Vec<String>,
 }
@@ -75,7 +75,7 @@ pub struct PlanChoice {
     pub rationale: String,
 }
 
-/// A plan under its anonymous label, as judges and the mapper see it.
+/// A plan under its anonymous label, as judges and the mapping agent see it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct LabeledPlan {
     /// 1 to N.
@@ -84,7 +84,7 @@ pub struct LabeledPlan {
     pub text: String,
 }
 
-/// The mapper aligns drafts by topic, quoting each one.
+/// The mapping agent aligns drafts by topic, quoting each one.
 pub struct Map;
 
 impl Step for Map {
@@ -162,11 +162,11 @@ pub struct CritiquePoint {
 pub enum Severity {
     Low,
     Medium,
-    /// Blocks the plan or the card.
+    /// Blocks the plan or the task.
     High,
 }
 
-/// One revision round. Resumes the drafter's own session.
+/// One revision round. Resumes the drafting agent's own session.
 pub struct Revise;
 
 impl Step for Revise {
@@ -183,36 +183,36 @@ pub struct ReviseInput {
 }
 
 /// Proposes one small experiment per remaining dispute.
-pub struct ProposeSpike;
+pub struct ProposeExperiment;
 
-impl Step for ProposeSpike {
-    const NAME: StepName = StepName::ProposeSpike;
-    type Input = ProposeSpikeInput;
-    type Output = SpikeProposals;
+impl Step for ProposeExperiment {
+    const NAME: StepName = StepName::ProposeExperiment;
+    type Input = ProposeExperimentInput;
+    type Output = ExperimentProposals;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct ProposeSpikeInput {
+pub struct ProposeExperimentInput {
     /// Topics still disputed after revision.
     pub disputed: Vec<MapTopic>,
-    pub budget_usd: f64,
-    /// Time box per spike, in minutes.
+    pub limit_usd: f64,
+    /// Time box per experiment, in minutes.
     pub time_box_min: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct SpikeProposals {
+pub struct ExperimentProposals {
     /// One per testable dispute. Untestable ones are left out.
-    pub proposals: Vec<SpikeProposal>,
+    pub proposals: Vec<ExperimentProposal>,
 }
 
-/// One experiment. Code checks it against the spike budget.
+/// One experiment. Code checks it against the experiment limit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct SpikeProposal {
+pub struct ExperimentProposal {
     pub topic: String,
     pub question: String,
     /// The options to build, usually two.
-    pub options: Vec<SpikeOption>,
+    pub options: Vec<ExperimentOption>,
     /// What to measure, such as "p50 latency and counters after a restart".
     pub measure: String,
     pub decides_by: String,
@@ -223,23 +223,23 @@ pub struct SpikeProposal {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct SpikeOption {
+pub struct ExperimentOption {
     /// Such as "Redis".
     pub label: String,
     pub build: String,
 }
 
-pub struct SpikeReportStep;
+pub struct ExperimentReportStep;
 
-impl Step for SpikeReportStep {
-    const NAME: StepName = StepName::SpikeReport;
-    type Input = SpikeProposal;
-    type Output = SpikeReport;
+impl Step for ExperimentReportStep {
+    const NAME: StepName = StepName::ExperimentReport;
+    type Input = ExperimentProposal;
+    type Output = ExperimentReport;
 }
 
-/// What one spike option measured.
+/// What one experiment option measured.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct SpikeReport {
+pub struct ExperimentReport {
     pub topic: String,
     pub option: String,
     pub measurements: Vec<Measurement>,
@@ -272,7 +272,7 @@ pub struct JudgeInput {
     pub rubric: Vec<RubricCriterion>,
     /// Plans in presentation order. Never the judge's own.
     pub plans: Vec<LabeledPlan>,
-    pub spikes: Vec<SpikeReport>,
+    pub experiments: Vec<ExperimentReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -301,72 +301,72 @@ pub struct PlanScore {
 }
 
 /// Turns the chosen plan into a task graph proposal. Code builds and checks the graph.
-pub struct PlanToCards;
+pub struct PlanToTasks;
 
-impl Step for PlanToCards {
-    const NAME: StepName = StepName::PlanToCards;
-    type Input = PlanToCardsInput;
+impl Step for PlanToTasks {
+    const NAME: StepName = StepName::PlanToTasks;
+    type Input = PlanToTasksInput;
     type Output = TaskGraphProposal;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct PlanToCardsInput {
+pub struct PlanToTasksInput {
     pub goal: GoalBrief,
     pub plan: PlanDraft,
     pub decisions: Vec<String>,
-    /// Paths no card may own.
+    /// Paths no task may own.
     pub forbidden_paths: Vec<String>,
     pub max_tasks: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskGraphProposal {
-    pub cards: Vec<CardProposal>,
+    pub tasks: Vec<TaskProposal>,
 }
 
-/// Keys are local to the proposal; code assigns card ids.
+/// Keys are local to the proposal; code assigns task ids.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct CardProposal {
+pub struct TaskProposal {
     /// A short unique key, such as `store`.
     pub key: String,
     pub title: String,
-    /// The task text the owner gets.
+    /// The task text the worker gets.
     pub task: String,
     pub kind: ProposedKind,
     pub owned_paths: Vec<String>,
     /// Paths it reads but must not edit, such as frozen interfaces.
     pub read_only_paths: Vec<String>,
-    /// Keys of cards it needs first.
+    /// Keys of tasks it needs first.
     pub depends_on: Vec<String>,
     /// Goal criteria it serves, `G1`.
     pub criteria: Vec<String>,
 }
 
-/// Test cards are added by code, one per build card.
+/// Test tasks are added by code, one per build task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProposedKind {
     /// Interfaces with stubs that compile and fail "not implemented".
     Interface,
     Build,
-    /// Integration or cleanup work.
+    /// Merge or cleanup work.
     Chore,
     Docs,
 }
 
-/// The coordinator plans and delegates in one structured output (`orchestrator`).
-pub struct Coordinate;
+/// The orchestrator plans and delegates in one structured output (`orchestrator`).
+pub struct Orchestrate;
 
-impl Step for Coordinate {
-    const NAME: StepName = StepName::Coordinate;
-    type Input = CoordinateInput;
-    type Output = CoordinateOutput;
+impl Step for Orchestrate {
+    const NAME: StepName = StepName::Orchestrate;
+    type Input = OrchestrateInput;
+    type Output = OrchestrateOutput;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct CoordinateInput {
+pub struct OrchestrateInput {
     pub goal: GoalBrief,
-    /// Workers it may assign, as `worker/model` with their families.
+    /// Models it may assign, as `agent/model` with their providers.
     pub crew: Vec<String>,
     /// The rules code will check its output against.
     pub rules: Vec<String>,
@@ -374,18 +374,18 @@ pub struct CoordinateInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct CoordinateOutput {
+pub struct OrchestrateOutput {
     pub plan: PlanDraft,
-    pub cards: Vec<CardProposal>,
+    pub tasks: Vec<TaskProposal>,
     pub assignments: Vec<Assignment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Assignment {
-    /// The card key.
-    pub card: String,
-    /// `worker/model`.
-    pub owner: String,
-    /// `worker/model` each.
+    /// The task key.
+    pub task: String,
+    /// `agent/model`.
+    pub worker: String,
+    /// `agent/model` each.
     pub reviewers: Vec<String>,
 }

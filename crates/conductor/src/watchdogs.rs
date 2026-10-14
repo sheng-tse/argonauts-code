@@ -1,5 +1,5 @@
 //! The watchdogs inside every session: inactivity (no events, no output, and no CPU in the
-//! process tree), the same tool call repeated, a stall with no heartbeat, and a harness's own
+//! process tree), the same tool call repeated, a stall with no heartbeat, and a CLI's own
 //! subagents past the fan-out cap where only counting can enforce it (agy).
 
 use std::collections::{HashMap, HashSet};
@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use argonauts_core::AgentEvent;
 use argonauts_core::events::session::{SubagentStatus, SubagentUpdate, Watchdog};
-use argonauts_core::worker::SessionLimits;
+use argonauts_core::session_runner::SessionLimits;
 use serde_json::Value;
 
 /// How late a heartbeat may be before the silence counts as a stall.
@@ -73,7 +73,7 @@ struct Streak {
 }
 
 impl Watchdogs {
-    /// `fanout_cap` is set only where the conductor enforces the cap by counting.
+    /// `fanout_cap` is set only where Argonauts Code enforces the cap by counting.
     pub fn new(limits: &SessionLimits, fanout_cap: Option<u32>) -> Self {
         Self {
             limits: limits.clone(),

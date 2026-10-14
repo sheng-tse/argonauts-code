@@ -9,10 +9,10 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::kit::Drawn;
 use crate::text::{ambiguous_width, spans_width, width_with};
-use crate::widgets::Drawn;
 
-/// Every view and card is checked at these widths.
+/// Every view and question is checked at these widths.
 pub const WIDTHS: [u16; 6] = [40, 60, 80, 100, 120, 200];
 
 /// Glyphs that are ambiguous or that some fonts draw as emoji. `ui.glyphs = "ascii"` keeps them
@@ -193,7 +193,7 @@ pub fn check_block_meters(meters: &[Rect]) -> Vec<FrameIssue> {
     issues
 }
 
-/// Checks what a widget drew: its rows, as [`check_lines`] does, and its block meters.
+/// Checks what a mod drew: its rows, as [`check_lines`] does, and its block meters.
 pub fn check_drawn(drawn: &Drawn, width: u16) -> Vec<FrameIssue> {
     let mut issues = check_lines(&drawn.lines, width);
     issues.extend(check_block_meters(&drawn.meters));

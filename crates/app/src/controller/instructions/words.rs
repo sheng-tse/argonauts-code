@@ -2,7 +2,9 @@
 //! ask you first or loosen what asks you. Code reads them, never a model.
 
 use argonauts_core::input::EFFORT_LEVELS;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
+
+use super::request_words::FOR_WHAT_ROLES_DO;
 
 /// An effort level from what a request says, such as "max effort" or "extra high".
 pub(super) fn effort_level(text: &str) -> Option<String> {
@@ -64,7 +66,7 @@ fn ideograph(c: char) -> bool {
 }
 
 /// Where `says` stands in your message word for word, as the place of its first word. It
-/// takes two words at least, so a lone "the" or "solo" picked out of your message can't stand
+/// takes two words at least, so a lone "the" or "captain" picked out of your message can't stand
 /// for an instruction.
 pub(super) fn quoted_at(message: &[String], says: &[String]) -> Option<usize> {
     if says.len() < 2 {
@@ -82,11 +84,9 @@ const NEGATIONS: [&str; 16] = [
 ];
 
 /// The verbs of the roles an instruction gives.
-const ROLE_VERBS: [&str; 14] = [
-    "lead",
-    "leads",
-    "coordinate",
-    "coordinates",
+const ROLE_VERBS: [&str; 12] = [
+    "orchestrate",
+    "orchestrates",
     "build",
     "builds",
     "review",
@@ -107,7 +107,9 @@ pub(super) fn turned_around(says: &str, names: &[&str]) -> bool {
         .any(|clause| {
             let words = tokens(clause);
             words.iter().enumerate().any(|(at, word)| {
-                (names.contains(word) || ROLE_VERBS.contains(&word.as_str())) && negated(&words, at)
+                let role_verb = ROLE_VERBS.contains(&word.as_str())
+                    || FOR_WHAT_ROLES_DO.contains(&word.as_str());
+                (names.contains(word) || role_verb) && negated(&words, at)
             })
         })
 }
@@ -117,14 +119,14 @@ pub(super) fn turned_around(says: &str, names: &[&str]) -> bool {
 pub(super) enum Stance {
     /// Only for it.
     For,
-    /// Against it somewhere, such as "not solo", or for its opposite.
+    /// Against it somewhere, such as "not Captain", or for its opposite.
     Against,
     /// Neither.
     Silent,
 }
 
 /// What `says` makes of something that `cues` name and `opposite` names the other side of. A
-/// cue counts for it, and the same cue after a negation in its clause ("not solo", "don't do
+/// cue counts for it, and the same cue after a negation in its clause ("not Captain", "don't do
 /// this alone") against it; the opposite's cues count the other way round.
 pub(super) fn stance(says: &str, cues: &[&str], opposite: &[&str]) -> Stance {
     let (mut pro, mut con) = (false, false);
@@ -421,7 +423,7 @@ pub(super) fn toml_text(text: &str) -> String {
     toml::Value::String(text.to_owned()).to_string()
 }
 
-pub(super) fn toml_list(workers: &[WorkerRef]) -> String {
+pub(super) fn toml_list(workers: &[ModelRef]) -> String {
     let items: Vec<String> = workers
         .iter()
         .map(|worker| toml_text(&worker.to_string()))

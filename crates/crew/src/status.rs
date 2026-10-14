@@ -3,11 +3,11 @@
 
 use std::fmt::Write as _;
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::api::StatusSummary;
 use argonauts_core::events::RunEvent;
 use argonauts_core::names::{PlanLabel, RoleName};
-use argonauts_core::settings::budget::BudgetUnit;
+use argonauts_core::settings::limit::LimitUnit;
 
 pub mod files;
 pub mod folder;
@@ -20,7 +20,7 @@ pub enum Viewer {
     User,
     Session {
         role: RoleName,
-        card: Option<CardId>,
+        task: Option<TaskId>,
         /// Set while drafts are sealed.
         label: Option<PlanLabel>,
     },
@@ -62,26 +62,26 @@ pub fn render(summary: &StatusSummary) -> String {
     section(
         &mut out,
         "Tasks",
-        summary.cards.iter().map(|card| {
+        summary.tasks.iter().map(|task| {
             let mut row = format!(
                 "{} [{}] {}",
-                card.card,
-                folder::words(&card.state),
-                card.title
+                task.task,
+                folder::words(&task.state),
+                task.title
             );
-            if let Some(owner) = &card.owner {
-                let _ = write!(row, " · {owner}");
+            if let Some(worker) = &task.worker {
+                let _ = write!(row, " · {worker}");
             }
-            if !card.note.is_empty() {
-                let _ = write!(row, " · {}", card.note);
+            if !task.note.is_empty() {
+                let _ = write!(row, " · {}", task.note);
             }
             row
         }),
     );
     section(&mut out, "Recent", summary.recent.iter().cloned());
-    if let Some(budget) = &summary.budget {
-        let spent = format!("${:.2}", budget.spent.cost_usd);
-        let line = match &budget.limit {
+    if let Some(spend) = &summary.spend {
+        let spent = format!("${:.2}", spend.spent.cost_usd);
+        let line = match &spend.limit {
             Some(limit) => format!("{spent} of {}", amount(limit.unit, limit.amount)),
             None => spent,
         };
@@ -89,13 +89,17 @@ pub fn render(summary: &StatusSummary) -> String {
     }
     section(
         &mut out,
-        "Quotas",
-        summary.quotas.iter().map(|quota| {
-            let mut row = format!("{} {}", quota.vendor, folder::words(&quota.status));
-            if let Some(used) = quota.used {
+        "PlanUsages",
+        summary.plan_windows.iter().map(|plan_usage| {
+            let mut row = format!(
+                "{} {}",
+                plan_usage.agent_id,
+                folder::words(&plan_usage.status)
+            );
+            if let Some(used) = plan_usage.used {
                 let _ = write!(row, ", {:.0}% used", used * 100.0);
             }
-            if let Some(window) = &quota.window {
+            if let Some(window) = &plan_usage.window {
                 let _ = write!(row, " ({window})");
             }
             row
@@ -116,21 +120,21 @@ fn section(out: &mut String, title: &str, rows: impl Iterator<Item = String>) {
     }
 }
 
-fn amount(unit: BudgetUnit, amount: f64) -> String {
+fn amount(unit: LimitUnit, amount: f64) -> String {
     match unit {
-        BudgetUnit::Usd => format!("${amount:.2}"),
-        BudgetUnit::Tokens => format!("{amount:.0} tokens"),
-        BudgetUnit::Quota => format!("{:.0}% of the plan usage window", amount * 100.0),
-        BudgetUnit::Minutes => format!("{amount:.0} minutes"),
+        LimitUnit::Usd => format!("${amount:.2}"),
+        LimitUnit::Tokens => format!("{amount:.0} tokens"),
+        LimitUnit::PlanUsage => format!("{:.0}% of the plan usage window", amount * 100.0),
+        LimitUnit::Minutes => format!("{amount:.0} minutes"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use argonauts_core::RunId;
-    use argonauts_core::api::CardBrief;
-    use argonauts_core::events::card::CardState;
-    use argonauts_core::names::{DecisionId, WorkerRef};
+    use argonauts_core::api::TaskBrief;
+    use argonauts_core::events::task::TaskState;
+    use argonauts_core::names::{DecisionId, ModelRef};
 
     use super::*;
 
@@ -144,14 +148,14 @@ mod tests {
             ],
             plan: Some("Redis counters behind auth".to_owned()),
             decisions: vec![(DecisionId::numbered(1), "Store: Redis".to_owned())],
-            cards: vec![CardBrief {
-                card: CardId::new("task-002").unwrap(),
+            tasks: vec![TaskBrief {
+                task: TaskId::new("task-002").unwrap(),
                 title: "The Redis store".to_owned(),
-                state: CardState::Running,
-                owner: Some(WorkerRef::new("codex", None)),
+                state: TaskState::Running,
+                worker: Some(ModelRef::new("codex", None)),
                 note: String::new(),
             }],
-            recent: vec!["task-001 merged into the integration branch".to_owned()],
+            recent: vec!["task-001 merged into the run branch".to_owned()],
             waiting: vec!["Merge this run into main?".to_owned()],
             ..StatusSummary::default()
         };
@@ -162,7 +166,7 @@ mod tests {
         assert!(text.contains("  D-001 Store: Redis\n"));
         assert!(text.contains("  task-002 [running] The Redis store · codex\n"));
         assert!(text.contains("\nWaiting on you:\n  Merge this run into main?\n"));
-        assert!(!text.contains("Quotas"));
+        assert!(!text.contains("PlanUsages"));
         assert_eq!(render(&StatusSummary::default()), "No run is going.\n");
     }
 }

@@ -1,5 +1,5 @@
 //! `!` shell mode in the real app: the command runs in the repo, its output shows in the
-//! transcript, and the lead gets both with your next message.
+//! transcript, and the main agent gets both with your next message.
 
 mod app_support;
 
@@ -23,7 +23,7 @@ fn app_shell_mode_runs_echo_hi() -> anyhow::Result<()> {
     let mut pty = start(&scenario)?;
     pty.wait_for(r"Argonauts Code v?\d+\.\d+\.\d+", WAIT)?;
 
-    check_mode_line(&pty)?;
+    check_bottom_row(&pty)?;
     pty.send("!")?;
     pty.wait_for("! for shell mode", WAIT)?;
     pty.send("echo hi")?;
@@ -80,7 +80,7 @@ fn app_shell_mode_runs_echo_hi() -> anyhow::Result<()> {
         "{ends:?}"
     );
 
-    // Back in message mode, the lead gets the command and its output with the next message.
+    // Back in message mode, the main agent gets the command and its output with the next message.
     pty.wait_for(r"shift\+tab to cycle", WAIT)?;
     submit(&mut pty, requests::HI)?;
     wait_turns_finished(&scenario, 1)?;

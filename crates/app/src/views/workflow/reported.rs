@@ -6,7 +6,7 @@
 //! The view shows the reported phases in place of the step's one phase, so what you see is the
 //! workflow that runs, whatever it is called and however many phases it has.
 
-use argonauts_core::events::session::{VendorAgent, VendorAgentState, VendorWorkflow};
+use argonauts_core::events::session::{CliAgent, CliAgentState, CliWorkflowRun};
 use argonauts_core::names::{SessionKey, WorkflowId};
 use argonauts_core::views::{AgentRow, PhaseCount, PhaseRow, RowStatus, WorkflowRow};
 use argonauts_core::workflow::{StandardPhase, StepRef};
@@ -17,9 +17,9 @@ use crate::views::sessions::{RunFacts, SessionFacts};
 pub(super) struct StepWorkflow {
     /// The step that runs it.
     pub step: StepRef,
-    pub workflow: VendorWorkflow,
+    pub workflow: CliWorkflowRun,
     /// The session behind each agent that has one yet, by the agent's index in the report.
-    pub seats: Vec<(u32, SessionKey)>,
+    pub agent_sessions: Vec<(u32, SessionKey)>,
 }
 
 /// What a reported workflow adds to the view of the workflow whose step runs it.
@@ -42,7 +42,7 @@ impl StepWorkflow {
     /// under the same label, which the newer session stands for.
     pub fn holds(&self, row: &AgentRow) -> bool {
         let label = row.label.trim();
-        self.seats
+        self.agent_sessions
             .iter()
             .any(|(_, session)| *session == row.session)
             || (!label.is_empty()
@@ -54,13 +54,13 @@ impl StepWorkflow {
     }
 
     /// The agent's row once it has a session, under the label the workflow gave it.
-    fn row(&self, agent: &VendorAgent, sessions: &RunFacts) -> Option<AgentRow> {
-        let seated = self
-            .seats
+    fn row(&self, agent: &CliAgent, sessions: &RunFacts) -> Option<AgentRow> {
+        let by_index = self
+            .agent_sessions
             .iter()
             .find(|(index, _)| *index == agent.index)
             .and_then(|(_, session)| sessions.session(session));
-        let facts = seated.or_else(|| self.under_label(agent, sessions))?;
+        let facts = by_index.or_else(|| self.under_label(agent, sessions))?;
         let mut row = sessions.agent_row(facts);
         if !agent.label.trim().is_empty() {
             row.label.clone_from(&agent.label);
@@ -69,11 +69,11 @@ impl StepWorkflow {
     }
 
     /// The step's newest session under the agent's label. A report sent before the agent's
-    /// session started names no seat for it yet, and the runner reports again only when the
+    /// session started names no session for it yet, and the runner reports again only when the
     /// agent ends, so until then its label is how its session is known.
     fn under_label<'a>(
         &self,
-        agent: &VendorAgent,
+        agent: &CliAgent,
         sessions: &'a RunFacts,
     ) -> Option<&'a SessionFacts> {
         let label = agent.label.trim();
@@ -90,7 +90,7 @@ impl StepWorkflow {
     /// of the workflow it runs shares.
     pub fn rows(&self, sessions: &RunFacts, standard: StandardPhase) -> Reported {
         let workflow = &self.workflow;
-        let declared = |agent: &VendorAgent| {
+        let declared = |agent: &CliAgent| {
             agent
                 .phase
                 .is_some_and(|index| workflow.phases.iter().any(|phase| phase.index == index))
@@ -105,7 +105,7 @@ impl StepWorkflow {
             .phases
             .iter()
             .map(|phase| {
-                let agents: Vec<(&VendorAgent, Option<AgentRow>)> = workflow
+                let agents: Vec<(&CliAgent, Option<AgentRow>)> = workflow
                     .agents_in(phase.index)
                     .map(|agent| (agent, self.row(agent, sessions)))
                     .collect();
@@ -121,7 +121,7 @@ impl StepWorkflow {
                     detail: phase.detail.clone(),
                     standard,
                     status,
-                    attempt: None,
+                    try_number: None,
                     count: workflow
                         .count(phase.index)
                         .and_then(|(done, total)| PhaseCount::of(done, total)),
@@ -129,13 +129,14 @@ impl StepWorkflow {
                         .into_iter()
                         .filter_map(|(_, row)| row.map(WorkflowRow::Agent))
                         .collect(),
+                    note: None,
                 }
             })
             .collect();
         let done = workflow
             .agents
             .iter()
-            .filter(|agent| agent.state == VendorAgentState::Done)
+            .filter(|agent| agent.state == CliAgentState::Done)
             .count();
         Reported {
             loose,
@@ -148,16 +149,17 @@ impl StepWorkflow {
 
 /// Where a phase stands by its agents. One with a session goes by what its session says,
 /// which knows when it waits for you; one still queued has only the report's word.
-fn phase_status(agents: &[(&VendorAgent, Option<AgentRow>)]) -> RowStatus {
+fn phase_status(agents: &[(&CliAgent, Option<AgentRow>)]) -> RowStatus {
     let statuses: Vec<RowStatus> = agents
         .iter()
         .map(|(agent, row)| match row {
             Some(row) => row.status,
             None => match agent.state {
-                VendorAgentState::Queued => RowStatus::Queued,
-                VendorAgentState::Running | VendorAgentState::Other => RowStatus::Running,
-                VendorAgentState::Done => RowStatus::Done,
-                VendorAgentState::Failed => RowStatus::Failed,
+                CliAgentState::Queued => RowStatus::Queued,
+                CliAgentState::Running | CliAgentState::Other => RowStatus::Running,
+                CliAgentState::Done => RowStatus::Done,
+                CliAgentState::Failed | CliAgentState::Blocked => RowStatus::Failed,
+                CliAgentState::Skipped => RowStatus::Skipped,
             },
         })
         .collect();
@@ -173,8 +175,13 @@ fn phase_status(agents: &[(&VendorAgent, Option<AgentRow>)]) -> RowStatus {
     } else if any(RowStatus::Queued) {
         // Between two of its agents.
         RowStatus::Running
-    } else if all(RowStatus::Failed) {
+    } else if any(RowStatus::Failed) {
+        // As Claude Code marks a phase: nobody is at work, and one of its agents failed.
         RowStatus::Failed
+    } else if any(RowStatus::Paused) || any(RowStatus::Skipped) {
+        // Held with its work kept, or stopped part-way: the phase isn't over, and nothing
+        // in it failed.
+        RowStatus::Paused
     } else {
         RowStatus::Done
     }
@@ -183,7 +190,7 @@ fn phase_status(agents: &[(&VendorAgent, Option<AgentRow>)]) -> RowStatus {
 #[cfg(test)]
 mod tests {
     use argonauts_core::events::session::{
-        EndReason, SessionEvent, SubagentStatus, VendorPhase, VendorWorkflow,
+        CliPhase, CliWorkflowRun, EndReason, SessionEvent, SubagentStatus,
     };
     use argonauts_core::events::workflow::{WorkflowEvent, WorkflowStarted};
     use argonauts_core::events::{RunEvent, RunEventKind};
@@ -231,7 +238,7 @@ mod tests {
     }
 
     /// A session the Work step started, under `label`.
-    fn seated(seq: u64, session: u32, label: &str) -> RunEvent {
+    fn started_as(seq: u64, session: u32, label: &str) -> RunEvent {
         let key = SessionKey::numbered(session);
         let mut event = session_started(seq, &key, None, RoleName::Worker, "codex");
         if let RunEventKind::Session(SessionEvent::Started(started)) = &mut event.kind {
@@ -246,9 +253,9 @@ mod tests {
     fn report(
         name: &str,
         phases: &[&str],
-        agents: &[(&str, Option<u32>, VendorAgentState)],
-    ) -> VendorWorkflow {
-        VendorWorkflow {
+        agents: &[(&str, Option<u32>, CliAgentState)],
+    ) -> CliWorkflowRun {
+        CliWorkflowRun {
             id: "steps".into(),
             call: None,
             name: name.into(),
@@ -256,7 +263,7 @@ mod tests {
             phases: phases
                 .iter()
                 .zip(1..)
-                .map(|(title, index)| VendorPhase {
+                .map(|(title, index)| CliPhase {
                     index,
                     title: (*title).to_owned(),
                     detail: String::new(),
@@ -265,7 +272,7 @@ mod tests {
             agents: agents
                 .iter()
                 .zip(1..)
-                .map(|((label, phase, state), index)| VendorAgent {
+                .map(|((label, phase, state), index)| CliAgent {
                     index,
                     label: (*label).to_owned(),
                     phase: *phase,
@@ -275,9 +282,10 @@ mod tests {
                     tool_calls: 0,
                     duration_ms: 0,
                     started_at_ms: None,
-                    attempt: 1,
+                    try_number: 1,
                     prompt: None,
                     result: None,
+                    ..CliAgent::default()
                 })
                 .collect(),
             status: SubagentStatus::Running,
@@ -289,14 +297,18 @@ mod tests {
         }
     }
 
-    /// The run's view once the runner reported `workflow`, with `seats` behind its agents.
-    fn view(events: &[RunEvent], workflow: &VendorWorkflow, seats: &[(u32, u32)]) -> WorkflowView {
+    /// The run's view once the runner reported `workflow`, with `sessions` behind its agents.
+    fn view(
+        events: &[RunEvent],
+        workflow: &CliWorkflowRun,
+        sessions: &[(u32, u32)],
+    ) -> WorkflowView {
         let mut log = WorkflowLog::of(events);
-        let seats = seats
+        let sessions = sessions
             .iter()
             .map(|(agent, session)| (*agent, SessionKey::numbered(*session)))
             .collect();
-        log.note_report(&work(), workflow, seats);
+        log.note_report(&work(), workflow, sessions);
         view_from(&log, events, &run_id(), None).unwrap()
     }
 
@@ -318,7 +330,44 @@ mod tests {
             .collect()
     }
 
-    use VendorAgentState::{Done, Queued, Running};
+    use CliAgentState::{Done, Failed, Queued, Running};
+
+    /// A phase is done only when every one of its agents ended well, as Claude Code marks
+    /// it. With one that failed and nobody at work, it reads as failed, however many others
+    /// finished.
+    #[test]
+    fn a_phase_with_an_agent_that_failed_isnt_done() {
+        let events = [run_started()];
+        let workflow = report(
+            "council",
+            &["Propose", "Challenge"],
+            &[
+                ("plan", Some(1), Done),
+                ("propose:w0", Some(1), Failed),
+                ("propose:w1", Some(1), Done),
+                ("challenge:w0", Some(2), Done),
+            ],
+        );
+        let shown = view(&events, &workflow, &[]);
+        let propose = &shown.phases[0];
+        assert_eq!(propose.status, RowStatus::Failed);
+        assert_eq!(propose.count, PhaseCount::of(2, 3));
+        assert_eq!(shown.phases[1].status, RowStatus::Done);
+    }
+
+    /// An agent that was stopped part-way is no failure and no ending: its phase is neither
+    /// ticked nor crossed, and keeps its number.
+    #[test]
+    fn a_phase_with_a_stopped_agent_isnt_over() {
+        let events = [
+            run_started(),
+            started_as(1, 1, "build:store"),
+            session_ended(2, &SessionKey::numbered(1), EndReason::Stopped, 1_000),
+        ];
+        let workflow = report("steps", &["Build"], &[("build:store", Some(1), Running)]);
+        let shown = view(&events, &workflow, &[(1, 1)]);
+        assert_eq!(shown.phases[0].status, RowStatus::Paused);
+    }
 
     /// A sample moment: the orchestrator wrote the steps, one builder is done, one
     /// builds, one waits its turn, and the reviewers haven't started.
@@ -326,11 +375,11 @@ mod tests {
     fn the_view_shows_the_phases_of_the_workflow_a_step_runs() {
         let events = vec![
             run_started(),
-            seated(1, 1, "plan:orchestrator"),
+            started_as(1, 1, "plan:orchestrator"),
             session_ended(2, &SessionKey::numbered(1), EndReason::Completed, 1_000),
-            seated(3, 2, "build:store"),
+            started_as(3, 2, "build:store"),
             session_ended(4, &SessionKey::numbered(2), EndReason::Completed, 1_000),
-            seated(5, 3, "build:cli"),
+            started_as(5, 3, "build:cli"),
         ];
         let workflow = report(
             "add-due-dates",
@@ -346,15 +395,13 @@ mod tests {
         let view = view(&events, &workflow, &[(1, 2), (2, 3)]);
 
         // The workflow's own phases in its order are the view's: no phase of
-        // the run's own around them. The agent that wrote the steps goes first in the first.
+        // the run's own around them. The agent that wrote the steps is none of its agents, so
+        // it is no row of theirs.
         assert_eq!(names(&view), ["Build", "Review"]);
         let [build, review] = view.phases.as_slice() else {
             panic!("two phases");
         };
-        assert_eq!(
-            labels(build),
-            ["plan:orchestrator", "build:store", "build:cli"]
-        );
+        assert_eq!(labels(build), ["build:store", "build:cli"]);
 
         // An agent has a row once it has a session, and the count knows the ones that wait.
         assert_eq!(build.count, PhaseCount::of(1, 3));
@@ -363,23 +410,31 @@ mod tests {
         assert_eq!(review.count, PhaseCount::of(0, 2));
         assert_eq!(review.status, RowStatus::Waiting);
 
-        // Only the workflow's own five count.
+        // Only the workflow's own five count, and the header's count is its phases' added up.
         assert_eq!((view.agents_done, view.agents_total), (1, 5));
+        let added_up = view
+            .phases
+            .iter()
+            .filter_map(|phase| phase.count)
+            .fold((0, 0), |(done, total), count| {
+                (done + count.done, total + count.total)
+            });
+        assert_eq!(added_up, (1, 5));
         // An unnamed run goes by the name of the workflow it runs.
         assert_eq!(view.name, "add-due-dates");
         assert_eq!(view.description, "what the workflow does");
     }
 
-    /// The runner reports an agent as running before its session starts, and names its seat
+    /// The runner reports an agent as running before its session starts, and names its session
     /// only in a later report. Until then the agent's label finds its session, so the phase
     /// shows who works in it.
     #[test]
-    fn an_agent_whose_seat_isnt_reported_yet_is_found_by_its_label() {
+    fn an_agent_whose_session_isnt_reported_yet_is_found_by_its_label() {
         let events = vec![
             run_started(),
-            seated(1, 1, "plan:orchestrator"),
+            started_as(1, 1, "plan:orchestrator"),
             session_ended(2, &SessionKey::numbered(1), EndReason::Completed, 1_000),
-            seated(3, 2, "build:rate-limit"),
+            started_as(3, 2, "build:rate-limit"),
         ];
         let workflow = report(
             "rate-limit-per-key",
@@ -390,7 +445,7 @@ mod tests {
         let [build, _review] = view.phases.as_slice() else {
             panic!("two phases");
         };
-        assert_eq!(labels(build), ["plan:orchestrator", "build:rate-limit"]);
+        assert_eq!(labels(build), ["build:rate-limit"]);
         assert_eq!(build.status, RowStatus::Running);
     }
 
@@ -398,7 +453,7 @@ mod tests {
     /// workflow's own order, each agent in the phase it was put in.
     #[test]
     fn whatever_phases_the_workflow_reports_are_the_views() {
-        let events = vec![run_started(), seated(1, 1, "translate:changelog")];
+        let events = vec![run_started(), started_as(1, 1, "translate:changelog")];
         let one = report(
             "translate",
             &["Translate the changelog"],
@@ -413,7 +468,7 @@ mod tests {
             "Proof", "Typeset", "Package", "Announce",
         ];
         // The agent sits in the second Draft, the fifth phase, not the first of that name.
-        let events = vec![run_started(), seated(1, 1, "draft:two")];
+        let events = vec![run_started(), started_as(1, 1, "draft:two")];
         let paper = report(
             "write-the-paper",
             &twelve,
@@ -445,7 +500,7 @@ mod tests {
         // It gave no name either, so the run's own stands.
         assert_eq!(shown.name, "script");
 
-        let events = vec![run_started(), seated(1, 1, "scout")];
+        let events = vec![run_started(), started_as(1, 1, "scout")];
         let loose = report("warming-up", &[], &[("scout", None, Running)]);
         let shown = view(&events, &loose, &[(1, 1)]);
         assert_eq!(names(&shown), ["Work", "Merge"]);
@@ -455,8 +510,8 @@ mod tests {
         // A phase it names later takes the agents put in it, and one in none stays.
         let events = vec![
             run_started(),
-            seated(1, 1, "scout"),
-            seated(2, 2, "build:a"),
+            started_as(1, 1, "scout"),
+            started_as(2, 2, "build:a"),
         ];
         let grown = report(
             "warming-up",
@@ -476,7 +531,7 @@ mod tests {
     fn a_retried_agent_is_one_row_and_the_newest_report_stands() {
         let events = vec![
             run_started(),
-            seated(1, 1, "build:cli"),
+            started_as(1, 1, "build:cli"),
             session_ended(
                 2,
                 &SessionKey::numbered(1),
@@ -485,7 +540,7 @@ mod tests {
                 },
                 1_000,
             ),
-            seated(3, 2, "build:cli"),
+            started_as(3, 2, "build:cli"),
         ];
         let mut log = WorkflowLog::of(&events);
         let first = report(
@@ -525,33 +580,30 @@ mod tests {
                 ("review:rate-limit", Some(2), Running),
             ],
         );
-        let seat = |agent: u32, session: u32| AgentSession {
+        let agent_session = |agent: u32, session: u32| AgentSession {
             agent,
             session: SessionKey::numbered(session),
         };
         let events = vec![
             run_started(),
-            seated(1, 1, "plan:orchestrator"),
+            started_as(1, 1, "plan:orchestrator"),
             session_ended(2, &SessionKey::numbered(1), EndReason::Completed, 1_000),
-            seated(3, 2, "build:rate-limit"),
+            started_as(3, 2, "build:rate-limit"),
             session_ended(4, &SessionKey::numbered(2), EndReason::Completed, 1_000),
-            seated(5, 3, "review:rate-limit"),
+            started_as(5, 3, "review:rate-limit"),
             event(
                 6,
                 RunEventKind::Workflow(WorkflowEvent::Reported(Box::new(WorkflowReport {
                     step: work(),
                     workflow,
-                    sessions: vec![seat(1, 2), seat(2, 3)],
+                    sessions: vec![agent_session(1, 2), agent_session(2, 3)],
                     size_asked: None,
                 }))),
             ),
         ];
         let shown = super::super::workflow_view(&events, &run_id(), None).unwrap();
         assert_eq!(names(&shown), ["Build", "Review"]);
-        assert_eq!(
-            labels(&shown.phases[0]),
-            ["plan:orchestrator", "build:rate-limit"]
-        );
+        assert_eq!(labels(&shown.phases[0]), ["build:rate-limit"]);
         assert_eq!(labels(&shown.phases[1]), ["review:rate-limit"]);
         assert_eq!(shown.phases[1].status, RowStatus::Running);
         assert_eq!((shown.agents_done, shown.agents_total), (1, 2));
@@ -563,7 +615,7 @@ mod tests {
     fn a_finished_workflow_marks_the_phases_nothing_ran_in() {
         let events = vec![
             run_started(),
-            seated(1, 1, "build:a"),
+            started_as(1, 1, "build:a"),
             session_ended(2, &SessionKey::numbered(1), EndReason::Completed, 1_000),
         ];
         let mut done = report(

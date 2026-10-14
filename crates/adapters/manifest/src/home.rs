@@ -5,14 +5,14 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, bail};
-use argonauts_core::registry::harness::HomeTemplate;
+use argonauts_core::registry::cli::HomeTemplate;
 use argonauts_core::session::SpecFile;
 
 /// Templates hold config, not data, so anything bigger is a mistake worth stopping on.
 const MAX_FILES: usize = 256;
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 
-/// Written when the template is empty, since the conductor only creates a file's parents and
+/// Written when the template is empty, since Argonauts Code only creates a file's parents and
 /// the home must still exist.
 const KEEP_FILE: &str = ".keep";
 
@@ -111,7 +111,7 @@ fn collect(dir: &Path, prefix: &Path, found: &mut Vec<(PathBuf, PathBuf)>) -> an
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::registry::harness::HomeKeep;
+    use argonauts_core::registry::cli::HomeKeep;
 
     fn template(name: &str) -> HomeTemplate {
         HomeTemplate {

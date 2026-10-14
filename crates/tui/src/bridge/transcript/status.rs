@@ -2,8 +2,8 @@
 
 use argonauts_core::api::StatusSummary;
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::card::CardState;
-use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
+use argonauts_core::events::task::TaskState;
+use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 
 use crate::cell::{Cell, Tone, ToolItem, ToolState};
 use crate::format;
@@ -13,7 +13,7 @@ use super::steps::step;
 /// Recent lines worth showing; the log keeps the rest.
 const RECENT: usize = 5;
 
-/// `● Status(run-06)` with the goal, plan, decisions, cards, recent events, spend, and what
+/// `● Status(run-06)` with the goal, plan, decisions, tasks, recent events, spend, and what
 /// waits for you, each under its own `⎿`.
 pub fn status_cells(summary: &StatusSummary, names: &DisplayNames) -> Vec<Cell> {
     let args = summary
@@ -39,7 +39,7 @@ pub fn status_cells(summary: &StatusSummary, names: &DisplayNames) -> Vec<Cell> 
 /// What a status with no sections says.
 pub const NOTHING_RUNNING: &str = "Nothing running · describe a change to start one";
 
-/// The goal, plan, decisions, cards, recent events, spend, and what waits for you, each a group
+/// The goal, plan, decisions, tasks, recent events, spend, and what waits for you, each a group
 /// of trimmed, non-empty lines. The `/status` view draws the same groups.
 pub fn status_sections(summary: &StatusSummary, names: &DisplayNames) -> Vec<Vec<String>> {
     let mut sections: Vec<Vec<String>> = Vec::new();
@@ -61,18 +61,18 @@ pub fn status_sections(summary: &StatusSummary, names: &DisplayNames) -> Vec<Vec
                 .collect(),
         );
     }
-    if !summary.cards.is_empty() {
+    if !summary.tasks.is_empty() {
         section(
             summary
-                .cards
+                .tasks
                 .iter()
-                .map(|card| {
-                    let mut line = format!("{} {} · {}", card.card, card.title, state(card.state));
-                    if let Some(owner) = &card.owner {
-                        line.push_str(&format!(" · {}", names.worker(owner)));
+                .map(|task| {
+                    let mut line = format!("{} {} · {}", task.task, task.title, state(task.state));
+                    if let Some(worker) = &task.worker {
+                        line.push_str(&format!(" · {}", names.worker(worker)));
                     }
-                    if !card.note.trim().is_empty() {
-                        line.push_str(&format!(" · {}", card.note.trim()));
+                    if !task.note.trim().is_empty() {
+                        line.push_str(&format!(" · {}", task.note.trim()));
                     }
                     line
                 })
@@ -81,9 +81,9 @@ pub fn status_sections(summary: &StatusSummary, names: &DisplayNames) -> Vec<Vec
     }
     let skip = summary.recent.len().saturating_sub(RECENT);
     section(summary.recent.iter().skip(skip).cloned().collect());
-    if let Some(budget) = &summary.budget {
-        let spent = format::spend(&budget.spent);
-        let line = match &budget.limit {
+    if let Some(spend) = &summary.spend {
+        let spent = format::spend(&spend.spent);
+        let line = match &spend.limit {
             Some(limit) => format!("Spent {spent} of {}", amount(limit)),
             None => format!("Spent {spent}"),
         };
@@ -108,30 +108,30 @@ pub fn status_sections(summary: &StatusSummary, names: &DisplayNames) -> Vec<Vec
         .collect()
 }
 
-fn amount(limit: &BudgetAmount) -> String {
+fn amount(limit: &LimitAmount) -> String {
     match limit.unit {
-        BudgetUnit::Usd => format::usd(limit.amount),
-        BudgetUnit::Tokens => format!("{} tokens", format::tokens(limit.amount.max(0.0) as u64)),
-        BudgetUnit::Quota => format!("{:.0}% of plan usage", limit.amount * 100.0),
-        BudgetUnit::Minutes => format!("{:.0} minutes", limit.amount),
+        LimitUnit::Usd => format::usd(limit.amount),
+        LimitUnit::Tokens => format!("{} tokens", format::tokens(limit.amount.max(0.0) as u64)),
+        LimitUnit::PlanUsage => format!("{:.0}% of plan usage", limit.amount * 100.0),
+        LimitUnit::Minutes => format!("{:.0} minutes", limit.amount),
     }
 }
 
-fn state(state: CardState) -> &'static str {
+fn state(state: TaskState) -> &'static str {
     match state {
-        CardState::Waiting => "waiting",
-        CardState::Ready => "ready",
-        CardState::Running => "running",
-        CardState::Blocked => "blocked on a question",
-        CardState::NeedsDecision => "needs a decision",
-        CardState::Gating => "running checks",
-        CardState::InReview => "in review",
-        CardState::Integrating => "integrating",
-        CardState::Integrated => "merged into the run",
-        CardState::Failed => "failed",
-        CardState::Escalated => "needs you",
-        CardState::Deferred => "waiting for limit",
-        CardState::Cancelled => "cancelled",
-        CardState::TakenOver => "taken over",
+        TaskState::Waiting => "waiting",
+        TaskState::Ready => "ready",
+        TaskState::Running => "running",
+        TaskState::Blocked => "blocked on a question",
+        TaskState::NeedsDecision => "needs a decision",
+        TaskState::Checking => "running checks",
+        TaskState::InReview => "in review",
+        TaskState::Merging => "merging",
+        TaskState::Merged => "merged into the run",
+        TaskState::Failed => "failed",
+        TaskState::NeedsYou => "needs you",
+        TaskState::Deferred => "waiting for limit",
+        TaskState::Cancelled => "cancelled",
+        TaskState::TakenOver => "taken over",
     }
 }

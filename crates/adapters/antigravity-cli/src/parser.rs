@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use argonauts_core::events::session::SubagentStatus;
-use argonauts_core::limits::{QuotaReading, QuotaSource, QuotaStatus};
-use argonauts_core::names::VendorId;
+use argonauts_core::limits::{PlanUsageReading, PlanUsageSource, PlanUsageStatus};
+use argonauts_core::names::AgentId;
 use argonauts_core::{AgentEvent, ErrorCategory, RetryReason, StreamParser};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
@@ -343,12 +343,12 @@ impl AgyStreamParser {
         self.stderr_error.take().map(|held| held.error)
     }
 
-    /// Reports an error once per turn, with a quota reading when it's a spent quota.
+    /// Reports an error once per turn, with a plan usage reading when the plan's usage is spent.
     fn report(&mut self, error: AgyError) -> Vec<AgentEvent> {
         if !self.turn_errors.insert(error_key(&error)) {
             return Vec::new();
         }
-        let mut events: Vec<AgentEvent> = quota_exhausted(&error).into_iter().collect();
+        let mut events: Vec<AgentEvent> = plan_usage_spent(&error).into_iter().collect();
         events.push(AgentEvent::Error {
             category: error.category,
             message: error.message,
@@ -526,22 +526,22 @@ fn rejected_model(error: AgyError, exit_code: Option<i32>, saw_init: bool) -> Ag
     }
 }
 
-/// A daily or plan quota that ran out is also a quota reading, so the board stops sending
-/// cards here until a probe says otherwise.
-fn quota_exhausted(error: &AgyError) -> Option<AgentEvent> {
+/// A daily or plan limit that ran out is also a plan usage reading, so the board stops sending
+/// tasks here until a probe says otherwise.
+fn plan_usage_spent(error: &AgyError) -> Option<AgentEvent> {
     if error.category != ErrorCategory::UsageLimit {
         return None;
     }
     let lower = error.message.to_ascii_lowercase();
     let window = (lower.contains("daily") || lower.contains("per day")).then(|| "daily".to_owned());
-    Some(AgentEvent::Quota {
-        reading: QuotaReading {
-            vendor: VendorId(ADAPTER_ID.to_owned()),
-            status: QuotaStatus::Rejected,
+    Some(AgentEvent::PlanUsage {
+        reading: PlanUsageReading {
+            agent_id: AgentId(ADAPTER_ID.to_owned()),
+            status: PlanUsageStatus::Rejected,
             used: Some(1.0),
             resets_at: None,
             window,
-            source: QuotaSource::ErrorMessage,
+            source: PlanUsageSource::ErrorMessage,
             observed_at: OffsetDateTime::now_utc(),
             detail: Some(json!({"message": error.message})),
             wrap_up: false,
@@ -1294,13 +1294,13 @@ mod tests {
     }
 
     #[test]
-    fn a_spent_quota_is_reported_with_its_turn() {
+    fn a_spent_plan_usage_is_reported_with_its_turn() {
         let mut parser = AgyStreamParser::new();
         parser.parse_stdout_line(INIT);
         let events = parser.parse_stdout_line(
             r#"{"event":"result","result":{"status":"ERROR","response":"","error":"API error (attempt 1): RESOURCE_EXHAUSTED (code 429): Daily quota exhausted for gemini-3.6-flash-low"}}"#,
         );
-        assert_eq!(names(&events), ["quota", "error", "result"]);
+        assert_eq!(names(&events), ["plan_usage", "error", "result"]);
         assert!(matches!(
             &events[1],
             AgentEvent::Error {
@@ -1478,17 +1478,17 @@ mod tests {
             Some(3),
         );
         assert_eq!(only_error(&daily), (ErrorCategory::UsageLimit, false));
-        let quota = daily
+        let plan_usage = daily
             .iter()
             .find_map(|e| match e {
-                AgentEvent::Quota { reading } => Some(reading),
+                AgentEvent::PlanUsage { reading } => Some(reading),
                 _ => None,
             })
-            .expect("a quota reading");
-        assert_eq!(quota.vendor, VendorId("antigravity-cli".into()));
-        assert_eq!(quota.status, QuotaStatus::Rejected);
-        assert_eq!(quota.window.as_deref(), Some("daily"));
-        assert_eq!(quota.source, QuotaSource::ErrorMessage);
+            .expect("a plan usage reading");
+        assert_eq!(plan_usage.agent_id, AgentId("antigravity-cli".into()));
+        assert_eq!(plan_usage.status, PlanUsageStatus::Rejected);
+        assert_eq!(plan_usage.window.as_deref(), Some("daily"));
+        assert_eq!(plan_usage.source, PlanUsageSource::ErrorMessage);
         assert!(matches!(
             daily.last(),
             Some(AgentEvent::Result { is_error: true, .. })
@@ -1505,7 +1505,7 @@ mod tests {
         assert!(
             !billing
                 .iter()
-                .any(|e| matches!(e, AgentEvent::Quota { .. }))
+                .any(|e| matches!(e, AgentEvent::PlanUsage { .. }))
         );
 
         let cases = [

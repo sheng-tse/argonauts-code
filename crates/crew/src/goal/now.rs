@@ -4,21 +4,21 @@
 //! so an answer taken while the work is half written never ends a goal early or costs it a
 //! try.
 //!
-//! The reply says the checks began. They run beside the loop, hold the run from parking the way
+//! The reply says the checks began. They run beside the loop, hold the run from waiting the way
 //! a session at work does, and are dropped when the run pauses or stops.
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::goal::{GoalChecked, GoalEvent, GoalRun, GoalVerdict};
 use argonauts_core::goal::GoalSpec;
-use argonauts_core::worker::Access;
+use argonauts_core::session_runner::Access;
 
-use crate::card::support::owner_of;
 use crate::engine::host::Host;
 use crate::engine::shared::{Admission, lock};
 use crate::error::{EngineError, EngineResult};
 use crate::labels;
 use crate::state::RunState;
+use crate::task::support::worker_of;
 use crate::workflow::StepAt;
 
 use super::check::{self, Place};
@@ -26,7 +26,7 @@ use super::pursue;
 
 /// Starts the checks of `task`'s goal and returns once they're under way. `Err` says why they
 /// can't run now.
-pub fn start(host: &Host, task: Option<&CardId>) -> Result<(), String> {
+pub fn start(host: &Host, task: Option<&TaskId>) -> Result<(), String> {
     let Some(task) = task else {
         return Err(
             "a workflow's goal is checked when its round ends. Open one of its agents to run \
@@ -46,7 +46,7 @@ pub fn start(host: &Host, task: Option<&CardId>) -> Result<(), String> {
         None,
         RunEventKind::Goal(GoalEvent::CheckingNow {
             task: Some(task.clone()),
-            attempt: asked.place.attempt,
+            try_number: asked.place.try_number,
         }),
     )
     .map_err(|err| err.to_string())?;
@@ -59,7 +59,7 @@ pub fn start(host: &Host, task: Option<&CardId>) -> Result<(), String> {
             // Once the loop halts nothing more is recorded.
             () = halt.cancelled() => return,
         };
-        // Released before what it found is recorded: recording wakes the loop, which may park
+        // Released before what it found is recorded: recording wakes the loop, which may wait
         // now that nothing holds it.
         drop(running);
         if let Err(err) = record(&beside, &asked, found) {
@@ -71,18 +71,18 @@ pub fn start(host: &Host, task: Option<&CardId>) -> Result<(), String> {
 
 /// One check you asked for: whose goal, and where it's checked.
 struct Asked {
-    task: CardId,
+    task: TaskId,
     goal: GoalSpec,
     place: Place,
 }
 
 /// The goal `task` is worked as and where its work is, or why there's nothing to check.
-fn asked(host: &Host, state: &RunState, task: &CardId) -> Result<Asked, String> {
+fn asked(host: &Host, state: &RunState, task: &TaskId) -> Result<Asked, String> {
     let Some(goal) = state.goal.goal_of(Some(task)) else {
         return Err("that task isn't worked as a goal".to_owned());
     };
     let record = state
-        .cards
+        .tasks
         .get(task)
         .ok_or_else(|| format!("there is no task {task}"))?;
     let dir = record
@@ -94,7 +94,7 @@ fn asked(host: &Host, state: &RunState, task: &CardId) -> Result<Asked, String> 
         base: record.base.clone(),
         task: Some(task.clone()),
         at: step_of(state, task),
-        authors: vec![owner_of(host, record)],
+        authors: vec![worker_of(host, record)],
         ..Place::new(dir, try_under_way(goal))
     };
     Ok(Asked {
@@ -105,19 +105,19 @@ fn asked(host: &Host, state: &RunState, task: &CardId) -> Result<Asked, String> 
 }
 
 fn try_under_way(goal: &GoalRun) -> u32 {
-    goal.attempts.last().map_or(1, |attempt| attempt.n)
+    goal.tries.last().map_or(1, |a_try| a_try.n)
 }
 
 /// The step `task` is built in, in its newest round, which places the judge beside its agent
 /// in the workflow view.
-fn step_of(state: &RunState, task: &CardId) -> Option<StepAt> {
+fn step_of(state: &RunState, task: &TaskId) -> Option<StepAt> {
     let step = state
         .sessions
         .in_order()
         .into_iter()
         .rev()
         .find(|session| {
-            session.card.as_ref() == Some(task) && session.started.access == Access::Build
+            session.task.as_ref() == Some(task) && session.started.access == Access::Build
         })?
         .started
         .workflow_step
@@ -148,7 +148,7 @@ fn record(host: &Host, asked: &Asked, found: EngineResult<GoalChecked>) -> Engin
     let task = &asked.task;
     let (label, at_work) = host.read(|state| {
         (
-            labels::card_label(state, task),
+            labels::task_label(state, task),
             super::task::pursued(state, task),
         )
     });
@@ -208,12 +208,12 @@ fn found_words(label: &str, checked: &GoalChecked, at_work: bool) -> String {
 /// Marks `task`'s goal as being checked on your ask until it's dropped.
 struct Running {
     host: Host,
-    task: CardId,
+    task: TaskId,
 }
 
 impl Running {
     /// `None` when its checks already run.
-    fn begin(host: &Host, task: &CardId) -> Option<Self> {
+    fn begin(host: &Host, task: &TaskId) -> Option<Self> {
         lock(&host.shared().checking_goals)
             .insert(task.clone())
             .then(|| Self {
@@ -251,7 +251,7 @@ mod tests {
             })
             .collect();
         GoalChecked {
-            attempt: 3,
+            try_number: 3,
             overall: if met.iter().all(|met| *met) {
                 GoalVerdict::Met
             } else {

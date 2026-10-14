@@ -1,3 +1,4 @@
+use argonauts_core::settings::Settings;
 use argonauts_core::{canonical_json, sha256_hex};
 
 use super::{Repo, invalid, layer_of};
@@ -6,10 +7,10 @@ use crate::{SettingsError, SettingsSources, resolve};
 /// Every workflow setting, each with its default where it has one (as JSON).
 const WORKFLOW_SETTINGS: &[(&str, Option<&str>)] = &[
     // Everything is a default.
-    ("solo_or_crew", None),
-    ("solo_or_crew.solo_max_files", None),
-    ("solo_or_crew.crew_min_files", None),
-    ("solo_or_crew.crew_labels", None),
+    ("captain_or_crew", None),
+    ("captain_or_crew.captain_max_files", None),
+    ("captain_or_crew.crew_min_files", None),
+    ("captain_or_crew.crew_labels", None),
     ("drafting.blind", Some("true")),
     ("judging.anonymize", Some("true")),
     ("judging.method", Some("\"cross\"")),
@@ -19,7 +20,7 @@ const WORKFLOW_SETTINGS: &[(&str, Option<&str>)] = &[
     ("experiments.limit_usd", Some("2.0")),
     ("review.assign", Some("\"ring\"")),
     ("review.other_provider", Some("true")),
-    ("solo.restate_first", Some("false")),
+    ("captain.understand_first", Some("false")),
     ("approvals.goal_changes", Some("\"ask\"")),
     ("checks.run", None),
     ("routing.algorithm", Some("\"bandit\"")),
@@ -28,8 +29,11 @@ const WORKFLOW_SETTINGS: &[(&str, Option<&str>)] = &[
     ("approvals.merge.decide_with", Some("\"rules\"")),
     ("approvals.plan.mode", Some("\"auto\"")),
     ("approvals.plan.decide_with", Some("\"rules_and_model\"")),
-    ("approvals.goal.mode", Some("\"auto\"")),
-    ("approvals.goal.decide_with", Some("\"rules_and_model\"")),
+    ("approvals.understand.mode", Some("\"auto\"")),
+    (
+        "approvals.understand.decide_with",
+        Some("\"rules_and_model\""),
+    ),
     ("approvals.stuck.mode", Some("\"auto\"")),
     ("approvals.stuck.decide_with", Some("\"rules_and_model\"")),
     ("approvals.limit.mode", Some("\"auto\"")),
@@ -40,7 +44,7 @@ const WORKFLOW_SETTINGS: &[(&str, Option<&str>)] = &[
         Some("\"rules_and_model\""),
     ),
     ("approvals.workflow_promotion.mode", Some("\"auto\"")),
-    ("approvals.approver.different_provider", Some("true")),
+    ("approvals.judge.different_provider", Some("true")),
     ("sessions.lifetime", Some("\"task\"")),
     ("compaction", Some("\"inherit\"")),
     ("runs.remind_waiting_days", Some("7")),
@@ -59,7 +63,7 @@ const WORKFLOW_SETTINGS: &[(&str, Option<&str>)] = &[
     // ui.verbosity defaults to `full`.
     ("ui.verbosity", Some("\"full\"")),
     ("ui.keys", None),
-    ("ui.takeover", None),
+    ("ui.take_over", None),
     ("ui.keymap", None),
     ("ui.narrator", Some("\"on_demand\"")),
     ("narrator.model", None),
@@ -74,7 +78,7 @@ const WORKFLOW_SETTINGS: &[(&str, Option<&str>)] = &[
     // The keys the later changes and decisions added.
     ("workflow", Some("\"council\"")),
     ("workflow", Some("\"council\"")),
-    ("main_agent", Some("\"claude-code\"")),
+    ("crew.main", Some("\"claude-code\"")),
     ("crew", None),
     ("fallback.strategy", Some("\"first\"")),
     ("fallback.together", Some("1")),
@@ -97,9 +101,9 @@ const WORKFLOW_SETTINGS: &[(&str, Option<&str>)] = &[
     ("mcp.share", Some("\"summaries\"")),
     ("mcp.run_limit", Some("\"60m\"")),
     ("mcp.runs_per_day", Some("5")),
-    ("notifications.chat.command", Some("[]")),
+    ("notifications.conversation.command", Some("[]")),
     (
-        "notifications.chat.on",
+        "notifications.conversation.on",
         Some("[\"needs_you\",\"finished\",\"agent_down\"]"),
     ),
     ("sessions.context", Some("\"largest\"")),
@@ -132,22 +136,22 @@ fn every_workflow_setting_has_a_key() {
         }
     }
     // A role's own fallback mode exists once the role has a fallback table.
-    let owner = resolve(&SettingsSources {
-        overrides: vec!["fallback.workers.together=2".into()],
+    let worker = resolve(&SettingsSources {
+        overrides: vec!["fallback.worker.together=2".into()],
         ..SettingsSources::default()
     })
     .unwrap();
     assert!(
-        owner
+        worker
             .entries
             .iter()
-            .any(|entry| entry.key == "fallback.workers.mode")
+            .any(|entry| entry.key == "fallback.worker.mode")
     );
     assert!(
-        owner
+        worker
             .entries
             .iter()
-            .any(|entry| entry.key == "fallback.workers.together")
+            .any(|entry| entry.key == "fallback.worker.together")
     );
 }
 
@@ -169,7 +173,7 @@ fn resolved_hash_recorded() {
     repo.local("[ui]\nbell = false\n");
     let local = resolve(&repo.sources()).unwrap();
     assert_ne!(local.sha256, first.sha256);
-    repo.global_preset("council", "[judging]\nanonymize = false\n");
+    repo.global_workflow("council", "[judging]\nanonymize = false\n");
     assert_ne!(resolve(&repo.sources()).unwrap().sha256, local.sha256);
 }
 
@@ -248,13 +252,17 @@ fn agent_binary_must_be_absolute_outside_repo() {
 #[test]
 fn global_only_keys_refused_from_project_files() {
     let repo = Repo::new();
-    let chat = "[notifications.chat]\ncommand = [\"/usr/bin/notify\", \"{text}\"]\n";
-    repo.global(chat);
+    let conversation =
+        "[notifications.conversation]\ncommand = [\"/usr/bin/notify\", \"{text}\"]\n";
+    repo.global(conversation);
     let resolved = resolve(&repo.sources()).unwrap();
-    assert_eq!(resolved.settings.notifications.chat.command.len(), 2);
+    assert_eq!(
+        resolved.settings.notifications.conversation.command.len(),
+        2
+    );
     repo.global("");
     for trusted in [false, true] {
-        repo.project(chat);
+        repo.project(conversation);
         let sources = SettingsSources {
             project_trusted: trusted,
             ..repo.sources()
@@ -262,13 +270,13 @@ fn global_only_keys_refused_from_project_files() {
         let err = resolve(&sources).unwrap_err();
         assert!(
             matches!(&err, SettingsError::Refused(message)
-                if message.contains("notifications.chat.command")
+                if message.contains("notifications.conversation.command")
                     && message.contains(&repo.project_file())),
             "{err}"
         );
     }
     repo.project("");
-    repo.local(chat);
+    repo.local(conversation);
     assert!(resolve(&repo.trusted()).is_err());
 }
 
@@ -292,6 +300,10 @@ fn values_serde_accepts_are_still_checked() {
         ("[workflows]\nmax_depth = 3\n", "workflows.max_depth"),
         ("[checks]\ntimeout = \"5 minutes\"\n", "checks.timeout"),
         (
+            "[evolution]\npropose_timeout = \"a while\"\n",
+            "evolution.propose_timeout",
+        ),
+        (
             "[endpoints.local]\ntimeout = \"soon\"\n",
             "endpoints.local.timeout",
         ),
@@ -300,18 +312,18 @@ fn values_serde_accepts_are_still_checked() {
             "agents.codex.effort",
         ),
         (
-            "[approvals.approver]\nsecond_model = \"codex\"\n",
-            "approvals.approver.second_model",
+            "[approvals.judge]\nsecond_model = \"codex\"\n",
+            "approvals.judge.second_model",
         ),
         (
-            "[approvals]\ndecides = \"codex/<model>\"\n[approvals.approver]\nsecond_model = \"codex\"\n",
-            "approvals.approver.second_model",
+            "[approvals]\ndecides = \"codex/<model>\"\n[approvals.judge]\nsecond_model = \"codex\"\n",
+            "approvals.judge.second_model",
         ),
         (
             "[approvals.plan]\notherwise = \"open_pull_request\"\n",
             "approvals.plan.otherwise",
         ),
-        // Only a merge opens a pull request, and a budget has nothing to send back.
+        // Only a merge opens a pull request, and a limit has nothing to send back.
         (
             "[approvals.plan]\nat_hard_limit = \"open_pull_request\"\n",
             "approvals.plan.at_hard_limit",
@@ -335,12 +347,12 @@ fn values_serde_accepts_are_still_checked() {
         assert_eq!(layer, repo.project_file(), "{text}");
         assert!(message.starts_with(key), "{key}: {message}");
     }
-    // A model approver makes the same approvals sane, and full auto takes a picked answerer
+    // A model judge makes the same approvals sane, and autopilot takes a picked answerer
     // and a merge that opens a pull request at a hard limit.
     repo.project(
         "[approvals]\nautopilot = true\nanswers = \"opencode/glm-5\"\n\
          decides = \"codex/<model>\"\n\
-         [approvals.approver]\nsecond_model = \"claude-code/opus\"\n\
+         [approvals.judge]\nsecond_model = \"claude-code/opus\"\n\
          [approvals.merge]\nmode = \"auto\"\ndecide_with = \"model\"\n\
          at_hard_limit = \"open_pull_request\"\n\
          [approvals.rules.merge]\nmin_test_coverage_of_changed_lines = 0.5\n",
@@ -354,9 +366,9 @@ fn values_serde_accepts_are_still_checked() {
     );
 }
 
-/// Full auto's settings that wouldn't do what you meant say so: a picked answerer no agent
-/// provides, or one the approver can't check, and a checkpoint the switch leaves with you. A
-/// checkpoint kept supervised in the repo stays supervised under a global switch.
+/// Autopilot's settings that wouldn't do what you meant say so: a picked answerer no agent
+/// provides, or one the judge can't check, and an approval the switch leaves with you. A
+/// approval kept supervised in the repo stays supervised under a global switch.
 #[test]
 fn autopilot_settings_that_miss_say_so() {
     use argonauts_core::settings::approvals::{Answerer, ApprovalMode};
@@ -413,15 +425,15 @@ fn autopilot_settings_that_miss_say_so() {
 }
 
 #[test]
-fn an_unset_approver_model_is_picked_for_each_run_so_nothing_warns() {
+fn an_unset_judge_model_is_picked_for_each_run_so_nothing_warns() {
     let repo = Repo::new();
-    // The defaults decide most checkpoints with rules and a model, and leave the model unset.
+    // The defaults decide most approvals with rules and a model, and leave the model unset.
     let defaults = resolve(&repo.trusted()).unwrap();
-    assert_eq!(defaults.settings.approvals.approver_model(), None);
+    assert_eq!(defaults.settings.approvals.judge_model(), None);
     assert!(defaults.warnings.is_empty(), "{:?}", defaults.warnings);
 
     repo.project(
-        "[approvals.goal]\nmode = \"auto_preview\"\ndecide_with = \"rules_or_model\"\n\
+        "[approvals.understand]\nmode = \"auto_preview\"\ndecide_with = \"rules_or_model\"\n\
          [approvals.merge]\nmode = \"auto\"\ndecide_with = \"model\"\n",
     );
     let resolved = resolve(&repo.trusted()).unwrap();
@@ -429,28 +441,28 @@ fn an_unset_approver_model_is_picked_for_each_run_so_nothing_warns() {
 }
 
 #[test]
-fn the_older_sandbox_off_still_reads_as_the_tools_own() {
+fn the_tools_own_sandbox_reads_for_everyone_and_for_a_role() {
     use argonauts_core::names::RoleName;
     use argonauts_core::settings::approvals::SandboxChoice;
 
     let repo = Repo::new();
-    repo.project("[sandbox]\nmode = \"off\"\n[roles.reviewer.sandbox]\nmode = \"off\"\n");
+    repo.project("[sandbox]\nmode = \"tool\"\n[roles.reviewer.sandbox]\nmode = \"tool\"\n");
     let resolved = resolve(&repo.trusted()).unwrap();
     assert_eq!(resolved.settings.sandbox.mode, SandboxChoice::Tool);
     let reviewer = resolved.settings.sandbox_for(&RoleName::Reviewer);
     assert_eq!(reviewer.mode, SandboxChoice::Tool);
 
-    // Other words the picker doesn't offer are still refused.
+    // A word the picker doesn't offer is refused.
     repo.project("[sandbox]\nmode = \"loose\"\n");
     let (layer, _) = invalid(resolve(&repo.trusted()));
     assert_eq!(layer, repo.project_file());
 }
 
 #[test]
-fn a_gate_written_as_a_string_shows_the_table_to_write_instead() {
+fn a_check_written_as_a_string_shows_the_table_to_write_instead() {
     let repo = Repo::new();
     repo.local("[limits]\nspend_per_run = 1.0\n\n[checks]\nrun = [\"python3 -m unittest -q\"]\n");
-    // Untrusted, the gates are a safety key left out, so the file resolves.
+    // Untrusted, the checks are a safety key left out, so the file resolves.
     let resolved = resolve(&repo.sources()).unwrap();
     assert!(
         resolved.warnings.iter().any(|warning| warning.starts_with(
@@ -471,9 +483,9 @@ fn a_gate_written_as_a_string_shows_the_table_to_write_instead() {
     );
 }
 
-/// The likeliest slip when writing a gate by hand: one bracket pair, or an inline table.
+/// The likeliest slip when writing a check by hand: one bracket pair, or an inline table.
 #[test]
-fn a_gate_written_as_one_table_resolves_untrusted_and_shows_the_list_to_write() {
+fn a_check_written_as_one_table_resolves_untrusted_and_shows_the_list_to_write() {
     let repo = Repo::new();
     let expected = "checks.run is written as a single table, but it takes a list of checks, \
                     each a [[checks.run]] table with two brackets. Write it like this:\n\
@@ -577,8 +589,8 @@ fn every_kind_of_wrong_value_says_what_the_key_takes_in_plain_words() {
             "crew can't be \"claude-code\"; it is a table, written [crew] with its settings under it",
         ),
         (
-            "[crew]\nworkers = [1]\n",
-            "crew.workers can't hold 1; each entry takes text in quotes",
+            "[crew]\nworker = [1]\n",
+            "crew.worker can't hold 1; each entry takes text in quotes",
         ),
         (
             "[crew]\njudge = 3\n",
@@ -619,10 +631,10 @@ fn every_kind_of_wrong_value_says_what_the_key_takes_in_plain_words() {
     }
 }
 
-/// Who decides when you don't is written as the settings template writes it. The older names
-/// of the same keys still read, and a key that went is unknown.
+/// Who decides when you don't is written as the settings template writes it. A key the
+/// settings don't have is ignored with a notice.
 #[test]
-fn approvals_read_as_the_template_writes_them_and_the_old_names_still_read() {
+fn approvals_read_as_the_template_writes_them_and_an_unknown_key_is_ignored() {
     let repo = Repo::new();
     repo.project(
         "[approvals]\nanswers = \"main\"\ndecides = \"judge\"\nwhen_declined = \"decide\"\n\
@@ -638,23 +650,19 @@ fn approvals_read_as_the_template_writes_them_and_the_old_names_still_read() {
     );
 
     repo.project(
-        "[approvals]\nanswered_by = \"main\"\n\
-         [approvals.approver]\nmodel = \"codex/gpt-5.6\"\n\
-         [approvals.merge.rules]\nmax_combined_diff_lines = 400\n",
+        "[approvals]\nasks = \"main\"\n\
+         [approvals.rules.merge]\nmax_files = 100\n",
     );
     let resolved = resolve(&repo.trusted()).unwrap();
     assert_eq!(
         resolved.settings.approvals.rules.merge.max_changed_lines,
-        400
+        Settings::default().approvals.rules.merge.max_changed_lines
     );
     assert_eq!(
         resolved.warnings,
         [
-            ".argonauts/config.toml uses older setting names, which still read as the new \
-             ones: approvals.answered_by → approvals.answers, approvals.merge.rules → \
-             approvals.rules.merge, approvals.rules.merge.max_combined_diff_lines → \
-             approvals.rules.merge.max_changed_lines",
-            "unknown setting approvals.approver.model in .argonauts/config.toml, ignored",
+            "unknown setting approvals.asks in .argonauts/config.toml, ignored",
+            "unknown setting approvals.rules.merge.max_files in .argonauts/config.toml, ignored",
         ]
     );
 }

@@ -22,21 +22,21 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use time::OffsetDateTime;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::FrontEndOptions;
-use caps::FrontEndRuns;
+use crate::OutsideAgentOptions;
+use caps::OutsideAgentRuns;
 
 pub struct UserServer {
     api: Arc<dyn ConductorApi>,
-    options: FrontEndOptions,
-    runs: Arc<dyn FrontEndRuns>,
+    options: OutsideAgentOptions,
+    runs: Arc<dyn OutsideAgentRuns>,
 }
 
 impl UserServer {
-    /// `runs` counts the runs front ends start each day, the daily ledger outside tests.
+    /// `runs` counts the runs outside agents start each day, the daily ledger outside tests.
     pub fn new(
         api: Arc<dyn ConductorApi>,
-        options: FrontEndOptions,
-        runs: Arc<dyn FrontEndRuns>,
+        options: OutsideAgentOptions,
+        runs: Arc<dyn OutsideAgentRuns>,
     ) -> Self {
         Self { api, options, runs }
     }
@@ -46,14 +46,14 @@ impl UserServer {
     }
 
     /// The options the server started with. Calls use [`UserServer::current_options`].
-    pub fn start_options(&self) -> &FrontEndOptions {
+    pub fn start_options(&self) -> &OutsideAgentOptions {
         &self.options
     }
 
     /// The options for one call: the stricter of the start values and what the reloader reads
     /// now. A reload that fails keeps the start values. The reloader may read files, so it runs
     /// off the async threads.
-    pub async fn current_options(&self) -> FrontEndOptions {
+    pub async fn current_options(&self) -> OutsideAgentOptions {
         let start = &self.options;
         let Some(reload) = start.reload.clone() else {
             return start.clone();
@@ -65,16 +65,16 @@ impl UserServer {
         else {
             return start.clone();
         };
-        FrontEndOptions {
+        OutsideAgentOptions {
             mcp: stricter(&start.mcp, &now.mcp),
             repo_trusted: start.repo_trusted && now.repo_trusted,
             reload: None,
         }
     }
 
-    /// Takes one of today's front-end runs under `cap`, or says why not. The ledger locks a
+    /// Takes one of today's outside-agent runs under `cap`, or says why not. The ledger locks a
     /// file, so this runs off the async threads.
-    pub async fn take_front_end_run(&self, cap: u32) -> Result<TakenRun, String> {
+    pub async fn take_outside_agent_run(&self, cap: u32) -> Result<TakenRun, String> {
         let runs = Arc::clone(&self.runs);
         let taken = OffsetDateTime::now_utc();
         let today = tokio::task::spawn_blocking(move || runs.take(cap, taken))
@@ -84,7 +84,7 @@ impl UserServer {
     }
 
     /// Gives back a run whose start failed, so it doesn't count against today's cap.
-    pub async fn give_back_front_end_run(&self, run: TakenRun) -> Result<(), String> {
+    pub async fn give_back_outside_agent_run(&self, run: TakenRun) -> Result<(), String> {
         let runs = Arc::clone(&self.runs);
         tokio::task::spawn_blocking(move || runs.give_back(run.taken))
             .await
@@ -92,7 +92,7 @@ impl UserServer {
     }
 }
 
-/// A front-end run taken from today's count.
+/// An outside-agent run taken from today's count.
 pub struct TakenRun {
     /// Today's count, this run included.
     pub today: u32,
@@ -100,7 +100,7 @@ pub struct TakenRun {
 }
 
 /// The tighter side of each key: anything either turns off stays off, the smaller daily cap,
-/// the shorter run budget, and status-only sharing if either asks for it.
+/// the shorter run limit, and status-only sharing if either asks for it.
 fn stricter(start: &McpSettings, now: &McpSettings) -> McpSettings {
     let start_runs = if start.start_runs == StartRuns::Off || now.start_runs == StartRuns::Off {
         StartRuns::Off
@@ -136,7 +136,7 @@ fn shorter(start: &Span, now: &Span) -> Span {
 /// Serves until the client closes the stream. Refuses to start in a repo you haven't trusted.
 pub async fn serve_on<R, W>(
     api: Arc<dyn ConductorApi>,
-    options: FrontEndOptions,
+    options: OutsideAgentOptions,
     read: R,
     write: W,
 ) -> anyhow::Result<()>
@@ -200,22 +200,22 @@ mod tests {
     use std::time::Duration;
 
     use argonauts_core::api::{
-        ApiError, CardBrief, DiffScope, DiffView, EventStream, RawView, RunHandle, RunState,
-        RunSummary, StartRun, StatusSummary, SteerAck,
+        ApiError, DiffScope, DiffView, EventStream, RawView, RunHandle, RunState, RunSummary,
+        StartRun, StatusSummary, SteerAck, TaskBrief,
     };
-    use argonauts_core::events::card::CardState;
-    use argonauts_core::events::checkpoint::{
-        CheckpointEvent, CheckpointKind, CheckpointOpened, CheckpointPacket, FreeText,
+    use argonauts_core::events::approval::{
+        ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket, FreeText,
     };
     use argonauts_core::events::run::{Party, RunLifecycle, RunMode};
     use argonauts_core::events::session::QueuedMessage;
+    use argonauts_core::events::task::TaskState;
     use argonauts_core::events::{RunEvent, RunEventKind};
     use argonauts_core::future::BoxFuture;
     use argonauts_core::input::MentionTarget;
-    use argonauts_core::names::{CheckpointId, MessageId, SessionKey, WorkerRef};
+    use argonauts_core::names::{ApprovalId, MessageId, ModelRef, SessionKey};
     use argonauts_core::settings::agents::{McpSettings, Share, StartRuns};
     use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
-    use argonauts_core::{CardId, RunId, Spend};
+    use argonauts_core::{RunId, Spend, TaskId};
     use rmcp::model::{ClientCapabilities, ClientConfig, ProtocolVersion};
     use rmcp::{ClientLifecycleMode, ClientServiceExt};
     use serde_json::{Value, json};
@@ -232,12 +232,12 @@ mod tests {
         RUN_STATUS, SEND_GUIDANCE, START_RUN,
     };
     use super::*;
-    use crate::FrontEndSettings;
+    use crate::OutsideAgentSettings;
 
     const RUN: &str = "run-20260929-041503-3fa2";
     const EVIDENCE: &str = "3fa2c1d0e9ab77aa00112233445566778899aabbccddeeff0011223344556677";
     /// Agent text that may leave only in `agent_text` fields.
-    const AGENT_ONLY: &[&str] = &["TITLE-TEXT", "GOAL-TEXT", "CARD-TITLE", "CHECKPOINT-TITLE"];
+    const AGENT_ONLY: &[&str] = &["TITLE-TEXT", "GOAL-TEXT", "TASK-TITLE", "APPROVAL-TITLE"];
     /// Text that never leaves, not even as agent text, besides the secret.
     const NEVER_SENT: &[&str] = &[
         "PLAN-TEXT",
@@ -247,7 +247,7 @@ mod tests {
         "WITHDRAW-TEXT",
         "STOPPED-TEXT",
         "PACKET-TEXT",
-        "PRESET-TEXT",
+        "WORKFLOW-TEXT",
     ];
 
     // Built at runtime so no string in this file looks like a real credential.
@@ -278,7 +278,7 @@ mod tests {
         Other(&'static str),
     }
 
-    /// A conductor that records every call and serves one run.
+    /// Argonauts Code that records every call and serves one run.
     #[derive(Default)]
     struct FakeApi {
         calls: Mutex<Vec<Call>>,
@@ -418,7 +418,7 @@ mod tests {
             Box::pin(async move { Ok(MessageId::numbered(1)) })
         }
 
-        fn guidance_from_front_end(
+        fn guidance_from_outside_agent(
             &self,
             run: &RunId,
             text: String,
@@ -450,7 +450,7 @@ mod tests {
             Box::pin(async move { Ok(()) })
         }
 
-        fn pause_from_front_end(
+        fn pause_from_outside_agent(
             &self,
             run: &RunId,
             now: bool,
@@ -485,11 +485,19 @@ mod tests {
             self.refuse("stop_session")
         }
 
+        fn restart_session(
+            &self,
+            _run: &RunId,
+            _session: &SessionKey,
+        ) -> BoxFuture<'_, Result<(), ApiError>> {
+            self.refuse("restart_session")
+        }
+
         fn reassign(
             &self,
             _run: &RunId,
-            _card: &CardId,
-            _to: WorkerRef,
+            _task: &TaskId,
+            _to: ModelRef,
         ) -> BoxFuture<'_, Result<(), ApiError>> {
             self.refuse("reassign")
         }
@@ -517,7 +525,7 @@ mod tests {
         fn diff(
             &self,
             _run: &RunId,
-            _card: &CardId,
+            _task: &TaskId,
             _scope: DiffScope,
         ) -> BoxFuture<'_, Result<DiffView, ApiError>> {
             self.refuse("diff")
@@ -532,17 +540,17 @@ mod tests {
         }
     }
 
-    /// Today's front-end runs, counted in memory instead of `~/.argonauts/daily.json`.
+    /// Today's outside-agent runs, counted in memory instead of `~/.argonauts/daily.json`.
     #[derive(Default)]
     struct FakeRuns {
         taken: AtomicU32,
     }
 
-    impl FrontEndRuns for FakeRuns {
+    impl OutsideAgentRuns for FakeRuns {
         fn take(&self, cap: u32, _now: OffsetDateTime) -> Result<u32, String> {
             let taken = self.taken.load(Ordering::SeqCst);
             if taken >= cap {
-                return Err(format!("today's {cap} runs for front ends are used up"));
+                return Err(format!("today's {cap} runs for outside agents are used up"));
             }
             self.taken.store(taken + 1, Ordering::SeqCst);
             Ok(taken + 1)
@@ -568,8 +576,8 @@ mod tests {
                 "long ".repeat(200)
             ),
             mode: RunMode::Crew,
-            workflow: "PRESET-TEXT".to_owned(),
-            state: RunState::Parked,
+            workflow: "WORKFLOW-TEXT".to_owned(),
+            state: RunState::Waiting,
             stopped_at: "STOPPED-TEXT".to_owned(),
             updated: OffsetDateTime::UNIX_EPOCH,
             spent: Spend {
@@ -579,7 +587,7 @@ mod tests {
                 ..Spend::default()
             },
             sessions_to_resume: 0,
-            waiting: vec![CheckpointId::numbered(1)],
+            waiting: vec![ApprovalId::numbered(1)],
             live: false,
             remind: false,
             name: None,
@@ -591,11 +599,11 @@ mod tests {
             run: Some(run_id()),
             goal: vec![format!("GOAL-TEXT {}", secret()), "second line".to_owned()],
             plan: Some("PLAN-TEXT".to_owned()),
-            cards: vec![CardBrief {
-                card: CardId::new("task-001").expect("task id"),
-                title: "CARD-TITLE \x1b]0;evil\x07".to_owned(),
-                state: CardState::Running,
-                owner: Some(WorkerRef::new("claude", None)),
+            tasks: vec![TaskBrief {
+                task: TaskId::new("task-001").expect("task id"),
+                title: "TASK-TITLE \x1b]0;evil\x07".to_owned(),
+                state: TaskState::Running,
+                worker: Some(ModelRef::new("claude", None)),
                 note: "NOTE-TEXT".to_owned(),
             }],
             recent: vec!["RECENT-TEXT".to_owned()],
@@ -609,9 +617,9 @@ mod tests {
             seq,
             ts: OffsetDateTime::UNIX_EPOCH,
             run_id: run_id(),
-            card_id: None,
+            task_id: None,
             session: None,
-            source: "conductor".to_owned(),
+            source: "argonauts-code".to_owned(),
             kind,
         }
     }
@@ -627,12 +635,12 @@ mod tests {
     }
 
     fn opened(number: u32) -> RunEventKind {
-        RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(CheckpointOpened {
-            id: CheckpointId::numbered(number),
-            kind: CheckpointKind::Merge,
-            title: format!("CHECKPOINT-TITLE \x1b]0;x\x07 {}", secret()),
-            card: None,
-            packet: CheckpointPacket::WorkflowPromotion(json!({ "recipe": "PACKET-TEXT" })),
+        RunEventKind::Approval(ApprovalEvent::Opened(Box::new(ApprovalOpened {
+            id: ApprovalId::numbered(number),
+            kind: ApprovalKind::Merge,
+            title: format!("APPROVAL-TITLE \x1b]0;x\x07 {}", secret()),
+            task: None,
+            packet: ApprovalPacket::WorkflowPromotion(json!({ "learned_workflow": "PACKET-TEXT" })),
             evidence_sha256: EVIDENCE.to_owned(),
             mode: ApprovalMode::Supervised,
             decide_with: DecideWith::Rules,
@@ -642,7 +650,7 @@ mod tests {
         })))
     }
 
-    /// A pause, checkpoint cp-001 still open, and cp-002 opened and withdrawn.
+    /// A pause, approval approval-001 still open, and approval-002 opened and withdrawn.
     fn history() -> Vec<RunEvent> {
         vec![
             pause_event(0),
@@ -650,8 +658,8 @@ mod tests {
             event(2, opened(2)),
             event(
                 3,
-                RunEventKind::Checkpoint(CheckpointEvent::Withdrawn {
-                    id: CheckpointId::numbered(2),
+                RunEventKind::Approval(ApprovalEvent::Withdrawn {
+                    id: ApprovalId::numbered(2),
                     reason: "WITHDRAW-TEXT".to_owned(),
                 }),
             ),
@@ -667,8 +675,8 @@ mod tests {
         }
     }
 
-    fn trusted(mcp: McpSettings) -> FrontEndOptions {
-        FrontEndOptions {
+    fn trusted(mcp: McpSettings) -> OutsideAgentOptions {
+        OutsideAgentOptions {
             mcp,
             repo_trusted: true,
             reload: None,
@@ -676,22 +684,22 @@ mod tests {
     }
 
     /// Settings a test changes while the server runs. `None` is a reload that fails.
-    type Reloaded = Arc<Mutex<Option<FrontEndSettings>>>;
+    type Reloaded = Arc<Mutex<Option<OutsideAgentSettings>>>;
 
-    fn reloading(start: McpSettings) -> (FrontEndOptions, Reloaded) {
-        let now: Reloaded = Arc::new(Mutex::new(Some(FrontEndSettings {
+    fn reloading(start: McpSettings) -> (OutsideAgentOptions, Reloaded) {
+        let now: Reloaded = Arc::new(Mutex::new(Some(OutsideAgentSettings {
             mcp: start.clone(),
             repo_trusted: true,
         })));
         let read = Arc::clone(&now);
-        let options = FrontEndOptions {
+        let options = OutsideAgentOptions {
             reload: Some(Arc::new(move || read.lock().unwrap().clone())),
             ..trusted(start)
         };
         (options, now)
     }
 
-    /// A client speaking raw JSON-RPC lines, as a front end's MCP library would.
+    /// A client speaking raw JSON-RPC lines, as an outside agent's MCP library would.
     struct Wire {
         lines: Lines<BufReader<ReadHalf<DuplexStream>>>,
         write: WriteHalf<DuplexStream>,
@@ -702,7 +710,7 @@ mod tests {
     }
 
     impl Wire {
-        fn open(api: Arc<FakeApi>, options: FrontEndOptions, runs: Arc<FakeRuns>) -> Self {
+        fn open(api: Arc<FakeApi>, options: OutsideAgentOptions, runs: Arc<FakeRuns>) -> Self {
             let (client, server) = tokio::io::duplex(1 << 20);
             let (server_read, server_write) = tokio::io::split(server);
             let server = UserServer::new(api, options, runs);
@@ -810,7 +818,7 @@ mod tests {
         connect_with(api, trusted(mcp), client).await
     }
 
-    async fn connect_with(api: FakeApi, options: FrontEndOptions, client: &str) -> Setup {
+    async fn connect_with(api: FakeApi, options: OutsideAgentOptions, client: &str) -> Setup {
         let api = Arc::new(api);
         let runs = Arc::new(FakeRuns::default());
         let mut wire = Wire::open(Arc::clone(&api), options, Arc::clone(&runs));
@@ -957,7 +965,7 @@ mod tests {
                 assert!(!property.contains("approv"), "{tool}");
             }
             if let Some(modes) = properties.get("mode") {
-                assert_eq!(modes["enum"], json!(["solo", "crew"]), "{tool}");
+                assert_eq!(modes["enum"], json!(["captain", "crew"]), "{tool}");
             }
         }
         let asks = [
@@ -990,7 +998,7 @@ mod tests {
         let starts = api.starts();
         assert_eq!(starts.len(), 1);
         assert_eq!(starts[0].approval_mode, None);
-        assert_eq!(starts[0].front_end.as_deref(), Some("OpenClaw"));
+        assert_eq!(starts[0].outside_agent.as_deref(), Some("OpenClaw"));
     }
 
     #[tokio::test]
@@ -1012,7 +1020,7 @@ mod tests {
             .call(START_RUN, request(json!({ "approval_mode": "auto" })))
             .await;
         assert!(is_error(&auto));
-        assert!(text(&auto).contains("Argonauts app"), "{auto}");
+        assert!(text(&auto).contains("Argonauts Code app"), "{auto}");
         let auto_mode = wire
             .call(START_RUN, request(json!({ "mode": "auto" })))
             .await;
@@ -1048,11 +1056,14 @@ mod tests {
         assert!(!is_error(&fine), "{fine}");
         let started = &api.starts()[0];
         assert_eq!(started.approval_mode, None);
-        assert_eq!(started.front_end.as_deref(), Some("OpenClaw"));
+        assert_eq!(started.outside_agent.as_deref(), Some("OpenClaw"));
         assert_eq!(started.overrides, vec!["ui.theme=dark".to_owned()]);
         assert_eq!(started.mode, RunMode::Crew);
         assert_eq!(fine["structuredContent"]["run"], json!(RUN));
-        assert_eq!(fine["structuredContent"]["front_end_runs_today"], json!(1));
+        assert_eq!(
+            fine["structuredContent"]["outside_agent_runs_today"],
+            json!(1)
+        );
     }
 
     #[tokio::test]
@@ -1063,7 +1074,7 @@ mod tests {
         };
         let Setup { mut wire, api, .. } = connect(fake(), off, "Hermes").await;
         let result = wire
-            .call(START_RUN, json!({ "request": "x", "mode": "solo" }))
+            .call(START_RUN, json!({ "request": "x", "mode": "captain" }))
             .await;
         assert!(is_error(&result));
         assert!(text(&result).contains("mcp.start_runs"), "{result}");
@@ -1076,25 +1087,28 @@ mod tests {
         let Setup { mut wire, api, .. } = connect(fake(), capped, "Hermes").await;
         for _ in 0..2 {
             let result = wire
-                .call(START_RUN, json!({ "request": "x", "mode": "solo" }))
+                .call(START_RUN, json!({ "request": "x", "mode": "captain" }))
                 .await;
             assert!(!is_error(&result), "{result}");
         }
         let third = wire
-            .call(START_RUN, json!({ "request": "x", "mode": "solo" }))
+            .call(START_RUN, json!({ "request": "x", "mode": "captain" }))
             .await;
         assert!(is_error(&third));
         assert!(text(&third).contains("used up"), "{third}");
         assert_eq!(api.starts().len(), 2);
 
         let empty = wire
-            .call(START_RUN, json!({ "request": " \x1b[2J ", "mode": "solo" }))
+            .call(
+                START_RUN,
+                json!({ "request": " \x1b[2J ", "mode": "captain" }),
+            )
             .await;
         assert!(is_error(&empty), "{empty}");
     }
 
     #[tokio::test]
-    async fn mcp_start_the_conductor_refuses_gives_its_run_back() {
+    async fn mcp_start_argonauts_code_refuses_gives_its_run_back() {
         let refusing = FakeApi {
             start_refusal: Some("the repo is busy"),
             ..fake()
@@ -1110,7 +1124,7 @@ mod tests {
         } = connect(refusing, capped, "Hermes").await;
         for _ in 0..3 {
             let result = wire
-                .call(START_RUN, json!({ "request": "x", "mode": "solo" }))
+                .call(START_RUN, json!({ "request": "x", "mode": "captain" }))
                 .await;
             assert!(is_error(&result), "{result}");
             assert!(text(&result).contains("the repo is busy"), "{result}");
@@ -1239,13 +1253,13 @@ mod tests {
         let (read, write) = tokio::io::split(server);
         let err = serve_on(
             Arc::clone(&api) as Arc<dyn ConductorApi>,
-            FrontEndOptions::default(),
+            OutsideAgentOptions::default(),
             read,
             write,
         )
         .await
         .expect_err("an untrusted repo is refused");
-        assert!(err.to_string().contains("argonauts init"), "{err}");
+        assert!(err.to_string().contains("argonauts setup"), "{err}");
         let mut said = String::new();
         client.read_to_string(&mut said).await.expect("read");
         assert!(said.is_empty(), "the server answered: {said}");
@@ -1254,7 +1268,7 @@ mod tests {
         let (read, write) = tokio::io::split(server);
         let untrusted = UserServer::new(
             Arc::clone(&api) as Arc<dyn ConductorApi>,
-            FrontEndOptions {
+            OutsideAgentOptions {
                 repo_trusted: false,
                 ..trusted(McpSettings::default())
             },
@@ -1270,17 +1284,17 @@ mod tests {
         let result = wire.call(REQUEST_DECISION, json!({ "run": RUN })).await;
         assert!(!is_error(&result), "{result}");
         let said = text(&result);
-        assert!(said.contains("cp-001"), "{said}");
+        assert!(said.contains("approval-001"), "{said}");
         assert!(said.contains("merge"), "{said}");
         assert!(said.contains(&EVIDENCE[..12]), "{said}");
         assert!(!said.contains(&EVIDENCE[..13]), "{said}");
-        assert!(said.contains("Argonauts app"), "{said}");
+        assert!(said.contains("Argonauts Code app"), "{said}");
         assert!(
-            said.contains(&format!("argonauts approve {RUN} cp-001")),
+            said.contains(&format!("argonauts approve {RUN} approval-001")),
             "{said}"
         );
         assert!(
-            !said.contains("cp-002"),
+            !said.contains("approval-002"),
             "a withdrawn approval is listed: {said}"
         );
         let agent_only = AGENT_ONLY.iter().map(|&marker| marker.to_owned());
@@ -1289,7 +1303,7 @@ mod tests {
         }
         let waiting = &result["structuredContent"]["waiting"];
         assert_eq!(waiting.as_array().map(Vec::len), Some(1), "{result}");
-        assert_eq!(waiting[0]["checkpoint"], json!("cp-001"));
+        assert_eq!(waiting[0]["approval"], json!("approval-001"));
         assert_eq!(waiting[0]["evidence"], json!(&EVIDENCE[..12]));
         assert_eq!(result["structuredContent"]["needs_you"], json!(true));
         assert_code_written(REQUEST_DECISION, &result);
@@ -1390,7 +1404,7 @@ mod tests {
         assert_code_written(LIST_RUNS, &listed);
         let run = &listed["structuredContent"]["runs"][0];
         assert_eq!(run["run"], json!(RUN));
-        assert_eq!(run["state"], json!("parked"));
+        assert_eq!(run["state"], json!("waiting"));
         assert_eq!(run["needs_you"], json!(true));
         assert_eq!(run["spent"]["usd"], json!(1.25));
         let title = run["agent_text"].as_str().unwrap_or_default();
@@ -1400,9 +1414,9 @@ mod tests {
         let status = wire.call(RUN_STATUS, json!({ "run": RUN })).await;
         assert_code_written(RUN_STATUS, &status);
         let fields = &status["structuredContent"];
-        assert_eq!(fields["cards"][0]["card"], json!("task-001"));
-        assert_eq!(fields["cards"][0]["state"], json!("running"));
-        assert_eq!(fields["card_counts"]["running"], json!(1));
+        assert_eq!(fields["tasks"][0]["task"], json!("task-001"));
+        assert_eq!(fields["tasks"][0]["state"], json!("running"));
+        assert_eq!(fields["task_counts"]["running"], json!(1));
         assert!(
             fields["agent_text"]
                 .as_str()
@@ -1416,7 +1430,7 @@ mod tests {
         assert_eq!(fields["next_since"], json!(4));
         assert_eq!(fields["events"][0]["type"], json!("run"));
         assert_eq!(fields["events"][0]["event"], json!("pause_requested"));
-        assert_eq!(fields["events"][1]["checkpoint"], json!("cp-001"));
+        assert_eq!(fields["events"][1]["approval"], json!("approval-001"));
         assert_eq!(fields["events"][3]["event"], json!("withdrawn"));
 
         let many = FakeApi {
@@ -1514,8 +1528,8 @@ mod tests {
                 }
             }
             assert_eq!(
-                results[3].1["structuredContent"]["waiting"][0]["checkpoint"],
-                json!("cp-001")
+                results[3].1["structuredContent"]["waiting"][0]["approval"],
+                json!("approval-001")
             );
         }
     }
@@ -1534,20 +1548,20 @@ mod tests {
         now.lock().unwrap().as_mut().unwrap().mcp.runs_per_day = 10;
         for _ in 0..2 {
             let result = wire
-                .call(START_RUN, json!({ "request": "x", "mode": "solo" }))
+                .call(START_RUN, json!({ "request": "x", "mode": "captain" }))
                 .await;
             assert!(!is_error(&result), "{result}");
             assert_eq!(
-                result["structuredContent"]["front_end_runs_per_day"],
+                result["structuredContent"]["outside_agent_runs_per_day"],
                 json!(2)
             );
         }
         let third = wire
-            .call(START_RUN, json!({ "request": "x", "mode": "solo" }))
+            .call(START_RUN, json!({ "request": "x", "mode": "captain" }))
             .await;
         assert!(text(&third).contains("used up"), "{third}");
 
-        *now.lock().unwrap() = Some(FrontEndSettings {
+        *now.lock().unwrap() = Some(OutsideAgentSettings {
             mcp: McpSettings {
                 start_runs: StartRuns::Off,
                 guidance: false,
@@ -1564,7 +1578,7 @@ mod tests {
                 .any(|name| name == SEND_GUIDANCE || name == PAUSE_RUN)
         );
         let started = wire
-            .call(START_RUN, json!({ "request": "x", "mode": "solo" }))
+            .call(START_RUN, json!({ "request": "x", "mode": "captain" }))
             .await;
         assert!(text(&started).contains("mcp.start_runs"), "{started}");
         let guided = wire
@@ -1596,10 +1610,10 @@ mod tests {
         assert!(
             listed["error"]["message"]
                 .as_str()
-                .is_some_and(|message| message.contains("argonauts init"))
+                .is_some_and(|message| message.contains("argonauts setup"))
         );
         let every_tool = [
-            (START_RUN, json!({ "request": "x", "mode": "solo" })),
+            (START_RUN, json!({ "request": "x", "mode": "captain" })),
             (LIST_RUNS, json!({})),
             (RUN_STATUS, json!({ "run": RUN })),
             (RUN_EVENTS, json!({ "run": RUN })),
@@ -1639,11 +1653,11 @@ mod tests {
         assert_eq!(stricter(&tight, &loose), tight);
         assert_eq!(stricter(&loose, &loose), loose);
 
-        let budget = |start: &str, now: &str| shorter(&Span::new(start), &Span::new(now)).0;
-        assert_eq!(budget("2h", "30m"), "30m");
-        assert_eq!(budget("30m", "2h"), "30m");
-        assert_eq!(budget("none", "45s"), "45s");
-        assert_eq!(budget("45s", "none"), "45s");
-        assert_eq!(budget("60m", "soon"), "60m");
+        let limit = |start: &str, now: &str| shorter(&Span::new(start), &Span::new(now)).0;
+        assert_eq!(limit("2h", "30m"), "30m");
+        assert_eq!(limit("30m", "2h"), "30m");
+        assert_eq!(limit("none", "45s"), "45s");
+        assert_eq!(limit("45s", "none"), "45s");
+        assert_eq!(limit("60m", "soon"), "60m");
     }
 }

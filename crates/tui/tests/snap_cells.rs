@@ -161,7 +161,7 @@ fn session_header() {
     let lines = lines_of(&header(), 80);
     let all = text(&lines);
     for word in [
-        "Argonauts",
+        "Argonauts Code",
         "v0.0.1",
         "Claude Code · Opus 5.5 with xhigh effort · Council",
         "~/github/argonauts",
@@ -283,7 +283,7 @@ fn tool_calls() {
         ToolKind::Search,
         "Search",
         "rg --files-with-matches \"fn write_json\" crates/argonauts-core/src \
-         crates/argonauts-tui/src crates/argonauts-cli/src --glob '!target' --hidden",
+         crates/argonauts-tui/src crates/argonauts-app/src --glob '!target' --hidden",
     )
     .with_item(ToolItem::text("Found 3 files · /workflows to monitor"))
     .with_state(ToolState::Done);
@@ -335,10 +335,10 @@ fn the_bullet_color_carries_the_state() {
     let running = ToolCall::call(ToolKind::Read, "Read", "a");
     let bullet = |call: &ToolCall| style_of(&lines_of(call, 80), "●").and_then(|s| s.fg);
     assert_eq!(bullet(&done), fg(Role::Success));
-    assert_eq!(bullet(&failed), fg(Role::Error));
+    assert_eq!(bullet(&failed), fg(Role::Danger));
     let pending = bullet(&running);
     assert!(
-        pending != fg(Role::Success) && pending != fg(Role::Error),
+        pending != fg(Role::Success) && pending != fg(Role::Danger),
         "a running call is neither green nor red: {pending:?}"
     );
 
@@ -565,7 +565,7 @@ fn turn_end_recap_and_notices() {
     snapshot_widths("notice_error", &error);
     assert_eq!(
         style_of(&lines_of(&error, 80), "●").and_then(|s| s.fg),
-        fg(Role::Error)
+        fg(Role::Danger)
     );
 }
 

@@ -2,27 +2,15 @@
 source: crates/tui/tests/snap_overlays.rs
 expression: "screen(&mut view, width, 24, &state)"
 ---
-Resume a conversation, a run, or a session
-Pick one to carry on. Waiting runs never expire     1 conversation · 2 runs · 2 Claude Code sessions
-
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│     Kind     Id                      Title                  State          When  Spent  Sessions │
-│ ❯   session  claude-code:0a1b2c3d-1  Explain the input lo…             just now                  │
-│     chat     chat-002                what does export do?                2h ago                  │
-│     run      run-02                  Fix the flaky export…  ✗ crashed    3h ago  $0.46         2 │
-│     session  claude-code:0a1b2c3d-2  Rename the CSV writer               1d ago                  │
-│   ◆ run      run-03                  Add a --json flag to…  ◆ waiting    2d ago  $0.46         2 │
+│ Resume a conversation · in ~/code/export                                                         │
 │                                                                                                  │
+│     from              first prompt or title                             last used     length     │
+│ ❯   Claude Code       Explain the input loop                            just now      3 turns    │
+│     Argonauts Code    what does export do?                              2h ago        3 turns    │
+│     Argonauts Code    Fix the flaky export test                         3h ago        stopped    │
+│     Claude Code       Rename the CSV writer                             yesterday     3 turns    │
+│   ◆ Argonauts Code    Add a --json flag to export                       Sep 28        waiting    │
 │                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
+│ ↑↓ pick · enter continues it · b branches from it, the original untouched · / search · esc       │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-↑↓ select · ⏎ resume · / search · esc back

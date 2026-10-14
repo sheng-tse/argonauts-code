@@ -1,0 +1,68 @@
+{
+  "adapter": "antigravity-cli",
+  "program": "agy",
+  "name": "denied_resume_skip",
+  "args": [
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--dangerously-skip-permissions",
+    "--disable-slash-commands",
+    "--mode",
+    "accept-edits",
+    "--project",
+    "argonauts-live-f11-3",
+    "--model",
+    "gemini-3.6-flash-low",
+    "--effort",
+    "low",
+    "--conversation",
+    "d0f3d90b-0370-45fc-a3c3-d5ac13626764",
+    "--log-file",
+    "<live>/out/denied_resume_skip.agy.log"
+  ],
+  "date": "2026-10-04T02:26:34.452102Z",
+  "duration_ms": 5613,
+  "exit_code": 0,
+  "sanitized": "absolute paths replaced with <workdir> (the throwaway repo) and <live> (its check folder), Claude Code's folder slug with <workdir-slug>, the home directory with ~, and email addresses with <email>",
+  "cli_version": "1.2.16",
+  "also_matches": [],
+  "model": "gemini-3.6-flash-low",
+  "effort": "low",
+  "env_removed": [
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_PID",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY"
+  ],
+  "env_set": [
+    [
+      "AGY_CLI_DISABLE_AUTO_UPDATE",
+      "true"
+    ]
+  ],
+  "keep_stdin_open": false,
+  "role": "direct",
+  "stdin": [
+    {
+      "after_ms": 0,
+      "line": "{\"event\": \"user\", \"message\": {\"content\": \"You may run the commands you were refused.\"}}"
+    }
+  ],
+  "resume_session": "d0f3d90b-0370-45fc-a3c3-d5ac13626764",
+  "files_after": [
+    "README.md",
+    "notes.txt",
+    "shell.txt"
+  ],
+  "note": "Turn 2: denied_command's conversation resumed with --dangerously-skip-permissions and 'You may run the commands you were refused.' agy ran the same command, shell.txt holds hi, and denied_actions was null."
+}

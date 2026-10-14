@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use argonauts_core::app::ModelChoice;
 use argonauts_core::model_catalog::{ModelCatalog, display_name_from_id};
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::registry::{ModelEntry, RegistryKind};
 use argonauts_core::settings::Settings;
 use argonauts_registry::models::{CLAUDE_CODE_ALIASES, usual_efforts};
@@ -17,7 +17,7 @@ use argonauts_registry::models::{CLAUDE_CODE_ALIASES, usual_efforts};
 pub(super) struct Labels<'a> {
     catalog: ModelCatalog,
     listed: &'a [ModelEntry],
-    /// (harness, model) for each CLI whose default model is known from your settings or its
+    /// (CLI, model) for each CLI whose default model is known from your settings or its
     /// own list.
     defaults: &'a [(String, String)],
     endpoints: BTreeSet<String>,
@@ -33,7 +33,7 @@ impl<'a> Labels<'a> {
         let endpoints = listed
             .iter()
             .filter(|entry| entry.kind == RegistryKind::Endpoint)
-            .map(|entry| entry.id.worker.clone())
+            .map(|entry| entry.id.agent.clone())
             .chain(settings.endpoints.keys().cloned())
             .collect();
         Self {
@@ -51,13 +51,13 @@ impl<'a> Labels<'a> {
         choice: &mut ModelChoice,
     ) {
         let worker = choice.worker.clone();
-        let harness = worker.worker.as_str();
+        let cli = worker.agent.as_str();
         choice.alias = self.is_alias(&worker);
         let target = self.target(&worker);
-        let (efforts, default_effort) = self.levels(Some(&worker), target.as_ref(), harness);
+        let (efforts, default_effort) = self.levels(Some(&worker), target.as_ref(), cli);
         choice.efforts = efforts;
         choice.default_effort = default_effort;
-        choice.effort = effort_set(settings, role, harness);
+        choice.effort = effort_set(settings, role, cli);
         choice.runs = None;
         choice.recommended = false;
         choice.new = false;
@@ -93,7 +93,7 @@ impl<'a> Labels<'a> {
                 choice.name = label.name;
                 choice.description = label.description;
                 choice.recommended = label.recommended;
-                choice.new = label.new && !choice.older && !self.endpoints.contains(harness);
+                choice.new = label.new && !choice.older && !self.endpoints.contains(cli);
             }
         }
     }
@@ -104,7 +104,7 @@ impl<'a> Labels<'a> {
     pub(super) fn order(&self, a: &ModelChoice, b: &ModelChoice) -> Ordering {
         let place = place_in_group(a);
         place.cmp(&place_in_group(b)).then_with(|| {
-            if self.endpoints.contains(&a.worker.worker) {
+            if self.endpoints.contains(&a.worker.agent) {
                 return Ordering::Equal;
             }
             let newest = || self.catalog.newest_first(&a.worker, &b.worker);
@@ -125,13 +125,13 @@ impl<'a> Labels<'a> {
     /// The levels `worker` takes and its default. An alias or a default with levels of its own
     /// in the registry, as your `models.toml` may give it, takes those. Otherwise they're the
     /// levels of `target`, the model it runs, as the catalog says, else as the registry entry
-    /// does, else its harness's usual ones. The catalog's list may be empty, for a model that
+    /// does, else its CLI's usual ones. The catalog's list may be empty, for a model that
     /// takes none.
     pub(super) fn levels(
         &self,
-        worker: Option<&WorkerRef>,
-        target: Option<&WorkerRef>,
-        harness: &str,
+        worker: Option<&ModelRef>,
+        target: Option<&ModelRef>,
+        cli: &str,
     ) -> (Vec<String>, Option<String>) {
         let own = worker
             .filter(|worker| Some(*worker) != target)
@@ -156,7 +156,7 @@ impl<'a> Labels<'a> {
                     .filter(|levels| !levels.is_empty())
             })
             .unwrap_or_else(|| {
-                usual_efforts(harness)
+                usual_efforts(cli)
                     .iter()
                     .map(|level| (*level).to_owned())
                     .collect()
@@ -169,20 +169,20 @@ impl<'a> Labels<'a> {
     }
 
     /// The model `worker` runs: a CLI's default runs the model your settings or its own list
-    /// name, else the one the catalog says; an alias runs its family's newest; a model runs
+    /// name, else the one the catalog says; an alias runs its provider's newest; a model runs
     /// itself.
-    pub(super) fn target(&self, worker: &WorkerRef) -> Option<WorkerRef> {
+    pub(super) fn target(&self, worker: &ModelRef) -> Option<ModelRef> {
         let model = match worker.model.as_deref() {
             Some(_) if self.is_alias(worker) => return self.alias_target(worker),
             Some(_) => return Some(worker.clone()),
             None => self
                 .defaults
                 .iter()
-                .find(|(harness, _)| *harness == worker.worker)
+                .find(|(cli, _)| *cli == worker.agent)
                 .map(|(_, model)| model.clone())
                 .or_else(|| self.catalog.entry(worker)?.runs.clone())?,
         };
-        let runs = WorkerRef::new(worker.worker.clone(), Some(model));
+        let runs = ModelRef::new(worker.agent.clone(), Some(model));
         if self.is_alias(&runs) {
             return self.alias_target(&runs).or(Some(runs));
         }
@@ -191,11 +191,11 @@ impl<'a> Labels<'a> {
 
     /// Claude Code's aliases always are, though discovery lists them as models of their own.
     /// Any other name is an alias when the catalog says so and the CLI doesn't list it.
-    fn is_alias(&self, worker: &WorkerRef) -> bool {
+    fn is_alias(&self, worker: &ModelRef) -> bool {
         let Some(model) = worker.model.as_deref() else {
             return false;
         };
-        if worker.worker == "claude-code" && CLAUDE_CODE_ALIASES.contains(&model) {
+        if worker.agent == "claude-code" && CLAUDE_CODE_ALIASES.contains(&model) {
             return true;
         }
         self.catalog.is_alias(worker)
@@ -205,18 +205,18 @@ impl<'a> Labels<'a> {
                 .any(|entry| entry.id == *worker && entry.discovered)
     }
 
-    /// The current model the registry lists under that alias or of that family, which follows
+    /// The current model the registry lists under that alias or of that provider, which follows
     /// Anthropic's list day to day, else the one the catalog names.
-    fn alias_target(&self, alias: &WorkerRef) -> Option<WorkerRef> {
+    fn alias_target(&self, alias: &ModelRef) -> Option<ModelRef> {
         let name = alias.model.as_deref()?;
         let current = |entry: &&ModelEntry| {
-            entry.id.worker == alias.worker
+            entry.id.agent == alias.agent
                 && entry.id != *alias
                 && entry.discovered
                 && !entry.retired
                 && entry.successor.is_none()
         };
-        let family_word = |entry: &&ModelEntry| {
+        let provider_word = |entry: &&ModelEntry| {
             entry
                 .id
                 .model
@@ -228,25 +228,25 @@ impl<'a> Labels<'a> {
             .iter()
             .filter(current)
             .find(|entry| entry.aliases.iter().any(|known| known == name))
-            .or_else(|| self.listed.iter().filter(current).find(family_word));
+            .or_else(|| self.listed.iter().filter(current).find(provider_word));
         listed
             .map(|entry| entry.id.clone())
             .or_else(|| self.catalog.entry(alias).map(|entry| entry.id.clone()))
     }
 
-    fn listed_entry(&self, worker: &WorkerRef) -> Option<&ModelEntry> {
+    fn listed_entry(&self, worker: &ModelRef) -> Option<&ModelEntry> {
         self.listed
             .iter()
             .find(|entry| entry.id == *worker)
             .or_else(|| {
                 let model = worker.model.as_deref()?;
                 self.listed.iter().find(|entry| {
-                    entry.id.worker == worker.worker && entry.aliases.iter().any(|a| a == model)
+                    entry.id.agent == worker.agent && entry.aliases.iter().any(|a| a == model)
                 })
             })
     }
 
-    fn description(&self, target: Option<&WorkerRef>) -> Option<String> {
+    fn description(&self, target: Option<&ModelRef>) -> Option<String> {
         self.catalog.label(target?).description
     }
 }
@@ -264,12 +264,8 @@ fn place_in_group(choice: &ModelChoice) -> (u8, usize) {
     }
 }
 
-/// The level set now: the role's, else, as a chat turn reads it, the agent's.
-pub(super) fn effort_set(
-    settings: &Settings,
-    role: Option<RoleName>,
-    harness: &str,
-) -> Option<String> {
+/// The level set now: the role's, else, as a conversation turn reads it, the agent's.
+pub(super) fn effort_set(settings: &Settings, role: Option<RoleName>, cli: &str) -> Option<String> {
     settings
         .roles
         .get(&role.unwrap_or(RoleName::Main))
@@ -277,7 +273,7 @@ pub(super) fn effort_set(
         .or_else(|| {
             settings
                 .agents
-                .get(harness)
+                .get(cli)
                 .and_then(|agent| agent.effort.clone())
         })
 }

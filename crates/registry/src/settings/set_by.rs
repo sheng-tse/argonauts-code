@@ -19,7 +19,7 @@ pub(crate) struct SetBy {
 #[derive(Debug, Clone)]
 struct Origin {
     layer: &'static str,
-    /// The file path, `--set key=value`, or the preset.
+    /// The file path, `--set key=value`, or the workflow.
     source: String,
 }
 

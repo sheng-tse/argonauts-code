@@ -1,8 +1,8 @@
-//! The run host: one `argonauts supervise` process per run. It owns the run's lock, journal,
-//! socket, and agent processes, and exits when the run finishes or parks.
+//! The run host: one `argonauts host` process per run. It owns the run's lock, journal,
+//! socket, and agent processes, and exits when the run finishes or waits.
 
+pub(crate) mod clis;
 mod door;
-pub(crate) mod harnesses;
 pub(crate) mod log_views;
 mod orphans;
 mod relay;
@@ -12,7 +12,7 @@ mod server;
 pub(crate) mod services;
 mod sink;
 mod start;
-mod time_budget;
+mod time_limit;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -23,8 +23,9 @@ use argonauts_core::control::{ControlReply, ControlRequest};
 use argonauts_core::engine::{
     EngineContext, EngineExit, EventSink as _, RepoContext, RunEngine, Services,
 };
-use argonauts_core::events::run::{ParkReason, RunLifecycle, RunMode, RunOutcome};
+use argonauts_core::events::run::{RunLifecycle, RunMode, RunOutcome, WaitReason};
 use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::hidden_git::CLEARED_STALE_LOCK;
 use argonauts_core::journal::{Journal, RunLock, read_all, read_since_snapshot};
 use argonauts_core::layout::run_files;
 use argonauts_core::paths::write_private_file;
@@ -35,25 +36,25 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
-pub(crate) use self::server::SUPERVISOR_EXITING;
+pub(crate) use self::server::RUN_HOST_EXITING;
 
 use self::door::Door;
 use self::relay::{Queue, Receipt};
 use self::server::ServerState;
 use self::sink::JournalSink;
 use crate::ancestry::{self, AgentMarkers};
-use crate::env::AppEnv;
-use crate::live_registry::{self, LiveSupervisor};
+use crate::env::{AppEnv, FolderGit};
+use crate::live_registry::{self, LiveRunHost};
 use crate::run_files::{self as files, SettingsRecord, StartRecord};
 use crate::usage_ledger::UsageLedger;
 
-const SOURCE: &str = "conductor";
+const SOURCE: &str = "argonauts-code";
 /// Live events kept for a slow subscriber before it reads the rest from the journal.
 const EVENT_BUFFER: usize = 1024;
 /// One command at a time, so the host knows which ones an engine took.
 const INBOX: usize = 1;
-/// `supervisor.park_grace` when it doesn't parse.
-const DEFAULT_PARK_GRACE: Duration = Duration::from_secs(10);
+/// `run_host.wait_grace` when it doesn't parse.
+const DEFAULT_WAIT_GRACE: Duration = Duration::from_secs(10);
 /// How long an exiting host waits to log what became of the pending requests.
 const REPORT_WAIT: Duration = Duration::from_secs(2);
 
@@ -63,11 +64,11 @@ pub(crate) type EngineFactory = Arc<dyn Fn(&Settings, RunMode) -> Box<dyn RunEng
 pub(crate) struct HostOptions {
     pub paths: Paths,
     pub engine: EngineFactory,
-    /// `supervisor.park_grace` when `None`.
-    pub park_grace: Option<Duration>,
+    /// `run_host.wait_grace` when `None`.
+    pub wait_grace: Option<Duration>,
     /// Off only for tests that host a run in their own process, whose parent is the test runner.
     pub check_ancestry: bool,
-    /// Cancelled on SIGTERM: the engine stops its sessions after their tool call and parks, and
+    /// Cancelled on SIGTERM: the engine stops its sessions after their tool call and waits, and
     /// the host exits without waiting out the grace.
     pub shutdown: CancellationToken,
     /// Hold the computer's sleep off while this process hosts the run, when the run's
@@ -85,7 +86,7 @@ impl HostOptions {
             engine: Arc::new(|settings: &Settings, mode: RunMode| {
                 argonauts_crew::engine_for(settings, mode)
             }),
-            park_grace: None,
+            wait_grace: None,
             check_ancestry: true,
             shutdown: CancellationToken::new(),
             keep_awake: true,
@@ -95,15 +96,15 @@ impl HostOptions {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum HostExit {
-    /// Another supervisor holds the lock, so this one left quietly.
+    /// Another run host holds the lock, so this one left quietly.
     AlreadyHosted,
     Finished(RunOutcome),
-    Parked(ParkReason),
+    Waiting(WaitReason),
     Crashed(String),
 }
 
-/// `argonauts supervise`: exits 0 when the run finishes or parks, and fails when it crashed.
-pub(crate) async fn supervise(repo_root: &Path, run: &RunId) -> anyhow::Result<()> {
+/// `argonauts host`: exits 0 when the run finishes or waits, and fails when it crashed.
+pub(crate) async fn host(repo_root: &Path, run: &RunId) -> anyhow::Result<()> {
     let options = HostOptions::production()?;
     let mut terminate = signal(SignalKind::terminate()).context("listening for SIGTERM")?;
     let shutdown = options.shutdown.clone();
@@ -112,15 +113,15 @@ pub(crate) async fn supervise(repo_root: &Path, run: &RunId) -> anyhow::Result<(
             shutdown.cancel();
         }
     });
-    match supervise_with(repo_root, run, options).await? {
+    match host_with(repo_root, run, options).await? {
         HostExit::Crashed(reason) => anyhow::bail!("run {run} crashed: {reason}"),
-        HostExit::AlreadyHosted | HostExit::Finished(_) | HostExit::Parked(_) => Ok(()),
+        HostExit::AlreadyHosted | HostExit::Finished(_) | HostExit::Waiting(_) => Ok(()),
     }
 }
 
 /// Takes the lock, serves the socket, kills orphans, queues pending requests, and drives the
-/// engine, calling it again when a request arrives within the park grace.
-pub(crate) async fn supervise_with(
+/// engine, calling it again when a request arrives within the wait grace.
+pub(crate) async fn host_with(
     repo_root: &Path,
     run: &RunId,
     options: HostOptions,
@@ -146,7 +147,7 @@ pub(crate) async fn supervise_with(
     // The run works for as long as this process hosts it, and the hold ends with the
     // process however it ends.
     let _awake = (keep_awake && host.settings.awake.while_working)
-        .then(crate::keep_awake::while_hosting)
+        .then(|| crate::keep_awake::while_hosting(&host.settings.awake))
         .flatten();
     // Clients get their Welcome now, and their requests queue while the slow start runs.
     let serving = Serving::start(&host);
@@ -196,7 +197,7 @@ impl Serving {
     }
 }
 
-/// One supervisor's hold on its run, from the lock to exit.
+/// One run host's hold on its run, from the lock to exit.
 struct Host {
     env: AppEnv,
     run: RunId,
@@ -233,14 +234,14 @@ impl Host {
         let (pid, started) = ancestry::own_process();
         let token = files::read_token(&run_dir).context("reading the approval token")?;
         write_private_file(&run_dir.join(run_files::PID), format!("{pid}\n").as_bytes())
-            .context("writing the supervisor's pid file")?;
+            .context("writing the run host's pid file")?;
         let journal_path = run_dir.join(run_files::EVENTS);
         let journal = Journal::open(&journal_path, lock)?;
         let fresh = journal.next_seq() == 0;
         let (events, _) = broadcast::channel(EVENT_BUFFER);
         let sink = JournalSink::new(journal, run.clone(), events.clone())
             .counting_sessions(options.paths.clone(), pid);
-        let entry = LiveSupervisor {
+        let entry = LiveRunHost {
             pid,
             start_time: started,
             repo_root: env.repo_root.clone(),
@@ -248,7 +249,7 @@ impl Host {
             sessions: 0,
         };
         if let Err(err) = live_registry::register(&options.paths, &entry) {
-            tracing::warn!("adding this supervisor to registry.json: {err:#}");
+            tracing::warn!("adding this run host to registry.json: {err:#}");
         }
         let (door, queue) = Door::new();
         let state = Arc::new(ServerState {
@@ -283,7 +284,7 @@ impl Host {
         Ok((host, queue))
     }
 
-    /// A new run's `RunStarted`, then the agents a crashed supervisor left. Before `RunStarted`
+    /// A new run's `RunStarted`, then the agents a crashed run host left. Before `RunStarted`
     /// there's no run to record a failure in, so it's an error.
     async fn begin(&self, recorded: &SettingsRecord) -> anyhow::Result<()> {
         if self.fresh {
@@ -295,6 +296,19 @@ impl Host {
                 .start_notes
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = notes;
+        } else if matches!(self.env.git(), FolderGit::Hidden(_)) {
+            // A stop in the middle of a write left its lock, which every git call of the run
+            // taken up again would fail on.
+            let root = &self.env.repo_root;
+            let writers = start::other_writers(&self.env);
+            match off_the_runtime(|| crate::hidden_git::clear_locks(root, writers)) {
+                Ok(true) => self.note(NoteLevel::Warn, CLEARED_STALE_LOCK.to_owned()),
+                Ok(false) => {}
+                Err(err) => {
+                    self.note(NoteLevel::Error, format!("{err:#}"));
+                    return Err(err);
+                }
+            }
         }
         let killed = orphans::kill_orphans(&self.run_dir, &self.options.paths).await?;
         let stopped = match killed.len() {
@@ -305,7 +319,7 @@ impl Host {
         if let Some(stopped) = stopped {
             self.note(
                 NoteLevel::Warn,
-                format!("Stopped {stopped} a crashed supervisor left running."),
+                format!("Stopped {stopped} a crashed run host left running."),
             );
         }
         Ok(())
@@ -353,12 +367,12 @@ impl Host {
             Err(reason) => return self.crash(reason),
         };
         let mut reporter = tokio::spawn(report_pending(self.sink.clone(), receipts));
-        let time_budget = self.pause_when_time_is_spent();
+        let time_limit = self.pause_when_time_is_spent();
 
         let exit = self
             .drive(&repo, &services, started.mode, history, reopen, queue)
             .await;
-        if let Some(timer) = time_budget {
+        if let Some(timer) = time_limit {
             timer.abort();
         }
         self.settle(queue, &exit);
@@ -424,7 +438,7 @@ impl Host {
             // Only `/resume` of a stopped run defers a `CancelPause`, so the engine goes on.
             reopen |= matches!(request, ControlRequest::CancelPause);
             // Nobody waits for what a take-back returns, so its messages stay queued rather
-            // than vanish. Clients ask a live supervisor instead.
+            // than vanish. Clients ask a live run host instead.
             if let ControlRequest::TakeBack { .. } = request {
                 self.note(
                     NoteLevel::Warn,
@@ -448,7 +462,7 @@ impl Host {
         Ok((receipts, reopen))
     }
 
-    /// Runs the engine until it finishes or crashes, or parks with no request inside the grace.
+    /// Runs the engine until it finishes or crashes, or waits with no request inside the grace.
     /// `reopen` goes to the first engine only.
     async fn drive(
         &self,
@@ -460,14 +474,14 @@ impl Host {
         queue: &mut Queue,
     ) -> HostExit {
         let state = &self.state;
-        let grace = self.options.park_grace.unwrap_or_else(|| {
+        let grace = self.options.wait_grace.unwrap_or_else(|| {
             self.settings
-                .supervisor
-                .park_grace
+                .run_host
+                .wait_grace
                 .parse()
                 .ok()
                 .flatten()
-                .unwrap_or(DEFAULT_PARK_GRACE)
+                .unwrap_or(DEFAULT_WAIT_GRACE)
         });
         let shutdown = &self.options.shutdown;
         let mut history = Some(history);
@@ -491,7 +505,7 @@ impl Host {
                 history,
                 sink: self.sink.clone(),
                 inbox: engine_inbox,
-                vendor_events: services.health.subscribe(),
+                agent_events: services.health.subscribe(),
                 services: services.clone(),
                 shutdown: shutdown.clone(),
                 reopen: std::mem::take(&mut reopen),
@@ -506,37 +520,37 @@ impl Host {
                     tracing::error!("run {} crashed: {reason}", self.run);
                     return HostExit::Crashed(reason);
                 }
-                Ok(EngineExit::Parked(reason)) => reason,
+                Ok(EngineExit::Waiting(reason)) => reason,
                 Err(err) => return self.crash(format!("the engine failed: {err}")),
             };
             if shutdown.is_cancelled() {
-                return HostExit::Parked(reason);
+                return HostExit::Waiting(reason);
             }
-            // A request the engine didn't take before it parked is one that came in the grace.
+            // A request the engine didn't take before it began to wait came in the grace.
             // An engine that takes nothing gets one more try, not a loop.
             if !queue.is_empty() && (taken > 0 || !retried_idle) {
                 retried_idle = taken == 0;
                 continue;
             }
-            state.door.park();
-            answer_parked(state, queue).await;
+            state.door.wait();
+            answer_waiting(state, queue).await;
             tokio::select! {
                 () = state.door.woken() => {}
                 () = tokio::time::sleep(grace) => {
-                    if state.door.close_if_parked() {
-                        return HostExit::Parked(reason);
+                    if state.door.close_if_waiting() {
+                        return HostExit::Waiting(reason);
                     }
                     // A request woke it just as the grace ran out.
                     state.door.woken().await;
                 }
-                () = shutdown.cancelled() => return HostExit::Parked(reason),
+                () = shutdown.cancelled() => return HostExit::Waiting(reason),
             }
             retried_idle = false;
         }
     }
 
     /// Answers every request still queued as the host exits. What a client would have saved for
-    /// the next supervisor goes to `pending-answers.jsonl`; the rest are refused.
+    /// the next run host goes to `pending-answers.jsonl`; the rest are refused.
     fn settle(&self, queue: &mut Queue, exit: &HostExit) {
         self.state.door.close();
         for entry in queue.close() {
@@ -551,7 +565,7 @@ impl Host {
                 return server::error("the run was merged, so it takes no more requests");
             }
             HostExit::Finished(_) => true,
-            HostExit::AlreadyHosted | HostExit::Parked(_) | HostExit::Crashed(_) => false,
+            HostExit::AlreadyHosted | HostExit::Waiting(_) | HostExit::Crashed(_) => false,
         };
         let stops = matches!(
             request,
@@ -560,14 +574,14 @@ impl Host {
         if finished && stops {
             return server::error("the run has already finished");
         }
-        // No engine took it, so the client can send it to the next supervisor.
+        // No engine took it, so the client can send it to the next run host.
         if !relay::deferrable(request) {
-            return server::error(SUPERVISOR_EXITING);
+            return server::error(RUN_HOST_EXITING);
         }
         match files::append_pending(&self.run_dir, request) {
             Ok(()) => relay::deferred_reply(request),
             Err(err) => server::error(format!(
-                "the run's supervisor exited, and saving the request for the next one failed: \
+                "the run's run host exited, and saving the request for the next one failed: \
                  {err:#}"
             )),
         }
@@ -630,7 +644,7 @@ impl Host {
             tracing::warn!("removing {}: {err}", pid.display());
         }
         if let Err(err) = live_registry::unregister(&self.options.paths, self.pid) {
-            tracing::warn!("removing this supervisor from registry.json: {err:#}");
+            tracing::warn!("removing this run host from registry.json: {err:#}");
         }
     }
 }
@@ -645,13 +659,13 @@ fn off_the_runtime<T>(work: impl FnOnce() -> T) -> T {
     }
 }
 
-/// Answers the queued requests a parked run doesn't wake for, from the run's files. The rest
+/// Answers the queued requests a waiting run doesn't wake for, from the run's files. The rest
 /// wait for the next engine.
-async fn answer_parked(state: &ServerState, queue: &mut Queue) {
+async fn answer_waiting(state: &ServerState, queue: &mut Queue) {
     let mut waiting = Vec::new();
     for entry in queue.take_all() {
-        if server::while_parked(&entry.request).is_some() {
-            let reply = server::parked_reply(state, &entry.request).await;
+        if server::while_waiting(&entry.request).is_some() {
+            let reply = server::waiting_reply(state, &entry.request).await;
             entry.answer(reply);
         } else {
             waiting.push(entry);
@@ -681,23 +695,27 @@ fn refused_while_stopped(what: &str, message: &str) -> String {
 fn describe(request: &ControlRequest) -> String {
     match request {
         ControlRequest::Answer { answer, .. } => format!("Your answer to {}", answer.id),
-        ControlRequest::Reassign { card, to, .. } => format!("Moving {card} to {to}"),
+        ControlRequest::Reassign { task, to, .. } => format!("Moving {task} to {to}"),
         ControlRequest::Guidance { .. } => "Your guidance".to_owned(),
         ControlRequest::Mention { .. } => "Your message".to_owned(),
         ControlRequest::ApprovalMode { .. } => "The approval mode change".to_owned(),
-        ControlRequest::TakeOverEnded { card, .. } => {
-            format!("The end of your take-over of {card}")
+        ControlRequest::TakeOverEnded { task, .. } => {
+            format!("The end of your take-over of {task}")
         }
         ControlRequest::TakeBack { .. } => "Taking your messages back".to_owned(),
         ControlRequest::Stop => "Stopping the run".to_owned(),
-        ControlRequest::StopSession { session } => format!("Stopping {session}"),
+        ControlRequest::StopSession {
+            session,
+            again: false,
+        } => format!("Stopping {session}"),
+        ControlRequest::StopSession { session, .. } => format!("Starting {session} over"),
         ControlRequest::SpotCheck { id, .. } => format!("Your spot check of {id}"),
         ControlRequest::Goal { .. } => "Your change to the goal".to_owned(),
         _ => "A request".to_owned(),
     }
 }
 
-/// A note in the run's log, or in the supervisor log when even that fails.
+/// A note in the run's log, or in the run host log when even that fails.
 fn note(sink: &JournalSink, level: NoteLevel, text: String) {
     let kind = RunEventKind::Note(Note {
         level,
@@ -714,13 +732,13 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Instant;
 
-    use argonauts_core::CardId;
+    use argonauts_core::TaskId;
     use argonauts_core::api::{DiffScope, StartRun};
     use argonauts_core::control::ControlRequest;
     use argonauts_core::future::BoxFuture;
     use argonauts_core::input::MentionTarget;
     use argonauts_core::journal::read_all;
-    use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
+    use argonauts_core::names::{ModelRef, RoleName, SessionKey};
     use argonauts_core::settings::approvals::ApprovalMode;
     use argonauts_testkit::TempRepo;
 
@@ -763,17 +781,17 @@ mod tests {
                 run: run.clone(),
                 request: StartRun {
                     request: "tidy the readme\nand nothing else".to_owned(),
-                    mode: RunMode::Solo,
+                    mode: RunMode::Captain,
                     forced: true,
                     estimate: None,
-                    triage: None,
-                    chat_turn: None,
+                    captain_or_crew: None,
+                    conversation_turn: None,
                     continues: None,
                     overrides: Vec::new(),
                     include_uncommitted: false,
                     main_agent: None,
                     approval_mode: None,
-                    front_end: None,
+                    outside_agent: None,
                     instructions: Vec::new(),
                     request_settings: Vec::new(),
                     required_steps: Vec::new(),
@@ -813,7 +831,7 @@ mod tests {
                         script: script.clone(),
                     }) as Box<dyn RunEngine>
                 }),
-                park_grace: Some(grace),
+                wait_grace: Some(grace),
                 check_ancestry: false,
                 shutdown: CancellationToken::new(),
                 keep_awake: false,
@@ -833,18 +851,18 @@ mod tests {
             true
         }
 
-        async fn supervise(&self, options: HostOptions) -> HostExit {
-            supervise_with(self.repo.root(), &self.run, options)
+        async fn host(&self, options: HostOptions) -> HostExit {
+            host_with(self.repo.root(), &self.run, options)
                 .await
                 .unwrap()
         }
 
-        /// Supervises once the last supervisor's lock is free. A child that another test forks
+        /// Hosts the run once the last run host's lock is free. A child that another test forks
         /// can hold a copy of the lock until its exec, even a copy taken only to check it.
-        async fn supervise_again(&self, grace: Duration, script: Script) -> HostExit {
+        async fn host_again(&self, grace: Duration, script: Script) -> HostExit {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                let exit = self.supervise(self.options(grace, script.clone())).await;
+                let exit = self.host(self.options(grace, script.clone())).await;
                 if exit != HostExit::AlreadyHosted || Instant::now() > deadline {
                     return exit;
                 }
@@ -873,8 +891,8 @@ mod tests {
         Arc::new(move |_, _| Box::pin(async move { EngineExit::Finished(outcome) }))
     }
 
-    fn park() -> Script {
-        Arc::new(|_, _| Box::pin(async { EngineExit::Parked(ParkReason::Paused) }))
+    fn wait() -> Script {
+        Arc::new(|_, _| Box::pin(async { EngineExit::Waiting(WaitReason::Paused) }))
     }
 
     fn started_count(events: &[RunEvent]) -> usize {
@@ -891,28 +909,28 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn every_pending_frame_kind_is_applied_first_then_removed() {
         let test = TestRun::new();
-        let card = CardId::new("task-001").unwrap();
+        let task = TaskId::new("task-001").unwrap();
         let session = SessionKey::numbered(1);
         let mut pending = vec![
             answer(TOKEN),
             answer("not the token"),
             ControlRequest::Guidance {
                 text: "prefer small commits".to_owned(),
-                front_end: None,
+                outside_agent: None,
             },
             ControlRequest::Mention {
-                target: MentionTarget::Card(card.clone()),
+                target: MentionTarget::Task(task.clone()),
                 text: "check the edge case".to_owned(),
             },
             ControlRequest::Reassign {
-                card: card.clone(),
-                to: WorkerRef::new("codex", None),
+                task: task.clone(),
+                to: ModelRef::new("codex", None),
                 rule_override: None,
                 token: None,
             },
             ControlRequest::Reassign {
-                card: card.clone(),
-                to: WorkerRef::new("codex", None),
+                task: task.clone(),
+                to: ModelRef::new("codex", None),
                 rule_override: Some("review.other_provider".to_owned()),
                 token: Some(TOKEN.to_owned()),
             },
@@ -921,11 +939,11 @@ mod tests {
                 token: TOKEN.to_owned(),
             },
             ControlRequest::TakeOver {
-                card: card.clone(),
+                task: task.clone(),
                 token: TOKEN.to_owned(),
             },
             ControlRequest::TakeOverEnded {
-                card: card.clone(),
+                task: task.clone(),
                 token: TOKEN.to_owned(),
             },
             ControlRequest::TakeBack {
@@ -933,10 +951,13 @@ mod tests {
             },
             ControlRequest::Pause {
                 now: false,
-                front_end: None,
+                outside_agent: None,
             },
             ControlRequest::CancelPause,
-            ControlRequest::StopSession { session },
+            ControlRequest::StopSession {
+                session,
+                again: false,
+            },
             ControlRequest::Steer {
                 session: SessionKey::numbered(2),
                 text: "look again".to_owned(),
@@ -944,8 +965,8 @@ mod tests {
             },
             ControlRequest::Status,
             ControlRequest::Diff {
-                card: card.clone(),
-                scope: DiffScope::Card,
+                task: task.clone(),
+                scope: DiffScope::Task,
             },
             ControlRequest::Raw {
                 session: SessionKey::numbered(1),
@@ -977,7 +998,7 @@ mod tests {
             })
         };
         let exit = test
-            .supervise(test.options(Duration::from_millis(50), script))
+            .host(test.options(Duration::from_millis(50), script))
             .await;
         assert_eq!(exit, HostExit::Finished(RunOutcome::Merged));
 
@@ -1036,7 +1057,7 @@ mod tests {
         assert!(base.join("README.md").is_file(), "the base worktree exists");
         assert!(!files::socket_path(&test.run_dir).exists());
         assert!(!test.run_dir.join(run_files::PID).exists());
-        assert!(live_registry::live_supervisors(&test.paths).is_empty());
+        assert!(live_registry::live_run_hosts(&test.paths).is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1046,7 +1067,7 @@ mod tests {
         let test = TestRun::new();
         let guidance = ControlRequest::Guidance {
             text: "use the v2 API".to_owned(),
-            front_end: None,
+            outside_agent: None,
         };
         files::append_pending(&test.run_dir, &guidance).unwrap();
         let path = test.run_dir.join(run_files::PENDING_ANSWERS);
@@ -1061,7 +1082,7 @@ mod tests {
         std::fs::create_dir_all(socket.join("in-the-way")).unwrap();
 
         let exit = test
-            .supervise(test.options(Duration::ZERO, finish(RunOutcome::Merged)))
+            .host(test.options(Duration::ZERO, finish(RunOutcome::Merged)))
             .await;
         assert!(matches!(exit, HostExit::Crashed(_)), "{exit:?}");
         assert_eq!(test.rounds.load(Ordering::SeqCst), 0);
@@ -1081,9 +1102,7 @@ mod tests {
                 })
             })
         };
-        let exit = test
-            .supervise_again(Duration::from_millis(50), script)
-            .await;
+        let exit = test.host_again(Duration::from_millis(50), script).await;
         assert_eq!(exit, HostExit::Finished(RunOutcome::Merged));
         assert_eq!(*log.lock().unwrap(), ["guidance"]);
         assert!(test.events().iter().any(|event| matches!(
@@ -1100,11 +1119,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_second_supervisor_returns_already_hosted() {
+    async fn a_second_run_host_returns_already_hosted() {
         let test = TestRun::new();
         let held = RunLock::try_acquire(&test.run_dir).unwrap().unwrap();
         let exit = test
-            .supervise(test.options(Duration::ZERO, finish(RunOutcome::Merged)))
+            .host(test.options(Duration::ZERO, finish(RunOutcome::Merged)))
             .await;
         assert_eq!(exit, HostExit::AlreadyHosted);
         assert_eq!(test.rounds.load(Ordering::SeqCst), 0);
@@ -1113,13 +1132,13 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn parks_and_exits_after_the_grace_then_resumes_from_the_log() {
+    async fn waits_and_exits_after_the_grace_then_resumes_from_the_log() {
         let test = TestRun::new();
         let began = Instant::now();
         let exit = test
-            .supervise(test.options(Duration::from_millis(200), park()))
+            .host(test.options(Duration::from_millis(200), wait()))
             .await;
-        assert_eq!(exit, HostExit::Parked(ParkReason::Paused));
+        assert_eq!(exit, HostExit::Waiting(WaitReason::Paused));
         assert!(began.elapsed() >= Duration::from_millis(200));
         assert_eq!(test.rounds.load(Ordering::SeqCst), 1);
         assert!(test.lock_released().await, "the lock is released");
@@ -1134,7 +1153,7 @@ mod tests {
             })
         };
         let exit = test
-            .supervise(test.options(Duration::from_secs(10), script))
+            .host(test.options(Duration::from_secs(10), script))
             .await;
         assert_eq!(exit, HostExit::Finished(RunOutcome::Stopped));
         assert_eq!(
@@ -1146,10 +1165,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_front_end_run_pauses_once_its_time_budget_is_spent() {
+    async fn a_outside_agent_run_pauses_once_its_time_limit_is_spent() {
         let test = TestRun::new();
         let mut start = files::read_start(&test.run_dir).unwrap();
-        start.request.front_end = Some("other-tool".to_owned());
+        start.request.outside_agent = Some("other-tool".to_owned());
         files::write_start(&test.run_dir, &start).unwrap();
         let mut recorded = files::read_settings(&test.run_dir).unwrap();
         recorded.settings.mcp.run_limit = argonauts_core::settings::Span::new("1s");
@@ -1158,7 +1177,7 @@ mod tests {
             Box::pin(async move {
                 match context.inbox.recv().await {
                     Some(argonauts_core::engine::EngineCommand::Pause { now: false }) => {
-                        EngineExit::Parked(ParkReason::Paused)
+                        EngineExit::Waiting(WaitReason::Paused)
                     }
                     _ => EngineExit::Crashed("expected a pause".to_owned()),
                 }
@@ -1166,9 +1185,9 @@ mod tests {
         });
         let began = Instant::now();
         let exit = test
-            .supervise(test.options(Duration::from_millis(50), script))
+            .host(test.options(Duration::from_millis(50), script))
             .await;
-        assert_eq!(exit, HostExit::Parked(ParkReason::Paused));
+        assert_eq!(exit, HostExit::Waiting(WaitReason::Paused));
         assert!(began.elapsed() >= Duration::from_secs(1));
         let notes = notes(&test.events());
         assert!(
@@ -1189,7 +1208,7 @@ mod tests {
                 let log = log.clone();
                 Box::pin(async move {
                     if round == 0 {
-                        return EngineExit::Parked(ParkReason::Checkpoint);
+                        return EngineExit::Waiting(WaitReason::Approval);
                     }
                     if let Some(command) = context.inbox.recv().await {
                         answer_command(command, &log);
@@ -1200,7 +1219,7 @@ mod tests {
         };
         let options = test.options(Duration::from_secs(30), script);
         let began = Instant::now();
-        let (exit, reply) = tokio::join!(test.supervise(options), async {
+        let (exit, reply) = tokio::join!(test.host(options), async {
             let mut client = test.connect().await;
             client.call(2, answer(TOKEN)).await
         });
@@ -1215,22 +1234,22 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn shutdown_parks_without_waiting_out_the_grace() {
+    async fn shutdown_waits_without_waiting_out_the_grace() {
         let test = TestRun::new();
         let script: Script = Arc::new(|_, context: EngineContext| {
             Box::pin(async move {
                 context.shutdown.cancelled().await;
-                EngineExit::Parked(ParkReason::Paused)
+                EngineExit::Waiting(WaitReason::Paused)
             })
         });
         let options = test.options(Duration::from_secs(30), script);
         let shutdown = options.shutdown.clone();
         let began = Instant::now();
-        let (exit, ()) = tokio::join!(test.supervise(options), async {
+        let (exit, ()) = tokio::join!(test.host(options), async {
             test.connect().await;
             shutdown.cancel();
         });
-        assert_eq!(exit, HostExit::Parked(ParkReason::Paused));
+        assert_eq!(exit, HostExit::Waiting(WaitReason::Paused));
         assert!(began.elapsed() < Duration::from_secs(30));
     }
 
@@ -1239,12 +1258,12 @@ mod tests {
         let test = TestRun::new();
         let crashed: Script =
             Arc::new(|_, _| Box::pin(async { EngineExit::Crashed("the disk is full".to_owned()) }));
-        let exit = test.supervise(test.options(Duration::ZERO, crashed)).await;
+        let exit = test.host(test.options(Duration::ZERO, crashed)).await;
         assert_eq!(exit, HostExit::Crashed("the disk is full".to_owned()));
 
         let test = TestRun::new();
         let panicked: Script = Arc::new(|_, _| Box::pin(async { panic!("engine bug") }));
-        let exit = test.supervise(test.options(Duration::ZERO, panicked)).await;
+        let exit = test.host(test.options(Duration::ZERO, panicked)).await;
         assert!(
             matches!(&exit, HostExit::Crashed(reason) if reason.contains("engine bug")),
             "{exit:?}"
@@ -1282,20 +1301,20 @@ mod tests {
             })
         });
         let exit = test
-            .supervise(test.options(Duration::from_millis(50), script))
+            .host(test.options(Duration::from_millis(50), script))
             .await;
         assert_eq!(exit, HostExit::Finished(RunOutcome::Stopped));
         let notes = notes(&test.events());
         assert!(
             notes.iter().any(|note| note.level == NoteLevel::Warn
-                && note.text.contains("answer to cp")
+                && note.text.contains("answer to approval-001")
                 && note.text.contains("the evidence changed")),
             "{notes:?}"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_request_no_engine_took_is_kept_for_the_next_supervisor() {
+    async fn a_request_no_engine_took_is_kept_for_the_next_run_host() {
         let test = TestRun::new();
         let mode = ControlRequest::ApprovalMode {
             mode: ApprovalMode::Supervised,
@@ -1303,9 +1322,9 @@ mod tests {
         };
         files::append_pending(&test.run_dir, &mode).unwrap();
         let exit = test
-            .supervise(test.options(Duration::from_millis(50), park()))
+            .host(test.options(Duration::from_millis(50), wait()))
             .await;
-        assert_eq!(exit, HostExit::Parked(ParkReason::Paused));
+        assert_eq!(exit, HostExit::Waiting(WaitReason::Paused));
         assert_eq!(
             test.rounds.load(Ordering::SeqCst),
             2,
@@ -1325,9 +1344,9 @@ mod tests {
                 let seen = seen.clone();
                 Box::pin(async move {
                     seen.lock().unwrap().push(context.reopen);
-                    // The first parks without taking the request, so the next one gets it.
+                    // The first waits without taking the request, so the next one gets it.
                     if round == 0 {
-                        return EngineExit::Parked(ParkReason::Paused);
+                        return EngineExit::Waiting(WaitReason::Paused);
                     }
                     let _ = context.inbox.recv().await;
                     EngineExit::Finished(RunOutcome::Stopped)
@@ -1335,7 +1354,7 @@ mod tests {
             })
         };
         let exit = test
-            .supervise(test.options(Duration::from_millis(50), script))
+            .host(test.options(Duration::from_millis(50), script))
             .await;
         assert_eq!(exit, HostExit::Finished(RunOutcome::Stopped));
         assert_eq!(*seen.lock().unwrap(), [true, false]);
@@ -1348,7 +1367,7 @@ mod tests {
         std::fs::remove_file(test.run_dir.join(run_files::START)).unwrap();
         let options = test.options(Duration::ZERO, finish(RunOutcome::Merged));
         assert!(
-            supervise_with(test.repo.root(), &test.run, options)
+            host_with(test.repo.root(), &test.run, options)
                 .await
                 .is_err()
         );
@@ -1374,7 +1393,7 @@ mod tests {
         });
         let options = test.options(Duration::ZERO, script);
         assert_eq!(
-            test.supervise(options).await,
+            test.host(options).await,
             HostExit::Finished(RunOutcome::Merged)
         );
         let lines = UsageLedger::new(&test.paths).read_since(None);
@@ -1385,7 +1404,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_subscriber_gets_the_last_event_before_the_supervisor_exits() {
+    async fn a_subscriber_gets_the_last_event_before_the_run_host_exits() {
         let test = TestRun::new();
         let subscribed = Arc::new(tokio::sync::Notify::new());
         let script: Script = {
@@ -1404,7 +1423,7 @@ mod tests {
             })
         };
         let options = test.options(Duration::from_secs(10), script);
-        let (exit, last) = tokio::join!(test.supervise(options), async {
+        let (exit, last) = tokio::join!(test.host(options), async {
             let mut client = test.connect().await;
             let subscribe = ControlRequest::Subscribe {
                 from_seq: 0,
@@ -1427,11 +1446,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_failed_start_keeps_pending_requests_for_the_next_supervisor() {
+    async fn a_failed_start_keeps_pending_requests_for_the_next_run_host() {
         let test = TestRun::new();
         let guidance = ControlRequest::Guidance {
             text: "prefer small commits".to_owned(),
-            front_end: None,
+            outside_agent: None,
         };
         files::append_pending(&test.run_dir, &guidance).unwrap();
         files::append_pending(&test.run_dir, &ControlRequest::Stop).unwrap();
@@ -1447,11 +1466,11 @@ mod tests {
         std::fs::write(&worktrees, "in the way").unwrap();
 
         let exit = test
-            .supervise(test.options(Duration::ZERO, finish(RunOutcome::Merged)))
+            .host(test.options(Duration::ZERO, finish(RunOutcome::Merged)))
             .await;
         assert!(matches!(exit, HostExit::Crashed(_)), "{exit:?}");
         assert_eq!(test.rounds.load(Ordering::SeqCst), 0);
-        // Set aside and left there, as a supervisor that crashed right then would leave them.
+        // Set aside and left there, as a run host that crashed right then would leave them.
         let kept = files::set_aside_pending(&test.run_dir).unwrap();
         assert_eq!(kept.requests, vec![guidance.clone(), ControlRequest::Stop]);
         drop(kept);
@@ -1476,7 +1495,7 @@ mod tests {
             })
         };
         let exit = test
-            .supervise(test.options(Duration::from_millis(50), script))
+            .host(test.options(Duration::from_millis(50), script))
             .await;
         assert_eq!(exit, HostExit::Finished(RunOutcome::Stopped));
         assert_eq!(*log.lock().unwrap(), ["guidance", "stop"]);
@@ -1518,7 +1537,7 @@ mod tests {
             let _client = Client::connect(&address).await;
             began.elapsed()
         });
-        let exit = test.supervise(options).await;
+        let exit = test.host(options).await;
         let welcomed = welcomed.await.unwrap();
         assert_eq!(exit, HostExit::Finished(RunOutcome::Merged));
         assert!(

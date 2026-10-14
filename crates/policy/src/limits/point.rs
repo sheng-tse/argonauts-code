@@ -1,11 +1,11 @@
 //! The hard limits the evidence can show at a decision point. Only `agent_paths` count;
-//! `conductor_paths` are the conductor's own commits and are never a violation. Time passing
-//! never is one either, since a parked run never expires.
+//! `conductor_paths` are Argonauts Code's own commits and are never a violation. Time passing
+//! never is one either, since a waiting run never expires.
 //!
-//! Irreversible actions and self-approval have no facts here: the approver checks its own
+//! Irreversible actions and self-approval have no facts here: the judge checks its own
 //! independence from `DecisionPoint.authors`.
 
-use argonauts_core::events::checkpoint::CheckpointKind;
+use argonauts_core::events::approval::ApprovalKind;
 use argonauts_core::policy::{DecisionPoint, EvidencePacket, HardLimit, Violation};
 use argonauts_core::settings::Settings;
 
@@ -21,7 +21,7 @@ pub fn check(
     run_start: &Settings,
 ) -> Vec<Violation> {
     let facts = &evidence.facts;
-    let merge = point.kind == CheckpointKind::Merge;
+    let merge = point.kind == ApprovalKind::Merge;
     let mut violations = Vec::new();
 
     // The packet binds what gets approved, so one built for another kind of point covers
@@ -36,7 +36,7 @@ pub fn check(
             Vec::new(),
         ));
     }
-    let names_commits = matches!(point.kind, CheckpointKind::Plan | CheckpointKind::Merge);
+    let names_commits = matches!(point.kind, ApprovalKind::Plan | ApprovalKind::Merge);
     if names_commits && facts.subject.is_none() {
         violations.push(violation(
             HardLimit::NoSubject,
@@ -44,12 +44,12 @@ pub fn check(
             Vec::new(),
         ));
     }
-    if merge && facts.gates_passed != Some(true) {
-        let detail = match facts.gates_passed {
+    if merge && facts.checks_passed != Some(true) {
+        let detail = match facts.checks_passed {
             Some(_) => "a check failed",
             None => "the checks didn't run",
         };
-        violations.push(violation(HardLimit::GatesFailed, detail, Vec::new()));
+        violations.push(violation(HardLimit::ChecksFailed, detail, Vec::new()));
     }
 
     violations.extend(protected_paths(evidence, settings));
@@ -73,7 +73,7 @@ pub fn check(
     if !locks.is_empty() {
         violations.push(violation(
             HardLimit::Lockfile,
-            "an agent changes lockfiles, which only the conductor updates",
+            "an agent changes lockfiles, which only Argonauts Code updates",
             locks,
         ));
     }
@@ -117,7 +117,7 @@ pub fn check(
     if facts.acceptance_tests_valid == Some(false) {
         violations.push(violation(
             HardLimit::TestPassesOnStubs,
-            "an acceptance test passes on the stubs or fails on the integration branch",
+            "an acceptance test passes on the stubs or fails on the run branch",
             Vec::new(),
         ));
     }
@@ -147,7 +147,7 @@ pub fn check(
 }
 
 /// Turning the sandbox back on mid-run covers only new sessions. The ones that already ran
-/// had none, so every checkpoint of that run still asks.
+/// had none, so every approval of that run still asks.
 fn no_sandbox(settings: &Settings, run_start: &Settings) -> Option<Violation> {
     let (now, started) = (settings.sandbox.mode, run_start.sandbox.mode);
     let detail = if now.ours_off() {

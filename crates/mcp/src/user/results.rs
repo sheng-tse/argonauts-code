@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use argonauts_core::api::{ApiError, RunSummary, StatusSummary};
-use argonauts_core::events::checkpoint::{CheckpointEvent, CheckpointOpened};
+use argonauts_core::events::approval::{ApprovalEvent, ApprovalOpened};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::redact::redact_secrets;
 use argonauts_core::sanitize::sanitize_for_terminal;
@@ -19,15 +19,15 @@ use time::format_description::well_known::Rfc3339;
 
 /// Agent text is cut to this many characters.
 pub const AGENT_TEXT_MAX: usize = 280;
-/// Runs and cards past these counts are left out, and a `more_*` count says how many.
+/// Runs and tasks past these counts are left out, and a `more_*` count says how many.
 pub const MAX_RUNS: usize = 50;
-pub const MAX_CARDS: usize = 50;
-/// Characters of a checkpoint's evidence hash shown, enough to tell two apart.
+pub const MAX_TASKS: usize = 50;
+/// Characters of an approval's evidence hash shown, enough to tell two apart.
 pub const EVIDENCE_PREFIX: usize = 12;
-/// Error text from the conductor can quote agent text, so it's cut like it.
+/// Error text from Argonauts Code can quote agent text, so it's cut like it.
 const ERROR_MAX: usize = 300;
 
-/// Agent text as a front end may see it, or `None` when `share` keeps it home.
+/// Agent text as an outside agent may see it, or `None` when `share` keeps it home.
 pub fn agent_text(text: &str, share: Share) -> Option<String> {
     match share {
         Share::StatusOnly => None,
@@ -108,7 +108,7 @@ pub fn run_summary(run: &RunSummary, share: Share) -> Value {
     with_agent_text(object(fields), &run.title, share)
 }
 
-/// Newest first, as the conductor lists them.
+/// Newest first, as Argonauts Code lists them.
 pub fn run_list(runs: &[RunSummary], share: Share) -> Value {
     json!({
         "runs": runs.iter().take(MAX_RUNS).map(|run| run_summary(run, share)).collect::<Vec<_>>(),
@@ -117,7 +117,7 @@ pub fn run_list(runs: &[RunSummary], share: Share) -> Value {
 }
 
 /// One run's status. `summary` is its row in the run list, for its state and spend. The plan,
-/// decisions, and recent lines stay home; only goal lines and card titles go out as agent text.
+/// decisions, and recent lines stay home; only goal lines and task titles go out as agent text.
 pub fn run_status(
     run: &RunId,
     status: &StatusSummary,
@@ -127,7 +127,7 @@ pub fn run_status(
     let mut fields = match summary {
         Some(summary) => object(run_summary(summary, Share::StatusOnly)),
         None => {
-            let spent = status.budget.as_ref().map(|budget| spend(&budget.spent));
+            let spent = status.spend.as_ref().map(|limit| spend(&limit.spent));
             object(json!({
                 "run": run.as_str(),
                 "needs_you": !status.waiting.is_empty(),
@@ -136,35 +136,35 @@ pub fn run_status(
         }
     };
     let mut counts: BTreeMap<String, u32> = BTreeMap::new();
-    for card in &status.cards {
-        if let Value::String(state) = tag(&card.state) {
+    for task in &status.tasks {
+        if let Value::String(state) = tag(&task.state) {
             *counts.entry(state).or_default() += 1;
         }
     }
-    let cards: Vec<Value> = status
-        .cards
+    let tasks: Vec<Value> = status
+        .tasks
         .iter()
-        .take(MAX_CARDS)
-        .map(|card| {
+        .take(MAX_TASKS)
+        .map(|task| {
             let fields = json!({
-                "card": card.card.as_str(),
-                "state": tag(&card.state),
-                "owner": card.owner.as_ref().map(|owner| clean(&owner.worker, 64)),
+                "task": task.task.as_str(),
+                "state": tag(&task.state),
+                "worker": task.worker.as_ref().map(|worker| clean(&worker.agent, 64)),
             });
-            with_agent_text(object(fields), &card.title, share)
+            with_agent_text(object(fields), &task.title, share)
         })
         .collect();
-    fields.insert("cards".to_owned(), Value::Array(cards));
-    fields.insert("card_counts".to_owned(), json!(counts));
+    fields.insert("tasks".to_owned(), Value::Array(tasks));
+    fields.insert("task_counts".to_owned(), json!(counts));
     fields.insert(
-        "more_cards".to_owned(),
-        json!(status.cards.len().saturating_sub(MAX_CARDS)),
+        "more_tasks".to_owned(),
+        json!(status.tasks.len().saturating_sub(MAX_TASKS)),
     );
     fields.insert("decisions".to_owned(), json!(status.decisions.len()));
     with_agent_text(fields, &status.goal.join(" / "), share)
 }
 
-/// One event: its position, time, type, and ids. Only a checkpoint's title goes out as agent
+/// One event: its position, time, type, and ids. Only an approval's title goes out as agent
 /// text; messages, reports, and tool output stay home.
 pub fn event(event: &RunEvent, share: Share) -> Value {
     let (kind, name) = event_names(&event.kind);
@@ -176,8 +176,8 @@ pub fn event(event: &RunEvent, share: Share) -> Value {
     if let Some(name) = name {
         fields.insert("event".to_owned(), Value::String(name));
     }
-    if let Some(card) = &event.card_id {
-        fields.insert("card".to_owned(), Value::String(card.as_str().to_owned()));
+    if let Some(task) = &event.task_id {
+        fields.insert("task".to_owned(), Value::String(task.as_str().to_owned()));
     }
     if let Some(session) = &event.session {
         fields.insert(
@@ -185,31 +185,28 @@ pub fn event(event: &RunEvent, share: Share) -> Value {
             Value::String(session.as_str().to_owned()),
         );
     }
-    let RunEventKind::Checkpoint(checkpoint) = &event.kind else {
+    let RunEventKind::Approval(approval) = &event.kind else {
         return Value::Object(fields);
     };
-    let id = match checkpoint {
-        CheckpointEvent::Opened(opened) => {
-            fields.insert("checkpoint_kind".to_owned(), tag(&opened.kind));
+    let id = match approval {
+        ApprovalEvent::Opened(opened) => {
+            fields.insert("approval_kind".to_owned(), tag(&opened.kind));
             fields.insert("needs_you".to_owned(), Value::Bool(opened.needs_you));
             fields.insert(
-                "checkpoint".to_owned(),
+                "approval".to_owned(),
                 Value::String(opened.id.as_str().to_owned()),
             );
             return with_agent_text(fields, &opened.title, share);
         }
-        CheckpointEvent::Checked(check) => &check.id,
-        CheckpointEvent::Decided(decided) => &decided.id,
-        CheckpointEvent::Withdrawn { id, .. } | CheckpointEvent::SpotCheckQueued { id } => id,
+        ApprovalEvent::Checked(check) => &check.id,
+        ApprovalEvent::Decided(decided) => &decided.id,
+        ApprovalEvent::Withdrawn { id, .. } | ApprovalEvent::SpotCheckQueued { id } => id,
     };
-    fields.insert(
-        "checkpoint".to_owned(),
-        Value::String(id.as_str().to_owned()),
-    );
+    fields.insert("approval".to_owned(), Value::String(id.as_str().to_owned()));
     Value::Object(fields)
 }
 
-/// The event's type and, for types tagged by event name, that name, such as `checkpoint` and
+/// The event's type and, for types tagged by event name, that name, such as `approval` and
 /// `opened`.
 fn event_names(kind: &RunEventKind) -> (&'static str, Option<String>) {
     use RunEventKind as Kind;
@@ -219,18 +216,18 @@ fn event_names(kind: &RunEventKind) -> (&'static str, Option<String>) {
         Kind::Goal(inner) => ("goal", inner_tag(inner)),
         Kind::Plan(inner) => ("plan", inner_tag(inner)),
         Kind::Divide(inner) => ("divide", inner_tag(inner)),
-        Kind::Card(inner) => ("card", inner_tag(inner)),
+        Kind::Task(inner) => ("task", inner_tag(inner)),
         Kind::Session(inner) => ("session", inner_tag(inner)),
         Kind::Agent(_) => ("agent", None),
-        Kind::Gate(_) => ("gate", None),
+        Kind::Check(_) => ("check", None),
         Kind::Review(inner) => ("review", inner_tag(inner)),
-        Kind::Integration(inner) => ("integration", inner_tag(inner)),
-        Kind::Checkpoint(inner) => ("checkpoint", inner_tag(inner)),
-        Kind::Handoff(inner) => ("handoff", inner_tag(inner)),
-        Kind::Vendor(inner) => ("vendor", inner_tag(inner)),
-        Kind::Budget(inner) => ("budget", inner_tag(inner)),
+        Kind::Merge(inner) => ("merge", inner_tag(inner)),
+        Kind::Approval(inner) => ("approval", inner_tag(inner)),
+        Kind::Fallback(inner) => ("fallback", inner_tag(inner)),
+        Kind::AgentStatus(inner) => ("agent_id", inner_tag(inner)),
+        Kind::Spend(inner) => ("spend", inner_tag(inner)),
         Kind::Blackboard(inner) => ("blackboard", inner_tag(inner)),
-        Kind::Retro(inner) => ("retro", inner_tag(inner)),
+        Kind::RunReview(inner) => ("run_review", inner_tag(inner)),
         Kind::Note(_) => ("note", None),
         Kind::Workflow(inner) => ("workflow", inner_tag(inner)),
     }
@@ -258,41 +255,41 @@ pub fn evidence_prefix(evidence_sha256: &str) -> String {
         .collect()
 }
 
-/// The shell command that answers `checkpoint`, run by you in a terminal.
-pub fn approve_command(run: &RunId, checkpoint: &CheckpointOpened) -> String {
-    format!("argonauts approve {run} {}", checkpoint.id)
+/// The shell command that answers `approval`, run by you in a terminal.
+pub fn approve_command(run: &RunId, approval: &ApprovalOpened) -> String {
+    format!("argonauts approve {run} {}", approval.id)
 }
 
 /// What's waiting in `run`, as text for the client to show and as fields. It says where to
 /// answer and never answers anything.
-pub fn decision(run: &RunId, waiting: &[CheckpointOpened], share: Share) -> (String, Value) {
+pub fn decision(run: &RunId, waiting: &[ApprovalOpened], share: Share) -> (String, Value) {
     let how = format!(
-        "Answer it in the Argonauts app, or run `argonauts approve {run} <approval>` in a \
+        "Answer it in the Argonauts Code app, or run `argonauts approve {run} <approval>` in a \
          terminal. This server can't answer it."
     );
     let items: Vec<Value> = waiting
         .iter()
-        .map(|checkpoint| {
+        .map(|approval| {
             let fields = json!({
-                "checkpoint": checkpoint.id.as_str(),
-                "kind": tag(&checkpoint.kind),
-                "evidence": evidence_prefix(&checkpoint.evidence_sha256),
-                "needs_you": checkpoint.needs_you,
-                "answer_with": approve_command(run, checkpoint),
+                "approval": approval.id.as_str(),
+                "kind": tag(&approval.kind),
+                "evidence": evidence_prefix(&approval.evidence_sha256),
+                "needs_you": approval.needs_you,
+                "answer_with": approve_command(run, approval),
             });
-            with_agent_text(object(fields), &checkpoint.title, share)
+            with_agent_text(object(fields), &approval.title, share)
         })
         .collect();
     let fields = json!({
         "run": run.as_str(),
-        "needs_you": waiting.iter().any(|checkpoint| checkpoint.needs_you),
+        "needs_you": waiting.iter().any(|approval| approval.needs_you),
         "waiting": items,
         "how_to_answer": how,
     });
     (decision_text(run, waiting), fields)
 }
 
-fn decision_text(run: &RunId, waiting: &[CheckpointOpened]) -> String {
+fn decision_text(run: &RunId, waiting: &[ApprovalOpened]) -> String {
     if waiting.is_empty() {
         return format!("Nothing in run {run} is waiting for a decision.");
     }
@@ -300,19 +297,19 @@ fn decision_text(run: &RunId, waiting: &[CheckpointOpened]) -> String {
         1 => format!("Run {run} is waiting for a decision."),
         n => format!("Run {run} is waiting for {n} decisions."),
     }];
-    for checkpoint in waiting {
-        let kind = tag(&checkpoint.kind);
-        let kind = kind.as_str().unwrap_or("checkpoint");
-        let deciding = if checkpoint.needs_you {
+    for approval in waiting {
+        let kind = tag(&approval.kind);
+        let kind = kind.as_str().unwrap_or("approval");
+        let deciding = if approval.needs_you {
             ""
         } else {
             " Its approval rules are still deciding."
         };
         lines.push(format!(
-            "- {} ({kind}, evidence {}): answer it in the Argonauts app, or run `{}`.{deciding}",
-            checkpoint.id,
-            evidence_prefix(&checkpoint.evidence_sha256),
-            approve_command(run, checkpoint),
+            "- {} ({kind}, evidence {}): answer it in the Argonauts Code app, or run `{}`.{deciding}",
+            approval.id,
+            evidence_prefix(&approval.evidence_sha256),
+            approve_command(run, approval),
         ));
     }
     lines.push("This server can say what's waiting but never answer it.".to_owned());

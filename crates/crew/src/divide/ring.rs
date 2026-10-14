@@ -1,20 +1,20 @@
-//! The review ring: each card's reviewers (`review.per_task`) come from other model families
-//! than its owner (`review.other_provider`). Chores (integration, docs) rotate.
+//! The review ring: each task's reviewers (`review.per_task`) come from other model providers
+//! than its worker (`review.other_provider`). Chores (merge, docs) rotate.
 
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 
-/// `candidates` are `(worker, family)`, the owner already left out. Rotates by `offset` so the
+/// `candidates` are `(worker, provider)`, the worker already left out. Rotates by `offset` so the
 /// load spreads. Fewer than `per_task` come back when too few fit.
 pub fn reviewers(
-    owner_family: &str,
-    candidates: &[(WorkerRef, String)],
+    worker_provider: &str,
+    candidates: &[(ModelRef, String)],
     per_task: usize,
     other_provider: bool,
     offset: usize,
-) -> Vec<WorkerRef> {
-    let mut pool: Vec<&WorkerRef> = Vec::new();
-    for (worker, family) in candidates {
-        if (!other_provider || family != owner_family) && !pool.contains(&worker) {
+) -> Vec<ModelRef> {
+    let mut pool: Vec<&ModelRef> = Vec::new();
+    for (worker, provider) in candidates {
+        if (!other_provider || provider != worker_provider) && !pool.contains(&worker) {
             pool.push(worker);
         }
     }
@@ -34,19 +34,19 @@ pub fn reviewers(
 mod tests {
     use super::*;
 
-    fn crew() -> Vec<(WorkerRef, String)> {
+    fn crew() -> Vec<(ModelRef, String)> {
         [
-            ("claude-code/opus", "claude"),
-            ("codex", "gpt"),
-            ("agy/gemini-3.6-pro", "gemini"),
-            ("claude-code/sonnet", "claude"),
+            ("claude-code/opus", "anthropic"),
+            ("codex", "openai"),
+            ("agy/gemini-3.6-pro", "google"),
+            ("claude-code/sonnet", "anthropic"),
         ]
         .into_iter()
-        .map(|(worker, family)| (worker.parse().unwrap(), family.to_owned()))
+        .map(|(worker, provider)| (worker.parse().unwrap(), provider.to_owned()))
         .collect()
     }
 
-    fn names(workers: &[WorkerRef]) -> Vec<String> {
+    fn names(workers: &[ModelRef]) -> Vec<String> {
         workers.iter().map(ToString::to_string).collect()
     }
 
@@ -54,33 +54,33 @@ mod tests {
     fn divide_review_ring_other_provider() {
         let crew = crew();
         for offset in 0..6 {
-            for reviewer in reviewers("claude", &crew, 2, true, offset) {
-                assert!(!reviewer.worker.starts_with("claude"), "offset {offset}");
+            for reviewer in reviewers("anthropic", &crew, 2, true, offset) {
+                assert!(!reviewer.agent.starts_with("claude"), "offset {offset}");
             }
         }
-        assert_eq!(names(&reviewers("claude", &crew, 1, true, 0)), ["codex"]);
+        assert_eq!(names(&reviewers("anthropic", &crew, 1, true, 0)), ["codex"]);
         assert_eq!(
-            names(&reviewers("claude", &crew, 1, true, 1)),
+            names(&reviewers("anthropic", &crew, 1, true, 1)),
             ["agy/gemini-3.6-pro"]
         );
         assert_eq!(
-            names(&reviewers("claude", &crew, 2, true, 1)),
+            names(&reviewers("anthropic", &crew, 2, true, 1)),
             ["agy/gemini-3.6-pro", "codex"]
         );
-        // Only one other family: one reviewer, however many are asked for.
+        // Only one other provider: one reviewer, however many are asked for.
         assert_eq!(
-            names(&reviewers("gpt", &crew[..2], 2, true, 0)),
+            names(&reviewers("openai", &crew[..2], 2, true, 0)),
             ["claude-code/opus"]
         );
-        // A one-family crew has no ring unless the setting allows the same family.
+        // A one-provider crew has no ring unless the setting allows the same provider.
         let same: Vec<_> = crew
             .iter()
-            .filter(|(_, f)| f == "claude")
+            .filter(|(_, provider)| provider == "anthropic")
             .cloned()
             .collect();
-        assert!(reviewers("claude", &same, 1, true, 0).is_empty());
+        assert!(reviewers("anthropic", &same, 1, true, 0).is_empty());
         assert_eq!(
-            names(&reviewers("claude", &same, 1, false, 1)),
+            names(&reviewers("anthropic", &same, 1, false, 1)),
             ["claude-code/sonnet"]
         );
     }

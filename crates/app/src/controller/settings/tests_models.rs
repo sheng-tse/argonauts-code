@@ -1,5 +1,5 @@
 //! The model lists behind `/model` and `/effort`: only installed CLIs, each model's own effort
-//! levels, the background refresh, and the scope card's one note for a session override.
+//! levels, the background refresh, and the scope question's one note for a session override.
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -9,13 +9,13 @@ use std::time::Duration;
 use argonauts_core::app::{AppEvent, ModelChoice, ViewData};
 use argonauts_core::input::SlashCommand;
 use argonauts_core::model_picker::{EffortSlider, ModelsLevel};
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::registry::ModelRegistry as _;
 use argonauts_core::settings::ui::NarratorMode;
 use argonauts_core::settings::{SettingScope, Settings};
 use argonauts_registry::models::discovery::{claude_code_entries, parse_model_pages};
 use argonauts_registry::models::{FileRegistry, ModelCache};
-use argonauts_testkit::{FakeDirectory, FakeWorker};
+use argonauts_testkit::{FakeDirectory, FakeRunner};
 
 use super::tests::Fixture;
 use super::*;
@@ -23,10 +23,10 @@ use crate::controller::Internal;
 
 const CODEX_MODELS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../registry/tests/fixtures/codex/0.158.0/debug-models.json"
+    "/../registry/tests/fixtures/codex/debug-models.json"
 );
 
-/// A stand-in `codex` that lists the recorded models for `codex debug models` and nothing else.
+/// A fake `codex` that lists the recorded models for `codex debug models` and nothing else.
 fn fake_codex(dir: &Path) -> PathBuf {
     let path = dir.join("codex");
     let script =
@@ -38,10 +38,10 @@ fn fake_codex(dir: &Path) -> PathBuf {
 
 const AGY_MODELS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../registry/tests/fixtures/agy/1.2.13/models.json"
+    "/../registry/tests/fixtures/agy/models.json"
 );
 
-/// A stand-in `agy` that lists the recorded models and nothing else.
+/// A fake `agy` that lists the recorded models and nothing else.
 fn fake_agy(dir: &Path) -> PathBuf {
     let path = dir.join("agy");
     let script = format!(
@@ -61,12 +61,12 @@ fn codex_and_agy(fixture: &mut Fixture, dir: &Path) {
     fixture.ctx.services.registry =
         Arc::new(FileRegistry::from_files(&settings, None, None).with_cache(&cache));
     let directory = Arc::new(FakeDirectory::new());
-    directory.add(FakeWorker::harness("codex", "gpt"));
-    directory.add(FakeWorker::harness("antigravity-cli", "gemini"));
+    directory.add(FakeRunner::cli("codex", "openai"));
+    directory.add(FakeRunner::cli("antigravity-cli", "google"));
     fixture.ctx.services.workers = directory;
 }
 
-/// `/effort`'s slider for the default agent.
+/// `/effort`'s slider for the main agent.
 fn effort_slider(fixture: &Fixture) -> EffortSlider {
     let command = SlashCommand::Effort {
         role: None,
@@ -85,8 +85,8 @@ fn two_installed(fixture: &mut Fixture, dir: &Path) -> PathBuf {
     let cache = dir.join("home").join("models-cache.json");
     fixture.ctx.services.registry = registry(dir, &cache);
     let directory = Arc::new(FakeDirectory::new());
-    directory.add(FakeWorker::harness("claude-code", "claude"));
-    directory.add(FakeWorker::harness("codex", "gpt"));
+    directory.add(FakeRunner::cli("claude-code", "anthropic"));
+    directory.add(FakeRunner::cli("codex", "openai"));
     fixture.ctx.services.workers = directory;
     cache
 }
@@ -133,7 +133,7 @@ async fn model_lists_only_installed_clis() {
     );
 
     let only_claude = Arc::new(FakeDirectory::new());
-    only_claude.add(FakeWorker::harness("claude-code", "claude"));
+    only_claude.add(FakeRunner::cli("claude-code", "anthropic"));
     fixture.ctx.services.workers = only_claude;
     let offered = workers(&models::choices(&fixture.ctx, Some(RoleName::Reviewer)));
     assert!(
@@ -161,7 +161,7 @@ async fn a_refresh_brings_the_open_model_list_up_to_date() {
     };
     assert_eq!((refreshed, refreshing, update), (None, true, false));
     assert!(!workers(&choices).iter().any(|w| w.starts_with("codex/")));
-    // A model whose levels aren't known yet gets its harness's usual ones.
+    // A model whose levels aren't known yet gets its CLI's usual ones.
     assert_eq!(
         efforts(&choices, "codex"),
         ["low", "medium", "high", "xhigh", "max"]
@@ -195,7 +195,7 @@ async fn a_refresh_brings_the_open_model_list_up_to_date() {
         offered.contains(&"codex/gpt-6-sol".to_owned()),
         "{offered:?}"
     );
-    // Each harness's models stay together, Claude Code's aliases first.
+    // Each CLI's models stay together, Claude Code's aliases first.
     let last_claude = offered.iter().rposition(|w| w.starts_with("claude-code"));
     let first_codex = offered.iter().position(|w| w.starts_with("codex"));
     assert!(last_claude < first_codex, "{offered:?}");
@@ -218,7 +218,7 @@ async fn a_refresh_brings_the_open_model_list_up_to_date() {
 
 const ANTHROPIC_PAGES: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../registry/tests/fixtures/anthropic/2026-10-01"
+    "/../registry/tests/fixtures/anthropic"
 );
 
 /// A cache holding Claude Code's models as Anthropic's saved pages list them, read within the
@@ -249,7 +249,7 @@ fn offered<'a>(choices: &'a [ModelChoice], worker: &str) -> &'a ModelChoice {
 async fn each_cli_lists_its_default_aliases_models_then_older_ones() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(false, |repo| {
-        std::fs::write(repo.global_config(), "main_agent = \"claude-code/opus\"\n").unwrap();
+        std::fs::write(repo.global_config(), "crew.main = \"claude-code/opus\"\n").unwrap();
     });
     let cache = dir.path().join("home").join("models-cache.json");
     cache_with_claude_models(&cache);
@@ -284,7 +284,7 @@ async fn each_cli_lists_its_default_aliases_models_then_older_ones() {
     assert!(
         choices[first_older..]
             .iter()
-            .take_while(|c| c.worker.worker == "claude-code")
+            .take_while(|c| c.worker.agent == "claude-code")
             .all(|c| c.older),
         "older models come last in their CLI's group"
     );
@@ -311,7 +311,7 @@ async fn each_cli_lists_its_default_aliases_models_then_older_ones() {
         .registry
         .list()
         .into_iter()
-        .find(|entry| entry.id.worker == "codex" && entry.cli_default)
+        .find(|entry| entry.id.agent == "codex" && entry.cli_default)
         .and_then(|entry| entry.id.model)
         .expect("Codex marks its default");
     assert_eq!(
@@ -320,7 +320,7 @@ async fn each_cli_lists_its_default_aliases_models_then_older_ones() {
     );
     let codex: Vec<&ModelChoice> = choices
         .iter()
-        .filter(|c| c.worker.worker == "codex")
+        .filter(|c| c.worker.agent == "codex")
         .collect();
     assert_eq!(
         codex[0].worker.to_string(),
@@ -351,7 +351,7 @@ async fn a_cli_model_you_set_is_what_its_default_runs() {
 async fn effort_offers_the_levels_the_chosen_model_reports() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(false, |repo| {
-        std::fs::write(repo.global_config(), "main_agent = \"codex/gpt-5.5\"\n").unwrap();
+        std::fs::write(repo.global_config(), "crew.main = \"codex/gpt-5.5\"\n").unwrap();
     });
     two_installed(&mut fixture, dir.path());
     let (worker, levels) = models::efforts(&fixture.ctx, None);
@@ -365,13 +365,13 @@ async fn effort_offers_the_levels_the_chosen_model_reports() {
 }
 
 #[tokio::test]
-async fn the_scope_card_names_a_session_override_once() {
+async fn the_scope_question_names_a_session_override_once() {
     let mut fixture = Fixture::new(false, |_| {});
     narrator_mode(&mut fixture.ctx, &mut fixture.state, NarratorMode::Live)
         .await
         .unwrap();
     let id = fixture.ctx.next_choice_id();
-    let card = scope::scope_question(
+    let question = scope::scope_question(
         &fixture.ctx,
         id,
         "ui.narrator",
@@ -380,15 +380,16 @@ async fn the_scope_card_names_a_session_override_once() {
     );
     let said = |text: &str| text.contains("override sets this until you quit");
     assert_eq!(
-        card.body.iter().filter(|line| said(line)).count(),
+        question.body.iter().filter(|line| said(line)).count(),
         1,
-        "{card:#?}"
+        "{question:#?}"
     );
     assert!(
-        card.options
+        question
+            .options
             .iter()
             .all(|option| option.detail.as_deref().is_none_or(|detail| !said(detail))),
-        "{card:#?}"
+        "{question:#?}"
     );
 }
 
@@ -400,7 +401,7 @@ async fn the_models_level_reads_like_claude_codes_picker() {
     let mut fixture = Fixture::new(false, |repo| {
         std::fs::write(
             repo.global_config(),
-            "main_agent = \"claude-code/claude-opus-5-5\"\n[roles.main]\neffort = \"max\"\n",
+            "crew.main = \"claude-code/claude-opus-5-5\"\n[roles.main]\neffort = \"max\"\n",
         )
         .unwrap();
     });
@@ -570,7 +571,7 @@ async fn codex_models_start_at_the_level_codex_lists_for_each() {
     ] {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = Fixture::new(false, |repo| {
-            let config = format!("main_agent = \"{agent}\"\n");
+            let config = format!("crew.main = \"{agent}\"\n");
             std::fs::write(repo.global_config(), config).unwrap();
         });
         codex_and_agy(&mut fixture, dir.path());
@@ -603,7 +604,7 @@ async fn an_agy_model_named_for_a_level_runs_at_it_only() {
     let mut fixture = Fixture::new(false, |repo| {
         std::fs::write(
             repo.global_config(),
-            "main_agent = \"antigravity-cli/gemini-3.8-flash-high\"\n",
+            "crew.main = \"antigravity-cli/gemini-3.8-flash-high\"\n",
         )
         .unwrap();
     });
@@ -641,7 +642,7 @@ async fn an_agy_model_named_for_a_level_runs_at_it_only() {
 #[tokio::test]
 async fn haiku_is_haiku_5_5_and_the_header_keeps_its_effort() {
     let mut fixture = Fixture::new(false, |repo| {
-        let config = "main_agent = \"claude-code\"\n\n[agents.claude-code]\nmodel = \"haiku\"\n\
+        let config = "crew.main = \"claude-code\"\n\n[agents.claude-code]\nmodel = \"haiku\"\n\
                       effort = \"low\"\n";
         std::fs::write(repo.global_config(), config).unwrap();
     });
@@ -659,36 +660,40 @@ async fn haiku_is_haiku_5_5_and_the_header_keeps_its_effort() {
     );
 }
 
-/// The default agent's chat session, as a turn builds it, with `/fast` on or off.
-fn chat_session(fixture: &Fixture, fast: bool) -> argonauts_core::worker::SessionSpec {
+/// The main agent's conversation session, as a turn builds it, with `/fast` on or off.
+fn conversation_session(
+    fixture: &Fixture,
+    fast: bool,
+) -> argonauts_core::session_runner::SessionSpec {
     use crate::controller::turn::{Launch, TurnStep, session_spec};
-    use argonauts_core::names::{ChatId, SessionKey, TurnId};
+    use argonauts_core::names::{ConversationId, SessionKey, TurnId};
 
-    let (chat, turn) = (ChatId::numbered(1), TurnId::numbered(1));
+    let (conversation, turn) = (ConversationId::numbered(1), TurnId::numbered(1));
     let step = TurnStep::Ask { run_status: None };
-    let worker = fixture.ctx.settings().main_agent.clone();
+    let worker = fixture.ctx.settings().crew.main.clone();
     let launch = Launch {
-        chat: &chat,
+        conversation: &conversation,
         turn: &turn,
         step: &step,
         text: "what does main do?",
         pictures: Vec::new(),
-        handle: Arc::new(FakeWorker::harness(&worker.to_string(), "gemini")),
+        handle: Arc::new(FakeRunner::cli(&worker.to_string(), "gemini")),
         worker,
         resume: None,
+        fork: false,
         excerpt: None,
         notes: Vec::new(),
         shell: None,
         fast,
         workdir: fixture.ctx.env.repo_root.clone(),
     };
-    let dir = fixture.ctx.env.state_dir.join("chat-test");
+    let dir = fixture.ctx.env.state_dir.join("conversation-test");
     session_spec(&fixture.ctx, &launch, SessionKey::numbered(1), dir)
 }
 
 /// A level set before a model fixed at one was picked stays set, but never reaches the model:
-/// the header and the chat's session say high on gemini-3.8-flash-high whether `low` is the
-/// default role's or agy's own, as `/effort` and `/model` do.
+/// the header and the conversation's session say high on gemini-3.8-flash-high whether `low` is the
+/// main role's or agy's own, as `/effort` and `/model` do.
 #[tokio::test]
 async fn a_level_set_before_never_reaches_a_model_fixed_at_one() {
     for set in [
@@ -697,7 +702,7 @@ async fn a_level_set_before_never_reaches_a_model_fixed_at_one() {
     ] {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = Fixture::new(false, |repo| {
-            let config = format!("main_agent = \"antigravity-cli/gemini-3.8-flash-high\"\n{set}");
+            let config = format!("crew.main = \"antigravity-cli/gemini-3.8-flash-high\"\n{set}");
             std::fs::write(repo.global_config(), config).unwrap();
         });
         codex_and_agy(&mut fixture, dir.path());
@@ -707,9 +712,9 @@ async fn a_level_set_before_never_reaches_a_model_fixed_at_one() {
         let (header, effort) = crate::controller::header_agent(&fixture.ctx);
         assert_eq!(header.to_string(), "antigravity-cli/gemini-3.8-flash-high");
         assert_eq!(effort.as_deref(), Some("high"), "{set}");
-        let spec = chat_session(&fixture, false);
+        let spec = conversation_session(&fixture, false);
         assert_eq!(
-            spec.worker.to_string(),
+            spec.model.to_string(),
             "antigravity-cli/gemini-3.8-flash-high"
         );
         assert_eq!(spec.effort.as_deref(), Some("high"), "{set}");
@@ -724,7 +729,7 @@ async fn a_level_set_before_never_reaches_a_model_fixed_at_one() {
 async fn fast_on_an_agy_model_fixed_at_one_level_runs_its_lowest_sibling() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(false, |repo| {
-        let config = "main_agent = \"antigravity-cli/gemini-3.8-flash-high\"\n";
+        let config = "crew.main = \"antigravity-cli/gemini-3.8-flash-high\"\n";
         std::fs::write(repo.global_config(), config).unwrap();
     });
     codex_and_agy(&mut fixture, dir.path());
@@ -732,7 +737,7 @@ async fn fast_on_an_agy_model_fixed_at_one_level_runs_its_lowest_sibling() {
     refresh_lands(&mut fixture).await;
 
     let fast = |model: &str| {
-        let worker: WorkerRef = format!("antigravity-cli/{model}").parse().unwrap();
+        let worker: ModelRef = format!("antigravity-cli/{model}").parse().unwrap();
         crate::controller::turn::fast_choice(&fixture.ctx, &worker)
             .map(|(worker, level)| (worker.to_string(), level))
     };
@@ -747,23 +752,23 @@ async fn fast_on_an_agy_model_fixed_at_one_level_runs_its_lowest_sibling() {
         assert_eq!(fast(model), None, "{model}");
     }
 
-    let spec = chat_session(&fixture, true);
+    let spec = conversation_session(&fixture, true);
     assert_eq!(
-        spec.worker.to_string(),
+        spec.model.to_string(),
         "antigravity-cli/gemini-3.8-flash-low"
     );
     assert_eq!(spec.effort.as_deref(), Some("low"));
 }
 
-/// Haiku 4.5 takes no effort setting, but the default agent's `/effort` still opens with
-/// nothing to slide, since All hands lives there. A role on Haiku 4.5 lists the roles' efforts
+/// Haiku 4.5 takes no effort setting, but the main agent's `/effort` still opens with
+/// nothing to slide, since Ultracode lives there. A role on Haiku 4.5 lists the roles' efforts
 /// as before.
 #[test]
 fn effort_on_a_main_agent_without_levels_still_offers_ultracode() {
     let fixture = Fixture::new(false, |repo| {
-        let config = "main_agent = \"claude-code/claude-haiku-4-5\"\n\
+        let config = "crew.main = \"claude-code/claude-haiku-4-5\"\n\
                       ultracode = true\n\
-                      [roles.reviewer]\nworkers = [\"claude-code/claude-haiku-4-5\"]\n";
+                      [roles.reviewer]\nmodels = [\"claude-code/claude-haiku-4-5\"]\n";
         std::fs::write(repo.global_config(), config).unwrap();
     });
     let slider = effort_slider(&fixture);

@@ -11,6 +11,7 @@ use crate::render::RenderCtx;
 use crate::text::marks;
 use crate::text::{sanitize_line, str_width, truncate_line};
 use crate::theme::Role;
+use argonauts_core::input::{DraftCommand, NOT_A_COMMAND};
 
 /// Columns before the text on each input row: `❯ ` or two spaces.
 const PROMPT_WIDTH: usize = 2;
@@ -58,11 +59,21 @@ pub(super) fn render(
     });
 
     let selection = composer.visual_range();
-    let letters = if shell {
+    let mut letters = if shell {
         Vec::new()
     } else {
         keywords::letters(text, &composer.drawn_keywords(), theme, Some(&ctx.clock))
     };
+    let command = composer.command();
+    // A real command is the one bold thing in the input, in the brightest text color. No hue
+    // is free: purple is ultracode's, red the error's, and lavender the selected menu row's.
+    if let Some(DraftCommand::Known { typed, .. }) = &command {
+        let bold = theme.style(Role::Bright).add_modifier(Modifier::BOLD);
+        letters.insert(0, (0..typed.len(), bold));
+    }
+    let after_draft = command
+        .as_ref()
+        .and_then(|command| after_draft(command, text, width));
     let mut lines = Vec::with_capacity(rows.len().min(MAX_INPUT_ROWS) + 2);
     // The label reads in the dim grey, a step brighter than the rule it sits on.
     let label_style = if shell {
@@ -104,6 +115,9 @@ pub(super) fn render(
                     Some(selection) => spans.extend(selected(&row, selection, cursor)),
                     None => spans.extend(unselected(&row, cursor)),
                 }
+                if let Some(words) = after_draft.as_deref().filter(|_| index + 1 == rows.len()) {
+                    hang_after(&mut spans, words, dim);
+                }
             }
         }
         lines.push(truncate_line(&Line::from(spans), width));
@@ -128,7 +142,7 @@ pub(super) fn render(
 pub const ULTRACODE_TAG: &str = "ultracode";
 
 /// The rule above the input. Its label is the main model's name, with the workflow's first
-/// when it isn't solo, in grey. Purple is kept for the `ultracode` tag, at the far right, two
+/// when it isn't Captain, in grey. Purple is kept for the `ultracode` tag, at the far right, two
 /// spaces after the name as Claude Code joins the tags in this slot. On a row too narrow for
 /// both, the name goes first. `styles` are the rule's and the label's.
 fn top_rule(
@@ -161,6 +175,55 @@ fn top_rule(
     spans.extend(words);
     spans.extend([Span::raw(" "), Span::styled(rule.to_owned(), dim)]);
     Line::from(spans)
+}
+
+/// Cells between a draft that names no command and the words that say so.
+const REFUSAL_GAP: usize = 3;
+
+/// The dim words after a command's draft: the arguments still to come, right after it, or why
+/// Enter does nothing, three cells on. On a row with no room for how to fix it, only the reason
+/// stays, and the bottom line names the fix.
+fn after_draft(command: &DraftCommand, text: &str, width: usize) -> Option<String> {
+    let words = if fix_goes_below(command, text, width) {
+        NOT_A_COMMAND.to_owned()
+    } else {
+        command.after_draft()?
+    };
+    let gap = match command {
+        DraftCommand::Known { .. } if text.ends_with(char::is_whitespace) => 0,
+        DraftCommand::Known { .. } => 1,
+        DraftCommand::Unknown { .. } => REFUSAL_GAP,
+    };
+    Some(format!("{}{words}", " ".repeat(gap)))
+}
+
+/// Whether the draft's last row, on a screen `width` cells wide, is too short for the reason
+/// and the fix together.
+pub(super) fn fix_goes_below(command: &DraftCommand, text: &str, width: usize) -> bool {
+    let Some(whole) = command.after_draft().filter(|_| command.fix().is_some()) else {
+        return false;
+    };
+    let input_width = width.saturating_sub(PROMPT_WIDTH).max(1);
+    let last_row = layout::rows(text, input_width)
+        .last()
+        .map_or(0, |row| str_width(layout::visible(text, *row, input_width)));
+    last_row + REFUSAL_GAP + str_width(&whole) > input_width
+}
+
+/// Puts `words` after the row's text. A cursor at the row's end sits on their first cell, as
+/// it sits on a placeholder's first letter.
+fn hang_after(spans: &mut Vec<Span<'static>>, words: &str, dim: Style) {
+    let cursor_at_end = spans
+        .last()
+        .is_some_and(|last| last.content == " " && last.style == block());
+    if !cursor_at_end {
+        spans.push(Span::styled(words.to_owned(), dim));
+        return;
+    }
+    spans.pop();
+    let first = words.graphemes(true).next().unwrap_or(" ");
+    spans.push(Span::styled(first.to_owned(), dim.patch(block())));
+    spans.push(Span::styled(words[first.len()..].to_owned(), dim));
 }
 
 /// With focus the block sits on the placeholder's first letter, the way Claude Code draws it.

@@ -2,28 +2,29 @@
 
 mod common;
 
-use argonauts_core::app::{AppEvent, AppMode, QuotaChip, StatusLine};
-use argonauts_core::events::card::CardState;
-use argonauts_core::events::checkpoint::{
-    CheckpointKind, CheckpointOpened, CheckpointPacket, FreeText, QuestionPacket,
+use argonauts_core::app::{AppEvent, AppMode, HeaderAndBottomLine, PlanUsageChip};
+use argonauts_core::events::agent_status::RunSpend;
+use argonauts_core::events::approval::{
+    ApprovalKind, ApprovalOpened, ApprovalPacket, FreeText, QuestionPacket,
 };
 use argonauts_core::events::run::{RunMode, RunPhase};
-use argonauts_core::events::vendor::RunBudget;
-use argonauts_core::limits::{HealthState, QuotaReading, QuotaSource, QuotaStatus};
-use argonauts_core::names::{CheckpointId, RoleName, SessionKey, TurnId, VendorId, WorkerRef};
+use argonauts_core::events::task::TaskState;
+use argonauts_core::limits::{HealthState, PlanUsageReading, PlanUsageSource, PlanUsageStatus};
+use argonauts_core::names::{AgentId, ApprovalId, ModelRef, RoleName, SessionKey, TurnId};
 use argonauts_core::policy::{NarratorLine, NarratorLineKind, NarratorStatus};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::bottom_line::BottomLineSettings;
-use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
+use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::ui::{NarratorMode, Theme as ThemeChoice, UiSettings};
 use argonauts_core::views::ContextUse;
-use argonauts_core::{CardId, KeyScheme, RunId, Spend};
+use argonauts_core::{KeyScheme, RunId, Spend, TaskId};
 use argonauts_tui::bottom::{LinePart, ModeState, PartBody};
 use argonauts_tui::bridge::settings::theme_for;
 use argonauts_tui::bridge::{Cx, Effects, status};
+use argonauts_tui::kit::Level;
 use argonauts_tui::model::{ViewModel, VimMode};
 use argonauts_tui::stability;
-use argonauts_tui::state::{AppState, CardRow, Doing, OpenCheckpoint, RunState, SessionState};
+use argonauts_tui::state::{AppState, Doing, OpenApproval, RunState, SessionState, TaskRow};
 use argonauts_tui::theme::{ColorEnv, Role};
 use common::{at, ctx, fg, style_of, styled, text, theme};
 use ratatui::text::{Line, Span};
@@ -39,28 +40,29 @@ fn run_id(n: u32) -> RunId {
     RunId::new(format!("run-20260930-100000-{n:04}")).unwrap()
 }
 
-fn worker(name: &str, model: &str) -> WorkerRef {
-    WorkerRef::new(name, Some(model.to_owned()))
+fn worker(name: &str, model: &str) -> ModelRef {
+    ModelRef::new(name, Some(model.to_owned()))
 }
 
-fn session(n: u32, who: WorkerRef, tokens_out: u64) -> SessionState {
-    let vendor = who.worker.clone();
-    let mut session = SessionState::new(SessionKey::numbered(n), who, vendor, RoleName::Worker, T0);
+fn session(n: u32, who: ModelRef, tokens_out: u64) -> SessionState {
+    let agent_id = who.agent.clone();
+    let mut session =
+        SessionState::new(SessionKey::numbered(n), who, agent_id, RoleName::Worker, T0);
     session.follow = Some(n as u8);
     session.status = argonauts_tui::state::SessionStatus::Working;
     session.tokens_out = tokens_out;
     session
 }
 
-fn status_line_with(quotas: Vec<QuotaChip>) -> StatusLine {
-    StatusLine {
+fn bottom_line_with(plan_chips: Vec<PlanUsageChip>) -> HeaderAndBottomLine {
+    HeaderAndBottomLine {
         title: "Fix the export race".into(),
         repo: "~/argonauts".into(),
         workflow: "council".into(),
         ultracode: false,
         run: None,
         main_agent: worker("claude-code", "opus"),
-        quotas,
+        plan_chips,
         line: Default::default(),
         spent: None,
         limit: None,
@@ -70,22 +72,22 @@ fn status_line_with(quotas: Vec<QuotaChip>) -> StatusLine {
     }
 }
 
-fn reading(vendor: &str, window: &str, used: f64, age_minutes: i64) -> QuotaReading {
-    QuotaReading {
-        vendor: VendorId(vendor.into()),
-        status: QuotaStatus::Allowed,
+fn reading(agent_id: &str, window: &str, used: f64, age_minutes: i64) -> PlanUsageReading {
+    PlanUsageReading {
+        agent_id: AgentId(agent_id.into()),
+        status: PlanUsageStatus::Allowed,
         used: Some(used),
         resets_at: None,
         window: Some(window.into()),
-        source: QuotaSource::RateLimitEvent,
+        source: PlanUsageSource::RateLimitEvent,
         observed_at: OffsetDateTime::now_utc() - Duration::minutes(age_minutes),
         detail: None,
         wrap_up: false,
     }
 }
 
-fn chip(label: &str, reading: Option<QuotaReading>) -> QuotaChip {
-    QuotaChip {
+fn chip(label: &str, reading: Option<PlanUsageReading>) -> PlanUsageChip {
+    PlanUsageChip {
         label: label.into(),
         reading,
         health: HealthState::Healthy,
@@ -93,7 +95,7 @@ fn chip(label: &str, reading: Option<QuotaReading>) -> QuotaChip {
     }
 }
 
-/// A crew run 4m 12s in: Build, 2 of 5 cards merged, 3 agents, $0.21 of $5.00 spent.
+/// A crew run 4m 12s in: Build, 2 of 5 tasks merged, 3 agents, $0.21 of $5.00 spent.
 fn crew() -> AppState {
     let mut state = AppState::default();
     let id = run_id(1);
@@ -105,14 +107,14 @@ fn crew() -> AppState {
     run.started = Some(T0);
     run.updated = Some(T0 + Duration::seconds(252));
     for n in 1..=5 {
-        let card = CardId::new(format!("task-{n:03}")).unwrap();
-        let mut row = CardRow::new(card.clone(), "Card");
+        let task = TaskId::new(format!("task-{n:03}")).unwrap();
+        let mut row = TaskRow::new(task.clone(), "Task");
         row.state = Some(if n <= 2 {
-            CardState::Integrated
+            TaskState::Merged
         } else {
-            CardState::Running
+            TaskState::Running
         });
-        run.cards.insert(card, row);
+        run.tasks.insert(task, row);
     }
     for session in [
         session(1, worker("claude-code", "opus"), 18_100),
@@ -122,13 +124,13 @@ fn crew() -> AppState {
         run.session_order.push(session.key.clone());
         run.sessions.insert(session.key.clone(), session);
     }
-    run.budget = Some(RunBudget {
+    run.spend = Some(RunSpend {
         spent: Spend {
             cost_usd: 0.21,
             ..Spend::default()
         },
-        limit: Some(BudgetAmount {
-            unit: BudgetUnit::Usd,
+        limit: Some(LimitAmount {
+            unit: LimitUnit::Usd,
             amount: 5.0,
         }),
         lines: Vec::new(),
@@ -137,7 +139,7 @@ fn crew() -> AppState {
     state.runs.insert(id.clone(), run);
     state.attached = Some(id.clone());
     state.mode = Some(AppMode::Working { run: id });
-    state.status = Some(status_line_with(vec![chip(
+    state.status = Some(bottom_line_with(vec![chip(
         "Claude",
         Some(reading("claude-code", "five_hour", 0.38, 0)),
     )]));
@@ -173,7 +175,7 @@ fn bottom_row(model: &ViewModel, theme: &argonauts_tui::theme::Theme, width: u16
 }
 
 /// The status with these parts on its bottom line's right side.
-fn with_right_parts(mut status: StatusLine, parts: &[&str]) -> StatusLine {
+fn with_right_parts(mut status: HeaderAndBottomLine, parts: &[&str]) -> HeaderAndBottomLine {
     let right = parts
         .iter()
         .map(|part| format!("{part:?}"))
@@ -230,15 +232,15 @@ fn palette_roles_dark_and_light() {
     assert_eq!(theme_for(&auto, &env, Some(false)), dark);
 }
 
-/// The spend and context parts are yours to add: the run's spend against its limit, and the
-/// busiest session's context as a small bar.
+/// The spend and context parts are yours to add: the run's spend against its limit, and
+/// whose context is fullest, by name.
 #[test]
 fn spend_and_context_parts() {
     let mut state = crew();
     let status = state
         .status
         .clone()
-        .unwrap_or_else(|| status_line_with(Vec::new()));
+        .unwrap_or_else(|| bottom_line_with(Vec::new()));
     state.status = Some(with_right_parts(status, &["spend", "context"]));
     let run = state.runs.get_mut(&run_id(1)).unwrap();
     let contexts = [(1, 150_000), (2, 90_000), (3, 40_000)];
@@ -258,10 +260,10 @@ fn spend_and_context_parts() {
         );
     }
     let row = text(&render(120));
-    assert!(row.contains("$0.21/$5.00  context "), "{row}");
+    assert!(row.contains("$0.21/$5.00  context \u{b7} "), "{row}");
     assert!(row.ends_with(" 75%"), "{row}");
 
-    // A session near its cap turns the bar the warning color.
+    // A session near where it starts afresh turns its percent the warning color.
     let run = state.runs.get_mut(&run_id(1)).unwrap();
     let session = run.sessions.get_mut(&SessionKey::numbered(2)).unwrap();
     session.context = Some(ContextUse {
@@ -269,20 +271,20 @@ fn spend_and_context_parts() {
         cap: 200_000,
     });
     let model = synced(&state, &ui, NOW);
-    let fills: Vec<Role> = model
+    let levels: Vec<Level> = model
         .bottom
         .line
         .right
         .iter()
         .filter_map(|part| match part {
             LinePart::Added(part) => match &part.body {
-                PartBody::Meter { fill, .. } => Some(*fill),
+                PartBody::Fill { level, .. } => Some(*level),
                 _ => None,
             },
             _ => None,
         })
         .collect();
-    assert_eq!(fills, [Role::Warning]);
+    assert_eq!(levels, [Level::Warn]);
     assert!(text(&[bottom_row(&model, &theme, 120)]).ends_with(" 93%"));
 }
 
@@ -291,23 +293,23 @@ fn working_line_states() {
     let ui = UiSettings::default();
     let theme = theme();
 
-    // A chat turn: thinking, then a tool, then text between thinking spells.
-    let mut chat = AppState::default();
-    chat.mode = Some(AppMode::Answering {
+    // A conversation turn: thinking, then a tool, then text between thinking spells.
+    let mut conversation = AppState::default();
+    conversation.mode = Some(AppMode::Answering {
         turn: TurnId::numbered(1),
     });
-    chat.chat.turn = Some(TurnId::numbered(1));
-    chat.chat.tokens_out = 3_600;
-    chat.chat.doing = Doing::Thinking;
-    let mut thinking = synced(&chat, &ui, 0.0);
-    let mut tool_state = chat.clone();
-    tool_state.chat.doing = Doing::RunningTool;
+    conversation.conversation.turn = Some(TurnId::numbered(1));
+    conversation.conversation.tokens_out = 3_600;
+    conversation.conversation.doing = Doing::Thinking;
+    let mut thinking = synced(&conversation, &ui, 0.0);
+    let mut tool_state = conversation.clone();
+    tool_state.conversation.doing = Doing::RunningTool;
     let mut tool = thinking.clone_model();
     sync(&mut tool, &tool_state, &ui, 9.0);
-    let mut thought_state = chat.clone();
-    thought_state.chat.doing = Doing::Thinking;
+    let mut thought_state = conversation.clone();
+    thought_state.conversation.doing = Doing::Thinking;
     sync(&mut thinking, &thought_state, &ui, 1.0);
-    thought_state.chat.doing = Doing::Writing;
+    thought_state.conversation.doing = Doing::Writing;
     let mut thought = thinking.clone_model();
     sync(&mut thought, &thought_state, &ui, 3.0);
 
@@ -336,9 +338,12 @@ fn working_line_states() {
     };
     let rows = |width| {
         vec![
-            ("chat thinking", line(&thinking, 12.0, width)),
-            ("chat running a tool", line(&tool, 12.0, width)),
-            ("chat between thinking spells", line(&thought, 4.0, width)),
+            ("conversation thinking", line(&thinking, 12.0, width)),
+            ("conversation running a tool", line(&tool, 12.0, width)),
+            (
+                "conversation between thinking spells",
+                line(&thought, 4.0, width),
+            ),
             ("crew run", line(&crew, NOW, width)),
             ("crew run stalled for 40s", line(&stalled, NOW, width)),
             ("pausing", line(&pausing, NOW, width)),
@@ -362,9 +367,10 @@ fn working_line_states() {
             .map(|(_, rest)| rest),
         Some("Pausing… (esc again to stop now)")
     );
+    // A stream reported as stalled is red, as a line gone quiet is.
     let glyph = line(&stalled, NOW, 120).spans[0].style.fg;
-    assert_eq!(glyph, fg(Role::Warning));
-    // The chat line steps aside while its answer streams, and the crew line stays.
+    assert_eq!(glyph, fg(Role::Danger));
+    // The conversation line steps aside while its answer streams, and the crew line stays.
     assert!(!thought.bottom.working.as_ref().unwrap().shows(true));
     assert!(crew.bottom.working.as_ref().unwrap().shows(true));
 
@@ -394,7 +400,7 @@ fn working_line_states() {
 }
 
 #[test]
-fn mode_line_states() {
+fn bottom_row_states() {
     let theme = theme();
     let ui = UiSettings::default();
     let vim = UiSettings {
@@ -405,24 +411,24 @@ fn mode_line_states() {
     let idle = {
         let mut state = AppState::default();
         state.mode = Some(AppMode::Idle);
-        state.status = Some(status_line_with(Vec::new()));
+        state.status = Some(bottom_line_with(Vec::new()));
         synced(&state, &ui, NOW)
     };
 
-    let mut shadow_state = crew();
-    if let Some(status) = shadow_state.status.as_mut() {
+    let mut auto_preview_state = crew();
+    if let Some(status) = auto_preview_state.status.as_mut() {
         status.approval_mode = ApprovalMode::AutoPreview;
     }
-    let insert = synced(&shadow_state, &vim, NOW);
+    let insert = synced(&auto_preview_state, &vim, NOW);
 
-    // A card waits in another run, and the screen's own vim state survives a sync.
-    let mut auto_state = shadow_state.clone();
+    // A question waits in another run, and the screen's own vim state survives a sync.
+    let mut auto_state = auto_preview_state.clone();
     if let Some(status) = auto_state.status.as_mut() {
         status.approval_mode = ApprovalMode::Auto;
     }
     let other = run_id(2);
     let mut waiting = RunState::new(other.clone());
-    waiting.checkpoints.push(OpenCheckpoint {
+    waiting.approvals.push(OpenApproval {
         opened: Box::new(question()),
         set_aside: false,
         replayed: false,
@@ -441,7 +447,7 @@ fn mode_line_states() {
                 let row = text(std::slice::from_ref(line));
                 row.contains('ǁ') || row.contains("⏵⏵")
             })
-            .expect("a mode line")
+            .expect("a bottom line")
     };
     let rows = |width| {
         vec![
@@ -455,7 +461,7 @@ fn mode_line_states() {
     };
     assert_stable(|width| rows(width).into_iter().map(|(_, line)| line).collect());
     for width in [80, 120] {
-        insta::assert_snapshot!(format!("mode_line_states_{width}"), labeled(&rows(width)));
+        insta::assert_snapshot!(format!("bottom_row_states_{width}"), labeled(&rows(width)));
     }
     assert_eq!(normal.bottom.mode.vim, Some(VimMode::Normal));
     let idle_row = text(&[row(&idle, 120)]);
@@ -468,10 +474,11 @@ fn mode_line_states() {
     assert!(text(&[row(&insert, 120)]).contains("-- INSERT -- ǁ auto preview mode on"));
     assert!(text(&[row(&insert, 120)]).contains("← 3 agents"));
     let normal_row = row(&normal, 120);
-    assert!(text(std::slice::from_ref(&normal_row)).starts_with("  -- NORMAL -- ⏵⏵ auto mode on"));
+    // As in Claude Code, NORMAL has no label.
+    assert!(text(std::slice::from_ref(&normal_row)).starts_with("  ⏵⏵ auto mode on"));
     assert_eq!(
         style_of(&[normal_row], "1 needs you").and_then(|style| style.fg),
-        fg(Role::Warning)
+        fg(Role::Warn)
     );
 }
 
@@ -502,18 +509,18 @@ fn the_bottom_line_marks_the_main_cli_and_never_names_the_model() {
     };
 
     // Nothing read yet: the CLI in use still has its mark.
-    let status = status_line_with(Vec::new());
+    let status = bottom_line_with(Vec::new());
     state.apply(&AppEvent::Status {
         status: status.clone(),
     });
     assert_eq!(chips(&state), "● Claude");
 
-    let quotas = vec![chip(
+    let plan_chips = vec![chip(
         "Claude",
         Some(reading("claude-code", "five_hour", 0.57, 0)),
     )];
     state.apply(&AppEvent::Status {
-        status: status_line_with(quotas.clone()),
+        status: bottom_line_with(plan_chips.clone()),
     });
     assert!(
         chips(&state).starts_with("● Claude 5h "),
@@ -523,9 +530,9 @@ fn the_bottom_line_marks_the_main_cli_and_never_names_the_model() {
     assert!(chips(&state).ends_with(" 57%"), "{}", chips(&state));
 
     // After /model to another CLI the mark moves, and no model's name comes with it.
-    let mut changed = status_line_with(quotas);
+    let mut changed = bottom_line_with(plan_chips);
     changed.main_agent = worker("codex", "gpt-5.6");
-    changed.workflow = "solo".into();
+    changed.workflow = "captain".into();
     state.apply(&AppEvent::Status { status: changed });
     let moved = chips(&state);
     assert!(moved.starts_with("● Codex  ○ Claude 5h "), "{moved}");
@@ -536,24 +543,24 @@ fn the_bottom_line_marks_the_main_cli_and_never_names_the_model() {
 fn bottom_line_chips() {
     let mut state = AppState::default();
     state.mode = Some(AppMode::Idle);
-    let out_until = QuotaReading {
-        status: QuotaStatus::Rejected,
+    let out_until = PlanUsageReading {
+        status: PlanUsageStatus::Rejected,
         resets_at: Some(datetime!(2030-01-01 15:45 UTC)),
         ..reading("antigravity-cli", "daily", 1.0, 0)
     };
-    let quotas = vec![
+    let plan_chips = vec![
         chip("Claude", Some(reading("claude-code", "five_hour", 0.71, 0))),
         chip("Codex", Some(reading("codex", "five_hour", 0.92, 0))),
         chip("agy", Some(out_until)),
         chip("OpenCode", None),
-        QuotaChip {
+        PlanUsageChip {
             health: HealthState::Down,
             windows: Vec::new(),
             ..chip("OpenRouter", None)
         },
         chip("Local", None),
     ];
-    let mut status = with_right_parts(status_line_with(quotas), &["plan-usage", "spend"]);
+    let mut status = with_right_parts(bottom_line_with(plan_chips), &["plan-usage", "spend"]);
     status.spent = Some(Spend {
         cost_usd: 0.46,
         ..Spend::default()
@@ -603,8 +610,9 @@ fn narrator_live_line() {
         ts: T0,
         run: Some(run_id(1)),
         kind: NarratorLineKind::Update,
-        text: "Codex took over task-003 while Claude waits for its 5h reset; two tasks are merged."
-            .into(),
+        text:
+            "task-003 fell back to Codex while Claude waits for its 5h reset; two tasks are merged."
+                .into(),
         model: worker("claude-code", "haiku"),
         spend: Spend::default(),
     });
@@ -639,16 +647,16 @@ fn narrator_live_line() {
     assert_eq!(quiet.bottom.narrator, None);
 }
 
-fn question() -> CheckpointOpened {
-    let card = CardId::new("task-001").unwrap();
-    CheckpointOpened {
-        id: CheckpointId::numbered(1),
-        kind: CheckpointKind::Question,
+fn question() -> ApprovalOpened {
+    let task = TaskId::new("task-001").unwrap();
+    ApprovalOpened {
+        id: ApprovalId::numbered(1),
+        kind: ApprovalKind::Question,
         title: "Which cache?".into(),
-        card: Some(card.clone()),
-        packet: CheckpointPacket::Question(QuestionPacket {
+        task: Some(task.clone()),
+        packet: ApprovalPacket::Question(QuestionPacket {
             from: worker("codex", "gpt-5.6"),
-            card,
+            task,
             text: "Which cache?".into(),
             options: Vec::new(),
         }),
@@ -667,8 +675,8 @@ fn the_working_line_steps_aside_while_the_run_waits_on_you() {
     let mut state = crew();
     let open = |state: &mut AppState, needs_you: bool, set_aside: bool| {
         let run = state.runs.get_mut(&run_id(1)).unwrap();
-        run.checkpoints = vec![OpenCheckpoint {
-            opened: Box::new(CheckpointOpened {
+        run.approvals = vec![OpenApproval {
+            opened: Box::new(ApprovalOpened {
                 needs_you,
                 ..question()
             }),
@@ -677,40 +685,40 @@ fn the_working_line_steps_aside_while_the_run_waits_on_you() {
         }];
     };
     let working = |state: &AppState| synced(state, &ui, NOW).bottom.working.is_some();
-    let card_state = |state: &mut AppState, card: &str, to: CardState| {
+    let task_state = |state: &mut AppState, task: &str, to: TaskState| {
         let run = state.runs.get_mut(&run_id(1)).unwrap();
-        let card = CardId::new(card).unwrap();
-        run.cards.get_mut(&card).unwrap().state = Some(to);
+        let task = TaskId::new(task).unwrap();
+        run.tasks.get_mut(&task).unwrap().state = Some(to);
     };
 
     // One agent's question while the others work: the run goes on.
     open(&mut state, true, false);
     assert!(working(&state));
 
-    // With every agent done and every card held up, nothing goes on but the wait, set aside or
+    // With every agent done and every task held up, nothing goes on but the wait, set aside or
     // not.
     let run = state.runs.get_mut(&run_id(1)).unwrap();
     for session in run.sessions.values_mut() {
         session.status = argonauts_tui::state::SessionStatus::Done;
     }
-    card_state(&mut state, "task-003", CardState::Blocked);
-    card_state(&mut state, "task-004", CardState::Integrated);
-    card_state(&mut state, "task-005", CardState::Waiting);
+    task_state(&mut state, "task-003", TaskState::Blocked);
+    task_state(&mut state, "task-004", TaskState::Merged);
+    task_state(&mut state, "task-005", TaskState::Waiting);
     assert!(!working(&state));
     open(&mut state, true, true);
     assert!(!working(&state));
 
-    // Gates running for another card are work too.
-    card_state(&mut state, "task-004", CardState::Gating);
+    // Checks running for another task are work too.
+    task_state(&mut state, "task-004", TaskState::Checking);
     assert!(working(&state));
-    card_state(&mut state, "task-004", CardState::Integrated);
+    task_state(&mut state, "task-004", TaskState::Merged);
 
     // While the policy still decides, something is at work.
     open(&mut state, false, false);
     assert!(working(&state));
 
     // Answered, the run goes on.
-    state.runs.get_mut(&run_id(1)).unwrap().checkpoints.clear();
+    state.runs.get_mut(&run_id(1)).unwrap().approvals.clear();
     assert!(working(&state));
 }
 
@@ -749,7 +757,7 @@ fn sync_fills_the_rest_and_keeps_what_the_screen_changed() {
         queued_at: T0,
         delivery: Delivery::NextTurn,
     });
-    state.chat.queued.push("and the docs".into());
+    state.conversation.queued.push("and the docs".into());
     let mut model = synced(&state, &ui, NOW);
     let bottom = &model.bottom;
     assert_eq!(model.title, "Fix the export race");
@@ -779,10 +787,10 @@ fn sync_fills_the_rest_and_keeps_what_the_screen_changed() {
     sync(&mut model, &state, &ui, NOW + 2.0);
     assert_eq!(model.bottom.mode.approval, ScreenMode::Auto);
 
-    // The input keeps your preset whatever the run follows, and a finished run leaves nothing
+    // The input keeps your workflow whatever the run follows, and a finished run leaves nothing
     // working.
     let run = state.runs.get_mut(&run_id(1)).unwrap();
-    run.mode = Some(RunMode::Solo);
+    run.mode = Some(RunMode::Captain);
     run.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
     sync(&mut model, &state, &ui, NOW + 3.0);
     assert_eq!(
@@ -798,8 +806,8 @@ fn sync_fills_the_rest_and_keeps_what_the_screen_changed() {
 /// you answer.
 #[test]
 fn the_working_line_steps_aside_while_the_cli_asks_you() {
-    use argonauts_core::app::{AppChoice, ChatEvent, ChoiceKind};
-    use argonauts_core::events::checkpoint::FreeText;
+    use argonauts_core::app::{AppChoice, ChoiceKind, ConversationEvent};
+    use argonauts_core::events::approval::FreeText;
     use argonauts_core::names::ChoiceId;
 
     let ui = UiSettings::default();
@@ -808,8 +816,8 @@ fn the_working_line_steps_aside_while_the_cli_asks_you() {
     state.apply(&AppEvent::Mode {
         mode: AppMode::Answering { turn: turn.clone() },
     });
-    state.apply(&AppEvent::Chat {
-        event: ChatEvent::TurnStarted {
+    state.apply(&AppEvent::Conversation {
+        event: ConversationEvent::TurnStarted {
             turn,
             text: "fix the rounding".into(),
             worker: worker("claude-code", "haiku"),

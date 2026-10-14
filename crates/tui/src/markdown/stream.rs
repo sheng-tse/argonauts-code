@@ -10,7 +10,7 @@
 //! following line can still change it (an underline turning it into a heading, a delimiter row
 //! turning it into a table, a backslash turning into a line break); inside a fenced code block a
 //! finished line is final at once. A table waits until another block follows it, since a new row
-//! can widen every column. And rendering restarts from a checkpoint at the newest top-level
+//! can widen every column. And rendering restarts from a restart point at the newest top-level
 //! block, or inside a fenced code block at its newest line, so a frame renders only what is
 //! still being written.
 
@@ -35,7 +35,7 @@ pub struct MarkdownStream {
     clean: String,
     /// Bytes of `source` already cleaned into `clean`.
     raw_done: usize,
-    checkpoint: Checkpoint,
+    restart: RestartPoint,
     /// Rows from `clean` before this offset have been handed out.
     printed_to: usize,
     /// How much of `clean` the last [`take_stable`](Self::take_stable) looked at.
@@ -44,7 +44,7 @@ pub struct MarkdownStream {
 
 /// A place in the clean source where rendering can start without changing any row.
 #[derive(Debug, Clone, Default)]
-struct Checkpoint {
+struct RestartPoint {
     at: usize,
     /// Whether anything before `at` rendered rows, so the first row after it is not the
     /// message's first row.
@@ -62,13 +62,13 @@ struct FenceCursor {
     highlighter: LineHighlighter,
 }
 
-/// The rows of the source from the checkpoint on, each with the offset it came from.
+/// The rows of the source from the restart point on, each with the offset it came from.
 struct Region {
     rows: Vec<Line<'static>>,
     offsets: Vec<usize>,
-    /// Where the Markdown part starts, after a fenced block the checkpoint was inside of.
+    /// Where the Markdown part starts, after a fenced block the restart point was inside of.
     markdown_at: usize,
-    /// Where the fence the checkpoint was inside of closes, when it does.
+    /// Where the fence the restart point was inside of closes, when it does.
     fence_close: Option<usize>,
     /// The parser state after the last code line, when the fence is still open at the end.
     fence_state: Option<LineHighlighter>,
@@ -114,7 +114,7 @@ impl MarkdownStream {
             return Vec::new();
         }
         self.looked_at = self.clean.len();
-        let at = self.checkpoint.at;
+        let at = self.restart.at;
         let region = self.render_region(&self.clean[at..], ctx);
         let text = &self.clean[at..];
         // Inside an open fence every finished line is final: code never changes meaning.
@@ -143,12 +143,12 @@ impl MarkdownStream {
     /// reduced motion the line being written stays hidden until it ends, so text arrives a
     /// whole line at a time instead of word by word.
     pub fn tail(&self, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
-        let mut text = self.clean[self.checkpoint.at..].to_owned();
+        let mut text = self.clean[self.restart.at..].to_owned();
         if !ctx.theme.reduced_motion {
             text.push_str(&sanitize(&self.source[self.raw_done..]));
         }
         let region = self.render_region(&text, ctx);
-        let printed = self.printed_to.saturating_sub(self.checkpoint.at);
+        let printed = self.printed_to.saturating_sub(self.restart.at);
         let mut rows = region.between(printed, usize::MAX);
         fit_lines(&mut rows, usize::from(ctx.width));
         rows
@@ -159,7 +159,7 @@ impl MarkdownStream {
         self.clean.push_str(&partial);
         self.raw_done = self.source.len();
         self.looked_at = self.clean.len();
-        let at = self.checkpoint.at;
+        let at = self.restart.at;
         let region = self.render_region(&self.clean[at..], ctx);
         let printed = self.printed_to.saturating_sub(at);
         let mut rows = region.between(printed, usize::MAX);
@@ -169,12 +169,12 @@ impl MarkdownStream {
         rows
     }
 
-    /// Moves the checkpoint up to `hold`, the end of what just printed, when rendering can start
+    /// Moves the restart point up to `hold`, the end of what just printed, when rendering can start
     /// over from there: inside the fenced block being written, or at a top-level block.
     fn advance(&mut self, region: &Region, hold: usize, stable_rows: bool) {
-        let has_rows = self.checkpoint.has_rows || stable_rows;
-        let text = &self.clean[self.checkpoint.at..];
-        if let Some(cursor) = &self.checkpoint.fence
+        let has_rows = self.restart.has_rows || stable_rows;
+        let text = &self.clean[self.restart.at..];
+        if let Some(cursor) = &self.restart.fence
             && region.fence_close.is_none_or(|close| hold <= close)
         {
             let mut cursor = cursor.clone();
@@ -186,8 +186,8 @@ impl MarkdownStream {
                     }
                 }
             }
-            self.checkpoint = Checkpoint {
-                at: self.checkpoint.at + hold,
+            self.restart = RestartPoint {
+                at: self.restart.at + hold,
                 has_rows,
                 after_heading: false,
                 fence: Some(cursor),
@@ -199,8 +199,8 @@ impl MarkdownStream {
         };
         let local = hold.checked_sub(region.markdown_at);
         if let Some(local) = local.filter(|local| trace.starts.contains(local)) {
-            self.checkpoint = Checkpoint {
-                at: self.checkpoint.at + hold,
+            self.restart = RestartPoint {
+                at: self.restart.at + hold,
                 has_rows,
                 after_heading: trace.after_heading.contains(&local),
                 fence: None,
@@ -217,8 +217,8 @@ impl MarkdownStream {
             for line in body[fence.content..local].lines() {
                 highlighter.skip(line);
             }
-            self.checkpoint = Checkpoint {
-                at: self.checkpoint.at + hold,
+            self.restart = RestartPoint {
+                at: self.restart.at + hold,
                 has_rows,
                 after_heading: false,
                 fence: Some(FenceCursor {
@@ -230,7 +230,7 @@ impl MarkdownStream {
         }
     }
 
-    /// Renders `text`, the source from the checkpoint on, remembering each row's offset.
+    /// Renders `text`, the source from the restart point on, remembering each row's offset.
     fn render_region(&self, text: &str, ctx: &RenderCtx<'_>) -> Region {
         let indent = AssistantMessage::indent(ctx.theme);
         let width = usize::from(ctx.width);
@@ -242,8 +242,8 @@ impl MarkdownStream {
             fence_state: None,
             trace: None,
         };
-        let mut has_rows = self.checkpoint.has_rows;
-        if let Some(cursor) = &self.checkpoint.fence {
+        let mut has_rows = self.restart.has_rows;
+        if let Some(cursor) = &self.restart.fence {
             let mut highlighter = cursor.highlighter.clone();
             let mut pos = 0;
             for line in text.split_inclusive('\n') {
@@ -277,11 +277,11 @@ impl MarkdownStream {
             }
             region.markdown_at = pos;
         }
-        let at_checkpoint = region.markdown_at == 0;
+        let at_restart = region.markdown_at == 0;
         let cont = Continuation {
             rows_before: has_rows,
-            blank_before: at_checkpoint && self.blank_before_checkpoint(),
-            after_heading: at_checkpoint && self.checkpoint.after_heading,
+            blank_before: at_restart && self.blank_before_restart(),
+            after_heading: at_restart && self.restart.after_heading,
         };
         let at = region.markdown_at;
         let (rows, trace) = render_traced(&text[at..], ctx, &indent, cont);
@@ -293,8 +293,8 @@ impl MarkdownStream {
         region
     }
 
-    fn blank_before_checkpoint(&self) -> bool {
-        let before = &self.clean[..self.checkpoint.at];
+    fn blank_before_restart(&self) -> bool {
+        let before = &self.clean[..self.restart.at];
         let Some(body) = before.strip_suffix('\n') else {
             return false;
         };

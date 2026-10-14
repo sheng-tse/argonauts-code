@@ -10,12 +10,12 @@ const MARK_COL: usize = 1;
 const TEXT_COL: usize = 11;
 const MARK_MIN_WIDTH: usize = 36;
 
-/// Printed once at startup. Quotas and spend stay live in the status line instead.
+/// Printed once at startup. Plan usage and spend stay live in the bottom line instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionHeader {
     pub app: String,
     pub version: String,
-    /// The chat's CLI by name, such as `Claude Code`.
+    /// The conversation's CLI by name, such as `Claude Code`.
     pub main_agent: Option<String>,
     /// Its model by name, such as `Opus 5.5`.
     pub model: Option<String>,
@@ -28,7 +28,7 @@ pub struct SessionHeader {
     pub agents: Vec<AgentReady>,
     /// From an earlier session, for `/resume` to reattach to.
     pub runs_going: u32,
-    /// Runs whose cards wait on you. The app opens a new conversation all the same, and
+    /// Runs whose questions wait on you. The app opens a new conversation all the same, and
     /// `/resume` opens one of them.
     pub runs_need_you: u32,
 }
@@ -106,7 +106,8 @@ impl HistoryCell for SessionHeader {
                 lines.push(truncate_line(&Line::from(spans), width));
             }
         }
-        // With the blank row History adds, two blank rows separate the header from the chat.
+        // With the blank row History adds, two blank rows separate the header from the
+        // conversation.
         lines.push(Line::default());
         lines
     }
@@ -287,11 +288,11 @@ mod tests {
     #[test]
     fn a_long_folder_is_cut_from_the_left() {
         assert_eq!(
-            shorten_folder("/Users/you/github/argonauts", 24),
+            shorten_folder("/Users/you/projects/github/argonauts", 24),
             "/…/github/argonauts"
         );
         assert_eq!(
-            shorten_folder("/Users/you/github/argonauts", 14),
+            shorten_folder("/Users/you/projects/github/argonauts", 14),
             "/…/argonauts"
         );
         assert_eq!(shorten_folder("/a/averyveryverylongname", 10), "…ylongname");
@@ -347,7 +348,7 @@ mod tests {
     }
 
     /// The header's two lines as the picture of names on screen draws them, from the text
-    /// column on: the workflow is named with a capital, as `Solo`.
+    /// column on: the workflow is named with a capital, as `Captain`.
     #[test]
     fn the_header_names_the_workflow_as_its_picture_does() {
         use crate::overview::golden::{Picture, Region, assert_matches, theme};
@@ -360,7 +361,7 @@ mod tests {
         let header = SessionHeader {
             model: Some("Haiku 4.5".to_owned()),
             effort: None,
-            workflow: "solo".to_owned(),
+            workflow: "captain".to_owned(),
             agents: Vec::new(),
             runs_going: 0,
             ..header()

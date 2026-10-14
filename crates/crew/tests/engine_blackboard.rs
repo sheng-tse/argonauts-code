@@ -9,21 +9,21 @@ use time::OffsetDateTime;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use argonauts_core::events::card::{CardEvent, CardKind, CardSpec, CardState};
 use argonauts_core::events::run::Party;
 use argonauts_core::events::session::{Delivery, InputPartKind, SessionEvent, SessionStarted};
 use argonauts_core::events::shared::{
     BlackboardEvent, BlackboardKind, BlackboardMessage, Recipient,
 };
+use argonauts_core::events::task::{TaskEvent, TaskKind, TaskSpec, TaskState};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::input::MentionTarget;
-use argonauts_core::names::{MessageId, RoleName, SessionKey, VendorId, WorkerRef};
+use argonauts_core::names::{AgentId, MessageId, ModelRef, RoleName, SessionKey};
+use argonauts_core::session_runner::{Access, RunnerKind, SessionControl};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::roles::RoleSettings;
 use argonauts_core::settings::sessions::SessionLifetime;
-use argonauts_core::steps::card::{CardReport, ChangeRequestOut, ReportStatus};
-use argonauts_core::worker::{Access, SessionControl, WorkerKind};
-use argonauts_core::{CardId, RunId};
+use argonauts_core::steps::task::{ChangeRequestOut, ReportStatus, TaskReport};
+use argonauts_core::{RunId, TaskId};
 use argonauts_crew::blackboard::rules::{self, Decider, Tally};
 use argonauts_crew::blackboard::{self, Post, commands, delivery, records};
 use argonauts_crew::consultant;
@@ -31,70 +31,70 @@ use argonauts_crew::engine::host::Host;
 use argonauts_crew::engine::live::LiveSession;
 use argonauts_crew::engine::shared::Shared;
 use argonauts_crew::state::RunState;
-use argonauts_crew::state::cards::CardRecord;
+use argonauts_crew::state::tasks::TaskEntry;
+use argonauts_testkit::runner::FakeSession;
 use argonauts_testkit::services::MemorySink;
-use argonauts_testkit::worker::FakeSession;
 
-fn card(id: &str) -> CardId {
-    CardId::new(id).unwrap()
+fn task(id: &str) -> TaskId {
+    TaskId::new(id).unwrap()
 }
 
-fn worker(name: &str) -> WorkerRef {
-    WorkerRef::new(name, None)
+fn worker(name: &str) -> ModelRef {
+    ModelRef::new(name, None)
 }
 
-fn spec(id: &str, owner: &str, owned: &[&str], reads: &[&str], depends_on: &[&str]) -> CardSpec {
+fn spec(id: &str, who: &str, owned: &[&str], reads: &[&str], depends_on: &[&str]) -> TaskSpec {
     let strings = |items: &[&str]| items.iter().map(|item| (*item).to_owned()).collect();
-    CardSpec {
-        id: card(id),
+    TaskSpec {
+        id: task(id),
         title: format!("Build {id}"),
         task: String::new(),
-        kind: CardKind::Build,
+        kind: TaskKind::Build,
         owned_paths: strings(owned),
         read_only_paths: strings(reads),
         forbidden_paths: Vec::new(),
         hidden_paths: Vec::new(),
-        depends_on: depends_on.iter().map(|id| card(id)).collect(),
+        depends_on: depends_on.iter().map(|id| task(id)).collect(),
         criteria: Vec::new(),
-        owner: Some(worker(owner)),
+        worker: Some(worker(who)),
         reviewers: Vec::new(),
-        budget: Default::default(),
+        limit: Default::default(),
         predictions: None,
         item: None,
     }
 }
 
-fn record(spec: CardSpec, state: CardState) -> CardRecord {
-    CardRecord {
-        owner: spec.owner.clone(),
+fn record(spec: TaskSpec, state: TaskState) -> TaskEntry {
+    TaskEntry {
+        worker: spec.worker.clone(),
         spec,
         state,
-        attempts: 1,
+        tries: 1,
         reassigned: 0,
         worktree: None,
         branch: None,
         base: None,
         commits: Vec::new(),
         reports: Vec::new(),
-        gates: Vec::new(),
+        checks: Vec::new(),
         reviews: Vec::new(),
-        handoffs: 0,
+        fallbacks: 0,
         debt: None,
     }
 }
 
-/// Five cards: card-001 asks; card-002 owns the limiter, whose interface card-003 reads;
-/// card-004 builds on card-002; card-005 is already integrated.
+/// Five tasks: task-001 asks; task-002 owns the limiter, whose interface task-003 reads;
+/// task-004 builds on task-002; task-005 is already merged.
 fn crew_state() -> RunState {
     let mut state = RunState::default();
-    let cards = [
+    let tasks = [
         (
             spec("task-001", "codex", &["src/api/**"], &[], &[]),
-            CardState::Running,
+            TaskState::Running,
         ),
         (
             spec("task-002", "claude-code", &["src/limiter/**"], &[], &[]),
-            CardState::Running,
+            TaskState::Running,
         ),
         (
             spec(
@@ -104,20 +104,20 @@ fn crew_state() -> RunState {
                 &["src/limiter/mod.rs"],
                 &[],
             ),
-            CardState::Running,
+            TaskState::Running,
         ),
         (
             spec("task-004", "codex", &["docs/**"], &[], &["task-002"]),
-            CardState::Waiting,
+            TaskState::Waiting,
         ),
         (
             spec("task-005", "claude-code", &["src/old/**"], &[], &[]),
-            CardState::Integrated,
+            TaskState::Merged,
         ),
     ];
-    for (spec, state_now) in cards {
+    for (spec, state_now) in tasks {
         state
-            .cards
+            .tasks
             .by_id
             .insert(spec.id.clone(), record(spec, state_now));
     }
@@ -136,23 +136,23 @@ fn change_request_decision_rules() {
     let state = crew_state();
     let mut settings = Settings::default();
     settings.limits.protected_paths = vec!["infra/**".to_owned()];
-    let asker = card("task-001");
+    let asker = task("task-001");
     let decide =
         |paths: &[&str]| rules::decider_for(&state, &settings, Some(&asker), &request(paths));
 
-    // Local and reversible: only the owner of that piece.
+    // Local and reversible: only the worker of that piece.
     assert_eq!(
         decide(&["src/limiter/redis.rs"]),
-        Decider::Owner(worker("claude-code"))
+        Decider::Worker(worker("claude-code"))
     );
-    // Cross-cutting: a frozen interface another card reads.
+    // Cross-cutting: a frozen interface another task reads.
     assert_eq!(
         decide(&["src/limiter/mod.rs"]),
-        Decider::Owners(vec![worker("claude-code"), worker("agy")])
+        Decider::Workers(vec![worker("claude-code"), worker("agy")])
     );
     // Irreversible, or nobody's piece: you.
     assert_eq!(decide(&["db/migrations/0004_keys.sql"]), Decider::User);
-    // The checkpoint names the outside actions, each once, for your allowlist.
+    // The approval names the outside actions, each once, for your allowlist.
     let paths =
         |paths: &[&str]| -> Vec<String> { paths.iter().map(|path| (*path).to_owned()).collect() };
     assert_eq!(
@@ -166,23 +166,23 @@ fn change_request_decision_rules() {
     );
     assert!(rules::irreversible_actions(&paths(&["src/limiter/redis.rs"])).is_empty());
     assert_eq!(decide(&["Cargo.toml"]), Decider::User);
-    // An integrated card's owner has no next report to vote in.
+    // A merged task's worker has no next report to vote in.
     assert_eq!(decide(&["src/old/limits.rs"]), Decider::User);
     // The goal file: `approvals.goal_changes` decides.
     assert_eq!(decide(&[".argonauts/goal/run-01.md"]), Decider::Goal);
-    // Into a protected path: back to the plan checkpoint.
+    // Into a protected path: back to the plan approval.
     assert_eq!(decide(&["infra/terraform/main.tf"]), Decider::Replan);
     assert_eq!(decide(&[".argonauts/config.toml"]), Decider::Replan);
 
-    // Dependents: owners and readers of the paths, and cards built on them.
+    // Dependents: workers and readers of the paths, and tasks built on them.
     assert_eq!(
         rules::dependents(&state, &request(&["src/limiter/mod.rs"])),
-        [card("task-002"), card("task-003"), card("task-004")]
+        [task("task-002"), task("task-003"), task("task-004")]
     );
 
-    // Majority wins; the phase lead breaks a tie only when it isn't a party.
+    // Majority wins; the tie-breaker breaks a tie only when it isn't a party.
     let (a, b, c) = (worker("claude-code"), worker("agy"), worker("codex"));
-    let votes = |ballot: &[(&WorkerRef, bool)]| -> Vec<(WorkerRef, bool)> {
+    let votes = |ballot: &[(&ModelRef, bool)]| -> Vec<(ModelRef, bool)> {
         ballot
             .iter()
             .map(|(who, yes)| ((*who).clone(), *yes))
@@ -197,7 +197,10 @@ fn change_request_decision_rules() {
         Tally::Rejected
     );
     let tie = votes(&[(&a, true), (&b, false)]);
-    assert_eq!(rules::tally(&tie, Some(&c)), Tally::LeadBreaks(c.clone()));
+    assert_eq!(
+        rules::tally(&tie, Some(&c)),
+        Tally::TieBreakerDecides(c.clone())
+    );
     assert_eq!(rules::tally(&tie, Some(&a)), Tally::YouDecide);
     assert_eq!(rules::tally(&tie, None), Tally::YouDecide);
 }
@@ -210,8 +213,8 @@ fn posted(n: u32, kind: BlackboardKind, text: &str, refs: &[&str]) -> Blackboard
             session: SessionKey::numbered(1),
             worker: worker("codex"),
         },
-        to: Recipient::Card {
-            card: card("task-002"),
+        to: Recipient::Task {
+            task: task("task-002"),
         },
         text: text.to_owned(),
         in_reply_to: None,
@@ -224,9 +227,9 @@ fn envelope(kind: RunEventKind) -> RunEvent {
         seq: 0,
         ts: OffsetDateTime::UNIX_EPOCH,
         run_id: RunId::new("run-01").unwrap(),
-        card_id: Some(card("task-001")),
+        task_id: Some(task("task-001")),
         session: None,
-        source: "conductor".to_owned(),
+        source: "argonauts-code".to_owned(),
         kind,
     }
 }
@@ -289,18 +292,18 @@ fn host(crew: &support::Crew) -> anyhow::Result<(Host, Arc<MemorySink>)> {
     Ok((host, sink))
 }
 
-/// Records a card's creation and moves it to `state`.
-fn add_card(host: &Host, spec: CardSpec, state: CardState) -> anyhow::Result<()> {
+/// Records a task's creation and moves it to `state`.
+fn add_task(host: &Host, spec: TaskSpec, state: TaskState) -> anyhow::Result<()> {
     let id = spec.id.clone();
     host.record(
         Some(&id),
         None,
-        RunEventKind::Card(CardEvent::Created(Box::new(spec))),
+        RunEventKind::Task(TaskEvent::Created(Box::new(spec))),
     )?;
     host.record(
         Some(&id),
         None,
-        RunEventKind::Card(CardEvent::State {
+        RunEventKind::Task(TaskEvent::State {
             from: None,
             to: state,
             reason: String::new(),
@@ -314,20 +317,20 @@ fn run_session(
     host: &Host,
     n: u32,
     role: RoleName,
-    card: Option<&str>,
+    task: Option<&str>,
     by: &str,
     blind: bool,
 ) -> anyhow::Result<(SessionKey, mpsc::Receiver<SessionControl>)> {
     let key = SessionKey::numbered(n);
-    let card = card.map(CardId::new).transpose()?;
+    let task = task.map(TaskId::new).transpose()?;
     host.record(
-        card.as_ref(),
+        task.as_ref(),
         Some(&key),
         RunEventKind::Session(SessionEvent::Started(Box::new(SessionStarted {
             worker: worker(by),
-            vendor: VendorId(by.to_owned()),
-            family: by.to_owned(),
-            kind: WorkerKind::Harness,
+            agent_id: AgentId(by.to_owned()),
+            provider: by.to_owned(),
+            kind: RunnerKind::Cli,
             role,
             step: None,
             access: Access::Build,
@@ -344,7 +347,7 @@ fn run_session(
         key.clone(),
         LiveSession {
             role,
-            card,
+            task,
             blind,
             control,
             cancel: CancellationToken::new(),
@@ -383,17 +386,17 @@ fn delivered_now(
 async fn blackboard_delivered_at_next_turn() -> anyhow::Result<()> {
     let crew = support::Crew::new()?;
     let (host, sink) = host(&crew)?;
-    add_card(
+    add_task(
         &host,
         spec("task-002", "codex", &["src/limiter/**"], &[], &[]),
-        CardState::Running,
+        TaskState::Running,
     )?;
-    add_card(
+    add_task(
         &host,
         spec("task-003", "agy", &["src/store/**"], &[], &[]),
-        CardState::Ready,
+        TaskState::Ready,
     )?;
-    let (owner, mut controls) =
+    let (worker_session, mut controls) =
         run_session(&host, 1, RoleName::Worker, Some("task-002"), "codex", false)?;
 
     // Guidance reaches the running session at its next turn, once.
@@ -405,33 +408,33 @@ async fn blackboard_delivered_at_next_turn() -> anyhow::Result<()> {
     assert_eq!(got[0].0, guidance);
     assert_eq!(got[0].2, Delivery::NextTurn);
     assert!(got[0].1.contains("Retry-After is in seconds."));
-    delivery::queue(&host, &guidance, &owner)?;
+    delivery::queue(&host, &guidance, &worker_session)?;
     assert!(delivered_now(&mut controls).is_empty(), "never twice");
     assert_eq!(
         delivered(&sink.events(), &guidance),
-        std::slice::from_ref(&owner)
+        std::slice::from_ref(&worker_session)
     );
     assert!(sink.events().iter().any(|event| matches!(
         &event.kind,
         RunEventKind::Session(SessionEvent::Queued(queued)) if queued.id == guidance
     )));
 
-    // A question for a card with no running session waits for its next session start.
+    // A question for a task with no running session waits for its next session start.
     let question = blackboard::post(
         &host,
         Post {
             kind: BlackboardKind::Question,
             from: Party::Agent {
-                session: owner.clone(),
+                session: worker_session.clone(),
                 worker: worker("codex"),
             },
-            to: Recipient::Card {
-                card: card("task-003"),
+            to: Recipient::Task {
+                task: task("task-003"),
             },
             text: "Does the store expire keys itself?".to_owned(),
             in_reply_to: None,
             refs: Vec::new(),
-            from_card: Some(card("task-002")),
+            from_task: Some(task("task-002")),
         },
     )?;
     assert!(delivery::to_running(&host, &question)?.is_empty());
@@ -453,20 +456,21 @@ async fn blackboard_delivered_at_next_turn() -> anyhow::Result<()> {
 async fn mention_to_blind_session_is_text_only() -> anyhow::Result<()> {
     let crew = support::Crew::new()?;
     let (host, _sink) = host(&crew)?;
-    add_card(
+    add_task(
         &host,
         spec("task-002", "codex", &["src/limiter/**"], &[], &[]),
-        CardState::Running,
+        TaskState::Running,
     )?;
-    let (_drafter, mut drafter) = run_session(&host, 1, RoleName::Drafter, None, "agy", true)?;
-    let (owner, mut owned) =
+    let (_draft_session, mut drafting_agent) =
+        run_session(&host, 1, RoleName::Draft, None, "agy", true)?;
+    let (worker_session, mut owned) =
         run_session(&host, 2, RoleName::Worker, Some("task-002"), "codex", false)?;
 
     let text = "Keep the counters in Redis.";
     commands::mention(&host, MentionTarget::All, text.to_owned())
         .await
         .map_err(anyhow::Error::msg)?;
-    let blind = delivered_now(&mut drafter);
+    let blind = delivered_now(&mut drafting_agent);
     assert_eq!(blind.len(), 1);
     assert_eq!(blind[0].1, text, "only your text, nothing attached");
     let seeing = delivered_now(&mut owned);
@@ -479,23 +483,23 @@ async fn mention_to_blind_session_is_text_only() -> anyhow::Result<()> {
         Post {
             kind: BlackboardKind::Question,
             from: Party::Agent {
-                session: owner,
+                session: worker_session,
                 worker: worker("codex"),
             },
             to: Recipient::All,
             text: "Which plan uses Redis?".to_owned(),
             in_reply_to: None,
             refs: Vec::new(),
-            from_card: Some(card("task-002")),
+            from_task: Some(task("task-002")),
         },
     )?;
     delivery::to_running(&host, &question)?;
-    assert!(delivered_now(&mut drafter).is_empty());
+    assert!(delivered_now(&mut drafting_agent).is_empty());
     Ok(())
 }
 
-fn report(concerns: &[&str], change_requests: Vec<ChangeRequestOut>) -> CardReport {
-    CardReport {
+fn report(concerns: &[&str], change_requests: Vec<ChangeRequestOut>) -> TaskReport {
+    TaskReport {
         status: ReportStatus::Done,
         summary: "Done.".to_owned(),
         files_changed: Vec::new(),
@@ -508,23 +512,23 @@ fn report(concerns: &[&str], change_requests: Vec<ChangeRequestOut>) -> CardRepo
     }
 }
 
-fn card_state(host: &Host, id: &str) -> Option<CardState> {
-    host.read(|state| state.cards.get(&card(id)).map(|record| record.state))
+fn task_state(host: &Host, id: &str) -> Option<TaskState> {
+    host.read(|state| state.tasks.get(&task(id)).map(|record| record.state))
 }
 
 /// A message counts as delivered only once the session's control queue holds a place for it.
 /// A session whose queue is full, or that ended, gets nothing recorded, and the message waits
-/// for the card's next session.
+/// for the task's next session.
 #[tokio::test]
 async fn hand_over_records_nothing_a_session_cannot_take() -> anyhow::Result<()> {
     let crew = support::Crew::new()?;
     let (host, sink) = host(&crew)?;
-    add_card(
+    add_task(
         &host,
         spec("task-002", "codex", &["src/limiter/**"], &[], &[]),
-        CardState::Running,
+        TaskState::Running,
     )?;
-    let (owner, controls) =
+    let (worker_session, controls) =
         run_session(&host, 1, RoleName::Worker, Some("task-002"), "codex", false)?;
     let queued = |events: &[RunEvent], message: &MessageId| {
         events.iter().any(|event| {
@@ -534,13 +538,13 @@ async fn hand_over_records_nothing_a_session_cannot_take() -> anyhow::Result<()>
 
     // Its queue is full.
     let held = (0..8)
-        .map(|_| host.reserve_control(&owner))
+        .map(|_| host.reserve_control(&worker_session))
         .collect::<Result<Vec<_>, _>>()
         .map_err(anyhow::Error::msg)?;
     let first = commands::guidance(&host, "Keys expire after an hour.".to_owned())
         .await
         .map_err(anyhow::Error::msg)?;
-    let refused = delivery::queue(&host, &first, &owner);
+    let refused = delivery::queue(&host, &first, &worker_session);
     assert!(
         refused
             .as_ref()
@@ -554,7 +558,7 @@ async fn hand_over_records_nothing_a_session_cannot_take() -> anyhow::Result<()>
     let second = commands::guidance(&host, "Count in seconds.".to_owned())
         .await
         .map_err(anyhow::Error::msg)?;
-    let refused = delivery::queue(&host, &second, &owner);
+    let refused = delivery::queue(&host, &second, &worker_session);
     assert!(
         refused
             .as_ref()
@@ -567,7 +571,7 @@ async fn hand_over_records_nothing_a_session_cannot_take() -> anyhow::Result<()>
         assert!(!queued(&events, message), "{message}");
     }
 
-    // Both reach the card's next session when it starts.
+    // Both reach the task's next session when it starts.
     let (next, _next_controls) =
         run_session(&host, 2, RoleName::Worker, Some("task-002"), "codex", false)?;
     let parts = delivery::at_session_start(&host, &next)?;
@@ -589,7 +593,7 @@ async fn change_request_pauses_dependents() -> anyhow::Result<()> {
         spec("task-004", "codex", &["docs/**"], &[], &[]),
     ];
     for spec in running {
-        add_card(&host, spec, CardState::Running)?;
+        add_task(&host, spec, TaskState::Running)?;
     }
     run_session(&host, 1, RoleName::Worker, Some("task-001"), "codex", false)?;
     let (_limiter, mut limiter) = run_session(
@@ -602,12 +606,12 @@ async fn change_request_pauses_dependents() -> anyhow::Result<()> {
     )?;
 
     let asked = request(&["src/limiter/redis.rs"]);
-    blackboard::on_report(&host, &card("task-001"), &report(&[], vec![asked])).await?;
+    blackboard::on_report(&host, &task("task-001"), &report(&[], vec![asked])).await?;
 
-    // The owner of the limiter decides; its card and the card built on it wait meanwhile.
-    assert_eq!(card_state(&host, "task-002"), Some(CardState::Blocked));
-    assert_eq!(card_state(&host, "task-003"), Some(CardState::Blocked));
-    assert_eq!(card_state(&host, "task-004"), Some(CardState::Running));
+    // The worker of the limiter decides; its task and the task built on it wait meanwhile.
+    assert_eq!(task_state(&host, "task-002"), Some(TaskState::Blocked));
+    assert_eq!(task_state(&host, "task-003"), Some(TaskState::Blocked));
+    assert_eq!(task_state(&host, "task-004"), Some(TaskState::Running));
     let events = sink.events();
     let request = events
         .iter()
@@ -631,8 +635,8 @@ async fn change_request_pauses_dependents() -> anyhow::Result<()> {
         .filter(|event| {
             matches!(
                 &event.kind,
-                RunEventKind::Card(CardEvent::State {
-                    to: CardState::Blocked,
+                RunEventKind::Task(TaskEvent::State {
+                    to: TaskState::Blocked,
                     ..
                 })
             )
@@ -654,16 +658,16 @@ async fn change_request_pauses_dependents() -> anyhow::Result<()> {
             .contains(&format!("accept {}", request.1.id))
     );
 
-    // The owner accepts in its next report: the record settles it and the cards go on.
+    // The worker accepts in its next report: the record settles it and the tasks go on.
     let vote = format!("accept {}: a trait keeps the store swappable", request.1.id);
-    blackboard::on_report(&host, &card("task-002"), &report(&[&vote], Vec::new())).await?;
+    blackboard::on_report(&host, &task("task-002"), &report(&[&vote], Vec::new())).await?;
     let record = host
         .read(|state| state.blackboard.settled(&request.1.id).cloned())
         .expect("a decision record");
     assert!(record.text.starts_with("Accepted: "), "{}", record.text);
-    assert_eq!(record.from, Party::Conductor);
-    assert_eq!(card_state(&host, "task-002"), Some(CardState::Running));
-    assert_eq!(card_state(&host, "task-003"), Some(CardState::Running));
+    assert_eq!(record.from, Party::ArgonautsCode);
+    assert_eq!(task_state(&host, "task-002"), Some(TaskState::Running));
+    assert_eq!(task_state(&host, "task-003"), Some(TaskState::Running));
     Ok(())
 }
 
@@ -671,24 +675,24 @@ async fn change_request_pauses_dependents() -> anyhow::Result<()> {
 async fn settled_question_answered_with_record_id() -> anyhow::Result<()> {
     let crew = support::Crew::new()?;
     let (host, sink) = host(&crew)?;
-    add_card(
+    add_task(
         &host,
         spec("task-002", "codex", &["src/api/**"], &[], &[]),
-        CardState::Running,
+        TaskState::Running,
     )?;
-    add_card(
+    add_task(
         &host,
         spec("task-003", "agy", &["src/limiter/**"], &[], &[]),
-        CardState::Running,
+        TaskState::Running,
     )?;
     run_session(&host, 1, RoleName::Worker, Some("task-002"), "codex", false)?;
     run_session(&host, 2, RoleName::Worker, Some("task-003"), "agy", false)?;
     let question = "Does src/limiter/mod.rs count per key or per user?";
-    let asking = CardReport {
+    let asking = TaskReport {
         questions: vec![question.to_owned()],
         ..report(&[], Vec::new())
     };
-    blackboard::on_report(&host, &card("task-002"), &asking).await?;
+    blackboard::on_report(&host, &task("task-002"), &asking).await?;
     let first = host
         .read(|state| {
             state
@@ -699,7 +703,7 @@ async fn settled_question_answered_with_record_id() -> anyhow::Result<()> {
         })
         .expect("the question is posted");
     let answer = format!("answer {first}: per key");
-    blackboard::on_report(&host, &card("task-003"), &report(&[&answer], Vec::new())).await?;
+    blackboard::on_report(&host, &task("task-003"), &report(&[&answer], Vec::new())).await?;
     let record = host
         .read(|state| {
             state
@@ -709,11 +713,11 @@ async fn settled_question_answered_with_record_id() -> anyhow::Result<()> {
         })
         .expect("answered");
 
-    // Asked again by the card's next session with nothing new, the conductor answers with the
+    // Asked again by the task's next session with nothing new, Argonauts Code answers with the
     // record's id.
     run_session(&host, 3, RoleName::Worker, Some("task-002"), "codex", false)?;
     let before = sink.events().len();
-    blackboard::on_report(&host, &card("task-002"), &asking).await?;
+    blackboard::on_report(&host, &task("task-002"), &asking).await?;
     let replies: Vec<BlackboardMessage> = sink.events()[before..]
         .iter()
         .filter_map(|event| match &event.kind {
@@ -726,8 +730,61 @@ async fn settled_question_answered_with_record_id() -> anyhow::Result<()> {
         })
         .collect();
     assert_eq!(replies.len(), 1);
-    assert_eq!(replies[0].from, Party::Conductor);
+    assert_eq!(replies[0].from, Party::ArgonautsCode);
     assert!(replies[0].refs.contains(&record.to_string()));
+    Ok(())
+}
+
+/// A task blocked on a question for another task's worker goes back to work when that worker
+/// answers in its report, as it does when anyone else answers.
+#[tokio::test]
+async fn an_answer_in_another_tasks_report_wakes_the_task_that_asked() -> anyhow::Result<()> {
+    let crew = support::Crew::new()?;
+    let (host, _sink) = host(&crew)?;
+    add_task(
+        &host,
+        spec("task-002", "codex", &["src/api/**"], &[], &[]),
+        TaskState::Blocked,
+    )?;
+    add_task(
+        &host,
+        spec("task-003", "agy", &["src/limiter/**"], &[], &[]),
+        TaskState::Running,
+    )?;
+    run_session(&host, 1, RoleName::Worker, Some("task-002"), "codex", false)?;
+    run_session(&host, 2, RoleName::Worker, Some("task-003"), "agy", false)?;
+    let asking = TaskReport {
+        status: ReportStatus::Blocked,
+        questions: vec!["Does src/limiter/mod.rs count per key or per user?".to_owned()],
+        ..report(&[], Vec::new())
+    };
+    blackboard::on_report(&host, &task("task-002"), &asking).await?;
+    let question = host
+        .read(|state| {
+            let asked = state.blackboard.messages.first()?;
+            Some((asked.id.clone(), asked.to.clone()))
+        })
+        .expect("the question is posted");
+    assert_eq!(
+        question.1,
+        Recipient::Task {
+            task: task("task-003")
+        },
+        "the question is for the task that owns the file"
+    );
+    assert_eq!(task_state(&host, "task-002"), Some(TaskState::Blocked));
+
+    let answer = format!("answer {}: per key", question.0);
+    blackboard::on_report(&host, &task("task-003"), &report(&[&answer], Vec::new())).await?;
+    assert!(
+        host.read(|state| state.blackboard.settled(&question.0).is_some()),
+        "the answer settles the question"
+    );
+    assert_ne!(
+        task_state(&host, "task-002"),
+        Some(TaskState::Blocked),
+        "the task that asked carries on"
+    );
     Ok(())
 }
 
@@ -741,15 +798,15 @@ async fn consultant_answers_question_owns_nothing() -> anyhow::Result<()> {
     crew.settings.roles.insert(
         RoleName::Consultant,
         RoleSettings {
-            workers: vec![worker("claude-code")],
+            models: vec![worker("claude-code")],
             ..RoleSettings::default()
         },
     );
     let (host, sink) = host(&crew)?;
-    add_card(
+    add_task(
         &host,
         spec("task-002", "codex", &["src/api/**"], &[], &[]),
-        CardState::Running,
+        TaskState::Running,
     )?;
     let (asker, _controls) =
         run_session(&host, 1, RoleName::Worker, Some("task-002"), "codex", false)?;
@@ -767,7 +824,7 @@ async fn consultant_answers_question_owns_nothing() -> anyhow::Result<()> {
             text: "Token bucket or sliding window?".to_owned(),
             in_reply_to: None,
             refs: Vec::new(),
-            from_card: Some(card("task-002")),
+            from_task: Some(task("task-002")),
         },
     )?;
     let before = sink.events().len();
@@ -780,8 +837,8 @@ async fn consultant_answers_question_owns_nothing() -> anyhow::Result<()> {
     assert_eq!(posted.in_reply_to, Some(question.clone()));
     assert_eq!(
         posted.to,
-        Recipient::Card {
-            card: card("task-002")
+        Recipient::Task {
+            task: task("task-002")
         },
         "back to the asker, for its next turn"
     );
@@ -791,7 +848,7 @@ async fn consultant_answers_question_owns_nothing() -> anyhow::Result<()> {
     assert_eq!(specs.len(), 1);
     assert_eq!(specs[0].role, RoleName::Consultant);
     assert_eq!(specs[0].access, Access::ReadOnly);
-    assert_eq!(specs[0].card, None);
+    assert_eq!(specs[0].task, None);
     assert!(
         specs[0]
             .prompt
@@ -804,10 +861,10 @@ async fn consultant_answers_question_owns_nothing() -> anyhow::Result<()> {
             .iter()
             .any(|part| part.text.contains("Token bucket or sliding window?"))
     );
-    // It owns no card: nothing it did touched one.
+    // It owns no task: nothing it did touched one.
     for event in &sink.events()[before..] {
         assert!(
-            !matches!(event.kind, RunEventKind::Card(_)),
+            !matches!(event.kind, RunEventKind::Task(_)),
             "{:?}",
             event.kind
         );

@@ -1,0 +1,27 @@
+---
+source: crates/tui/tests/snap_questions.rs
+expression: text(&lines)
+---
+● Merge the run into main
+  task      title                    lines     checks  review
+  task-001  Exporter trait           +30 -4    passed  approved
+  task-002  JSON writer              +60 -8    passed  approved
+  task-003  Wire --json into the C…  +90 -12   passed  approved
+  task-004  Middleware               +120 -16  passed  needs Opus on Claude Code
+            Run records              +27 -0
+  4 tasks · 9 files · +327 -40
+  Suite passed on the latest main
+
+────────────────────────────────────────────────────────────────────────────────
+◆ Merge this run into main?
+  4 tasks · 9 files · +327 -40 · suite passed on the latest main
+  1 task needs a stronger review · $0.46 of $3.00
+
+  ❯ 1. Merge
+    2. Open a pull request
+    3. Request changes on some tasks
+    4. Keep the branch
+    5. Abandon the run
+    6. Show the diff
+
+  Enter to choose · Tab to add a note · Esc to carry on without me

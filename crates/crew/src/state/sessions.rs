@@ -1,44 +1,44 @@
-//! Every session the run started, with its vendor session id and how it ended.
+//! Every session the run started, with its CLI session id and how it ended.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::event::AgentEvent;
 use argonauts_core::events::RunEvent;
 use argonauts_core::events::session::{
-    EndReason, SessionEnd, SessionEvent, SessionStarted, VendorWorkflow,
+    CliWorkflowRun, EndReason, SessionEnd, SessionEvent, SessionStarted,
 };
-use argonauts_core::names::{SessionKey, WorkerRef};
+use argonauts_core::names::{ModelRef, SessionKey};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Sessions {
     pub by_key: BTreeMap<SessionKey, SessionRecord>,
-    /// The exact model each session's harness reported at its start, which catches an alias
-    /// that moved to a new model. The outcome log keeps it per card.
+    /// The exact model each session's CLI reported at its start, which catches an alias
+    /// that moved to a new model. The outcome log keeps it per task.
     #[serde(default)]
     pub models: BTreeMap<SessionKey, String>,
     /// Whether each worker's newest session ended on a sign-in error, so a resumed run asks
     /// that worker's CLI whether it's logged out before starting it again.
     #[serde(default)]
-    pub sign_in_failed: BTreeMap<WorkerRef, bool>,
+    pub sign_in_failed: BTreeMap<ModelRef, bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub key: SessionKey,
-    pub card: Option<CardId>,
+    pub task: Option<TaskId>,
     /// The newest start. A resumed session keeps its key and records `Started` again.
     pub started: SessionStarted,
     /// The seq of its first `Session::Started`.
     pub since: u64,
     /// How many times it started, 1 unless it was resumed after a pause or a crash.
     pub starts: u32,
-    pub vendor_session: Option<String>,
+    pub cli_session: Option<String>,
     pub transcript: Option<PathBuf>,
-    /// The newest context fill the harness reported, in tokens.
+    /// The newest context fill the CLI reported, in tokens.
     pub context_used: Option<u64>,
     /// The window that fill was of, when it came with one.
     #[serde(default)]
@@ -47,21 +47,21 @@ pub struct SessionRecord {
     /// It ended `Stopped` because the whole run stopped, so a reopened run resumes it.
     #[serde(default)]
     pub stopped_with_run: bool,
-    /// The worker its step asked, once another agent took the session over after a vendor
-    /// failure, or ran it from the start because the asked one was out. The step finds the
+    /// The worker its step asked, once the session fell back to another agent after an agent
+    /// failure, or another ran it from the start because the asked one was out. The step finds the
     /// session by it.
     #[serde(default)]
-    pub asked: Option<WorkerRef>,
-    /// Each time it ended for a vendor reason: the worker then, and the seq of the end.
+    pub asked: Option<ModelRef>,
+    /// Each time it ended for an agent reason: the worker then, and the seq of the end.
     #[serde(default)]
-    pub vendor_failures: Vec<(WorkerRef, u64)>,
+    pub agent_failures: Vec<(ModelRef, u64)>,
     /// The files its edit tools wrote, as its CLI named them: from its folder, or absolute.
     #[serde(default)]
     pub written: BTreeSet<String>,
     /// The workflow its own CLI ran, as it last reported it, which the steps you require are
     /// checked against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workflow: Option<Box<VendorWorkflow>>,
+    pub workflow: Option<Box<CliWorkflowRun>>,
 }
 
 impl SessionRecord {
@@ -77,7 +77,7 @@ impl SessionRecord {
     }
 
     /// The worker its step asked for, whoever runs it now.
-    pub fn asked_worker(&self) -> &WorkerRef {
+    pub fn asked_worker(&self) -> &ModelRef {
         self.asked.as_ref().unwrap_or(&self.started.worker)
     }
 
@@ -106,33 +106,33 @@ impl Sessions {
                     record.end = None;
                     record.stopped_with_run = false;
                     if started.resumed_from.is_some() {
-                        record.vendor_session = started.resumed_from.clone();
+                        record.cli_session = started.resumed_from.clone();
                     }
                 }
                 None => {
                     let record = SessionRecord {
                         key: key.clone(),
-                        card: envelope.card_id.clone(),
+                        task: envelope.task_id.clone(),
                         started: (**started).clone(),
                         since: envelope.seq,
                         starts: 1,
-                        vendor_session: started.resumed_from.clone(),
+                        cli_session: started.resumed_from.clone(),
                         transcript: None,
                         context_used: None,
                         context_window: None,
                         end: None,
                         stopped_with_run: false,
                         asked: started.asked.clone(),
-                        vendor_failures: Vec::new(),
+                        agent_failures: Vec::new(),
                         written: BTreeSet::new(),
                         workflow: None,
                     };
                     self.by_key.insert(key.clone(), record);
                 }
             },
-            SessionEvent::VendorSession { id, transcript } => {
+            SessionEvent::CliSession { id, transcript } => {
                 if let Some(record) = self.by_key.get_mut(key) {
-                    record.vendor_session = Some(id.clone());
+                    record.cli_session = Some(id.clone());
                     if transcript.is_some() {
                         record.transcript = transcript.clone();
                     }
@@ -140,14 +140,14 @@ impl Sessions {
             }
             SessionEvent::Ended(end) => {
                 if let Some(record) = self.by_key.get_mut(key) {
-                    if end.vendor_session.is_some() {
-                        record.vendor_session = end.vendor_session.clone();
+                    if end.cli_session.is_some() {
+                        record.cli_session = end.cli_session.clone();
                     }
                     let worker = record.started.worker.clone();
                     self.sign_in_failed
                         .insert(worker.clone(), end.reason.is_sign_in_error());
-                    if end.reason.is_vendor_failure() {
-                        record.vendor_failures.push((worker, envelope.seq));
+                    if end.reason.is_agent_failure() {
+                        record.agent_failures.push((worker, envelope.seq));
                     }
                     record.end = Some((**end).clone());
                 }
@@ -182,7 +182,7 @@ impl Sessions {
             AgentEvent::Init {
                 session_id: Some(id),
                 ..
-            } if record.vendor_session.is_none() => record.vendor_session = Some(id.clone()),
+            } if record.cli_session.is_none() => record.cli_session = Some(id.clone()),
             AgentEvent::ContextFill { used, size, .. } => {
                 record.context_used = Some(*used);
                 record.context_window = size.or(record.context_window);

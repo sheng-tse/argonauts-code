@@ -7,7 +7,7 @@ result           L        1 1
 prompt           >        1 1
 turn_end         *        1 1
 recap            #        1 1
-card             ?        1 1
+question         ?        1 1
 note             >        1 1
 mode_ask         ||       2 2
 mode_go          >>       2 2

@@ -1,17 +1,17 @@
-//! The screen reader's memory between events: text streamed a line at a time, the card that
+//! The screen reader's memory between events: text streamed a line at a time, the question that
 //! typed numbers answer, and a take-over waiting for you to come back.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use argonauts_core::api::TakeOverTicket;
-use argonauts_core::app::{AnswerTarget, AppEvent, ChatEvent, UiCommand, ViewRequest};
+use argonauts_core::app::{AnswerTarget, AppEvent, ConversationEvent, UiCommand, ViewRequest};
+use argonauts_core::cli_commands::CliCommandSet;
 use argonauts_core::events::session::SessionEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::input::{ParsedInput, SlashCommand, parse_input_with};
-use argonauts_core::settings::ui::TakeoverWhere;
-use argonauts_core::vendor_commands::VendorCommandSet;
-use argonauts_core::{AgentEvent, CardId, KeyScheme, RunId, Verbosity};
+use argonauts_core::settings::ui::TakeOverWhere;
+use argonauts_core::{AgentEvent, KeyScheme, RunId, TaskId, Verbosity};
 
 use crate::UiOptions;
 use crate::bridge::keys::shown_run;
@@ -22,10 +22,10 @@ use crate::state::AppState;
 use crate::views::waiting::{self, RunEntry};
 
 use super::answer::Armed;
-use super::cards::{CardList, ListTarget};
 use super::decisions::Decisions;
 use super::lines::{lines_for, rings_for};
 use super::offer::Offer;
+use super::questions::{ListTarget, QuestionList};
 use super::words::{labeled, shows, speaker};
 
 /// What one event or one typed line comes to.
@@ -56,25 +56,25 @@ struct Stream {
     spoken: Vec<String>,
 }
 
-const CHAT: &str = "chat";
+const CONVERSATION: &str = "conversation";
 
 #[derive(Debug)]
 pub struct Reader {
     pub state: AppState,
     streams: BTreeMap<String, Stream>,
-    /// The card typed numbers answer.
-    pub(super) card: Option<ListTarget>,
-    /// Cards answered here that the app hasn't closed yet.
+    /// The question typed numbers answer.
+    pub(super) question: Option<ListTarget>,
+    /// Questions answered here that the app hasn't closed yet.
     pub(super) answered: Vec<AnswerTarget>,
     /// Type my own answer was picked without the answer; the next line is it.
-    pub(super) own_answer: Option<CardList>,
+    pub(super) own_answer: Option<QuestionList>,
     pub(super) armed: Option<Armed>,
-    /// Handoff cards whose Remember this pick is on.
+    /// Fallback questions whose Remember this pick is on.
     pub(super) remember: Vec<AnswerTarget>,
     pub(super) decisions: Decisions,
     /// A take-over running in another terminal; the next line says you're back.
-    take_over: Option<(RunId, CardId)>,
-    /// What the list just read out offers the next line, such as a checkpoint by number.
+    take_over: Option<(RunId, TaskId)>,
+    /// What the list just read out offers the next line, such as an approval by number.
     offer: Option<Offer>,
 }
 
@@ -88,7 +88,7 @@ impl Reader {
         Self {
             state,
             streams: BTreeMap::new(),
-            card: None,
+            question: None,
             answered: Vec::new(),
             own_answer: None,
             armed: None,
@@ -133,25 +133,25 @@ impl Reader {
             None => lines,
         };
         said.bell = rings_for(event, &self.state);
-        self.follow_cards(event, &mut said);
+        self.follow_questions(event, &mut said);
         said
     }
 
-    /// Reads one typed line: the end of a take-over, your own answer, a card's answer, a
+    /// Reads one typed line: the end of a take-over, your own answer, a question's answer, a
     /// command, or a message.
     pub fn typed(&mut self, line: &str) -> Said {
         let mut said = Said::default();
-        if let Some((run, card)) = self.take_over.take() {
+        if let Some((run, task)) = self.take_over.take() {
             said.lines.push("take over: back".to_owned());
             said.commands.push(UiCommand::TakeOverEnded {
                 run,
-                card,
+                task,
                 exit_code: None,
             });
             return said;
         }
-        if let Some(card) = self.own_answer.take() {
-            self.own_answer(card, line, &mut said);
+        if let Some(question) = self.own_answer.take() {
+            self.own_answer(question, line, &mut said);
             return said;
         }
         if let Some(taken) = self.offer.take().and_then(|offer| offer.take(line)) {
@@ -168,7 +168,7 @@ impl Reader {
             }
             return said;
         }
-        match parse_input_with(line, self.state.vendor_commands.as_ref()) {
+        match parse_input_with(line, self.state.cli_commands.as_ref()) {
             Ok(ParsedInput::Empty) => {}
             Ok(ParsedInput::Slash { command }) => self.slash(command, &mut said),
             Ok(ParsedInput::Mention { target, text }) => match resolve_target(&target, &self.state)
@@ -207,13 +207,13 @@ impl Reader {
                 lines: vec!["take over: back".to_owned()],
                 commands: vec![UiCommand::TakeOverEnded {
                     run: job.run,
-                    card: job.ticket.card,
+                    task: job.ticket.task,
                     exit_code: None,
                 }],
                 ..Said::default()
             },
             Err(error) => {
-                let mut said = self.take_over(&job.ticket, TakeoverWhere::Here, &job.run);
+                let mut said = self.take_over(&job.ticket, TakeOverWhere::Here, &job.run);
                 said.lines.insert(
                     0,
                     format!("warning: tmux couldn't open the session ({error})."),
@@ -231,7 +231,7 @@ impl Reader {
             }
             SlashCommand::Help => said
                 .lines
-                .extend(help_lines(self.state.vendor_commands.as_ref())),
+                .extend(help_lines(self.state.cli_commands.as_ref())),
             // One line each, newest first, with the link to copy from the terminal.
             SlashCommand::Artifacts => {
                 let published = self.state.artifacts.all();
@@ -246,7 +246,7 @@ impl Reader {
                     )
                 }));
             }
-            // What the run's row opens on screen: the lead's session while it
+            // What the run's row opens on screen: the main agent's session while it
             // designs, else the workflow, printed as text.
             SlashCommand::Workflows => match shown_run(&self.state).map(|run| run.id.clone()) {
                 Some(run) => match waiting::entry(&self.state, &run) {
@@ -292,7 +292,7 @@ impl Reader {
         said.commands.push(UiCommand::Verbosity { level });
     }
 
-    fn take_over(&mut self, ticket: &TakeOverTicket, place: TakeoverWhere, run: &RunId) -> Said {
+    fn take_over(&mut self, ticket: &TakeOverTicket, place: TakeOverWhere, run: &RunId) -> Said {
         let mut said = Said::default();
         if let Some(spec) = &ticket.command
             && let Err(error) = write_spec_files(spec)
@@ -306,7 +306,7 @@ impl Reader {
                 said.lines.extend(labeled("take over", &reason));
                 said.commands.push(UiCommand::TakeOverEnded {
                     run: run.clone(),
-                    card: ticket.card.clone(),
+                    task: ticket.task.clone(),
                     exit_code: None,
                 });
             }
@@ -315,7 +315,7 @@ impl Reader {
                 if let Some(notice) = notice {
                     said.lines.extend(labeled("take over", &notice));
                 }
-                self.take_over = Some((run.clone(), ticket.card.clone()));
+                self.take_over = Some((run.clone(), ticket.task.clone()));
             }
             TakeOverPlan::TmuxSplit { argv, sentinel }
             | TakeOverPlan::NewTab { argv, sentinel } => {
@@ -338,14 +338,14 @@ impl Reader {
             return None;
         }
         match event {
-            AppEvent::Chat {
+            AppEvent::Conversation {
                 event:
-                    ChatEvent::Agent {
+                    ConversationEvent::Agent {
                         turn,
                         event: AgentEvent::TextDelta { text, parent: None },
                     },
-            } if self.state.chat.turn.as_ref() == Some(turn) => {
-                Some((CHAT.to_owned(), self.chat_speaker(), text))
+            } if self.state.conversation.turn.as_ref() == Some(turn) => {
+                Some((CONVERSATION.to_owned(), self.conversation_speaker(), text))
             }
             AppEvent::Run { event } => match &event.kind {
                 RunEventKind::Agent(AgentEvent::TextDelta { text, parent: None })
@@ -362,16 +362,16 @@ impl Reader {
     /// Whether `event` ends what a speaker was streaming, and how.
     fn closes(&self, event: &AppEvent) -> Option<Close> {
         match event {
-            AppEvent::Chat { event } => {
-                let key = CHAT.to_owned();
-                let who = self.chat_speaker();
+            AppEvent::Conversation { event } => {
+                let key = CONVERSATION.to_owned();
+                let who = self.conversation_speaker();
                 match event {
-                    ChatEvent::TurnStarted { .. } => Some(Close::Tail {
+                    ConversationEvent::TurnStarted { .. } => Some(Close::Tail {
                         key,
                         who,
                         ends: true,
                     }),
-                    ChatEvent::Agent { event, .. } => match event {
+                    ConversationEvent::Agent { event, .. } => match event {
                         AgentEvent::Message { parent: None, .. } => {
                             Some(Close::Whole { key, ends: false })
                         }
@@ -384,21 +384,22 @@ impl Reader {
                         }),
                         _ => None,
                     },
-                    ChatEvent::TurnFinished { .. } => Some(Close::Whole { key, ends: true }),
-                    ChatEvent::HandedOff { .. }
-                    | ChatEvent::Joined { .. }
-                    | ChatEvent::AnswerRetried { .. } => Some(Close::Tail {
+                    ConversationEvent::TurnFinished { .. } => {
+                        Some(Close::Whole { key, ends: true })
+                    }
+                    ConversationEvent::FellBack { .. }
+                    | ConversationEvent::Joined { .. }
+                    | ConversationEvent::AnswerRetried { .. } => Some(Close::Tail {
                         key,
                         who,
                         ends: false,
                     }),
-                    ChatEvent::TurnFailed { .. } | ChatEvent::TurnCancelled { .. } => {
-                        Some(Close::Tail {
-                            key,
-                            who,
-                            ends: true,
-                        })
-                    }
+                    ConversationEvent::TurnFailed { .. }
+                    | ConversationEvent::TurnCancelled { .. } => Some(Close::Tail {
+                        key,
+                        who,
+                        ends: true,
+                    }),
                 }
             }
             AppEvent::Run { event } if event.session.is_some() => {
@@ -476,12 +477,12 @@ impl Reader {
         unsaid
     }
 
-    fn chat_speaker(&self) -> String {
+    fn conversation_speaker(&self) -> String {
         self.state
-            .chat
+            .conversation
             .worker
             .as_ref()
-            .map_or_else(|| "agent".to_owned(), |worker| worker.worker.clone())
+            .map_or_else(|| "agent".to_owned(), |worker| worker.agent.clone())
     }
 
     fn run_speaker(&self, event: &RunEvent) -> String {
@@ -526,9 +527,9 @@ fn here_lines(argv: &[String], cwd: &Path) -> Vec<String> {
 }
 
 /// The commands under their categories, as the `/` menu and `/help` group them.
-fn help_lines(vendor: Option<&VendorCommandSet>) -> Vec<String> {
+fn help_lines(agent_id: Option<&CliCommandSet>) -> Vec<String> {
     let mut lines = Vec::new();
-    for section in help_sections(vendor) {
+    for section in help_sections(agent_id) {
         lines.push(if section.runs_here {
             format!("help: {} commands:", section.heading)
         } else {

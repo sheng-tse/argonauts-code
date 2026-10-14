@@ -34,7 +34,7 @@ impl Given {
     pub fn add(&mut self, parts: &[InputPart]) {
         for part in parts {
             match part.kind {
-                InputPartKind::GateOutput if self.checks.is_none() => {
+                InputPartKind::CheckOutput if self.checks.is_none() => {
                     self.checks = checks_result(&part.text);
                 }
                 InputPartKind::Evidence if self.change.is_empty() => {
@@ -108,14 +108,14 @@ impl Rounds {
         let ToolTitle::Agent { name, role, .. } = &mut row.title else {
             return;
         };
-        let seat = |label: &str| (run.clone(), label.to_owned(), role.clone());
+        let key = |label: &str| (run.clone(), label.to_owned(), role.clone());
         let base = match name.rsplit_once('-') {
-            Some((stem, n)) if n.parse::<u32>().is_ok() && self.seen.contains_key(&seat(stem)) => {
+            Some((stem, n)) if n.parse::<u32>().is_ok() && self.seen.contains_key(&key(stem)) => {
                 stem.to_owned()
             }
             _ => name.clone(),
         };
-        let round = self.seen.entry(seat(&base)).or_default();
+        let round = self.seen.entry(key(&base)).or_default();
         *round += 1;
         if *round > 1 {
             *name = format!("{base} · round {round}");
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn the_checks_result_reads_as_its_counts() {
-        let text = "Argonauts ran these after the build, in the task's worktree:\n\
+        let text = "Argonauts Code ran these after the build, in the task's worktree:\n\
                     tests (python3 -m unittest -q) passed: 12 passed in 0.03s";
         assert_eq!(checks_result(text).as_deref(), Some("12 passed"));
         assert_eq!(checks_result("nothing here"), None);

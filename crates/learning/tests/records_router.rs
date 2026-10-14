@@ -13,19 +13,19 @@ use argonauts_learning::types::Assignment;
 
 use records_support::{close, worker};
 
-/// A record whose rates sit at `pass` and `approval`, worth `cards` cards each.
-fn record(name: &str, pass: f64, approval: f64, cards: f64) -> Record {
+/// A record whose rates sit at `pass` and `approval`, worth `tasks` tasks each.
+fn record(name: &str, pass: f64, approval: f64, tasks: f64) -> Record {
     Record {
         worker: worker(name),
         task_type: "backend".to_owned(),
         pooled_from: None,
         model_id: None,
-        pass: Beta::prior(pass, cards),
-        approval: Beta::prior(approval, cards),
+        pass: Beta::prior(pass, tasks),
+        approval: Beta::prior(approval, tasks),
         cost_ratio: 1.0,
         time_ratio: 1.0,
         prediction: 0.0,
-        evidence: cards,
+        evidence: tasks,
         counts: TrackRecord { passed: 0, of: 0 },
         pinned: false,
     }
@@ -155,7 +155,7 @@ fn router_exploration_guardrails() {
     assert!(!may(&[], false, Some(Assignment::Fallback), room));
     assert!(!may(&[], false, Some(Assignment::Retry), room));
 
-    // One card in five: the fifth card may be the first to explore, the tenth the second.
+    // One task in five: the fifth task may be the first to explore, the tenth the second.
     let so_far = |routed, explored| RunSoFar { routed, explored };
     assert!(!may(&[], false, None, so_far(0, 0)));
     assert!(!may(&[], false, None, so_far(3, 0)));

@@ -1,9 +1,9 @@
-//! The merge agent: bringing in a branch that moved while the run worked, fixing what that
+//! The merger: bringing in a branch that moved while the run worked, fixing what that
 //! broke, and the message the change lands with.
 
-pub const MAIN_MOVED: &str = include_str!("merge/main_moved.md");
-pub const COMMIT_MESSAGE: &str = include_str!("merge/commit_message.md");
-pub const AFTER_MAIN: &str = include_str!("merge/after_main.md");
+pub const MAIN_MOVED: &str = argonauts_core::template!("prompts/merge/main-moved.md");
+pub const COMMIT_MESSAGE: &str = argonauts_core::template!("prompts/merge/commit-message.md");
+pub const AFTER_MAIN: &str = argonauts_core::template!("prompts/merge/after-main.md");
 
 #[cfg(test)]
 mod tests {

@@ -1,4 +1,4 @@
-//! Approvals, hard limits, the approver model, and the live narrator. Every decision point
+//! Approvals, hard limits, the judge, and the live narrator. Every decision point
 //! checks the hard limits first, and only then does your mode and `decide_with` pick who
 //! answers. Agents never approve anything, and nothing here can raise autonomy.
 
@@ -9,14 +9,14 @@ use argonauts_core::RunId;
 use argonauts_core::clock::{Clock, SystemClock};
 use argonauts_core::policy::{ApprovalPolicy, Narrator};
 use argonauts_core::registry::ModelRegistry;
+use argonauts_core::session_runner::RunnerDirectory;
 use argonauts_core::settings::Settings;
 use argonauts_core::steps::StepRunner;
-use argonauts_core::worker::WorkerDirectory;
 
 pub mod approvals;
-pub mod approver;
 pub mod autonomy;
 pub mod daily;
+pub mod judge;
 pub mod limits;
 pub mod narrator;
 pub mod parts;
@@ -24,31 +24,31 @@ pub mod rules;
 pub mod session;
 pub mod templates;
 
-/// Re-reads the settings, so each checkpoint can use the stricter of the run-start and current
+/// Re-reads the settings, so each approval can use the stricter of the run-start and current
 /// approval settings.
 pub type SettingsReloader = Arc<dyn Fn() -> Option<Settings> + Send + Sync>;
 
-/// The policy a run's supervisor hands the engine. `state_dir` is the repo's
-/// `~/.argonauts/state/<repo>`, where shadow records and spot checks live. It must already
-/// exist, or every auto checkpoint asks, since a lost record could raise autonomy. An unset
-/// approver is picked from each agent's cheapest model; [`approval_policy_with_models`] adds the
+/// The policy a run's run host hands the engine. `state_dir` is the repo's
+/// `~/.argonauts/state/<repo>`, where auto preview records and spot checks live. It must already
+/// exist, or every auto approval asks, since a lost record could raise autonomy. An unset
+/// judge is picked from each agent's cheapest model; [`approval_policy_with_models`] adds the
 /// live model lists.
 pub fn approval_policy(
     settings: Arc<Settings>,
     reload: SettingsReloader,
     state_dir: &Path,
-    workers: Arc<dyn WorkerDirectory>,
+    workers: Arc<dyn RunnerDirectory>,
     steps: Arc<dyn StepRunner>,
 ) -> Arc<dyn ApprovalPolicy> {
     build(settings, reload, state_dir, workers, None, steps)
 }
 
-/// [`approval_policy`], picking an unset approver from `models`' live lists as well.
+/// [`approval_policy`], picking an unset judge from `models`' live lists as well.
 pub fn approval_policy_with_models(
     settings: Arc<Settings>,
     reload: SettingsReloader,
     state_dir: &Path,
-    workers: Arc<dyn WorkerDirectory>,
+    workers: Arc<dyn RunnerDirectory>,
     models: Arc<dyn ModelRegistry>,
     steps: Arc<dyn StepRunner>,
 ) -> Arc<dyn ApprovalPolicy> {
@@ -59,23 +59,23 @@ fn build(
     settings: Arc<Settings>,
     reload: SettingsReloader,
     state_dir: &Path,
-    workers: Arc<dyn WorkerDirectory>,
+    workers: Arc<dyn RunnerDirectory>,
     models: Option<Arc<dyn ModelRegistry>>,
     steps: Arc<dyn StepRunner>,
 ) -> Arc<dyn ApprovalPolicy> {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let source = approvals::settings::SettingsSource::new(settings, reload);
     let limits = Arc::new(limits::BuiltinLimits::new(source.clone(), workers.clone()));
-    let mut approver = approver::StepApprover::new(workers, steps, state_dir.to_owned());
+    let mut judge = judge::StepJudge::new(workers, steps, state_dir.to_owned());
     if let Some(models) = models {
-        approver = approver.with_models(models);
+        judge = judge.with_models(models);
     }
-    let approver = Arc::new(approver);
+    let judge = Arc::new(judge);
     let autonomy = Arc::new(autonomy::StateAutonomy::open(state_dir, clock.clone()));
     Arc::new(approvals::ApprovalsPolicy::from_parts(parts::PolicyParts {
         source,
         limits,
-        approver,
+        judge,
         autonomy,
         clock,
     }))
@@ -86,7 +86,7 @@ pub fn narrator(
     settings: Arc<Settings>,
     run: RunId,
     run_dir: &Path,
-    workers: Arc<dyn WorkerDirectory>,
+    workers: Arc<dyn RunnerDirectory>,
     steps: Arc<dyn StepRunner>,
 ) -> Arc<dyn Narrator> {
     narrator::LiveNarrator::start(settings, run, run_dir.to_owned(), workers, steps)
@@ -96,8 +96,8 @@ pub fn narrator(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::events::checkpoint::CheckpointKind;
-    use argonauts_core::names::CheckpointId;
+    use argonauts_core::events::approval::ApprovalKind;
+    use argonauts_core::names::ApprovalId;
     use argonauts_core::policy::{
         DecisionPoint, EvidenceFacts, EvidencePacket, NarratorError, PolicyOutcome, Verdict,
     };
@@ -106,19 +106,19 @@ mod tests {
     use argonauts_core::steps::SchemaStepRunner;
     use argonauts_testkit::FakeDirectory;
 
-    fn point(kind: CheckpointKind) -> DecisionPoint {
+    fn point(kind: ApprovalKind) -> DecisionPoint {
         DecisionPoint {
             run: RunId::new("run-01").unwrap(),
-            checkpoint: CheckpointId::numbered(1),
+            approval: ApprovalId::numbered(1),
             kind,
-            recipe: None,
+            learned_workflow: None,
             authors: Vec::new(),
             mode_override: None,
-            lead: None,
+            main_agent: None,
         }
     }
 
-    fn evidence(kind: CheckpointKind, facts: EvidenceFacts) -> EvidencePacket {
+    fn evidence(kind: ApprovalKind, facts: EvidenceFacts) -> EvidencePacket {
         EvidencePacket {
             kind,
             goal: None,
@@ -129,7 +129,7 @@ mod tests {
     }
 
     fn policy(settings: Settings, home: &Path) -> Arc<dyn ApprovalPolicy> {
-        // A run's state folder exists before its first checkpoint.
+        // A run's state folder exists before its first approval.
         let state_dir = home.join("state").join("repo-01");
         std::fs::create_dir_all(&state_dir).unwrap();
         let reload: SettingsReloader = Arc::new(|| None);
@@ -147,16 +147,19 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let mut settings = Settings::default();
         settings.sandbox.mode = SandboxChoice::Os;
-        settings.approvals.goal.mode = ApprovalMode::Auto;
-        settings.approvals.goal.decide_with = DecideWith::Rules;
+        settings.approvals.understand.mode = ApprovalMode::Auto;
+        settings.approvals.understand.decide_with = DecideWith::Rules;
         let policy = policy(settings, home.path());
 
         let no_questions = EvidenceFacts {
             open_questions: Some(0),
             ..EvidenceFacts::default()
         };
-        let goal = evidence(CheckpointKind::Goal, no_questions);
-        match policy.evaluate(&point(CheckpointKind::Goal), &goal).await {
+        let goal = evidence(ApprovalKind::Understand, no_questions);
+        match policy
+            .evaluate(&point(ApprovalKind::Understand), &goal)
+            .await
+        {
             PolicyOutcome::Decided { verdict, by, .. } => {
                 assert_eq!((verdict, by), (Verdict::Approve, DecideWith::Rules));
             }
@@ -164,8 +167,8 @@ mod tests {
         }
 
         // A merge packet that names no commits is a hard-limit failure, so it asks.
-        let merge = evidence(CheckpointKind::Merge, EvidenceFacts::default());
-        match policy.evaluate(&point(CheckpointKind::Merge), &merge).await {
+        let merge = evidence(ApprovalKind::Merge, EvidenceFacts::default());
+        match policy.evaluate(&point(ApprovalKind::Merge), &merge).await {
             PolicyOutcome::AskUser { violations, .. } => assert!(!violations.is_empty()),
             other => panic!("{other:?}"),
         }

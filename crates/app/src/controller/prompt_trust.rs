@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use argonauts_core::NoteLevel;
 use argonauts_core::app::{AppEvent, ChoiceKind};
-use argonauts_core::events::checkpoint::AnswerAction;
+use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::names::ChoiceId;
 use argonauts_crew::prompts::trust;
 
@@ -185,11 +185,11 @@ mod tests {
     use argonauts_core::names::RoleName;
     use argonauts_testkit::TempRepo;
 
-    use super::super::test_support::{Harness, HarnessOptions};
+    use super::super::test_support::{CliOptions, TestDriver};
     use super::*;
     use crate::prompts::catalog;
 
-    const ROLE: &str = ".argonauts/roles/reviewers.md";
+    const ROLE: &str = ".argonauts/roles/reviewer.md";
 
     /// A repository as a clone has it: the role file is committed, and nothing here wrote it.
     fn cloned(repo: &TempRepo) {
@@ -197,16 +197,16 @@ mod tests {
         repo.commit_all("add a reviewers file").unwrap();
     }
 
-    async fn start(prepare: fn(&TempRepo)) -> Harness {
-        Harness::start_with(HarnessOptions {
+    async fn start(prepare: fn(&TempRepo)) -> TestDriver {
+        TestDriver::start_with(CliOptions {
             prepare: Some(Box::new(prepare)),
-            ..HarnessOptions::default()
+            ..CliOptions::default()
         })
         .await
     }
 
-    async fn question(harness: &mut Harness) -> argonauts_core::app::AppChoice {
-        let asked = harness
+    async fn question(driver: &mut TestDriver) -> argonauts_core::app::AppChoice {
+        let asked = driver
             .until(|event| {
                 matches!(event, AppEvent::Choice { choice } if choice.kind == ChoiceKind::TrustProject)
             })
@@ -217,86 +217,86 @@ mod tests {
         }
     }
 
-    async fn answer(harness: &Harness, id: &ChoiceId, action: AnswerAction) {
-        harness
+    async fn answer(driver: &TestDriver, id: &ChoiceId, action: AnswerAction) {
+        driver
             .send(UiCommand::Answer {
                 to: AnswerTarget::Choice { id: id.clone() },
                 action,
                 text: None,
                 evidence_sha256: None,
-                cards: Vec::new(),
+                tasks: Vec::new(),
                 remember: false,
             })
             .await;
     }
 
-    fn reviewers_file_is_used(harness: &Harness) -> bool {
-        catalog::dirs(&harness.env)
+    fn reviewers_file_is_used(driver: &TestDriver) -> bool {
+        catalog::dirs(&driver.env)
             .role(RoleName::Reviewer)
             .is_some()
     }
 
     #[tokio::test]
     async fn a_cloned_role_file_asks_once_and_is_used_after_a_yes() {
-        let mut harness = start(cloned).await;
-        let asked = question(&mut harness).await;
+        let mut driver = start(cloned).await;
+        let asked = question(&mut driver).await;
         assert_eq!(asked.title, "Use these instructions?");
         assert!(
             asked
                 .body
                 .iter()
-                .any(|line| line.contains("roles/reviewers.md"))
+                .any(|line| line.contains("roles/reviewer.md"))
         );
-        assert!(!reviewers_file_is_used(&harness));
+        assert!(!reviewers_file_is_used(&driver));
 
         // "Show the file" prints what it says above the question, which stays open.
-        answer(&harness, &asked.id, AnswerAction::ShowDiff).await;
-        let shown = harness
+        answer(&driver, &asked.id, AnswerAction::ShowDiff).await;
+        let shown = driver
             .until(|event| matches!(event, AppEvent::Report { .. }))
             .await;
         let AppEvent::Report { title, lines } = shown else {
             unreachable!()
         };
-        assert!(title.ends_with("roles/reviewers.md"), "{title}");
+        assert!(title.ends_with("roles/reviewer.md"), "{title}");
         assert_eq!(lines, ["Go easy on this code."]);
 
-        answer(&harness, &asked.id, AnswerAction::Approve).await;
-        let closed = harness
+        answer(&driver, &asked.id, AnswerAction::Approve).await;
+        let closed = driver
             .until(|event| matches!(event, AppEvent::ChoiceClosed { .. }))
             .await;
         let AppEvent::ChoiceClosed { outcome, .. } = closed else {
             unreachable!()
         };
         assert!(outcome.starts_with("Trusted 1 file"), "{outcome}");
-        assert!(reviewers_file_is_used(&harness));
+        assert!(reviewers_file_is_used(&driver));
     }
 
     #[tokio::test]
     async fn a_no_leaves_it_unused_until_prompts_trust() {
-        let mut harness = start(cloned).await;
-        let asked = question(&mut harness).await;
-        answer(&harness, &asked.id, AnswerAction::Cancel).await;
-        harness
+        let mut driver = start(cloned).await;
+        let asked = question(&mut driver).await;
+        answer(&driver, &asked.id, AnswerAction::Cancel).await;
+        driver
             .until(|event| matches!(event, AppEvent::ChoiceClosed { .. }))
             .await;
-        assert!(!reviewers_file_is_used(&harness));
+        assert!(!reviewers_file_is_used(&driver));
         // Asked once: the file now waits as one you said no to.
-        let waiting = trust::waiting(&harness.env.repo_root, &harness.env.state_dir);
+        let waiting = trust::waiting(&driver.env.repo_root, &driver.env.state_dir);
         assert!(waiting.new.is_empty());
         assert_eq!(waiting.declined.len(), 1);
 
-        harness
+        driver
             .send(UiCommand::Slash {
                 command: SlashCommand::Prompts {
                     action: PromptsAction::Trust,
                 },
             })
             .await;
-        let trusted = harness
+        let trusted = driver
             .until(|event| matches!(event, AppEvent::Notice { text, .. } if text.starts_with("Trusted")))
             .await;
         assert!(matches!(trusted, AppEvent::Notice { .. }));
-        assert!(reviewers_file_is_used(&harness));
+        assert!(reviewers_file_is_used(&driver));
     }
 
     /// The first start runs the setup, which asks about the folder's settings and not about
@@ -313,7 +313,7 @@ mod tests {
             "opencode",
             "opencode-acp",
         ];
-        let mut harness = Harness::start_with(HarnessOptions {
+        let mut driver = TestDriver::start_with(CliOptions {
             flags: ids
                 .iter()
                 .map(|id| format!(r#"agents.{id}.binary="/nowhere/{id}""#))
@@ -323,10 +323,10 @@ mod tests {
                 ..Opening::default()
             },
             prepare: Some(Box::new(cloned)),
-            ..HarnessOptions::default()
+            ..CliOptions::default()
         })
         .await;
-        let welcome = harness
+        let welcome = driver
             .until(|event| matches!(event, AppEvent::Choice { .. }))
             .await;
         let AppEvent::Choice { choice: welcome } = welcome else {
@@ -334,28 +334,28 @@ mod tests {
         };
         assert_ne!(welcome.kind, ChoiceKind::TrustProject, "{welcome:?}");
         // Esc takes the setup's recommended answers.
-        harness
+        driver
             .send(UiCommand::SetAside {
                 to: AnswerTarget::Choice { id: welcome.id },
             })
             .await;
-        let asked = question(&mut harness).await;
+        let asked = question(&mut driver).await;
         assert_eq!(asked.title, "Use these instructions?");
-        assert!(!reviewers_file_is_used(&harness));
+        assert!(!reviewers_file_is_used(&driver));
         // The setup left every template where you can edit it, and none in the repository.
-        let yours = harness.env.paths.home().join("prompts");
+        let yours = driver.env.paths.home().join("prompts");
         assert!(yours.join("README.md").is_file());
         assert!(yours.join("frames/judge.md").is_file());
-        assert!(!harness.env.repo_root.join(".argonauts/prompts").exists());
+        assert!(!driver.env.repo_root.join(".argonauts/prompts").exists());
     }
 
     #[tokio::test]
     async fn a_file_you_wrote_here_is_never_asked_about() {
-        let harness = start(|repo| {
+        let driver = start(|repo| {
             repo.write(ROLE, "Check error handling.\n").unwrap();
         })
         .await;
-        assert!(trust::waiting(&harness.env.repo_root, &harness.env.state_dir).is_empty());
-        assert!(reviewers_file_is_used(&harness));
+        assert!(trust::waiting(&driver.env.repo_root, &driver.env.state_dir).is_empty());
+        assert!(reviewers_file_is_used(&driver));
     }
 }

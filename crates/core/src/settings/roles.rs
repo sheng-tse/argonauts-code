@@ -4,26 +4,27 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use super::approvals::RoleSandbox;
+pub use super::fallback::{BrokenWork, FallbackEntry, FallbackMode, FallbackRules, FallbackTable};
 pub use super::goal::RoleGoal;
-pub use super::handoff::{BrokenWork, FallbackEntry, FallbackRules, HandoffMode, HandoffSettings};
 use super::sessions::{Compaction, NativeFanout, SessionLifetime};
 use super::shell::RoleShell;
-use crate::names::WorkerRef;
+use crate::names::ModelRef;
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct RoleSettings {
-    /// Workers that fill the role. Empty lets the router pick from the crew.
-    pub workers: Vec<WorkerRef>,
-    /// How many places, where a role has several (drafters, reviewers per task).
+    /// Models that fill the role, written `agent` or `agent/model`. Empty lets the router pick
+    /// from the crew.
+    pub models: Vec<ModelRef>,
+    /// How many places, where a role has several (drafting agents, reviewers per task).
     pub count: Option<u32>,
-    /// Blind to peers in the same role (reviewers, drafters).
+    /// Blind to the others in the same role (reviewers, drafting agents).
     pub blind: Option<bool>,
-    /// Always a fresh session (judges, adjudicator, approver default to yes).
+    /// Always a fresh session (the judge defaults to yes).
     pub fresh_session: Option<bool>,
     /// Only when asked (consultant).
     pub on_demand: bool,
-    /// When the role runs, such as `reviewers_disagree` for the adjudicator.
+    /// When the role runs, such as `asked` for the consultant.
     pub when: Option<RoleTrigger>,
     pub effort: Option<String>,
     pub lifetime: Option<SessionLifetime>,
@@ -49,8 +50,8 @@ pub struct RoleSettings {
 #[serde(rename_all = "snake_case")]
 pub enum RoleTrigger {
     Always,
-    /// Only when a card's reviewers disagree.
+    /// Only when a task's reviewers disagree.
     ReviewersDisagree,
-    /// Only when asked (`@consultant`, or the coordinator asks).
+    /// Only when asked (`@consultant`, or the orchestrator asks).
     Asked,
 }

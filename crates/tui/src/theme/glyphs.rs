@@ -3,7 +3,7 @@ use argonauts_core::settings::ui::Glyphs as GlyphChoice;
 /// Every symbol the UI draws, so a terminal without the Unicode set can swap them. None has an
 /// emoji form, since a font without that glyph falls back to the emoji font, whose glyph spills
 /// into the next cell. The few East Asian ambiguous ones are Claude Code's shapes and the box
-/// lines, which have no one-cell stand-in, and `ui.ambiguous_width = 2` swaps them out.
+/// lines, which have no one-cell form, and `ui.ambiguous_width = 2` swaps them out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Glyphs {
     /// Starts assistant text, tool calls, and notices. Claude Code's `●`, and never its macOS
@@ -14,8 +14,8 @@ pub struct Glyphs {
     pub prompt: &'static str,
     pub turn_end: &'static str,
     pub recap: &'static str,
-    pub card: &'static str,
-    /// Starts a note typed under a card option.
+    pub question: &'static str,
+    /// Starts a note typed under a question option.
     pub note: &'static str,
     /// Precedes a mode that stops and asks: `ǁ supervised mode on`. Claude Code's `⏸` has an
     /// emoji form, and this Latin letter draws the same pause sign from the text font itself.
@@ -27,7 +27,7 @@ pub struct Glyphs {
     pub ellipsis: &'static str,
     /// Precedes token counts: `↓ 3.6k tokens`.
     pub tokens: &'static str,
-    /// Points at the crew view: `← 3 agents`.
+    /// Points at the agent panel: `← 3 agents`.
     pub agents: &'static str,
     /// The working glyph's frames, forward and back: Claude Code's, with `·`, `✳`, and `✽`
     /// swapped for `∙`, `✲`, and `✼`, which draw the same in one cell everywhere.
@@ -38,7 +38,7 @@ pub struct Glyphs {
     pub title_idle: &'static str,
     /// One frame holds the circle still; more frames turn it like the title glyph.
     pub agent_working: &'static [&'static str],
-    /// Waiting on other work, such as a card it depends on.
+    /// Waiting on other work, such as a task it depends on.
     pub agent_waiting: &'static str,
     /// Waiting on a timer, such as a usage reset.
     pub agent_timer: &'static str,
@@ -71,7 +71,7 @@ impl Glyphs {
         prompt: "❯",
         turn_end: "✻",
         recap: "※",
-        card: "◆",
+        question: "◆",
         note: "✎",
         mode_ask: "ǁ",
         mode_go: "⏵⏵",
@@ -111,7 +111,7 @@ impl Glyphs {
         prompt: ">",
         turn_end: "*",
         recap: "#",
-        card: "?",
+        question: "?",
         note: ">",
         mode_ask: "||",
         mode_go: ">>",
@@ -170,7 +170,7 @@ impl Glyphs {
             ("prompt", self.prompt),
             ("turn_end", self.turn_end),
             ("recap", self.recap),
-            ("card", self.card),
+            ("question", self.question),
             ("note", self.note),
             ("mode_ask", self.mode_ask),
             ("mode_go", self.mode_go),

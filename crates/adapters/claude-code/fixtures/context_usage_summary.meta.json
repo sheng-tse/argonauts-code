@@ -1,0 +1,79 @@
+{
+  "adapter": "claude-code",
+  "program": "claude",
+  "name": "context_usage_summary",
+  "args": [
+    "-p",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--model",
+    "haiku",
+    "--effort",
+    "low",
+    "--max-budget-usd",
+    "0.05",
+    "--strict-mcp-config",
+    "--session-id",
+    "588aba2d-47c4-48a7-b235-1c50c3ba2fb3",
+    "--disallowedTools",
+    "SendMessage",
+    "ListAgents",
+    "Agent",
+    "--settings",
+    "<live>/claude-settings.json"
+  ],
+  "date": "2026-10-04T22:47:58Z",
+  "duration_ms": 6910,
+  "exit_code": 0,
+  "sanitized": "absolute paths replaced with <workdir> (the throwaway repo), <live> (its check folder), <scratch> (the scratch folder), Claude Code's folder slug with <workdir-slug>, its per-user temp folder with /tmp/claude-uid, the home directory with ~, and email addresses with <email>",
+  "cli_version": "2.1.289",
+  "also_matches": [],
+  "model": "haiku",
+  "effort": "low",
+  "env_removed": [
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_PID",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "EMPTY_VAR"
+  ],
+  "keep_input_open": true,
+  "role": "direct",
+  "stdin_file": "context_usage_summary.stdin.jsonl",
+  "stdin_note": "each line as written, with _t seconds since the start; _stdin: closed marks where the input closed",
+  "session_id": "588aba2d-47c4-48a7-b235-1c50c3ba2fb3",
+  "result_total_cost_usd": [
+    0.037221
+  ],
+  "files": [
+    {
+      "path": "<live>/claude-settings.json",
+      "contents": "{\"crossSessionInbound\": \"refuse\", \"attribution\": {\"commit\": \"\", \"pr\": \"\"}, \"sandbox\": {\"enabled\": false}}\n"
+    },
+    {
+      "path": "<workdir>/README.md",
+      "contents": "# probe\n\nA throwaway repository for one Argonauts live check.\n"
+    },
+    {
+      "path": "<workdir>/CLAUDE.md",
+      "contents": "# Probe repo\n\nThis repository holds only a README. Answer briefly.\n"
+    }
+  ],
+  "files_after": [
+    "CLAUDE.md",
+    "README.md"
+  ],
+  "note": "One short turn with a chosen session id, then get_context_usage with detail \"summary\" after the result. The reply came 10 ms after the request, as control_response ctx-1, and nothing followed it in the 5 s before the input closed: no assistant, result, rate_limit_event or other usage line, so no model call. Its categories are System prompt, System tools, System tools (deferred) (kind deferred), Memory files, Skills, Messages, Autocompact buffer (kind buffer) and Free space (kind free); the used rows add up to totalTokens, and free is maxTokens less totalTokens less the buffer. totalTokens (24010) is above the last response's real count in apiUsage (18554): summary sets Messages to the API count less the local estimates of the other rows, never below zero, plus an estimate of messages since that response, so on a fresh session Messages is 1 and the total is the estimates'. The reply also carries autocompactSource, which the published schema doesn't list."
+}

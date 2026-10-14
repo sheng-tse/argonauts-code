@@ -4,6 +4,7 @@
 //! back as it reads now.
 
 use argonauts_core::app::{UiCommand, ViewData};
+use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::text::shown_name;
 use argonauts_core::workflow_page::{PageField, PageGroup, WorkflowChange, WorkflowPage};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -366,7 +367,7 @@ impl WorkflowPageView {
         fit_columns(
             vec![
                 Column::new("step", cells(&named)),
-                Column::new("role", cells(&|group| shown_name(&clean(&group.role)))).keep(2),
+                Column::new("role", cells(&|group| role_shown(&clean(&group.role)))).keep(2),
                 Column::new("who would take it", cells(&|group| clean(&group.who))).keep(1),
                 Column::new("how", cells(&|group| clean(&group.how))).flex(),
             ],
@@ -383,7 +384,7 @@ impl WorkflowPageView {
                 spans.push(Span::raw(" ".repeat(GAP)));
             }
             let style = match (place, pointed) {
-                (0, true) => theme.style(Role::Card),
+                (0, true) => theme.style(Role::Question),
                 (0, false) => theme.style(Role::Text),
                 _ => theme.style(Role::Dim),
             };
@@ -401,7 +402,7 @@ impl WorkflowPageView {
         theme: &Theme,
     ) -> Line<'static> {
         let label_style = if pointed {
-            theme.style(Role::Card)
+            theme.style(Role::Question)
         } else {
             theme.style(Role::Text)
         };
@@ -463,7 +464,7 @@ impl WorkflowPageView {
         } else {
             (
                 marks.failed,
-                theme.style(Role::Error),
+                theme.style(Role::Danger),
                 theme.style(Role::Text),
             )
         };
@@ -479,7 +480,7 @@ impl WorkflowPageView {
     fn footer(&self, theme: &Theme) -> Footer {
         if let Some(said) = &self.said {
             let role = if said.starts_with("Not saved") {
-                Role::Warning
+                Role::Warn
             } else {
                 Role::Dim
             };
@@ -652,7 +653,7 @@ impl View for WorkflowPageView {
 fn pointer(pointed: bool, theme: &Theme) -> Span<'static> {
     if pointed {
         let mark = Marks::for_theme(theme).selected;
-        Span::styled(format!("{mark} "), theme.style(Role::Card))
+        Span::styled(format!("{mark} "), theme.style(Role::Question))
     } else {
         Span::raw("  ")
     }
@@ -667,22 +668,28 @@ fn written(value: &str, theme: &Theme) -> Span<'static> {
     }
 }
 
+/// A step's role as the page names it: a crew role by its people, such as `Workers` for
+/// `worker`, with a capital.
+fn role_shown(role: &str) -> String {
+    shown_name(CrewRole::parse(role).map_or(role, |crew| crew.plural()))
+}
+
 /// Every value a key takes, side by side, the one written standing out.
 fn choice_spans(field: &PageField, theme: &Theme) -> Vec<Span<'static>> {
-    let chosen = theme.style(Role::Card).add_modifier(Modifier::BOLD);
+    let chosen = theme.style(Role::Question).add_modifier(Modifier::BOLD);
     let dim = theme.style(Role::Dim);
     let mut values: Vec<(&str, &str)> = Vec::new();
     if field.optional {
         values.push(("", UNSET));
     }
-    // A role is named on screen with a capital, and kept as typed.
+    // A role is named on screen by its people with a capital, and kept as typed.
     let roles = field.key == "role";
     let shown: Vec<String> = field
         .choices
         .iter()
         .map(|choice| {
             if roles {
-                shown_name(choice)
+                role_shown(choice)
             } else {
                 choice.clone()
             }
@@ -698,7 +705,7 @@ fn choice_spans(field: &PageField, theme: &Theme) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     // A value the key doesn't take, as a broken file may hold, is shown for what it is.
     if !values.iter().any(|(value, _)| *value == field.value) {
-        spans.push(Span::styled(clean(&field.value), theme.style(Role::Error)));
+        spans.push(Span::styled(clean(&field.value), theme.style(Role::Danger)));
         spans.push(Span::raw(" ".repeat(GAP)));
     }
     for (place, (value, shown)) in values.iter().enumerate() {
@@ -760,7 +767,7 @@ mod tests {
                 field(
                     "role",
                     role,
-                    &["orchestrator", "workers", "reviewers", "judge"],
+                    &["orchestrator", "worker", "reviewer", "judge"],
                     false,
                 ),
                 field("does", "", &[], true),
@@ -788,8 +795,8 @@ mod tests {
                     fields: vec![field("adapt", "false", &["false", "true"], false)],
                 },
                 step(0, "Plan", "orchestrator", ""),
-                step(1, "Build", "workers", ""),
-                step(2, "Review", "reviewers", "Build"),
+                step(1, "Build", "worker", ""),
+                step(2, "Review", "reviewer", "Build"),
             ],
             said: None,
             refresh: false,
@@ -860,8 +867,8 @@ mod tests {
         let lines = view.list_lines(100, &theme);
         let chosen = &lines[2].spans;
         assert!(chosen[0].content.starts_with('❯'), "{chosen:?}");
-        assert_eq!(chosen[0].style, theme.style(Role::Card));
-        assert_eq!(chosen[1].style, theme.style(Role::Card));
+        assert_eq!(chosen[0].style, theme.style(Role::Question));
+        assert_eq!(chosen[1].style, theme.style(Role::Question));
     }
 
     #[test]
@@ -887,7 +894,7 @@ mod tests {
             WorkflowChange::Set {
                 step: Some(0),
                 key: "role".to_owned(),
-                value: "workers".to_owned(),
+                value: "worker".to_owned(),
             }
         );
         let before = change(press(&mut view, KeyCode::Left));
@@ -996,7 +1003,7 @@ mod tests {
         let added = change(press(&mut view, KeyCode::Char('a')));
         assert_eq!(added, WorkflowChange::AddStep { after: Some(0) });
         let mut fresh = page();
-        fresh.groups.insert(2, step(1, "Step 4", "workers", ""));
+        fresh.groups.insert(2, step(1, "Step 4", "worker", ""));
         fresh.refresh = true;
         assert!(view.accept(&ViewData::WorkflowPage {
             page: Box::new(fresh)

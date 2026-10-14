@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-crew"
-description = "Argonauts run engine: a workflow runner for goal alignment, planning, dividing, card pipelines, integration, and the retro."
+description = "Argonauts Code run engine: a workflow runner for Understand, planning, dividing, task pipelines, merge, and the run review."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

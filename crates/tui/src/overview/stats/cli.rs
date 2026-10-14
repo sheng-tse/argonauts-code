@@ -2,19 +2,20 @@
 //! models as bars, and who did what in each role.
 
 use argonauts_core::api::{UsagePeriod, UsageSummary};
-use argonauts_core::crew_stats::CrewRole;
-use argonauts_core::limits::{QuotaReading, QuotaStatus};
+use argonauts_core::crew_stats::StatsRole;
+use argonauts_core::limits::{PlanUsageReading, PlanUsageStatus};
 use argonauts_core::settings::stats::StatsMeasure;
 use ratatui::style::Style;
 use ratatui::text::Span;
 
-use super::data::{Cli, Crew, Model};
+use super::data::{Cli, Crew, DayPart, Model};
 use super::draw::{self, Entry, Fared};
+use super::grid::{self, Body};
 use crate::format;
+use crate::kit::{Drawn, Frame, Header, Kit, Level, fit, spread};
 use crate::overview::cards::{used_of, window_label};
 use crate::text::{spans_width, str_width, truncate_spans};
 use crate::theme::Role;
-use crate::widgets::{Drawn, Frame, Header, Kit, Level, fit, spread};
 
 /// The chart's width: ten columns two cells wide, a cell apart.
 const CHART: usize = 30;
@@ -24,21 +25,23 @@ const CHART_GAP: usize = 2;
 const CHART_ROWS: usize = 8;
 /// From this inner width the all-together card draws its days chart.
 const CHART_FROM: usize = 64;
-/// The narrowest a CLI's card is drawn before the cards take a row each.
-const LEAST_CLI_CARD: usize = 34;
-/// Cells between two cards side by side.
-const CARD_GAP: usize = 2;
-/// The fewest cells a card's column of model names takes, and the most: a longer name is cut
-/// with `…`, still one blank before its bar.
+/// The fewest cells a card's column of model names takes, and the most, a swatch and the
+/// longest name with one blank before its bar: a longer name is cut with `…`.
 const LEAST_NAME: usize = 16;
-const MOST_NAME: usize = 19;
+const MOST_NAME: usize = draw::MODEL_NAME + 3;
 /// The narrowest a model's bar is drawn with the units of its count beside it, and without.
 const LEAST_MODEL_BAR: usize = 8;
 const LEAST_BARE_BAR: usize = 4;
 /// Blank cells a card keeps after its model rows' words when they say what they count.
-const SPARE: usize = 2;
-/// Cells a card's row of how work fared gives its label.
-const OUTCOME_LABEL: usize = 9;
+const SPARE: usize = 1;
+/// Cells a card's row of how work fared gives its label: nine, where the row just fits the
+/// narrowest card, and a cell more on a card with room for it.
+pub(super) const OUTCOME_LABEL: usize = 9;
+const ROOMY_CARD: usize = 36;
+/// The widest a plan window's bar is drawn on a card, and the cells of a row of two windows
+/// beside their bars and the gap between them: `5h `, `week ` and a share after each.
+const MOST_PLAN_BAR: usize = 12;
+const PLAN_WORDS: usize = 18;
 /// The who-did-what card's column of role names.
 const ROLE_COLUMN: usize = 16;
 /// Squares before they stand for more than one task each.
@@ -49,6 +52,9 @@ pub(super) struct Stats<'a> {
     pub crew: &'a Crew,
     pub usage: &'a UsageSummary,
     pub measure: StatsMeasure,
+    /// The tokens of everything on this computer over every day, the crew's or not, when the
+    /// Overview's numbers are at hand.
+    pub on_this_computer: Option<u64>,
 }
 
 /// Tokens in millions with two decimals, the second dropped when it's a zero: `5.0M`,
@@ -92,14 +98,50 @@ pub(super) fn share(part: u64, whole: u64) -> String {
     format::percent(part as f64 / whole.max(1) as f64)
 }
 
-/// `4m 12s`, `3m 05s`, `41s`, `12h 40m`: the seconds take two digits beside minutes, so a
-/// column of them lines up.
+/// A share in whole percents, as the legends of By model and By role write it, or nothing
+/// when it rounds to none.
+pub(super) fn whole_share(part: u64, whole: u64) -> String {
+    match (part as f64 / whole.max(1) as f64 * 100.0).round() as u64 {
+        0 => String::new(),
+        percent => format!("{percent}%"),
+    }
+}
+
+/// `4m 12s`, `3m 05s`, `6m`, `41s`, `12h 40m`: the seconds take two digits beside minutes, so
+/// a column of them lines up, and whole minutes go without them.
 pub(super) fn took(secs: u64) -> String {
     match secs {
         3600.. => format!("{}h {}m", secs / 3600, (secs % 3600) / 60),
+        60.. if secs.is_multiple_of(60) => format!("{}m", secs / 60),
         60.. => format!("{}m {:02}s", secs / 60, secs % 60),
         _ => format!("{secs}s"),
     }
+}
+
+/// Time summed over many sessions, to the minute: `6h 54m`, `42m`, and `41s` under one.
+pub(super) fn took_whole(secs: u64) -> String {
+    match secs {
+        3600.. => format!("{}h {}m", secs / 3600, (secs % 3600) / 60),
+        60.. => format!("{}m", secs / 60),
+        _ => format!("{secs}s"),
+    }
+}
+
+/// What one of `n` pieces of work cost: `$0.14`. Under two cents it keeps a third decimal,
+/// `$0.014`, so less than a cent still reads as something.
+pub(super) fn cost_each(cost_usd: f64, n: u32) -> String {
+    let each = cost_usd / f64::from(n.max(1));
+    if each > 0.0 && each < 0.02 {
+        format!("${each:.3}")
+    } else {
+        format::usd(each)
+    }
+}
+
+/// One stack of the chart's columns: its colour, and which of the period's parts are its own.
+pub(super) struct Stack<'a> {
+    pub style: Style,
+    pub holds: &'a dyn Fn(&DayPart) -> bool,
 }
 
 /// Bold numbers and dim words, as a header's right side writes them, giving up pieces from
@@ -173,23 +215,10 @@ impl Stats<'_> {
         let inner = frame.inner();
         let crew = self.crew;
         let mut drawn = Drawn::new();
-        let left = vec![
-            kit.span(kit.glyphs.widget, Role::Card),
-            Span::raw(" "),
-            kit.strong("all together"),
-            kit.dim(format!("  {}", self.period_words())),
-        ];
-        drawn.push(header_row(kit, left, &self.totals(), inner));
+        drawn.push(self.together_title(kit, inner));
         drawn.push(Vec::new());
 
-        let slots = crew.slots().len();
-        let chart_width = CHART.max(slots * slot_width(slots));
-        let chart = inner >= CHART_FROM;
-        let right = if chart {
-            inner - chart_width - CHART_GAP
-        } else {
-            inner
-        };
+        let right = self.beside_chart(inner);
         let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
         let measured = crew.measured(self.measure);
         rows.push(vec![kit.dim(format!(
@@ -256,8 +285,8 @@ impl Stats<'_> {
             rows.push(fared_bar(kit, fared, right));
             let entries = [
                 (fared.first, Role::Success, "passed first time"),
-                (fared.once, Role::Warning, "sent back once"),
-                (fared.more, Role::Error, "sent back twice"),
+                (fared.once, Role::Warn, "sent back once"),
+                (fared.more, Role::Danger, "sent back twice"),
             ]
             .into_iter()
             .map(|(n, role, name)| Entry {
@@ -272,30 +301,107 @@ impl Stats<'_> {
             rows.push(vec![kit.dim("no task reviewed yet")]);
         }
 
-        if chart {
-            let columns = self.chart(kit, rows.len().saturating_sub(1).min(CHART_ROWS));
-            // The chart sits at the bottom, its labels on the last row.
-            let pad = rows.len().saturating_sub(columns.len());
-            let mut left: Vec<Vec<Span<'static>>> = vec![Vec::new(); pad];
-            left.extend(columns);
-            for (at, row) in rows.into_iter().enumerate() {
-                let mut line = fit(
-                    left.get(at).cloned().unwrap_or_default(),
-                    chart_width + CHART_GAP,
-                );
-                line.extend(row);
-                drawn.push(line);
-            }
-        } else {
-            for row in rows {
-                drawn.push(row);
-            }
+        let own: Vec<_> = crew
+            .clis
+            .iter()
+            .map(|cli| move |part: &DayPart| part.agent == cli.agent)
+            .collect();
+        let stacks: Vec<Stack<'_>> = crew
+            .clis
+            .iter()
+            .zip(&own)
+            .map(|(cli, holds)| Stack {
+                style: kit.fg(cli.role()),
+                holds,
+            })
+            .collect();
+        for row in self.with_chart(kit, inner, rows, &stacks) {
+            drawn.push(row);
         }
         frame.draw(kit, drawn)
     }
 
+    /// The all-together card's first row. Over every day so far it says whose work Stats
+    /// counts, and how much of everything on this computer that is, which the Overview
+    /// counts. A shorter period is named, before its totals.
+    fn together_title(&self, kit: &Kit<'_>, inner: usize) -> Vec<Span<'static>> {
+        let title = |words: &str| {
+            vec![
+                kit.span(kit.glyphs.the_mod, Role::Question),
+                Span::raw(" "),
+                kit.strong("all together"),
+                kit.dim(format!("  {words}")),
+            ]
+        };
+        if self.crew.period != UsagePeriod::All {
+            let left = title(&self.period_words());
+            return header_row(kit, left, &self.totals(), inner);
+        }
+        let left = title("the crew's work through Argonauts Code");
+        let mut right = vec![
+            kit.strong(self.tokens(self.crew.total.total_tokens())),
+            kit.dim(" tokens"),
+        ];
+        if let Some(all) = self.on_this_computer {
+            let room = inner.saturating_sub(spans_width(&left) + spans_width(&right) + 2);
+            let of = vec![
+                kit.dim(" of "),
+                kit.strong(millions(all)),
+                kit.dim(" on this computer (Overview)"),
+            ];
+            if spans_width(&of) <= room {
+                right.extend(of);
+            }
+        }
+        let room = inner.saturating_sub(spans_width(&right) + 2);
+        spread(truncate_spans(&left, room), right, inner)
+    }
+
+    /// The chart's width for the period's slots.
+    fn chart_width(&self) -> usize {
+        let slots = self.crew.slots().len();
+        CHART.max(slots * slot_width(slots))
+    }
+
+    /// The cells the rows beside the chart have in a card `inner` wide: all of it where the
+    /// card is too narrow for a chart.
+    pub(super) fn beside_chart(&self, inner: usize) -> usize {
+        if inner >= CHART_FROM {
+            inner - self.chart_width() - CHART_GAP
+        } else {
+            inner
+        }
+    }
+
+    /// `rows`, made for the width [`Stats::beside_chart`] gives, with the period's chart at
+    /// their left: it sits at the bottom, its labels on the last row.
+    pub(super) fn with_chart(
+        &self,
+        kit: &Kit<'_>,
+        inner: usize,
+        rows: Vec<Vec<Span<'static>>>,
+        stacks: &[Stack<'_>],
+    ) -> Vec<Vec<Span<'static>>> {
+        if inner < CHART_FROM {
+            return rows;
+        }
+        let columns = self.chart(kit, rows.len().saturating_sub(1).min(CHART_ROWS), stacks);
+        let pad = rows.len().saturating_sub(columns.len());
+        let mut left: Vec<Vec<Span<'static>>> = vec![Vec::new(); pad];
+        left.extend(columns);
+        let width = self.chart_width() + CHART_GAP;
+        rows.into_iter()
+            .enumerate()
+            .map(|(at, row)| {
+                let mut line = fit(left.get(at).cloned().unwrap_or_default(), width);
+                line.extend(row);
+                line
+            })
+            .collect()
+    }
+
     /// The period as the all-together card names it.
-    fn period_words(&self) -> String {
+    pub(super) fn period_words(&self) -> String {
         match self.crew.period {
             UsagePeriod::Today => "today".to_owned(),
             UsagePeriod::Week => {
@@ -332,10 +438,11 @@ impl Stats<'_> {
         pieces
     }
 
-    /// The period's days or weeks as columns `rows` high, stacked by CLI from the bottom,
-    /// over their labels: a week's days by their letters with today's in the accent, a
-    /// month's by the dates its weeks start on, and weeks by the month each begins.
-    fn chart(&self, kit: &Kit<'_>, rows: usize) -> Vec<Vec<Span<'static>>> {
+    /// The period's days or weeks as columns `rows` high, each stacked from the bottom in the
+    /// order of `stacks`, over their labels: a week's days by their letters with today's in
+    /// the accent, a month's by the dates its weeks start on, and weeks by the month each
+    /// begins.
+    fn chart(&self, kit: &Kit<'_>, rows: usize, stacks: &[Stack<'_>]) -> Vec<Vec<Span<'static>>> {
         let crew = self.crew;
         let slots = crew.slots();
         let width = slot_width(slots.len());
@@ -345,16 +452,16 @@ impl Stats<'_> {
                 if slot.ahead {
                     return Vec::new();
                 }
-                crew.clis
+                stacks
                     .iter()
-                    .map(|cli| {
+                    .map(|stack| {
                         let value = crew
                             .days
                             .iter()
-                            .filter(|part| part.agent == cli.agent && slot.holds(part.day))
+                            .filter(|part| slot.holds(part.day) && (stack.holds)(part))
                             .map(|part| part.measured(self.measure))
                             .sum();
-                        (value, kit.fg(cli.role()))
+                        (value, stack.style)
                     })
                     .collect()
             })
@@ -388,7 +495,7 @@ impl Stats<'_> {
             used = at + str_width(&label);
             let today = slot.holds(crew.today) && crew.period != UsagePeriod::All;
             labels.push(if today {
-                Span::styled(label, kit.bold(Role::Card))
+                Span::styled(label, kit.bold(Role::Question))
             } else {
                 kit.dim(label)
             });
@@ -397,50 +504,23 @@ impl Stats<'_> {
         out
     }
 
-    /// The CLIs' cards side by side, as many to a row as fit, two cells apart and all one
-    /// height. `picked` is the card the keys are on.
-    pub fn cli_cards(&self, kit: &Kit<'_>, width: usize, picked: Option<usize>) -> Vec<Drawn> {
+    /// The CLIs' cards side by side, `picked` the one the keys are on, and how they're laid
+    /// out.
+    pub fn cli_cards(
+        &self,
+        kit: &Kit<'_>,
+        width: usize,
+        picked: Option<usize>,
+    ) -> (Vec<Drawn>, grid::Layout) {
         let clis = &self.crew.clis;
-        if clis.is_empty() {
-            return Vec::new();
-        }
-        let room = width.saturating_sub(2);
-        let per_row = ((room + CARD_GAP) / (LEAST_CLI_CARD + CARD_GAP)).clamp(1, clis.len());
-        let card = (room - CARD_GAP * (per_row - 1)) / per_row;
-        let inner = card.saturating_sub(4);
-        let layout = self.model_layout(inner);
-        let mut out = Vec::new();
-        for (row_at, row) in clis.chunks(per_row).enumerate() {
-            let bodies: Vec<Drawn> = row
-                .iter()
-                .map(|cli| self.cli_body(kit, cli, inner, &layout))
-                .collect();
-            let height = bodies.iter().map(Drawn::height).max().unwrap_or(0);
-            let mut line = Drawn::new();
-            let mut at = 1;
-            for (k, mut body) in bodies.into_iter().enumerate() {
-                while body.height() < height {
-                    body.push(Vec::new());
-                }
-                let frame = Frame {
-                    left: 0,
-                    width: card,
-                    toggle: None,
-                    active: picked == Some(row_at * per_row + k),
-                };
-                let drawn = frame.draw(kit, body);
-                line = if k == 0 {
-                    let mut first = drawn;
-                    first.indent(1);
-                    first
-                } else {
-                    crate::widgets::side_by_side(line, drawn, at)
-                };
-                at += card + CARD_GAP;
-            }
-            out.push(line);
-        }
-        out
+        let cards = grid::Layout::of(width, clis.len());
+        let layout = self.model_layout(cards.least_inner());
+        let bodies = clis
+            .iter()
+            .enumerate()
+            .map(|(at, cli)| self.cli_body(kit, cli, cards.inner(at), &layout))
+            .collect();
+        (grid::draw(kit, cards, bodies, picked), cards)
     }
 
     /// How every card lays out its models' rows, alike so their bars line up: the names'
@@ -501,7 +581,7 @@ impl Stats<'_> {
         let did = match role {
             Some(role) if units => {
                 let unit = match role {
-                    CrewRole::Judge => "review",
+                    StatsRole::Judge => "review",
                     role => role.unit(),
                 };
                 count(did, unit)
@@ -516,9 +596,9 @@ impl Stats<'_> {
     }
 
     /// One CLI: its tokens, its work and plan, each model a thin bar, how its tasks and its
-    /// reviews fared, its pace over the period, and its plan's windows.
-    fn cli_body(&self, kit: &Kit<'_>, cli: &Cli, inner: usize, layout: &ModelLayout) -> Drawn {
-        let mut drawn = Drawn::new();
+    /// reviews fared, its pace over the period, and its plan's windows, a blank row between
+    /// each part.
+    fn cli_body(&self, kit: &Kit<'_>, cli: &Cli, inner: usize, layout: &ModelLayout) -> Body {
         let dot = if cli.main { "●" } else { "○" };
         let left = vec![
             kit.span(dot, cli.role()),
@@ -526,16 +606,12 @@ impl Stats<'_> {
             kit.strong(cli.name.clone()),
         ];
         let tokens = self.tokens(cli.tokens());
-        drawn.push(spread(
-            left,
-            vec![kit.strong(tokens), kit.dim(" tok")],
-            inner,
-        ));
+        let title = spread(left, vec![kit.strong(tokens), kit.dim(" tok")], inner);
 
         // A judge's sign-off is a review too, so a CLI that reviews and judges counts both.
         let mut did = Vec::new();
-        let tasks = cli.did(CrewRole::Worker);
-        let reviews = cli.did(CrewRole::Reviewer) + cli.did(CrewRole::Judge);
+        let tasks = cli.did(StatsRole::Worker);
+        let reviews = cli.did(StatsRole::Reviewer) + cli.did(StatsRole::Judge);
         if tasks > 0 {
             did.push(count(tasks, "task"));
         }
@@ -553,64 +629,115 @@ impl Stats<'_> {
         let right = vec![kit.dim(right)];
         let room = inner.saturating_sub(spans_width(&right) + 1);
         let left = truncate_spans(&[kit.dim(did.join(" · "))], room);
-        drawn.push(spread(left, right, inner));
-        drawn.push(Vec::new());
+        let did = spread(left, right, inner);
 
         let whole = cli.measured(self.measure);
         let bar = self.model_bar(cli, inner, layout);
-        for model in &cli.models {
-            let style = model_style(kit, cli, model);
-            let mut row = draw::swatch(kit, style);
-            row.push(Span::raw(model.name.clone()));
-            // A name cut to its column keeps a blank before the bar.
-            let row = truncate_spans(&row, layout.names - 1);
-            let mut row = fit(row, layout.names);
-            row.extend(draw::thin(
-                kit,
-                model.measured(self.measure),
-                whole,
-                bar,
-                style,
-            ));
-            row.push(kit.dim(self.model_amount(model, layout.units)));
-            drawn.push(truncate_spans(&row, inner));
-        }
-        drawn.push(Vec::new());
+        let bars = cli
+            .models
+            .iter()
+            .map(|model| {
+                let style = model_style(kit, cli, model);
+                let mut row = draw::swatch(kit, style);
+                row.push(Span::raw(model.name.clone()));
+                // A name cut to its column keeps a blank before the bar.
+                let row = truncate_spans(&row, layout.names - 1);
+                let mut row = fit(row, layout.names);
+                row.extend(draw::thin(
+                    kit,
+                    model.measured(self.measure),
+                    whole,
+                    bar,
+                    style,
+                ));
+                row.push(kit.dim(self.model_amount(model, layout.units)));
+                truncate_spans(&row, inner)
+            })
+            .collect();
 
-        let back = cli.sent_back(CrewRole::Reviewer) + cli.sent_back(CrewRole::Judge);
+        let back = cli.sent_back(StatsRole::Reviewer) + cli.sent_back(StatsRole::Judge);
         let accepted = Fared {
             first: reviews.saturating_sub(back),
             once: back.min(reviews),
             more: 0,
         };
-        drawn.push(outcome_row(kit, "tasks", cli.fared(), "first pass"));
-        drawn.push(outcome_row(kit, "reviews", accepted, "accepted"));
-
-        let work = self
-            .crew
-            .series(StatsMeasure::Tasks, |part| part.agent == cli.agent);
-        let top = self
-            .crew
-            .fullest(StatsMeasure::Tasks, |part| Some(part.agent.clone()));
-        let mut line = draw::spark(kit, &work, top, kit.fg(cli.role()));
-        let mut words = format!(" {}", self.span_words());
-        let (n, secs, unit) = if tasks > 0 {
-            (tasks, cli.took(CrewRole::Worker), "a task")
+        let label = if inner >= ROOMY_CARD {
+            OUTCOME_LABEL + 1
         } else {
-            let secs = cli.took(CrewRole::Reviewer) + cli.took(CrewRole::Judge);
+            OUTCOME_LABEL
+        };
+        let mut rest = vec![
+            Vec::new(),
+            outcome_row_in(kit, ("tasks", label), cli.fared(), "first pass"),
+            Vec::new(),
+            outcome_row_in(kit, ("reviews", label), accepted, "accepted"),
+            Vec::new(),
+        ];
+        rest.extend(self.pace_rows(kit, cli, inner));
+        rest.push(Vec::new());
+        rest.push(self.plan_line(kit, cli, inner));
+        Body {
+            head: vec![title, did, Vec::new()],
+            bars,
+            rest,
+        }
+    }
+
+    /// The CLI's work over the period as a sparkline, before the period and the time a piece
+    /// of the work took. A week is seven bars a cell apart, over the letters of their days.
+    fn pace_rows(&self, kit: &Kit<'_>, cli: &Cli, inner: usize) -> Vec<Vec<Span<'static>>> {
+        let crew = self.crew;
+        let work = crew.series(StatsMeasure::Tasks, |part| part.agent == cli.agent);
+        let top = crew.fullest(StatsMeasure::Tasks, |part| Some(part.agent.clone()));
+        let style = kit.fg(cli.role());
+        let tasks = cli.did(StatsRole::Worker);
+        let (n, secs, unit) = if tasks > 0 {
+            (tasks, cli.took(StatsRole::Worker), "a task")
+        } else {
+            let reviews = cli.did(StatsRole::Reviewer) + cli.did(StatsRole::Judge);
+            let secs = cli.took(StatsRole::Reviewer) + cli.took(StatsRole::Judge);
             (reviews, secs, "a review")
         };
-        if n > 0 && secs > 0 {
-            words.push_str(&format!(" · {} {unit}", took(secs / u64::from(n))));
+        let pace = (n > 0 && secs > 0).then(|| format!("{} {unit}", took(secs / u64::from(n))));
+        let span = self.span_words();
+        if crew.period != UsagePeriod::Week {
+            let mut line = draw::spark(kit, &work, top, style);
+            line.push(kit.dim(match pace {
+                Some(pace) => format!(" {span} · {pace}"),
+                None => format!(" {span}"),
+            }));
+            return vec![truncate_spans(&line, inner)];
         }
-        line.push(kit.dim(words));
-        drawn.push(truncate_spans(&line, inner));
-        drawn.push(self.plan_line(kit, cli, inner));
-        drawn
+        let mut line = draw::spark_apart(kit, &work, top, style);
+        // The letters under the bars say it's a week, so on a narrow card the pace alone
+        // follows them.
+        let room = inner.saturating_sub(spans_width(&line));
+        let words = [
+            pace.as_ref().map(|pace| format!("  {span} · {pace}")),
+            pace.as_ref().map(|pace| format!("  {pace}")),
+            Some(format!("  {span}")),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|words| str_width(words) <= room);
+        line.extend(words.map(|words| kit.dim(words)));
+        vec![line, vec![kit.dim(self.weekday_letters())]]
+    }
+
+    /// `S M T W T F S`: the letters of a week's days from the day it starts on, a blank
+    /// between them, under bars drawn the same way.
+    pub(super) fn weekday_letters(&self) -> String {
+        let mut day = self.crew.week_starts;
+        let mut letters = Vec::new();
+        for _ in 0..7 {
+            letters.push(letter(day).to_string());
+            day = day.next();
+        }
+        letters.join(" ")
     }
 
     /// The period as a card's pace names it: `weeks`, `this week`.
-    fn span_words(&self) -> &'static str {
+    pub(super) fn span_words(&self) -> &'static str {
         match self.crew.period {
             UsagePeriod::Today => "today",
             UsagePeriod::Week => "this week",
@@ -619,8 +746,8 @@ impl Stats<'_> {
         }
     }
 
-    /// `5h ━━━━━━  1%   week ━━━━━━ 56%`: the CLI's plan windows, their bars as wide as the
-    /// card leaves them, or why there is no reading.
+    /// `5h ━━━━━━   1%   week ━━━━━━  56%`: the CLI's plan windows, their bars as wide as
+    /// the card leaves them, or why there is no reading.
     pub(super) fn plan_line(&self, kit: &Kit<'_>, cli: &Cli, inner: usize) -> Vec<Span<'static>> {
         let Some(plan) = self.usage.plans.iter().find(|plan| plan.agent == cli.agent) else {
             return vec![kit.dim("no plan reading yet")];
@@ -628,7 +755,11 @@ impl Stats<'_> {
         if plan.pays_per_token {
             return vec![kit.dim("pays per token")];
         }
-        let bar = (inner.saturating_sub(10) / 4).clamp(4, 10);
+        // Two windows share the row, half a bar's width apart.
+        let bar = (LEAST_BARE_BAR..=MOST_PLAN_BAR)
+            .rev()
+            .find(|bar| PLAN_WORDS + 2 * bar + bar / 2 <= inner)
+            .unwrap_or(LEAST_BARE_BAR);
         match self.plan_windows(kit, cli, bar) {
             Some(windows) => truncate_spans(&windows, inner),
             // The Usage tab's own words; its page says why.
@@ -645,19 +776,32 @@ impl Stats<'_> {
             .and_then(|plan| plan.plan.clone())
     }
 
+    /// The models that filled `role`, the CLI that did the most of it first, its models
+    /// together.
+    pub(super) fn filled_by(&self, role: StatsRole) -> Vec<(&Cli, &Model)> {
+        let mut filled = self.crew.in_role(role);
+        filled.sort_by_key(|(cli, _)| std::cmp::Reverse(cli.did(role)));
+        filled
+    }
+
     /// Each role with every model that filled it, a bar of what each did in it, and a
     /// legend of each, a blank row between roles. `picked` is the role the keys are on.
-    pub fn who_did_what(&self, kit: &Kit<'_>, frame: Frame, picked: Option<CrewRole>) -> Drawn {
+    pub fn who_did_what(&self, kit: &Kit<'_>, frame: Frame, picked: Option<StatsRole>) -> Drawn {
         let inner = frame.inner();
         let mut drawn = Drawn::new();
-        let left = Header::new("who did what", Role::Card).left(kit);
+        let left = Header::new("who did what", Role::Question).left(kit);
         let note = vec![kit.dim("every model that filled the role · enter opens a role")];
         let room = inner.saturating_sub(spans_width(&left) + 2);
         drawn.push(spread(left, truncate_spans(&note, room), inner));
         let bar_cells = inner.saturating_sub(ROLE_COLUMN);
         for role in self.crew.roles() {
             drawn.push(Vec::new());
-            let filled = self.filled_by(role);
+            // The row counts work, so a model that only spent in the role isn't on it.
+            let filled: Vec<_> = self
+                .filled_by(role)
+                .into_iter()
+                .filter(|(_, model)| model.did(role) > 0)
+                .collect();
             let parts: Vec<(u64, Style)> = filled
                 .iter()
                 .map(|(cli, model)| (u64::from(model.did(role)), model_style(kit, cli, model)))
@@ -665,7 +809,7 @@ impl Stats<'_> {
             let label = if picked == Some(role) {
                 vec![Span::styled(
                     format!("❯ {}", role.plural()),
-                    kit.bold(Role::Card),
+                    kit.bold(Role::Question),
                 )]
             } else {
                 vec![Span::raw(role.plural())]
@@ -680,7 +824,7 @@ impl Stats<'_> {
                 .iter()
                 .map(|(cli, model)| Entry {
                     style: model_style(kit, cli, model),
-                    name: model.name.clone(),
+                    name: draw::model_name(&model.name),
                     amount: model.did(role).to_string(),
                     note: if single {
                         units(model.did(role), role.unit())
@@ -694,6 +838,10 @@ impl Stats<'_> {
                 let mut row = vec![Span::raw(" ".repeat(ROLE_COLUMN))];
                 row.extend(line);
                 drawn.push(row);
+            }
+            if filled.is_empty() {
+                let none = format!("no {}s recorded", role.unit());
+                drawn.push(vec![Span::raw(" ".repeat(ROLE_COLUMN)), kit.dim(none)]);
             }
         }
         if self.crew.roles().is_empty() {
@@ -752,7 +900,7 @@ fn short_month(month: time::Month) -> &'static str {
 pub(super) fn window_meter(
     kit: &Kit<'_>,
     cli: &Cli,
-    reading: &QuotaReading,
+    reading: &PlanUsageReading,
     cells: usize,
 ) -> Vec<Span<'static>> {
     let used = used_of(reading);
@@ -767,7 +915,7 @@ pub(super) fn window_meter(
         Level::Ok => kit.fg(cli.role()),
         level => kit.fg(level.number_role()),
     };
-    let percent = if reading.status == QuotaStatus::Rejected {
+    let percent = if reading.status == PlanUsageStatus::Rejected {
         "out".to_owned()
     } else {
         format::percent(used)
@@ -781,7 +929,7 @@ pub(super) fn window_meter(
 }
 
 /// The window's name as the Usage tab says it: `5h`, `week`.
-pub(super) fn window_name(reading: &QuotaReading) -> String {
+pub(super) fn window_name(reading: &PlanUsageReading) -> String {
     match window_label(reading).as_str() {
         "7d" => "week".to_owned(),
         other => other.to_owned(),
@@ -793,7 +941,7 @@ pub(super) fn window_name(reading: &QuotaReading) -> String {
 pub(super) fn window_bar(
     kit: &Kit<'_>,
     cli: &Cli,
-    reading: &QuotaReading,
+    reading: &PlanUsageReading,
     cells: usize,
 ) -> Vec<Span<'static>> {
     let used = used_of(reading);
@@ -808,13 +956,13 @@ pub(super) fn window_bar(
         Level::Ok => (kit.fg(cli.role()), kit.style(Role::Dim)),
         level => (kit.fg(level.number_role()), kit.style(level.number_role())),
     };
-    let percent = if reading.status == QuotaStatus::Rejected {
+    let percent = if reading.status == PlanUsageStatus::Rejected {
         "out".to_owned()
     } else {
         format::percent(used)
     };
     let mut bar = draw::thin(kit, (used * 1000.0).round() as u64, 1000, cells, fill);
-    bar.push(Span::styled(format!(" {percent:>3}"), words));
+    bar.push(Span::styled(format!(" {percent:>4}"), words));
     bar
 }
 
@@ -835,7 +983,17 @@ pub(super) fn outcome_row(
     fared: Fared,
     words: &str,
 ) -> Vec<Span<'static>> {
-    let mut row = vec![kit.dim(format!("{label:<OUTCOME_LABEL$}"))];
+    outcome_row_in(kit, (label, OUTCOME_LABEL), fared, words)
+}
+
+/// [`outcome_row`] with its label in a column `width` wide.
+fn outcome_row_in(
+    kit: &Kit<'_>,
+    (label, width): (&str, usize),
+    fared: Fared,
+    words: &str,
+) -> Vec<Span<'static>> {
+    let mut row = vec![kit.dim(format!("{label:<width$}"))];
     if fared.total() == 0 {
         row.push(kit.dim("none"));
         return row;
@@ -851,8 +1009,8 @@ pub(super) fn outcome_row(
 pub(super) fn fared_bar(kit: &Kit<'_>, fared: Fared, cells: usize) -> Vec<Span<'static>> {
     let parts = [
         (u64::from(fared.first), kit.fg(Role::Success)),
-        (u64::from(fared.once), kit.fg(Role::Warning)),
-        (u64::from(fared.more), kit.fg(Role::Error)),
+        (u64::from(fared.once), kit.fg(Role::Warn)),
+        (u64::from(fared.more), kit.fg(Role::Danger)),
     ];
     draw::stacked(kit, &parts, cells)
 }

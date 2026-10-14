@@ -4,7 +4,7 @@
 
 use argonauts_core::app::{UiCommand, ViewData};
 use argonauts_core::input::{PromptsAction, SlashCommand};
-use argonauts_core::prompt_list::{PromptList, PromptRow, WriterChoice};
+use argonauts_core::prompt_list::{PromptList, PromptRow, WriterChoice, heading};
 use argonauts_core::prompt_parts::Readers;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
@@ -22,7 +22,7 @@ use super::{View, ViewCtx, ViewOutcome};
 /// Cells between columns.
 const GAP: usize = 2;
 /// Cells before the first column, where the selection mark goes.
-const LEAD: usize = 2;
+const MARGIN: usize = 2;
 
 const ROLE: &str = "role";
 const PART: &str = "part";
@@ -61,7 +61,7 @@ impl PromptsView {
         let roles = (0..rows.len())
             .map(|index| {
                 if index == self.cursor.offset {
-                    clean(&rows[index].role)
+                    clean(heading(&rows[index].role))
                 } else {
                     clean(self.list.role_shown(index))
                 }
@@ -80,9 +80,9 @@ impl PromptsView {
     fn lines(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let dim = theme.style(Role::Dim);
         let marks = Marks::for_theme(theme);
-        let columns = self.columns(width.saturating_sub(LEAD));
-        let row_of = |cells: &dyn Fn(&Column) -> Span<'static>, lead: Span<'static>| {
-            let mut spans = vec![lead];
+        let columns = self.columns(width.saturating_sub(MARGIN));
+        let row_of = |cells: &dyn Fn(&Column) -> Span<'static>, opening: Span<'static>| {
+            let mut spans = vec![opening];
             for (i, column) in columns.iter().enumerate() {
                 if i > 0 {
                     spans.push(Span::raw(" ".repeat(GAP)));
@@ -91,27 +91,27 @@ impl PromptsView {
             }
             Line::from(spans)
         };
-        let blank = Span::raw(" ".repeat(LEAD));
+        let blank = Span::raw(" ".repeat(MARGIN));
         let mut lines = vec![row_of(
             &|column| Span::styled(column.cell(column.heading), dim),
             blank.clone(),
         )];
         for index in 0..self.list.rows.len() {
             let selected = index == self.cursor.selected;
-            let lead = if selected {
-                Span::styled(format!("{} ", marks.selected), theme.style(Role::Card))
+            let opening = if selected {
+                Span::styled(format!("{} ", marks.selected), theme.style(Role::Question))
             } else {
                 blank.clone()
             };
             let style = |column: &Column| match column.heading {
                 // What is yours stands out on every row.
                 YOURS => theme.style(Role::Label),
-                _ if selected => theme.style(Role::Card),
+                _ if selected => theme.style(Role::Question),
                 _ => theme.style(Role::Text),
             };
             lines.push(row_of(
                 &|column| Span::styled(column.cell(&column.cells[index]), style(column)),
-                lead,
+                opening,
             ));
         }
         lines
@@ -120,7 +120,7 @@ impl PromptsView {
     /// What you should know about your own files, under the list.
     fn notes(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let marks = Marks::for_theme(theme);
-        let warning = theme.style(Role::Warning);
+        let warning = theme.style(Role::Warn);
         let first = [Span::styled(format!("{} ", marks.warning), warning)];
         let rest = [Span::raw("  ")];
         self.list
@@ -188,7 +188,7 @@ impl PromptsView {
         };
         let title = format!(
             "{} · {} · {}",
-            clean(&row.role),
+            clean(heading(&row.role)),
             clean(&row.part),
             clean(from)
         );
@@ -389,8 +389,8 @@ impl View for PromptsView {
     }
 }
 
-/// `w`: who writes one role's instructions. Picking goes back to the chat, where the change is
-/// shown and asks where to keep it, as every setting does.
+/// `w`: who writes one role's instructions. Picking goes back to the conversation, where the change
+/// is shown and asks where to keep it, as every setting does.
 #[derive(Debug)]
 struct WriterPicker {
     role: String,
@@ -449,23 +449,23 @@ impl WriterPicker {
                 Column::new("writer", names),
                 Column::new("what it does", about).flex(),
             ],
-            width.saturating_sub(LEAD),
+            width.saturating_sub(MARGIN),
             GAP,
         );
         (0..rows.len())
             .map(|index| {
                 let selected = index == self.cursor.selected;
                 let mut spans = vec![if selected {
-                    Span::styled(format!("{} ", marks.selected), theme.style(Role::Card))
+                    Span::styled(format!("{} ", marks.selected), theme.style(Role::Question))
                 } else {
-                    Span::raw(" ".repeat(LEAD))
+                    Span::raw(" ".repeat(MARGIN))
                 }];
                 for (c, column) in columns.iter().enumerate() {
                     if c > 0 {
                         spans.push(Span::raw(" ".repeat(GAP)));
                     }
                     let style = match (c, selected) {
-                        (0, true) => theme.style(Role::Card),
+                        (0, true) => theme.style(Role::Question),
                         (0, false) => theme.style(Role::Text),
                         _ => dim,
                     };
@@ -525,7 +525,7 @@ impl View for WriterPicker {
                 let Some(choice) = self.choices.get(self.cursor.selected) else {
                     return ViewOutcome::Consumed;
                 };
-                return ViewOutcome::SendToChat(UiCommand::Slash {
+                return ViewOutcome::SendToConversation(UiCommand::Slash {
                     command: SlashCommand::Prompts {
                         action: PromptsAction::Writer {
                             role: Some(self.role.clone()),
@@ -686,22 +686,22 @@ mod tests {
         let orchestrator = "the orchestrator";
         PromptList {
             rows: vec![
-                row("workers", "frame", built_in, "", Some("frames/workers")),
+                row("worker", "frame", built_in, "", Some("frames/worker")),
                 row(
-                    "workers",
+                    "worker",
                     INSTRUCTIONS,
                     orchestrator,
-                    "roles/workers.md",
+                    "roles/worker.md",
                     None,
                 ),
                 row(
-                    "reviewers",
+                    "reviewer",
                     "frame",
                     built_in,
                     CHANGED,
-                    Some("frames/reviewers"),
+                    Some("frames/reviewer"),
                 ),
-                row("reviewers", INSTRUCTIONS, orchestrator, "", None),
+                row("reviewer", INSTRUCTIONS, orchestrator, "", None),
                 row("judge", "frame", built_in, "", Some("frames/judge")),
                 row(
                     "orchestrator",
@@ -780,7 +780,7 @@ mod tests {
             [
                 "  role          part          written by        yours",
                 "  workers       frame         built in",
-                "                instructions  the orchestrator  roles/workers.md",
+                "                instructions  the orchestrator  roles/worker.md",
                 "❯ reviewers     frame         built in          ✎ changed",
                 "                instructions  the orchestrator",
                 "  judge         frame         built in",
@@ -797,11 +797,11 @@ mod tests {
         let lines = view.lines(80, &theme);
         let chosen = &lines[3].spans;
         assert_eq!(chosen[0].content, "❯ ");
-        assert_eq!(chosen[0].style, theme.style(Role::Card));
+        assert_eq!(chosen[0].style, theme.style(Role::Question));
         let role = chosen
             .iter()
             .find(|span| span.content.contains("reviewers"));
-        assert_eq!(role.unwrap().style, theme.style(Role::Card));
+        assert_eq!(role.unwrap().style, theme.style(Role::Question));
     }
 
     #[test]
@@ -810,7 +810,7 @@ mod tests {
         assert_eq!(
             sent(press(&mut view, KeyCode::Char('e'))),
             PromptsAction::Copy {
-                name: "frames/reviewers".to_owned(),
+                name: "frames/reviewer".to_owned(),
                 global: false
             }
         );
@@ -818,14 +818,14 @@ mod tests {
         assert_eq!(
             sent(press(&mut view, KeyCode::Char('e'))),
             PromptsAction::Role {
-                role: "reviewers".to_owned(),
+                role: "reviewer".to_owned(),
                 global: false
             }
         );
         assert_eq!(
             sent(press(&mut view, KeyCode::Char('E'))),
             PromptsAction::Role {
-                role: "reviewers".to_owned(),
+                role: "reviewer".to_owned(),
                 global: true
             }
         );
@@ -839,11 +839,11 @@ mod tests {
             ViewOutcome::Consumed
         ));
         let said = view.said.clone().unwrap();
-        assert!(said.starts_with("r again deletes your file for frames/reviewers"));
+        assert!(said.starts_with("r again deletes your file for frames/reviewer"));
         assert_eq!(
             sent(press(&mut view, KeyCode::Char('r'))),
             PromptsAction::Reset {
-                name: "frames/reviewers".to_owned()
+                name: "frames/reviewer".to_owned()
             }
         );
         // Any other key between the two takes the first one back.
@@ -869,7 +869,7 @@ mod tests {
         assert_eq!(
             sent(press(&mut view, KeyCode::Char('r'))),
             PromptsAction::ResetRole {
-                role: "workers".to_owned()
+                role: "worker".to_owned()
             }
         );
     }
@@ -916,7 +916,7 @@ mod tests {
         press(&mut view, KeyCode::Char('r'));
         assert_eq!(
             view.said.as_deref(),
-            Some("frames/workers is the built-in already")
+            Some("frames/worker is the built-in already")
         );
         press(&mut view, KeyCode::Char('d'));
         assert!(view.said.clone().unwrap().contains("nothing to compare"));
@@ -932,7 +932,7 @@ mod tests {
         assert_eq!(
             sent(press(&mut view, KeyCode::Char('d'))),
             PromptsAction::Diff {
-                name: "frames/reviewers".to_owned()
+                name: "frames/reviewer".to_owned()
             }
         );
     }
@@ -944,7 +944,7 @@ mod tests {
             ViewOutcome::Open(shown) => {
                 let text = format!("{shown:?}");
                 assert!(text.contains("reviewers · frame · ✎ changed"), "{text}");
-                assert!(text.contains("The frame of the reviewers."), "{text}");
+                assert!(text.contains("The frame of the reviewer."), "{text}");
             }
             other => panic!("{other:?}"),
         }
@@ -1002,16 +1002,17 @@ mod tests {
         let ViewOutcome::Open(mut picker) = press(&mut view, KeyCode::Char('w')) else {
             panic!("w opens the writers");
         };
-        // It opens on the writer in use, and Enter on another asks for the change in the chat.
+        // It opens on the writer in use, and Enter on another asks for the change in the
+        // conversation.
         press(picker.as_mut(), KeyCode::Down);
         press(picker.as_mut(), KeyCode::Down);
         match press(picker.as_mut(), KeyCode::Enter) {
-            ViewOutcome::SendToChat(UiCommand::Slash {
+            ViewOutcome::SendToConversation(UiCommand::Slash {
                 command: SlashCommand::Prompts { action },
             }) => assert_eq!(
                 action,
                 PromptsAction::Writer {
-                    role: Some("reviewers".to_owned()),
+                    role: Some("reviewer".to_owned()),
                     who: "codex/gpt-5.6".to_owned()
                 }
             ),
@@ -1043,7 +1044,7 @@ mod tests {
         fresh
             .rows
             .insert(0, row("main", "frame", "built in", "", Some("frames/main")));
-        fresh.said = Some("Wrote .argonauts/prompts/frames/reviewers.md.".to_owned());
+        fresh.said = Some("Wrote .argonauts/prompts/frames/reviewer.md.".to_owned());
         fresh.refresh = true;
         assert!(view.accept(&ViewData::Prompts {
             view: Box::new(fresh)
@@ -1051,7 +1052,7 @@ mod tests {
         let row = view.selected().unwrap();
         assert_eq!(
             (row.role.as_str(), row.part.as_str()),
-            ("reviewers", "frame")
+            ("reviewer", "frame")
         );
         assert!(view.said.clone().unwrap().starts_with("Wrote "));
     }
@@ -1060,13 +1061,13 @@ mod tests {
     fn notes_about_your_files_sit_under_the_list() {
         let mut list = pictured();
         list.notes = vec![
-            "roles/reviewers.md names Codex, which tells the reviewers who made the work."
+            "roles/reviewer.md names Codex, which tells the reviewers who made the work."
                 .to_owned(),
         ];
         let view = PromptsView::new(list);
         let notes = text(&view.notes(40, &Theme::dark()));
         assert!(
-            notes[0].ends_with("roles/reviewers.md names Codex, which"),
+            notes[0].ends_with("roles/reviewer.md names Codex, which"),
             "{notes:?}"
         );
         assert!(notes[1].starts_with("  tells the reviewers"), "{notes:?}");

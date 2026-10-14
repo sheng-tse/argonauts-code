@@ -1,4 +1,4 @@
-//! The setup's last step: every answer written at once, the preset files, this folder, and the
+//! The setup's last step: every answer written at once, the workflow files, this folder, and the
 //! closing line.
 
 use std::path::{Path, PathBuf};
@@ -8,14 +8,14 @@ use argonauts_core::NoteLevel;
 use argonauts_core::layout::project_files;
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
 use argonauts_core::settings::limits_template;
-use argonauts_registry::{write_preset, write_setting};
+use argonauts_registry::{write_setting, write_workflow};
 
 use super::probe::FoundAgent;
-use super::steps::{COORDINATED_CREW, PEER_CREW};
+use super::steps::{COUNCIL, ORCHESTRATOR};
 use crate::env::AppEnv;
 
-/// The presets first run writes where you can read and edit them.
-pub(crate) const PRESET_FILES: &[&str] = &[PEER_CREW, COORDINATED_CREW];
+/// The workflows first run writes where you can read and edit them.
+pub(crate) const WORKFLOW_FILES: &[&str] = &[COUNCIL, ORCHESTRATOR];
 
 pub(crate) const CLOSING: &str = "Change any of this later with /model, /effort, /workflow, \
                                   /agents, /approvals, /permissions, or /config.";
@@ -90,14 +90,14 @@ fn add_sections(file: &Path) -> anyhow::Result<()> {
     write_private_file(file, text.as_bytes()).with_context(|| format!("writing {}", file.display()))
 }
 
-/// Writes each preset file that's missing. A file you have is never touched. Failures come back
+/// Writes each workflow file that's missing. A file you have is never touched. Failures come back
 /// as notices, since the setup goes on without them.
-pub(crate) fn write_presets(dir: &Path) -> Vec<(NoteLevel, String)> {
-    PRESET_FILES
+pub(crate) fn write_workflows(dir: &Path) -> Vec<(NoteLevel, String)> {
+    WORKFLOW_FILES
         .iter()
         .filter(|name| !dir.join(format!("{name}.toml")).exists())
         .filter_map(|name| {
-            write_preset(name, dir).err().map(|err| {
+            write_workflow(name, dir).err().map(|err| {
                 (
                     NoteLevel::Warn,
                     format!("Couldn't write the {name} workflow file: {err}"),
@@ -158,7 +158,7 @@ mod tests {
         let keys = vec![
             ("workflow".to_owned(), "\"council\"".to_owned()),
             (
-                "approvals.goal.mode".to_owned(),
+                "approvals.understand.mode".to_owned(),
                 "\"supervised\"".to_owned(),
             ),
         ];
@@ -186,11 +186,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("config.toml");
         std::fs::write(&target, "# mine\n[ui]\nbell = false\n").unwrap();
-        write_config(&target, &[("workflow".to_owned(), "\"solo\"".to_owned())]).unwrap();
+        write_config(
+            &target,
+            &[("workflow".to_owned(), "\"captain\"".to_owned())],
+        )
+        .unwrap();
         let text = std::fs::read_to_string(&target).unwrap();
         assert!(text.contains("# mine"), "{text}");
         assert!(text.contains("bell = false"), "{text}");
-        assert!(text.contains("workflow = \"solo\""), "{text}");
+        assert!(text.contains("workflow = \"captain\""), "{text}");
     }
 
     #[test]
@@ -214,7 +218,11 @@ mod tests {
         assert_eq!(settings.fallback, none.fallback);
 
         // A second setup adds neither again.
-        write_config(&target, &[("workflow".to_owned(), "\"solo\"".to_owned())]).unwrap();
+        write_config(
+            &target,
+            &[("workflow".to_owned(), "\"captain\"".to_owned())],
+        )
+        .unwrap();
         let again = std::fs::read_to_string(&target).unwrap();
         assert_eq!(again.matches("# 4. Limits.").count(), 1, "{again}");
         assert_eq!(again.matches("# 2. Fallbacks:").count(), 1, "{again}");
@@ -234,7 +242,7 @@ mod tests {
         let text = std::fs::read_to_string(&target).unwrap();
         let text = text.replace("# spend_per_run = 5.00", "spend_per_run = 5.00");
         let settings: argonauts_core::settings::Settings = toml::from_str(&text).unwrap();
-        assert_eq!(settings.limits.budget.spend_per_run, Some(5.0), "{text}");
+        assert_eq!(settings.limits.spend.spend_per_run, Some(5.0), "{text}");
     }
 
     #[test]
@@ -242,7 +250,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("config.toml");
         std::fs::write(&target, "[limits]\nspend_per_run = 2.0\n").unwrap();
-        write_config(&target, &[("workflow".to_owned(), "\"solo\"".to_owned())]).unwrap();
+        write_config(
+            &target,
+            &[("workflow".to_owned(), "\"captain\"".to_owned())],
+        )
+        .unwrap();
         let text = std::fs::read_to_string(&target).unwrap();
         assert!(!text.contains("# 4. Limits."), "{text}");
         assert!(text.contains("spend_per_run = 2.0"), "{text}");
@@ -250,13 +262,13 @@ mod tests {
     }
 
     #[test]
-    fn preset_files_you_have_are_left_alone() {
+    fn workflow_files_you_have_are_left_alone() {
         let dir = tempfile::tempdir().unwrap();
-        for name in PRESET_FILES {
+        for name in WORKFLOW_FILES {
             std::fs::write(dir.path().join(format!("{name}.toml")), "# edited\n").unwrap();
         }
-        assert!(write_presets(dir.path()).is_empty());
-        for name in PRESET_FILES {
+        assert!(write_workflows(dir.path()).is_empty());
+        for name in WORKFLOW_FILES {
             let text = std::fs::read_to_string(dir.path().join(format!("{name}.toml"))).unwrap();
             assert_eq!(text, "# edited\n");
         }

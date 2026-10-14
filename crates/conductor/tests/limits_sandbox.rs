@@ -1,7 +1,7 @@
 //! A session can't read what its sandbox denies: the run's approval token, sealed drafts,
-//! another session's raw log, other cards' worktrees, and sockets in `~/.argonauts`. Each test
-//! runs one probe script twice: through the harness worker, and through the OS sandbox's wrap of
-//! the profile the worker builds. That is Seatbelt on macOS and Landlock on Linux, so both draw
+//! another session's raw log, other tasks' worktrees, and sockets in `~/.argonauts`. Each test
+//! runs one probe script twice: through the CLI runner, and through the OS sandbox's wrap of
+//! the profile the runner builds. That is Seatbelt on macOS and Landlock on Linux, so both draw
 //! the same boundary.
 
 #![cfg(any(target_os = "macos", target_os = "linux"))]
@@ -11,19 +11,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use argonauts_conductor::harness_worker::HarnessWorker;
+use argonauts_conductor::cli_runner::CliRunner;
 use argonauts_conductor::sandbox::{ProfileInput, SandboxWrap, session_profile};
 use argonauts_core::layout::{self, run_files, session_files};
-use argonauts_core::names::{SessionKey, WorkerRef};
+use argonauts_core::names::{ModelRef, SessionKey};
+use argonauts_core::session_runner::{Access, SandboxProfile, SessionRunner};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxChoice;
-use argonauts_core::worker::{Access, SandboxProfile, Worker};
 use argonauts_core::{
-    Adapter, AgentEvent, CardId, CommandSpec, Paths, RepoId, RunId, SessionRequest, SpecFile,
-    StopPlan, StreamParser,
+    Adapter, AgentEvent, CommandSpec, Paths, RepoId, RunId, SessionRequest, SpecFile, StopPlan,
+    StreamParser, TaskId,
 };
-use argonauts_testkit::services::{MemoryHealthBoard, MemoryQuotaBoard};
-use argonauts_testkit::worker::{drain, session_spec};
+use argonauts_testkit::runner::{drain, session_spec};
+use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
 
 /// `$1` is the results file. Then each check is three arguments: `read` or `write`, a name,
 /// and a path. Each check adds `<name>=ok` or `<name>=blocked` to the results.
@@ -45,14 +45,14 @@ while [ $# -ge 3 ]; do
 done
 "#;
 
-const VENDOR: &str = "probe";
+const AGENT: &str = "probe";
 
 #[cfg(target_os = "macos")]
 fn os_sandbox() -> Arc<dyn SandboxWrap> {
     Arc::new(argonauts_conductor::sandbox::seatbelt::Seatbelt::new())
 }
 
-/// The launcher the conductor ships for tests, since this test binary isn't `argonauts`.
+/// The launcher Argonauts Code ships for tests, since this test binary isn't `argonauts`.
 #[cfg(target_os = "linux")]
 fn os_sandbox() -> Arc<dyn SandboxWrap> {
     Arc::new(
@@ -78,7 +78,7 @@ fn check(op: &'static str, name: &'static str, path: PathBuf, expected: &'static
     }
 }
 
-/// A run with two cards, a base worktree, a sealed draft, and a second session, all under a
+/// A run with two tasks, a base worktree, a sealed draft, and a second session, all under a
 /// temporary `ARGONAUTS_HOME`.
 struct Layout {
     _root: tempfile::TempDir,
@@ -92,8 +92,8 @@ struct Layout {
     session_dir: PathBuf,
     status: PathBuf,
     base: PathBuf,
-    card_a: PathBuf,
-    card_b: PathBuf,
+    task_a: PathBuf,
+    task_b: PathBuf,
 }
 
 impl Layout {
@@ -108,13 +108,13 @@ impl Layout {
         let key = SessionKey::numbered(1);
         let run_dir = paths.run_dir(&repo, &run);
         let session_dir = layout::session_dir(&run_dir, &key);
-        let tree = |card: &str| paths.worktree_dir(&repo, &run, &CardId::new(card).unwrap());
+        let tree = |task: &str| paths.worktree_dir(&repo, &run, &TaskId::new(task).unwrap());
         let layout = Self {
             results: results.path().canonicalize().unwrap().join("results.txt"),
             status: session_dir.join(session_files::STATUS),
             base: tree("base"),
-            card_a: tree("task-a"),
-            card_b: tree("task-b"),
+            task_a: tree("task-a"),
+            task_b: tree("task-b"),
             session_dir,
             run_dir,
             key,
@@ -134,8 +134,8 @@ impl Layout {
             (other_session.join(session_files::RAW_STDOUT), "{\"raw\":1}"),
             (layout.status.clone(), "{}"),
             (layout.base.join("README.md"), "base"),
-            (layout.card_a.join("src.rs"), "task a"),
-            (layout.card_b.join("hidden_test.rs"), "hidden test"),
+            (layout.task_a.join("src.rs"), "task a"),
+            (layout.task_b.join("hidden_test.rs"), "hidden test"),
         ] {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, contents).unwrap();
@@ -145,7 +145,7 @@ impl Layout {
 
     fn workdir(&self, access: Access) -> &Path {
         match access {
-            Access::Build | Access::Spike => &self.card_a,
+            Access::Build | Access::Experiment => &self.task_a,
             _ => &self.base,
         }
     }
@@ -179,7 +179,7 @@ impl Layout {
         let workdir = self.workdir(access);
         let input = ProfileInput {
             access,
-            vendor: VENDOR,
+            agent_id: AGENT,
             workdir,
             session_dir: &self.session_dir,
             argonauts_home: self.paths.home(),
@@ -187,7 +187,7 @@ impl Layout {
             base_worktree: Some(&self.base),
             status_file: Some(&self.status),
             extra_writable: &[],
-            sees_other_copies: false,
+            sees_other_worktrees: false,
             commits: false,
         };
         let profile = session_profile(&SandboxProfile::default(), &input);
@@ -202,7 +202,7 @@ impl Layout {
         self.results()
     }
 
-    /// Runs the probe as a harness session.
+    /// Runs the probe as a CLI session.
     async fn probe_through_worker(
         &self,
         access: Access,
@@ -216,31 +216,31 @@ impl Layout {
         });
         let mut settings = Settings::default();
         settings.sandbox.mode = SandboxChoice::Os;
-        let worker = HarnessWorker::new(
+        let worker = CliRunner::new(
             adapter,
-            WorkerRef::new(VENDOR, Some("tiny".to_owned())),
-            VENDOR.to_owned(),
+            ModelRef::new(AGENT, Some("tiny".to_owned())),
+            AGENT.to_owned(),
             Arc::new(settings),
-            Arc::new(MemoryQuotaBoard::default()),
+            Arc::new(MemoryPlanUsageBoard::default()),
             Arc::new(MemoryHealthBoard::default()),
         )
         .with_home(self.paths.clone())
         .with_sandbox(os_sandbox());
 
         let mut spec = session_spec("probe", access, self.workdir(access));
-        spec.worker = WorkerRef::new(VENDOR, Some("tiny".to_owned()));
+        spec.model = ModelRef::new(AGENT, Some("tiny".to_owned()));
         spec.run = Some(self.run.clone());
         spec.key = self.key.clone();
         spec.session_dir = self.session_dir.clone();
         spec.status_file = Some(self.status.clone());
-        if matches!(access, Access::Build | Access::Spike) {
-            spec.card = Some(CardId::new("task-a").unwrap());
+        if matches!(access, Access::Build | Access::Experiment) {
+            spec.task = Some(TaskId::new("task-a").unwrap());
             spec.goal_sha256 = Some("0".repeat(64));
         }
 
         let handle = match worker.start(spec).await {
             Ok(handle) => handle,
-            Err(err) => panic!("the worker refused the probe session: {err:?}"),
+            Err(err) => panic!("the session runner refused the probe session: {err:?}"),
         };
         tokio::time::timeout(Duration::from_secs(60), drain(handle))
             .await
@@ -261,7 +261,7 @@ fn assert_results(route: &str, results: &HashMap<String, String>, checks: &[Chec
     }
 }
 
-/// A harness that is only the probe script, with files its launch writes, as a real adapter's
+/// A CLI that is only the probe script, with files its launch writes, as a real adapter's
 /// settings or schema.
 struct ProbeAdapter {
     args: Vec<String>,
@@ -284,7 +284,7 @@ impl StreamParser for Silent {
 
 impl Adapter for ProbeAdapter {
     fn id(&self) -> &'static str {
-        VENDOR
+        AGENT
     }
     fn display_name(&self) -> &'static str {
         "Probe"
@@ -313,7 +313,7 @@ impl Adapter for ProbeAdapter {
         ("tiny", None)
     }
     fn stop_plan(&self) -> StopPlan {
-        StopPlan::escalating(Duration::from_secs(1), Duration::from_secs(1))
+        StopPlan::stepped(Duration::from_secs(1), Duration::from_secs(1))
     }
 }
 
@@ -351,11 +351,11 @@ async fn limits_readonly_session_cannot_read_state_or_drafts() {
         ),
         check(
             "read",
-            "other-card",
-            l.card_b.join("hidden_test.rs"),
+            "other-task",
+            l.task_b.join("hidden_test.rs"),
             "blocked",
         ),
-        check("read", "build-card", l.card_a.join("src.rs"), "blocked"),
+        check("read", "build-task", l.task_a.join("src.rs"), "blocked"),
         check(
             "write",
             "pending-answers",
@@ -391,14 +391,14 @@ async fn limits_build_session_cannot_read_other_worktrees() {
     let checks = [
         check(
             "read",
-            "other-card",
-            l.card_b.join("hidden_test.rs"),
+            "other-task",
+            l.task_b.join("hidden_test.rs"),
             "blocked",
         ),
         check(
             "write",
-            "other-card-write",
-            l.card_b.join("hidden_test.rs"),
+            "other-task-write",
+            l.task_b.join("hidden_test.rs"),
             "blocked",
         ),
         check("read", "base", l.base.join("README.md"), "blocked"),
@@ -409,8 +409,8 @@ async fn limits_build_session_cannot_read_other_worktrees() {
             "blocked",
         ),
         check("read", "own-status", l.status.clone(), "ok"),
-        check("read", "own-worktree", l.card_a.join("src.rs"), "ok"),
-        check("write", "own-worktree-write", l.card_a.join("new.rs"), "ok"),
+        check("read", "own-worktree", l.task_a.join("src.rs"), "ok"),
+        check("write", "own-worktree-write", l.task_a.join("new.rs"), "ok"),
     ];
 
     assert_results(
@@ -421,7 +421,7 @@ async fn limits_build_session_cannot_read_other_worktrees() {
     let results = l.probe_through_worker(Access::Build, &checks, &[]).await;
     assert_results("worker", &results, &checks);
     assert_eq!(
-        std::fs::read_to_string(l.card_b.join("hidden_test.rs")).unwrap(),
+        std::fs::read_to_string(l.task_b.join("hidden_test.rs")).unwrap(),
         "hidden test"
     );
 }

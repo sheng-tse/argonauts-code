@@ -8,7 +8,7 @@
 //!   its role names. It reports the whole state on every change, in the shape Claude Code
 //!   reports its own workflows, and hands the host every finished call to save.
 //! - [`dry_run`] says what a file would run, and runs nothing.
-//! - [`rehearse`] runs a script against stand-in answers, to catch one that throws before any
+//! - [`rehearse`] runs a script against placeholder answers, to catch one that throws before any
 //!   agent starts.
 //! - [`Library`] finds workflows on disk and the built-in ones.
 //! - [`change`] makes one change to a file of steps in its text, comments kept.
@@ -29,7 +29,8 @@ pub use call::{AgentCall, AgentEnd, Check, Checked, Host, JournalEntry, Kept};
 pub use edit::{Change, EditError, FILE_FIELDS, STEP_FIELDS, change};
 pub use file::{Count, FileError, ForEach, KeptBy, Problem, Step, WORKFLOW_KEYS, WorkflowFile};
 pub use library::{
-    BUILT_IN, Library, LibraryError, Listed, Loaded, Origin, README, built_in, check_name, template,
+    Library, LibraryError, Listed, Loaded, Origin, README, built_in, built_ins, check_name,
+    template,
 };
 pub use plan::{DryRun, Estimate, Row, dry_run, how};
 pub use rehearse::{Rehearsal, rehearse};

@@ -1,5 +1,5 @@
 //! The part of a run's whole journal the condensed replay reads. A reattached stream starts at
-//! the latest snapshot, but your request, the chat turns, and the milestones go back to the
+//! the latest snapshot, but your request, the conversation turns, and the milestones go back to the
 //! run's start.
 
 use std::io;
@@ -7,16 +7,16 @@ use std::path::Path;
 
 use argonauts_core::events::RunEvent;
 
-/// The envelope kinds the replay reads. Agent output, vendor records, and budget lines, which
+/// The envelope kinds the replay reads. Agent output, agent records, and limit lines, which
 /// make up most of a journal, are never parsed.
 const KINDS: [&[u8]; 8] = [
     b"run",
     b"goal",
-    b"card",
+    b"task",
     b"session",
-    b"integration",
-    b"checkpoint",
-    b"handoff",
+    b"merge",
+    b"approval",
+    b"fallback",
     b"workflow",
 ];
 
@@ -80,13 +80,13 @@ mod tests {
     use argonauts_core::api::StatusSummary;
     use argonauts_core::event::AgentEvent;
     use argonauts_core::events::RunEventKind;
-    use argonauts_core::events::checkpoint::AnswerAction;
+    use argonauts_core::events::approval::AnswerAction;
     use argonauts_core::events::run::{Party, RunLifecycle, RunSnapshot};
-    use argonauts_core::names::CheckpointId;
+    use argonauts_core::names::ApprovalId;
 
     use super::*;
     use crate::client::test_support::{
-        checkpoint_decided, event, plan_checkpoint, run_id, run_started,
+        approval_decided, event, plan_approval, run_id, run_started,
     };
     use crate::views::condensed_replay;
 
@@ -119,7 +119,7 @@ mod tests {
                 upto: seq - 1,
                 engine: serde_json::Value::Null,
                 summary: StatusSummary::default(),
-                open_checkpoints: Vec::new(),
+                open_approvals: Vec::new(),
                 running: Vec::new(),
             }))),
         )
@@ -129,15 +129,15 @@ mod tests {
     /// output is never read.
     #[test]
     fn the_replay_reaches_back_past_the_latest_snapshot() {
-        let plan = CheckpointId::numbered(1);
+        let plan = ApprovalId::numbered(1);
         let (_dir, path) = journal(&[
             run_started(0, "Add --json to export", None),
-            plan_checkpoint(1, &plan, 5),
+            plan_approval(1, &plan, 5),
             delta(2),
             snapshot(3),
-            checkpoint_decided(4, &plan, AnswerAction::Approve, Party::User, None),
+            approval_decided(4, &plan, AnswerAction::Approve, Party::User, None),
             delta(5),
-            checkpoint_decided(6, &plan, AnswerAction::Approve, Party::User, None),
+            approval_decided(6, &plan, AnswerAction::Approve, Party::User, None),
         ]);
         let history = replay_history(&path, 5).unwrap();
         let seqs: Vec<u64> = history.iter().map(|event| event.seq).collect();

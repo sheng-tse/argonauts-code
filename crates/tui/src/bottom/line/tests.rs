@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use super::*;
-use crate::bottom::{ApprovalMode, ModeLine, ModeState};
+use crate::bottom::{ApprovalMode, BottomRow, ModeState};
 use crate::model::VimMode;
 use crate::render::Clock;
 use crate::text::{plain_text, str_width};
@@ -66,14 +66,14 @@ fn line_with(clis: Vec<CliUse>) -> BottomLine {
     }
 }
 
-fn auto() -> ModeLine {
-    ModeLine {
+fn auto() -> BottomRow {
+    BottomRow {
         approval: ApprovalMode::Auto,
-        ..ModeLine::default()
+        ..BottomRow::default()
     }
 }
 
-fn row_of(mode: &ModeLine, line: &BottomLine, width: u16) -> Line<'static> {
+fn row_of(mode: &BottomRow, line: &BottomLine, width: u16) -> Line<'static> {
     let theme = theme();
     let ctx = RenderCtx::new(width, &theme, Clock::still(Instant::now()));
     let state = ModeState {
@@ -110,10 +110,10 @@ fn sides(line: &BottomLine, width: u16) -> String {
 fn the_line_gives_things_up_in_the_fixed_order() {
     let theme = theme();
     let ctx = RenderCtx::new(200, &theme, Clock::still(Instant::now()));
-    let mode = ModeLine {
+    let mode = BottomRow {
         approval: ApprovalMode::Auto,
         background_agents: 2,
-        ..ModeLine::default()
+        ..BottomRow::default()
     };
     let state = ModeState {
         panel: true,
@@ -323,15 +323,15 @@ fn no_cli_ever_leaves_the_line() {
 #[test]
 fn no_cli_leaves_the_line_beside_vim_agents_or_needs_you() {
     let modes = [
-        ModeLine {
+        BottomRow {
             background_agents: 2,
             ..auto()
         },
-        ModeLine {
+        BottomRow {
             needs_you: 1,
             ..auto()
         },
-        ModeLine {
+        BottomRow {
             vim: Some(VimMode::Insert),
             background_agents: 2,
             ..auto()
@@ -356,7 +356,8 @@ fn no_cli_leaves_the_line_beside_vim_agents_or_needs_you() {
         }
     }
     let narrow = plain_text(&[row_of(&modes[2], &line_with(pressed()), 40)]);
-    assert!(narrow.contains("-- I --"), "{narrow:?}");
+    // Claude Code keeps the vim label whole however narrow the line.
+    assert!(narrow.contains("-- INSERT --"), "{narrow:?}");
 }
 
 #[test]
@@ -418,11 +419,11 @@ fn the_chips_carry_their_colors() {
     assert_eq!(style("●"), kit.fg(Role::CliClaude));
     assert_eq!(style("Claude"), kit.bold(Role::Bright));
     assert_eq!(style("Codex"), theme.style(Role::Dim));
-    assert_eq!(style("93%"), kit.bold(Role::Warning));
-    assert_eq!(style("4:40pm"), theme.style(Role::Warning));
+    assert_eq!(style("93%"), kit.bold(Role::Warn));
+    assert_eq!(style("4:40pm"), theme.style(Role::Warn));
     assert_eq!(style("56%"), kit.bold(Role::Bright));
     assert_eq!(style("11%"), theme.style(Role::Dim));
-    assert_eq!(style("out · Tue 3:45pm"), theme.style(Role::Error));
+    assert_eq!(style("out · Tue 3:45pm"), theme.style(Role::Danger));
     let dots: Vec<_> = drawn
         .spans
         .iter()
@@ -438,9 +439,9 @@ fn the_chips_carry_their_colors() {
         .filter_map(|span| span.style.fg)
         .collect();
     let color = |role| theme.color(role).unwrap();
-    assert!(fills.contains(&color(Role::Warning)), "{fills:?}");
+    assert!(fills.contains(&color(Role::Warn)), "{fills:?}");
     assert!(fills.contains(&color(Role::CliClaude)), "{fills:?}");
-    assert!(fills.contains(&color(Role::Error)), "{fills:?}");
+    assert!(fills.contains(&color(Role::Danger)), "{fills:?}");
 }
 
 #[test]
@@ -616,7 +617,7 @@ fn a_named_meter_and_a_part_drawn_elsewhere() {
             fill: Role::BarFill,
         },
     }));
-    let chip = vec![kit.dim("checks "), kit.span("7 of 9 passed", Role::Warning)];
+    let chip = vec![kit.dim("checks "), kit.span("7 of 9 passed", Role::Warn)];
     line.right.push(LinePart::Added(AddedPart {
         name: "checks".into(),
         body: PartBody::Drawn(chip.clone()),
@@ -748,4 +749,53 @@ fn mode_can_sit_on_the_right() {
     let row = row(&line, 40);
     assert!(row.starts_with("  main  "), "{row:?}");
     assert!(row.ends_with("⏵⏵ auto mode on"), "{row:?}");
+}
+
+/// The context part names whose context it shows, as its pictures draw it at the right end
+/// of the line: the percent in the terminal's own colour while the session is at ease, and
+/// red once it is close to starting afresh.
+#[test]
+fn the_context_part_matches_its_pictures() {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    use crate::kit::Level;
+    use crate::overview::golden::{Picture, Region, assert_matches, theme};
+
+    let pictures = [
+        ("context_tab", 82, 20, Level::Ok),
+        ("context_near_full", 85, 95, Level::Danger),
+    ];
+    for (name, row, percent, level) in pictures {
+        let picture = Picture::load(name);
+        let theme = theme();
+        let mut line = BottomLine::default();
+        line.right.push(LinePart::Added(AddedPart {
+            name: "context".into(),
+            body: PartBody::Fill {
+                label: "context".into(),
+                who: "build:due-flag".into(),
+                who_role: Role::Label,
+                percent,
+                level,
+            },
+        }));
+        // The rows under the input keep the screen's last column free, so a screen 118 cells
+        // wide draws them in 117.
+        let ctx = RenderCtx::new(117, &theme, Clock::still(Instant::now()));
+        let state = ModeState {
+            line: Some(&line),
+            ..ModeState::default()
+        };
+        let drawn = auto().line(&ctx, state);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 117, 1));
+        buf.set_line(0, 0, &drawn, 117);
+        // The part's 28 cells, flush right.
+        let part = Region {
+            rows: row..row + 1,
+            columns: 89..117,
+            at: (0, 0),
+        };
+        assert_matches(&picture, &buf, &part, &theme);
+    }
 }

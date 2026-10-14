@@ -3,7 +3,7 @@
 //! `mods/stats.toml` names.
 
 use argonauts_core::api::{UsagePeriod, UsageSummary};
-use argonauts_core::crew_stats::CrewRole;
+use argonauts_core::crew_stats::StatsRole;
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::settings::stats::{StatsColumn, StatsSettings};
 use ratatui::style::Style;
@@ -14,10 +14,10 @@ use super::cli::{SQUARES, Stats, count, numbers, took, window_meter};
 use super::data::{Cli, Crew};
 use super::draw;
 use crate::format;
+use crate::kit::{Drawn, Form, Frame, Header, Kit, fit, spread};
 use crate::overview::cards::{used_of, window_label};
 use crate::text::{spans_width, truncate_spans};
 use crate::theme::Role;
-use crate::widgets::{Drawn, Form, Frame, Header, Kit, fit, spread};
 
 /// Cells for a CLI's dot and short name.
 const NAME: usize = 10;
@@ -81,6 +81,7 @@ impl StatsCard<'_> {
             crew: &crew,
             usage: self.usage,
             measure: settings.measure,
+            on_this_computer: None,
         };
         if settings.total {
             drawn.push(super::cli::header_row(
@@ -191,7 +192,7 @@ impl StatsCard<'_> {
                     if taken == 0 {
                         Vec::new()
                     } else {
-                        vec![kit.dim(format!("took over {taken}"))]
+                        vec![kit.dim(format!("{taken} fell back to it"))]
                     }
                 }
                 // Nothing records lines per task yet.
@@ -265,16 +266,16 @@ fn lay_out(rows: Vec<Row>, inner: usize) -> Vec<Vec<Span<'static>>> {
 
 /// `◆ stats today`.
 fn header_left(kit: &Kit<'_>, period: UsagePeriod) -> Vec<Span<'static>> {
-    let mut left = Header::new("stats", Role::Card).left(kit);
+    let mut left = Header::new("stats", Role::Question).left(kit);
     left.push(kit.dim(format!(" {}", crate::overview::period_words(period))));
     left
 }
 
 /// `7 tasks`, `11 reviews`, a judge's sign-offs counted as reviews as on the tab.
 fn work_words(cli: &Cli) -> String {
-    let reviews = cli.did(CrewRole::Reviewer) + cli.did(CrewRole::Judge);
-    let workflows = cli.did(CrewRole::Orchestrator);
-    match (cli.did(CrewRole::Worker), reviews, workflows) {
+    let reviews = cli.did(StatsRole::Reviewer) + cli.did(StatsRole::Judge);
+    let workflows = cli.did(StatsRole::Orchestrator);
+    match (cli.did(StatsRole::Worker), reviews, workflows) {
         (0, 0, 0) => String::new(),
         (0, 0, n) => count(n, "workflow"),
         (0, n, _) => count(n, "review"),
@@ -288,11 +289,11 @@ fn review_cell(kit: &Kit<'_>, cli: &Cli) -> Vec<Span<'static>> {
     if fared.total() > 0 {
         return fit(draw::squares(kit, fared, SQUARES), REVIEW);
     }
-    let reviews = cli.did(CrewRole::Reviewer) + cli.did(CrewRole::Judge);
+    let reviews = cli.did(StatsRole::Reviewer) + cli.did(StatsRole::Judge);
     if reviews == 0 {
         return fit(Vec::new(), REVIEW);
     }
-    let back = cli.sent_back(CrewRole::Reviewer) + cli.sent_back(CrewRole::Judge);
+    let back = cli.sent_back(StatsRole::Reviewer) + cli.sent_back(StatsRole::Judge);
     fit(vec![kit.dim(format!("{back} sent back"))], REVIEW)
 }
 
@@ -315,14 +316,14 @@ fn plan_cell(kit: &Kit<'_>, look: &Stats<'_>, cli: &Cli) -> Vec<Span<'static>> {
 
 /// `4m 12s a task`.
 fn pace_cell(kit: &Kit<'_>, cli: &Cli) -> Vec<Span<'static>> {
-    let reviews = cli.did(CrewRole::Reviewer) + cli.did(CrewRole::Judge);
-    let (n, secs, unit) = match cli.did(CrewRole::Worker) {
+    let reviews = cli.did(StatsRole::Reviewer) + cli.did(StatsRole::Judge);
+    let (n, secs, unit) = match cli.did(StatsRole::Worker) {
         0 => (
             reviews,
-            cli.took(CrewRole::Reviewer) + cli.took(CrewRole::Judge),
+            cli.took(StatsRole::Reviewer) + cli.took(StatsRole::Judge),
             "a review",
         ),
-        tasks => (tasks, cli.took(CrewRole::Worker), "a task"),
+        tasks => (tasks, cli.took(StatsRole::Worker), "a task"),
     };
     if n == 0 || secs == 0 {
         return Vec::new();

@@ -19,11 +19,11 @@ call_tool = { name = "approve", arguments = { tool_name = "Edit", tool_use_id = 
 [[rule.step]]
 write = { path = "notes.txt", content = "This is a final.\n" }
 [[rule.step]]
-emit_file = "../../../adapters/claude-code/fixtures/2.1.289/direct_resume.stdout.jsonl"
+emit_file = "../../../adapters/claude-code/fixtures/direct_resume.stdout.jsonl"
 [[rule.step]]
 exit = 0
 
-# Who coordinates and who reviews, in the request's own words.
+# Who orchestrates and who reviews, in the request's own words.
 [[rule]]
 argv0 = "claude"
 args_contain = ["dontAsk"]
@@ -34,7 +34,7 @@ emit = '{"type":"system","subtype":"init","session_id":"sess-due-dates","cwd":".
 [[rule.step]]
 emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-dates","message":{"id":"msg-due-dates","content":[{"type":"text","text":"I would add a due field to the task model, parse --due in the add command, and show it in list, with a test for each."}]}}'
 [[rule.step]]
-emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-due-dates","result":"I would add a due field to the task model, parse --due in the add command, and show it in list, with a test for each.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"change","answer_markdown":"I would add a due field to the task model, parse --due in the add command, and show it in list, with a test for each.","estimate":{"task_type":"feature","summary":"Add due dates to tasks","files_likely":["src/task.rs","src/cli.rs","tests/due.rs"],"file_count":5,"risk_labels":[],"tests_exist":true,"unknowns":[]},"how_to_run":[{"says":"Have codex coordinate","kind":"coordinate","who":"codex","model":"","effort":"","value":"","scope":"this_request"},{"says":"gemini review it","kind":"review","who":"gemini","model":"","effort":"","value":"","scope":"this_request"},{"says":"use grok to build","kind":"build","who":"grok","model":"","effort":"","value":"","scope":"this_request"}]}}'
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-due-dates","result":"I would add a due field to the task model, parse --due in the add command, and show it in list, with a test for each.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"change","answer_markdown":"I would add a due field to the task model, parse --due in the add command, and show it in list, with a test for each.","estimate":{"task_type":"feature","summary":"Add due dates to tasks","files_likely":["src/task.rs","src/cli.rs","tests/due.rs"],"file_count":5,"risk_labels":[],"tests_exist":true,"unknowns":[]},"how_to_run":[{"says":"Have codex orchestrate","kind":"orchestrate","who":"codex","model":"","effort":"","value":"","scope":"this_request"},{"says":"gemini review it","kind":"review","who":"gemini","model":"","effort":"","value":"","scope":"this_request"},{"says":"use grok to build","kind":"build","who":"grok","model":"","effort":"","value":"","scope":"this_request"}]}}'
 [[rule.step]]
 exit = 0
 
@@ -56,20 +56,20 @@ exit = 0
 [[rule]]
 argv0 = "claude"
 [[rule.step]]
-emit_file = "../../../adapters/claude-code/fixtures/2.1.284/read-only.stdout.jsonl"
+emit_file = "../../../adapters/claude-code/fixtures/read-only-untitled.stdout.jsonl"
 [[rule.step]]
 exit = 0
 
 [[rule]]
 argv0 = "codex"
 [[rule.step]]
-emit_file = "../../../adapters/codex/fixtures/0.158.0/read_only_ok.stdout.jsonl"
+emit_file = "../../../adapters/codex/fixtures/read_only_ok.stdout.jsonl"
 [[rule.step]]
 exit = 0
 
 [[rule]]
 argv0 = "agy"
 [[rule.step]]
-emit_file = "../../../adapters/antigravity-cli/fixtures/1.2.13/readonly_ok.stdout.jsonl"
+emit_file = "../../../adapters/antigravity-cli/fixtures/readonly_ok_plain.stdout.jsonl"
 [[rule.step]]
 exit = 0

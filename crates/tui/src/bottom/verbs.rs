@@ -1,4 +1,4 @@
-//! The voyage set fits Argonauts; the plain set says what happens without the theme. The
+//! The voyage set fits Argonauts Code; the plain set says what happens without the theme. The
 //! words live in `data/spinner-words.txt`.
 
 use std::collections::hash_map::RandomState;

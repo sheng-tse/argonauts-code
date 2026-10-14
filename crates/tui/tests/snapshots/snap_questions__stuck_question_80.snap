@@ -1,0 +1,24 @@
+---
+source: crates/tui/tests/snap_questions.rs
+expression: text(&lines)
+---
+● Parser · tries
+  1. tests failed: 2 of 41
+  2. review asked for changes: the error type leaks
+  3. tests failed: 1 of 41
+
+────────────────────────────────────────────────────────────────────────────────
+◆ Parser needs a decision
+  Agent: build:parser · GPT 5.6 on Codex
+  Parser · 3 tries
+  Last failure: parser::tests::nested_quotes failed
+
+  ❯ 1. Retry with a note
+    2. Fall back
+    3. Split
+    4. Take over myself
+    5. Defer it
+    6. Cancel the task
+    7. Show the details
+
+  Enter to choose · Tab to add a note · Esc to carry on without me

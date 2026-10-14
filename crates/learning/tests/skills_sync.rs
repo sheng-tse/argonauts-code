@@ -1,4 +1,4 @@
-//! `argonauts sync`, skill drift, and the delegation package.
+//! `argonauts sync`, skill drift, and the outside agent package.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use argonauts_learning::Store;
+use argonauts_learning::learned_workflows::{LearnedWorkflow, LoadedLearnedWorkflow, Match};
 use argonauts_learning::package;
-use argonauts_learning::recipes::{LoadedRecipe, Match, Recipe};
 use argonauts_learning::skills::{export, render, validate};
 use argonauts_learning::sync::{self, SyncMode};
 
@@ -160,7 +160,7 @@ fn sync_says_who_reads_what() {
 }
 
 #[test]
-fn sync_warns_near_harness_caps() {
+fn sync_warns_near_cli_caps() {
     let warnings = |bytes: usize| {
         let (_dir, store) = new_store();
         conventions(&store, &format!("# C\n\n{}\n", "x".repeat(bytes)));
@@ -182,10 +182,10 @@ fn sync_warns_near_harness_caps() {
     assert_eq!(over.len(), 2);
 }
 
-fn recipe() -> LoadedRecipe {
-    LoadedRecipe {
-        recipe: Recipe {
-            recipe: "api-feature".to_owned(),
+fn learned_workflow() -> LoadedLearnedWorkflow {
+    LoadedLearnedWorkflow {
+        learned_workflow: LearnedWorkflow {
+            name: "api-feature".to_owned(),
             version: 2,
             parent: Some(1),
             description: "Endpoints with tests".to_owned(),
@@ -207,7 +207,7 @@ fn sync_warns_on_skill_drift() {
     let (_dir, store) = new_store();
     let skill_path = store.skills_dir().join("api-feature/SKILL.md");
     fs::create_dir_all(skill_path.parent().unwrap()).unwrap();
-    fs::write(&skill_path, render(&export(&recipe()).unwrap())).unwrap();
+    fs::write(&skill_path, render(&export(&learned_workflow()).unwrap())).unwrap();
 
     let clean = sync::sync(&store, SyncMode::Write).unwrap();
     assert_eq!(clean.skill_drift, Vec::new());
@@ -232,7 +232,7 @@ fn sync_warns_on_skill_drift() {
 }
 
 #[test]
-fn delegation_package_layouts() {
+fn outside_agent_package_layouts() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     fs::create_dir_all(&repo).unwrap();

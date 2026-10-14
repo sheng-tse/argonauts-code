@@ -1,4 +1,4 @@
-//! Exporting recipes as skills, the validator, and imports.
+//! Exporting learned workflows as skills, the validator, and imports.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -6,16 +6,16 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use argonauts_learning::recipes::{LoadedRecipe, Match, Recipe};
+use argonauts_learning::learned_workflows::{LearnedWorkflow, LoadedLearnedWorkflow, Match};
 use argonauts_learning::scan::Finding;
 use argonauts_learning::skills::{
-    self, META_RECIPE, META_SHA256, META_VERSION, export, import, propose_export, propose_import,
-    render, validate,
+    self, META_LEARNED_WORKFLOW, META_SHA256, META_VERSION, export, import, propose_export,
+    propose_import, render, validate,
 };
 use argonauts_learning::{LearningError, Store, git};
 use argonauts_testkit::TempRepo;
 
-fn recipe(description: &str, extra: Value) -> LoadedRecipe {
+fn learned_workflow(description: &str, extra: Value) -> LoadedLearnedWorkflow {
     let mut settings: BTreeMap<String, Value> = serde_json::from_value(json!({
         "critique": {
             "rounds": 1,
@@ -35,8 +35,8 @@ fn recipe(description: &str, extra: Value) -> LoadedRecipe {
     if let Value::Object(extra) = extra {
         settings.extend(extra);
     }
-    let recipe = Recipe {
-        recipe: "api-feature".to_owned(),
+    let learned_workflow = LearnedWorkflow {
+        name: "api-feature".to_owned(),
         version: 3,
         parent: Some(2),
         description: description.to_owned(),
@@ -50,11 +50,11 @@ fn recipe(description: &str, extra: Value) -> LoadedRecipe {
         prompts: BTreeMap::new(),
         settings,
     };
-    LoadedRecipe {
+    LoadedLearnedWorkflow {
         path: PathBuf::from(".argonauts/learned/api-feature/v3.yaml"),
         text: String::new(),
         sha256: "0".repeat(64),
-        recipe,
+        learned_workflow,
     }
 }
 
@@ -72,7 +72,7 @@ fn frontmatter(text: &str) -> serde_json::Map<String, Value> {
 
 #[test]
 fn skill_export_flat_metadata_and_hash() {
-    let skill = export(&recipe(
+    let skill = export(&learned_workflow(
         "New or changed HTTP API endpoints, with tests",
         json!({}),
     ))
@@ -88,7 +88,7 @@ fn skill_export_flat_metadata_and_hash() {
     }
     let metadata = fields["metadata"].as_object().unwrap();
     assert_eq!(metadata.len(), 3);
-    assert_eq!(metadata[META_RECIPE], "api-feature");
+    assert_eq!(metadata[META_LEARNED_WORKFLOW], "api-feature");
     assert_eq!(metadata[META_VERSION], "3");
     let body = text.split_once("\n---\n").unwrap().1;
     assert_eq!(body, skill.body);
@@ -119,7 +119,7 @@ fn skill_export_flat_metadata_and_hash() {
     ] {
         assert!(skill.body.contains(expected), "{expected}\n{}", skill.body);
     }
-    // Setting values and gate commands never reach the skill.
+    // Setting values and check commands never reach the skill.
     for absent in [
         "7.25",
         "sentinel",
@@ -134,16 +134,16 @@ fn skill_export_flat_metadata_and_hash() {
 
 #[test]
 fn skill_export_follows_inline_phases() {
-    let loaded = recipe(
+    let loaded = learned_workflow(
         "Reviews",
         json!({
             "phases": [
-                { "name": "Look", "standard": "understand", "steps": [{ "kind": "restate" }] },
+                { "name": "Look", "standard": "understand", "steps": [{ "kind": "read" }] },
                 { "name": "Judge", "standard": "decide", "steps": [
                     { "kind": "loop_until", "until": "reviewers_agree", "max": 3, "steps": [
-                        { "kind": "review" }, { "kind": "refute" }
+                        { "kind": "review" }, { "kind": "critique" }
                     ]},
-                    { "kind": "checkpoint" }
+                    { "kind": "approval" }
                 ]}
             ]
         }),
@@ -281,41 +281,48 @@ fn skill_validator_matches_spec_fields() {
 #[test]
 fn skill_export_refuses_secrets() {
     let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789AB";
-    let refusal = |loaded: LoadedRecipe| match export(&loaded) {
+    let refusal = |loaded: LoadedLearnedWorkflow| match export(&loaded) {
         Err(LearningError::Refused(message)) => message,
         other => panic!("exported: {other:?}"),
     };
-    let message = refusal(recipe(&format!("Uses {token} for the API"), json!({})));
+    let message = refusal(learned_workflow(
+        &format!("Uses {token} for the API"),
+        json!({}),
+    ));
     assert!(message.contains("github token"), "{message}");
     assert!(!message.contains(token), "{message}");
 
-    let message = refusal(recipe(
+    let message = refusal(learned_workflow(
         "Endpoints",
         json!({ "critique": { "checklist": [format!("Check api_key = {}", "s".repeat(24))] } }),
     ));
     assert!(message.contains("assigned secret"), "{message}");
 
-    let message = refusal(recipe(
+    let message = refusal(learned_workflow(
         "Reads config from /Users/alice/.config/app",
         json!({}),
     ));
     assert!(message.contains("home folder"), "{message}");
-    let message = refusal(recipe(
+    let message = refusal(learned_workflow(
         "Endpoints",
         json!({ "critique": { "checklist": ["See ~/notes.md"] } }),
     ));
     assert!(message.contains("home folder"), "{message}");
 
-    let message = refusal(recipe("Endpoints\u{202E}", json!({})));
+    let message = refusal(learned_workflow("Endpoints\u{202E}", json!({})));
     assert!(message.contains("U+202E"), "{message}");
 
-    let mut bad_name = recipe("Endpoints", json!({}));
-    bad_name.recipe.recipe = "API Feature".to_owned();
+    let mut bad_name = learned_workflow("Endpoints", json!({}));
+    bad_name.learned_workflow.name = "API Feature".to_owned();
     let message = refusal(bad_name);
     assert!(message.contains("must be lowercase"), "{message}");
 
     // A URL path that merely starts with /users is no home folder.
-    export(&recipe("Adds GET /users/me and /users/{id}", json!({}))).unwrap();
+    export(&learned_workflow(
+        "Adds GET /users/me and /users/{id}",
+        json!({}),
+    ))
+    .unwrap();
 }
 
 fn store_for(repo: &TempRepo) -> Store {
@@ -331,7 +338,7 @@ fn skill_export_writes_agents_dir_and_claude_link() {
     let repo = TempRepo::new().unwrap();
     let store = store_for(&repo);
     let head = repo.head().unwrap();
-    let proposal = propose_export(&store, &recipe("Endpoints", json!({})), true).unwrap();
+    let proposal = propose_export(&store, &learned_workflow("Endpoints", json!({})), true).unwrap();
 
     assert_eq!(proposal.branch, "argonauts/skills/api-feature");
     assert_eq!(
@@ -391,13 +398,14 @@ fn skill_export_writes_agents_dir_and_claude_link() {
     );
     assert!(proposal.description.contains("hermes skills trust"));
     assert!(proposal.description.contains("OpenClaw"));
-    let notes = skills::harness_notes(Some(repo.root())).join("\n");
+    let notes = skills::cli_notes(Some(repo.root())).join("\n");
     assert!(
         notes.contains(&format!("hermes skills trust {}", repo.root().display())),
         "{notes}"
     );
 
-    let unlinked = propose_export(&store, &recipe("Endpoints", json!({})), false).unwrap();
+    let unlinked =
+        propose_export(&store, &learned_workflow("Endpoints", json!({})), false).unwrap();
     assert!(!tree(repo.root(), &unlinked.commit).contains(".claude/skills"));
 }
 
@@ -674,7 +682,7 @@ fn skill_import_clones_git_urls_without_hooks() {
 fn skills_list_reads_the_agents_folder() {
     let repo = TempRepo::new().unwrap();
     let store = store_for(&repo);
-    let skill = export(&recipe("Endpoints", json!({}))).unwrap();
+    let skill = export(&learned_workflow("Endpoints", json!({}))).unwrap();
     write(
         repo.root(),
         ".agents/skills/api-feature/SKILL.md",
@@ -688,7 +696,10 @@ fn skills_list_reads_the_agents_folder() {
     let listed = skills::list(&store).unwrap();
     let names: Vec<&str> = listed.iter().map(|s| s.frontmatter.name.as_str()).collect();
     assert_eq!(names, ["api-feature", "foreign"]);
-    assert_eq!(listed[0].frontmatter.metadata[META_RECIPE], "api-feature");
+    assert_eq!(
+        listed[0].frontmatter.metadata[META_LEARNED_WORKFLOW],
+        "api-feature"
+    );
     assert_eq!(listed[1].frontmatter.metadata["a.b"], "c");
     assert_eq!(skills::drift(&store).unwrap(), Vec::new());
 }

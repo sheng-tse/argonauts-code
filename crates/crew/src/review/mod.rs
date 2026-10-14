@@ -1,46 +1,47 @@
-//! Review: each reviewer runs `Review` on the conductor's diff, the gate results, and the
-//! acceptance tests, never the owner's notes; blind reviewers never see each other before
-//! adjudication. Disagreement among two or more reviewers goes to a fresh adjudicator.
+//! Review: each reviewer runs `Review` on Argonauts Code's diff, the check results, and the
+//! acceptance tests, never the worker's notes; blind reviewers never see each other before
+//! the judge settles them. Disagreement among two or more reviewers goes to a fresh judge.
 
 use std::path::Path;
 
 use futures::future::join_all;
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::card::{CardKind, ReviewEvent};
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::events::task::{ReviewEvent, TaskKind};
+use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::session_runner::{Access, RunnerKind};
 use argonauts_core::steps::Step;
 use argonauts_core::steps::judgment::{Review, ReviewInput, ReviewOutput, ReviewVerdict};
-use argonauts_core::worker::{Access, WorkerKind};
 
 use crate::engine::host::{Ask, Host};
-use crate::engine::stand_in::{self, Seat};
+use crate::engine::job_fallback::{self, Job};
 use crate::error::{EngineError, EngineResult};
-use crate::plan::context::{self, candidates_for, families, seats};
+use crate::plan::context::{self, agent_count, candidates_for, providers};
 use crate::prompts::review::REVIEW;
 use crate::state::RunState;
-use crate::state::cards::CardRecord;
-use crate::workflow::kinds::item_card;
+use crate::state::tasks::TaskEntry;
+use crate::task::at_start;
+use crate::workflow::kinds::item_task;
 use crate::workflow::{StepCall, StepDone, authors, runner};
 
-pub mod adjudicate;
 pub mod diff_cut;
 pub mod endpoint_tests;
 pub mod reviewers;
+pub mod settle;
 mod together;
 
-/// What a card's review came to.
+/// What a task's review came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     Approved,
-    /// The comments go back to the owner's session.
+    /// The comments go back to the worker's session.
     ChangesRequested {
         comments: Vec<String>,
     },
-    /// A reviewer or the adjudicator rejected the approach, or review couldn't happen: you or
+    /// A reviewer or the judge rejected the approach, or review couldn't happen: you or
     /// your rules decide.
-    Escalated {
+    NeedsYou {
         reasons: Vec<String>,
     },
 }
@@ -52,7 +53,7 @@ impl Verdict {
             Self::ChangesRequested { comments } => {
                 format!("Changes requested ({} comments)", comments.len())
             }
-            Self::Escalated { reasons } => format!("Needs you: {}", reasons.join("; ")),
+            Self::NeedsYou { reasons } => format!("Needs you: {}", reasons.join("; ")),
         }
     }
 
@@ -62,7 +63,7 @@ impl Verdict {
         let said: &[String] = match self {
             Self::Approved => &[],
             Self::ChangesRequested { comments } => comments,
-            Self::Escalated { reasons } => reasons,
+            Self::NeedsYou { reasons } => reasons,
         };
         said.iter()
             .map(|finding| finding.split_whitespace().collect::<Vec<_>>().join(" "))
@@ -80,30 +81,30 @@ pub(crate) fn with_findings(what: String, verdict: &Verdict) -> String {
     }
 }
 
-/// `review`: a card's review inside `build`, or a review of the step's input against criteria.
+/// `review`: a task's review inside `build`, or a review of the step's input against criteria.
 pub async fn review_step(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
-    match card_of(host, call) {
-        Some(card) => {
-            let excluded = excluded_families(host, call);
-            let round = host.read(|state| step_round(state, call, &card));
-            let verdict = review_card_among(host, &card, round, &excluded).await?;
+    match task_of(host, call) {
+        Some(task) => {
+            let excluded = excluded_providers(host, call);
+            let round = host.read(|state| step_round(state, call, &task));
+            let verdict = review_task_among(host, &task, round, &excluded).await?;
             Ok(StepDone::done(verdict.line()))
         }
         None => review_input(host, call).await,
     }
 }
 
-/// The card a step works on, when its `for_each` item is a card spec or a card's id.
-pub(crate) fn card_of(host: &Host, call: &StepCall) -> Option<CardId> {
-    let card = item_card(call.item.as_ref()?)?;
-    host.read(|state| state.cards.get(&card).is_some())
-        .then_some(card)
+/// The task a step works on, when its `for_each` item is a task spec or a task's id.
+pub(crate) fn task_of(host: &Host, call: &StepCall) -> Option<TaskId> {
+    let task = item_task(call.item.as_ref()?)?;
+    host.read(|state| state.tasks.get(&task).is_some())
+        .then_some(task)
 }
 
-/// The card's own review round for a workflow `review` step: the round after its newest, or
+/// The task's own review round for a workflow `review` step: the round after its newest, or
 /// that newest one again when this step round already began asking for it.
-fn step_round(state: &RunState, call: &StepCall, card: &CardId) -> u32 {
-    let newest = state.cards.get(card).map_or(0, |record| {
+fn step_round(state: &RunState, call: &StepCall, task: &TaskId) -> u32 {
+    let newest = state.tasks.get(task).map_or(0, |record| {
         record
             .reviews
             .iter()
@@ -121,7 +122,7 @@ fn step_round(state: &RunState, call: &StepCall, card: &CardId) -> u32 {
         .and_then(|record| record.round(&call.at.step, call.at.round))
         .is_some_and(|progress| {
             state.sessions.by_key.values().any(|session| {
-                session.card.as_ref() == Some(card)
+                session.task.as_ref() == Some(task)
                     && session.started.role == RoleName::Reviewer
                     && session.since > progress.since
             })
@@ -133,71 +134,73 @@ fn step_round(state: &RunState, call: &StepCall, card: &CardId) -> u32 {
     }
 }
 
-/// Reviews a card that passed its gates: the card's reviewers, then an adjudicator when they
+/// Reviews a task that passed its checks: the task's reviewers, then the judge when they
 /// disagree. `round` counts change rounds from 1.
-pub async fn review_card(host: &Host, card: &CardId, round: u32) -> EngineResult<Verdict> {
-    review_card_among(host, card, round, &[]).await
+pub async fn review_task(host: &Host, task: &TaskId, round: u32) -> EngineResult<Verdict> {
+    review_task_among(host, task, round, &[]).await
 }
 
-/// `review_card` without reviewers of the `excluded` families, besides the owner's.
-async fn review_card_among(
+/// `review_task` without reviewers of the `excluded` providers, besides the worker's.
+async fn review_task_among(
     host: &Host,
-    card: &CardId,
+    task: &TaskId,
     round: u32,
     excluded: &[String],
 ) -> EngineResult<Verdict> {
-    let family = families(host);
-    let mut reviewers = host.read(|state| reviewers::for_card(state, card, &family));
-    reviewers.retain(|reviewer| !excluded.contains(&family(reviewer)));
-    review_by(host, card, round, &reviewers).await
+    let provider = providers(host);
+    let other_provider = host.settings().review.other_provider;
+    let mut reviewers =
+        host.read(|state| reviewers::for_task(state, task, &provider, other_provider));
+    reviewers.retain(|reviewer| !excluded.contains(&provider(reviewer)));
+    review_by(host, task, round, &reviewers).await
 }
 
-/// Reviews the card's work with exactly these reviewers, even one that owns the card: the
-/// model a quality debt waits for, say. `round` must be one no other review of the card used.
+/// Reviews the task's work with exactly these reviewers, even one that owns the task: the
+/// model a quality debt waits for, say. `round` must be one no other review of the task used.
 pub async fn review_by(
     host: &Host,
-    card: &CardId,
+    task: &TaskId,
     round: u32,
-    reviewers: &[WorkerRef],
+    reviewers: &[ModelRef],
 ) -> EngineResult<Verdict> {
-    review_in(host, card, round, reviewers, None).await
+    review_in(host, task, round, reviewers, None).await
 }
 
-/// Reviews a race attempt's work in `tree` before it becomes the card's. An attempt is never
-/// adjudicated: it passes only when every reviewer approves, since the other attempts compete.
-pub async fn review_attempt(
+/// Reviews a race try's work in `tree` before it becomes the task's. A try is never
+/// settled: it passes only when every reviewer approves, since the other tries compete.
+pub async fn review_try(
     host: &Host,
-    card: &CardId,
+    task: &TaskId,
     round: u32,
-    reviewers: &[WorkerRef],
+    reviewers: &[ModelRef],
     tree: &Path,
 ) -> EngineResult<Verdict> {
-    review_in(host, card, round, reviewers, Some(tree)).await
+    review_in(host, task, round, reviewers, Some(tree)).await
 }
 
-/// The card's work in `tree`, or in its own worktree when `tree` is `None`.
+/// The task's work in `tree`, or in its own worktree when `tree` is `None`.
 async fn review_in(
     host: &Host,
-    card: &CardId,
+    task: &TaskId,
     round: u32,
-    reviewers: &[WorkerRef],
+    reviewers: &[ModelRef],
     tree: Option<&Path>,
 ) -> EngineResult<Verdict> {
     let (record, goal, decisions, tests) = host.read(|state| {
         (
-            state.cards.get(card).cloned(),
+            state.tasks.get(task).cloned(),
             context::goal_text(state),
             context::decision_lines(state),
-            acceptance_tests(state, card),
+            acceptance_tests(state, task),
         )
     });
     let Some(record) = record else {
         return Err(EngineError::Refused(format!(
-            "{card} is not a task of this run"
+            "{task} is not a task of this run"
         )));
     };
     if reviewers.is_empty() {
-        return Ok(Verdict::Escalated {
+        return Ok(Verdict::NeedsYou {
             reasons: vec!["No reviewer from another provider than the worker".to_owned()],
         });
     }
@@ -206,10 +209,10 @@ async fn review_in(
         .or_else(|| record.worktree.clone());
     let settings = host.settings();
     let blind = settings.review.blind
-        || (reviewers.len() > 1 && settings.visibility.reviews_hidden_until_adjudicated);
+        || (reviewers.len() > 1 && settings.visibility.reviews_hidden_until_settled);
     let mut reviews = host.read(|state| reviews_of_round(state, &record, round, reviewers));
-    // A stand-in may not come from the owner's company, as no reviewer may.
-    let owner = record.owner.clone().or_else(|| record.spec.owner.clone());
+    // A fallback may not come from the worker's provider, as no reviewer may.
+    let worker = record.worker.clone().or_else(|| record.spec.worker.clone());
     let (chunks, cut_note) = diff_cut::cut(
         &work_diff(host, workdir.as_deref(), record.base.as_deref()).await?,
         settings.review.max_diff_lines,
@@ -220,22 +223,23 @@ async fn review_in(
     }
     let input = ReviewInput {
         goal,
-        card: format!("{}\n\n{}", record.spec.title, record.spec.task),
+        task: format!("{}\n\n{}", record.spec.title, record.spec.task),
         diff,
-        gates: record
-            .gates
+        checks: record
+            .checks
             .iter()
-            .map(|gate| {
-                let result = if gate.passed { "passed" } else { "failed" };
-                format!("{} {result}: {}", gate.name, gate.summary)
+            .map(|check| {
+                let result = if check.passed { "passed" } else { "failed" };
+                format!("{} {result}: {}", check.name, check.summary)
             })
+            .chain(host.read(at_start::review_lines))
             .collect(),
         acceptance_tests: tests,
         decisions,
         round,
     };
-    let at = host.read(|state| runner::review_at(state, card));
-    let ask_of = |reviewer: &WorkerRef| {
+    let at = host.read(|state| runner::review_at(state, task));
+    let ask_of = |reviewer: &ModelRef| {
         let mut ask = Ask::new(
             at.clone(),
             RoleName::Reviewer,
@@ -243,10 +247,10 @@ async fn review_in(
             REVIEW,
             input.clone(),
         );
-        ask.card = Some(card.clone());
+        ask.task = Some(task.clone());
         ask.blind = blind;
         ask.slot = round;
-        ask.independent_of = owner.iter().cloned().collect();
+        ask.independent_of = worker.iter().cloned().collect();
         if is_endpoint(host, reviewer) {
             ask.access = Access::NoTools;
         } else {
@@ -255,37 +259,38 @@ async fn review_in(
         }
         ask
     };
-    // A reviewer's seat, which fallbacks that take it together must fit as one alone would.
-    let seat = Seat {
+    // A reviewer's job, which fallbacks that take it together must fit as one alone would.
+    let job = Job {
         at: at.clone(),
         role: RoleName::Reviewer,
         step: Some(Review::NAME),
-        card: Some(card.clone()),
-        independent_of: owner.iter().cloned().collect(),
+        task: Some(task.clone()),
+        independent_of: worker.iter().cloned().collect(),
         isolated: blind,
     };
-    // Each reviewer has its own seat before any is asked, so none stands in for another too.
+    // Each reviewer has its own job before any is asked, so none becomes the fallback of another
+    // too.
     for reviewer in reviewers {
-        stand_in::hold(host, &seat, reviewer);
+        job_fallback::hold(host, &job, reviewer);
     }
-    // Who is asked, and in whose seat: each reviewer still to review, or several fallbacks
-    // at once in the seat of one that's out already, and those that join a fallback that
-    // took a seat midway before the step was entered again.
-    let mut asked: Vec<(WorkerRef, WorkerRef)> = Vec::new();
+    // Who is asked, and in whose place: each reviewer still to review, or several fallbacks
+    // at once in the place of one that's out already, and those that join a fallback that
+    // took a reviewer's place midway before the step was entered again.
+    let mut asked: Vec<(ModelRef, ModelRef)> = Vec::new();
     for reviewer in reviewers {
-        match reviews.iter().find(|(seat, _, _)| seat == reviewer) {
+        match reviews.iter().find(|(asked, _, _)| asked == reviewer) {
             None => {
-                let by = together::from_the_start(host, &seat, reviewer).await;
+                let by = together::from_the_start(host, &job, reviewer).await;
                 if by.len() < 2 {
                     asked.push((reviewer.clone(), reviewer.clone()));
                 } else {
-                    together::say_who_reviews(host, card, round, reviewer, &by, &[])?;
+                    together::say_who_reviews(host, task, round, reviewer, &by, &[])?;
                     asked.extend(by.into_iter().map(|by| (reviewer.clone(), by)));
                 }
             }
             Some((_, first, _)) if first != reviewer => {
-                let more = together::joining(host, &seat, reviewer, first);
-                together::say_who_reviews(host, card, round, reviewer, &more, &[first])?;
+                let more = together::joining(host, &job, reviewer, first);
+                together::say_who_reviews(host, task, round, reviewer, &more, &[first])?;
                 asked.extend(more.into_iter().map(|by| (reviewer.clone(), by)));
             }
             Some(_) => {}
@@ -294,10 +299,10 @@ async fn review_in(
     let mut stalls = Vec::new();
     while !asked.is_empty() {
         let answers = join_all(asked.iter().map(|(reviewer, by)| {
-            // A fallback asked in a seat reviews under its own name, so entered again its
-            // review is found by that name.
+            // A fallback asked in a reviewer's place reviews under its own name, so entered again
+            // its review is found by that name.
             let given = (by != reviewer)
-                .then(|| together::given(host, card, round, by))
+                .then(|| together::given(host, task, round, by))
                 .flatten();
             let ask = ask_of(by);
             async move {
@@ -317,9 +322,9 @@ async fn review_in(
             match answer {
                 Ok((None, review)) => reviews.push((reviewer.clone(), by.clone(), review)),
                 Ok((Some(answered), review)) => {
-                    // Under the name of whoever reviewed, a stand-in included.
+                    // Under the name of whoever reviewed, a fallback included.
                     host.record(
-                        Some(card),
+                        Some(task),
                         Some(&answered.session),
                         RunEventKind::Review(ReviewEvent::Reviewed {
                             reviewer: answered.worker.clone(),
@@ -328,21 +333,21 @@ async fn review_in(
                             review: answered.output,
                         }),
                     )?;
-                    // A fallback took the reviewer's own seat midway, so the rest of its
+                    // A fallback took the reviewer's own place midway, so the rest of its
                     // fallbacks join it.
                     if by == reviewer && answered.worker != *reviewer {
                         let first = &answered.worker;
-                        let more = together::joining(host, &seat, reviewer, first);
-                        together::say_who_reviews(host, card, round, reviewer, &more, &[first])?;
+                        let more = together::joining(host, &job, reviewer, first);
+                        together::say_who_reviews(host, task, round, reviewer, &more, &[first])?;
                         joining.extend(more.into_iter().map(|by| (reviewer.clone(), by)));
                     }
                     reviews.push((reviewer.clone(), answered.worker, review));
                 }
                 Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
-                // Nobody else may take that reviewer's seat, so the review goes on without it.
+                // Nobody else may take that reviewer's place, so the review goes on without it.
                 Err(EngineError::Stalled(stall)) => stalls.push(stall),
                 Err(error) => {
-                    return Ok(Verdict::Escalated {
+                    return Ok(Verdict::NeedsYou {
                         reasons: vec![format!("{by}'s review failed: {error}")],
                     });
                 }
@@ -357,27 +362,27 @@ async fn review_in(
     }
     for stall in stalls {
         let text = format!("{} The review goes on without that reviewer.", stall.line);
-        context::warn(host, Some(card), text)?;
+        context::warn(host, Some(task), text)?;
     }
-    let outputs = together::counted_by_seat(host, reviews);
+    let outputs = together::counted_by_reviewer(host, reviews);
     if tree.is_some() {
         return Ok(strictest(&outputs));
     }
     if outputs.len() > 1 && !agree(&outputs) {
-        return adjudicate::adjudicate(host, card).await;
+        return settle::settle(host, task).await;
     }
     Ok(combine(&outputs))
 }
 
 /// Reviews these reviewers already recorded for this round, so a re-entered review asks only
-/// the rest: whose seat, who reviewed, and the review. A stand-in's review counts for the
-/// reviewer whose seat it took.
+/// the rest: in whose place, who reviewed, and the review. A fallback's review counts for the
+/// reviewer whose place it took.
 fn reviews_of_round(
     state: &RunState,
-    record: &CardRecord,
+    record: &TaskEntry,
     round: u32,
-    reviewers: &[WorkerRef],
-) -> Vec<(WorkerRef, WorkerRef, ReviewOutput)> {
+    reviewers: &[ModelRef],
+) -> Vec<(ModelRef, ModelRef, ReviewOutput)> {
     record
         .reviews
         .iter()
@@ -388,32 +393,32 @@ fn reviews_of_round(
                 review,
                 ..
             } if *r == round => {
-                let seat = if reviewers.contains(reviewer) {
+                let asked = if reviewers.contains(reviewer) {
                     Some(reviewer.clone())
                 } else {
-                    stood_in_for(state, &record.spec.id, reviewer, reviewers)
+                    fallback_for(state, &record.spec.id, reviewer, reviewers)
                 };
-                seat.map(|seat| (seat, reviewer.clone(), review.clone()))
+                asked.map(|asked| (asked, reviewer.clone(), review.clone()))
             }
             _ => None,
         })
         .collect()
 }
 
-/// The reviewer of `reviewers` whose seat on `card` `worker` took, its newest.
-fn stood_in_for(
+/// The reviewer of `reviewers` whose place on `task` `worker` took, its newest.
+fn fallback_for(
     state: &RunState,
-    card: &CardId,
-    worker: &WorkerRef,
-    reviewers: &[WorkerRef],
-) -> Option<WorkerRef> {
+    task: &TaskId,
+    worker: &ModelRef,
+    reviewers: &[ModelRef],
+) -> Option<ModelRef> {
     state
         .sessions
         .in_order()
         .into_iter()
         .rev()
         .filter(|session| {
-            session.card.as_ref() == Some(card)
+            session.task.as_ref() == Some(task)
                 && session.started.role == RoleName::Reviewer
                 && session.started.worker == *worker
         })
@@ -434,18 +439,18 @@ fn combine(reviews: &[ReviewOutput]) -> Verdict {
         Some(ReviewVerdict::RequestChanges) => Verdict::ChangesRequested {
             comments: reviews.iter().flat_map(comment_lines).collect(),
         },
-        Some(ReviewVerdict::Reject) => Verdict::Escalated {
+        Some(ReviewVerdict::Reject) => Verdict::NeedsYou {
             reasons: reviews.iter().map(|r| r.summary.clone()).collect(),
         },
     }
 }
 
-/// The most severe verdict among `reviews`: one rejection escalates, one request for changes
+/// The most severe verdict among `reviews`: one rejection sends it to you, one request for changes
 /// sends the work back with every such comment.
 fn strictest(reviews: &[ReviewOutput]) -> Verdict {
     let with = |verdict| reviews.iter().filter(move |r| r.verdict == verdict);
     if with(ReviewVerdict::Reject).next().is_some() {
-        return Verdict::Escalated {
+        return Verdict::NeedsYou {
             reasons: with(ReviewVerdict::Reject)
                 .map(|r| r.summary.clone())
                 .collect(),
@@ -470,14 +475,14 @@ fn comment_lines(review: &ReviewOutput) -> Vec<String> {
     lines
 }
 
-/// Paths of the acceptance tests written for `card`.
-fn acceptance_tests(state: &RunState, card: &CardId) -> Vec<String> {
+/// Paths of the acceptance tests written for `task`.
+fn acceptance_tests(state: &RunState, task: &TaskId) -> Vec<String> {
     let mut paths: Vec<String> = Vec::new();
-    for record in state.cards.by_id.values() {
-        let CardKind::AcceptanceTests { for_card } = &record.spec.kind else {
+    for record in state.tasks.by_id.values() {
+        let TaskKind::AcceptanceTests { for_task } = &record.spec.kind else {
             continue;
         };
-        if for_card != card {
+        if for_task != task {
             continue;
         }
         let written = record.reviews.iter().rev().find_map(|event| match event {
@@ -492,7 +497,7 @@ fn acceptance_tests(state: &RunState, card: &CardId) -> Vec<String> {
     paths
 }
 
-/// The work in `tree` against the card's base, computed by the conductor.
+/// The work in `tree` against the task's base, computed by Argonauts Code.
 async fn work_diff(host: &Host, tree: Option<&Path>, base: Option<&str>) -> EngineResult<String> {
     match (tree, base) {
         (Some(tree), Some(base)) => Ok(host.git().review_diff(tree, base, "HEAD").await?),
@@ -500,29 +505,29 @@ async fn work_diff(host: &Host, tree: Option<&Path>, base: Option<&str>) -> Engi
     }
 }
 
-pub(crate) fn is_endpoint(host: &Host, worker: &WorkerRef) -> bool {
+pub(crate) fn is_endpoint(host: &Host, worker: &ModelRef) -> bool {
     host.services()
         .workers
         .get(worker)
-        .is_ok_and(|w| w.kind() == WorkerKind::Endpoint)
+        .is_ok_and(|w| w.kind() == RunnerKind::Endpoint)
 }
 
-/// A review of the step's input, outside a card: reviewers from another family than the
-/// step's `different_family_from`, blind when the step says so.
+/// A review of the step's input, outside a task: reviewers from another provider than the
+/// step's `different_provider_from`, blind when the step says so.
 async fn review_input(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     let settings = host.settings();
-    let family = families(host);
-    let excluded = excluded_families(host, call);
-    let seats = seats(
+    let provider = providers(host);
+    let excluded = excluded_providers(host, call);
+    let count = agent_count(
         call,
         settings,
         RoleName::Reviewer,
         Some(settings.review.per_task.max(1)),
     );
-    let reviewers: Vec<WorkerRef> = candidates_for(call, settings, RoleName::Reviewer)
+    let reviewers: Vec<ModelRef> = candidates_for(call, settings, RoleName::Reviewer)
         .into_iter()
-        .filter(|w| !excluded.contains(&family(w)))
-        .take(seats.unwrap_or(1) as usize)
+        .filter(|w| !excluded.contains(&provider(w)))
+        .take(count.unwrap_or(1) as usize)
         .collect();
     if reviewers.is_empty() {
         return Ok(StepDone::skipped(
@@ -538,18 +543,18 @@ async fn review_input(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     }
     let input = host.read(|state| ReviewInput {
         goal: context::goal_text(state),
-        card: call
+        task: call
             .step
             .task
             .clone()
             .unwrap_or_else(|| "Review the input below against the goal.".to_owned()),
         diff: target,
-        gates: Vec::new(),
+        checks: Vec::new(),
         acceptance_tests: Vec::new(),
         decisions: context::decision_lines(state),
         round: call.at.round,
     });
-    // A stand-in may not come from the company of whoever made what's reviewed.
+    // A fallback may not come from the provider of whoever made what's reviewed.
     let authors = host.read(|state| authors::excluded(state, settings, call));
     let asks = reviewers.iter().enumerate().map(|(slot, reviewer)| {
         let mut ask = Ask::new(
@@ -618,12 +623,12 @@ async fn review_input(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     Ok(StepDone::done(summary))
 }
 
-/// The families `different_family_from` leaves out (`workflow::authors`).
-fn excluded_families(host: &Host, call: &StepCall) -> Vec<String> {
+/// The providers `different_provider_from` leaves out (`workflow::authors`).
+fn excluded_providers(host: &Host, call: &StepCall) -> Vec<String> {
     let workers = host.read(|state| authors::excluded(state, host.settings(), call));
     let mut excluded: Vec<String> = workers
         .iter()
-        .map(|worker| crate::roles::family(host, worker))
+        .map(|worker| crate::roles::provider(host, worker))
         .collect();
     excluded.sort();
     excluded.dedup();
@@ -674,7 +679,7 @@ mod tests {
         let reject = [review(ReviewVerdict::Reject, "wrong approach")];
         assert_eq!(
             combine(&reject),
-            Verdict::Escalated {
+            Verdict::NeedsYou {
                 reasons: vec!["wrong approach".to_owned()]
             }
         );

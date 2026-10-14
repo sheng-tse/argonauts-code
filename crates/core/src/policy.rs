@@ -1,4 +1,4 @@
-//! Approval and narrator interfaces. Approvals come only from you, your rules, or an approver
+//! Approval and narrator interfaces. Approvals come only from you, your rules, or a judge
 //! model you configured; the MCP server never gets [`crate::api::Approvals`].
 
 use serde::{Deserialize, Serialize};
@@ -6,17 +6,17 @@ use time::OffsetDateTime;
 use tokio::sync::broadcast;
 
 use crate::events::RunEvent;
-use crate::events::card::CardSpec;
-use crate::events::checkpoint::{AnswerAction, CheckpointKind};
+use crate::events::approval::{AnswerAction, ApprovalKind};
 use crate::events::goal::GoalFile;
 use crate::events::run::RunPhase;
+use crate::events::task::TaskSpec;
 use crate::future::BoxFuture;
-use crate::names::{CheckpointId, WorkerRef};
+use crate::names::{ApprovalId, ModelRef};
+use crate::session_runner::SessionSpec;
 use crate::settings::approvals::{ApprovalMode, DecideWith};
-use crate::settings::budget::BudgetAmount;
-use crate::settings::handoff::HandoffMode;
+use crate::settings::fallback::FallbackMode;
+use crate::settings::limit::LimitAmount;
 use crate::settings::ui::NarratorMode;
-use crate::worker::SessionSpec;
 use crate::{RunId, Spend, canonical_json, sha256_hex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -24,7 +24,7 @@ use crate::{RunId, Spend, canonical_json, sha256_hex};
 pub enum Verdict {
     Approve,
     Reject,
-    Escalate,
+    AskYou,
 }
 
 /// A failed hard limit. No mode or model overrides one.
@@ -38,29 +38,29 @@ pub struct Violation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HardLimit {
-    /// A gate failed or didn't run.
-    GatesFailed,
+    /// A check failed or didn't run.
+    ChecksFailed,
     TestDeleted,
     /// A skip or focus marker was added.
     SkipMarker,
     /// Test or build config changed.
     TestConfigChanged,
-    /// Stops the card.
+    /// Stops the task.
     Secret,
     ProtectedPath,
     /// A dependency not on the allowlist.
     Dependency,
     Lockfile,
-    /// A card, run, day, or month budget ceiling.
+    /// A task, run, day, or month limit ceiling.
     Ceiling,
-    /// The integration branch moved after the approval, so it no longer covers what would land.
+    /// The run branch moved after the approval, so it no longer covers what would land.
     HeadMoved,
     SentBackTwice,
     AutoMergeCap,
     /// An irreversible outside action not on your allowlist.
     Irreversible,
     SelfApproval,
-    /// A harness session (any access) or a gate without a working sandbox.
+    /// A CLI session (any access) or a check without a working sandbox.
     NoSandbox,
     /// A build session without the approved goal's hash.
     NoGoalHash,
@@ -77,28 +77,28 @@ pub enum HardLimit {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DecisionPoint {
     pub run: RunId,
-    pub checkpoint: CheckpointId,
-    pub kind: CheckpointKind,
-    /// Shadow records count per recipe.
-    pub recipe: Option<String>,
-    /// The approver must not be one of these.
-    pub authors: Vec<WorkerRef>,
+    pub approval: ApprovalId,
+    pub kind: ApprovalKind,
+    /// Auto preview records count per learned workflow.
+    pub learned_workflow: Option<String>,
+    /// The judge must not be one of these.
+    pub authors: Vec<ModelRef>,
     /// Set from Shift+Tab; replaces the configured mode for this point.
     pub mode_override: Option<ApprovalMode>,
-    /// The lead, whose answers the approver checks. In full auto, when nothing you can run
-    /// comes from a company none of the authors come from, the approver comes from another
-    /// company than this one's.
+    /// The main agent, whose answers the judge checks. In autopilot, when nothing you can run
+    /// comes from a provider none of the authors come from, the judge comes from another
+    /// provider than this one's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lead: Option<WorkerRef>,
+    pub main_agent: Option<ModelRef>,
 }
 
 /// Rules read only `facts`. Agent outputs can add conditions but never remove them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EvidencePacket {
-    pub kind: CheckpointKind,
+    pub kind: ApprovalKind,
     pub goal: Option<GoalFile>,
     pub facts: EvidenceFacts,
-    /// Reviewer verdicts, judge scores, differ tags, one line each.
+    /// Reviewer verdicts, judge scores, comparer tags, one line each.
     pub agent_outputs: Vec<String>,
     /// Shown as data: the plan text, the combined diff, your rules file.
     pub documents: Vec<EvidenceDocument>,
@@ -107,7 +107,7 @@ pub struct EvidencePacket {
 impl EvidencePacket {
     /// Approvals are bound to this hash of the canonical JSON.
     pub fn sha256(&self) -> String {
-        // Plain data can't fail to serialize, and an empty object would match no checkpoint.
+        // Plain data can't fail to serialize, and an empty object would match no approval.
         let value = serde_json::to_value(self).unwrap_or_default();
         sha256_hex(canonical_json(&value).as_bytes())
     }
@@ -127,7 +127,7 @@ pub struct EvidenceDocument {
     pub sha256: Option<String>,
 }
 
-/// The commits an approval covers. The engine refuses to land when the integration branch's
+/// The commits an approval covers. The engine refuses to land when the run branch's
 /// head is no longer `head_commit`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvidenceSubject {
@@ -144,7 +144,7 @@ pub struct EvidenceFacts {
     /// Largest gap between a judge's two orders.
     pub max_score_spread: Option<f64>,
     pub winner_margin: Option<f64>,
-    /// Every counted score came from another family than the plan's author.
+    /// Every counted score came from another provider than the plan's author.
     pub judges_other_provider: Option<bool>,
     /// Every dispute with a proposed experiment was settled by running it.
     pub disputes_settled: Option<bool>,
@@ -152,21 +152,21 @@ pub struct EvidenceFacts {
     pub flagged_plans: Option<u32>,
     pub estimate_usd: Option<f64>,
     pub new_dependencies: Vec<String>,
-    /// Paths agents changed in the combined diff against main, or cards own in a plan. Hard
+    /// Paths agents changed in the combined diff against main, or tasks own in a plan. Hard
     /// limits check these.
     pub agent_paths: Vec<String>,
-    /// Paths only the conductor committed, under an `Argonauts-Conductor: <run>` trailer.
+    /// Paths only Argonauts Code committed, under an `Argonauts-Code: <run>` trailer.
     /// Shown, not checked.
     pub conductor_paths: Vec<String>,
     /// The protected subset of `agent_paths`.
     pub protected_paths: Vec<String>,
-    pub gates_passed: Option<bool>,
+    pub checks_passed: Option<bool>,
     pub reviews_approved: Option<bool>,
-    /// Every card's standing approval came from a reviewer of another company than the card's
-    /// owner, as [`company_of`](crate::registry::company_of) tells them apart.
+    /// Every task's standing approval came from a reviewer of another provider than the task's
+    /// worker by the registry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewed_by_other_provider: Option<bool>,
-    /// Every acceptance test fails on the stubs and passes on the integration branch.
+    /// Every acceptance test fails on the stubs and passes on the run branch.
     pub acceptance_tests_valid: Option<bool>,
     pub untested_criteria: Vec<String>,
     /// Share of changed lines covered by tests.
@@ -174,15 +174,15 @@ pub struct EvidenceFacts {
     pub tamper_flags: Option<u32>,
     pub combined_diff_lines: Option<u32>,
     pub suite_on_latest_main: Option<bool>,
-    /// Cards whose quality debt no strong enough model reviewed, by the labels the merge table
+    /// Tasks whose quality debt no strong enough model reviewed, by the labels the merge table
     /// gives them, from the merge rows under `merge_rule = "upgrade_review"`, and empty under
     /// `none`. `None` means not measured, so auto won't merge unless `allow_debt` is set.
     #[serde(default)]
     pub unreviewed_debt: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub escalation: Option<EscalationFacts>,
+    pub stuck: Option<StuckFacts>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budget: Option<BudgetFacts>,
+    pub spend: Option<SpendFacts>,
     /// A goal change only clarifies the goal and leaves its success criteria as they were.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub criteria_unchanged: Option<bool>,
@@ -200,36 +200,38 @@ pub struct EvidenceFacts {
     pub send_backs: u32,
 }
 
-/// What auto needs to grant an escalated card one more attempt. The engine fills it only when it
-/// knows every fact, so a missing one asks you.
+/// What auto needs to grant a task that needs you one more try. The engine fills in what it
+/// knows, and a fact it doesn't know asks you.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EscalationFacts {
-    /// The card's role's handoff mode.
-    pub handoff_mode: HandoffMode,
-    /// Model families that have worked on the card.
-    pub families_tried: Vec<String>,
-    /// The family of the fallback the next attempt would go to. `None` when no fallback is left.
-    pub next_family: Option<String>,
-    /// Extra attempts granted so far, against `rules.escalation.max_extra_attempts`.
-    pub extra_attempts: u32,
-    /// One more attempt fits in what's left of the reserve.
-    pub fits_reserve: bool,
+pub struct StuckFacts {
+    /// The task's role's fallback mode.
+    pub fallback_mode: FallbackMode,
+    /// Model providers that have worked on the task.
+    pub providers_tried: Vec<String>,
+    /// The provider of the fallback the next try would go to. `None` when no fallback is left.
+    pub next_provider: Option<String>,
+    /// Extra tries granted so far, against `rules.stuck.max_extra_tries`.
+    pub extra_tries: u32,
+    /// Whether one more try fits in what's left of the reserve. `None` when that can't be
+    /// told: the task has no limit of its own, or the two are counted in different units.
+    #[serde(default)]
+    pub fits_reserve: Option<bool>,
 }
 
 /// What auto needs to release the run's reserve.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct BudgetFacts {
-    /// The estimated cost of the cards not yet done.
-    pub remaining_cards: BudgetAmount,
-    pub reserve_left: BudgetAmount,
+pub struct SpendFacts {
+    /// The estimated cost of the tasks not yet done.
+    pub remaining_tasks: LimitAmount,
+    pub reserve_left: LimitAmount,
 }
 
-/// What auto needs to promote a recipe change.
+/// What auto needs to promote a learned workflow change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromotionFacts {
     /// As `rules.workflow_promotion.change_classes` names it, such as `checklist_item`.
     pub change_class: String,
-    /// The recipe's last promotion or canary. `None` when it never had one.
+    /// The learned workflow's last promotion or canary. `None` when it never had one.
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub last_promoted: Option<OffsetDateTime>,
 }
@@ -237,15 +239,15 @@ pub struct PromotionFacts {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum PolicyOutcome {
-    /// Supervised, shadow, a hard limit failed, or auto escalated.
+    /// Supervised, auto preview, a hard limit failed, or auto left it to you.
     AskUser {
         violations: Vec<Violation>,
-        shadow: Option<ShadowRecord>,
+        auto_preview: Option<AutoPreviewRecord>,
     },
     Decided {
         verdict: Verdict,
         by: DecideWith,
-        approver: Option<WorkerRef>,
+        judge: Option<ModelRef>,
         reasons: Vec<String>,
         /// Whether this approval joined your spot-check queue.
         spot_check: bool,
@@ -254,35 +256,35 @@ pub enum PolicyOutcome {
 
 /// What auto would have decided.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ShadowRecord {
+pub struct AutoPreviewRecord {
     pub would: Verdict,
     pub by: DecideWith,
     pub reasons: Vec<String>,
 }
 
-/// Your decision, reported back so shadow records can be scored.
+/// Your decision, reported back so auto preview records can be scored.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UserDecision {
     pub point: DecisionPoint,
     pub action: AnswerAction,
     pub edited: bool,
-    pub shadow: Option<ShadowRecord>,
+    pub auto_preview: Option<AutoPreviewRecord>,
 }
 
 pub trait ApprovalPolicy: Send + Sync {
-    /// Hard limits first, then the mode and `decide_with`. Starts the approver model in a fresh,
+    /// Hard limits first, then the mode and `decide_with`. Starts the judge in a fresh,
     /// read-only session when `decide_with` includes `model`.
     fn evaluate<'a>(
         &'a self,
         point: &'a DecisionPoint,
         evidence: &'a EvidencePacket,
     ) -> BoxFuture<'a, PolicyOutcome>;
-    /// Feeds shadow matching and earned autonomy.
+    /// Feeds auto preview matching and earned autonomy.
     fn user_decided(&self, decision: &UserDecision);
-    /// A wrong auto-approval drops that point back to shadow.
+    /// A wrong auto-approval drops that point back to auto preview.
     fn spot_checked(&self, point: &DecisionPoint, correct: bool);
     /// The mode `point` runs in, given the one your settings ask for. Your records may only
-    /// lower it, such as back to shadow after a wrong auto-approval.
+    /// lower it, such as back to auto preview after a wrong auto-approval.
     fn effective_mode(&self, point: &DecisionPoint, requested: ApprovalMode) -> ApprovalMode {
         let _ = point;
         requested
@@ -300,19 +302,19 @@ pub trait ApprovalPolicy: Send + Sync {
 
 pub trait HardLimits: Send + Sync {
     fn check_point(&self, point: &DecisionPoint, evidence: &EvidencePacket) -> Vec<Violation>;
-    /// The built-in gates on one card's diff: protected paths, secrets, test tampering,
+    /// The built-in checks on one task's diff: protected paths, secrets, test tampering,
     /// dependencies, lockfiles.
-    fn check_card_diff(&self, card: &CardSpec, unified_diff: &str) -> Vec<Violation>;
-    /// As [`Self::check_card_diff`], with the card's checked-out tree, where a changed file's
+    fn check_task_diff(&self, task: &TaskSpec, unified_diff: &str) -> Vec<Violation>;
+    /// As [`Self::check_task_diff`], with the task's checked-out tree, where a changed file's
     /// folders show whether it's part of a Claude Code plugin.
-    fn check_card_tree_diff(
+    fn check_task_tree_diff(
         &self,
-        card: &CardSpec,
+        task: &TaskSpec,
         unified_diff: &str,
         tree: &std::path::Path,
     ) -> Vec<Violation> {
         let _ = tree;
-        self.check_card_diff(card, unified_diff)
+        self.check_task_diff(task, unified_diff)
     }
     /// Refuses a build session without a sandbox or goal hash.
     fn check_session(&self, spec: &SessionSpec) -> Vec<Violation>;
@@ -323,7 +325,7 @@ pub trait HardLimits: Send + Sync {
 pub struct ApprovalsView {
     pub points: Vec<ApprovalRow>,
     pub spot_checks_waiting: u32,
-    pub approver: Option<WorkerRef>,
+    pub judge: Option<ModelRef>,
     /// What the settings check found in these settings that may not do what you meant.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
@@ -331,7 +333,7 @@ pub struct ApprovalsView {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApprovalRow {
-    pub kind: CheckpointKind,
+    pub kind: ApprovalKind,
     pub mode: ApprovalMode,
     pub decide_with: DecideWith,
     pub matches_in_a_row: u32,
@@ -348,7 +350,7 @@ pub struct NarratorLine {
     pub run: Option<RunId>,
     pub kind: NarratorLineKind,
     pub text: String,
-    pub model: WorkerRef,
+    pub model: ModelRef,
     pub spend: Spend,
 }
 
@@ -371,7 +373,7 @@ pub enum NarratorLineKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NarratorStatus {
     pub mode: NarratorMode,
-    pub model: WorkerRef,
+    pub model: ModelRef,
     pub spent: Spend,
     /// As written in settings.
     pub cap: String,
@@ -400,7 +402,7 @@ pub trait Narrator: Send + Sync {
     fn summary(&self) -> BoxFuture<'_, Result<NarratorLine, NarratorError>>;
     fn ask(&self, question: String) -> BoxFuture<'_, Result<NarratorLine, NarratorError>>;
     fn set_mode(&self, mode: NarratorMode);
-    fn set_model(&self, model: WorkerRef);
+    fn set_model(&self, model: ModelRef);
     fn status(&self) -> NarratorStatus;
     fn lines(&self) -> broadcast::Receiver<NarratorLine>;
 }

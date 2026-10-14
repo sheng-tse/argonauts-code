@@ -1,38 +1,39 @@
-//! Goal alignment: restatements, differences, what was settled, the drafted and approved goal
+//! Understand: readings, differences, what was settled, the drafted and approved goal
 //! file, and goal changes. And the goals being kept: the run's own, which its workflow goes
 //! round until it holds, and each task's, when its role works a task as a goal.
 //!
-//! A round is restatements, then listings, then one `Settled`, then drafts. A restatement or a
+//! A round is readings, then listings, then one `Settled`, then drafts. A reading or a
 //! listing that arrives after a round settled starts the next round (a send back), and so does a
-//! second `Settled`, which is how a round with no restatements left still shows up.
+//! second `Settled`, which is how a round with no readings left still shows up.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::RunEvent;
 use argonauts_core::events::goal::{
-    Assumption, Attempt, CliGoalSaid, Decider, GoalChangeResolution, GoalChecked, GoalEvent,
-    GoalFile, GoalQuestion, GoalRun, GoalStatus,
+    Assumption, CliGoalSaid, Decider, GoalChangeResolution, GoalChecked, GoalEvent, GoalFile,
+    GoalQuestion, GoalRun, GoalStatus, Try,
 };
 use argonauts_core::events::run::Party;
-use argonauts_core::names::{MessageId, WorkerRef};
-use argonauts_core::steps::goal::{Difference, Restatement};
+use argonauts_core::names::{MessageId, ModelRef};
+use argonauts_core::steps::understand::{Difference, Reading};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GoalState {
-    /// 1 for the first round of restatements, +1 for each send back.
+    /// 1 for the first round of readings, +1 for each send back.
     pub round: u32,
-    /// `(label, worker, restatement)` in the order they were recorded, labels A, B, C.
-    pub restated: Vec<(String, WorkerRef, Restatement)>,
-    pub compared: Vec<(WorkerRef, Vec<Difference>)>,
+    /// `(label, worker, reading)` in the order they were recorded, labels A, B, C.
+    pub readings: Vec<(String, ModelRef, Reading)>,
+    pub compared: Vec<(ModelRef, Vec<Difference>)>,
     pub settled: Option<SettledGoal>,
-    /// The seq of this round's `Settled`. Goal checkpoints opened after it belong to this round.
+    /// The seq of this round's `Settled`. Understand approvals opened after it belong to this
+    /// round.
     pub settled_at: Option<u64>,
     /// The newest draft of this round, answers and edits included.
     pub drafted: Option<GoalFile>,
-    /// Frozen once set: every build and spike session carries its hash. Only an approved goal
+    /// Frozen once set: every build and experiment session carries its hash. Only an approved goal
     /// change replaces it, with a higher version.
     pub approved: Option<GoalFile>,
     pub approved_by: Option<Party>,
@@ -55,7 +56,7 @@ pub struct GoalState {
     pub ended_because: Option<String>,
     /// The goals of the tasks worked as goals.
     #[serde(default)]
-    pub tasks: BTreeMap<CardId, TaskGoal>,
+    pub tasks: BTreeMap<TaskId, TaskGoal>,
 }
 
 /// One task's goal as it's kept.
@@ -106,10 +107,10 @@ impl GoalChange {
 impl GoalState {
     pub fn apply(&mut self, event: &GoalEvent, envelope: &RunEvent) {
         match event {
-            GoalEvent::Restated {
+            GoalEvent::Read {
                 label,
                 worker,
-                restatement,
+                reading,
             } => {
                 if self.approved.is_some() {
                     return;
@@ -118,8 +119,8 @@ impl GoalState {
                     self.next_round();
                 }
                 self.round = self.round.max(1);
-                self.restated
-                    .push((label.clone(), worker.clone(), restatement.clone()));
+                self.readings
+                    .push((label.clone(), worker.clone(), reading.clone()));
             }
             GoalEvent::Compared {
                 worker,
@@ -217,14 +218,14 @@ impl GoalState {
                 }
                 None => self.pursuit = Some((**goal).clone()),
             },
-            GoalEvent::AttemptStarted {
+            GoalEvent::TryStarted {
                 n,
                 title,
                 phase,
                 task,
             } => {
                 if let Some(goal) = self.goal_mut(task.as_ref()) {
-                    goal.attempts.push(Attempt {
+                    goal.tries.push(Try {
                         n: *n,
                         title: title.clone(),
                         phase: *phase,
@@ -236,12 +237,12 @@ impl GoalState {
                 }
             }
             GoalEvent::Checked(checked) => {
-                if let Some(attempt) = self.goal_mut(checked.task.as_ref()).and_then(|goal| {
-                    goal.attempts
+                if let Some(a_try) = self.goal_mut(checked.task.as_ref()).and_then(|goal| {
+                    goal.tries
                         .iter_mut()
-                        .find(|attempt| attempt.n == checked.attempt)
+                        .find(|a_try| a_try.n == checked.try_number)
                 }) {
-                    attempt.verdict = Some(checked.overall);
+                    a_try.verdict = Some(checked.overall);
                 }
                 self.checks.push((**checked).clone());
             }
@@ -311,14 +312,14 @@ impl GoalState {
     }
 
     /// The goal `task` is worked as, or the run's own for `None`.
-    pub fn goal_of(&self, task: Option<&CardId>) -> Option<&GoalRun> {
+    pub fn goal_of(&self, task: Option<&TaskId>) -> Option<&GoalRun> {
         match task {
             Some(task) => self.tasks.get(task).map(|kept| &kept.goal),
             None => self.pursuit.as_ref(),
         }
     }
 
-    fn goal_mut(&mut self, task: Option<&CardId>) -> Option<&mut GoalRun> {
+    fn goal_mut(&mut self, task: Option<&TaskId>) -> Option<&mut GoalRun> {
         match task {
             Some(task) => self.tasks.get_mut(task).map(|kept| &mut kept.goal),
             None => self.pursuit.as_mut(),
@@ -326,23 +327,23 @@ impl GoalState {
     }
 
     /// The newest check of each try of that goal, oldest try first.
-    pub fn checks_of(&self, task: Option<&CardId>) -> Vec<&GoalChecked> {
+    pub fn checks_of(&self, task: Option<&TaskId>) -> Vec<&GoalChecked> {
         let Some(goal) = self.goal_of(task) else {
             return Vec::new();
         };
-        goal.attempts
+        goal.tries
             .iter()
-            .filter_map(|attempt| {
+            .filter_map(|a_try| {
                 self.checks
                     .iter()
                     .rev()
-                    .find(|checked| checked.attempt == attempt.n && checked.task.as_ref() == task)
+                    .find(|checked| checked.try_number == a_try.n && checked.task.as_ref() == task)
             })
             .collect()
     }
 
     /// Whether that goal already changed approach, which it does once.
-    pub fn approach_changed(&self, task: Option<&CardId>) -> bool {
+    pub fn approach_changed(&self, task: Option<&TaskId>) -> bool {
         match task {
             Some(task) => self
                 .tasks
@@ -362,7 +363,7 @@ impl GoalState {
 
     fn next_round(&mut self) {
         self.round += 1;
-        self.restated.clear();
+        self.readings.clear();
         self.compared.clear();
         self.settled = None;
         self.settled_at = None;
@@ -377,7 +378,7 @@ mod tests {
     use argonauts_core::RunId;
     use argonauts_core::events::RunEventKind;
     use argonauts_core::events::goal::GoalSource;
-    use argonauts_core::steps::goal::DiffTag;
+    use argonauts_core::steps::understand::DiffTag;
     use time::OffsetDateTime;
 
     use super::*;
@@ -387,9 +388,9 @@ mod tests {
             seq,
             ts: OffsetDateTime::UNIX_EPOCH,
             run_id: RunId::new("run-01").unwrap(),
-            card_id: None,
+            task_id: None,
             session: None,
-            source: "conductor".to_owned(),
+            source: "argonauts-code".to_owned(),
             kind: RunEventKind::Goal(event),
         }
     }
@@ -403,11 +404,11 @@ mod tests {
         state
     }
 
-    fn restated(label: &str) -> GoalEvent {
-        GoalEvent::Restated {
+    fn read_event(label: &str) -> GoalEvent {
+        GoalEvent::Read {
             label: label.to_owned(),
-            worker: WorkerRef::new(format!("w{label}"), None),
-            restatement: Restatement {
+            worker: ModelRef::new(format!("w{label}"), None),
+            reading: Reading {
                 summary: format!("reading {label}"),
                 success_criteria: vec!["it works".to_owned()],
                 in_scope: Vec::new(),
@@ -437,7 +438,7 @@ mod tests {
             out_of_scope: Vec::new(),
             assumptions: Vec::new(),
             answers: Vec::new(),
-            source: GoalSource::Restatements,
+            source: GoalSource::Readings,
             path: PathBuf::from(".argonauts/goal/run-01.md"),
             sha256: sha.to_owned(),
         }
@@ -446,10 +447,10 @@ mod tests {
     #[test]
     fn a_round_folds_in_order() {
         let state = fold(vec![
-            restated("A"),
-            restated("B"),
+            read_event("A"),
+            read_event("B"),
             GoalEvent::Compared {
-                worker: WorkerRef::new("d", None),
+                worker: ModelRef::new("d", None),
                 differences: vec![Difference {
                     topic: "t".to_owned(),
                     readings: Vec::new(),
@@ -461,7 +462,7 @@ mod tests {
             GoalEvent::Drafted(file(1, "aa")),
         ]);
         assert_eq!(state.round, 1);
-        assert_eq!(state.restated.len(), 2);
+        assert_eq!(state.readings.len(), 2);
         assert_eq!(state.compared.len(), 1);
         assert_eq!(state.settled_at, Some(3));
         assert_eq!(state.drafted.as_ref().unwrap().sha256, "aa");
@@ -471,24 +472,24 @@ mod tests {
     #[test]
     fn a_send_back_starts_the_next_round() {
         let state = fold(vec![
-            restated("A"),
-            restated("B"),
+            read_event("A"),
+            read_event("B"),
             settled(),
             GoalEvent::Drafted(file(1, "aa")),
-            restated("A"),
+            read_event("A"),
         ]);
         assert_eq!(state.round, 2);
-        assert_eq!(state.restated.len(), 1);
+        assert_eq!(state.readings.len(), 1);
         assert!(state.settled.is_none() && state.drafted.is_none());
 
         let empty_round = fold(vec![
-            restated("A"),
+            read_event("A"),
             settled(),
             GoalEvent::Drafted(file(1, "aa")),
             settled(),
         ]);
         assert_eq!(empty_round.round, 2);
-        assert!(empty_round.restated.is_empty());
+        assert!(empty_round.readings.is_empty());
         assert_eq!(empty_round.settled_at, Some(3));
         assert!(empty_round.drafted.is_none());
     }
@@ -496,7 +497,7 @@ mod tests {
     #[test]
     fn the_approved_goal_is_frozen() {
         let state = fold(vec![
-            restated("A"),
+            read_event("A"),
             settled(),
             GoalEvent::Drafted(file(1, "aa")),
             GoalEvent::Approved {
@@ -508,12 +509,12 @@ mod tests {
                 file: file(1, "cc"),
                 by: Party::Rules,
             },
-            restated("B"),
+            read_event("B"),
         ]);
         assert_eq!(state.approved_sha256(), Some("aa"));
         assert_eq!(state.approved_by, Some(Party::User));
         assert_eq!(state.drafted.as_ref().unwrap().sha256, "aa");
-        assert_eq!(state.restated.len(), 1);
+        assert_eq!(state.readings.len(), 1);
 
         let changed = fold(vec![
             GoalEvent::Approved {

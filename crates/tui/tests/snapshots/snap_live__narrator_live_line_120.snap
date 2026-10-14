@@ -2,7 +2,7 @@
 source: crates/tui/tests/snap_live.rs
 expression: "format!(\"{}\\n---\\n{}\", text(&lines), styled(&narrator))"
 ---
-※ narrator: Codex took over task-003 while Claude waits for its 5h reset; two tasks are merged.
+※ narrator: task-003 fell back to Codex while Claude waits for its 5h reset; two tasks are merged.
 ✻ Rowing… (4m 12s · ↓ 48.2k tokens · Build · 2/5 tasks · 3 agents · $0.21)
 
 ─────────────────────────────────────────────────────────────────────────────────────────────────────── Council · Opus ─
@@ -10,4 +10,4 @@ expression: "format!(\"{}\\n---\\n{}\", text(&lines), styled(&narrator))"
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts · ← 3 agents                        ● Claude 5h ▄▄▖▄▄▄ 38%
 ---
-[fg=#999999]※[/] [fg=#999999]narrator: [/][fg=#999999 i]Codex took over task-003 while Claude waits for its 5h reset; two tasks are merged.[/]
+[fg=#999999]※[/] [fg=#999999]narrator: [/][fg=#999999 i]task-003 fell back to Codex while Claude waits for its 5h reset; two tasks are merged.[/]

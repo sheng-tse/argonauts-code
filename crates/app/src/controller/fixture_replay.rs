@@ -1,9 +1,10 @@
-//! Recorded vendor replies to the chat's own steps, one `TriageEstimate` and one resumed
-//! `ChatAnswer` per vendor, replayed through each adapter's parser and the chat's reading.
+//! Recorded agent replies to the conversation's own steps, one `Estimate` and one resumed
+//! `ConversationAnswer` per agent, replayed through each adapter's parser and the conversation's
+//! reading.
 //!
-//! `record_chat_fixtures` makes the live calls again. It is ignored, and runs only with
-//! `ARGONAUTS_RECORD=record_chat_fixtures` and `ARGONAUTS_LIVE_DIR` naming an absolute scratch
-//! folder outside this repository; `ARGONAUTS_VENDORS` picks adapters, such as `codex`.
+//! `record_conversation_fixtures` makes the live calls again. It is ignored, and runs only with
+//! `ARGONAUTS_RECORD=record_conversation_fixtures` and `ARGONAUTS_LIVE_DIR` naming an absolute
+//! scratch folder outside this repository; `ARGONAUTS_AGENTS` picks adapters, such as `codex`.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write as _};
@@ -16,22 +17,24 @@ use std::{env, fs, thread};
 use argonauts_core::event::AgentEvent;
 use argonauts_core::events::session::EndReason;
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::intake::{ChatAnswer, ChatAnswerInput, IntakeInput, TriageEstimate};
+use argonauts_core::steps::intake::{
+    ConversationAnswer, ConversationAnswerInput, Estimate, IntakeInput,
+};
 use argonauts_core::steps::{StepError, StepOutcome, decode, last_json_object, output_schema};
 use argonauts_core::{Adapter, CommandSpec, SessionRequest, SessionRole};
-use argonauts_testkit::worker::session_end;
+use argonauts_testkit::runner::session_end;
 use regex::Regex;
 use serde_json::{Value, json};
 
-use super::triage::{Reading, read_reply};
+use super::captain_or_crew::{Reading, read_reply};
 use crate::adapters::builtin_adapters;
 
-const VENDORS: &[&str] = &["claude-code", "codex", "antigravity-cli"];
+const AGENTS: &[&str] = &["claude-code", "codex", "antigravity-cli"];
 const REQUEST: &str = "How should we add rate limiting to the server in server.py?";
 const FOLLOW_UP: &str = "In one sentence, what did I just ask you about?";
 const TIMEOUT: Duration = Duration::from_secs(300);
 /// Stands in for the scratch folder the calls ran in.
-const LIVE: &str = "/tmp/argonauts-live/chat";
+const LIVE: &str = "/tmp/argonauts-live/conversation";
 /// Parts of Claude Code's init line that describe the recording machine, not the session.
 const LOCAL_SETUP: &[&str] = &[
     "slash_commands",
@@ -59,21 +62,21 @@ struct Recorded {
     meta: Value,
 }
 
-/// `None` when that vendor wasn't recorded.
-fn replay(vendor: &str, name: &str) -> Option<Recorded> {
-    let base = fixtures().join(vendor).join(name);
+/// `None` when that agent wasn't recorded.
+fn replay(agent_id: &str, name: &str) -> Option<Recorded> {
+    let base = fixtures().join(agent_id).join(name);
     let read = |ext: &str| fs::read_to_string(base.with_extension(ext)).ok();
     let stdout = read("stdout.jsonl")?;
     let stderr = read("stderr.txt").unwrap_or_default();
     let meta: Value = serde_json::from_str(&read("meta.json")?).expect("meta json");
     Some(Recorded {
-        events: parse(vendor, &stdout, &stderr, meta["exit_code"].as_i64()),
+        events: parse(agent_id, &stdout, &stderr, meta["exit_code"].as_i64()),
         meta,
     })
 }
 
-fn parse(vendor: &str, stdout: &str, stderr: &str, exit_code: Option<i64>) -> Vec<AgentEvent> {
-    let mut parser = adapter(vendor).parser();
+fn parse(agent_id: &str, stdout: &str, stderr: &str, exit_code: Option<i64>) -> Vec<AgentEvent> {
+    let mut parser = adapter(agent_id).parser();
     let mut events = Vec::new();
     for line in stdout.lines() {
         events.extend(parser.parse_stdout_line(line));
@@ -101,7 +104,7 @@ fn output(events: &[AgentEvent]) -> Option<StepOutcome> {
     Some(StepOutcome {
         value,
         end: session_end(EndReason::Completed, text.as_deref(), structured),
-        attempts: 1,
+        tries: 1,
     })
 }
 
@@ -112,18 +115,18 @@ fn session_id(events: &[AgentEvent]) -> Option<String> {
     })
 }
 
-/// What each vendor's recorded triage turn did. `Silent` records a vendor quirk, with why.
-enum Triage {
+/// What each agent's recorded estimate turn did. `Silent` records an agent quirk, with why.
+enum EstimateTurn {
     Answered,
     Silent(&'static str),
 }
 
-const RECORDED: &[(&str, Triage)] = &[
-    ("claude-code", Triage::Answered),
-    ("codex", Triage::Answered),
+const RECORDED: &[(&str, EstimateTurn)] = &[
+    ("claude-code", EstimateTurn::Answered),
+    ("codex", EstimateTurn::Answered),
     (
         "antigravity-cli",
-        Triage::Silent(
+        EstimateTurn::Silent(
             "agy 1.2.13 in headless mode denies a shell command it wasn't allowed and then ends \
              the turn with no output",
         ),
@@ -131,14 +134,15 @@ const RECORDED: &[(&str, Triage)] = &[
 ];
 
 #[test]
-fn recorded_triage_replies_read_as_a_branch() {
-    for (vendor, expected) in RECORDED {
-        let triage = replay(vendor, "triage").unwrap_or_else(|| panic!("{vendor}: no fixture"));
+fn recorded_estimates_read_as_a_branch() {
+    for (agent_id, expected) in RECORDED {
+        let estimate =
+            replay(agent_id, "estimate").unwrap_or_else(|| panic!("{agent_id}: no fixture"));
         assert!(
-            session_id(&triage.events).is_some(),
-            "{vendor}: no session id"
+            session_id(&estimate.events).is_some(),
+            "{agent_id}: no session id"
         );
-        let reading = match output(&triage.events) {
+        let reading = match output(&estimate.events) {
             Some(outcome) => read_reply(&Ok(outcome), &Settings::default()),
             None => read_reply(
                 &Err(StepError::SchemaMismatch {
@@ -149,49 +153,52 @@ fn recorded_triage_replies_read_as_a_branch() {
             ),
         };
         match (expected, reading) {
-            (Triage::Answered, Ok(reading)) => {
+            (EstimateTurn::Answered, Ok(reading)) => {
                 let markdown = match &reading {
                     Reading::Answer { markdown }
                     | Reading::Change { markdown, .. }
                     | Reading::Unclear { markdown, .. } => markdown,
                 };
-                assert!(!markdown.trim().is_empty(), "{vendor}: {reading:?}");
+                assert!(!markdown.trim().is_empty(), "{agent_id}: {reading:?}");
             }
-            // The chat shows it as a failed turn rather than an empty answer.
-            (Triage::Silent(why), Err(err)) => {
+            // The conversation shows it as a failed turn rather than an empty answer.
+            (EstimateTurn::Silent(why), Err(err)) => {
                 assert_eq!(
                     super::turn::describe(&err),
                     "it ended without an answer",
                     "{why}"
                 );
             }
-            (_, reading) => panic!("{vendor}: {reading:?}"),
+            (_, reading) => panic!("{agent_id}: {reading:?}"),
         }
     }
 }
 
 #[test]
 fn recorded_resumed_turns_remember_the_first() {
-    for (vendor, _) in RECORDED {
-        let triage = replay(vendor, "triage").unwrap_or_else(|| panic!("{vendor}: no fixture"));
-        let resumed = replay(vendor, "resumed").unwrap_or_else(|| panic!("{vendor}: no resumed"));
-        let first = session_id(&triage.events);
+    for (agent_id, _) in RECORDED {
+        let estimate =
+            replay(agent_id, "estimate").unwrap_or_else(|| panic!("{agent_id}: no fixture"));
+        let resumed =
+            replay(agent_id, "resumed").unwrap_or_else(|| panic!("{agent_id}: no resumed"));
+        let first = session_id(&estimate.events);
         assert_eq!(
             resumed.meta["resumed_from"].as_str(),
             first.as_deref(),
-            "{vendor}"
+            "{agent_id}"
         );
         let args = resumed.meta["args"].to_string();
         assert!(
             first.is_some_and(|id| args.contains(&id)),
-            "{vendor}: the resume id isn't among {args}"
+            "{agent_id}: the resume id isn't among {args}"
         );
         let outcome = output(&resumed.events)
-            .unwrap_or_else(|| panic!("{vendor}: no output in {:#?}", resumed.events));
-        let answer = decode::<ChatAnswer>(&outcome).unwrap_or_else(|err| panic!("{vendor}: {err}"));
+            .unwrap_or_else(|| panic!("{agent_id}: no output in {:#?}", resumed.events));
+        let answer = decode::<ConversationAnswer>(&outcome)
+            .unwrap_or_else(|err| panic!("{agent_id}: {err}"));
         assert!(
             answer.answer_markdown.to_lowercase().contains("rate limit"),
-            "{vendor} doesn't remember the first turn: {}",
+            "{agent_id} doesn't remember the first turn: {}",
             answer.answer_markdown
         );
     }
@@ -199,9 +206,9 @@ fn recorded_resumed_turns_remember_the_first() {
 
 #[test]
 #[ignore = "live calls that spend agent plan usage"]
-fn record_chat_fixtures() {
-    if env::var("ARGONAUTS_RECORD").ok().as_deref() != Some("record_chat_fixtures") {
-        eprintln!("set ARGONAUTS_RECORD=record_chat_fixtures and ARGONAUTS_LIVE_DIR");
+fn record_conversation_fixtures() {
+    if env::var("ARGONAUTS_RECORD").ok().as_deref() != Some("record_conversation_fixtures") {
+        eprintln!("set ARGONAUTS_RECORD=record_conversation_fixtures and ARGONAUTS_LIVE_DIR");
         return;
     }
     let live = PathBuf::from(env::var("ARGONAUTS_LIVE_DIR").expect("ARGONAUTS_LIVE_DIR"));
@@ -216,16 +223,16 @@ fn record_chat_fixtures() {
         !live.starts_with(&ours),
         "live calls run outside the repository"
     );
-    let wanted = env::var("ARGONAUTS_VENDORS").unwrap_or_else(|_| VENDORS.join(","));
-    for vendor in wanted.split(',').map(str::trim).filter(|v| !v.is_empty()) {
-        record_vendor(vendor, &live);
+    let wanted = env::var("ARGONAUTS_AGENTS").unwrap_or_else(|_| AGENTS.join(","));
+    for agent_id in wanted.split(',').map(str::trim).filter(|v| !v.is_empty()) {
+        record_agent(agent_id, &live);
     }
 }
 
-fn record_vendor(vendor: &str, live: &Path) {
-    let adapter = adapter(vendor);
-    let repo = throwaway_repo(live, vendor);
-    let scratch = live.join(format!("{vendor}-scratch"));
+fn record_agent(agent_id: &str, live: &Path) {
+    let adapter = adapter(agent_id);
+    let repo = throwaway_repo(live, agent_id);
+    let scratch = live.join(format!("{agent_id}-scratch"));
     fs::create_dir_all(&scratch).expect("scratch");
     let (model, effort) = adapter.cheapest_model();
     let request = |prompt: String, schema: Value, resume: Option<String>| SessionRequest {
@@ -241,37 +248,37 @@ fn record_vendor(vendor: &str, live: &Path) {
     };
     let scrub = Scrubber::new(live);
 
-    let triage = request(
-        crate::prompts::triage_estimate(
+    let estimate = request(
+        crate::prompts::estimate(
             &IntakeInput {
                 request: REQUEST.to_owned(),
                 uncommitted_note: None,
             },
             true,
         ),
-        output_schema::<TriageEstimate>(),
+        output_schema::<Estimate>(),
         None,
     );
-    let first = call(adapter.as_ref(), &triage);
-    save(vendor, "triage", &first, None, &scrub);
-    let events = parse(vendor, &first.stdout, &first.stderr, first.exit_code);
+    let first = call(adapter.as_ref(), &estimate);
+    save(agent_id, "estimate", &first, None, &scrub);
+    let events = parse(agent_id, &first.stdout, &first.stderr, first.exit_code);
     let Some(id) = session_id(&events) else {
         panic!(
-            "{vendor} gave no session id to resume; see {}",
+            "{agent_id} gave no session id to resume; see {}",
             live.display()
         );
     };
 
     let follow_up = request(
-        crate::prompts::chat_answer(&ChatAnswerInput {
+        crate::prompts::conversation_answer(&ConversationAnswerInput {
             question: FOLLOW_UP.to_owned(),
             run_status: None,
         }),
-        output_schema::<ChatAnswer>(),
+        output_schema::<ConversationAnswer>(),
         Some(id.clone()),
     );
     let second = call(adapter.as_ref(), &follow_up);
-    save(vendor, "resumed", &second, Some(&id), &scrub);
+    save(agent_id, "resumed", &second, Some(&id), &scrub);
 }
 
 struct Call {
@@ -339,8 +346,8 @@ fn drain(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<String> {
     })
 }
 
-fn save(vendor: &str, name: &str, call: &Call, resumed_from: Option<&str>, scrub: &Scrubber) {
-    let dir = fixtures().join(vendor);
+fn save(agent_id: &str, name: &str, call: &Call, resumed_from: Option<&str>, scrub: &Scrubber) {
+    let dir = fixtures().join(agent_id);
     fs::create_dir_all(&dir).expect("the fixture folder");
     let base = dir.join(name);
     let stdout = scrub.lines(&call.stdout);
@@ -351,7 +358,7 @@ fn save(vendor: &str, name: &str, call: &Call, resumed_from: Option<&str>, scrub
     .expect("stdout");
     fs::write(base.with_extension("stderr.txt"), scrub.text(&call.stderr)).expect("stderr");
     let meta = json!({
-        "adapter": vendor,
+        "adapter": agent_id,
         "program": call.spec.program,
         "args": call.spec.args.iter().map(|arg| scrub.text(arg)).collect::<Vec<_>>(),
         "exit_code": call.exit_code,
@@ -361,13 +368,13 @@ fn save(vendor: &str, name: &str, call: &Call, resumed_from: Option<&str>, scrub
     let meta = serde_json::to_string_pretty(&meta).expect("meta") + "\n";
     fs::write(base.with_extension("meta.json"), meta).expect("meta");
     println!(
-        "{vendor} {name}: exit {:?} in {} ms",
+        "{agent_id} {name}: exit {:?} in {} ms",
         call.exit_code, call.duration_ms
     );
 }
 
-fn throwaway_repo(live: &Path, vendor: &str) -> PathBuf {
-    let repo = live.join(format!("{vendor}-repo"));
+fn throwaway_repo(live: &Path, agent_id: &str) -> PathBuf {
+    let repo = live.join(format!("{agent_id}-repo"));
     if repo.exists() {
         fs::remove_dir_all(&repo).expect("an old throwaway repo");
     }
@@ -392,7 +399,7 @@ fn throwaway_repo(live: &Path, vendor: &str) -> PathBuf {
                 "-c",
                 "core.hooksPath=/dev/null",
                 "-c",
-                "user.name=Argonauts",
+                "user.name=Argonauts Code",
             ])
             .args(["-c", "user.email=argonauts@example.invalid"])
             .args(args)

@@ -5,11 +5,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use argonauts_core::vendor_commands::files::{CommandFile, command_files, folders, skill_files};
-use argonauts_core::vendor_commands::{
-    BuiltinCommand, BuiltinKind, CommandKind, CommandScope, CommandSource, VendorCommand,
+use argonauts_core::cli_commands::files::{CommandFile, command_files, folders, skill_files};
+use argonauts_core::cli_commands::{
+    BuiltinCommand, BuiltinKind, CliCommand, CommandKind, CommandScope, CommandSource,
 };
-use argonauts_core::vendor_sessions::VendorScan;
+use argonauts_core::cli_sessions::CliScan;
 
 use BuiltinKind::{Argonauts, ScreenOnly};
 
@@ -32,7 +32,7 @@ const fn command(
     }
 }
 
-/// Each runs Argonauts' version or only in Codex's own screens, since `codex exec` takes none
+/// Each runs Argonauts Code's version or only in Codex's own screens, since `codex exec` takes none
 /// of them. The app's own commands are here too; the internal debugging ones aren't.
 #[rustfmt::skip]
 pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
@@ -44,7 +44,7 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     command("approve", &[], "", "Approve what waits", ScreenOnly),
     command("archive", &[], "", "Archive this thread", ScreenOnly),
     command("cd", &["pwd"], "[path]", "Work in another folder", Argonauts("cd")),
-    command("clear", &["new"], "", "A new chat", Argonauts("clear")),
+    command("clear", &["new"], "", "A new conversation", Argonauts("clear")),
     command("compact", &[], "", "Summarize the conversation to free context", Argonauts("compact")),
     command("copy", &[], "", "Copy the last answer", Argonauts("copy")),
     command("daemon", &[], "", "The background daemon", ScreenOnly),
@@ -106,7 +106,7 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
 
 /// The project's skills, then yours, Codex's own, your custom prompts, and your enabled
 /// plugins' skills. The first command of a name wins, so the project's come first.
-pub fn discover(scan: &VendorScan) -> Vec<VendorCommand> {
+pub fn discover(scan: &CliScan) -> Vec<CliCommand> {
     let codex = scan.home.join(".codex");
     let mut found = Vec::new();
     for dir in project_skill_dirs(&scan.folder) {
@@ -129,7 +129,7 @@ pub fn discover(scan: &VendorScan) -> Vec<VendorCommand> {
                     scope: CommandScope::User,
                     path: file.path.clone(),
                 };
-                vendor(format!("{PROMPTS}:{}", file.name), &file, source)
+                agent_id(format!("{PROMPTS}:{}", file.name), &file, source)
             }),
     );
     found.extend(plugins(scan));
@@ -138,8 +138,8 @@ pub fn discover(scan: &VendorScan) -> Vec<VendorCommand> {
 
 /// What `codex exec` takes for `command`: a skill's `$name`, or a custom prompt's text with the
 /// arguments put in.
-pub fn prompt(command: &VendorCommand, args: &str) -> Option<String> {
-    if command.kind != CommandKind::Vendor {
+pub fn prompt(command: &CliCommand, args: &str) -> Option<String> {
+    if command.kind != CommandKind::Cli {
         return None;
     }
     let args = args.trim();
@@ -173,7 +173,7 @@ fn project_skill_dirs(folder: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-fn skills(dir: &Path, scope: CommandScope) -> Vec<VendorCommand> {
+fn skills(dir: &Path, scope: CommandScope) -> Vec<CliCommand> {
     skill_files(dir)
         .into_iter()
         .map(|file| {
@@ -181,13 +181,13 @@ fn skills(dir: &Path, scope: CommandScope) -> Vec<VendorCommand> {
                 scope,
                 path: file.path.clone(),
             };
-            vendor(file.name.clone(), &file, source)
+            agent_id(file.name.clone(), &file, source)
         })
         .collect()
 }
 
 /// Each plugin `config.toml` turns on, from its newest copy in the plugin cache.
-fn plugins(scan: &VendorScan) -> Vec<VendorCommand> {
+fn plugins(scan: &CliScan) -> Vec<CliCommand> {
     let codex = scan.home.join(".codex");
     let Ok(text) = fs::read_to_string(codex.join("config.toml")) else {
         return Vec::new();
@@ -219,7 +219,7 @@ fn plugins(scan: &VendorScan) -> Vec<VendorCommand> {
             let source = CommandSource::Plugin {
                 plugin: plugin.to_owned(),
             };
-            found.push(vendor(format!("{plugin}:{}", file.name), &file, source));
+            found.push(agent_id(format!("{plugin}:{}", file.name), &file, source));
         }
     }
     found
@@ -300,13 +300,13 @@ fn is_placeholder_name(name: &str) -> bool {
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
-fn vendor(name: String, file: &CommandFile, source: CommandSource) -> VendorCommand {
-    VendorCommand {
+fn agent_id(name: String, file: &CommandFile, source: CommandSource) -> CliCommand {
+    CliCommand {
         name,
         aliases: Vec::new(),
         args: file.args(),
         help: file.help(),
-        kind: CommandKind::Vendor,
+        kind: CommandKind::Cli,
         source,
     }
 }
@@ -333,7 +333,7 @@ mod tests {
                 if slash_spec(name).is_some() {
                     assert!(
                         matches!(builtin.kind, Argonauts(ours) if ours == name),
-                        "/{name} is an Argonauts command"
+                        "/{name} is an Argonauts Code command"
                     );
                 }
             }
@@ -345,7 +345,7 @@ mod tests {
                 );
             }
             // `codex exec` runs none of them as typed.
-            assert_ne!(builtin.kind, BuiltinKind::Vendor, "/{}", builtin.name);
+            assert_ne!(builtin.kind, BuiltinKind::Cli, "/{}", builtin.name);
         }
     }
 
@@ -396,7 +396,7 @@ mod tests {
             "model = \"gpt-6\"\n\n[plugins.\"pdf@openai-primary-runtime\"]\nenabled = true\n\n[plugins.\"documents@openai-primary-runtime\"]\nenabled = false\n",
         );
 
-        let found = discover(&VendorScan::new(&folder, &home));
+        let found = discover(&CliScan::new(&folder, &home));
         let names: Vec<&str> = found.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
             names,
@@ -428,7 +428,7 @@ mod tests {
             prompt(&found[4], "FILES=src/main.rs").as_deref(),
             Some("Draft a PR for src/main.rs.")
         );
-        let builtin = VendorCommand::from(&BUILTIN_COMMANDS[0]);
+        let builtin = CliCommand::from(&BUILTIN_COMMANDS[0]);
         assert_eq!(prompt(&builtin, ""), None);
     }
 

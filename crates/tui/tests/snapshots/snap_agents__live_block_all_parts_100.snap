@@ -2,7 +2,7 @@
 source: crates/tui/tests/snap_agents.rs
 expression: text(lines)
 ---
-● Opus on Claude Code · worker · task-003 (Middlew…) · 4m12s · ↓ 18.1k · retrying in 12s (attempt 2)
+● Opus on Claude Code · worker · task-003 (Middleware) · 4m12s · ↓ 18.1k · retrying in 12s (try 2)
   ⎿  Bash(cargo test export)
         Error: Exit code 101
         test export::case_1 ... ok

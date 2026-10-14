@@ -1,4 +1,4 @@
-//! Review scenarios: reviewers and the adjudicator on a card, and an endpoint reviewer's
+//! Review scenarios: reviewers and the judge on a task, and an endpoint reviewer's
 //! acceptance tests, on a host over fake workers and a temp repo.
 
 use std::sync::Arc;
@@ -7,25 +7,26 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 
 use argonauts_core::engine::RepoContext;
-use argonauts_core::events::card::{CardBudget, CardEvent, CardKind, CardSpec, ReviewEvent};
+use argonauts_core::events::task::{ReviewEvent, TaskEvent, TaskKind, TaskLimit, TaskSpec};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::names::WorkflowId;
+use argonauts_core::session_runner::{Access, SessionRunner, SessionSpec};
 use argonauts_core::settings::Settings;
+use argonauts_core::settings::crew::CrewSettings;
 use argonauts_core::steps::StepName;
-use argonauts_core::steps::card::AcceptanceTestsInput;
-use argonauts_core::worker::{Access, SessionSpec, Worker};
+use argonauts_core::steps::task::AcceptanceTestsInput;
 use argonauts_core::workflow::{StandardPhase, Step, StepRef};
-use argonauts_core::{CardId, RepoId, RunId};
-use argonauts_crew::card::worktree;
+use argonauts_core::{RepoId, RunId, TaskId};
 use argonauts_crew::engine::host::Host;
 use argonauts_crew::engine::shared::Shared;
 use argonauts_crew::review::{self, Verdict, endpoint_tests};
 use argonauts_crew::state::RunState;
+use argonauts_crew::task::worktree;
 use argonauts_crew::workflow::{StepAt, StepCall};
 use argonauts_testkit::repo::TempRepo;
+use argonauts_testkit::runner::{FakeRunner, FakeSession};
 use argonauts_testkit::services::{FakeServices, MemorySink, engine_context_in};
-use argonauts_testkit::worker::{FakeSession, FakeWorker};
 
 const CLAUDE: &str = "claude-code/claude-opus";
 const CODEX: &str = "codex/gpt-5";
@@ -42,19 +43,21 @@ struct Bench {
 
 impl Bench {
     fn new(
-        workers: Vec<FakeWorker>,
+        workers: Vec<FakeRunner>,
         settings: impl FnOnce(&mut Settings),
         history: Vec<RunEvent>,
     ) -> anyhow::Result<Self> {
         let services = FakeServices::new();
         let mut all = Settings {
-            main_agent: CLAUDE.parse()?,
-            crew: Vec::new().into(),
+            crew: CrewSettings {
+                main: CLAUDE.parse()?,
+                ..CrewSettings::of(Vec::new())
+            },
             ..Settings::default()
         };
         for worker in workers {
             let added = services.workers.add(worker);
-            all.crew.add(added.worker_ref().clone());
+            all.crew.add(added.model_ref().clone());
         }
         settings(&mut all);
         let repo = TempRepo::new()?;
@@ -107,7 +110,7 @@ impl Bench {
     }
 }
 
-/// The run's first event, as the supervisor writes it, based on the repo's first commit.
+/// The run's first event, as the run host writes it, based on the repo's first commit.
 fn started(repo: &TempRepo) -> anyhow::Result<RunEvent> {
     let head = repo.git(&["rev-parse", "HEAD"])?;
     let started: argonauts_core::events::run::RunStarted = serde_json::from_value(json!({
@@ -117,8 +120,8 @@ fn started(repo: &TempRepo) -> anyhow::Result<RunEvent> {
         "forced": true,
         "workflow": "council",
         "estimate": null,
-        "triage": null,
-        "chat_turn": null,
+        "captain_or_crew": null,
+        "conversation_turn": null,
         "continues": null,
         "repo_root": repo.root(),
         "base_branch": "main",
@@ -128,16 +131,16 @@ fn started(repo: &TempRepo) -> anyhow::Result<RunEvent> {
         "settings_sha256": "",
         "settings": {},
         "overrides": [],
-        "harness_versions": {},
+        "cli_versions": {},
         "version": "0.0.1"
     }))?;
     Ok(RunEvent {
         seq: 0,
         ts: time::OffsetDateTime::UNIX_EPOCH,
         run_id: RunId::new("run-01")?,
-        card_id: None,
+        task_id: None,
         session: None,
-        source: "supervisor".to_owned(),
+        source: "run-host".to_owned(),
         kind: RunEventKind::Run(argonauts_core::events::run::RunLifecycle::Started(
             Box::new(started),
         )),
@@ -158,21 +161,21 @@ fn prompt_text(spec: &SessionSpec) -> String {
         .join("\n")
 }
 
-fn created(seq: u64, spec: CardSpec) -> anyhow::Result<RunEvent> {
+fn created(seq: u64, spec: TaskSpec) -> anyhow::Result<RunEvent> {
     Ok(RunEvent {
         seq,
         ts: time::OffsetDateTime::UNIX_EPOCH,
         run_id: RunId::new("run-01")?,
-        card_id: Some(spec.id.clone()),
+        task_id: Some(spec.id.clone()),
         session: None,
-        source: "conductor".to_owned(),
-        kind: RunEventKind::Card(CardEvent::Created(Box::new(spec))),
+        source: "argonauts-code".to_owned(),
+        kind: RunEventKind::Task(TaskEvent::Created(Box::new(spec))),
     })
 }
 
-fn card(id: &str, kind: CardKind, owner: &str, reviewers: &[&str], owned: &[&str]) -> CardSpec {
-    CardSpec {
-        id: CardId::new(id).expect("task id"),
+fn task(id: &str, kind: TaskKind, worker: &str, reviewers: &[&str], owned: &[&str]) -> TaskSpec {
+    TaskSpec {
+        id: TaskId::new(id).expect("task id"),
         title: format!("{id} title"),
         task: "Rate limit the API with a token bucket.".to_owned(),
         kind,
@@ -182,19 +185,24 @@ fn card(id: &str, kind: CardKind, owner: &str, reviewers: &[&str], owned: &[&str
         hidden_paths: Vec::new(),
         depends_on: Vec::new(),
         criteria: vec!["G1".to_owned()],
-        owner: Some(owner.parse().expect("worker")),
+        worker: Some(worker.parse().expect("worker")),
         reviewers: reviewers
             .iter()
             .map(|r| r.parse().expect("worker"))
             .collect(),
-        budget: CardBudget::default(),
+        limit: TaskLimit::default(),
         predictions: None,
         item: None,
     }
 }
 
-fn reviewer(name: &str, family: &str, verdict: &'static str, summary: &'static str) -> FakeWorker {
-    FakeWorker::harness(name, family).respond_with(move |spec| {
+fn reviewer(
+    name: &str,
+    provider: &str,
+    verdict: &'static str,
+    summary: &'static str,
+) -> FakeRunner {
+    FakeRunner::cli(name, provider).respond_with(move |spec| {
         let value = match spec.step {
             Some(StepName::Review) => json!({
                 "verdict": verdict,
@@ -203,7 +211,7 @@ fn reviewer(name: &str, family: &str, verdict: &'static str, summary: &'static s
                                "text": "Reset the bucket on a new window." }],
                 "tamper_suspected": false
             }),
-            Some(StepName::Adjudicate) => json!({
+            Some(StepName::Settle) => json!({
                 "verdict": "approve",
                 "reasons": ["The window reset is covered by the second test."],
                 "required_changes": []
@@ -215,16 +223,16 @@ fn reviewer(name: &str, family: &str, verdict: &'static str, summary: &'static s
 }
 
 #[tokio::test]
-async fn review_disagreement_goes_to_a_fresh_adjudicator() -> anyhow::Result<()> {
+async fn review_disagreement_goes_to_a_fresh_judge() -> anyhow::Result<()> {
     let workers = vec![
-        FakeWorker::harness(CLAUDE, "claude"),
-        reviewer(CODEX, "gpt", "approve", "APPROVE-SUMMARY"),
-        reviewer(AGY, "gemini", "request_changes", "CHANGES-SUMMARY"),
-        reviewer(LLAMA, "llama", "approve", "unused"),
+        FakeRunner::cli(CLAUDE, "anthropic"),
+        reviewer(CODEX, "openai", "approve", "APPROVE-SUMMARY"),
+        reviewer(AGY, "google", "request_changes", "CHANGES-SUMMARY"),
+        reviewer(LLAMA, "meta", "approve", "unused"),
     ];
-    let build = card(
+    let build = task(
         "task-001",
-        CardKind::Build,
+        TaskKind::Build,
         CLAUDE,
         &[CODEX, AGY],
         &["src/limit.rs"],
@@ -237,12 +245,12 @@ async fn review_disagreement_goes_to_a_fresh_adjudicator() -> anyhow::Result<()>
         },
         vec![created(0, build)?],
     )?;
-    let card = CardId::new("task-001")?;
-    let verdict = review::review_card(&bench.host, &card, 1).await?;
+    let task = TaskId::new("task-001")?;
+    let verdict = review::review_task(&bench.host, &task, 1).await?;
     assert_eq!(verdict, Verdict::Approved);
 
     let reviews = bench.reviews();
-    let reviewed: Vec<(WorkerRef, bool)> = reviews
+    let reviewed: Vec<(ModelRef, bool)> = reviews
         .iter()
         .filter_map(|r| match r {
             ReviewEvent::Reviewed {
@@ -253,18 +261,18 @@ async fn review_disagreement_goes_to_a_fresh_adjudicator() -> anyhow::Result<()>
         .collect();
     assert_eq!(reviewed.len(), 2);
     assert!(reviewed.iter().all(|(_, blind)| *blind));
-    let adjudicator = reviews.iter().find_map(|r| match r {
-        ReviewEvent::Adjudicated { adjudicator, .. } => Some(adjudicator.to_string()),
+    let judge = reviews.iter().find_map(|r| match r {
+        ReviewEvent::Settled { judge, .. } => Some(judge.to_string()),
         _ => None,
     });
-    assert_eq!(adjudicator.as_deref(), Some(LLAMA));
+    assert_eq!(judge.as_deref(), Some(LLAMA));
 
-    // Blind reviewers never saw each other; the adjudicator ran fresh without tools.
+    // Blind reviewers never saw each other; the judge ran fresh without tools.
     let codex = prompt_text(&bench.specs_of(CODEX, StepName::Review)[0]);
     let agy = prompt_text(&bench.specs_of(AGY, StepName::Review)[0]);
     assert!(!codex.contains("CHANGES-SUMMARY"));
     assert!(!agy.contains("APPROVE-SUMMARY"));
-    let ruling = &bench.specs_of(LLAMA, StepName::Adjudicate)[0];
+    let ruling = &bench.specs_of(LLAMA, StepName::Settle)[0];
     assert_eq!(ruling.access, Access::NoTools);
     assert_eq!(ruling.resume, None);
     assert!(prompt_text(ruling).contains("CHANGES-SUMMARY"));
@@ -277,7 +285,7 @@ async fn review_disagreement_goes_to_a_fresh_adjudicator() -> anyhow::Result<()>
 
 #[tokio::test]
 async fn endpoint_tests_outside_owned_paths_rejected() -> anyhow::Result<()> {
-    let endpoint = FakeWorker::endpoint(ENDPOINT, "glm").respond_with(|spec| {
+    let endpoint = FakeRunner::endpoint(ENDPOINT, "zhipu").respond_with(|spec| {
         let value = match spec.step {
             Some(StepName::AcceptanceTests) => json!({
                 "files": [
@@ -292,21 +300,21 @@ async fn endpoint_tests_outside_owned_paths_rejected() -> anyhow::Result<()> {
         FakeSession::structured(value)
     });
     let workers = vec![
-        FakeWorker::harness(CLAUDE, "claude"),
-        FakeWorker::harness(CODEX, "gpt"),
+        FakeRunner::cli(CLAUDE, "anthropic"),
+        FakeRunner::cli(CODEX, "openai"),
         endpoint,
     ];
-    let build = card(
+    let build = task(
         "task-001",
-        CardKind::Build,
+        TaskKind::Build,
         CODEX,
         &[ENDPOINT],
         &["src/limit.rs"],
     );
-    let tests = card(
+    let tests = task(
         "test-001",
-        CardKind::AcceptanceTests {
-            for_card: CardId::new("task-001")?,
+        TaskKind::AcceptanceTests {
+            for_task: TaskId::new("task-001")?,
         },
         ENDPOINT,
         &[],
@@ -317,8 +325,8 @@ async fn endpoint_tests_outside_owned_paths_rejected() -> anyhow::Result<()> {
         |_| {},
         vec![created(0, build)?, created(1, tests)?],
     )?;
-    let test_card = CardId::new("test-001")?;
-    let written = endpoint_tests::write_tests(&bench.host, &test_card).await?;
+    let test_task = TaskId::new("test-001")?;
+    let written = endpoint_tests::write_tests(&bench.host, &test_task).await?;
     assert_eq!(written, ["tests/limit/bucket_test.rs"]);
 
     let ask = &bench.specs_of(ENDPOINT, StepName::AcceptanceTests)[0];
@@ -327,7 +335,7 @@ async fn endpoint_tests_outside_owned_paths_rejected() -> anyhow::Result<()> {
     assert_eq!(input.test_dir, "tests/limit/");
     assert_eq!(input.criteria, ["G1"]);
 
-    let tree = worktree::ensure(&bench.host, &test_card).await?;
+    let tree = worktree::ensure(&bench.host, &test_task).await?;
     assert!(tree.path.join("tests/limit/bucket_test.rs").is_file());
     let lib = std::fs::read_to_string(tree.path.join("src/lib.rs")).unwrap_or_default();
     assert!(!lib.contains("overwritten"));
@@ -350,32 +358,32 @@ async fn endpoint_tests_outside_owned_paths_rejected() -> anyhow::Result<()> {
     assert!(rejected.contains("src/lib.rs") && rejected.contains("escape.rs"));
     for review in bench.reviews() {
         if let ReviewEvent::TestsWritten {
-            files, for_card, ..
+            files, for_task, ..
         } = review
         {
             assert_eq!(files, ["tests/limit/bucket_test.rs"]);
-            assert_eq!(for_card.as_str(), "task-001");
+            assert_eq!(for_task.as_str(), "task-001");
         }
     }
     Ok(())
 }
 
 #[tokio::test]
-async fn a_reviewer_of_the_owners_family_is_skipped() -> anyhow::Result<()> {
+async fn a_reviewer_of_the_workers_provider_is_skipped() -> anyhow::Result<()> {
     let workers = vec![
-        reviewer(CLAUDE, "claude", "approve", "fine"),
-        reviewer(CODEX, "gpt", "reject", "never asked"),
-        FakeWorker::harness("opencode/gpt-oss", "gpt"),
+        reviewer(CLAUDE, "anthropic", "approve", "fine"),
+        reviewer(CODEX, "openai", "reject", "never asked"),
+        FakeRunner::cli("opencode/gpt-oss", "openai"),
     ];
-    let build = card(
+    let build = task(
         "task-001",
-        CardKind::Build,
+        TaskKind::Build,
         "opencode/gpt-oss",
         &[CODEX, CLAUDE],
         &["src/limit.rs"],
     );
     let bench = Bench::new(workers, |_| {}, vec![created(0, build)?])?;
-    let verdict = review::review_card(&bench.host, &CardId::new("task-001")?, 1).await?;
+    let verdict = review::review_task(&bench.host, &TaskId::new("task-001")?, 1).await?;
     assert_eq!(verdict, Verdict::Approved);
     assert!(bench.specs_of(CODEX, StepName::Review).is_empty());
     assert_eq!(bench.specs_of(CLAUDE, StepName::Review).len(), 1);
@@ -401,16 +409,16 @@ fn step_call(step: serde_json::Value, index: u32) -> anyhow::Result<StepCall> {
 }
 
 #[tokio::test]
-async fn review_panel_adjudicates_disagreeing_reviewers() -> anyhow::Result<()> {
+async fn review_panel_settles_disagreeing_reviewers() -> anyhow::Result<()> {
     let workers = vec![
-        reviewer(CLAUDE, "claude", "approve", "unused"),
-        reviewer(CODEX, "gpt", "approve", "APPROVE-SUMMARY"),
-        reviewer(AGY, "gemini", "request_changes", "CHANGES-SUMMARY"),
+        reviewer(CLAUDE, "anthropic", "approve", "unused"),
+        reviewer(CODEX, "openai", "approve", "APPROVE-SUMMARY"),
+        reviewer(AGY, "google", "request_changes", "CHANGES-SUMMARY"),
     ];
     let bench = Bench::new(workers, |_| {}, Vec::new())?;
     let review = step_call(
         json!({ "kind": "review", "role": "reviewer", "count": 2, "blind": true,
-                "different_family_from": "author", "input": "goal" }),
+                "different_provider_from": "author", "input": "goal" }),
         0,
     )?;
     let done = review::review_step(&bench.host, &review).await?;
@@ -420,20 +428,20 @@ async fn review_panel_adjudicates_disagreeing_reviewers() -> anyhow::Result<()> 
         "the author's provider"
     );
 
-    let adjudicate = step_call(
-        json!({ "kind": "judge", "role": "adjudicator", "when": "reviewers_disagree" }),
+    let settle = step_call(
+        json!({ "kind": "judge", "role": "judge", "when": "reviewers_disagree" }),
         1,
     )?;
-    let done = argonauts_crew::plan::judge_step(&bench.host, &adjudicate).await?;
+    let done = argonauts_crew::plan::judge_step(&bench.host, &settle).await?;
     assert_eq!(done.summary.as_deref(), Some("Approved"));
-    let ruling = &bench.specs_of(CLAUDE, StepName::Adjudicate)[0];
+    let ruling = &bench.specs_of(CLAUDE, StepName::Settle)[0];
     let text = prompt_text(ruling);
     assert!(text.contains("APPROVE-SUMMARY") && text.contains("CHANGES-SUMMARY"));
     assert!(
         bench
             .reviews()
             .iter()
-            .any(|r| matches!(r, ReviewEvent::Adjudicated { .. }))
+            .any(|r| matches!(r, ReviewEvent::Settled { .. }))
     );
     Ok(())
 }

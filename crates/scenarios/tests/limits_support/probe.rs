@@ -1,5 +1,5 @@
 //! A sandbox probe: a script set as an agent's binary that tries reads and writes it must not
-//! be able to do, reports each on stderr, and then runs the fake vendor. The session's stderr
+//! be able to do, reports each on stderr, and then runs the fake agent. The session's stderr
 //! lands in its raw log, which the test reads afterwards.
 
 use std::fs;
@@ -19,7 +19,7 @@ pub const LEAKED: &str = "probe leaked:";
 pub const BLOCKED: &str = "probe blocked:";
 
 /// Writes an executable probe to `path` that runs `checks` and then `exec`s `program`, the
-/// fake vendor on `PATH`. A `--version` or `--help` call skips the checks, since doctor runs
+/// fake agent on `PATH`. A `--version` or `--help` call skips the checks, since doctor runs
 /// those outside any sandbox.
 pub fn write_probe(path: &Path, program: &str, checks: &[String]) -> anyhow::Result<PathBuf> {
     let script = format!(
@@ -89,7 +89,7 @@ impl Limits {
         Ok(text)
     }
 
-    /// Plants `relative` under your Argonauts home, so a probe has something real to try.
+    /// Plants `relative` under your Argonauts Code home, so a probe has something real to try.
     pub fn plant(&self, relative: &str) -> anyhow::Result<PathBuf> {
         let path = self.repo.home().join(relative);
         write_file(&path, "planted secret\n")?;

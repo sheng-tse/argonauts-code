@@ -164,7 +164,7 @@ pub enum ModPlace {
     /// Above the input.
     Above,
     /// On the line under the input, as a few words.
-    ModeLine,
+    BottomLine,
     Overview,
     Status,
     Usage,
@@ -176,7 +176,7 @@ pub enum ModPlace {
 impl ModPlace {
     pub const ALL: [ModPlace; 8] = [
         ModPlace::Above,
-        ModPlace::ModeLine,
+        ModPlace::BottomLine,
         ModPlace::Overview,
         ModPlace::Status,
         ModPlace::Usage,
@@ -188,7 +188,7 @@ impl ModPlace {
     pub fn word(self) -> &'static str {
         match self {
             ModPlace::Above => "above",
-            ModPlace::ModeLine => "mode-line",
+            ModPlace::BottomLine => "bottom-line",
             ModPlace::Overview => "overview",
             ModPlace::Status => "status",
             ModPlace::Usage => "usage",
@@ -211,8 +211,8 @@ impl ModPlace {
             ModPlace::Status => Some(Place::Status),
             ModPlace::Usage => Some(Place::Usage),
             ModPlace::Context => Some(Place::Context),
-            ModPlace::Limits => Some(Place::Budget),
-            ModPlace::ModeLine | ModPlace::Overview | ModPlace::Stats => None,
+            ModPlace::Limits => Some(Place::Limits),
+            ModPlace::BottomLine | ModPlace::Overview | ModPlace::Stats => None,
         }
     }
 
@@ -220,7 +220,7 @@ impl ModPlace {
     pub fn phrase(self) -> &'static str {
         match self {
             ModPlace::Above => "above the input",
-            ModPlace::ModeLine => "on the bottom line",
+            ModPlace::BottomLine => "on the bottom line",
             ModPlace::Overview => "on the Overview tab",
             ModPlace::Status => "on the Status tab",
             ModPlace::Usage => "on the Usage tab",
@@ -264,7 +264,7 @@ impl ModForm {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "from", rename_all = "snake_case")]
 pub enum ModSource {
-    /// Numbers Argonauts already keeps.
+    /// Numbers Argonauts Code already keeps.
     Builtin { source: BuiltinSource },
     /// A program of yours that prints the JSON [`ModReading`] reads.
     Command {
@@ -289,7 +289,7 @@ impl ModSource {
     }
 }
 
-/// The numbers Argonauts keeps that a mod can draw.
+/// The numbers Argonauts Code keeps that a mod can draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BuiltinSource {

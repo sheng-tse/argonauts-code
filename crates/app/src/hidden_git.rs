@@ -7,15 +7,12 @@ use std::process::Command;
 
 use anyhow::{Context as _, bail};
 use argonauts_core::hidden_git::OFF;
-pub(crate) use argonauts_core::hidden_git::{dir, is_on};
+pub(crate) use argonauts_core::hidden_git::{BRANCH, dir, is_on};
+use argonauts_core::hidden_git::{Writers, clear_stale_locks, locked, standing_lock};
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
 use argonauts_core::settings::delivery::HistorySettings;
 
 use crate::git::{self, git};
-
-/// The history's one branch, which follows your folder. A run names the branch it starts from
-/// and merges into wherever it speaks of them, so the name says what that is here.
-pub(crate) const BRANCH: &str = "your-folder";
 
 /// Makes the history for the folder with this state if there's none yet, and turns it on.
 /// It's a bare repository made without a template, so it holds no hooks, and your folder is
@@ -35,6 +32,26 @@ pub(crate) fn turn_on(state_dir: &Path) -> anyhow::Result<PathBuf> {
         }
         _ => Ok(dir),
     }
+}
+
+/// The bytes the history of the folder with this state takes on disk. `None` when it keeps
+/// none.
+pub(crate) fn size(state_dir: &Path) -> Option<u64> {
+    fn bytes_in(dir: &Path) -> u64 {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        entries
+            .filter_map(Result::ok)
+            .map(|entry| match entry.file_type() {
+                Ok(kind) if kind.is_dir() => bytes_in(&entry.path()),
+                Ok(kind) if kind.is_file() => entry.metadata().map_or(0, |meta| meta.len()),
+                _ => 0,
+            })
+            .sum()
+    }
+    let dir = dir(state_dir);
+    dir.join("HEAD").is_file().then(|| bytes_in(&dir))
 }
 
 /// Stops using the history. It stays where it is, so turning it on again loses nothing.
@@ -60,7 +77,7 @@ fn init_bare(dir: &Path) -> anyhow::Result<()> {
         })?;
     if !made.status.success() {
         bail!(
-            "git init for Argonauts' own history failed: {}",
+            "git init for Argonauts Code's own history failed: {}",
             String::from_utf8_lossy(&made.stderr).trim()
         );
     }
@@ -84,8 +101,12 @@ pub(crate) fn refused(folder: &Path, user_home: Option<&Path>) -> Option<&'stati
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Snapshot {
     pub commit: String,
-    /// What stayed out, each with why, such as `data.bin (over 50 MB)`.
+    /// What stayed out for its size or place, each with why, such as `data.bin (over 50 MB)`.
     pub left_out: Vec<String>,
+    /// What the leave-out list kept out, a folder ending in `/`.
+    pub kept_out: Vec<String>,
+    /// A lock that a stop in the middle of a write had left on the history was cleared first.
+    pub cleared_stale_lock: bool,
 }
 
 /// The files of a folder that git doesn't hold yet, sorted into what a first commit or a
@@ -226,6 +247,21 @@ pub(crate) fn make_repository(root: &Path, survey: &Survey, commit: bool) -> any
     git::git_ok(root, &["commit", "--quiet", "-m", "First commit"])
 }
 
+/// Clears the locks a stop left on the history `root` uses, and says whether any went. One
+/// that still stands is an error in words: a write would only fail on it in git's own.
+pub(crate) fn clear_locks(root: &Path, writers: Writers) -> anyhow::Result<bool> {
+    let Ok(dir) = git(root, &["rev-parse", "--absolute-git-dir"]) else {
+        return Ok(false);
+    };
+    let dir = Path::new(&dir);
+    let now = std::time::SystemTime::now();
+    let cleared = clear_stale_locks(dir, now, writers);
+    match standing_lock(dir, now) {
+        Some(age) => bail!("{}", locked(age)),
+        None => Ok(cleared),
+    }
+}
+
 /// Records `root` as it is now on the history's branch and returns that commit, the newest
 /// one when nothing changed since. What it takes is what [`Survey`] takes, and your
 /// `.gitignore` files hold. The first record of a folder past `history.max_files` or
@@ -236,8 +272,11 @@ pub(crate) fn record(
     root: &Path,
     limits: &HistorySettings,
     message: &str,
+    writers: Writers,
 ) -> anyhow::Result<Snapshot> {
     let first = git::head(root).is_err();
+    let cleared_stale_lock = clear_locks(root, writers)?;
+    let kept_out = leave_out(root, &limits.leave_out)?;
     let new = git(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
     let survey = Survey::of(root, &new, limits);
     if first {
@@ -254,7 +293,73 @@ pub(crate) fn record(
     Ok(Snapshot {
         commit: git::head(root)?,
         left_out: survey.left_out,
+        kept_out,
+        cleared_stale_lock,
     })
+}
+
+/// Puts the leave-out list in force for the history `root` uses and returns what it keeps
+/// out of the folder as it is now. The list goes in the history's own exclude file, so it
+/// joins your `.gitignore` rules on every git call, the agents' copies included. A file an
+/// earlier record took before the list named it leaves the record here, and stays in your
+/// folder.
+fn leave_out(root: &Path, setting: &[String]) -> anyhow::Result<Vec<String>> {
+    let git_dir = PathBuf::from(git(root, &["rev-parse", "--absolute-git-dir"])?);
+    let info = git_dir.join("info");
+    create_private_dir_all(&info).with_context(|| format!("creating {}", info.display()))?;
+    let file = info.join("exclude");
+    let mut list = argonauts_core::leave_out::patterns(setting).join("\n");
+    list.push('\n');
+    write_private_file(&file, list.as_bytes()).context("writing the leave-out list")?;
+
+    let from = format!("--exclude-from={}", file.display());
+    let recorded = git(root, &["ls-files", "--cached", "--ignored", &from, "-z"])?;
+    if !recorded.is_empty() {
+        forget(root, &recorded)?;
+    }
+    let kept = git(
+        root,
+        &[
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--directory",
+            &from,
+            "-z",
+        ],
+    )?;
+    Ok(kept
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Takes `paths`, NUL-separated, out of the index and leaves the files where they are.
+fn forget(root: &Path, paths: &str) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    let mut child = git::command(root)
+        .args(["update-index", "--force-remove", "-z", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("running git update-index")?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(paths.as_bytes())
+            .context("naming the files to leave out")?;
+    }
+    let out = child
+        .wait_with_output()
+        .context("running git update-index")?;
+    if !out.status.success() {
+        bail!(
+            "leaving files out of the history failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
 }
 
 const MB: u64 = 1024 * 1024;
@@ -287,7 +392,7 @@ fn short_of_room(free: u64, bytes: u64, limits: &HistorySettings) -> anyhow::Res
 fn too_big_to_start(files: u64, bytes: u64, limits: &HistorySettings) -> anyhow::Result<()> {
     if limits.max_files > 0 && files > limits.max_files {
         bail!(
-            "this folder has {files} files, more than history.max_files ({}) lets Argonauts \
+            "this folder has {files} files, more than history.max_files ({}) lets Argonauts Code \
              record. Start in the project's own folder, add a .gitignore for what isn't part \
              of it, or raise the setting",
             limits.max_files
@@ -296,7 +401,7 @@ fn too_big_to_start(files: u64, bytes: u64, limits: &HistorySettings) -> anyhow:
     let total = limits.max_total_mb.saturating_mul(MB);
     if total > 0 && bytes > total {
         bail!(
-            "this folder holds {} MB, more than history.max_total_mb ({}) lets Argonauts \
+            "this folder holds {} MB, more than history.max_total_mb ({}) lets Argonauts Code \
              record. Start in the project's own folder, add a .gitignore for what isn't part \
              of it, or raise the setting",
             bytes / MB,
@@ -306,7 +411,7 @@ fn too_big_to_start(files: u64, bytes: u64, limits: &HistorySettings) -> anyhow:
     Ok(())
 }
 
-/// Commits what's staged as Argonauts, whatever identity your git has or lacks, since these
+/// Commits what's staged as Argonauts Code, whatever identity your git has or lacks, since these
 /// commits are its own record and never reach a branch of yours.
 fn commit(root: &Path, message: &str, allow_empty: bool) -> anyhow::Result<()> {
     let mut command = git::command(root);
@@ -315,9 +420,9 @@ fn commit(root: &Path, message: &str, allow_empty: bool) -> anyhow::Result<()> {
         command.arg("--allow-empty");
     }
     let out = command
-        .env("GIT_AUTHOR_NAME", "Argonauts")
+        .env("GIT_AUTHOR_NAME", "Argonauts Code")
         .env("GIT_AUTHOR_EMAIL", "argonauts@localhost")
-        .env("GIT_COMMITTER_NAME", "Argonauts")
+        .env("GIT_COMMITTER_NAME", "Argonauts Code")
         .env("GIT_COMMITTER_EMAIL", "argonauts@localhost")
         .output()
         .context("running git commit")?;
@@ -367,7 +472,7 @@ mod tests {
         assert_eq!(env.git(), FolderGit::Hidden(hidden.clone()));
         assert!(hidden.starts_with(&env.state_dir));
         let limits = HistorySettings::default();
-        let first = record(root, &limits, "first").unwrap();
+        let first = record(root, &limits, "first", Writers::Maybe).unwrap();
         assert_eq!(files_in(root, &first.commit), ["notes.md", "src/app.py"]);
         assert!(first.left_out.is_empty());
         assert_eq!(
@@ -375,10 +480,15 @@ mod tests {
             BRANCH
         );
         // Nothing changed, so nothing new is recorded.
-        assert_eq!(record(root, &limits, "again").unwrap().commit, first.commit);
+        assert_eq!(
+            record(root, &limits, "again", Writers::Maybe)
+                .unwrap()
+                .commit,
+            first.commit
+        );
 
         std::fs::write(root.join("notes.md"), "done\n").unwrap();
-        let second = record(root, &limits, "second").unwrap();
+        let second = record(root, &limits, "second", Writers::Maybe).unwrap();
         assert_ne!(second.commit, first.commit);
         assert_eq!(
             git(root, &["show", &format!("{}:notes.md", second.commit)]).unwrap(),
@@ -398,7 +508,7 @@ mod tests {
         let root = &env.repo_root;
         turn_on(&env.state_dir).unwrap();
         std::fs::write(root.join("data.bin"), vec![0u8; 2 * 1024 * 1024]).unwrap();
-        let nested = root.join("vendor/lib");
+        let nested = root.join("third_party/lib");
         std::fs::create_dir_all(&nested).unwrap();
         crate::git::git(&nested, &["init", "--quiet"]).unwrap();
         std::fs::write(nested.join("lib.c"), "int x;\n").unwrap();
@@ -409,7 +519,7 @@ mod tests {
             max_file_mb: 1,
             ..HistorySettings::default()
         };
-        let snapshot = record(root, &limits, "first").unwrap();
+        let snapshot = record(root, &limits, "first", Writers::Maybe).unwrap();
         assert_eq!(
             files_in(root, &snapshot.commit),
             [".gitignore", "notes.md", "src/app.py"]
@@ -418,11 +528,11 @@ mod tests {
             snapshot.left_out,
             [
                 "data.bin (over 1 MB)",
-                "vendor/lib/ (a git repository of its own)"
+                "third_party/lib/ (a git repository of its own)"
             ]
         );
         // They stay out the next time too, and stay in the folder.
-        let again = record(root, &limits, "again").unwrap();
+        let again = record(root, &limits, "again", Writers::Maybe).unwrap();
         assert_eq!(again.commit, snapshot.commit);
         assert_eq!(again.left_out, snapshot.left_out);
         assert!(root.join("data.bin").is_file() && nested.join("lib.c").is_file());
@@ -436,7 +546,7 @@ mod tests {
             max_files: 1,
             ..HistorySettings::default()
         };
-        let err = record(&env.repo_root, &limits, "first").unwrap_err();
+        let err = record(&env.repo_root, &limits, "first", Writers::Maybe).unwrap_err();
         assert!(err.to_string().contains("history.max_files"), "{err}");
         assert!(git::head(&env.repo_root).is_err(), "nothing was recorded");
     }
@@ -463,14 +573,14 @@ mod tests {
             min_free_gb: 1_000_000,
             ..HistorySettings::default()
         };
-        let err = record(&env.repo_root, &greedy, "first").unwrap_err();
+        let err = record(&env.repo_root, &greedy, "first", Writers::Maybe).unwrap_err();
         assert!(err.to_string().contains("history.min_free_gb"), "{err}");
         assert!(git::head(&env.repo_root).is_err(), "nothing was recorded");
         let off = HistorySettings {
             min_free_gb: 0,
             ..greedy
         };
-        assert!(record(&env.repo_root, &off, "first").is_ok());
+        assert!(record(&env.repo_root, &off, "first", Writers::Maybe).is_ok());
     }
 
     #[test]

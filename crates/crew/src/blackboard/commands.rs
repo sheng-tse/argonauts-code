@@ -7,12 +7,13 @@ use argonauts_core::events::session::{Delivery, QueuedMessage};
 use argonauts_core::events::shared::{BlackboardKind, Recipient};
 use argonauts_core::input::MentionTarget;
 use argonauts_core::names::{MessageId, RoleName, SessionKey};
-use argonauts_core::worker::{SessionControl, SteerSupport};
+use argonauts_core::session_runner::{SessionControl, SteerSupport};
 use argonauts_core::{Note, NoteLevel};
 
 use crate::blackboard::{Post, delivery, post};
 use crate::consultant;
 use crate::engine::host::Host;
+use crate::error::EngineResult;
 use crate::state::blackboard::TAKEN_BACK;
 
 /// `SessionControl::Deliver` with `Delivery::Steer`; the reply says how the worker takes it.
@@ -46,7 +47,7 @@ pub async fn steer(
             text: text.clone(),
             in_reply_to: None,
             refs: Vec::new(),
-            from_card: None,
+            from_task: None,
         },
     )
     .map_err(|error| error.to_string())?;
@@ -90,42 +91,49 @@ pub async fn mention(
         == Recipient::Role {
             role: RoleName::Consultant,
         };
-    let id = post(
-        host,
-        Post {
-            kind: if asks_consultant {
-                BlackboardKind::Question
-            } else {
-                BlackboardKind::Mention
-            },
-            from: Party::User,
-            to,
-            text,
-            in_reply_to: None,
-            refs: Vec::new(),
-            from_card: None,
-        },
-    )
-    .map_err(|error| error.to_string())?;
-    if asks_consultant {
-        // The consultant's session takes minutes, and the loop never waits on a long command.
-        let host = host.clone();
-        let question = id.clone();
-        tokio::spawn(async move {
-            if let Err(error) = consultant::answer(&host, &question).await {
-                let note = Note {
-                    level: NoteLevel::Warn,
-                    text: format!("The consultant couldn't answer {question}: {error}"),
-                };
-                if let Err(error) = host.record(None, None, RunEventKind::Note(note)) {
-                    tracing::error!(%question, %error, "recording the consultant's failure");
-                }
-            }
-        });
-    } else {
-        delivery::to_running(host, &id).map_err(|error| error.to_string())?;
+    if !asks_consultant {
+        return mention_to(host, to, text).map_err(|error| error.to_string());
     }
+    let question = Post {
+        kind: BlackboardKind::Question,
+        ..from_you(to, text)
+    };
+    let id = post(host, question).map_err(|error| error.to_string())?;
+    // The consultant's session takes minutes, and the loop never waits on a long command.
+    let host = host.clone();
+    let question = id.clone();
+    tokio::spawn(async move {
+        if let Err(error) = consultant::answer(&host, &question).await {
+            let note = Note {
+                level: NoteLevel::Warn,
+                text: format!("The consultant couldn't answer {question}: {error}"),
+            };
+            if let Err(error) = host.record(None, None, RunEventKind::Note(note)) {
+                tracing::error!(%question, %error, "recording the consultant's failure");
+            }
+        }
+    });
     Ok(id)
+}
+
+/// A mention of yours for `to`: queued on its running sessions for their next turn, and put
+/// in the first prompt of one that starts later.
+pub fn mention_to(host: &Host, to: Recipient, text: String) -> EngineResult<MessageId> {
+    let id = post(host, from_you(to, text))?;
+    delivery::to_running(host, &id)?;
+    Ok(id)
+}
+
+fn from_you(to: Recipient, text: String) -> Post {
+    Post {
+        kind: BlackboardKind::Mention,
+        from: Party::User,
+        to,
+        text,
+        in_reply_to: None,
+        refs: Vec::new(),
+        from_task: None,
+    }
 }
 
 /// Posted as `Guidance` for every working agent's next turn.
@@ -139,7 +147,7 @@ pub async fn guidance(host: &Host, text: String) -> Result<MessageId, String> {
             text,
             in_reply_to: None,
             refs: Vec::new(),
-            from_card: None,
+            from_task: None,
         },
     )
     .map_err(|error| error.to_string())?;
@@ -147,7 +155,7 @@ pub async fn guidance(host: &Host, text: String) -> Result<MessageId, String> {
     Ok(id)
 }
 
-/// Removes the undelivered ones and returns them. A message already handed to a session for its
+/// Removes the undelivered ones and returns them. A message already passed to a session for its
 /// next turn has left the blackboard and can't be taken back.
 pub fn take_back(host: &Host, messages: &[MessageId]) -> Vec<QueuedMessage> {
     let mut taken = Vec::new();
@@ -177,7 +185,7 @@ pub fn take_back(host: &Host, messages: &[MessageId]) -> Vec<QueuedMessage> {
             text: String::new(),
             in_reply_to: Some(id.clone()),
             refs: vec![TAKEN_BACK.to_owned()],
-            from_card: None,
+            from_task: None,
         };
         match post(host, mark) {
             Ok(_) => taken.push(QueuedMessage {
@@ -197,11 +205,11 @@ pub fn take_back(host: &Host, messages: &[MessageId]) -> Vec<QueuedMessage> {
 fn recipient(host: &Host, target: MentionTarget) -> Result<Recipient, String> {
     Ok(match target {
         MentionTarget::Worker(worker) => Recipient::Worker { worker },
-        MentionTarget::Card(card) => {
-            if host.read(|state| state.cards.get(&card).is_none()) {
-                return Err(format!("There's no {card} in this run"));
+        MentionTarget::Task(task) => {
+            if host.read(|state| state.tasks.get(&task).is_none()) {
+                return Err(format!("There's no {task} in this run"));
             }
-            Recipient::Card { card }
+            Recipient::Task { task }
         }
         MentionTarget::Role(role) => Recipient::Role { role },
         MentionTarget::Number(key) => Recipient::Session {
@@ -229,7 +237,7 @@ fn following(host: &Host, key: u8) -> Option<SessionKey> {
 fn typed_target(to: &Recipient) -> MentionTarget {
     match to {
         Recipient::Worker { worker } => MentionTarget::Worker(worker.clone()),
-        Recipient::Card { card } => MentionTarget::Card(card.clone()),
+        Recipient::Task { task } => MentionTarget::Task(task.clone()),
         Recipient::Role { role } => MentionTarget::Role(*role),
         Recipient::All | Recipient::Session { .. } | Recipient::User => MentionTarget::All,
     }

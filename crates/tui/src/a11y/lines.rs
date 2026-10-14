@@ -1,16 +1,16 @@
-use argonauts_core::app::{AppEvent, ChatEvent, ShellEvent, TurnReply};
+use argonauts_core::app::{AppEvent, ConversationEvent, ShellEvent, TurnReply};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::checkpoint::CheckpointEvent;
+use argonauts_core::events::approval::ApprovalEvent;
 use argonauts_core::events::run::Party;
-use argonauts_core::settings::protocol::SoloStyle;
+use argonauts_core::settings::protocol::CaptainKind;
 use argonauts_core::{AgentEvent, NoteLevel};
 
 use crate::bridge::tools::is_own;
 use crate::state::AppState;
 
 use super::agent::agent_lines;
-use super::cards::CardList;
+use super::questions::QuestionList;
 use super::run::run_lines;
 use super::views::view_lines;
 use super::words::{labeled, spoken, word};
@@ -28,16 +28,16 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
         )],
         AppEvent::Detached { run } => vec![format!("run: {run} detached")],
         // Replayed events rebuild the state quietly; the condensed replay speaks for them.
-        AppEvent::Run { .. } | AppEvent::Chat { .. } if state.replaying() => Vec::new(),
+        AppEvent::Run { .. } | AppEvent::Conversation { .. } if state.replaying() => Vec::new(),
         AppEvent::Run { event } => run_lines(event, state),
-        AppEvent::Chat { event } => chat_lines(event, state),
-        AppEvent::Choice { choice } => CardList::choice(choice).lines(),
+        AppEvent::Conversation { event } => conversation_lines(event, state),
+        AppEvent::Choice { choice } => QuestionList::choice(choice).lines(),
         AppEvent::ChoiceClosed { outcome, .. } => labeled("question", outcome),
         AppEvent::Narrator { line } => labeled("narrator", &line.text),
         AppEvent::Notice { .. } if state.notice_repeated => Vec::new(),
         AppEvent::Notice { level, text } => {
             let label = match level {
-                NoteLevel::Info | NoteLevel::Aside => "notice",
+                NoteLevel::Info | NoteLevel::Aside | NoteLevel::Quiet => "notice",
                 NoteLevel::Warn => "warning",
                 NoteLevel::Error => "error",
             };
@@ -50,11 +50,11 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
             .iter()
             .flat_map(|text| labeled("taken back", text))
             .collect(),
-        AppEvent::VendorCommands { .. }
+        AppEvent::CliCommands { .. }
         | AppEvent::Names { .. }
         | AppEvent::RepoFiles { .. }
         | AppEvent::BackgroundRuns { .. }
-        | AppEvent::ChatCleared => Vec::new(),
+        | AppEvent::ConversationCleared => Vec::new(),
         AppEvent::SettingChanged {
             key,
             value,
@@ -90,10 +90,16 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
             lines.extend(labeled("recap", recap));
             lines
         }
-        AppEvent::ChatResumed {
-            chat, title, turns, ..
+        AppEvent::ConversationResumed {
+            conversation,
+            title,
+            turns,
+            ..
         } => {
-            let mut lines = vec![format!("chat: resumed {chat}, {}", title.trim())];
+            let mut lines = vec![format!(
+                "conversation: resumed {conversation}, {}",
+                title.trim()
+            )];
             lines.extend(
                 turns
                     .iter()
@@ -104,6 +110,34 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
         AppEvent::Report { title, lines } => {
             let mut said = labeled("report", title);
             said.extend(lines.iter().cloned());
+            said
+        }
+        AppEvent::Templates { list } => {
+            let said = |label: &str, entries: &[argonauts_core::template_list::TemplateEntry]| {
+                let names: Vec<String> = entries
+                    .iter()
+                    .map(|entry| {
+                        let mut name = entry.name.clone();
+                        if entry.in_use {
+                            name.push_str(" (in use)");
+                        }
+                        if let Some(changed) = entry.changed {
+                            name.push(' ');
+                            name.push_str(changed.mark());
+                        }
+                        name
+                    })
+                    .collect();
+                format!("{label}: {}", names.join(", "))
+            };
+            vec![
+                said("workflows", &list.workflows),
+                said("prompts", &list.prompts),
+            ]
+        }
+        AppEvent::Switched { text, undo, caveat } => {
+            let mut said = vec![text.clone()];
+            said.extend(undo.iter().chain(caveat).cloned());
             said
         }
         // A reader can't unfold it, so the whole text is read.
@@ -145,7 +179,7 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
     lines
         .iter()
         .map(|line| {
-            // Keep the indent of a card's list; it reads as nothing.
+            // Keep the indent of a question's list; it reads as nothing.
             let indent = line.len() - line.trim_start_matches(' ').len();
             format!("{}{}", &line[..indent], spoken(line))
         })
@@ -162,7 +196,7 @@ pub fn rings_for(event: &AppEvent, state: &AppState) -> bool {
         AppEvent::Choice { choice } => choice.bell,
         AppEvent::Run { event } => matches!(
             &event.kind,
-            RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) if opened.needs_you
+            RunEventKind::Approval(ApprovalEvent::Opened(opened)) if opened.needs_you
         ),
         _ => false,
     }
@@ -177,7 +211,7 @@ fn welcome_lines(state: &AppState) -> Vec<String> {
         welcome.version, welcome.repo, welcome.workflow
     )];
     for agent in &welcome.agents {
-        let mut line = format!("agent: {}", state.names.harness(&agent.id));
+        let mut line = format!("agent: {}", state.names.cli(&agent.id));
         if let Some(version) = &agent.version {
             line.push_str(&format!(" {version}"));
         }
@@ -222,65 +256,72 @@ fn shell_lines(event: &ShellEvent) -> Vec<String> {
     }
 }
 
-fn chat_lines(event: &ChatEvent, state: &AppState) -> Vec<String> {
-    let vendor = state
-        .chat
+fn conversation_lines(event: &ConversationEvent, state: &AppState) -> Vec<String> {
+    let agent_id = state
+        .conversation
         .worker
         .as_ref()
-        .map_or("agent", |worker| worker.worker.as_str());
+        .map_or("agent", |worker| worker.agent.as_str());
     match event {
-        ChatEvent::TurnStarted { text, .. } | ChatEvent::Joined { text, .. } => {
+        ConversationEvent::TurnStarted { text, .. } | ConversationEvent::Joined { text, .. } => {
             labeled("you", text)
         }
         // The answer comes whole with the turn's end.
-        ChatEvent::Agent {
+        ConversationEvent::Agent {
             event: AgentEvent::Result { is_error, .. },
             ..
         } => {
             if *is_error {
-                vec![format!("{vendor} error: finished with an error")]
+                vec![format!("{agent_id} error: finished with an error")]
             } else {
                 Vec::new()
             }
         }
-        // Argonauts' own calls, such as the report, say nothing.
-        ChatEvent::Agent {
+        // Argonauts Code's own calls, such as the report, say nothing.
+        ConversationEvent::Agent {
             event: AgentEvent::ToolFinished { id, .. },
             ..
         } if state
-            .chat
+            .conversation
             .tools
             .iter()
             .any(|tool| tool.id == *id && is_own(&tool.name)) =>
         {
             Vec::new()
         }
-        ChatEvent::Agent { event, .. } => agent_lines(vendor, vendor, event, state, None, None),
-        ChatEvent::TurnFinished { reply, .. } => match reply {
+        ConversationEvent::Agent { event, .. } => {
+            agent_lines(agent_id, agent_id, event, state, None, None)
+        }
+        ConversationEvent::TurnFinished { reply, .. } => match reply {
             TurnReply::Answer { markdown } | TurnReply::Unclear { markdown, .. } => {
-                answer_lines(vendor, markdown)
+                answer_lines(agent_id, markdown)
             }
             TurnReply::Change {
-                markdown, triage, ..
+                markdown,
+                captain_or_crew,
+                ..
             } => {
-                let mut lines = answer_lines(vendor, markdown);
-                let how = if triage.solo == Some(SoloStyle::Direct) {
-                    "this works solo in your checkout".to_owned()
+                let mut lines = answer_lines(agent_id, markdown);
+                let how = if captain_or_crew.captain == Some(CaptainKind::Direct) {
+                    "this works as Captain in your checkout".to_owned()
                 } else {
-                    format!("this takes a {} run", word(&triage.mode))
+                    format!("this takes a {} run", word(&captain_or_crew.mode))
                 };
-                lines.push(format!("{vendor}: {how}, {}", triage.reason.trim()));
+                lines.push(format!(
+                    "{agent_id}: {how}, {}",
+                    captain_or_crew.reason.trim()
+                ));
                 lines
             }
         },
-        ChatEvent::TurnFailed { error, .. } => labeled(&format!("{vendor} error"), error),
-        ChatEvent::TurnCancelled { .. } => vec![format!("{vendor}: stopped")],
-        ChatEvent::HandedOff { from, to, why, .. } => {
-            vec![format!("{} {why}, so {} continues", from.worker, to.worker)]
+        ConversationEvent::TurnFailed { error, .. } => labeled(&format!("{agent_id} error"), error),
+        ConversationEvent::TurnCancelled { .. } => vec![format!("{agent_id}: stopped")],
+        ConversationEvent::FellBack { from, to, why, .. } => {
+            vec![format!("{} {why}, so {} continues", from.agent, to.agent)]
         }
-        ChatEvent::AnswerRetried { .. } => {
+        ConversationEvent::AnswerRetried { .. } => {
             vec![format!(
-                "{vendor}: that answer missed its format, so it is asked again"
+                "{agent_id}: that answer missed its format, so it is asked again"
             )]
         }
     }
@@ -299,9 +340,9 @@ pub fn answer_lines(who: &str, markdown: &str) -> Vec<String> {
 pub fn party(from: &Party, names: &DisplayNames) -> String {
     match from {
         Party::User => "you".to_owned(),
-        Party::Agent { worker, .. } => names.harness(&worker.worker),
-        Party::Approver { model } => format!("approver {}", names.harness(&model.worker)),
-        Party::FrontEnd { client } => client.clone(),
+        Party::Agent { worker, .. } => names.cli(&worker.agent),
+        Party::Judge { model } => format!("judge {}", names.cli(&model.agent)),
+        Party::OutsideAgent { client } => client.clone(),
         other => word(other),
     }
 }

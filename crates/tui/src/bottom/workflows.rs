@@ -1,6 +1,8 @@
-//! The panel under the mode line, like Claude Code's workflow rows: one row per run with a
-//! status circle, its name, a progress bar, dim counts, and a notice when it needs you or runs
-//! near its budget. With `ui.panel.agents`, each run's agents follow under its row.
+//! The panel under the bottom line, as Claude Code's workflow rows: one row per run with its
+//! glyph, its name, a bar of its agents done, `done/total`, its time and its tokens, dim unless
+//! it is selected. Argonauts Code adds one thing at the row's end, only when there is something
+//! to say: who fills in for whom, why it needs you, or how it ended. With `ui.panel.agents`,
+//! each run's agents follow under its row.
 
 use std::time::{Duration, Instant};
 
@@ -15,20 +17,17 @@ use crate::text::{Part, fit_parts, full_width, sanitize_line, str_width};
 use crate::theme::{Role, Theme};
 use crate::views::layout::left;
 use crate::views::panes::Marks;
-use crate::views::states;
-use crate::widgets::State;
 
 use super::agents::{AgentRef, ListRow, RowKind, more_line, window};
-use super::bar::{BAR_CELLS, MIN_BAR_CELLS, bar, run_fill};
+use super::bar::{BAR_CELLS, MIN_BAR_CELLS, bar};
 use super::{AgentPanel, PanelEvent};
 
 /// The name column's width, so every bar starts in one column. A longer name widens it only
-/// into room the row has to spare, so one long name can't
-/// push every bar off the row. This holds `council · add --json to export`.
-const MAX_NAME_CELLS: usize = 37;
+/// into room the row has to spare, so one long name can't push every bar off the row.
+const MAX_NAME_CELLS: usize = 20;
 
-/// Names give up cells to keep the bar down to this, which holds a CLI and a short model.
-const MIN_NAME_CELLS: usize = 20;
+/// Names give up cells down to this to keep the bar.
+const MIN_NAME_CELLS: usize = 12;
 
 /// Rows under a run's row sit this much further in.
 const AGENT_INDENT: usize = 2;
@@ -59,22 +58,23 @@ pub struct WorkflowRow {
     /// none.
     pub timed: bool,
     pub tokens: u64,
-    /// Such as `$1.20`.
-    pub spend: Option<String>,
-    /// Such as `85% of budget · /workflows to stop`, drawn after `!` in the warning color.
+    /// Such as `85% of limit · /workflows to stop`, drawn after `!` in the warning color.
     pub notice: Option<String>,
-    /// The chat front end that started it, such as `via hermes`.
-    pub front_end: Option<String>,
-    /// The phase going on, such as `Fix`, after the count.
-    pub phase: Option<String>,
+    /// What Argonauts Code says at the row's end when there is something to say: why it needs
+    /// you, or how it ended, such as `merged onto main`.
+    pub said: Option<String>,
+    /// The model that fills in for another while the run goes on, such as `Sonnet 5.5 for
+    /// Opus 5.5`, said after the fallback's mark.
+    pub fallback: Option<String>,
+    /// The outside agent that started it, such as `via hermes`.
+    pub outside_agent: Option<String>,
     /// Goals its agents still work toward, for `2 goals running`.
     pub goals_running: usize,
     /// The key of the agent whose own CLI runs this workflow, so the row sits under that
     /// agent's rather than beside the run as a second one.
     pub parent: Option<String>,
-    /// A CLI's own workflow, counted in agents as the CLI counts them. Argonauts' runs count
-    /// steps, a step tried again once.
-    pub vendor: bool,
+    /// When the row of a run that ended leaves the list.
+    pub leaves_at: Option<Instant>,
 }
 
 impl WorkflowRow {
@@ -89,13 +89,13 @@ impl WorkflowRow {
             measured_at: None,
             timed: true,
             tokens: 0,
-            spend: None,
             notice: None,
-            front_end: None,
-            phase: None,
+            said: None,
+            fallback: None,
+            outside_agent: None,
             goals_running: 0,
             parent: None,
-            vendor: false,
+            leaves_at: None,
         }
     }
 
@@ -197,6 +197,19 @@ impl WorkflowPanel {
 
     pub fn blur(&mut self) {
         self.selected = None;
+    }
+
+    /// Lets go of the rows whose time in the list is up, each a run that ended a while ago,
+    /// and keeps the selection on the row it was on. True when a row left.
+    pub fn let_go(&mut self, agents: &AgentPanel, now: Instant) -> bool {
+        let due = |row: &WorkflowRow| row.leaves_at.is_some_and(|at| at <= now);
+        if !self.rows.iter().any(due) {
+            return false;
+        }
+        let keep = self.selected_id(agents);
+        self.rows.retain(|row| !due(row));
+        self.reselect(agents, keep.as_ref());
+        true
     }
 
     /// The run or agent the selection is on, so a new set of rows can keep it.
@@ -307,12 +320,13 @@ impl WorkflowPanel {
             .show_agents
             .then(|| agents.next_change(clock, theme))
             .flatten();
-        ticking.chain(agents).min()
+        let leaving = self.rows.iter().filter_map(|row| row.leaves_at);
+        ticking.chain(agents).chain(leaving).min()
     }
 }
 
 /// The panel's rows: workflow rows, and agent rows when they show. The live region draws them
-/// one blank row under the mode line. Without runs it's the agent panel alone.
+/// one blank row under the bottom line. Without runs it's the agent panel alone.
 pub fn panel_lines(
     workflows: &WorkflowPanel,
     agents: &AgentPanel,
@@ -362,7 +376,6 @@ pub fn panel_lines(
         },
         widest_stats,
     );
-    let fill = run_fill(ctx.theme);
     // The agents' rows are their own list, in Claude Code's shape, a step in under their run.
     let listed: Vec<ListRow> = entries
         .iter()
@@ -390,7 +403,6 @@ pub fn panel_lines(
                     &runs[i],
                     selected,
                     &columns,
-                    fill,
                     ctx,
                 ));
             }
@@ -481,7 +493,7 @@ pub fn handle_panel_key(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StopAsk {
     pub row: PanelRowId,
-    /// Such as `x again to stop codex/gpt-5.6 · esc to keep`, on the mode line.
+    /// Such as `x again to stop codex/gpt-5.6 · esc to keep`, on the bottom line.
     pub hint: String,
 }
 
@@ -527,23 +539,24 @@ fn run_line(
     cells: &RunCells,
     selected: bool,
     columns: &PanelColumns,
-    fill: Style,
     ctx: &RenderCtx<'_>,
 ) -> Line<'static> {
     let theme = ctx.theme;
-    // Claude Code's `○` stays for a run that's going, in the working color; the other states
-    // draw as they do everywhere.
-    let (circle, role) = match row.state {
-        WorkflowRowState::Running => (theme.glyphs.agent_waiting, Role::StateWorking),
-        WorkflowRowState::NeedsYou => states::mark(State::NeedsYou, theme),
-        WorkflowRowState::Done => states::mark(State::Done, theme),
-        WorkflowRowState::Failed => states::mark(State::Failed, theme),
-        WorkflowRowState::Paused | WorkflowRowState::Stopped => states::mark(State::Stopped, theme),
+    let ascii = theme.glyphs.is_ascii();
+    let pick = |unicode: &'static str, plain: &'static str| if ascii { plain } else { unicode };
+    // Claude Code's circle while it goes, its pause mark while it waits, and its tick or cross
+    // once it ended.
+    let (glyph, role) = match row.state {
+        WorkflowRowState::Running => (pick("◯", "o"), Role::Dim),
+        WorkflowRowState::NeedsYou => (pick("⏸", "="), Role::Warn),
+        WorkflowRowState::Paused => (pick("⏸", "="), Role::Dim),
+        WorkflowRowState::Done => (pick("✔", "*"), Role::StateDone),
+        WorkflowRowState::Failed | WorkflowRowState::Stopped => (pick("✘", "x"), Role::StateFailed),
     };
     let mut spans = if selected {
         vec![Span::styled(
             format!("{} ", theme.glyphs.prompt),
-            theme.style(Role::Card),
+            theme.style(Role::Question),
         )]
     } else {
         vec![Span::raw("  ")]
@@ -557,23 +570,29 @@ fn run_line(
     if inner > 0 {
         spans.push(Span::raw(" ".repeat(inner)));
     }
-    spans.push(Span::styled(circle, theme.style(role)));
-    spans.push(Span::raw(" "));
-    spans.push(Span::raw(left(
-        &cells.name,
-        columns.name_width.saturating_sub(inner),
-    )));
+    spans.push(Span::styled(format!("{glyph} "), theme.style(role)));
+    // The row is dim unless it is the one selected.
+    let name_style = if selected {
+        theme.style(Role::Text)
+    } else {
+        theme.style(Role::Dim)
+    };
+    spans.push(Span::styled(
+        left(&cells.name, columns.name_width.saturating_sub(inner)),
+        name_style,
+    ));
     if columns.bar_cells > 0 {
-        let steps = (row.agents_total > 0).then_some((row.agents_done, row.agents_total));
+        let agents = (row.agents_total > 0).then_some((row.agents_done, row.agents_total));
         spans.push(Span::raw("  "));
-        spans.extend(bar(steps, columns.bar_cells, fill, theme));
+        spans.extend(bar(agents, columns.bar_cells, theme));
     }
     spans.push(Span::raw("  "));
     fit_parts(spans, &cells.stats, usize::from(ctx.width))
 }
 
-/// `8/9 agents · Build · 2 goals running · 2h44m · ↓ 1.8M tokens · $1.20 · via hermes`, then
-/// the state's word or the budget notice. The state and the notice give way last.
+/// `2/4 · 4m12s · ↓ 128k tokens`, as Claude Code counts a workflow, then who started it when
+/// another agent did, the one thing Argonauts Code adds when there is something to say, and
+/// the limit notice. What it says and the notice give way last.
 fn run_stats(row: &WorkflowRow, ctx: &RenderCtx<'_>) -> Vec<Part> {
     let theme = ctx.theme;
     let marks = Marks::for_theme(theme);
@@ -587,31 +606,11 @@ fn run_stats(row: &WorkflowRow, ctx: &RenderCtx<'_>) -> Vec<Part> {
         ));
     };
     if row.agents_total > 0 {
-        let counted = if row.vendor { "agents" } else { "steps" };
-        push(
-            format!("{}/{} {counted}", row.agents_done, row.agents_total),
-            dim,
-            4,
-        );
-    }
-    if let Some(phase) = row
-        .phase
-        .as_deref()
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-    {
-        push(sanitize_line(phase).into_owned(), dim, 3);
-    }
-    if row.goals_running > 0 {
-        let noun = if row.goals_running == 1 {
-            "goal"
-        } else {
-            "goals"
-        };
-        push(format!("{} {noun} running", row.goals_running), dim, 3);
+        push(format!("{}/{}", row.agents_done, row.agents_total), dim, 4);
     }
     if row.timed {
-        push(format::duration_compact(row.elapsed(ctx.clock.now)), dim, 3);
+        let elapsed = row.elapsed(ctx.clock.now);
+        push(format::duration_slot(elapsed), dim, 3);
     }
     if row.tokens > 0 {
         push(
@@ -624,35 +623,58 @@ fn run_stats(row: &WorkflowRow, ctx: &RenderCtx<'_>) -> Vec<Part> {
             1,
         );
     }
-    if let Some(spend) = &row.spend {
-        push(sanitize_line(spend).trim().to_owned(), dim, 2);
-    }
     // Who started the run says more than its time does.
-    if let Some(front_end) = &row.front_end {
-        push(sanitize_line(front_end).trim().to_owned(), dim, 4);
+    if let Some(outside_agent) = &row.outside_agent {
+        push(sanitize_line(outside_agent).trim().to_owned(), dim, 4);
     }
-    let state = match row.state {
-        WorkflowRowState::Running => None,
-        WorkflowRowState::NeedsYou => {
-            let (glyph, role) = states::mark(State::NeedsYou, theme);
-            Some((format!("{glyph} needs you"), role))
-        }
-        WorkflowRowState::Done => Some(("done".to_owned(), Role::StateDone)),
-        WorkflowRowState::Failed => Some(("failed".to_owned(), Role::StateFailed)),
-        WorkflowRowState::Paused => Some(("paused".to_owned(), Role::StateStopped)),
-        WorkflowRowState::Stopped => Some(("stopped".to_owned(), Role::StateStopped)),
-    };
-    if let Some((word, role)) = state {
-        push(word, theme.style(role), 6);
+    if let Some((said, role)) = said(row, marks.fallback) {
+        push(said, theme.style(role), 6);
     }
     if let Some(notice) = &row.notice {
         push(
             format!("{} {}", marks.warning, sanitize_line(notice).trim()),
-            theme.style(Role::Warning),
+            theme.style(Role::Warn),
             5,
         );
     }
     parts
+}
+
+/// The words at a row's end and their color: why it needs you, who fills in while it runs
+/// after `mark`, how it ended, and for a run that says nothing more, the goals it still works
+/// toward. A run that simply goes on says nothing.
+fn said(row: &WorkflowRow, mark: &str) -> Option<(String, Role)> {
+    let clean = |words: &Option<String>| {
+        words
+            .as_deref()
+            .map(|words| sanitize_line(words).trim().to_owned())
+            .filter(|words| !words.is_empty())
+    };
+    let filling_in = clean(&row.fallback)
+        .filter(|_| row.state == WorkflowRowState::Running)
+        .map(|who| format!("{mark} {who}"));
+    let own = clean(&row.said).or(filling_in);
+    let role = match row.state {
+        WorkflowRowState::NeedsYou | WorkflowRowState::Running => Role::Warn,
+        WorkflowRowState::Done => Role::StateDone,
+        WorkflowRowState::Failed | WorkflowRowState::Stopped => Role::StateFailed,
+        WorkflowRowState::Paused => Role::Dim,
+    };
+    let words = match (row.state, own) {
+        (WorkflowRowState::NeedsYou, Some(why)) => format!("needs you · {why}"),
+        (WorkflowRowState::NeedsYou, None) => "needs you".to_owned(),
+        (_, Some(said)) => said,
+        (WorkflowRowState::Running, None) => {
+            let goals = match row.goals_running {
+                0 => return None,
+                1 => "1 goal running".to_owned(),
+                goals => format!("{goals} goals running"),
+            };
+            return Some((goals, Role::Dim));
+        }
+        (state, None) => state.word().to_owned(),
+    };
+    Some((words, role))
 }
 
 /// One layout for the whole panel, so every bar and every stat starts in the same column. The
@@ -673,16 +695,16 @@ struct Names {
 
 impl PanelColumns {
     /// While the bar shows, it starts in one column whatever names up to [`MAX_NAME_CELLS`]
-    /// are, so a run's bar stays put when its name changes, as it does once the lead picks the
-    /// workflow. A longer name takes the room past the full bar, then the bar's own down to its
-    /// least, so it's cut only once the row is full. As the row narrows, the stats stay whole,
-    /// the bar shrinks, then the name column gives up cells down to `names.least` to keep it,
-    /// then it goes, and then names are cut further.
+    /// are, so a run's bar stays put when its name changes, as it does once the main agent picks
+    /// the workflow. A longer name takes the room past the full bar, then the bar's own down to its
+    /// least, so it's cut only once the row is full. As the row narrows, the stats stay whole, the
+    /// bar shrinks, then the name column gives up cells down to `names.least` to keep it, then it
+    /// goes, and then names are cut further.
     fn fit(width: usize, names: Names, stats_width: usize) -> Self {
         // The mark, and the circle and its space.
-        let lead = 2 + 2;
+        let margin = 2 + 2;
         // What the name and the bar share, after the gaps that follow each.
-        let shared = width.saturating_sub(lead + 2 + 2 + stats_width);
+        let shared = width.saturating_sub(margin + 2 + 2 + stats_width);
         if shared >= MAX_NAME_CELLS + MIN_BAR_CELLS {
             let name_width = names.longest.clamp(MAX_NAME_CELLS, shared - MIN_BAR_CELLS);
             return Self {
@@ -698,8 +720,8 @@ impl PanelColumns {
             };
         }
         // Without the bar, names take what they need, and keep at least half of what's left
-        // after the lead.
-        let room = width.saturating_sub(lead);
+        // after the main agent.
+        let room = width.saturating_sub(margin);
         let name_width = names
             .widest
             .min(room.saturating_sub(stats_width + 2).max(room / 2));
@@ -768,7 +790,7 @@ mod tests {
             );
             assert_eq!(panel.selected, Some(expected));
             let text = plain_text(&panel_lines(&panel, &agents, &ctx));
-            assert!(text.contains(&format!("❯ ○ workflow-{expected}")), "{text}");
+            assert!(text.contains(&format!("❯ ◯ workflow-{expected}")), "{text}");
         }
         let text = plain_text(&panel_lines(&panel, &agents, &ctx));
         assert!(text.starts_with("  ↑ 3 more"), "{text}");
@@ -910,7 +932,7 @@ mod tests {
         let wide = at(100);
         let rows: Vec<&str> = wide.lines().collect();
         assert_eq!(rows[0], "  ● main", "{wide}");
-        assert!(rows[1].starts_with("  ○ workflow-0"), "{wide}");
+        assert!(rows[1].starts_with("  ◯ workflow-0"), "{wide}");
         assert!(
             rows[2].starts_with("    ○ build:flag   Update(src/export.rs)")
                 && rows[2].ends_with("↓ 18.1k tokens"),
@@ -958,7 +980,7 @@ mod tests {
         let mut sub = AgentRow::new("Count slowly", "Reading src", AgentState::Working)
             .with_label("Count slowly", "Count slowly");
         sub.kind = RowKind::Subagent;
-        sub.run = Some("chat".into());
+        sub.run = Some("conversation".into());
         sub.key = Some("toolu_a".into());
         agents.rows.push(sub);
         let mut worker = AgentRow::new("codex", "Update(src/a.rs)", AgentState::Working)
@@ -972,26 +994,170 @@ mod tests {
                 .map(|row| row.split_whitespace().take(2).collect::<Vec<_>>().join(" "))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(listed(&panel), ["● main", "○ Count", "○ workflow-0"]);
+        assert_eq!(listed(&panel), ["● main", "○ Count", "◯ workflow-0"]);
         panel.show_agents = true;
         assert_eq!(
             listed(&panel),
-            ["● main", "○ Count", "○ workflow-0", "○ build:flag"]
+            ["● main", "○ Count", "◯ workflow-0", "○ build:flag"]
         );
         // ↓ from the input lands on the first row past main, and typing there is a message.
         panel.focus_past_main(&agents);
         assert_eq!(
             panel.selected_id(&agents),
             Some(PanelRowId::Agent(AgentRef {
-                run: Some("chat".into()),
+                run: Some("conversation".into()),
                 session: "toolu_a".into()
             }))
         );
         assert_eq!(listed(&panel)[..2], ["○ main", "● Count"]);
     }
 
+    /// The picture's run in each state its row has, all named alike.
+    fn pictured(done: u32, total: u32, seconds: u64, tokens: u64) -> WorkflowRow {
+        let mut row = WorkflowRow::new("run-0", "Add due dates", WorkflowRowState::Running);
+        row.agents_done = done;
+        row.agents_total = total;
+        row.elapsed_ms = seconds * 1000;
+        row.tokens = tokens;
+        row
+    }
+
+    /// The rows as their picture draws them, cell for cell and colour for colour: Claude Code's
+    /// row, and at its end who fills in, why it needs you, or how it ended.
     #[test]
-    fn a_run_row_reads_like_claude_code() {
+    fn the_rows_read_as_their_picture() {
+        let theme = crate::views::workflow_pictures::dark();
+        let said = |mut row: WorkflowRow, state: WorkflowRowState, said: &str| {
+            row.state = state;
+            row.said = Some(said.to_owned());
+            row
+        };
+        let panel = WorkflowPanel {
+            rows: vec![
+                pictured(2, 4, 252, 128_000),
+                WorkflowRow {
+                    fallback: Some("Sonnet 5.5 for Opus 5.5".to_owned()),
+                    ..pictured(1, 3, 146, 83_600)
+                },
+                said(
+                    pictured(1, 3, 166, 84_200),
+                    WorkflowRowState::NeedsYou,
+                    "Claude Code is down",
+                ),
+                said(
+                    pictured(6, 6, 380, 177_000),
+                    WorkflowRowState::Done,
+                    "merged onto main",
+                ),
+                said(
+                    pictured(3, 6, 302, 140_000),
+                    WorkflowRowState::Stopped,
+                    "stopped · /resume carries it on",
+                ),
+            ],
+            max_rows: 5,
+            selected: Some(4),
+            ..WorkflowPanel::default()
+        };
+        let t0 = Instant::now();
+        let ctx = RenderCtx::new(124, &theme, Clock::still(t0));
+        let lines = panel_lines(&panel, &AgentPanel::default(), &ctx);
+        let picture = crate::views::workflow_pictures::picture!("run_rows");
+        let drawn = crate::views::workflow_pictures::buffer_of(&lines, 124);
+        picture.assert_drawn(0..5, &drawn, 0);
+    }
+
+    /// The moment a run's steps are known its row shows them all as agents to come: its name,
+    /// an empty bar, none of the four done and its time. No token is counted yet, so none
+    /// are shown, as in Claude Code's row. The time then counts by itself.
+    #[test]
+    fn a_run_whose_steps_were_just_written_has_an_empty_bar_and_its_time() {
+        let theme = crate::views::workflow_pictures::dark();
+        let t0 = Instant::now();
+        let mut row = pictured(0, 4, 2, 0);
+        row.measured_at = Some(t0);
+        let panel = WorkflowPanel {
+            rows: vec![row],
+            max_rows: 5,
+            ..WorkflowPanel::default()
+        };
+        let read = |at: Instant| {
+            let ctx = RenderCtx::new(124, &theme, Clock::still(at));
+            plain_text(&panel_lines(&panel, &AgentPanel::default(), &ctx))
+        };
+        let empty = "▱".repeat(BAR_CELLS);
+        assert_eq!(
+            read(t0),
+            format!("  ◯ Add due dates         {empty}  0/4 · 2s")
+        );
+        assert_eq!(
+            read(t0 + Duration::from_secs(1)),
+            format!("  ◯ Add due dates         {empty}  0/4 · 3s")
+        );
+    }
+
+    /// Each picture of the workflow view ends with the run's row in the bottom list, which is
+    /// this same row.
+    #[test]
+    fn the_row_under_each_view_reads_as_its_picture() {
+        use crate::views::workflow_pictures::{buffer_of, dark, picture};
+        let theme = dark();
+        let ctx = RenderCtx::new(124, &theme, Clock::still(Instant::now()));
+        let row = |mut row: WorkflowRow, state: WorkflowRowState, said: Option<&str>| {
+            row.state = state;
+            row.said = said.map(str::to_owned);
+            row
+        };
+        let done = WorkflowRowState::Done;
+        let cases = [
+            (
+                picture!("workflow_running"),
+                14,
+                row(
+                    pictured(2, 4, 252, 128_000),
+                    WorkflowRowState::Running,
+                    None,
+                ),
+            ),
+            (
+                picture!("workflow_done"),
+                14,
+                row(pictured(6, 6, 380, 177_000), done, Some("merged onto main")),
+            ),
+            (
+                picture!("workflow_done_no_git"),
+                14,
+                row(
+                    pictured(5, 5, 380, 165_000),
+                    done,
+                    Some("written into your folder"),
+                ),
+            ),
+            (
+                picture!("workflow_cli_down"),
+                22,
+                row(
+                    pictured(1, 3, 166, 84_200),
+                    WorkflowRowState::NeedsYou,
+                    Some("Claude Code is down"),
+                ),
+            ),
+        ];
+        for (picture, at, row) in cases {
+            let panel = WorkflowPanel {
+                rows: vec![row],
+                max_rows: 5,
+                ..WorkflowPanel::default()
+            };
+            let lines = panel_lines(&panel, &AgentPanel::default(), &ctx);
+            picture.assert_drawn(at..at + 1, &buffer_of(&lines, 124), 0);
+        }
+    }
+
+    /// A run near its limit says so after Claude Code's counts, in the warning color, and its
+    /// time keeps counting.
+    #[test]
+    fn a_run_near_its_limit_says_so_at_the_rows_end() {
         let theme = theme();
         let t0 = Instant::now();
         let ctx = RenderCtx::new(150, &theme, Clock::new(t0, t0 + Duration::from_secs(3)));
@@ -1001,7 +1167,6 @@ mod tests {
         row.elapsed_ms = 9_837_400;
         row.measured_at = Some(t0);
         row.tokens = 1_800_000;
-        row.spend = Some("$4.10".into());
         row.notice = Some("85% of limit · /workflows to stop".into());
         let panel = WorkflowPanel {
             rows: vec![row],
@@ -1009,23 +1174,17 @@ mod tests {
             ..WorkflowPanel::default()
         };
         let lines = panel_lines(&panel, &AgentPanel::default(), &ctx);
-        let bar = " ".repeat(BAR_CELLS);
         let pad = " ".repeat(MAX_NAME_CELLS - "argonauts-ui-kit".len());
+        let done = "▰".repeat(8 * BAR_CELLS / 9);
+        let left = "▱".repeat(BAR_CELLS - 8 * BAR_CELLS / 9);
         assert_eq!(
             plain_text(&lines),
             format!(
-                "  ○ argonauts-ui-kit{pad}  {bar}  8/9 steps · 2h44m · ↓ 1.8M tokens · $4.10 · ! 85% of limit · /workflows to stop"
+                "  ◯ argonauts-ui-kit{pad}  {done}{left}  8/9 · 2h44m · ↓ 1.8M tokens · ! 85% of limit · /workflows to stop"
             )
         );
-        let fill: Vec<_> = lines[0]
-            .spans
-            .iter()
-            .filter(|s| s.style.bg.is_some())
-            .collect();
-        assert_eq!(fill[0].content.len(), 8 * BAR_CELLS / 9);
-        assert_eq!(fill[0].style.bg, theme.style(Role::Card).fg);
         let notice = lines[0].spans.last().map(|span| span.style);
-        assert_eq!(notice, Some(theme.style(Role::Warning)));
+        assert_eq!(notice, Some(theme.style(Role::Warn)));
         assert_eq!(
             panel.next_change(&AgentPanel::default(), &ctx.clock, &theme),
             Some(t0 + Duration::from_millis(3_600))
@@ -1041,7 +1200,6 @@ mod tests {
         run.agents_total = 5;
         run.elapsed_ms = 252_000;
         run.tokens = 54_300;
-        run.spend = Some("$0.21".into());
         let panel = WorkflowPanel {
             rows: vec![run],
             max_rows: 5,
@@ -1069,17 +1227,15 @@ mod tests {
         (panel, agents, Clock::new(t0, t0 + Duration::from_secs(252)))
     }
 
-    /// Where each row's bar starts and how many cells it takes, from its colored cells or, without
-    /// color, its block glyphs.
+    /// Where each row's bar starts and how many cells it takes, from its cells' glyphs.
     fn bars(lines: &[Line<'_>], theme: &Theme) -> Vec<Option<(usize, usize)>> {
-        let glyphs = [theme.glyphs.bar_fill, theme.glyphs.bar_track];
+        let glyphs = ["▰", "▱", theme.glyphs.bar_fill, theme.glyphs.bar_track];
         let is_bar = |span: &Span<'_>| {
             !span.content.is_empty()
-                && (span.style.bg.is_some()
-                    || span
-                        .content
-                        .chars()
-                        .all(|c| glyphs.iter().any(|glyph| glyph.contains(c))))
+                && span
+                    .content
+                    .chars()
+                    .all(|c| glyphs.iter().any(|glyph| glyph.contains(c)))
         };
         lines
             .iter()
@@ -1104,7 +1260,7 @@ mod tests {
     fn a_runs_bar_keeps_its_column_when_its_name_changes() {
         let theme = theme();
         for width in [80, 100, 120, 200] {
-            let starts: Vec<Option<usize>> = ["goal", "council · add per-key rate limiting"]
+            let starts: Vec<Option<usize>> = ["goal", "add --json to export"]
                 .into_iter()
                 .map(|name| {
                     let (mut panel, _, clock) = crew(false);
@@ -1123,7 +1279,7 @@ mod tests {
     fn a_long_run_name_takes_the_room_the_row_has() {
         let theme = theme();
         let name = "council · Add a --json flag to export, with tests";
-        for (width, whole) in [(80, false), (100, false), (120, true)] {
+        for (width, whole) in [(80, false), (100, true), (120, true)] {
             let (mut panel, _, clock) = crew(false);
             panel.rows[0].name = name.into();
             let ctx = RenderCtx::new(width, &theme, clock);
@@ -1131,7 +1287,6 @@ mod tests {
             assert_lines(&lines, width);
             let text = plain_text(&lines);
             assert_eq!(text.contains(name), whole, "{width} columns\n{text}");
-            assert!(text.contains("$0.21"), "{width} columns\n{text}");
             assert!(bars(&lines, &theme)[0].is_some(), "{width} columns\n{text}");
         }
     }
@@ -1183,7 +1338,6 @@ mod tests {
             WorkflowRowState::Running,
         );
         inner.parent = Some("s-002".into());
-        inner.vendor = true;
         inner.agents_done = 1;
         inner.agents_total = 3;
         panel.rows.push(inner);
@@ -1202,12 +1356,12 @@ mod tests {
         let ctx = RenderCtx::new(100, &theme, Clock::still(t0));
         let text = plain_text(&panel_lines(&panel, &agents, &ctx));
         let rows: Vec<&str> = text.lines().collect();
-        assert!(rows[1].starts_with("  ○ workflow-0"), "{text}");
-        assert!(rows[1].contains("1/3 steps"), "a run counts steps: {text}");
+        assert!(rows[1].starts_with("  ◯ workflow-0"), "{text}");
+        assert!(rows[1].contains("  1/3 · "), "{text}");
         assert!(rows[3].starts_with("    ○ build:add-due-dates"), "{text}");
         assert!(
-            rows[4].starts_with("      ○ add-due-dates") && rows[4].contains("1/3 agents"),
-            "the agent's own workflow is under it, in its CLI's count: {text}"
+            rows[4].starts_with("      ◯ add-due-dates") && rows[4].contains("  1/3 · "),
+            "the agent's own workflow is under it: {text}"
         );
         assert_eq!(rows.len(), 5, "and listed once: {text}");
     }
@@ -1224,7 +1378,6 @@ mod tests {
         let mut inner =
             WorkflowRow::new("run-1#fix-median", "fix-median", WorkflowRowState::Running);
         inner.parent = Some("s-002".into());
-        inner.vendor = true;
         panel.rows.push(inner);
         let mut agents = AgentPanel::default();
         agents.rows.push(AgentRow::main());

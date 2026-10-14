@@ -69,12 +69,12 @@ mod tests {
         let theme = theme();
         let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
         let lines = narrator_lines(
-            Some("Codex took over task-002 while Claude waits for its reset."),
+            Some("task-002 fell back to Codex while Claude waits for its reset."),
             &ctx,
         );
         assert_eq!(
             plain_text(&lines),
-            "※ narrator: Codex took over task-002\n  while Claude waits for its reset."
+            "※ narrator: task-002 fell back to Codex\n  while Claude waits for its reset."
         );
         let text = lines[0]
             .spans

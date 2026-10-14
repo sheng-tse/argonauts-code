@@ -71,7 +71,7 @@ struct Prompt {
 impl Prompt {
     fn new(entry: PromptEntry) -> Self {
         // Folded as `sanitize_line` folds, keeping where the first line ends.
-        let cleaned = sanitize(&entry.text);
+        let cleaned = sanitize(&entry.prompt);
         let mut lines = cleaned
             .split('\n')
             .map(str::trim)
@@ -83,7 +83,7 @@ impl Prompt {
             line.push_str(rest);
         }
         Self {
-            text: entry.text,
+            text: entry.prompt,
             at: entry.at,
             line,
             first,

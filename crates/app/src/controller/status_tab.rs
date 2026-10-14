@@ -1,6 +1,6 @@
 //! The Overview's Status tab, read by code: the runs in this folder and how everything is set
 //! up. It is the panel's own read, so whatever goes wrong only leaves a part of the tab empty;
-//! nothing here writes into the chat.
+//! nothing here writes into the conversation.
 //!
 //! The CLIs' versions are the ones Doctor found as the app started, and who each one is signed
 //! in as is asked of the CLI's own login check once, off the loop, or read from the screen it
@@ -8,23 +8,26 @@
 //! is followed by a live read of the CLI's plan usage, which does. The addresses stay on this
 //! screen; nothing here sends them anywhere.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use argonauts_conductor::{AgentStatus, DoctorReport};
+use argonauts_core::adapter::BannerAccount;
 use argonauts_core::app::{AppEvent, ConfigEntry, ViewData};
-use argonauts_core::limits::QuotaBoard;
-use argonauts_core::names::VendorId;
+use argonauts_core::limits::PlanUsageBoard;
+use argonauts_core::names::AgentId;
+use argonauts_core::settings::layer;
 use argonauts_core::status_tab::{
-    CliStatus, Conversation, Folder, MainSession, SettingsFile, SettingsInEffect, StatusTabView,
-    WorkflowSetup,
+    CliProvider, CliStatus, CliVersionCheck, Conversation, Folder, MainSession, SettingsFile,
+    SettingsInEffect, StatusTabView, WorkflowSetup, providers_unread,
 };
 
-use super::chat::{self, ChatState};
+use super::conversation::{self, ConversationState};
+use super::header_and_bottom_line::header_agent;
 use super::runs::{self, RunsState};
-use super::status_line::header_agent;
+use super::status_health;
 use super::{Ctx, Effect, Outbox};
 use crate::env::FolderGit;
 use crate::setup::probe::LOGIN_TIMEOUT;
@@ -52,15 +55,38 @@ struct SignIn {
     plan: Option<String>,
     /// The check said it isn't signed in, or failed as one that isn't does.
     signed_out: bool,
+    /// The CLI asked whether to trust this folder before it showed who is signed in.
+    untrusted_folder: bool,
+    /// What it can use, for a CLI that keeps providers of its own in place of one account.
+    providers: Option<Vec<CliProvider>>,
+    /// Its providers were asked for, and nothing it printed could be read as their list.
+    providers_unread: bool,
+    /// The model it uses when none is named, with its provider, as the tab says it.
+    default_model: Option<String>,
 }
 
 impl CliFacts {
-    /// Doctor's check of every CLI, as the app started or `/doctor` ran.
+    /// Doctor's check of every CLI as the app started.
     pub(crate) fn checked(&self, report: DoctorReport) {
         *self.checked.lock().unwrap_or_else(PoisonError::into_inner) = Some(report);
     }
 
-    fn report(&self) -> Option<DoctorReport> {
+    /// One CLI as it is now, such as after its update, in place of what Doctor last found of
+    /// it. Whether it is turned on stays as the settings had it.
+    pub(crate) fn rechecked(&self, check: argonauts_conductor::AgentCheck) {
+        let mut checked = self.checked.lock().unwrap_or_else(PoisonError::into_inner);
+        let kept = checked
+            .as_mut()
+            .and_then(|report| report.agents.iter_mut().find(|kept| kept.id == check.id));
+        if let Some(kept) = kept {
+            *kept = argonauts_conductor::AgentCheck {
+                enabled: kept.enabled,
+                ..check
+            };
+        }
+    }
+
+    pub(crate) fn report(&self) -> Option<DoctorReport> {
         self.checked
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -92,9 +118,9 @@ impl CliFacts {
 pub(crate) async fn show(
     ctx: &mut Ctx,
     runs: &mut RunsState,
-    chat: &ChatState,
+    conversation: &ConversationState,
 ) -> anyhow::Result<Vec<Effect>> {
-    let view = read(ctx, runs, chat).await;
+    let view = read(ctx, runs, conversation).await;
     send(&ctx.out, view.clone());
     ask_sign_ins(ctx, view);
     Ok(Vec::new())
@@ -108,19 +134,27 @@ fn send(out: &Outbox, view: StatusTabView) {
     });
 }
 
-async fn read(ctx: &mut Ctx, runs: &mut RunsState, chat: &ChatState) -> StatusTabView {
+async fn read(
+    ctx: &mut Ctx,
+    runs: &mut RunsState,
+    conversation: &ConversationState,
+) -> StatusTabView {
     let listed = ctx.services.conductor.list().await.unwrap_or_default();
     // The run on screen, or else the newest one here.
     let followed = runs::attached(runs)
         .cloned()
         .or_else(|| listed.first().map(|summary| summary.run.clone()));
+    let at_work = followed
+        .as_ref()
+        .map(|run| status_health::at_work(ctx, run))
+        .unwrap_or_default();
     let run = match followed {
         Some(run) => ctx.services.conductor.status(&run).await.ok(),
         None => None,
     };
     let settings = ctx.settings();
     let (worker, effort) = header_agent(ctx);
-    let context = chat::context_row(chat);
+    let context = conversation::context_row(conversation);
     let main = MainSession {
         worker,
         effort,
@@ -137,21 +171,30 @@ async fn read(ctx: &mut Ctx, runs: &mut RunsState, chat: &ChatState) -> StatusTa
             let sign_ins = ctx.cli_facts.sign_ins();
             clis(
                 &report,
-                &main.worker.worker,
+                &main.worker.agent,
                 &sign_ins,
-                ctx.services.quota.as_ref(),
+                ctx.services.plan_usage.as_ref(),
+                &version_checks(ctx, &report),
+                &listing_providers(ctx),
             )
         })
         .unwrap_or_default();
+    let health = status_health::rows(ctx, &clis, &at_work);
     StatusTabView {
         version: env!("CARGO_PKG_VERSION").to_owned(),
-        conversation: chat::started(chat).map(|started| Conversation {
-            id: chat::id(chat).to_string(),
+        conversation: conversation::started(conversation).map(|started| Conversation {
+            id: conversation::id(conversation).to_string(),
             started,
         }),
         folder: Folder {
             shown: ctx.env.display_repo(),
             git: ctx.env.git() == FolderGit::Repository,
+            history_size: match ctx.env.git() {
+                FolderGit::Hidden(_) => {
+                    crate::hidden_git::size(&ctx.env.state_dir).map(super::folder_git::megabytes)
+                }
+                _ => None,
+            },
         },
         workflow: WorkflowSetup {
             name: settings.workflow.clone(),
@@ -160,10 +203,11 @@ async fn read(ctx: &mut Ctx, runs: &mut RunsState, chat: &ChatState) -> StatusTa
         },
         mode: settings.approvals.mode().label().to_owned(),
         clis,
-        settings: settings_in_effect(ctx, chat),
+        settings: settings_in_effect(ctx, conversation),
         main: Some(main),
         runs: listed,
         run,
+        health,
     }
 }
 
@@ -173,19 +217,63 @@ pub(crate) fn unnamed_accounts(ctx: &Ctx) -> Vec<String> {
         return Vec::new();
     };
     let sign_ins = ctx.cli_facts.sign_ins();
-    let main = header_agent(ctx).0.worker;
-    clis(&report, &main, &sign_ins, ctx.services.quota.as_ref())
-        .into_iter()
-        .filter(|cli| cli.installed && cli.account.is_none() && !cli.signed_out)
-        .map(|cli| {
-            format!(
-                "{} · {} · {}",
-                cli.name,
-                argonauts_core::status_tab::UNNAMED_ACCOUNT,
-                unnamed_why(&cli.id, sign_ins.contains_key(&cli.id))
-            )
+    let main = header_agent(ctx).0.agent;
+    let checks = version_checks(ctx, &report);
+    clis(
+        &report,
+        &main,
+        &sign_ins,
+        ctx.services.plan_usage.as_ref(),
+        &checks,
+        &listing_providers(ctx),
+    )
+    .into_iter()
+    .filter(|cli| {
+        cli.installed
+            && cli.account.is_none()
+            && cli.providers.is_none()
+            && !cli.signed_out
+            && !cli.untrusted_folder
+            // One that keeps providers of its own has no address to show.
+            && (!cli.lists_providers || cli.providers_unread)
+    })
+    .map(|cli| {
+        if cli.lists_providers {
+            return format!("{} · {}", cli.name, providers_unread(&cli.command));
+        }
+        format!(
+            "{} · {} · {}",
+            cli.name,
+            argonauts_core::status_tab::UNNAMED_ACCOUNT,
+            unnamed_why(&cli.id, sign_ins.contains_key(&cli.id))
+        )
+    })
+    .collect()
+}
+
+/// The CLIs that keep a list of providers in place of one account, by id.
+fn listing_providers(ctx: &Ctx) -> BTreeSet<String> {
+    crate::commands::adapters_here(Some(&ctx.env), ctx.settings.resolved())
+        .map(|adapters| {
+            adapters
+                .iter()
+                .filter(|adapter| !adapter.provider_checks().is_empty())
+                .map(|adapter| adapter.id().to_owned())
+                .collect()
         })
-        .collect()
+        .unwrap_or_default()
+}
+
+/// How each installed CLI's version stands and what there is to update to, by id, from Doctor's
+/// check and what sessions and the install sources have shown.
+pub(crate) fn version_checks(
+    ctx: &Ctx,
+    report: &DoctorReport,
+) -> BTreeMap<String, CliVersionCheck> {
+    match crate::commands::adapters_here(Some(&ctx.env), ctx.settings.resolved()) {
+        Ok(adapters) => crate::commands::version_checks(&ctx.env.paths, &adapters, report),
+        Err(_) => BTreeMap::new(),
+    }
 }
 
 /// Why a CLI's address isn't shown: what was asked, and what it said.
@@ -194,7 +282,7 @@ fn unnamed_why(id: &str, checked: bool) -> &'static str {
         ("codex", _) => {
             "its login check doesn't print the address, and no read of its plan usage has named it yet"
         }
-        ("antigravity-cli", true) => "its start-up screen showed no address",
+        ("antigravity-cli", true) => "its start-up screen was read and showed no address",
         ("antigravity-cli", false) => {
             "its start-up screen is read once the Status tab opens, and hasn't been yet"
         }
@@ -203,12 +291,15 @@ fn unnamed_why(id: &str, checked: bool) -> &'static str {
     }
 }
 
-/// Every CLI Doctor checked, the main session's first, each with who it is signed in as.
+/// Every CLI Doctor checked, the main session's first, each with who it is signed in as or
+/// what it can use, and how its version stands.
 fn clis(
     report: &DoctorReport,
     main: &str,
     sign_ins: &BTreeMap<String, SignIn>,
-    quota: &dyn QuotaBoard,
+    plan_usage: &dyn PlanUsageBoard,
+    checks: &BTreeMap<String, CliVersionCheck>,
+    listing: &BTreeSet<String>,
 ) -> Vec<CliStatus> {
     let mut clis: Vec<CliStatus> = report
         .agents
@@ -219,8 +310,10 @@ fn clis(
             // A CLI whose login check names no account may still name it when its plan
             // usage is read live, as Codex does.
             if sign_in.account.is_none()
+                && sign_in.providers.is_none()
                 && !sign_in.signed_out
-                && let Some(live) = quota.live(&VendorId(check.id.clone()))
+                && !sign_in.untrusted_folder
+                && let Some(live) = plan_usage.live(&AgentId(check.id.clone()))
                 && live.account.is_some()
             {
                 sign_in.account = live.account;
@@ -229,19 +322,19 @@ fn clis(
             CliStatus {
                 id: check.id.clone(),
                 name: check.display_name.clone(),
+                command: command_name(&check.binary),
                 version: check.version.clone().filter(|_| installed),
                 installed,
                 main: check.id == main,
                 account: sign_in.account,
                 signed_out: sign_in.signed_out,
+                untrusted_folder: sign_in.untrusted_folder,
                 plan: sign_in.plan,
-                note: match check.status {
-                    AgentStatus::NotInstalled => "not installed".to_owned(),
-                    AgentStatus::Tested => "checked".to_owned(),
-                    AgentStatus::Newer => "newer than checked, works".to_owned(),
-                    AgentStatus::Untested => "not a checked version, may still work".to_owned(),
-                    AgentStatus::UnknownVersion => "unknown version".to_owned(),
-                },
+                lists_providers: listing.contains(&check.id),
+                providers_unread: sign_in.providers_unread && sign_in.providers.is_none(),
+                providers: sign_in.providers,
+                default_model: sign_in.default_model,
+                check: checks.get(&check.id).cloned().unwrap_or_default(),
             }
         })
         .collect();
@@ -249,14 +342,22 @@ fn clis(
     clis
 }
 
+/// `agy` for `/opt/bin/agy`: the command as you would type it.
+fn command_name(binary: &str) -> String {
+    Path::new(binary).file_name().map_or_else(
+        || binary.to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
 /// Each settings file with what it sets, the mods, the main session's tools and the MCP
 /// servers its CLI brought.
-fn settings_in_effect(ctx: &Ctx, chat: &ChatState) -> SettingsInEffect {
+fn settings_in_effect(ctx: &Ctx, conversation: &ConversationState) -> SettingsInEffect {
     let keys: Vec<ConfigEntry> = ctx
         .settings
         .entries()
         .into_iter()
-        .filter(|entry| entry.layer != "built-in")
+        .filter(|entry| entry.layer != layer::BUILT_IN)
         .collect();
     let mut files: Vec<SettingsFile> = Vec::new();
     for entry in &keys {
@@ -285,12 +386,12 @@ fn settings_in_effect(ctx: &Ctx, chat: &ChatState) -> SettingsInEffect {
         files,
         mods_built_in: built_in,
         mods_yours: yours,
-        tools: chat::main_tools(ctx, chat)
+        tools: conversation::main_tools(ctx, conversation)
             .iter()
             .map(|name| tool_words(name))
             .collect(),
         tools_off: !ctx.settings().main_session.tools,
-        mcp_servers: chat::mcp_servers(chat),
+        mcp_servers: conversation::mcp_servers(conversation),
         keys,
     }
 }
@@ -370,20 +471,36 @@ fn ask_sign_ins(ctx: &Ctx, mut view: StatusTabView) {
             Some((check.id.clone(), path, Arc::clone(adapter)))
         })
         .collect();
-    if (checks.is_empty() && banners.is_empty()) || !ctx.cli_facts.start_asking() {
+    // A CLI that keeps providers of its own is asked what it can use, by its own commands.
+    let lists: Vec<(String, std::path::PathBuf, Arc<dyn argonauts_core::Adapter>)> = report
+        .agents
+        .iter()
+        .filter(|check| check.enabled && check.status != AgentStatus::NotInstalled)
+        .filter_map(|check| {
+            let path = check.path.clone()?;
+            let adapter = adapters.iter().find(|adapter| {
+                adapter.id() == check.id && !adapter.provider_checks().is_empty()
+            })?;
+            Some((check.id.clone(), path, Arc::clone(adapter)))
+        })
+        .collect();
+    let nothing_to_ask = checks.is_empty() && banners.is_empty() && lists.is_empty();
+    if nothing_to_ask || !ctx.cli_facts.start_asking() {
         return;
     }
+    let versions = version_checks(ctx, &report);
+    let listing = listing_providers(ctx);
     let cwd = ctx.env.repo_root.clone();
     let readers = super::account::live_readers(ctx);
     let workers = Arc::clone(&ctx.services.workers);
     let internal = ctx.internal.clone();
     let facts = Arc::clone(&ctx.cli_facts);
-    let quota = Arc::clone(&ctx.services.quota);
+    let plan_usage = Arc::clone(&ctx.services.plan_usage);
     let out = ctx.out.clone();
     let main = view
         .main
         .as_ref()
-        .map(|main| main.worker.worker.clone())
+        .map(|main| main.worker.agent.clone())
         .unwrap_or_default();
     tokio::spawn(async move {
         let asked = checks
@@ -393,47 +510,68 @@ fn ask_sign_ins(ctx: &Ctx, mut view: StatusTabView) {
             let cwd = cwd.clone();
             async move { (id, banner_sign_in(path, cwd, adapter).await) }
         });
-        let (asked, read) = futures::future::join(
+        let listed = lists
+            .into_iter()
+            .map(|(id, path, adapter)| async move { (id, providers(&path, adapter).await) });
+        let (asked, read, listed) = futures::future::join3(
             futures::future::join_all(asked),
             futures::future::join_all(read),
+            futures::future::join_all(listed),
         )
         .await;
         let known: BTreeMap<String, SignIn> = asked
             .into_iter()
             .chain(read)
+            .chain(listed)
             .filter_map(|(id, sign_in)| Some((id, sign_in?)))
             .collect();
         facts.known(known.clone());
-        view.clis = clis(&report, &main, &known, quota.as_ref());
+        view.clis = clis(
+            &report,
+            &main,
+            &known,
+            plan_usage.as_ref(),
+            &versions,
+            &listing,
+        );
         send(&out, view.clone());
         // A CLI whose check names no address is read live as the Usage tab reads it, which
         // names it, and the tab is drawn again once that read is in.
         for worker in readers {
-            let vendor = worker.vendor();
-            let unnamed = known
-                .get(&vendor.0)
-                .is_some_and(|sign_in| sign_in.account.is_none() && !sign_in.signed_out);
-            let named = quota
-                .live(&vendor)
+            let agent_id = worker.agent_id();
+            let unnamed = known.get(&agent_id.0).is_some_and(|sign_in| {
+                sign_in.account.is_none() && !sign_in.signed_out && !sign_in.untrusted_folder
+            });
+            let named = plan_usage
+                .live(&agent_id)
                 .is_some_and(|live| live.account.is_some());
             if !unnamed || named {
                 continue;
             }
-            let (facts, again, out, report, main) = (
+            let (facts, again, out, report, main, versions, listing) = (
                 Arc::clone(&facts),
-                Arc::clone(&quota),
+                Arc::clone(&plan_usage),
                 out.clone(),
                 report.clone(),
                 main.clone(),
+                versions.clone(),
+                listing.clone(),
             );
             let mut view = view.clone();
             super::account::read_account_live(
                 workers.as_ref(),
-                &quota,
+                &plan_usage,
                 internal.clone(),
                 &worker,
                 move || {
-                    view.clis = clis(&report, &main, &facts.sign_ins(), again.as_ref());
+                    view.clis = clis(
+                        &report,
+                        &main,
+                        &facts.sign_ins(),
+                        again.as_ref(),
+                        &versions,
+                        &listing,
+                    );
                     send(&out, view);
                 },
             );
@@ -464,23 +602,92 @@ async fn sign_in(program: &Path, args: &[String]) -> Option<SignIn> {
     Some(sign_in_from(&String::from_utf8_lossy(&output.stdout)))
 }
 
-/// Reads who a CLI's start-up screen says is signed in, off the async threads.
+/// Asks a CLI that keeps providers of its own what it can use: each of its listing commands
+/// in turn, with its updater kept off. A command that fails or runs out of time leaves its
+/// part unknown, and nothing but the CLI's own answers is read.
+async fn providers(program: &Path, adapter: Arc<dyn argonauts_core::Adapter>) -> Option<SignIn> {
+    let mut outputs = Vec::new();
+    for args in adapter.provider_checks() {
+        let child = tokio::process::Command::new(program)
+            .args(*args)
+            .envs(adapter.updater_off_env().iter().copied())
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .output();
+        let printed = match tokio::time::timeout(LOGIN_TIMEOUT, child).await {
+            Ok(Ok(output)) if output.status.success() => {
+                String::from_utf8_lossy(&output.stdout).into_owned()
+            }
+            _ => String::new(),
+        };
+        outputs.push(printed);
+    }
+    // It answered, and nothing in the answer is its list: that is said, never an account.
+    let Some(found) = adapter.providers(&outputs) else {
+        return Some(SignIn {
+            providers_unread: true,
+            ..SignIn::default()
+        });
+    };
+    let default_model = found.default_model.map(|(route, provider)| {
+        let model = route
+            .split_once('/')
+            .map_or(route.as_str(), |(_, model)| model);
+        format!("{} on {provider}", model_words(adapter.id(), model))
+    });
+    Some(SignIn {
+        providers: Some(found.providers),
+        default_model,
+        ..SignIn::default()
+    })
+}
+
+/// `GLM 5` for `z-ai/glm-5`: a routed model as its name reads, without who publishes it.
+fn model_words(cli: &str, model: &str) -> String {
+    let name = model.rsplit('/').next().unwrap_or(model);
+    argonauts_core::display_names::DisplayNames::default()
+        .model(cli, Some(name))
+        .unwrap_or_else(|| name.to_owned())
+}
+
+/// Reads who a CLI's start-up screen says is signed in, off the async threads, with the CLI's
+/// own updater kept off. A screen that never said is still one that was read.
 async fn banner_sign_in(
     program: std::path::PathBuf,
     cwd: std::path::PathBuf,
     adapter: Arc<dyn argonauts_core::Adapter>,
 ) -> Option<SignIn> {
     let read = tokio::task::spawn_blocking(move || {
-        super::banner::read_banner(&program, &cwd, super::banner::BANNER_TIMEOUT, |screen| {
-            adapter.banner_account(screen)
-        })
+        super::banner::read_banner(
+            &program,
+            &cwd,
+            adapter.updater_off_env(),
+            super::banner::BANNER_TIMEOUT,
+            |screen| adapter.banner_account(screen),
+        )
     });
-    let found = read.await.ok().flatten()?;
-    Some(SignIn {
-        account: found.account,
-        plan: found.plan,
-        signed_out: found.signed_out,
-    })
+    Some(sign_in_shown(read.await.ok()?))
+}
+
+/// What a start-up screen said, as the tab keeps it.
+fn sign_in_shown(banner: Option<BannerAccount>) -> SignIn {
+    match banner {
+        Some(BannerAccount::SignedIn { account, plan }) => SignIn {
+            account: Some(account),
+            plan,
+            ..SignIn::default()
+        },
+        Some(BannerAccount::SignedOut) => SignIn {
+            signed_out: true,
+            ..SignIn::default()
+        },
+        Some(BannerAccount::UntrustedFolder) => SignIn {
+            untrusted_folder: true,
+            ..SignIn::default()
+        },
+        None => SignIn::default(),
+    }
 }
 
 fn sign_in_from(printed: &str) -> SignIn {
@@ -504,7 +711,7 @@ fn sign_in_from(printed: &str) -> SignIn {
     SignIn {
         account: text("email"),
         plan: text("subscriptionType").map(|plan| capitalized(&plan)),
-        signed_out: false,
+        ..SignIn::default()
     }
 }
 

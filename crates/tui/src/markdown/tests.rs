@@ -155,7 +155,7 @@ fn blocks_are_separated_where_the_source_separates_them() {
         "para one\n\npara two"
     );
     assert_eq!(render("text\n```\ncode\n```\nmore", 80), "text\ncode\nmore");
-    assert_eq!(render("lead-in:\n- item", 80), "lead-in:\n- item");
+    assert_eq!(render("intro:\n- item", 80), "intro:\n- item");
 }
 
 #[test]

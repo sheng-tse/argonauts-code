@@ -1,60 +1,65 @@
-//! A run's story in scrollback: triage, goal and plan steps, gates, handoffs, pauses, resumes,
-//! merges, and the run's end, each a tool-call-shaped line with `⎿` details. Agents and cards
+//! A run's story in scrollback: goal and plan steps, checks, fallbacks, pauses, resumes,
+//! merges, and the run's end, each a tool-call-shaped line with `⎿` details. Agents and tasks
 //! draw their own items.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use argonauts_core::events::card::{
-    AttemptCause, CardEvent, CardState, GateOutcome, IntegrationEvent,
-};
+use argonauts_core::events::agent_status::{AgentStatusEvent, FallbackEvent, FallbackPlan};
 use argonauts_core::events::goal::GoalEvent;
 use argonauts_core::events::plan::{DivideEvent, JudgingResult, MappedTopic, PlanEvent};
 use argonauts_core::events::run::{ClosingAnswer, RunLifecycle, RunMode, RunPhase};
-use argonauts_core::events::vendor::{HandoffEvent, HandoffPlan, VendorEvent};
+use argonauts_core::events::task::{CheckOutcome, MergeEvent, TaskEvent, TaskState, TryCause};
 use argonauts_core::events::workflow::WorkflowEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::limits::HealthState;
-use argonauts_core::log::RETRO_FAILED;
-use argonauts_core::names::{VendorId, WorkerRef};
-use argonauts_core::{CardId, PhaseStatus, RunId};
+use argonauts_core::limits::{HealthState, ModelHealth, ModelState, TEST_TASK_SUCCEEDED};
+use argonauts_core::log::{COPIES_REMOVED, RUN_REVIEW_FAILED};
+use argonauts_core::names::{AgentId, ModelRef};
+use argonauts_core::{PhaseStatus, RunId, TaskId};
 use time::OffsetDateTime;
 
 use crate::format::WallClock;
 
 use super::items::Items;
-use super::{Cx, gates, handoff, lifecycle, steps, workflows};
+use super::{Cx, checks, fallback, lifecycle, steps, workflows};
 
 #[derive(Debug, Default)]
 pub(super) struct Milestones {
     runs: BTreeMap<RunId, RunStory>,
-    /// Each vendor's last health, to tell when one comes back.
-    health: BTreeMap<VendorId, HealthState>,
+    /// Each agent's last health, to tell when one comes back.
+    health: BTreeMap<AgentId, HealthState>,
+    /// Each model's last word, so a line says only what changed.
+    model_health: BTreeMap<ModelRef, ModelHealth>,
+    /// The models a line said went out on their own, so each one's return gets a line too.
+    models_said_out: BTreeSet<ModelRef>,
 }
 
 /// What a run's later lines need from its earlier events.
 #[derive(Debug, Default)]
 pub(super) struct RunStory {
     pub started: Option<OffsetDateTime>,
-    /// A crew run names the card on its gate lines.
+    /// A crew run names the task on its check lines.
     pub crew: bool,
     /// The last pause asked to stop now rather than at a safe point.
     pub pause_now: bool,
-    pub restatements: u32,
+    pub readings: u32,
     pub drafts: u32,
     pub mapped: Vec<MappedTopic>,
     pub judged: Option<JudgingResult>,
-    pub fast_path: Option<WorkerRef>,
-    pub coordinated: Option<WorkerRef>,
-    /// Gate results per card, printed together when the card leaves gating. `None` is the final
+    pub fast_path: Option<ModelRef>,
+    pub orchestrated: Option<ModelRef>,
+    /// Check results per task, printed together when the task leaves checking. `None` is the final
     /// check's.
-    pub gates: BTreeMap<Option<CardId>, Vec<GateOutcome>>,
-    pub landed: Option<String>,
+    pub checks: BTreeMap<Option<TaskId>, Vec<CheckOutcome>>,
+    pub run_merged: Option<String>,
+    /// The copies removed when the run ended, as its note names them. Said on the run's last
+    /// row.
+    pub copies_removed: Option<String>,
     pub pull_request: Option<PullRequest>,
-    pub retro: bool,
-    pub retro_failed: bool,
-    /// Each card's latest checkpoint tag and why it was handed off.
-    pub tags: BTreeMap<CardId, u32>,
-    pub handoffs: BTreeMap<CardId, HandoffPlan>,
+    pub run_review: bool,
+    pub run_review_failed: bool,
+    /// Each task's latest checkpoint tag and why it fell back.
+    pub tags: BTreeMap<TaskId, u32>,
+    pub fallbacks: BTreeMap<TaskId, FallbackPlan>,
     /// The run's own workflow, by the name its start item printed.
     pub workflow: Option<String>,
     /// Its start item, while it waits for the workflow a step runs to report its phases.
@@ -80,7 +85,7 @@ impl Milestones {
         cx: &mut Cx<'_>,
     ) {
         let story = self.runs.entry(event.run_id.clone()).or_default();
-        let card = event.card_id.as_ref();
+        let task = event.task_id.as_ref();
         match &event.kind {
             RunEventKind::Run(lifecycle) => match lifecycle {
                 RunLifecycle::Started(started) => {
@@ -98,7 +103,7 @@ impl Milestones {
                     sessions_stopped,
                     committed,
                 } => lifecycle::paused(story.pause_now, *sessions_stopped, committed, cx),
-                RunLifecycle::Parked { reason, .. } => lifecycle::parked(reason, clock, cx),
+                RunLifecycle::Waiting { reason, .. } => lifecycle::waiting(reason, clock, cx),
                 RunLifecycle::ClosingAnswer(answer) => story.closing = Some((**answer).clone()),
                 RunLifecycle::Finished { outcome, detail } => {
                     let elapsed = story.started.map(|at| {
@@ -112,17 +117,17 @@ impl Milestones {
                 _ => {}
             },
             RunEventKind::Phase(change) => match (change.phase, change.status) {
-                (RunPhase::Retro, PhaseStatus::Finished) => story.retro = true,
-                // The finish line mustn't call a failed retro saved.
-                (RunPhase::Retro, PhaseStatus::Failed) => {
-                    story.retro = false;
-                    story.retro_failed = true;
-                    steps::retro_failed(change.summary.as_deref(), cx);
+                (RunPhase::RunReview, PhaseStatus::Finished) => story.run_review = true,
+                // The finish line mustn't call a failed run review saved.
+                (RunPhase::RunReview, PhaseStatus::Failed) => {
+                    story.run_review = false;
+                    story.run_review_failed = true;
+                    steps::run_review_failed(change.summary.as_deref(), cx);
                 }
                 (phase, status) => steps::phase(phase, status, change.summary.as_deref(), cx),
             },
             RunEventKind::Goal(goal) => match goal {
-                GoalEvent::Restated { .. } => story.restatements += 1,
+                GoalEvent::Read { .. } => story.readings += 1,
                 GoalEvent::Approved { file, by } => steps::goal(story, file, by, cx),
                 GoalEvent::ChangeResolved { resolution, .. } => steps::goal_change(*resolution, cx),
                 _ => {}
@@ -132,153 +137,213 @@ impl Milestones {
                 PlanEvent::Mapped { topics, .. } => story.mapped = topics.clone(),
                 PlanEvent::FastPath { merged_by } => story.fast_path = Some(merged_by.clone()),
                 PlanEvent::Judged(result) => story.judged = Some(result.clone()),
-                PlanEvent::Coordinated {
-                    coordinator,
+                PlanEvent::Orchestrated {
+                    orchestrator,
                     rejection: None,
-                } => story.coordinated = Some(coordinator.clone()),
+                } => story.orchestrated = Some(orchestrator.clone()),
                 _ => {}
             },
             RunEventKind::Divide(DivideEvent::Graph(graph)) => {
-                steps::plan(story, graph.cards.len(), cx)
+                steps::plan(story, graph.tasks.len(), cx)
             }
-            RunEventKind::Gate(outcome) => {
+            RunEventKind::Check(outcome) => {
                 story
-                    .gates
-                    .entry(card.cloned())
+                    .checks
+                    .entry(task.cloned())
                     .or_default()
                     .push(outcome.clone());
             }
-            RunEventKind::Card(card_event) => {
-                let Some(card) = card else { return };
-                match card_event {
-                    CardEvent::State {
-                        from: Some(CardState::Gating),
+            RunEventKind::Task(task_event) => {
+                let Some(task) = task else { return };
+                match task_event {
+                    TaskEvent::State {
+                        from: Some(TaskState::Checking),
                         to,
                         ..
-                    } if *to != CardState::Gating => {
-                        if let Some(gates) = story.gates.remove(&Some(card.clone())) {
-                            let label = card_label(cx, &event.run_id, card);
-                            gates::report(Some(&label), &gates, story.crew, cx);
+                    } if *to != TaskState::Checking => {
+                        if let Some(checks) = story.checks.remove(&Some(task.clone())) {
+                            let label = task_label(cx, &event.run_id, task);
+                            checks::report(Some(&label), &checks, story.crew, cx);
                         }
                     }
-                    CardEvent::CheckpointTagged { n, .. } => {
-                        story.tags.insert(card.clone(), *n);
+                    TaskEvent::CheckpointTagged { n, .. } => {
+                        story.tags.insert(task.clone(), *n);
                     }
-                    CardEvent::Reassigned { from, to, by, .. } => {
-                        let label = card_label(cx, &event.run_id, card);
-                        handoff::reassigned(&label, from.as_ref(), to, by, cx)
+                    TaskEvent::Reassigned { from, to, by, .. } => {
+                        let label = task_label(cx, &event.run_id, task);
+                        fallback::reassigned(&label, from.as_ref(), to, by, cx)
                     }
-                    CardEvent::Reverted { to, kept_on } => {
-                        let label = card_label(cx, &event.run_id, card);
-                        handoff::reverted(&label, *to, kept_on, cx)
+                    TaskEvent::Rewound { to, kept_on } => {
+                        let label = task_label(cx, &event.run_id, task);
+                        fallback::rewound(&label, *to, kept_on, cx)
                     }
-                    CardEvent::DebtCleared { by } => {
-                        let label = card_label(cx, &event.run_id, card);
-                        handoff::debt_cleared(&label, by, cx)
+                    TaskEvent::DebtCleared { by } => {
+                        let label = task_label(cx, &event.run_id, task);
+                        fallback::debt_cleared(&label, by, cx)
                     }
-                    CardEvent::Attempt {
+                    TaskEvent::Try {
                         worker,
-                        cause: AttemptCause::Rotation,
+                        cause: TryCause::Rotation,
                         ..
                     } => {
-                        let label = card_label(cx, &event.run_id, card);
-                        handoff::rotated(&label, worker, cx)
+                        let label = task_label(cx, &event.run_id, task);
+                        fallback::rotated(&label, worker, cx)
+                    }
+                    TaskEvent::Try {
+                        worker,
+                        cause: TryCause::Restarted,
+                        ..
+                    } => {
+                        let label = task_label(cx, &event.run_id, task);
+                        fallback::restarted(&label, worker, cx)
                     }
                     _ => {}
                 }
             }
-            RunEventKind::Integration(integration) => match integration {
-                IntegrationEvent::Landed { target, .. } => story.landed = Some(target.clone()),
-                IntegrationEvent::PullRequest { url, command, .. } => {
+            RunEventKind::Merge(merge) => match merge {
+                MergeEvent::RunMerged { target, .. } => story.run_merged = Some(target.clone()),
+                MergeEvent::PullRequest { url, command, .. } => {
                     story.pull_request = Some(PullRequest {
                         url: url.clone(),
                         command: command.clone(),
                     });
                 }
-                IntegrationEvent::FinalCheck { .. } => {
-                    let gates = story.gates.remove(&None).unwrap_or_default();
-                    gates::report(None, &gates, false, cx);
+                MergeEvent::FinalCheck { .. } => {
+                    let checks = story.checks.remove(&None).unwrap_or_default();
+                    checks::report(None, &checks, false, cx);
                 }
-                IntegrationEvent::Conflict {
-                    card,
+                MergeEvent::Conflict {
+                    task,
                     files,
                     assigned_to,
                 } => {
-                    let label = card_label(cx, &event.run_id, card);
-                    handoff::conflict(&label, files.len(), assigned_to, cx)
+                    let label = task_label(cx, &event.run_id, task);
+                    fallback::conflict(&label, files.len(), assigned_to, cx)
                 }
-                IntegrationEvent::MainMoved { commits, .. } => lifecycle::main_moved(*commits, cx),
+                MergeEvent::MainMoved { commits, .. } => lifecycle::main_moved(*commits, cx),
                 _ => {}
             },
-            RunEventKind::Handoff(handoff_event) => match handoff_event {
-                HandoffEvent::Needed(plan) => {
-                    story.handoffs.insert(plan.card.clone(), plan.clone());
+            RunEventKind::Fallback(fallback_event) => match fallback_event {
+                FallbackEvent::Needed(plan) => {
+                    story.fallbacks.insert(plan.task.clone(), plan.clone());
                 }
-                HandoffEvent::HandedOff {
-                    card,
+                FallbackEvent::FellBack {
+                    task,
                     to,
                     mode,
                     context,
                     ..
-                } => handoff::handed_off(
-                    handoff::Handed {
-                        card: &card_label(cx, &event.run_id, card),
+                } => fallback::fell_back(
+                    fallback::Recorded {
+                        task: &task_label(cx, &event.run_id, task),
                         to,
                         mode: *mode,
                         context: *context,
-                        tag: story.tags.get(card).copied(),
+                        tag: story.tags.get(task).copied(),
                     },
-                    story.handoffs.get(card),
+                    story.fallbacks.get(task),
                     clock,
                     cx,
                 ),
-                HandoffEvent::Waiting {
-                    card,
-                    vendor,
+                FallbackEvent::Waiting {
+                    task,
+                    agent_id,
                     until,
+                    kept_off,
                 } => {
-                    let label = card_label(cx, &event.run_id, card);
-                    handoff::waiting(&label, vendor, *until, clock, cx)
+                    let wait = fallback::Wait {
+                        task: &task_label(cx, &event.run_id, task),
+                        agent_id,
+                        until: *until,
+                        kept_off: kept_off.as_ref(),
+                    };
+                    fallback::waiting(&wait, clock, cx)
                 }
-                HandoffEvent::Packet { .. } => {}
+                FallbackEvent::Note { .. }
+                | FallbackEvent::JobWaiting(_)
+                | FallbackEvent::JobFreed { .. } => {}
             },
-            RunEventKind::Vendor(vendor) => match vendor {
-                VendorEvent::Health(health) => {
-                    let before = self.health.insert(health.vendor.clone(), health.state);
-                    let was_out = matches!(before, Some(HealthState::Down | HealthState::Degraded));
+            RunEventKind::AgentStatus(agent_id) => match agent_id {
+                AgentStatusEvent::Health(health) => {
+                    let before = self.health.insert(health.agent_id.clone(), health.state);
+                    // A CLI comes back from Down by way of its test task.
+                    let was_out = matches!(
+                        before,
+                        Some(HealthState::Down | HealthState::Degraded | HealthState::Testing)
+                    );
                     if was_out && health.state == HealthState::Healthy {
-                        handoff::vendor_back(&event.run_id, &health.vendor, cx);
+                        let tested = health.reason.as_deref() == Some(TEST_TASK_SUCCEEDED);
+                        fallback::agent_back(&event.run_id, &health.agent_id, tested, cx);
+                    }
+                    if health.state == HealthState::Down && before != Some(HealthState::Down) {
+                        let out: Vec<&ModelHealth> = self
+                            .model_health
+                            .values()
+                            .filter(|model| model.model.agent_id() == health.agent_id)
+                            .collect();
+                        fallback::agent_down(&event.run_id, health, &out, cx);
                     }
                 }
-                VendorEvent::Disabled { vendor, reason } => items.notice(
+                AgentStatusEvent::Disabled { agent_id, reason } => items.notice(
                     argonauts_core::NoteLevel::Warn,
-                    &format!("{vendor} is off for new tasks: {reason}"),
+                    &format!("{agent_id} is off for new tasks: {reason}"),
                     cx,
                 ),
-                VendorEvent::Quota(_) => {}
+                AgentStatusEvent::Model(health) => {
+                    let cli = health.model.agent_id();
+                    let cli_out = matches!(
+                        self.health.get(&cli),
+                        Some(HealthState::Down | HealthState::Testing)
+                    );
+                    let another_out = self.model_health.values().any(|other| {
+                        other.model != health.model
+                            && other.model.agent_id() == cli
+                            && other.state == ModelState::Out
+                    });
+                    let before = self
+                        .model_health
+                        .insert(health.model.clone(), health.clone());
+                    let was = before.map_or(ModelState::Healthy, |before| before.state);
+                    let went_out = health.state == ModelState::Out && was != ModelState::Out;
+                    let came_back = health.state == ModelState::Healthy
+                        && matches!(was, ModelState::Out | ModelState::Testing);
+                    // A second model out takes the CLI down, and that line names each model's
+                    // trouble. A model's return is said only where its going was.
+                    if went_out && !cli_out && !another_out {
+                        self.models_said_out.insert(health.model.clone());
+                        fallback::model_out(health, &event.run_id, clock, cx);
+                    } else if came_back && self.models_said_out.remove(&health.model) {
+                        fallback::model_back(&health.model, &event.run_id, cx);
+                    }
+                }
+                AgentStatusEvent::PlanUsage(_) => {}
             },
             RunEventKind::Workflow(WorkflowEvent::Declared(declared)) => {
                 workflows::declared(&event.run_id, declared, story, cx);
             }
             RunEventKind::Workflow(WorkflowEvent::PhaseAdded { phase, why, .. }) => {
-                workflows::phase_added(&phase.title, why, story, cx);
+                workflows::phase_added(&phase.name, why, story, cx);
             }
             RunEventKind::Workflow(WorkflowEvent::Reported(report)) => {
                 workflows::reported(report, story, cx);
             }
-            RunEventKind::Retro(_) => story.retro = true,
+            RunEventKind::RunReview(_) => story.run_review = true,
             // The engine's note repeats the line the failed phase printed, without the reason.
-            RunEventKind::Note(note) if story.retro_failed && note.text == RETRO_FAILED => {}
+            RunEventKind::Note(note)
+                if story.run_review_failed && note.text == RUN_REVIEW_FAILED => {}
+            RunEventKind::Note(note) if note.text.starts_with(COPIES_REMOVED) => {
+                story.copies_removed = Some(note.line().to_owned());
+            }
             RunEventKind::Note(note) => items.note(note, cx),
             _ => {}
         }
     }
 }
 
-/// What a card goes by in the chat: its label, never its id (`RunState::card_label`).
-fn card_label(cx: &Cx<'_>, run: &RunId, card: &CardId) -> String {
+/// What a task goes by in the conversation: its label, never its id (`RunState::task_label`).
+fn task_label(cx: &Cx<'_>, run: &RunId, task: &TaskId) -> String {
     cx.state
         .runs
         .get(run)
-        .map_or_else(|| card.to_string(), |state| state.card_label(card))
+        .map_or_else(|| task.to_string(), |state| state.task_label(task))
 }

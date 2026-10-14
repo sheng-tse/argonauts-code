@@ -1,20 +1,23 @@
-//! In auto mode with rules deciding, a small solo change that passes the rules merges without
+//! In auto mode with rules deciding, a small Captain change that passes the rules merges without
 //! asking, the decision is recorded as the rules', and the auto-merge counts toward the day.
 
 mod policy_support;
 
-use argonauts_core::events::checkpoint::AnswerAction;
+use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::events::run::Party;
 use policy_support::{
-    AUTO_MERGE_RULES, RUN_WAIT, launch_ready, merge_decided, run_finished, solo_config, start_solo,
-    trusted_scenario, wait_for_events,
+    AUTO_MERGE_RULES, RUN_WAIT, captain_config, launch_ready, merge_decided, run_finished,
+    start_captain, trusted_scenario, wait_for_events,
 };
 
 #[test]
 fn policy_auto_mode_merges_under_rules() -> anyhow::Result<()> {
-    let scenario = trusted_scenario("owner-writes-hello.toml", &solo_config(AUTO_MERGE_RULES))?;
+    let scenario = trusted_scenario(
+        "worker-writes-hello.toml",
+        &captain_config(AUTO_MERGE_RULES),
+    )?;
     let mut pty = launch_ready(&scenario, &[])?;
-    start_solo(&mut pty)?;
+    start_captain(&mut pty)?;
 
     let events = wait_for_events(&scenario, "the run to finish", RUN_WAIT, run_finished)?;
     let decided = merge_decided(&events).expect("the merge was decided");

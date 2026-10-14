@@ -1,4 +1,4 @@
-//! Telemetry (`[telemetry]`): one anonymous event a day about how Argonauts is used, off until
+//! Telemetry (`[telemetry]`): one anonymous event a day about how Argonauts Code is used, off until
 //! you say yes. Only your own global config may turn it on, so a repository you clone can't,
 //! and it's a safety key, so an agent can't either.
 

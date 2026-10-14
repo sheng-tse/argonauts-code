@@ -6,12 +6,13 @@
 pub mod agents;
 mod band;
 pub mod bottom_line;
+pub mod cli_workflow_run;
 mod ended;
 pub mod failure;
 pub mod input;
 pub mod keys;
-pub mod mods;
 pub mod panel;
+pub mod plugin_output;
 pub mod refusal;
 mod reviewed;
 #[cfg(test)]
@@ -20,7 +21,6 @@ pub mod settings;
 pub mod status;
 pub mod tools;
 pub mod transcript;
-pub mod vendor_workflow;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -30,14 +30,14 @@ use argonauts_core::Verbosity;
 use argonauts_core::api::TakeOverTicket;
 use argonauts_core::app::{AppEvent, AppMode, UiCommand, ViewData};
 use argonauts_core::keywords::Keyword;
-use argonauts_core::names::WorkerRef;
-use argonauts_core::settings::ui::{TakeoverWhere, UiSettings};
+use argonauts_core::names::ModelRef;
+use argonauts_core::settings::ui::{TakeOverWhere, UiSettings};
 
 use crate::UiOptions;
 use crate::app::UiAction;
-use crate::cards::Cards;
 use crate::model::ViewModel;
 use crate::overview::{OverviewView, Tab};
+use crate::questions::Questions;
 use crate::state::AppState;
 use crate::theme::Theme;
 use crate::views::follow::Refresh;
@@ -72,17 +72,17 @@ impl<'a> Cx<'a> {
     pub fn keywords(&self) -> &'a [Keyword] {
         let state: &'a AppState = self.state;
         state
-            .vendor_commands
+            .cli_commands
             .as_ref()
             .map_or(&[], |set| set.keywords.as_slice())
     }
 
     /// `worker`'s keywords when it runs the main agent's CLI, the one whose table the screen
     /// has; none otherwise.
-    pub fn keywords_of(&self, worker: &WorkerRef) -> &'a [Keyword] {
+    pub fn keywords_of(&self, worker: &ModelRef) -> &'a [Keyword] {
         let state: &'a AppState = self.state;
-        match &state.vendor_commands {
-            Some(set) if set.vendor.0 == worker.worker => &set.keywords,
+        match &state.cli_commands {
+            Some(set) if set.agent_id.0 == worker.agent => &set.keywords,
             _ => &[],
         }
     }
@@ -99,7 +99,7 @@ pub struct Effects {
     /// The views answer a command typed while an answer ran, so they open as a panel under
     /// the working line and the answer keeps running above.
     pub views_as_panel: bool,
-    /// Close every open view first, such as when a card from the crew view gets the keys.
+    /// Close every open view first, such as when a question from the agent panel gets the keys.
     pub close_views: bool,
     pub take_over: Option<TakeOverJob>,
     /// An agent CLI's own command, such as its login, to run with the terminal handed over.
@@ -143,7 +143,7 @@ impl Effects {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TakeOverJob {
     pub ticket: TakeOverTicket,
-    pub place: TakeoverWhere,
+    pub place: TakeOverWhere,
     pub run: RunId,
 }
 
@@ -159,7 +159,7 @@ pub struct Bridge {
     settings: UiSettings,
     pub transcript: Transcript,
     pub agents: AgentBlocks,
-    pub cards: Cards,
+    pub questions: Questions,
     pub input: InputRouter,
     pub keys: KeyActions,
     refresh: Refresh,
@@ -178,7 +178,7 @@ impl Bridge {
             settings: options.settings.clone(),
             transcript: Transcript::default(),
             agents: AgentBlocks::default(),
-            cards: Cards::default(),
+            questions: Questions::default(),
             input: InputRouter::new(options),
             keys: KeyActions::default(),
             refresh: Refresh::default(),
@@ -197,7 +197,7 @@ impl Bridge {
         let mut out = Effects::default();
         // A refresh's answer that no view took is for a view that closed or is covered.
         let unclaimed = self.refresh.unclaimed(event, now);
-        // So is the answer to a refresh of the Overview's open tab, once the panel has
+        // So is the answer to a refresh of the usage panel's open tab, once the panel has
         // closed: it opens nothing and prints nothing.
         let stale_tab = matches!(event, AppEvent::View { data }
             if model.bottom.band.watch.answered(data, now));
@@ -205,18 +205,6 @@ impl Bridge {
             AppEvent::View { data } if !self.state.replaying() && !stale_tab => {
                 match data.as_ref() {
                     ViewData::StatusTab { view } if std::mem::take(&mut self.input.status_view) => {
-                        Some(view)
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
-        };
-        // `/context all` asked for the tab its answer opens to list every item.
-        let context_all = match event {
-            AppEvent::View { data } if !self.state.replaying() && !stale_tab => {
-                match data.as_ref() {
-                    ViewData::Context { view } if std::mem::take(&mut self.input.context_all) => {
                         Some(view)
                     }
                     _ => None,
@@ -235,7 +223,7 @@ impl Bridge {
             settings::on_event(event, &mut cx);
             self.input.answers_mid_answer_command(event, &mut cx);
             match status_view {
-                // Under its tab of the Overview, beside Usage and Context.
+                // Under its tab of the usage panel, beside Usage and Context.
                 Some(view) => cx.out.open(
                     OverviewView::new(Tab::Status, cx.model.bottom.band.watch.clone())
                         .with_status_tab((**view).clone()),
@@ -244,16 +232,10 @@ impl Bridge {
                 None => self.transcript.on_event(event, &mut cx),
             }
             self.agents.on_event(event, &mut cx);
-            self.cards.on_event(event, &mut cx);
+            self.questions.on_event(event, &mut cx);
             self.input.on_event(event, &mut cx);
-            match context_all {
-                Some(view) => cx.out.open(
-                    OverviewView::new(Tab::Context, cx.model.bottom.band.watch.clone())
-                        .with_context(view.clone())
-                        .listing_all(true),
-                ),
-                None if !unclaimed && !stale_tab => views::on_event(event, &mut cx, &self.refresh),
-                None => {}
+            if !unclaimed && !stale_tab {
+                views::on_event(event, &mut cx, &self.refresh);
             }
             status::sync(&mut cx);
             panel::sync(&mut cx);
@@ -304,7 +286,7 @@ impl Bridge {
             if !matches!(action, UiAction::Focus(_)) {
                 self.transcript.print_header(&mut cx);
             }
-            let _taken = self.cards.on_action(action, &mut cx)
+            let _taken = self.questions.on_action(action, &mut cx)
                 || self.input.on_action(action, &mut cx)
                 || self.keys.on_action(action, &mut cx);
             status::sync(&mut cx);
@@ -321,12 +303,12 @@ impl Bridge {
         for command in &out.commands {
             self.state.sent(command);
         }
-        // Chat text sent while a turn runs waits in grey until its own turn starts, and
+        // Conversation text sent while a turn runs waits in grey until its own turn starts, and
         // `AppState::apply` drops it again at that `TurnStarted`.
         if matches!(self.state.mode, Some(AppMode::Answering { .. })) {
             for command in &out.commands {
                 if let UiCommand::Submit { text, .. } = command {
-                    self.state.chat.queued.push(text.clone());
+                    self.state.conversation.queued.push(text.clone());
                 }
             }
         }
@@ -337,7 +319,7 @@ impl Bridge {
             self.settings.keys = if on {
                 argonauts_core::KeyScheme::Vim
             } else {
-                argonauts_core::KeyScheme::Standard
+                argonauts_core::KeyScheme::Default
             };
         }
     }
@@ -376,7 +358,7 @@ mod view_answer_tests {
     }
 
     #[test]
-    fn status_opens_its_view_and_where_are_we_prints_in_the_chat() {
+    fn status_opens_its_view_and_where_are_we_prints_in_the_conversation() {
         let mut bridge = Bridge::new(&UiOptions::default());
         let mut model = ViewModel::default();
         let sent = submit(&mut bridge, &mut model, "/status");
@@ -393,7 +375,7 @@ mod view_answer_tests {
         assert_eq!(out.views.len(), 1, "/status opens the status view");
         assert_eq!(model.history.cells().len(), printed);
 
-        // The same answer to anything else, such as "where are we?", prints in the chat.
+        // The same answer to anything else, such as "where are we?", prints in the conversation.
         submit(&mut bridge, &mut model, "/ask where are we?");
         let out = bridge.on_event(&mut model, &status(), Instant::now());
         assert!(out.views.is_empty());
@@ -401,7 +383,7 @@ mod view_answer_tests {
     }
 
     #[test]
-    fn status_print_prints_in_the_chat_and_opens_nothing() {
+    fn status_print_prints_in_the_conversation_and_opens_nothing() {
         let mut bridge = Bridge::new(&UiOptions::default());
         let mut model = ViewModel::default();
         let sent = submit(&mut bridge, &mut model, "/status print");
@@ -544,7 +526,7 @@ mod view_answer_tests {
             matches!(
                 keyed.commands[..],
                 [UiCommand::Slash {
-                    command: SlashCommand::Budget { key: Some(_), .. }
+                    command: SlashCommand::Limits { key: Some(_), .. }
                 }]
             ),
             "{:?}",
@@ -560,13 +542,13 @@ mod view_answer_tests {
 
         let mut bridge = Bridge::new(&UiOptions::default());
         let mut model = ViewModel::default();
-        let sent = submit(&mut bridge, &mut model, "/stats 7d");
+        let sent = submit(&mut bridge, &mut model, "/stats week");
         assert_eq!(sent.views.len(), 1);
         assert_eq!(
             sent.commands,
             [UiCommand::Slash {
                 command: SlashCommand::Stats {
-                    period: Some("7d".into()),
+                    period: Some("week".into()),
                     action: ViewAction::Open
                 }
             }]
@@ -588,8 +570,8 @@ mod view_answer_tests {
     /// numbers its preview draws. Another mod's page is still the controller's.
     #[test]
     fn mods_stats_opens_the_page_over_the_stats_tab() {
-        use argonauts_core::input::{ViewAction, WidgetsAction};
-        use argonauts_core::settings::ui::WidgetName;
+        use argonauts_core::input::{ModsAction, ViewAction};
+        use argonauts_core::settings::ui::ModName;
 
         let mut bridge = Bridge::new(&UiOptions::default());
         let mut model = ViewModel::default();
@@ -609,9 +591,9 @@ mod view_answer_tests {
         assert_eq!(
             other.commands,
             [UiCommand::Slash {
-                command: SlashCommand::Widgets {
-                    action: WidgetsAction::Page {
-                        widget: WidgetName::Context
+                command: SlashCommand::Mods {
+                    action: ModsAction::Page {
+                        the_mod: ModName::Context
                     },
                     scope: None
                 }
@@ -631,8 +613,7 @@ mod view_answer_tests {
         let mut ui = UiSettings::default();
         ui.views.status.open = ViewOpen::Print;
         ui.views.usage.open = ViewOpen::Print;
-        ui.views.context.open = ViewOpen::Dialog;
-        ui.views.budget.open = ViewOpen::Print;
+        ui.views.limits.open = ViewOpen::Print;
         let settings = AppEvent::UiSettings {
             vim: false,
             verbosity: argonauts_core::Verbosity::Full,
@@ -663,13 +644,13 @@ mod view_answer_tests {
         );
         assert_eq!(
             sent(&mut bridge, &mut model, "/limits"),
-            SlashCommand::Budget {
+            SlashCommand::Limits {
                 key: None,
                 value: None,
                 action: print
             }
         );
-        // A dialog is the panel, as a view is.
+        // A tab left as it was opens its panel.
         assert_eq!(
             sent(&mut bridge, &mut model, "/context"),
             SlashCommand::Context {
@@ -679,10 +660,10 @@ mod view_answer_tests {
         );
     }
 
-    /// `/context all` opens the Context tab listing every item of every category, and a
-    /// plain `/context` after it opens the tab with the largest few as ever.
+    /// Every list on the Context tab shows in full, so `/context all` opens the same tab as a
+    /// plain `/context`.
     #[test]
-    fn context_all_opens_the_tab_listing_every_item() {
+    fn context_all_opens_the_same_tab() {
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
 
@@ -691,7 +672,7 @@ mod view_answer_tests {
 
         let mut bridge = Bridge::new(&UiOptions::default());
         let mut model = ViewModel::default();
-        bridge.state.chat.context = Some(sample::breakdown());
+        bridge.state.conversation.context = Some(sample::counted());
         let answer = AppEvent::View {
             data: Box::new(ViewData::Context {
                 view: sample::context(),
@@ -707,24 +688,57 @@ mod view_answer_tests {
                 state: &bridge.state,
                 now: Instant::now(),
             };
-            let area = Rect::new(0, 0, 110, 60);
+            let area = Rect::new(0, 0, 118, 90);
             let mut buf = Buffer::empty(area);
             out.views[0].render(area, &mut buf, &ctx);
-            crate::views::dock::lines(&buf)
-                .iter()
-                .map(ToString::to_string)
+            let rows = crate::views::dock::lines(&buf);
+            let rows = rows.iter().map(ToString::to_string);
+            // The count's age is the only thing a later frame draws differently.
+            rows.filter(|row| !row.contains("counted "))
                 .collect::<Vec<_>>()
                 .join("\n")
         };
         let all = shown(&mut bridge, "/context all");
-        assert!(all.contains("Memory files · 2 · 4.9k"), "{all}");
-        assert!(all.contains("a the largest items"), "{all}");
-        let few = shown(&mut bridge, "/context");
-        assert!(!few.contains("Memory files · 2 · 4.9k"), "{few}");
-        assert!(few.contains("a every item"), "{few}");
+        assert!(all.contains("└ search_issues"), "{all}");
+        assert!(all.contains("└ release-notes"), "{all}");
+        assert!(!all.contains(" more"), "{all}");
+        assert_eq!(shown(&mut bridge, "/context"), all);
     }
 
-    /// The Overview asks again for what its open tab shows. Once the panel has closed, the
+    /// `/context print` answers with the sessions, and the conversation prints them under the
+    /// command's own row, with the main session's count as the screen holds it. Nothing opens.
+    #[test]
+    fn context_print_goes_into_the_conversation() {
+        use crate::cell::Cell;
+        use crate::overview::sample;
+
+        let mut bridge = Bridge::new(&UiOptions::default());
+        let mut model = ViewModel::default();
+        bridge.state.conversation.context = Some(sample::counted());
+        let printed = model.history.cells().len();
+        let answer = AppEvent::View {
+            data: Box::new(ViewData::ContextPrint {
+                view: sample::context(),
+            }),
+        };
+        let out = bridge.on_event(&mut model, &answer, Instant::now());
+        assert!(out.views.is_empty());
+        let cells = &model.history.cells()[printed..];
+        let [Cell::User(command), Cell::Custom(rows)] = cells else {
+            panic!("{cells:?}");
+        };
+        assert!(command.command);
+        assert_eq!(command.text, "/context print");
+        let theme = crate::Theme::dark();
+        let clock = crate::render::Clock::still(Instant::now());
+        let ctx = crate::render::RenderCtx::new(118, &theme, clock);
+        let text = crate::text::plain_text(&rows.lines(&ctx));
+        assert!(text.starts_with("  ⎿  Context Usage  counted "), "{text}");
+        assert!(text.contains("212k/1M tokens (21%)"), "{text}");
+        assert!(text.contains("Crew agents \u{b7} "), "{text}");
+    }
+
+    /// The usage panel asks again for what its open tab shows. Once the panel has closed, the
     /// answer still on its way opens nothing and prints nothing, and the next `/status`
     /// opens its tab as ever.
     #[test]
@@ -762,10 +776,10 @@ mod view_answer_tests {
         assert_eq!(out.views.len(), 1, "an answer you asked for opens its tab");
     }
 
-    /// Whatever a tab of the Overview is answered with, nothing of it reaches the chat, even
-    /// with nothing to show: no run, no readings.
+    /// Whatever a tab of the usage panel is answered with, nothing of it reaches the conversation,
+    /// even with nothing to show: no run, no readings.
     #[test]
-    fn no_tab_of_the_panel_prints_into_the_chat() {
+    fn no_tab_of_the_panel_prints_into_the_conversation() {
         let mut bridge = Bridge::new(&UiOptions::default());
         let mut model = ViewModel::default();
         let now = Instant::now();
@@ -900,7 +914,7 @@ mod view_answer_tests {
 
 #[cfg(test)]
 mod awake_tests {
-    use argonauts_core::app::{AwakeHold, StatusLine};
+    use argonauts_core::app::{AwakeHold, HeaderAndBottomLine};
     use argonauts_core::settings::approvals::ApprovalMode;
     use argonauts_core::settings::bottom_line::AWAKE;
     use argonauts_core::settings::ui::NarratorMode;
@@ -911,14 +925,14 @@ mod awake_tests {
 
     fn status(awake: Option<AwakeHold>) -> AppEvent {
         AppEvent::Status {
-            status: StatusLine {
+            status: HeaderAndBottomLine {
                 title: String::new(),
                 repo: "~/code".into(),
                 workflow: "council".into(),
                 ultracode: false,
                 run: None,
                 main_agent: "claude-code".parse().unwrap(),
-                quotas: Vec::new(),
+                plan_chips: Vec::new(),
                 line: Default::default(),
                 spent: None,
                 limit: None,

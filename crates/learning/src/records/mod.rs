@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use argonauts_core::limits::{TrackRecord, TrackRecords};
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::protocol::RoutingSettings;
 
@@ -38,7 +38,7 @@ pub const POOLED_CREW: &str = "crew";
 const CLAIM_DRAWS: u32 = 10_000;
 /// Fixed, so the same two posteriors always give the same answer.
 const CLAIM_SEED: u64 = 0x7A_C1A1;
-/// Cards a pinned rate is worth: enough that draws barely move from it.
+/// Tasks a pinned rate is worth: enough that draws barely move from it.
 const PIN_STRENGTH: f64 = 1e6;
 
 /// A Beta posterior over a rate: weighted passes and failures on top of the prior.
@@ -49,7 +49,7 @@ pub struct Beta {
 }
 
 impl Beta {
-    /// A prior centered on `mean`, worth `strength` cards.
+    /// A prior centered on `mean`, worth `strength` tasks.
     pub fn prior(mean: f64, strength: f64) -> Self {
         let mean = mean.clamp(0.0, 1.0);
         Self {
@@ -83,7 +83,7 @@ impl Beta {
         }
     }
 
-    /// The probability that this rate is above `other`'s, for "claim little" in the retro.
+    /// The probability that this rate is above `other`'s, for "claim little" in the run review.
     /// Estimated from seeded draws, so the same posteriors always give the same answer.
     pub fn prob_above(&self, other: &Beta) -> f64 {
         let mut rng = StdRng::seed_from_u64(CLAIM_SEED);
@@ -104,7 +104,7 @@ impl Beta {
 /// One worker's record on one task type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Record {
-    pub worker: WorkerRef,
+    pub worker: ModelRef,
     pub task_type: String,
     /// The group or overall rate it borrowed from while its own cell was sparse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -112,7 +112,7 @@ pub struct Record {
     /// The worker's newest model id: the model its full-weight evidence is about.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
-    /// First-pass gate rate.
+    /// First-pass check rate.
     pub pass: Beta,
     /// Review approval rate, relative to each reviewer's usual rate.
     pub approval: Beta,
@@ -122,9 +122,9 @@ pub struct Record {
     pub time_ratio: f64,
     /// Brier skill score of its predictions; 0 is no better than its base rate.
     pub prediction: f64,
-    /// Recency-weighted cards behind the record.
+    /// Recency-weighted tasks behind the record.
     pub evidence: f64,
-    /// Plain counts, for handoff cards: passed first try, of cards.
+    /// Plain counts, for fallback questions: passed first try, of tasks.
     pub counts: TrackRecord,
     /// Fixed by `routing.pins`.
     pub pinned: bool,
@@ -138,9 +138,9 @@ pub struct Book {
     pass: Pools,
     approval: Pools,
     /// Each worker's newest model id.
-    models: BTreeMap<WorkerRef, String>,
+    models: BTreeMap<ModelRef, String>,
     /// Each worker's prediction score, for cells it has no outcome in yet.
-    prediction: BTreeMap<WorkerRef, f64>,
+    prediction: BTreeMap<ModelRef, f64>,
 }
 
 impl Book {
@@ -157,8 +157,8 @@ impl Book {
         };
         let mut cells = evidence.cells();
         for (worker, types) in &settings.pins {
-            let Ok(worker) = worker.parse::<WorkerRef>() else {
-                tracing::warn!("ignoring routing.pins.{worker}: not a worker name");
+            let Ok(worker) = worker.parse::<ModelRef>() else {
+                tracing::warn!("ignoring routing.pins.{worker}: not a model name");
                 continue;
             };
             for task_type in types.keys() {
@@ -189,7 +189,7 @@ impl Book {
 
     /// What the router reads for a worker and task type: its own cell, pooled while sparse, or
     /// the prior when there's no evidence at all.
-    pub fn record(&self, worker: &WorkerRef, task_type: &str) -> Record {
+    pub fn record(&self, worker: &ModelRef, task_type: &str) -> Record {
         if let Some(record) = self
             .records
             .iter()
@@ -209,8 +209,8 @@ impl Book {
     /// asks for. `None` means the difference isn't clear yet.
     pub fn clearly_better(
         &self,
-        a: &WorkerRef,
-        b: &WorkerRef,
+        a: &ModelRef,
+        b: &ModelRef,
         task_type: &str,
         settings: &RoutingSettings,
     ) -> Option<bool> {
@@ -227,7 +227,7 @@ impl Book {
         }
     }
 
-    fn compose(&self, worker: &WorkerRef, task_type: &str, facts: &CellFacts) -> Record {
+    fn compose(&self, worker: &ModelRef, task_type: &str, facts: &CellFacts) -> Record {
         let settings = &self.settings;
         let configured =
             evidence::setting_for(&settings.priors, worker).and_then(|types| types.get(task_type));
@@ -272,7 +272,7 @@ impl Book {
     }
 }
 
-/// Each worker's Brier skill over the metrics an owner predicts, from the predictions and
+/// Each worker's Brier skill over the metrics a worker predicts, from the predictions and
 /// outcomes the book counts. Clamped so one wild score can't swamp the utility's other terms,
 /// and shrunk toward 0 while there are few predictions, the way a prior fades.
 fn prediction_scores(
@@ -280,7 +280,7 @@ fn prediction_scores(
     evidence: &Evidence<'_>,
     settings: &RoutingSettings,
     as_of: OffsetDateTime,
-) -> BTreeMap<WorkerRef, f64> {
+) -> BTreeMap<ModelRef, f64> {
     let mut scored: Vec<LogLine> = evidence
         .outcomes
         .iter()
@@ -295,9 +295,9 @@ fn prediction_scores(
             .filter(|line| matches!(line, LogLine::Prediction(prediction) if counts(prediction)))
             .cloned(),
     );
-    let mut sums: BTreeMap<WorkerRef, (f64, u32)> = BTreeMap::new();
+    let mut sums: BTreeMap<ModelRef, (f64, u32)> = BTreeMap::new();
     for calibration in predictions::calibration(&scored, settings) {
-        if !predictions::OWNER_METRICS.contains(&calibration.metric.as_str()) {
+        if !predictions::WORKER_METRICS.contains(&calibration.metric.as_str()) {
             continue;
         }
         let sum = sums.entry(calibration.worker).or_default();
@@ -315,8 +315,8 @@ fn prediction_scores(
         .collect()
 }
 
-/// The `TrackRecords` service the engine and handoff cards read: the book, rebuilt from the log
-/// when a run's outcomes change it.
+/// The `TrackRecords` service the engine and fallback questions read: the book, rebuilt from the
+/// log when a run's outcomes change it.
 pub struct LiveRecords {
     store: Store,
     settings: Arc<Settings>,
@@ -363,8 +363,8 @@ impl LiveRecords {
 }
 
 impl TrackRecords for LiveRecords {
-    /// Plain counts on similar cards; `None` until the worker has finished one.
-    fn get(&self, worker: &WorkerRef, task_type: &str) -> Option<TrackRecord> {
+    /// Plain counts on similar tasks; `None` until the worker has finished one.
+    fn get(&self, worker: &ModelRef, task_type: &str) -> Option<TrackRecord> {
         let counts = self.book().record(worker, task_type).counts;
         (counts.of > 0).then_some(counts)
     }

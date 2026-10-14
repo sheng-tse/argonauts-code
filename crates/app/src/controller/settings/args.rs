@@ -2,14 +2,14 @@
 //! `/effort reviewer high` into `roles.reviewer.effort = "high"`.
 
 use argonauts_core::input::{
-    EFFORT_LEVELS, NarratorChange, PERMISSION_KEYS, PresetAction, ROLE_SANDBOX_KEYS, SlashCommand,
+    EFFORT_LEVELS, NarratorChange, PERMISSION_KEYS, ROLE_SANDBOX_KEYS, SlashCommand, WorkflowVerb,
     is_permission_key,
 };
 use argonauts_core::layout::project_files;
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::handoff::CrewRole;
-use argonauts_registry::{presets_in, setting_meta, settings_catalog};
+use argonauts_core::settings::crew::CrewRole;
+use argonauts_registry::{setting_meta, settings_catalog, workflow_choices_in};
 
 use super::models;
 use crate::controller::Ctx;
@@ -68,13 +68,13 @@ pub(crate) fn setting_write(
         } => (Settings::ULTRACODE.to_owned(), on.to_string(), "effort"),
         SlashCommand::Workflow {
             name: Some(name),
-            action: PresetAction::Use,
+            action: WorkflowVerb::Use,
         } => ("workflow".to_owned(), quoted(name), "workflow"),
         SlashCommand::Approvals {
             key: Some(key),
             value: Some(value),
         } => (under("approvals", key), value.clone(), "approvals"),
-        SlashCommand::Budget {
+        SlashCommand::Limits {
             key: Some(key),
             value: Some(value),
             ..
@@ -147,26 +147,26 @@ pub(crate) fn setting_write(
 }
 
 /// The key a model pick sets and its TOML value: the worker you pick replaces the role's list.
-pub(crate) fn model_key(role: Option<RoleName>, worker: &WorkerRef) -> (String, String) {
+pub(crate) fn model_key(role: Option<RoleName>, worker: &ModelRef) -> (String, String) {
     let worker = worker.to_string();
     match role.unwrap_or(RoleName::Main) {
-        RoleName::Main => ("main_agent".to_owned(), quoted(&worker)),
+        RoleName::Main => ("crew.main".to_owned(), quoted(&worker)),
         RoleName::Narrator => ("narrator.model".to_owned(), quoted(&worker)),
-        RoleName::Approver => ("approvals.decides".to_owned(), quoted(&worker)),
+
         role => (
-            format!("roles.{}.workers", role.as_str()),
+            format!("roles.{}.models", role.as_str()),
             toml::Value::Array(vec![toml::Value::String(worker)]).to_string(),
         ),
     }
 }
 
-/// [`checked_value`], plus the checks that need the app: a preset that exists, and an effort
+/// [`checked_value`], plus the checks that need the app: a workflow that exists, and an effort
 /// level the role's model takes.
 pub(crate) fn check_known(ctx: &Ctx, key: &str, value: &str) -> anyhow::Result<String> {
     let value = checked_value(key, value)?;
     let text = toml_value_text(&value);
     if key == "workflow" {
-        check_preset(ctx, &text)?;
+        check_workflow_choice(ctx, &text)?;
     }
     if let ["roles", role, "effort"] = key.split('.').collect::<Vec<_>>().as_slice() {
         let role = super::rows::role_named(role).filter(|role| *role != RoleName::Main);
@@ -189,21 +189,21 @@ pub(crate) fn checked_value(key: &str, value: &str) -> anyhow::Result<String> {
     let value = toml_value(value);
     let Some(meta) = setting_meta(key) else {
         // The catalog lists keys with a built-in value, so a table such as a new endpoint, or
-        // a key unset by default such as `handoff.strategy`, is left to the resolve after the
+        // a key unset by default such as `fallback.strategy`, is left to the resolve after the
         // write, which undoes it when the key turns out unknown.
         if known_section(key) {
             return Ok(value);
         }
         anyhow::bail!("{key} isn't a setting; /config lists them");
     };
-    // Your own presets aren't in the catalog's list, so `/preset` checks names itself.
+    // Your own workflows aren't in the catalog's list, so `/workflow` checks names itself.
     if key != "workflow" && !meta.allowed.is_empty() && !meta.allowed.contains(&value) {
         anyhow::bail!("{key} takes {}, not {value}", meta.allowed.join(", "));
     }
     Ok(value)
 }
 
-/// Whether `key` is in a section the catalog knows, such as `handoff`.
+/// Whether `key` is in a section the catalog knows, such as `fallback`.
 fn known_section(key: &str) -> bool {
     let section = key.split('.').next().unwrap_or_default();
     key.contains('.')
@@ -235,11 +235,11 @@ fn check_effort(ctx: &Ctx, role: Option<RoleName>, level: &str) -> anyhow::Resul
 }
 
 /// For a model picked with an effort: the level must be one that model takes.
-fn check_level(ctx: &Ctx, worker: &WorkerRef, level: &str) -> anyhow::Result<()> {
+fn check_level(ctx: &Ctx, worker: &ModelRef, level: &str) -> anyhow::Result<()> {
     takes_level(Some(worker), &models::levels_of(ctx, Some(worker)), level)
 }
 
-fn takes_level(worker: Option<&WorkerRef>, levels: &[String], level: &str) -> anyhow::Result<()> {
+fn takes_level(worker: Option<&ModelRef>, levels: &[String], level: &str) -> anyhow::Result<()> {
     if !EFFORT_LEVELS.contains(&level) {
         anyhow::bail!("{level:?} isn't a level; use {}", EFFORT_LEVELS.join(", "));
     }
@@ -258,8 +258,11 @@ fn takes_level(worker: Option<&WorkerRef>, levels: &[String], level: &str) -> an
     )
 }
 
-fn check_preset(ctx: &Ctx, name: &str) -> anyhow::Result<()> {
-    let names: Vec<String> = preset_list(ctx).into_iter().map(|info| info.name).collect();
+fn check_workflow_choice(ctx: &Ctx, name: &str) -> anyhow::Result<()> {
+    let names: Vec<String> = workflow_list(ctx)
+        .into_iter()
+        .map(|info| info.name)
+        .collect();
     if names.iter().any(|known| known == name) {
         return Ok(());
     }
@@ -269,20 +272,20 @@ fn check_preset(ctx: &Ctx, name: &str) -> anyhow::Result<()> {
     )
 }
 
-/// Every preset you can pick: the built-ins, yours, then the project's.
-pub(crate) fn preset_list(ctx: &Ctx) -> Vec<argonauts_registry::PresetInfo> {
-    // `.argonauts/presets`, next to the project's `config.toml`.
+/// Every workflow you can pick: the built-ins, yours, then the project's.
+pub(crate) fn workflow_list(ctx: &Ctx) -> Vec<argonauts_registry::WorkflowChoice> {
+    // `.argonauts/workflows`, next to the project's `config.toml`.
     let project = ctx
         .env
         .project_config()
-        .with_file_name(project_files::PRESETS);
-    presets_in(&ctx.env.paths.global_presets(), Some(&project))
+        .with_file_name(project_files::WORKFLOWS);
+    workflow_choices_in(&ctx.env.paths.global_workflows(), Some(&project))
 }
 
 /// Where a role's own fallback settings sit: the table of the crew role it follows, such as
-/// `fallback.workers` for the worker.
+/// `fallback.worker` for the worker.
 pub(crate) fn fallback_section(role: RoleName) -> String {
-    format!("fallback.{}", CrewRole::of(role).as_str())
+    format!("fallback.{}", CrewRole::fallback_of(role).as_str())
 }
 
 /// `section.key`, unless you typed the section already.
@@ -333,22 +336,22 @@ mod tests {
 
     #[test]
     fn a_model_pick_replaces_the_role_list() {
-        let worker: WorkerRef = "codex/gpt-5".parse().unwrap();
+        let worker: ModelRef = "codex/gpt-5".parse().unwrap();
         assert_eq!(
             model_key(Some(RoleName::Reviewer), &worker),
             (
-                "roles.reviewer.workers".to_owned(),
+                "roles.reviewer.models".to_owned(),
                 "[\"codex/gpt-5\"]".to_owned()
             )
         );
-        assert_eq!(model_key(None, &worker).0, "main_agent");
+        assert_eq!(model_key(None, &worker).0, "crew.main");
         assert_eq!(
             model_key(Some(RoleName::Narrator), &worker).0,
             "narrator.model"
         );
         assert_eq!(
-            model_key(Some(RoleName::Approver), &worker).0,
-            "approvals.decides"
+            model_key(Some(RoleName::Judge), &worker).0,
+            "roles.judge.models"
         );
     }
 }

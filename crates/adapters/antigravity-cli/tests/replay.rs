@@ -3,14 +3,12 @@ use std::path::{Path, PathBuf};
 
 use argonauts_adapter_antigravity_cli::{AntigravityCli, TESTED_VERSIONS};
 use argonauts_core::events::session::{SubagentKind, SubagentStatus, SubagentUpdate};
-use argonauts_core::limits::{QuotaSource, QuotaStatus};
+use argonauts_core::limits::{PlanUsageSource, PlanUsageStatus};
 use argonauts_core::{
-    Adapter, AgentEvent, BudgetLimit, BudgetMeter, ErrorCategory, Report, ReportStatus, RetryReason,
+    Adapter, AgentEvent, ErrorCategory, MeterLimit, Report, ReportStatus, RetryReason, SpendMeter,
 };
 use serde_json::{Value, json};
 use time::macros::datetime;
-
-const VERSION: &str = "1.2.13";
 
 struct Replay {
     events: Vec<AgentEvent>,
@@ -18,11 +16,7 @@ struct Replay {
 }
 
 fn replay(name: &str) -> Replay {
-    replay_at(VERSION, name)
-}
-
-fn replay_at(version: &str, name: &str) -> Replay {
-    let dir = fixtures_dir().join(version);
+    let dir = fixtures_dir();
     let read = |ext: &str| fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap();
     let meta: Value = serde_json::from_str(&read("meta.json")).unwrap();
     let exit_code = meta["exit_code"].as_i64().map(|c| c as i32);
@@ -43,11 +37,11 @@ fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")
 }
 
-/// Recordings of sessions, as opposed to the quota probe.
+/// Recordings of sessions, as opposed to the plan usage probe.
 const SESSIONS: &[&str] = &[
-    "readonly_ok",
-    "build_hello_schema",
-    "build_shell",
+    "readonly_ok_plain",
+    "build_hello_schema_narrated",
+    "build_shell_denied",
     "stdin_steer",
     "build_subagent",
     "readonly_write_refused",
@@ -107,7 +101,7 @@ fn usage(input: u64, output: u64, cumulative: bool) -> AgentEvent {
 }
 
 fn billable_tokens(events: &[AgentEvent]) -> u64 {
-    let mut meter = BudgetMeter::new(BudgetLimit::Tokens(10_000_000), 0.85);
+    let mut meter = SpendMeter::new(MeterLimit::Tokens(10_000_000), 0.85);
     for event in events {
         meter.observe(event);
     }
@@ -115,17 +109,34 @@ fn billable_tokens(events: &[AgentEvent]) -> u64 {
 }
 
 #[test]
-fn every_tested_version_has_fixtures() {
-    for version in TESTED_VERSIONS {
-        let dir = fixtures_dir().join(version);
-        let recordings = fs::read_dir(&dir)
-            .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-            .filter_map(Result::ok)
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".meta.json"))
-            .count();
-        assert!(recordings >= 3, "{version} has {recordings} recordings");
+fn tested_versions_are_the_ones_the_recordings_name() {
+    assert_eq!(AntigravityCli.tested_versions(), TESTED_VERSIONS);
+    assert!(!TESTED_VERSIONS.is_empty());
+    for file in fs::read_dir(fixtures_dir()).unwrap() {
+        let path = file.unwrap().path();
+        if !path.to_string_lossy().ends_with(".meta.json") {
+            continue;
+        }
+        let meta: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let recorded_with = meta["cli_version"].as_str().unwrap();
+        let also_matches = meta["also_matches"].as_array().unwrap();
+        for version in also_matches
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .chain([recorded_with])
+        {
+            assert!(
+                TESTED_VERSIONS.contains(&version),
+                "{}: {version}",
+                path.display()
+            );
+        }
     }
 }
+
+/// The cheapest model of the agy releases these were recorded with. agy 1.3.5 no longer knows
+/// it, and a recording keeps the words the CLI wrote then.
+const RECORDED_CHEAPEST_MODEL: &str = "gemini-3.6-flash-low";
 
 #[test]
 fn recordings_used_the_cheapest_model() {
@@ -136,20 +147,17 @@ fn recordings_used_the_cheapest_model() {
             let at = args.iter().position(|a| *a == flag).unwrap();
             args[at + 1]
         };
-        assert_eq!(after("--model"), "gemini-3.6-flash-low", "{name}");
+        assert_eq!(after("--model"), RECORDED_CHEAPEST_MODEL, "{name}");
         assert_eq!(after("--effort"), "low", "{name}");
-        assert_eq!(meta["cli_version"], VERSION);
     }
 }
 
-/// A later installed version reads with nothing left unknown: an answer, a shell call, and a
+/// The newest recordings read with nothing left unknown: an answer, a shell call, and a
 /// report under the schema, which the CLI still ends with a 503.
 #[test]
-fn the_installed_version_reads_cleanly() {
-    const INSTALLED: &str = "1.3.1";
+fn the_newest_recordings_read_cleanly() {
     for name in ["readonly_ok", "build_shell", "build_hello_schema"] {
-        let Replay { events, meta } = replay_at(INSTALLED, name);
-        assert_eq!(meta["cli_version"], INSTALLED, "{name}");
+        let Replay { events, .. } = replay(name);
         assert!(
             matches!(
                 &events[0],
@@ -175,17 +183,17 @@ fn the_installed_version_reads_cleanly() {
             "{name}"
         );
     }
-    let Replay { events, .. } = replay_at(INSTALLED, "readonly_ok");
+    let Replay { events, .. } = replay("readonly_ok");
     assert!(events.iter().any(|e| matches!(
         e,
         AgentEvent::Result { text: Some(text), is_error: false, .. } if text.ends_with("ok\n")
     )));
-    let Replay { events, .. } = replay_at(INSTALLED, "build_shell");
+    let Replay { events, .. } = replay("build_shell");
     assert!(events.iter().any(|e| matches!(
         e,
         AgentEvent::ToolStarted { name, .. } if name == "run_command"
     )));
-    let Replay { events, .. } = replay_at(INSTALLED, "build_hello_schema");
+    let Replay { events, .. } = replay("build_hello_schema");
     assert!(events.iter().any(|e| matches!(
         e,
         AgentEvent::Result { structured: Some(report), .. } if report["status"] == "done"
@@ -194,7 +202,7 @@ fn the_installed_version_reads_cleanly() {
 
 #[test]
 fn read_only_reply_streams_text_then_succeeds() {
-    let Replay { events, .. } = replay("readonly_ok");
+    let Replay { events, .. } = replay("readonly_ok_plain");
     let events = without_fills(events);
     assert_eq!(
         names(&events),
@@ -252,7 +260,7 @@ fn read_only_reply_streams_text_then_succeeds() {
 
 #[test]
 fn build_with_schema_writes_a_file_and_reports() {
-    let Replay { events, meta } = replay("build_hello_schema");
+    let Replay { events, meta } = replay("build_hello_schema_narrated");
     let events = without_fills(events);
     assert_eq!(
         meta["files_after"],
@@ -339,13 +347,13 @@ fn build_with_schema_writes_a_file_and_reports() {
     assert_eq!(billable_tokens(&events), 45_520);
 }
 
-/// Checked live on 1.2.16: with neither sandbox flag, agy refuses a command it would
+/// Checked live: with neither sandbox flag, agy refuses a command it would
 /// ask about. The refused command comes only from its tool step, since the result's
 /// `denied_actions` names the kind of action alone, and the turn may give no answer at all.
-/// Direct solo offers the command after the turn from these two events.
+/// Direct Captain offers the command after the turn from these two events.
 #[test]
 fn a_refused_command_is_named_by_its_tool_step() {
-    let Replay { events, .. } = replay_at("1.2.16", "denied_command");
+    let Replay { events, .. } = replay("denied_command");
     let started = events.iter().find_map(|event| match event {
         AgentEvent::ToolStarted { id, input, .. } => Some((id.clone(), input.clone())),
         _ => None,
@@ -371,7 +379,7 @@ fn a_refused_command_is_named_by_its_tool_step() {
 
 #[test]
 fn denied_command_then_capacity_error_fails_once() {
-    let Replay { events, .. } = replay("build_shell");
+    let Replay { events, .. } = replay("build_shell_denied");
     let events = without_fills(events);
     assert_eq!(
         names(&events),
@@ -432,7 +440,7 @@ fn denied_command_then_capacity_error_fails_once() {
 #[test]
 fn a_killed_run_still_gets_one_result_per_turn() {
     for name in SESSIONS {
-        let dir = fixtures_dir().join(VERSION);
+        let dir = fixtures_dir();
         let stdout = fs::read_to_string(dir.join(format!("{name}.stdout.jsonl"))).unwrap();
         let mut parser = AntigravityCli.parser();
         let mut events: Vec<AgentEvent> = stdout
@@ -450,9 +458,7 @@ fn a_killed_run_still_gets_one_result_per_turn() {
 }
 
 fn fixture_lines(name: &str) -> Vec<String> {
-    let path = fixtures_dir()
-        .join(VERSION)
-        .join(format!("{name}.stdout.jsonl"));
+    let path = fixtures_dir().join(format!("{name}.stdout.jsonl"));
     fs::read_to_string(path)
         .unwrap()
         .lines()
@@ -547,7 +553,7 @@ fn an_error_result_closes_its_turn_while_input_stays_open() {
 
 #[test]
 fn a_recovered_turn_closes_at_its_result() {
-    let lines = fixture_lines("build_hello_schema");
+    let lines = fixture_lines("build_hello_schema_narrated");
     let mut parser = AntigravityCli.parser();
     let mut before = Vec::new();
     for line in &lines[..lines.len() - 1] {
@@ -569,7 +575,7 @@ fn a_recovered_turn_closes_at_its_result() {
 
 #[test]
 fn a_result_with_odd_usage_keeps_its_outcome() {
-    let mut lines = fixture_lines("readonly_ok");
+    let mut lines = fixture_lines("readonly_ok_plain");
     let at = lines.iter().position(|l| is_result_line(l)).unwrap();
     edit_result(&mut lines[at], |result| {
         result["usage"]["input_tokens"] = json!(14432.0);
@@ -598,7 +604,7 @@ fn a_result_with_odd_usage_keeps_its_outcome() {
 
 #[test]
 fn truncated_and_garbled_fixture_lines_become_unknown() {
-    let dir = fixtures_dir().join(VERSION);
+    let dir = fixtures_dir();
     let stdout = fs::read_to_string(dir.join("build_hello_schema.stdout.jsonl")).unwrap();
     let mut parser = AntigravityCli.parser();
     for line in stdout.lines() {
@@ -778,11 +784,11 @@ fn agy_subagent_info() {
 }
 
 #[test]
-fn context_fill_from_each_vendor() {
+fn context_fill_from_each_agent() {
     let expected: &[(&str, &[u64])] = &[
-        ("readonly_ok", &[14_433]),
-        ("build_hello_schema", &[14_995, 15_180, 15_345]),
-        ("build_shell", &[14_567]),
+        ("readonly_ok_plain", &[14_433]),
+        ("build_hello_schema_narrated", &[14_995, 15_180, 15_345]),
+        ("build_shell_denied", &[14_567]),
         (
             "stdin_steer",
             &[5759, 6239, 6611, 6947, 7152, 7380, 7678, 7864],
@@ -819,20 +825,20 @@ fn read_only_agent_had_no_write_tool() {
 
 #[test]
 fn agy_usage_probe_parses() {
-    let dir = fixtures_dir().join(VERSION);
+    let dir = fixtures_dir();
     let stdout = fs::read_to_string(dir.join("usage_probe.stdout.jsonl")).unwrap();
     let meta: Value =
         serde_json::from_str(&fs::read_to_string(dir.join("usage_probe.meta.json")).unwrap())
             .unwrap();
     let probe = AntigravityCli
-        .quota_probe(Path::new("/work"), None)
+        .plan_usage_probe(Path::new("/work"), None)
         .expect("agy has a free probe");
     assert_eq!(meta_args(&meta), probe.args);
 
-    let reading = AntigravityCli.parse_quota_probe(&stdout).unwrap();
-    assert_eq!(reading.vendor.0, "antigravity-cli");
-    assert_eq!(reading.source, QuotaSource::UsageProbe);
-    assert_eq!(reading.status, QuotaStatus::Allowed);
+    let reading = AntigravityCli.parse_plan_usage_probe(&stdout).unwrap();
+    assert_eq!(reading.agent_id.0, "antigravity-cli");
+    assert_eq!(reading.source, PlanUsageSource::UsageProbe);
+    assert_eq!(reading.status, PlanUsageStatus::Allowed);
     // The Gemini group's weekly window had the least left.
     assert_eq!(reading.window.as_deref(), Some("weekly"));
     let used = reading.used.unwrap();
@@ -855,13 +861,11 @@ fn fixtures_hold_no_local_paths_or_keys() {
         "github_pat_",
         "AIza",
     ];
-    for version in fs::read_dir(fixtures_dir()).unwrap() {
-        for file in fs::read_dir(version.unwrap().path()).unwrap() {
-            let path = file.unwrap().path();
-            let text = fs::read_to_string(&path).unwrap();
-            for leak in leaks {
-                assert!(!text.contains(leak), "{} contains {leak:?}", path.display());
-            }
+    for file in fs::read_dir(fixtures_dir()).unwrap() {
+        let path = file.unwrap().path();
+        let text = fs::read_to_string(&path).unwrap();
+        for leak in leaks {
+            assert!(!text.contains(leak), "{} contains {leak:?}", path.display());
         }
     }
 }

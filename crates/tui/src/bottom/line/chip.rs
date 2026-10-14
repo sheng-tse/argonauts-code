@@ -6,8 +6,8 @@ use ratatui::text::Span;
 
 use super::fit::{Fine, Second, Shape};
 use super::{CliState, CliUse, WindowUse};
+use crate::kit::{Kit, bars, merge};
 use crate::theme::Role;
-use crate::widgets::{Kit, bars, merge};
 
 /// A window's bar.
 const BAR_CELLS: usize = 6;
@@ -58,9 +58,9 @@ impl Chip<'_> {
         };
         let mut spans = self.head(fine);
         let more = match &cli.state {
-            CliState::Down => vec![self.kit().span("down", Role::Error)],
-            CliState::WrappingUp => vec![self.kit().span("wrapping up", Role::Warning)],
-            CliState::NearLimit => vec![self.kit().span("near limit", Role::Warning)],
+            CliState::Down => vec![self.kit().span("down", Role::Danger)],
+            CliState::WrappingUp => vec![self.kit().span("wrapping up", Role::Warn)],
+            CliState::NearLimit => vec![self.kit().span("near limit", Role::Warn)],
             CliState::Out { until } => self.out(until.as_deref()),
             CliState::Fine if fine >= Fine::Name => Vec::new(),
             CliState::Fine => match self.look.form {
@@ -109,8 +109,8 @@ impl Chip<'_> {
     fn number_style(&self, near: bool) -> Style {
         let kit = self.kit();
         match (near, self.cli.main) {
-            (true, true) => kit.bold(Role::Warning),
-            (true, false) => kit.style(Role::Warning),
+            (true, true) => kit.bold(Role::Warn),
+            (true, false) => kit.style(Role::Warn),
             (false, true) => kit.bold(Role::Bright),
             (false, false) => kit.style(Role::Dim),
         }
@@ -118,7 +118,7 @@ impl Chip<'_> {
 
     fn fill(&self, window: &WindowUse) -> Role {
         if window.near {
-            Role::Warning
+            Role::Warn
         } else {
             self.cli.color
         }
@@ -161,7 +161,7 @@ impl Chip<'_> {
             } else {
                 format!("resets {at}")
             };
-            spans.push(kit.span(words, Role::Warning));
+            spans.push(kit.span(words, Role::Warn));
         }
         if let Some(age) = window.age.as_deref().filter(|_| !self.shape.short_words) {
             join(&mut spans, vec![kit.dim(format!("{age} ago"))]);
@@ -262,11 +262,11 @@ impl Chip<'_> {
         let mut spans = Vec::new();
         let drawn_as_bars = matches!(self.look.form, LineForm::Fit | LineForm::Bars);
         if drawn_as_bars && !shape.out_bar_gone {
-            spans = small_bar(kit, 1.0, Role::Error);
+            spans = small_bar(kit, 1.0, Role::Danger);
         }
         join(
             &mut spans,
-            vec![kit.span(self.out_words(until), Role::Error)],
+            vec![kit.span(self.out_words(until), Role::Danger)],
         );
         spans
     }
@@ -300,10 +300,10 @@ impl Chip<'_> {
             shape.fine
         };
         let (words, tone) = match &cli.state {
-            CliState::Down => ("down".to_owned(), Some(Role::Error)),
-            CliState::WrappingUp => ("wrapping up".to_owned(), Some(Role::Warning)),
-            CliState::NearLimit => ("near limit".to_owned(), Some(Role::Warning)),
-            CliState::Out { until } => (self.out_words(until.as_deref()), Some(Role::Error)),
+            CliState::Down => ("down".to_owned(), Some(Role::Danger)),
+            CliState::WrappingUp => ("wrapping up".to_owned(), Some(Role::Warn)),
+            CliState::NearLimit => ("near limit".to_owned(), Some(Role::Warn)),
+            CliState::Out { until } => (self.out_words(until.as_deref()), Some(Role::Danger)),
             CliState::Fine if fine >= Fine::Name => (String::new(), None),
             CliState::Fine => self.windows_in_words(),
         };
@@ -373,7 +373,7 @@ impl Chip<'_> {
         {
             words.push_str(&format!(" · {age} ago"));
         }
-        (words, near.map(|_| Role::Warning))
+        (words, near.map(|_| Role::Warn))
     }
 }
 

@@ -10,10 +10,10 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
 use crate::format;
+use crate::kit::frame::Frame;
+use crate::kit::{Drawn, Kit, bars, fit, spread};
 use crate::text::{sanitize_line, spans_width, wrap_spans};
 use crate::theme::{Role, Theme};
-use crate::widgets::frame::Frame;
-use crate::widgets::{Drawn, Kit, bars, fit, spread};
 
 use super::columns::{self, Align, Cell, Column, Give};
 use super::panes::{self, Marks};
@@ -74,13 +74,13 @@ fn lines_met(goal: &AgentGoal) -> String {
 /// What an agent's row says of its goal: `try 3 · 2 of 3 lines met`, `goal met in 2 tries`.
 pub fn row_words(goal: &AgentGoal) -> String {
     let made = goal.tries.len();
-    let attempt = goal.current_try();
+    let try_number = goal.current_try();
     match goal.state {
         GoalState::Met => format!("goal met in {}", tries(made.max(1))),
-        GoalState::Running if attempt == 0 => format!("goal set · {}", lines_met(goal)),
-        GoalState::Running => format!("try {attempt} · {}", lines_met(goal)),
+        GoalState::Running if try_number == 0 => format!("goal set · {}", lines_met(goal)),
+        GoalState::Running => format!("try {try_number} · {}", lines_met(goal)),
         GoalState::Paused => format!("goal paused · {}", lines_met(goal)),
-        GoalState::Stuck => format!("stuck on try {attempt} · {}", lines_met(goal)),
+        GoalState::Stuck => format!("stuck on try {try_number} · {}", lines_met(goal)),
         GoalState::Cleared => "goal cleared".to_owned(),
     }
 }
@@ -88,12 +88,12 @@ pub fn row_words(goal: &AgentGoal) -> String {
 /// The same in a narrow pane, after the squares that already count the lines: `try 3 · 2/3`,
 /// `met`.
 pub fn row_words_brief(goal: &AgentGoal) -> String {
-    let attempt = goal.current_try();
+    let try_number = goal.current_try();
     let met = format!("{}/{}", goal.lines_met(), goal.lines.len());
     match goal.state {
         GoalState::Met => "met".to_owned(),
-        GoalState::Running if attempt == 0 => format!("set · {met}"),
-        GoalState::Running => format!("try {attempt} · {met}"),
+        GoalState::Running if try_number == 0 => format!("set · {met}"),
+        GoalState::Running => format!("try {try_number} · {met}"),
         GoalState::Paused => format!("paused · {met}"),
         GoalState::Stuck => format!("stuck · {met}"),
         GoalState::Cleared => "cleared".to_owned(),
@@ -104,19 +104,21 @@ pub fn row_words_brief(goal: &AgentGoal) -> String {
 /// Without color the fill tells them apart instead.
 pub fn squares(goal: &AgentGoal, theme: &Theme) -> Vec<Span<'static>> {
     let ascii = theme.glyphs.prompt.is_ascii();
-    let (full, hollow) = if ascii { ("#", "-") } else { ("■", "□") };
+    // The small squares are one cell in every font. The large ones are drawn two cells wide
+    // in some, where a row of them overlaps.
+    let (full, hollow) = if ascii { ("#", "-") } else { ("▪", "▫") };
     goal.lines
         .iter()
         .map(|line| match line.met {
             Some(true) => Span::styled(full, theme.style(Role::Success)),
-            Some(false) if theme.has_color() => Span::styled(full, theme.style(Role::Error)),
-            Some(false) => Span::styled(hollow, theme.style(Role::Error)),
+            Some(false) if theme.has_color() => Span::styled(full, theme.style(Role::Danger)),
+            Some(false) => Span::styled(hollow, theme.style(Role::Danger)),
             None => Span::styled(hollow, theme.style(Role::Dim)),
         })
         .collect()
 }
 
-/// `kept by Codex's own goal · checked by Argonauts`, the keeper in bold.
+/// `kept by Codex's own goal · checked by Argonauts Code`, the keeper in bold.
 pub fn kept_by(goal: &AgentGoal, theme: &Theme) -> Vec<Span<'static>> {
     let dim = theme.style(Role::Dim);
     let mut spans = vec![
@@ -126,7 +128,7 @@ pub fn kept_by(goal: &AgentGoal, theme: &Theme) -> Vec<Span<'static>> {
             theme.style(Role::Bright).add_modifier(Modifier::BOLD),
         ),
     ];
-    // Where Argonauts keeps the goal, saying it checks it too would say it twice.
+    // Where Argonauts Code keeps the goal, saying it checks it too would say it twice.
     let checker = clean(&goal.checked_by);
     if !checker.is_empty() && checker != clean(&goal.kept_by.words()) {
         spans.push(Span::styled(format!(" · checked by {checker}"), dim));
@@ -154,7 +156,7 @@ fn line_mark(line: &GoalLine, theme: &Theme) -> Span<'static> {
     let marks = Marks::for_theme(theme);
     match line.met {
         Some(true) => Span::styled(marks.done, theme.style(Role::Success)),
-        Some(false) => Span::styled(marks.failed, theme.style(Role::Error)),
+        Some(false) => Span::styled(marks.failed, theme.style(Role::Danger)),
         None => Span::styled(marks.phase_waiting, theme.style(Role::Dim)),
     }
 }
@@ -163,7 +165,7 @@ fn line_mark(line: &GoalLine, theme: &Theme) -> Span<'static> {
 fn worst(goal: &AgentGoal) -> u32 {
     goal.tries
         .iter()
-        .filter_map(|attempt| attempt.failing)
+        .filter_map(|a_try| a_try.failing)
         .max()
         .unwrap_or(0)
 }
@@ -173,15 +175,15 @@ fn worst(goal: &AgentGoal) -> u32 {
 fn failing_role(failing: u32, worst: u32) -> Role {
     match failing {
         0 => Role::Success,
-        n if n >= worst => Role::Error,
-        _ => Role::Warning,
+        n if n >= worst => Role::Danger,
+        _ => Role::Warn,
     }
 }
 
 /// A try's bar, `cells` wide: what still failed after it against the worst try. A line meter,
 /// since the tries sit on rows one under another.
-fn try_bar(attempt: &GoalTry, worst: u32, cells: usize, kit: &Kit<'_>) -> Vec<Span<'static>> {
-    match attempt.failing {
+fn try_bar(a_try: &GoalTry, worst: u32, cells: usize, kit: &Kit<'_>) -> Vec<Span<'static>> {
+    match a_try.failing {
         Some(failing) => {
             let ratio = f64::from(failing) / f64::from(worst.max(1));
             bars::line_meter(kit, ratio, cells, failing_role(failing, worst), None)
@@ -215,7 +217,7 @@ fn result_spans(check: &GoalCheck, theme: &Theme) -> Vec<Span<'static>> {
     };
     let role = match check.passed {
         Some(true) => Role::Success,
-        Some(false) => Role::Error,
+        Some(false) => Role::Danger,
         None => Role::Dim,
     };
     let outcome = match (outcome.is_empty(), check.passed) {
@@ -241,7 +243,7 @@ fn dim_line(text: impl Into<String>, theme: &Theme) -> Line<'static> {
 
 /// The panel's title on its box: `◆ Goal of build:cli`.
 pub fn panel_title(goal: &AgentGoal, theme: &Theme) -> String {
-    format!("{} Goal of {}", theme.glyphs.card, clean(&goal.label))
+    format!("{} Goal of {}", theme.glyphs.question, clean(&goal.label))
 }
 
 /// The panel's rows, `width` cells wide and at most `height` of them: the lines, the tries, and
@@ -299,7 +301,7 @@ fn lines_column(goal: &AgentGoal, width: usize, theme: &Theme) -> Vec<Line<'stat
         match (line.met, line.failing.as_deref().map(clean)) {
             (Some(false), Some(failing)) if !failing.is_empty() => text.push(Span::styled(
                 format!(" · {failing}"),
-                theme.style(Role::Error),
+                theme.style(Role::Danger),
             )),
             _ if !line.checked_by.trim().is_empty() => text.push(Span::styled(
                 format!(" · {}", clean(&line.checked_by)),
@@ -312,7 +314,7 @@ fn lines_column(goal: &AgentGoal, width: usize, theme: &Theme) -> Vec<Line<'stat
         rows.extend(wrap_spans(&text, width.max(4), &first, &rest));
     }
     if let Some(stopped) = stopped_words(goal) {
-        let words = [Span::styled(stopped, theme.style(Role::Warning))];
+        let words = [Span::styled(stopped, theme.style(Role::Warn))];
         rows.extend(wrapped(&words, width, 0));
     }
     rows
@@ -338,13 +340,17 @@ fn tries_column(
     let fixed = 3 + 2 + PANEL_BAR + 1 + count_cells;
     let words_width = width.saturating_sub(fixed).max(8);
     let mut tries: Vec<Vec<Line<'static>>> = Vec::new();
-    for attempt in &goal.tries {
-        let current = attempt.running;
-        let number_role = if current { Role::Card } else { Role::Dim };
-        let words_role = if current { Role::Card } else { Role::Bright };
-        let words = [Span::styled(clean(&attempt.did), theme.style(words_role))];
+    for a_try in &goal.tries {
+        let current = a_try.running;
+        let number_role = if current { Role::Question } else { Role::Dim };
+        let words_role = if current {
+            Role::Question
+        } else {
+            Role::Bright
+        };
+        let words = [Span::styled(clean(&a_try.did), theme.style(words_role))];
         let first = [Span::styled(
-            format!("{:<3}", attempt.number),
+            format!("{:<3}", a_try.number),
             theme.style(number_role),
         )];
         let rest = [Span::raw("   ")];
@@ -352,8 +358,8 @@ fn tries_column(
         if let Some(top) = wrapped.first_mut() {
             let mut spans = fit(std::mem::take(&mut top.spans), words_width + 3);
             spans.push(Span::raw("  "));
-            spans.extend(try_bar(attempt, worst, PANEL_BAR, &kit));
-            if let Some(failing) = attempt.failing {
+            spans.extend(try_bar(a_try, worst, PANEL_BAR, &kit));
+            if let Some(failing) = a_try.failing {
                 spans.push(Span::styled(
                     format!(" {failing}"),
                     theme.style(failing_role(failing, worst)),
@@ -379,11 +385,11 @@ fn tries_column(
         // The newest that fit beside the row that names the rest, and always the newest one.
         let mut kept = 0;
         let mut used = 1;
-        for attempt in tries.iter().rev() {
-            if kept > 0 && used + attempt.len() > room {
+        for lines in tries.iter().rev() {
+            if kept > 0 && used + lines.len() > room {
                 break;
             }
-            used += attempt.len();
+            used += lines.len();
             kept += 1;
         }
         let earlier = tries.len() - kept;
@@ -410,7 +416,7 @@ fn wrapped_dim(text: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
 }
 
 /// `Last check · cargo test overdue` with its result and what it printed, then what the CLI
-/// says of its goal, or that Argonauts keeps it.
+/// says of its goal, or that Argonauts Code keeps it.
 fn check_column(goal: &AgentGoal, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let mut rows = Vec::new();
     if goal.checking {
@@ -462,8 +468,8 @@ fn no_account(goal: &AgentGoal) -> String {
     let how = "it runs the checks after each turn and sends back what still fails";
     let why = goal.kept_note.as_deref().map(clean).unwrap_or_default();
     match &goal.kept_by {
-        GoalKeeper::Argonauts if why.is_empty() => format!("Kept by Argonauts: {how}"),
-        GoalKeeper::Argonauts => format!("{why}, so Argonauts keeps it: {how}"),
+        GoalKeeper::Argonauts if why.is_empty() => format!("Kept by Argonauts Code: {how}"),
+        GoalKeeper::Argonauts => format!("{why}, so Argonauts Code keeps it: {how}"),
         GoalKeeper::Cli { name } => format!("{} reports nothing about its goal", clean(name)),
     }
 }
@@ -477,7 +483,7 @@ fn card_head(
     kit: &Kit<'_>,
 ) -> Vec<Span<'static>> {
     let left = vec![
-        kit.span(kit.glyphs.widget, glyph),
+        kit.span(kit.glyphs.the_mod, glyph),
         Span::raw(" "),
         kit.strong(title.to_owned()),
     ];
@@ -516,7 +522,7 @@ pub fn tab(goal: &AgentGoal, width: usize, theme: &Theme) -> Drawn {
         cards.push(whole.draw(&kit, checks_card(goal, whole.inner(), &kit)));
         cards.push(whole.draw(&kit, cli_card(goal, whole.inner(), &kit)));
     }
-    crate::widgets::stack_cards(cards)
+    crate::kit::stack_cards(cards)
 }
 
 /// Two cards on the same rows, one cell apart. The shorter one's column stays blank under it.
@@ -553,7 +559,7 @@ fn goal_card(goal: &AgentGoal, width: usize, kit: &Kit<'_>) -> Drawn {
     }
     right.push(Span::styled(format!(" · {}", lines_met(goal)), dim));
     let mut card = Drawn::new();
-    card.push(card_head("the goal", Role::Card, right, width, kit));
+    card.push(card_head("the goal", Role::Question, right, width, kit));
 
     let text = |line: &GoalLine| -> Cell { vec![kit.span(clean(&line.text), Role::Bright)] };
     let how = |line: &GoalLine| -> Cell {
@@ -565,7 +571,7 @@ fn goal_card(goal: &AgentGoal, width: usize, kit: &Kit<'_>) -> Drawn {
                     .into_iter()
                     .filter(|part| !part.is_empty())
                     .collect();
-                vec![kit.span(words.join(" · "), Role::Error)]
+                vec![kit.span(words.join(" · "), Role::Danger)]
             }
             (Some(true), Some(n)) if !checker.is_empty() => {
                 vec![kit.dim(format!("{checker} · met on try {n}"))]
@@ -592,14 +598,14 @@ fn goal_card(goal: &AgentGoal, width: usize, kit: &Kit<'_>) -> Drawn {
             .min(room - fitted[1].width - 2);
     }
     for ((line, text), how) in goal.lines.iter().zip(&texts).zip(&hows) {
-        let lead = vec![line_mark(line, theme), Span::raw("   ")];
+        let opening = vec![line_mark(line, theme), Span::raw("   ")];
         if side_by_side {
             let cells = [text.clone(), how.clone()];
             card.lines
-                .push(columns::line(lead, &fitted, &cells, None, width));
+                .push(columns::line(opening, &fitted, &cells, None, width));
         } else {
             let rest = [Span::raw("    ")];
-            card.lines.extend(wrap_spans(text, width, &lead, &rest));
+            card.lines.extend(wrap_spans(text, width, &opening, &rest));
             card.lines.extend(wrap_spans(how, width, &rest, &rest));
         }
     }
@@ -608,7 +614,7 @@ fn goal_card(goal: &AgentGoal, width: usize, kit: &Kit<'_>) -> Drawn {
     }
     if let Some(stopped) = stopped_words(goal) {
         card.lines
-            .extend(wrapped(&[kit.span(stopped, Role::Warning)], width, 0));
+            .extend(wrapped(&[kit.span(stopped, Role::Warn)], width, 0));
     }
     card
 }
@@ -628,7 +634,7 @@ fn tries_card(goal: &AgentGoal, width: usize, kit: &Kit<'_>) -> Drawn {
         format::tokens(goal.tokens)
     ))];
     let mut card = Drawn::new();
-    card.push(card_head("tries", Role::Card, right, width, kit));
+    card.push(card_head("tries", Role::Question, right, width, kit));
     if goal.tries.is_empty() {
         card.push(vec![kit.dim("No try yet")]);
         return card;
@@ -639,13 +645,13 @@ fn tries_card(goal: &AgentGoal, width: usize, kit: &Kit<'_>) -> Drawn {
     let rows: Vec<(Vec<Cell>, Cell)> = goal
         .tries
         .iter()
-        .map(|attempt| {
-            let role = if attempt.running {
-                Role::Card
+        .map(|a_try| {
+            let role = if a_try.running {
+                Role::Question
             } else {
                 Role::Bright
             };
-            let changed = attempt.changed.filter(|diff| !diff.is_empty()).map(|diff| {
+            let changed = a_try.changed.filter(|diff| !diff.is_empty()).map(|diff| {
                 format!(
                     "+{} -{} in {}",
                     diff.insertions,
@@ -653,27 +659,27 @@ fn tries_card(goal: &AgentGoal, width: usize, kit: &Kit<'_>) -> Drawn {
                     count(diff.files_changed as usize, "file")
                 )
             });
-            let failing = match attempt.failing {
+            let failing = match a_try.failing {
                 Some(0) => vec![kit.span("none", Role::Success)],
                 Some(n) => vec![kit.span(format!("{n} {noun}"), failing_role(n, worst))],
                 None => Vec::new(),
             };
-            let time = panes::elapsed(attempt.elapsed_ms);
-            let spent = if attempt.running {
-                vec![kit.span(format!("{time} · running"), Role::Card)]
+            let time = panes::elapsed(a_try.elapsed_ms);
+            let spent = if a_try.running {
+                vec![kit.span(format!("{time} · running"), Role::Question)]
             } else {
-                vec![kit.dim(format!("{time} · {}", format::tokens(attempt.tokens)))]
+                vec![kit.dim(format!("{time} · {}", format::tokens(a_try.tokens)))]
             };
-            let number_role = if attempt.running {
-                Role::Card
+            let number_role = if a_try.running {
+                Role::Question
             } else {
                 Role::Dim
             };
             let cells = vec![
-                vec![kit.span(attempt.number.to_string(), number_role)],
-                vec![kit.span(clean(&attempt.did), role)],
+                vec![kit.span(a_try.number.to_string(), number_role)],
+                vec![kit.span(clean(&a_try.did), role)],
                 vec![kit.dim(changed.unwrap_or_default())],
-                try_bar(attempt, worst, TAB_BAR, kit),
+                try_bar(a_try, worst, TAB_BAR, kit),
                 failing,
             ];
             (cells, spent)
@@ -779,17 +785,17 @@ fn cli_card(goal: &AgentGoal, width: usize, kit: &Kit<'_>) -> Drawn {
     let mut card = Drawn::new();
     let Some(says) = &goal.cli_says else {
         let title = match &goal.kept_by {
-            GoalKeeper::Argonauts => "kept by Argonauts".to_owned(),
+            GoalKeeper::Argonauts => "kept by Argonauts Code".to_owned(),
             GoalKeeper::Cli { name } => format!("{} says", clean(name)),
         };
-        card.push(card_head(&title, Role::Card, Vec::new(), width, kit));
+        card.push(card_head(&title, Role::Question, Vec::new(), width, kit));
         card.lines
             .extend(wrapped(&[kit.dim(no_account(goal))], width, 0));
         return card;
     };
     card.push(card_head(
         &format!("{} says", clean(&says.cli)),
-        Role::Card,
+        Role::Question,
         vec![kit.dim("its own account")],
         width,
         kit,
@@ -883,7 +889,12 @@ pub(crate) mod fixture {
         }
     }
 
-    pub(crate) fn attempt(number: u32, did: &str, diff: (u32, u32, u32), failing: u32) -> GoalTry {
+    pub(crate) fn try_number(
+        number: u32,
+        did: &str,
+        diff: (u32, u32, u32),
+        failing: u32,
+    ) -> GoalTry {
         GoalTry {
             number,
             did: did.into(),
@@ -900,12 +911,12 @@ pub(crate) mod fixture {
     }
 
     /// `build:cli` on its third try: two of three lines met,
-    /// one test still failing, kept by Codex's own goal and checked by Argonauts.
+    /// one test still failing, kept by Codex's own goal and checked by Argonauts Code.
     pub(crate) fn build_cli(session: &str) -> AgentGoal {
         let mut tries = vec![
-            attempt(1, "wrote the command and its tests", (142, 0, 3), 4),
-            attempt(2, "fixed the date comparison", (9, 6, 1), 2),
-            attempt(3, "handling tasks with no due date", (14, 2, 2), 1),
+            try_number(1, "wrote the command and its tests", (142, 0, 3), 4),
+            try_number(2, "fixed the date comparison", (9, 6, 1), 2),
+            try_number(3, "handling tasks with no due date", (14, 2, 2), 1),
         ];
         (tries[0].elapsed_ms, tries[0].tokens) = (125_000, 61_000);
         (tries[1].elapsed_ms, tries[1].tokens) = (100_000, 38_000);
@@ -913,13 +924,13 @@ pub(crate) mod fixture {
         AgentGoal {
             session: SessionKey::parse(session).unwrap(),
             label: "build:cli".into(),
-            role: Some("workers".into()),
+            role: Some("worker".into()),
             task: None,
             kept_by: GoalKeeper::Cli {
                 name: "Codex".into(),
             },
             kept_note: None,
-            checked_by: "Argonauts".into(),
+            checked_by: "Argonauts Code".into(),
             state: GoalState::Running,
             stopped_because: None,
             set_ms_ago: Some(362_000),
@@ -995,7 +1006,7 @@ pub(crate) mod fixture {
         goal
     }
 
-    /// A goal on its first try with nothing met yet, kept by Argonauts.
+    /// A goal on its first try with nothing met yet, kept by Argonauts Code.
     pub(crate) fn starting(session: &str, label: &str) -> AgentGoal {
         let mut goal = build_cli(session);
         goal.label = label.into();
@@ -1016,7 +1027,7 @@ pub(crate) mod fixture {
 
 #[cfg(test)]
 mod tests {
-    use super::fixture::{attempt, build_cli, met, starting};
+    use super::fixture::{build_cli, met, starting, try_number};
     use super::*;
     use crate::stability::assert_lines;
     use crate::text::{plain_text, str_width};
@@ -1042,7 +1053,7 @@ mod tests {
         let theme = theme();
         let mut goal = build_cli("s-002");
         goal.tries = (1..=20)
-            .map(|number| attempt(number, &format!("try number {number}"), (1, 1, 1), 1))
+            .map(|number| try_number(number, &format!("try number {number}"), (1, 1, 1), 1))
             .collect();
         goal.tries[19].running = true;
         let text: Vec<String> = panel(&goal, 110, 12, &theme)
@@ -1071,13 +1082,13 @@ mod tests {
     fn a_row_carries_a_square_per_line_its_try_and_the_lines_met() {
         let theme = theme();
         let goal = build_cli("s-002");
-        assert_eq!(squares_text(&goal, &theme), "■■■");
+        assert_eq!(squares_text(&goal, &theme), "▪▪▪");
         let colors: Vec<_> = squares(&goal, &theme)
             .iter()
             .map(|span| span.style.fg)
             .collect();
         assert_eq!(colors[0], theme.style(Role::Success).fg);
-        assert_eq!(colors[2], theme.style(Role::Error).fg);
+        assert_eq!(colors[2], theme.style(Role::Danger).fg);
         assert_eq!(row_words(&goal), "try 3 · 2 of 3 lines met");
         assert_eq!(
             row_words(&met("s-001", "build:store")),
@@ -1085,7 +1096,7 @@ mod tests {
         );
         let starting = starting("s-003", "build:docs");
         assert_eq!(row_words(&starting), "try 1 · 0 of 2 lines met");
-        assert_eq!(squares_text(&starting, &theme), "■■");
+        assert_eq!(squares_text(&starting, &theme), "▪▪");
     }
 
     #[test]
@@ -1128,7 +1139,7 @@ mod tests {
     #[test]
     fn without_color_a_failing_line_is_a_hollow_square() {
         let plain = theme().with_level(crate::theme::ColorLevel::None);
-        assert_eq!(squares_text(&build_cli("s-002"), &plain), "■■□");
+        assert_eq!(squares_text(&build_cli("s-002"), &plain), "▪▪▫");
     }
 
     #[test]
@@ -1195,18 +1206,21 @@ mod tests {
         let goal = starting("s-003", "build:docs");
         let text = plain_text(&panel(&goal, 120, 12, &theme));
         assert!(text.contains("Not checked yet"), "{text}");
-        assert!(text.contains("Kept by Argonauts: it runs the"), "{text}");
+        assert!(
+            text.contains("Kept by Argonauts Code: it runs the"),
+            "{text}"
+        );
         let kept: String = kept_by(&goal, &theme)
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        assert_eq!(kept, "kept by Argonauts");
+        assert_eq!(kept, "kept by Argonauts Code");
         let tab = plain_text(&tab(&goal, 120, &theme).lines);
-        assert!(tab.contains("◆ kept by Argonauts"), "{tab}");
+        assert!(tab.contains("◆ kept by Argonauts Code"), "{tab}");
         assert!(tab.contains("Not checked yet"), "{tab}");
     }
 
-    /// Why Argonauts keeps a goal that was asked of the CLI is said where the CLI would speak,
+    /// Why Argonauts Code keeps a goal that was asked of the CLI is said where the CLI would speak,
     /// a goal that stopped short says why under its lines, and checks you asked for show as
     /// running, in the panel, on the Goal tab and to a screen reader.
     #[test]
@@ -1220,7 +1234,7 @@ mod tests {
             said.contains("Claude Code has no goal of its own,"),
             "{said}"
         );
-        assert!(said.contains("so Argonauts keeps it:"), "{said}");
+        assert!(said.contains("so Argonauts Code keeps it:"), "{said}");
         assert!(said.contains("Its checks are running now"), "{said}");
         assert!(!said.contains("Not checked yet"), "{said}");
         let card = plain_text(&tab(&goal, 120, &theme).lines);
@@ -1303,7 +1317,10 @@ mod tests {
         assert!(rows[11].ends_with("2m17s · running │"), "{text}");
         // The checks and the CLI's own account share their rows.
         let heads = rows.iter().find(|row| row.contains("◆ checks")).unwrap();
-        assert!(heads.contains("run by Argonauts after each try"), "{text}");
+        assert!(
+            heads.contains("run by Argonauts Code after each try"),
+            "{text}"
+        );
         assert!(heads.contains("◆ Codex says"), "{text}");
         assert!(heads.trim_end().ends_with("its own account │"), "{text}");
         assert!(

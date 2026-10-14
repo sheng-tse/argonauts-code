@@ -1,4 +1,4 @@
-//! List prices: the table built in, which also lets a dollar budget be tracked while a CLI
+//! List prices: the table built in, which also lets a dollar limit be tracked while a CLI
 //! reports only tokens, and the price list that gives every model an API value, from your
 //! settings first, then the public model list, then the table, then the nearest model's.
 
@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::budget::TokenPrice;
+use crate::meter::TokenPrice;
 use crate::overview::Tokens;
 
 /// Dollars per million tokens for input, output, and cached input. Anthropic's from its own
@@ -39,6 +39,8 @@ const PRICES: &[(&str, f64, f64, f64)] = &[
     ("gpt-6-sol", 2.00, 10.00, 0.20),
     ("gpt-6-astra", 10.00, 50.00, 1.00),
     ("gemini-3.6-flash", 0.75, 3.75, 0.075),
+    // Its introductory price, which matches 3.6's.
+    ("gemini-3.8-flash", 0.75, 3.75, 0.075),
     // Gemini 3 Pro's list price, which its 3.6 release keeps until a newer one is listed.
     ("gemini-3.6-pro", 2.00, 12.00, 0.20),
 ];
@@ -50,7 +52,7 @@ const SAME_PRICE_SUFFIXES: &[&str] = &["low", "medium", "high", "minimal"];
 const CLAUDE_CACHE_WRITE: f64 = 1.25;
 
 /// Matches the exact id, a dated snapshot such as `claude-haiku-4-5-20251001`, or a thinking
-/// level such as `gemini-3.6-flash-low`.
+/// level such as `gemini-3.8-flash-low`.
 pub fn builtin_price(model: &str) -> Option<TokenPrice> {
     let model = model.trim().to_ascii_lowercase();
     PRICES
@@ -141,7 +143,7 @@ impl ListPrice {
 
 /// Every model's list price, so each has an API value: your own prices, then those the public
 /// model list gives, then the table built in, then the price of the newest model of its
-/// family, and for a model none of them knows, its CLI's usual model's. A model that runs on
+/// provider, and for a model none of them knows, its CLI's usual model's. A model that runs on
 /// this computer costs nothing.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PriceList {
@@ -206,7 +208,7 @@ fn bare(model: &str) -> String {
     id.split('[').next().unwrap_or(id).trim().to_owned()
 }
 
-/// The newest listed model of the same family, for a model the table doesn't name.
+/// The newest listed model of the same provider, for a model the table doesn't name.
 fn nearest(model: &str) -> Option<&'static str> {
     let has = |word: &str| model.contains(word);
     let openai = has("gpt")
@@ -235,7 +237,7 @@ fn nearest(model: &str) -> Option<&'static str> {
         }
     } else if has("gemini") {
         if has("flash") {
-            "gemini-3.6-flash"
+            "gemini-3.8-flash"
         } else {
             "gemini-3.6-pro"
         }
@@ -260,11 +262,12 @@ mod tests {
 
     #[test]
     fn cheapest_models_have_prices() {
+        // Codex's cheapest, then the fallback its recordings may run on.
         for model in [
             "haiku",
-            "gpt-5.6-luna",
             "gpt-6-luna",
-            "gemini-3.6-flash-low",
+            "gpt-5.6-luna",
+            "gemini-3.8-flash-low",
         ] {
             assert!(builtin_price(model).is_some(), "{model}");
         }
@@ -353,7 +356,7 @@ mod tests {
             value("claude-code", Some("claude-sonnet-5-5[1m]")),
             value("claude-code", Some("claude-sonnet-5-5"))
         );
-        // A model no list names takes its family's newest price, then its CLI's usual one.
+        // A model no list names takes its provider's newest price, then its CLI's usual one.
         assert_eq!(
             value("claude-code", Some("claude-sonnet-6-1")),
             value("claude-code", Some("claude-sonnet-5-5"))

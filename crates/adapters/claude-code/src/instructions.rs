@@ -1,5 +1,5 @@
 //! The project instruction files Claude Code loads by itself, so a prompt names only the rest.
-//! Since 2.1.277 its built-in AGENTS.md mod decides, by the "Project instructions" choice in
+//! Since 2.1.277 its built-in AGENTS.md plugin decides, by the "Project instructions" choice in
 //! `/config`.
 
 use std::fs;
@@ -10,8 +10,8 @@ use serde_json::Value;
 pub const CLAUDE_MD: &str = "CLAUDE.md";
 pub const AGENTS_MD: &str = "AGENTS.md";
 
-/// The mod whose options hold the choice.
-const AGENTS_MOD: &str = "cc-plugin-agents-md@builtin";
+/// The plugin whose options hold the choice.
+const AGENTS_PLUGIN: &str = "cc-plugin-agents-md@builtin";
 
 /// "Project instructions" in `/config`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +96,7 @@ fn choice(workdir: &Path, config_dir: Option<&Path>) -> Choice {
             let settings: Value = serde_json::from_str(&fs::read_to_string(file).ok()?).ok()?;
             let options = settings
                 .get("pluginConfigs")?
-                .get(AGENTS_MOD)?
+                .get(AGENTS_PLUGIN)?
                 .get("options")?;
             Choice::parse(options.get("instructionFiles")?.as_str()?)
         })
@@ -127,7 +127,7 @@ mod tests {
 
     fn choose(config: &Path, choice: &str) {
         let settings = serde_json::json!({
-            "pluginConfigs": {AGENTS_MOD: {"options": {"instructionFiles": choice}}}
+            "pluginConfigs": {AGENTS_PLUGIN: {"options": {"instructionFiles": choice}}}
         });
         write(&config.join("settings.json"), &settings.to_string());
     }

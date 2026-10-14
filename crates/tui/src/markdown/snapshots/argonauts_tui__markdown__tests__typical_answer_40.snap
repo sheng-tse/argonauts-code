@@ -1,6 +1,5 @@
 ---
 source: crates/tui/src/markdown/tests.rs
-assertion_line: 213
 expression: text
 ---
 ● The flag is in and the tests pass:

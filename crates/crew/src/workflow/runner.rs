@@ -6,29 +6,29 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::run::RunMode;
 use argonauts_core::events::workflow::{
     PhaseMark, StepEnd, StepFinished, StepStarted, WorkflowDeclared, WorkflowEvent, WorkflowStarted,
 };
 use argonauts_core::future::BoxFuture;
-use argonauts_core::names::{WorkerRef, WorkflowId};
+use argonauts_core::names::{ModelRef, WorkflowId};
 use argonauts_core::paths::Paths;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::protocol::UnderstandWhen;
 use argonauts_core::workflow::{
     StandardPhase, Step, StepRef, Workflow, WorkflowParams, WorkflowRef,
 };
-use argonauts_core::{canonical_json, sha256_hex};
+use argonauts_core::{canonical_json, sha256_hex, workflow_files};
 
-use crate::card;
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
 use crate::goal::pursue;
 use crate::roles;
 use crate::state::RunState;
 use crate::state::ids::IdKind;
+use crate::task;
 use crate::workflow::validate::{self, Context};
 use crate::workflow::{
     Flow, StepAt, StepCall, StepDone, builtin, change, conditions, describe, kinds, params, replay,
@@ -36,10 +36,10 @@ use crate::workflow::{
 };
 use argonauts_core::steps::StepName;
 
-/// The run's workflow from the settings: the preset's `workflow`, looked up like any other. A
-/// solo run keeps that workflow when it builds the solo card, and otherwise follows the solo
-/// built-in its `solo` settings pick. A run that already started one (a recovered run, or one
-/// that switched) gets that one back.
+/// The run's workflow from the settings: the one `workflow` picks, looked up like any other. A
+/// Captain run keeps that workflow when it builds the Captain task, and otherwise follows the
+/// Captain built-in its `captain` settings pick. A run that already started one (a recovered run,
+/// or one that switched) gets that one back.
 pub fn workflow_for_run(host: &Host) -> EngineResult<(Option<WorkflowRef>, Workflow)> {
     let running = host.read(|state| {
         let root = state.workflows.root.as_ref()?;
@@ -49,18 +49,18 @@ pub fn workflow_for_run(host: &Host) -> EngineResult<(Option<WorkflowRef>, Workf
     if let Some(running) = running {
         return Ok(running);
     }
-    let settings = host.settings();
-    let configured = lookup(host, settings.phases.as_str());
-    if host.read(run_mode) != Some(RunMode::Solo) {
-        return Ok((Some(settings.phases.clone()), configured?));
+    let in_use = phases_in_use(host);
+    let configured = lookup(host, in_use.as_str());
+    if host.read(run_mode) != Some(RunMode::Captain) {
+        return Ok((Some(in_use), configured?));
     }
-    // A crew workflow that can't be found doesn't matter to a solo run that wouldn't use it.
+    // A crew workflow that can't be found doesn't matter to a Captain run that wouldn't use it.
     if let Ok(workflow) = configured
         && builds_goal(&workflow)
     {
-        return Ok((Some(settings.phases.clone()), workflow));
+        return Ok((Some(in_use), workflow));
     }
-    let name = WorkflowRef::new(solo_workflow(settings));
+    let name = WorkflowRef::new(captain_workflow(host.settings()));
     let workflow = lookup(host, name.as_str())?;
     Ok((Some(name), workflow))
 }
@@ -73,15 +73,15 @@ pub fn run_mode(state: &RunState) -> Option<RunMode> {
         .or_else(|| state.run.started.as_ref().map(|started| started.mode))
 }
 
-/// A crew run following a crew workflow. Solo runs, and runs that switched to a solo workflow
-/// (such as "run it solo" at the plan checkpoint), are not. Phase-end adaptation runs only in
+/// A crew run following a crew workflow. Captain runs, and runs that switched to a Captain workflow
+/// (such as "run it as Captain" at the plan approval), are not. Phase-end adaptation runs only in
 /// these.
 pub fn crew_run(state: &RunState, id: &WorkflowId) -> bool {
-    run_mode(state) != Some(RunMode::Solo) && !in_solo_workflow(state, id)
+    run_mode(state) != Some(RunMode::Captain) && !in_captain_workflow(state, id)
 }
 
-/// Whether the workflow, or one it runs inside, builds the solo card.
-pub fn in_solo_workflow(state: &RunState, id: &WorkflowId) -> bool {
+/// Whether the workflow, or one it runs inside, builds the Captain task.
+pub fn in_captain_workflow(state: &RunState, id: &WorkflowId) -> bool {
     let mut at = state.workflows.by_id.get(id);
     while let Some(record) = at {
         if builds_goal(&record.workflow) {
@@ -95,55 +95,89 @@ pub fn in_solo_workflow(state: &RunState, id: &WorkflowId) -> bool {
     false
 }
 
-/// Which built-in a solo run follows when the preset's workflow doesn't build the solo card,
-/// and where "run it solo" at the plan checkpoint goes.
-pub fn solo_workflow(settings: &Settings) -> &'static str {
-    if settings.solo.attempts > 1 {
+/// Which built-in a Captain run follows when the chosen workflow doesn't build the Captain task,
+/// and where "run it as Captain" at the plan approval goes.
+pub fn captain_workflow(settings: &Settings) -> &'static str {
+    if settings.captain.tries > 1 {
         "best-of-n"
-    } else if settings.solo.review {
+    } else if settings.captain.review {
         "maker-checker"
     } else {
-        "solo"
+        "captain"
     }
 }
 
-/// Where a solo card that escalates goes: the preset's workflow, unless it builds the solo card
-/// too, and then the default crew workflow.
+/// Where a Captain task that needs you goes: the workflow it names, unless it builds the Captain
+/// task too, and then the default crew workflow.
 pub fn crew_workflow(host: &Host) -> WorkflowRef {
-    let configured = &host.settings().phases;
+    let configured = phases_in_use(host);
     match lookup(host, configured.as_str()) {
         Ok(workflow) if builds_goal(&workflow) => WorkflowRef::new(DEFAULT_CREW_WORKFLOW),
-        _ => configured.clone(),
+        _ => configured,
     }
 }
 
-/// Where the crew goes when the preset's workflow is a solo one.
+/// The workflow whose phases a run starts from: the one in use when it has phases, and
+/// otherwise the default crew workflow. A file of steps, a script and a workflow that only sets
+/// settings have none of their own.
+pub fn phases_in_use(host: &Host) -> WorkflowRef {
+    let name = host.settings().workflow.as_str();
+    if has_phases(host, name) {
+        WorkflowRef::new(name)
+    } else {
+        WorkflowRef::new(DEFAULT_CREW_WORKFLOW)
+    }
+}
+
+/// Whether `lookup` has phases to find under this name. A project's file that waits for your
+/// trust doesn't count, as in the lookup.
+fn has_phases(host: &Host, name: &str) -> bool {
+    if Path::new(name).is_absolute() || builtin::source(name).is_some() {
+        return true;
+    }
+    let stem = name.strip_suffix(".star").unwrap_or(name);
+    let waiting = crate::prompts::files::waiting(host);
+    workflow_dirs(host).iter().any(|dir| {
+        let there = |file: String| {
+            let place = dir.join(file);
+            (place.is_file() && !waiting.contains(&place)).then_some(place)
+        };
+        let own_file = there(format!("{stem}.toml"))
+            .and_then(|place| std::fs::read_to_string(place).ok())
+            .is_some_and(|text| workflow_files::has_table(&text, workflow_files::PHASES_TABLE));
+        own_file
+            || there(format!("{stem}.yaml")).is_some()
+            || there(format!("{stem}.star")).is_some()
+    })
+}
+
+/// Where the crew goes when the chosen workflow is a Captain one.
 pub const DEFAULT_CREW_WORKFLOW: &str = "council";
 
-/// Whether any step of the workflow builds the solo card from the goal.
+/// Whether any step of the workflow builds the Captain task from the goal.
 pub fn builds_goal(workflow: &Workflow) -> bool {
     fn any(steps: &[Step]) -> bool {
         steps
             .iter()
-            .any(|step| card::builds_goal(step) || any(&step.steps))
+            .any(|step| task::builds_goal(step) || any(&step.steps))
     }
     workflow.phases.iter().any(|phase| any(&phase.steps))
 }
 
-/// Values the settings give a workflow's own params: `attempts` from `solo.attempts` above 1.
+/// Values the settings give a workflow's own params: `tries` from `captain.tries` above 1.
 /// Only params the workflow declares are filled, so its record never gains one it doesn't use.
 pub fn settings_params(workflow: &Workflow, settings: &Settings) -> WorkflowParams {
     let mut values = WorkflowParams::default();
-    if settings.solo.attempts > 1 && workflow.params.0.contains_key(ATTEMPTS) {
+    if settings.captain.tries > 1 && workflow.params.0.contains_key(TRIES) {
         values
             .0
-            .insert(ATTEMPTS.to_owned(), Value::from(settings.solo.attempts));
+            .insert(TRIES.to_owned(), Value::from(settings.captain.tries));
     }
     values
 }
 
-/// The param `best-of-n` counts its attempts with.
-pub const ATTEMPTS: &str = "attempts";
+/// The param `best-of-n` counts its tries with.
+pub const TRIES: &str = "tries";
 
 /// Where your own workflow files live: `.argonauts/workflows/` in the repo, then
 /// `~/.argonauts/workflows/`.
@@ -155,15 +189,16 @@ pub fn workflow_dirs(host: &Host) -> Vec<PathBuf> {
     dirs
 }
 
-/// A workflow by name: `.argonauts/workflows/<name>.yaml`, else
-/// `~/.argonauts/workflows/<name>.yaml`, else the built-in. Your own file with a built-in's
-/// name replaces it. A `<name>.star` file in the same places builds its workflow with
-/// Starlark's loops and functions, through learning's own small evaluator, and is validated
-/// and run like any other. A recipe's own workflow file comes by its full path, and only from
-/// beside the run's recipe version.
+/// A workflow's phases by name: the `[[phases]]` of `.argonauts/workflows/<name>.toml`, else
+/// `<name>.yaml` beside it, a file of phases alone, else the same two in
+/// `~/.argonauts/workflows/`, else the built-in. Your own file with a built-in's name replaces
+/// it. A `<name>.star` file in the same places builds its workflow with Starlark's loops and
+/// functions, through learning's own small evaluator, and is validated and run like any other.
+/// A learned workflow's own workflow file comes by its full path, and only from beside the run's
+/// learned workflow version.
 pub fn lookup(host: &Host, name: &str) -> EngineResult<Workflow> {
     if Path::new(name).is_absolute() {
-        return recipe_workflow(host, Path::new(name));
+        return workflow_beside_learned(host, Path::new(name));
     }
     let plain = Path::new(name)
         .components()
@@ -174,26 +209,39 @@ pub fn lookup(host: &Host, name: &str) -> EngineResult<Workflow> {
         )));
     }
     let stem = name.strip_suffix(".star").unwrap_or(name);
+    let own_file = format!("{stem}.toml");
     let file = format!("{stem}.yaml");
     let star = format!("{stem}.star");
     // A project's file that waits for your trust is passed over, so a built-in stays in place.
     let waiting = crate::prompts::files::waiting(host);
+    let read = |place: &Path| match std::fs::read_to_string(place) {
+        Ok(text) => Ok(Some(text)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(EngineError::from(err)),
+    };
     for dir in workflow_dirs(host) {
+        let refused =
+            |place: &Path, err: String| EngineError::Refused(format!("{}: {err}", place.display()));
+        // A workflow's own file may leave its phases out: it then only sets steps or settings.
+        let place = dir.join(&own_file);
+        if stem == name
+            && !waiting.contains(&place)
+            && let Some(text) = read(&place)?
+            && let Some(workflow) =
+                workflow_files::phases(&text, stem).map_err(|err| refused(&place, err))?
+        {
+            return Ok(workflow);
+        }
         let place = dir.join(&file);
-        if stem == name && !waiting.contains(&place) {
-            match std::fs::read_to_string(&place) {
-                Ok(text) => {
-                    return yaml::parse(&text).map_err(|err| {
-                        EngineError::Refused(format!("{}: {err}", place.display()))
-                    });
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => return Err(err.into()),
-            }
+        if stem == name
+            && !waiting.contains(&place)
+            && let Some(text) = read(&place)?
+        {
+            return yaml::parse(&text).map_err(|err| refused(&place, err));
         }
         let place = dir.join(&star);
         if place.is_file() && !waiting.contains(&place) {
-            return argonauts_learning::recipes::loops::build_file(&place)
+            return argonauts_learning::learned_workflows::loops::build_file(&place)
                 .map_err(|err| EngineError::Refused(format!("{}: {err}", place.display())));
         }
     }
@@ -201,14 +249,16 @@ pub fn lookup(host: &Host, name: &str) -> EngineResult<Workflow> {
         return builtin::load(name).map_err(EngineError::Refused);
     }
     Err(EngineError::Refused(format!(
-        "no workflow is named `{name}`: neither .argonauts/workflows/ nor ~/.argonauts/workflows/ has {file}, and it isn't built in"
+        "no workflow is named `{name}`: neither .argonauts/workflows/ nor ~/.argonauts/workflows/ has {own_file} with phases or {file}, and it isn't built in"
     )))
 }
 
-/// The `.star` or YAML workflow file beside the run's recipe version.
-fn recipe_workflow(host: &Host, path: &Path) -> EngineResult<Workflow> {
+/// The `.star` or YAML workflow file beside the run's learned workflow version.
+fn workflow_beside_learned(host: &Host, path: &Path) -> EngineResult<Workflow> {
     let refused = |why: String| EngineError::Refused(format!("{}: {why}", path.display()));
-    let Some(file) = crate::retro::recipe::recipe_file(&host.repo().run_dir, path) else {
+    let Some(file) =
+        crate::run_review::learned_workflow::learned_workflow_file(&host.repo().run_dir, path)
+    else {
         return Err(refused(
             "a phases file named by its full path must be a file beside this run's learned workflow".to_owned(),
         ));
@@ -217,18 +267,18 @@ fn recipe_workflow(host: &Host, path: &Path) -> EngineResult<Workflow> {
         .extension()
         .is_some_and(|extension| extension == "star")
     {
-        return argonauts_learning::recipes::loops::build_file(&file)
+        return argonauts_learning::learned_workflows::loops::build_file(&file)
             .map_err(|err| refused(err.to_string()));
     }
     yaml::parse(&std::fs::read_to_string(&file)?).map_err(|err| refused(err.to_string()))
 }
 
-/// Workers a workflow may name: the default agent, the crew, and every role's workers.
-pub fn allowed_workers(settings: &Settings) -> Vec<WorkerRef> {
-    let mut allowed = vec![settings.main_agent.clone()];
+/// Workers a workflow may name: the main agent, the crew, and every role's workers.
+pub fn allowed_workers(settings: &Settings) -> Vec<ModelRef> {
+    let mut allowed = vec![settings.crew.main.clone()];
     allowed.extend(settings.crew.members());
     for role in settings.roles.values() {
-        allowed.extend(role.workers.iter().cloned());
+        allowed.extend(role.models.iter().cloned());
     }
     allowed.sort();
     allowed.dedup();
@@ -241,7 +291,7 @@ pub fn version(workflow: &Workflow) -> EngineResult<String> {
     Ok(sha256_hex(canonical_json(&value).as_bytes()))
 }
 
-/// Checks the workflow at `depth` against the run's settings and what's left of its budget.
+/// Checks the workflow at `depth` against the run's settings and what's left of its limit.
 pub fn check(
     host: &Host,
     workflow: &Workflow,
@@ -249,15 +299,15 @@ pub fn check(
 ) -> Result<(), Vec<validate::WorkflowError>> {
     let settings = host.settings();
     let allowed = allowed_workers(settings);
-    let budget_left_usd = host.read(|state| {
-        let budget = state.run.budget.as_ref()?;
-        let limit = budget.limit.as_ref()?;
-        (limit.unit == argonauts_core::settings::budget::BudgetUnit::Usd)
-            .then_some(limit.amount - budget.spent.cost_usd)
+    let limit_left_usd = host.read(|state| {
+        let spend = state.run.spend.as_ref()?;
+        let limit = spend.limit.as_ref()?;
+        (limit.unit == argonauts_core::settings::limit::LimitUnit::Usd)
+            .then_some(limit.amount - spend.spent.cost_usd)
     });
-    let families: BTreeMap<WorkerRef, String> = allowed
+    let providers: BTreeMap<ModelRef, String> = allowed
         .iter()
-        .map(|worker| (worker.clone(), roles::family(host, worker)))
+        .map(|worker| (worker.clone(), roles::provider(host, worker)))
         .collect();
     let lookup = |name: &str| lookup(host, name).map_err(|err| err.to_string());
     let as_you_asked = host.read(|state| {
@@ -274,10 +324,10 @@ pub fn check(
         &Context {
             settings,
             allowed: &allowed,
-            families: &families,
+            providers: &providers,
             lookup: &lookup,
             depth,
-            budget_left_usd,
+            limit_left_usd,
             as_you_asked: &as_you_asked,
         },
     )
@@ -367,7 +417,7 @@ pub fn start_as(
 
 /// Runs the workflow to its end from its first unfinished step, taking approved changes from
 /// the next phase on. At each phase end of a crew run, with `workflows.adapt_at_phase_ends`,
-/// the lead may propose a change (`change::adapt_at_phase_end`). A step that fails stops it.
+/// the main agent may propose a change (`change::adapt_at_phase_end`). A step that fails stops it.
 pub fn run<'a>(host: &'a Host, id: &'a WorkflowId) -> BoxFuture<'a, EngineResult<Flow>> {
     Box::pin(async move {
         // A decision the log already holds stands, even when the engine stopped before acting
@@ -375,7 +425,7 @@ pub fn run<'a>(host: &'a Host, id: &'a WorkflowId) -> BoxFuture<'a, EngineResult
         let recorded = host.read(|state| {
             let record = state.workflows.by_id.get(id)?;
             Some(match replay::failed(record) {
-                // A goal loop out of rounds failed, but the run it stopped isn't a failure.
+                // An Understand loop out of rounds failed, but the run it stopped isn't a failure.
                 Some(progress) => match replay::step(state, host, record, progress) {
                     Flow::Continue => Err(failed(&progress.step, progress.summary.as_deref())),
                     flow => Ok(flow),
@@ -410,7 +460,7 @@ pub fn run<'a>(host: &'a Host, id: &'a WorkflowId) -> BoxFuture<'a, EngineResult
             let mark = PhaseMark {
                 id: id.clone(),
                 index: next,
-                title: phase.name.clone(),
+                name: phase.name.clone(),
             };
             // Asked when the next phase is about to begin, so a recovered run that stopped
             // between two phases still gets the chance, and an approved change takes effect
@@ -426,7 +476,7 @@ pub fn run<'a>(host: &'a Host, id: &'a WorkflowId) -> BoxFuture<'a, EngineResult
                 continue;
             }
             // A goal's check may have gone in before this very phase.
-            if pursue::begin_attempt(host, id, next)? {
+            if pursue::begin_try(host, id, next)? {
                 continue;
             }
             for (index, step) in phase.steps.iter().enumerate() {
@@ -494,7 +544,7 @@ fn start_phase(host: &Host, step: &StepRef) -> EngineResult<()> {
         (!record.phases_started.contains(&step.phase)).then(|| PhaseMark {
             id: step.workflow.clone(),
             index: step.phase,
-            title: phase.name.clone(),
+            name: phase.name.clone(),
         })
     }) else {
         return Ok(());
@@ -524,24 +574,24 @@ fn review_phase(state: &RunState, step: &StepRef) -> Option<PhaseMark> {
     Some(PhaseMark {
         id: step.workflow.clone(),
         index,
-        title: target.to_owned(),
+        name: target.to_owned(),
     })
 }
 
-/// The step that built `card`: where its owner's build sessions run. A prediction made while
-/// the plan was divided names the card too, from the planning step, so it isn't one.
-pub fn card_step(state: &RunState, card: &CardId) -> Option<StepRef> {
+/// The step that built `task`: where its worker's build sessions run. A prediction made while
+/// the plan was divided names the task too, from the planning step, so it isn't one.
+pub fn task_step(state: &RunState, task: &TaskId) -> Option<StepRef> {
     state.sessions.in_order().into_iter().find_map(|session| {
-        (session.card.as_ref() == Some(card) && session.started.step == Some(StepName::Build))
+        (session.task.as_ref() == Some(task) && session.started.step == Some(StepName::Build))
             .then(|| session.started.workflow_step.clone())
             .flatten()
     })
 }
 
-/// Where a card's review shows in the workflow: the later phase its build's `review_in`
+/// Where a task's review shows in the workflow: the later phase its build's `review_in`
 /// names, else the build's own step, in the round the build is in.
-pub fn review_at(state: &RunState, card: &CardId) -> Option<StepAt> {
-    let step = card_step(state, card)?;
+pub fn review_at(state: &RunState, task: &TaskId) -> Option<StepAt> {
+    let step = task_step(state, task)?;
     if let Some(mark) = review_phase(state, &step) {
         return Some(StepAt {
             step: StepRef {
@@ -565,7 +615,7 @@ pub fn review_at(state: &RunState, card: &CardId) -> Option<StepAt> {
     Some(StepAt { step, round })
 }
 
-/// A card's review is starting under `step`: the phase that shows it starts, once.
+/// A task's review is starting under `step`: the phase that shows it starts, once.
 pub fn review_started(host: &Host, step: &StepRef) -> EngineResult<()> {
     let Some(mark) = host.read(|state| {
         review_phase(state, step).filter(|mark| {
@@ -609,7 +659,7 @@ fn end_review_phase(host: &Host, step: &StepRef) -> EngineResult<()> {
     Ok(())
 }
 
-/// A phase's steps are over. One whose every step was skipped, such as solo's Understand when
+/// A phase's steps are over. One whose every step was skipped, such as Captain's Understand when
 /// your prompt is the goal, never ran, so it's recorded as skipped with the first reason.
 fn end_phase(host: &Host, mark: &PhaseMark, end: StepEnd) -> EngineResult<()> {
     let Some(skipped) = host.read(|state| {
@@ -674,7 +724,7 @@ fn skip_the_rest(host: &Host, id: &WorkflowId, from: u32, flow: &Flow) -> Engine
                 (!recorded).then(|| PhaseMark {
                     id: id.clone(),
                     index,
-                    title: phase.name.clone(),
+                    name: phase.name.clone(),
                 })
             })
             .collect::<Vec<_>>()
@@ -754,7 +804,7 @@ pub fn run_step<'a>(host: &'a Host, call: &'a StepCall) -> BoxFuture<'a, EngineR
 }
 
 /// With `understand.when = "off"`, a crew run's Understand phase doesn't run: its steps skip,
-/// and your prompt is the goal. The goal checkpoint code put before the work takes it and asks
+/// and your prompt is the goal. The Understand approval code put before the work takes it and asks
 /// the go-ahead; a workflow without one, which code didn't shape, takes it here.
 async fn understand_off(host: &Host, call: &StepCall) -> EngineResult<Option<StepDone>> {
     let off = host.settings().understand.when == UnderstandWhen::Off
@@ -770,11 +820,11 @@ async fn understand_off(host: &Host, call: &StepCall) -> EngineResult<Option<Ste
             .by_id
             .get(&call.at.step.workflow)
             .is_some_and(|record| {
-                shape::goal_checkpoint_runs(&record.workflow, UnderstandWhen::Off)
+                shape::understand_approval_runs(&record.workflow, UnderstandWhen::Off)
             })
     });
     if !asked_later {
-        crate::solo::prompt_is_the_goal(host).await?;
+        crate::captain::prompt_is_the_goal(host).await?;
     }
     Ok(Some(StepDone::skipped(
         "understand.when is off, so your prompt is the goal",

@@ -1,13 +1,13 @@
-//! The lead's brief: what it must say before anything runs, checked by
-//! code. Every problem goes back to the lead at once, as the validator's errors do. The brief's
-//! name and description become the run's identity; the example it started from shows only
-//! once, at the end of the start item.
+//! The main agent's brief: what it must say before anything runs, checked by code. Every problem
+//! goes back to the main agent at once, as the validator's errors do. The brief's name and
+//! description become the run's identity; the example it started from shows only once, at the end
+//! of the start item.
 
 use std::collections::BTreeSet;
 
 use unicode_width::UnicodeWidthStr;
 
-use argonauts_core::events::checkpoint::CheckpointKind;
+use argonauts_core::events::approval::ApprovalKind;
 use argonauts_core::events::goal::{Criterion, CriterionCheck};
 use argonauts_core::labels;
 use argonauts_core::steps::StepName;
@@ -24,12 +24,12 @@ pub const MAX_PHASES: usize = 6;
 pub const MAX_CRITERIA: usize = 8;
 pub const MAX_QUESTIONS: usize = 3;
 
-/// One thing code refused in a brief: what the lead is told, and the few plain words your
-/// `›` note says after "The lead's brief", such as "named the run in 5 words".
+/// One thing code refused in a brief: what the main agent is told, and the few plain words your
+/// `›` note says after "The main agent's brief", such as "named the run in 5 words".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Problem {
     pub plainly: String,
-    /// For the lead, with what the rule wants.
+    /// For the main agent, with what the rule wants.
     pub line: String,
 }
 
@@ -42,8 +42,8 @@ impl Problem {
     }
 }
 
-/// What's wrong with the brief, each as one line for the lead. `workflow` is the one it names,
-/// filled in and before code frames it; `examples` are the names it may start from.
+/// What's wrong with the brief, each as one line for the main agent. `workflow` is the one it
+/// names, filled in and before code frames it; `examples` are the names it may start from.
 pub fn problems(brief: &DesignOutput, workflow: &Workflow, examples: &[String]) -> Vec<Problem> {
     let mut problems = Vec::new();
     if let Some(problem) = name_problem(&brief.name, examples) {
@@ -84,25 +84,25 @@ pub fn problems(brief: &DesignOutput, workflow: &Workflow, examples: &[String]) 
             format!("the workflow has {phases} phases; write 1 to {MAX_PHASES}"),
         ));
     }
-    let mut titles = BTreeSet::new();
+    let mut names = BTreeSet::new();
     for (index, phase) in workflow.phases.iter().enumerate() {
         let at = format!("phase {} ({})", index + 1, phase.name);
-        if !titles.insert(phase.name.trim().to_lowercase()) {
+        if !names.insert(phase.name.trim().to_lowercase()) {
             problems.push(Problem::new(
-                "gave two phases one title",
-                format!("{at} has the title another phase has; give each phase its own"),
+                "gave two phases one name",
+                format!("{at} has the name another phase has; give each phase its own"),
             ));
         }
         if !title_case(&phase.name) {
             problems.push(Problem::new(
-                "gave a phase a title that isn't one or two words in Title Case",
+                "gave a phase a name that isn't one or two words in Title Case",
                 format!(
-                    "{at}: a title is one or two words in Title Case, such as `Fix` or `Final \
-                     Check`"
+                    "{at}: a phase's name is one or two words in Title Case, such as `Fix` or \
+                     `Final Check`"
                 ),
             ));
         }
-        if !phase.steps.is_empty() && phase.steps.iter().all(is_checkpoint) {
+        if !phase.steps.is_empty() && phase.steps.iter().all(is_approval) {
             problems.push(Problem::new(
                 "put an approval in a phase of its own",
                 format!(
@@ -111,7 +111,7 @@ pub fn problems(brief: &DesignOutput, workflow: &Workflow, examples: &[String]) 
                 ),
             ));
         }
-        // An example run as written keeps its own words; a workflow the lead wrote says them.
+        // An example run as written keeps its own words; a workflow the main agent wrote says them.
         if brief.workflow.is_some() && phase.detail.trim().is_empty() {
             problems.push(Problem::new(
                 "left a phase without its detail",
@@ -168,14 +168,14 @@ pub fn problems(brief: &DesignOutput, workflow: &Workflow, examples: &[String]) 
         ));
     }
     let mut items = BTreeSet::new();
-    for card in &brief.plan {
-        let item = labels::slug(&card.item, 3);
+    for task in &brief.plan {
+        let item = labels::slug(&task.item, 3);
         if item.is_empty() || !items.insert(item.clone()) {
             problems.push(Problem::new(
                 "gave a task no name of its own",
                 format!(
                     "plan item `{}` is empty or repeats; each task needs its own one-token name",
-                    card.item
+                    task.item
                 ),
             ));
         }
@@ -207,7 +207,7 @@ fn check_problem(criterion: &Criterion) -> Option<Problem> {
     }
 }
 
-/// The brief the lead wrote for this run: the newest design asked before the workflow
+/// The brief the main agent wrote for this run: the newest design asked before the workflow
 /// started. A design at a phase end serves a step, so it isn't one.
 pub fn of_run(state: &RunState) -> Option<DesignOutput> {
     state
@@ -225,12 +225,12 @@ pub fn of_run(state: &RunState) -> Option<DesignOutput> {
         })
 }
 
-/// The item the lead named for the card a build from the goal makes: its plan's first.
+/// The item the main agent named for the task a build from the goal makes: its plan's first.
 pub fn item(state: &RunState) -> Option<String> {
     of_run(state)?
         .plan
         .first()
-        .map(|card| labels::slug(&card.item, 3))
+        .map(|task| labels::slug(&task.item, 3))
         .filter(|item| !item.is_empty())
 }
 
@@ -288,7 +288,7 @@ pub fn apply_identity(workflow: &mut Workflow, brief: &DesignOutput) {
     workflow.based_on.clone_from(&brief.based_on);
 }
 
-/// A name for a run the lead didn't name, from the first words of intake's summary or your
+/// A name for a run the main agent didn't name, from the first words of intake's summary or your
 /// request: `add-a-json-flag` from "Add a --json flag to export".
 pub fn name_from(words: &str) -> String {
     let slug = labels::slug(words, 4);
@@ -367,31 +367,31 @@ fn title_case(title: &str) -> bool {
             .all(|word| word.chars().next().is_some_and(|c| !c.is_lowercase()))
 }
 
-fn is_checkpoint(step: &Step) -> bool {
-    step.kind == StepKind::Checkpoint && step.checkpoint != Some(CheckpointKind::ChangeRequest)
+fn is_approval(step: &Step) -> bool {
+    step.kind == StepKind::Approval && step.approval != Some(ApprovalKind::ChangeRequest)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use argonauts_core::events::goal::Criterion;
-    use argonauts_core::steps::design::BriefCard;
+    use argonauts_core::steps::design::BriefTask;
 
     use crate::workflow::yaml;
 
     const FIX: &str = r#"name: fix-slugify-median
 description: Fix slugify's dashes and median's even and empty lists, with tests
 phases:
-  - title: Fix
+  - name: Fix
     detail: one worker per function, each in its own worktree, tests as the checks
     standard: do
     steps:
       - { kind: build, input: plan, label: "fix:{item}", review_in: Review }
-  - title: Review
+  - name: Review
     detail: a reviewer from another provider reads each fix
     standard: check
     steps: []
-  - title: Merge
+  - name: Merge
     detail: the merge into main
     standard: decide
     steps:
@@ -399,7 +399,7 @@ phases:
 "#;
 
     fn examples() -> Vec<String> {
-        ["council", "maker-checker", "solo"]
+        ["council", "maker-checker", "captain"]
             .map(str::to_owned)
             .to_vec()
     }
@@ -414,12 +414,12 @@ phases:
             params: Vec::new(),
             workflow: Some(FIX.to_owned()),
             done_when: vec![Criterion::new("G1", "median([]) raises ValueError")],
-            plan: vec![BriefCard {
+            plan: vec![BriefTask {
                 item: "slugify".to_owned(),
                 task: "collapse punctuation into one dash".to_owned(),
             }],
             questions: Vec::new(),
-            first_attempt: None,
+            first_try: None,
         }
     }
 
@@ -513,7 +513,7 @@ phases:
     }
 
     #[test]
-    fn seven_phases_and_a_lone_checkpoint_are_refused() {
+    fn seven_phases_and_a_lone_approval_are_refused() {
         let mut seven = workflow();
         let merge = seven.phases[2].clone();
         for n in 0..4 {
@@ -528,8 +528,8 @@ phases:
         );
 
         let lone: Workflow = yaml::parse(
-            "name: x\nphases:\n  - title: Plan\n    detail: you approve the plan\n    \
-             standard: plan\n    steps:\n      - { kind: checkpoint, checkpoint: plan }\n",
+            "name: x\nphases:\n  - name: Plan\n    detail: you approve the plan\n    \
+             standard: plan\n    steps:\n      - { kind: approval, approval: plan }\n",
         )
         .unwrap();
         assert!(
@@ -558,14 +558,14 @@ phases:
     }
 
     #[test]
-    fn phase_titles_are_their_own_and_in_title_case() {
+    fn phase_names_are_their_own_and_in_title_case() {
         let mut twice = workflow();
         twice.phases[2].name = "review".to_owned();
         let found = problems(&brief(), &twice, &examples());
         assert!(
             found
                 .iter()
-                .any(|problem| problem.line.contains("title another phase has")),
+                .any(|problem| problem.line.contains("name another phase has")),
             "{found:?}"
         );
         assert!(
@@ -590,9 +590,9 @@ phases:
     }
 
     #[test]
-    fn a_plan_names_the_one_card_a_goal_build_makes() {
+    fn a_plan_names_the_one_task_a_goal_build_makes() {
         let mut two = brief();
-        two.plan.push(BriefCard {
+        two.plan.push(BriefTask {
             item: "median".to_owned(),
             task: "average the middle pair".to_owned(),
         });
@@ -615,11 +615,11 @@ phases:
     }
 
     #[test]
-    fn names_come_from_the_first_words_when_the_lead_named_nothing() {
+    fn names_come_from_the_first_words_when_the_main_agent_named_nothing() {
         assert_eq!(name_from("Add a --json flag to export"), "add-a-json-flag");
         assert_eq!(name_from("refactor"), "refactor-run");
         assert_eq!(name_from("   "), "untitled-run");
-        // Whatever it's made from, it passes the rule a lead's name must.
+        // Whatever it's made from, it passes the rule a main agent's name must.
         assert_eq!(name_problem(&name_from("Fix Slugify's Dashes"), &[]), None);
         let long = fit_description(&"word ".repeat(30));
         assert!(

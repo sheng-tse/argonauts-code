@@ -1,5 +1,5 @@
-//! Replaying a candidate against its parent: equal budgets, prefix replay, the stopping rule,
-//! the month's budget, and which workers may spend on it.
+//! Replaying a candidate against its parent: equal limits, prefix replay, the stopping rule,
+//! the month's limit, and which workers may spend on it.
 
 mod replay_support;
 
@@ -10,19 +10,21 @@ use serde_json::json;
 use time::OffsetDateTime;
 
 use argonauts_core::AuthMode;
-use argonauts_core::limits::GateRunner;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::limits::CheckRunner;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::agents::{AgentSettings, EndpointSettings};
 use argonauts_core::workflow::StandardPhase;
 use argonauts_learning::LearningError;
 use argonauts_learning::evolution::Thresholds;
-use argonauts_learning::recipes::LoadedRecipe;
+use argonauts_learning::learned_workflows::LoadedLearnedWorkflow;
 use argonauts_learning::replay::{
     ReplayReport, ReplayRequest, ReplayRunner, Versions, replay, replay_workers, start_phase,
 };
 
-use replay_support::{Fixture, RUN_SPEND_USD, ScriptedRunner, ShellGates, files_under, recipe};
+use replay_support::{
+    Fixture, RUN_SPEND_USD, ScriptedRunner, ShellChecks, files_under, learned_workflow,
+};
 
 /// Tasks named `names`, all in the tuning set.
 async fn tuning_fixture(names: &[&str], settings: &Settings) -> Fixture {
@@ -39,33 +41,33 @@ fn base_settings() -> Settings {
     settings
 }
 
-fn versions() -> (LoadedRecipe, LoadedRecipe) {
+fn versions() -> (LoadedLearnedWorkflow, LoadedLearnedWorkflow) {
     (
-        recipe(1, json!({ "critique": { "rounds": 1 } })),
-        recipe(2, json!({ "critique": { "rounds": 2 } })),
+        learned_workflow(1, json!({ "critique": { "rounds": 1 } })),
+        learned_workflow(2, json!({ "critique": { "rounds": 2 } })),
     )
 }
 
-fn child_only(request: &ReplayRequest, _attempt: u32) -> bool {
-    request.recipe.recipe.version == 2
+fn child_only(request: &ReplayRequest, _try: u32) -> bool {
+    request.learned_workflow.learned_workflow.version == 2
 }
 
 async fn run(
     fixture: &Fixture,
     settings: &Settings,
-    budget_left_usd: f64,
+    limit_left_usd: f64,
     runner: &Arc<ScriptedRunner>,
 ) -> Result<ReplayReport, LearningError> {
     let (parent, child) = versions();
-    run_versions(fixture, settings, &parent, &child, budget_left_usd, runner).await
+    run_versions(fixture, settings, &parent, &child, limit_left_usd, runner).await
 }
 
 async fn run_versions(
     fixture: &Fixture,
     settings: &Settings,
-    parent: &LoadedRecipe,
-    child: &LoadedRecipe,
-    budget_left_usd: f64,
+    parent: &LoadedLearnedWorkflow,
+    child: &LoadedLearnedWorkflow,
+    limit_left_usd: f64,
     runner: &Arc<ScriptedRunner>,
 ) -> Result<ReplayReport, LearningError> {
     let thresholds = Thresholds {
@@ -78,31 +80,31 @@ async fn run_versions(
         child,
         thresholds: &thresholds,
     };
-    run_with(fixture, settings, versions, budget_left_usd, runner).await
+    run_with(fixture, settings, versions, limit_left_usd, runner).await
 }
 
 async fn run_with(
     fixture: &Fixture,
     settings: &Settings,
     versions: Versions<'_>,
-    budget_left_usd: f64,
+    limit_left_usd: f64,
     runner: &Arc<ScriptedRunner>,
 ) -> Result<ReplayReport, LearningError> {
-    let gates: Arc<dyn GateRunner> = Arc::new(ShellGates::default());
+    let checks: Arc<dyn CheckRunner> = Arc::new(ShellChecks::default());
     let runner: Arc<dyn ReplayRunner> = runner.clone();
     replay(
         &fixture.set,
         versions,
         settings,
-        budget_left_usd,
+        limit_left_usd,
         runner,
-        gates,
+        checks,
     )
     .await
 }
 
 #[tokio::test]
-async fn replay_pairs_equal_budgets() {
+async fn replay_pairs_equal_limits() {
     let mut settings = base_settings();
     settings.evolution.replay.sequential = false;
     let fixture = tuning_fixture(&["alpha", "beta", "gamma"], &settings).await;
@@ -111,7 +113,7 @@ async fn replay_pairs_equal_budgets() {
     let both = beta.clone();
     let runner = ScriptedRunner::new(&fixture.tasks, move |request, _| {
         if request.entry.id == decided {
-            request.recipe.recipe.version == 2
+            request.learned_workflow.learned_workflow.version == 2
         } else {
             request.entry.id == both
         }
@@ -124,7 +126,10 @@ async fn replay_pairs_equal_budgets() {
     let mut seen: BTreeMap<(String, u32), u32> = BTreeMap::new();
     for request in &requests {
         let count = seen
-            .entry((request.entry.id.clone(), request.recipe.recipe.version))
+            .entry((
+                request.entry.id.clone(),
+                request.learned_workflow.learned_workflow.version,
+            ))
             .or_default();
         *count += 1;
         pairs
@@ -132,35 +137,35 @@ async fn replay_pairs_equal_budgets() {
             .or_default()
             .push(request);
     }
-    for ((task, attempt), pair) in &pairs {
+    for ((task, try_number), pair) in &pairs {
         let versions: Vec<u32> = pair
             .iter()
-            .map(|request| request.recipe.recipe.version)
+            .map(|request| request.learned_workflow.learned_workflow.version)
             .collect();
-        assert_eq!(versions, [1, 2], "{task} attempt {attempt}");
-        assert_eq!(pair[0].budget_usd, pair[1].budget_usd);
-        assert_eq!(pair[0].budget_usd, RUN_SPEND_USD);
+        assert_eq!(versions, [1, 2], "{task} try {try_number}");
+        assert_eq!(pair[0].limit_usd, pair[1].limit_usd);
+        assert_eq!(pair[0].limit_usd, RUN_SPEND_USD);
         assert_eq!(pair[0].workers, pair[1].workers);
         assert_eq!(pair[0].from_phase, pair[1].from_phase);
         assert!(pair[0].entry.tests.is_empty() && !pair[0].entry.holdout);
     }
-    let attempts = |task: &str| pairs.keys().filter(|(id, _)| id == task).count();
+    let tries = |task: &str| pairs.keys().filter(|(id, _)| id == task).count();
     assert_eq!(
-        attempts(&alpha),
+        tries(&alpha),
         3,
         "a task the versions split keeps all its runs"
     );
-    assert_eq!(attempts(&beta), 1, "both passed it, so it's dropped");
-    assert_eq!(attempts(&gamma), 1, "both failed it, so it's dropped");
+    assert_eq!(tries(&beta), 1, "both passed it, so it's dropped");
+    assert_eq!(tries(&gamma), 1, "both failed it, so it's dropped");
 
     assert_eq!(report.results.len(), 10);
     assert_eq!(report.spent_usd, 10.0 * RUN_SPEND_USD);
-    assert!(!report.stopped_early && !report.out_of_budget);
+    assert!(!report.stopped_early && !report.at_limit);
     let passed = |version: u32| {
         report
             .results
             .iter()
-            .filter(|result| result.recipe.version == version && result.passed)
+            .filter(|result| result.learned_workflow.version == version && result.passed)
             .count()
     };
     assert_eq!((passed(1), passed(2)), (1, 4));
@@ -168,10 +173,10 @@ async fn replay_pairs_equal_budgets() {
     assert!(!runner.saw_hidden());
 }
 
-/// Every replayed run is told what its cards keep hidden: the task's hidden tests at their
+/// Every replayed run is told what its tasks keep hidden: the task's hidden tests at their
 /// repo paths and the replay folder, while the tests themselves never travel with it.
 #[tokio::test]
-async fn replay_cards_hide_the_tests_and_the_replay_folder() {
+async fn replay_tasks_hide_the_tests_and_the_replay_folder() {
     let mut settings = base_settings();
     settings.evolution.replay.sequential = false;
     let fixture = tuning_fixture(&["alpha"], &settings).await;
@@ -192,7 +197,7 @@ async fn replay_cards_hide_the_tests_and_the_replay_folder() {
 
 #[tokio::test]
 async fn prefix_replay_starts_at_the_changed_phase() {
-    let parent = recipe(
+    let parent = learned_workflow(
         1,
         json!({
             "critique": { "rounds": 1, "checklist": ["errors"] },
@@ -200,12 +205,12 @@ async fn prefix_replay_starts_at_the_changed_phase() {
             "limits": { "per_task_usd": 2.0 },
         }),
     );
-    let changed = |settings: serde_json::Value| -> LoadedRecipe {
+    let changed = |settings: serde_json::Value| -> LoadedLearnedWorkflow {
         let mut child = parent.clone();
-        child.recipe.version = 2;
+        child.learned_workflow.version = 2;
         child.sha256 = "sha-v2".to_owned();
         if let serde_json::Value::Object(map) = settings {
-            child.recipe.settings.extend(map);
+            child.learned_workflow.settings.extend(map);
         }
         child
     };
@@ -226,7 +231,7 @@ async fn prefix_replay_starts_at_the_changed_phase() {
             json!({ "limits": { "per_task_usd": 3.0 } }),
             Some(StandardPhase::Do),
         ),
-        (json!({ "gates": { "timeout": "10m" } }), None),
+        (json!({ "checks": { "timeout": "10m" } }), None),
     ];
     for (settings, phase) in cases {
         assert_eq!(
@@ -238,7 +243,7 @@ async fn prefix_replay_starts_at_the_changed_phase() {
     let prompts = |name: &str| {
         let mut child = changed(json!({}));
         child
-            .recipe
+            .learned_workflow
             .prompts
             .insert(name.to_owned(), format!("{name}-v2.md"));
         start_phase(&parent, &child)
@@ -246,7 +251,7 @@ async fn prefix_replay_starts_at_the_changed_phase() {
     assert_eq!(prompts("drafting"), Some(StandardPhase::Plan));
     assert_eq!(prompts("build"), Some(StandardPhase::Do));
     let mut rewired = changed(json!({}));
-    rewired.recipe.phases = Some("api-feature.star".to_owned());
+    rewired.learned_workflow.phases = Some("api-feature.star".to_owned());
     assert_eq!(start_phase(&parent, &rewired), None);
 
     let settings = base_settings();
@@ -296,7 +301,7 @@ async fn sequential_replay_stops_when_clear() {
     assert_eq!(runner.requests().len(), better.results.len());
 
     let runner = ScriptedRunner::new(&fixture.tasks, |request, _| {
-        request.recipe.recipe.version == 1
+        request.learned_workflow.learned_workflow.version == 1
     });
     let worse = run(&fixture, &settings, 1000.0, &runner).await.unwrap();
     assert!(worse.stopped_early);
@@ -331,7 +336,7 @@ async fn holdout_runs_only_after_tuning_passes() {
     assert!(
         holdout
             .iter()
-            .all(|result| result.task == held.id && result.attempt == 1)
+            .all(|result| result.task == held.id && result.try_number == 1)
     );
     let first_holdout = better
         .results
@@ -380,7 +385,7 @@ async fn replay_margin_is_the_candidates_own() {
     let wins_alpha = {
         let alpha = won.id.clone();
         move |request: &ReplayRequest, _: u32| {
-            request.recipe.recipe.version == 2 && request.entry.id == alpha
+            request.learned_workflow.learned_workflow.version == 2 && request.entry.id == alpha
         }
     };
     for (thresholds, passes) in [(bar(10.0, false), true), (bar(60.0, false), false)] {
@@ -412,19 +417,19 @@ async fn replay_margin_is_the_candidates_own() {
 }
 
 #[tokio::test]
-async fn replay_waits_at_the_monthly_budget() {
+async fn replay_waits_at_the_monthly_limit() {
     let mut settings = base_settings();
     settings.evolution.replay.sequential = false;
     let fixture = tuning_fixture(&["alpha", "beta"], &settings).await;
     let runner = ScriptedRunner::new(&fixture.tasks, child_only);
 
     let nothing = run(&fixture, &settings, 0.5, &runner).await.unwrap();
-    assert!(nothing.out_of_budget);
+    assert!(nothing.at_limit);
     assert!(nothing.results.is_empty());
     assert!(runner.requests().is_empty());
 
     let first = run(&fixture, &settings, 2.5, &runner).await.unwrap();
-    assert!(first.out_of_budget);
+    assert!(first.at_limit);
     assert_eq!(
         first.results.len(),
         2,
@@ -439,10 +444,10 @@ async fn replay_waits_at_the_monthly_budget() {
     );
     let mut limited = settings.clone();
     limited.limits.evolution_usd_per_month = Some(5.0);
-    assert_eq!(fixture.set.budget_left(&limited, now).unwrap(), Some(3.0));
+    assert_eq!(fixture.set.limit_left(&limited, now).unwrap(), Some(3.0));
 
     let rest = run(&fixture, &settings, 1000.0, &runner).await.unwrap();
-    assert!(!rest.out_of_budget);
+    assert!(!rest.at_limit);
     assert_eq!(rest.results[..2], first.results[..]);
     assert_eq!(rest.results.len(), 2 * 3 * 2);
     assert_eq!(
@@ -492,14 +497,13 @@ async fn replays_skip_subscriptions_by_default() {
         "work-api/big",
         "ollama/qwen",
     ]
-    .map(|worker| worker.parse::<WorkerRef>().unwrap())
+    .map(|worker| worker.parse::<ModelRef>().unwrap())
     .to_vec()
     .into();
-    settings.main_agent = WorkerRef::new("claude-code", None);
+    settings.crew.main = ModelRef::new("claude-code", None);
 
-    let names = |workers: &[WorkerRef]| -> Vec<String> {
-        workers.iter().map(ToString::to_string).collect()
-    };
+    let names =
+        |workers: &[ModelRef]| -> Vec<String> { workers.iter().map(ToString::to_string).collect() };
     assert_eq!(
         names(&replay_workers(&settings)),
         ["codex/gpt-5.6-luna", "openrouter/open-model", "ollama/qwen"]
@@ -528,7 +532,7 @@ async fn replays_skip_subscriptions_by_default() {
     }
 
     let mut subscriptions_only = settings.clone();
-    subscriptions_only.crew = vec![WorkerRef::new("claude-code", None)].into();
+    subscriptions_only.crew = vec![ModelRef::new("claude-code", None)].into();
     let runner = ScriptedRunner::new(&fixture.tasks, child_only);
     let refused = run(&fixture, &subscriptions_only, 1000.0, &runner)
         .await

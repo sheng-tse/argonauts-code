@@ -7,7 +7,7 @@ expression: text(&view.lines)
 ❯ Also check whether the changelog mentions the new --export flag.
   ctrl+enter to send now
 
-───────────────────────────────────────────────────────────────────────────────────────────── solo ─
+────────────────────────────────────────────────────────────────────────────────────────── captain ─
 ❯
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt                     ● Claude 5h ▄▄▄▄▄▄ 53%

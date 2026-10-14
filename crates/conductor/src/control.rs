@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 /// Asks a running pipeline to stop. Clones share one flag. A stop interrupts the agent, kills a
-/// running gate, and ends the run as cancelled with the work so far committed.
+/// running check, and ends the run as cancelled with the work so far committed.
 #[derive(Debug, Clone)]
 pub struct StopHandle {
     flag: Arc<watch::Sender<bool>>,
@@ -38,7 +38,8 @@ impl StopHandle {
     pub async fn stopped(&self) {
         let mut rx = self.flag.subscribe();
         if rx.wait_for(|stopped| *stopped).await.is_err() {
-            // Unreachable while `self` holds the sender, but never report a stop that didn't happen.
+            // Unreachable while `self` holds the sender, but never report a stop that didn't
+            // happen.
             std::future::pending::<()>().await;
         }
     }
@@ -48,7 +49,7 @@ impl StopHandle {
 pub struct ConductorSettings {
     /// `None` means no limit.
     pub session_timeout: Option<Duration>,
-    pub gate_timeout: Duration,
+    pub check_timeout: Duration,
     /// How long to keep reading after the agent exits, in case something it started still holds
     /// its output open. Whatever remains in its process group is then killed.
     pub exit_grace: Duration,
@@ -59,7 +60,7 @@ impl Default for ConductorSettings {
     fn default() -> Self {
         Self {
             session_timeout: None,
-            gate_timeout: Duration::from_secs(30 * 60),
+            check_timeout: Duration::from_secs(30 * 60),
             exit_grace: Duration::from_secs(2),
             git_env: Vec::new(),
         }
@@ -93,7 +94,7 @@ mod tests {
     fn default_settings_are_generous() {
         let settings = ConductorSettings::default();
         assert_eq!(settings.session_timeout, None);
-        assert_eq!(settings.gate_timeout, Duration::from_secs(1800));
+        assert_eq!(settings.check_timeout, Duration::from_secs(1800));
         assert!(settings.git_env.is_empty());
     }
 }

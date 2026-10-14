@@ -1,0 +1,95 @@
+name  = "draft-and-vote"
+about = "Drafts, then a vote; no critique or experiments"
+
+[judging]
+method = "vote"
+
+[critique]
+rounds = 0
+
+[experiments]
+enabled = false
+
+[divide]
+single_worker = true
+
+# Its phases.
+[[phases]]
+name     = "Understand"
+detail   = "models from several providers read the request, and others compare the readings"
+standard = "understand"
+
+  [[phases.steps]]
+  kind  = "loop_until"
+  name  = "understanding"
+  until = "understood"
+  max   = 2
+
+    [[phases.steps.steps]]
+    kind  = "read"
+    name  = "readings"
+    role  = "reader"
+    label = "read:{provider}"
+
+    [[phases.steps.steps]]
+    kind  = "compare"
+    name  = "differences"
+    role  = "comparer"
+    input = "readings"
+    label = "compare:{n}"
+
+    [[phases.steps.steps]]
+    kind     = "approval"
+    approval = "understand"
+
+[[phases]]
+name     = "Plan"
+detail   = "blind drafts, then a majority vote on the plan"
+standard = "plan"
+
+  [[phases.steps]]
+  kind  = "loop_until"
+  name  = "planning"
+  until = "plan_decided"
+  max   = 3
+
+    [[phases.steps.steps]]
+    kind  = "draft"
+    name  = "drafts"
+    role  = "draft"
+    blind = true
+    input = "goal"
+    label = "draft:{provider}"
+
+    [[phases.steps.steps]]
+    kind   = "judge"
+    name   = "votes"
+    role   = "judge"
+    blind  = true
+    input  = "drafts"
+    params = { method = "vote" }
+    label  = "vote:{provider}"
+
+    [[phases.steps.steps]]
+    kind     = "approval"
+    approval = "plan"
+
+[[phases]]
+name     = "Build"
+detail   = "one worker builds the plan in its own worktree, its checks, then a review from another provider"
+standard = "do"
+
+  [[phases.steps]]
+  kind  = "build"
+  role  = "worker"
+  input = "plan"
+  label = "build:{item}"
+
+[[phases]]
+name     = "Merge"
+detail   = "the final check, then the merge into your branch"
+standard = "decide"
+
+  [[phases.steps]]
+  kind  = "merge"
+  label = "merge:{branch}"

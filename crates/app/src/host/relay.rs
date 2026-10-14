@@ -11,10 +11,10 @@ use std::collections::VecDeque;
 
 use argonauts_core::control::{ControlReply, ControlRequest};
 use argonauts_core::engine::{EngineCommand, EngineExit};
-use argonauts_core::events::run::{ParkReason, RunOutcome};
+use argonauts_core::events::run::{RunOutcome, WaitReason};
 use tokio::sync::{mpsc, oneshot};
 
-use super::server::{EngineReply, SUPERVISOR_EXITING, command, error};
+use super::server::{EngineReply, RUN_HOST_EXITING, command, error};
 
 /// One request, and its way back to whoever sent it.
 pub(crate) struct Entry {
@@ -53,7 +53,7 @@ impl Receipt {
         match self.0.await {
             Ok(Delivery::Taken(reply)) => reply.wait().await,
             Ok(Delivery::Answered(reply)) => *reply,
-            Err(_) => error(SUPERVISOR_EXITING),
+            Err(_) => error(RUN_HOST_EXITING),
         }
     }
 }
@@ -148,7 +148,7 @@ fn done_by(request: &ControlRequest, exit: &EngineExit) -> bool {
             EngineExit::Finished(RunOutcome::Stopped)
         ) | (
             ControlRequest::Pause { .. },
-            EngineExit::Parked(ParkReason::Paused)
+            EngineExit::Waiting(WaitReason::Paused)
         )
     )
 }
@@ -188,8 +188,8 @@ pub(crate) async fn forward(queue: &mut Queue, inbox: mpsc::Sender<EngineCommand
     }
 }
 
-/// What a client does with the request when no supervisor answers: queue it for the next one.
-/// A take-back isn't one, since only a live supervisor knows which messages it still holds.
+/// What a client does with the request when no run host answers: queue it for the next one.
+/// A take-back isn't one, since only a live run host knows which messages it still holds.
 pub(crate) fn deferrable(request: &ControlRequest) -> bool {
     matches!(
         request,
@@ -307,9 +307,9 @@ mod tests {
         let pause = taken_then_returned(
             ControlRequest::Pause {
                 now: true,
-                front_end: None,
+                outside_agent: None,
             },
-            EngineExit::Parked(ParkReason::Paused),
+            EngineExit::Waiting(WaitReason::Paused),
         );
         let (taken, queue) = pause.await;
         assert_eq!(taken, 1);
@@ -322,13 +322,13 @@ mod tests {
     #[tokio::test]
     async fn a_command_the_exit_doesnt_explain_goes_to_the_next_engine() {
         let (taken, queue) =
-            taken_then_returned(approval_mode(), EngineExit::Parked(ParkReason::Checkpoint)).await;
+            taken_then_returned(approval_mode(), EngineExit::Waiting(WaitReason::Approval)).await;
         assert_eq!(taken, 0);
         assert!(!queue.is_empty(), "a second copy rather than a lost one");
 
         let (taken, queue) = taken_then_returned(
             ControlRequest::Stop,
-            EngineExit::Parked(ParkReason::Checkpoint),
+            EngineExit::Waiting(WaitReason::Approval),
         )
         .await;
         assert_eq!(taken, 0);

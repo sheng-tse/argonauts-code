@@ -2,32 +2,28 @@
 
 use argonauts_core::api::StatusSummary;
 use argonauts_core::app::TurnReply;
-use argonauts_core::events::card::CardState;
 use argonauts_core::events::run::{ClosingAnswer, RunLifecycle, RunMode, RunOutcome};
+use argonauts_core::events::task::TaskState;
 use argonauts_core::events::{RunEvent, RunEventKind};
 
 /// Longest title, in characters. The terminal cuts the rest anyway.
 const TITLE_MAX: usize = 60;
 
-/// Such as "Export now takes --json. All 4 cards merged, and the checks pass. Ask for another
+/// Such as "Export now takes --json. All 4 tasks merged, and the checks pass. Ask for another
 /// change, or /resume an older run." A run that ended starts with what changed, from its
-/// closing answer, rather than its goal, which only restates what you asked.
+/// closing answer, rather than its goal, which only repeats what you asked.
 pub(crate) fn recap_from_summary(
     summary: &StatusSummary,
     outcome: Option<RunOutcome>,
     closing: Option<&ClosingAnswer>,
 ) -> String {
-    let lead = match outcome {
+    let main_agent = match outcome {
         Some(_) => closing.and_then(what_changed),
         None => Some(goal_line(summary)),
     };
-    let cards = Cards::count(summary);
-    let run = summary
-        .run
-        .as_ref()
-        .map_or_else(|| "/resume".to_owned(), |run| format!("/resume {run}"));
+    let tasks = Tasks::count(summary);
     let rest = match outcome {
-        Some(RunOutcome::Merged) => match cards.merged_phrase() {
+        Some(RunOutcome::Merged) => match tasks.merged_phrase() {
             Some(merged) => format!(
                 "{}, and the checks pass. Ask for another change, or /resume an older run.",
                 capitalized(&merged)
@@ -36,30 +32,31 @@ pub(crate) fn recap_from_summary(
                      run."
                 .to_owned(),
         },
-        // A run that didn't merge only merged its cards into its own branch, so they're done,
+        // A run that didn't merge only merged its tasks into its own branch, so they're done,
         // never "merged" beside an ending that says nothing merged.
         Some(RunOutcome::PullRequest) => {
-            with_done(&cards, "The work waits in a pull request for review")
+            with_done(&tasks, "The work waits in a pull request for review")
         }
+        // The recap is of the run on screen, which `/resume` alone carries on.
         Some(RunOutcome::BranchLeft) => format!(
-            "{} {run} picks it up.",
-            with_done(&cards, "The branches are kept for later")
+            "{} /resume picks it up.",
+            with_done(&tasks, "The branches are kept for later")
         ),
         Some(RunOutcome::Abandoned) => "You abandoned the run, so nothing merged.".to_owned(),
         Some(RunOutcome::Stopped) => format!(
-            "{} {run} goes on from there.",
-            with_done(&cards, "The run stopped")
+            "{} /resume goes on from there.",
+            with_done(&tasks, "The run stopped")
         ),
         Some(RunOutcome::Failed) => {
             format!(
                 "{} /status shows where.",
-                with_done(&cards, "The run failed")
+                with_done(&tasks, "The run failed")
             )
         }
-        None => in_progress(summary, &cards),
+        None => in_progress(summary, &tasks),
     };
-    match lead {
-        Some(lead) => format!("{}. {rest}", lead.trim_end_matches('.')),
+    match main_agent {
+        Some(main_agent) => format!("{}. {rest}", main_agent.trim_end_matches('.')),
         None => rest,
     }
 }
@@ -98,16 +95,18 @@ fn what_changed(closing: &ClosingAnswer) -> Option<String> {
     }
 }
 
-/// After a long chat turn.
+/// After a long conversation turn.
 pub(crate) fn recap_from_turn(request: &str, reply: &TurnReply) -> String {
     let title = title_from_request(request);
     match reply {
         TurnReply::Answer { .. } => format!("Answered \"{title}\"."),
-        TurnReply::Change { triage, .. } => {
+        TurnReply::Change {
+            captain_or_crew, ..
+        } => {
             format!(
                 "Started a {} run for \"{title}\": {}.",
-                mode_name(triage.mode),
-                triage.reason
+                mode_name(captain_or_crew.mode),
+                captain_or_crew.reason
             )
         }
         TurnReply::Unclear { .. } => {
@@ -116,7 +115,7 @@ pub(crate) fn recap_from_turn(request: &str, reply: &TurnReply) -> String {
     }
 }
 
-/// The terminal title for a chat: its first request, shortened.
+/// The terminal title for a conversation: its first request, shortened.
 pub(crate) fn title_from_request(request: &str) -> String {
     let line = request
         .lines()
@@ -149,7 +148,7 @@ pub(crate) fn title_from_request(request: &str) -> String {
 
 pub(crate) fn mode_name(mode: RunMode) -> &'static str {
     match mode {
-        RunMode::Solo => "solo",
+        RunMode::Captain => "captain",
         RunMode::Crew => "crew",
     }
 }
@@ -170,33 +169,33 @@ fn goal_line(summary: &StatusSummary) -> String {
     }
 }
 
-struct Cards {
+struct Tasks {
     merged: usize,
     working: usize,
-    /// Cancelled cards don't count.
+    /// Cancelled tasks don't count.
     total: usize,
 }
 
-impl Cards {
+impl Tasks {
     fn count(summary: &StatusSummary) -> Self {
         let counted = || {
             summary
-                .cards
+                .tasks
                 .iter()
-                .filter(|card| card.state != CardState::Cancelled)
+                .filter(|task| task.state != TaskState::Cancelled)
         };
         Self {
             merged: counted()
-                .filter(|card| card.state == CardState::Integrated)
+                .filter(|task| task.state == TaskState::Merged)
                 .count(),
             working: counted()
-                .filter(|card| {
+                .filter(|task| {
                     matches!(
-                        card.state,
-                        CardState::Running
-                            | CardState::Gating
-                            | CardState::InReview
-                            | CardState::Integrating
+                        task.state,
+                        TaskState::Running
+                            | TaskState::Checking
+                            | TaskState::InReview
+                            | TaskState::Merging
                     )
                 })
                 .count(),
@@ -204,8 +203,8 @@ impl Cards {
         }
     }
 
-    /// "all 4 cards merged", "the card merged", "2 of 5 cards merged", or `None` with no cards.
-    /// "all 4 cards done", "the card done", "1 of 2 cards done", or `None` with no cards.
+    /// "all 4 tasks merged", "the task merged", "2 of 5 tasks merged", or `None` with no tasks.
+    /// "all 4 tasks done", "the task done", "1 of 2 tasks done", or `None` with no tasks.
     fn done_phrase(&self) -> Option<String> {
         match (self.merged, self.total) {
             (_, 0) => None,
@@ -227,21 +226,21 @@ impl Cards {
     }
 }
 
-/// `sentence`, then how many cards finished, as "The run failed, with 1 of 2 cards done."
-fn with_done(cards: &Cards, sentence: &str) -> String {
-    match cards.done_phrase() {
+/// `sentence`, then how many tasks finished, as "The run failed, with 1 of 2 tasks done."
+fn with_done(tasks: &Tasks, sentence: &str) -> String {
+    match tasks.done_phrase() {
         Some(done) => format!("{sentence}, with {done}."),
         None => format!("{sentence}."),
     }
 }
 
-fn in_progress(summary: &StatusSummary, cards: &Cards) -> String {
+fn in_progress(summary: &StatusSummary, tasks: &Tasks) -> String {
     let mut parts = Vec::new();
-    if let Some(merged) = cards.merged_phrase() {
+    if let Some(merged) = tasks.merged_phrase() {
         parts.push(capitalized(&merged));
     }
-    if cards.working > 0 {
-        parts.push(format!("{} working", cards.working));
+    if tasks.working > 0 {
+        parts.push(format!("{} working", tasks.working));
     }
     let mut text = if !parts.is_empty() {
         format!("{}. ", parts.join(", "))
@@ -252,7 +251,7 @@ fn in_progress(summary: &StatusSummary, cards: &Cards) -> String {
         String::new()
     };
     if !summary.waiting.is_empty() {
-        // A card's title can end a sentence of its own, and one stop is enough.
+        // A task's title can end a sentence of its own, and one stop is enough.
         let waiting = summary.waiting.join(", ");
         text.push_str(&format!(
             "Waiting on {}.",
@@ -275,45 +274,45 @@ fn capitalized(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::api::CardBrief;
-    use argonauts_core::events::run::{ChangedFile, TriageDecision};
-    use argonauts_core::{CardId, RunId};
+    use argonauts_core::api::TaskBrief;
+    use argonauts_core::events::run::{CaptainOrCrewDecision, ChangedFile};
+    use argonauts_core::{RunId, TaskId};
 
-    fn card(n: u32, state: CardState) -> CardBrief {
-        CardBrief {
-            card: CardId::numbered(n),
+    fn task(n: u32, state: TaskState) -> TaskBrief {
+        TaskBrief {
+            task: TaskId::numbered(n),
             title: format!("task {n}"),
             state,
-            owner: None,
+            worker: None,
             note: String::new(),
         }
     }
 
-    fn summary(cards: Vec<CardBrief>) -> StatusSummary {
+    fn summary(tasks: Vec<TaskBrief>) -> StatusSummary {
         StatusSummary {
             run: Some(RunId::new("run-007").unwrap()),
             goal: vec!["export now takes --json.".to_owned(), "criteria".to_owned()],
-            cards,
+            tasks,
             ..StatusSummary::default()
         }
     }
 
     #[test]
     fn recap_from_status_summary() {
-        let merged = summary((1..=4).map(|n| card(n, CardState::Integrated)).collect());
+        let merged = summary((1..=4).map(|n| task(n, TaskState::Merged)).collect());
         assert_eq!(
             recap_from_summary(&merged, Some(RunOutcome::Merged), None),
             "All 4 tasks merged, and the checks pass. Ask for another change, or /resume an \
              older run."
         );
         let stopped = summary(vec![
-            card(1, CardState::Integrated),
-            card(2, CardState::Running),
-            card(3, CardState::Cancelled),
+            task(1, TaskState::Merged),
+            task(2, TaskState::Running),
+            task(3, TaskState::Cancelled),
         ]);
         assert_eq!(
             recap_from_summary(&stopped, Some(RunOutcome::Stopped), None),
-            "The run stopped, with 1 of 2 tasks done. /resume run-007 goes on from there."
+            "The run stopped, with 1 of 2 tasks done. /resume goes on from there."
         );
         let mut going = stopped.clone();
         going.waiting = vec!["the merge approval".to_owned()];
@@ -322,14 +321,14 @@ mod tests {
             "Export now takes --json. 1 of 2 tasks merged, 1 working. Waiting on the merge \
              approval."
         );
-        let mut escalated = summary(vec![card(1, CardState::Escalated)]);
-        escalated.waiting = vec!["task-001 needs you · Fix add so it returns a + b.".to_owned()];
+        let mut needs_you = summary(vec![task(1, TaskState::NeedsYou)]);
+        needs_you.waiting = vec!["Fix add so it returns a + b needs you".to_owned()];
         assert_eq!(
-            recap_from_summary(&escalated, None, None),
-            "Export now takes --json. The task isn't merged. Waiting on task-001 needs you · Fix \
-             add so it returns a + b."
+            recap_from_summary(&needs_you, None, None),
+            "Export now takes --json. The task isn't merged. Waiting on Fix add so it returns a + \
+             b needs you."
         );
-        // Before any card, a run that waits on you says only that, never that it's under way.
+        // Before any question, a run that waits on you says only that, never that it's under way.
         let mut asking = summary(Vec::new());
         asking.waiting = vec!["Question from build:greet".to_owned()];
         assert_eq!(
@@ -347,15 +346,15 @@ mod tests {
             recap_from_summary(&empty, Some(RunOutcome::Abandoned), None),
             "You abandoned the run, so nothing merged."
         );
-        let one = summary(vec![card(1, CardState::Integrated)]);
+        let one = summary(vec![task(1, TaskState::Merged)]);
         assert_eq!(
             recap_from_summary(&one, Some(RunOutcome::PullRequest), None),
             "The work waits in a pull request for review, with the task done."
         );
-        // A run left on its branches never says its card merged.
+        // A run left on its branches never says its task merged.
         assert_eq!(
             recap_from_summary(&one, Some(RunOutcome::BranchLeft), None),
-            "The branches are kept for later, with the task done. /resume run-007 picks it up."
+            "The branches are kept for later, with the task done. /resume picks it up."
         );
         assert_eq!(
             recap_from_summary(&stopped, Some(RunOutcome::Failed), None),
@@ -365,7 +364,7 @@ mod tests {
 
     #[test]
     fn a_finished_runs_recap_says_what_changed_not_what_you_asked() {
-        let one = summary(vec![card(1, CardState::Integrated)]);
+        let one = summary(vec![task(1, TaskState::Merged)]);
         let mut closing = ClosingAnswer {
             text: "Fixed parse() and format_cents() in invoice/money.py. All six tests pass."
                 .to_owned(),
@@ -378,6 +377,7 @@ mod tests {
             checks: Vec::new(),
             tests: Vec::new(),
             left: Vec::new(),
+            decided: Vec::new(),
         };
         assert_eq!(
             recap_from_summary(&one, Some(RunOutcome::Merged), Some(&closing)),
@@ -411,12 +411,12 @@ mod tests {
 
     #[test]
     fn a_turn_recap_says_what_the_turn_became() {
-        let triage = TriageDecision {
+        let captain_or_crew = CaptainOrCrewDecision {
             mode: RunMode::Crew,
-            escalate_to_crew: false,
+            move_to_crew: false,
             rule: "learned:api-feature".to_owned(),
             reason: "the learned workflow for api-feature says crew".to_owned(),
-            solo: None,
+            captain: None,
         };
         let reply = TurnReply::Change {
             markdown: String::new(),
@@ -425,7 +425,7 @@ mod tests {
                 "risk_labels": [], "tests_exist": true, "unknowns": []
             }))
             .unwrap(),
-            triage,
+            captain_or_crew,
             instructions: Vec::new(),
         };
         assert_eq!(

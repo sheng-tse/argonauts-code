@@ -206,7 +206,7 @@ mod tests {
             Ok(ColorValue::Color(Color::LightYellow))
         );
         assert_eq!(parse("ansi:white"), Ok(ColorValue::Color(Color::Gray)));
-        assert_eq!(parse("card"), Ok(ColorValue::Role(Role::Card)));
+        assert_eq!(parse("question"), Ok(ColorValue::Role(Role::Question)));
     }
 
     #[test]
@@ -241,8 +241,8 @@ mod tests {
     #[test]
     fn a_state_follows_its_role_until_given_its_own() {
         let mut theme = Theme::dark();
-        assert_eq!(theme.style(Role::StateWorking), theme.style(Role::Card));
-        theme.apply_colors([("card", "#123456")]);
+        assert_eq!(theme.style(Role::StateWorking), theme.style(Role::Question));
+        theme.apply_colors([("question", "#123456")]);
         assert_eq!(
             theme.style(Role::StateWorking).fg,
             Some(Color::Rgb(0x12, 0x34, 0x56))

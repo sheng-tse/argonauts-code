@@ -15,8 +15,8 @@ pub struct Notice {
     pub tone: Tone,
     /// Replaces the bullet.
     pub glyph: Option<String>,
-    /// Uses the theme's card glyph, `◆`, for a card's record.
-    pub card: bool,
+    /// Uses the theme's question glyph, `◆`, for a question's record.
+    pub question: bool,
     pub text: String,
     /// Dim words after the text: who decided and when, like `merged by you, 10:58`, or why.
     pub decided: Option<String>,
@@ -27,6 +27,10 @@ pub struct Notice {
     /// The words take the text color and only the bullet the tone, as for a warning that says
     /// who steps in.
     pub plain_words: bool,
+    /// Dim words right after the text, a space apart, such as how to undo what it says.
+    pub after: Option<String>,
+    /// Dim lines under the text at its own column, with no hook, such as what it can't do.
+    pub under: Vec<String>,
 }
 
 impl Notice {
@@ -34,16 +38,30 @@ impl Notice {
         Self {
             tone,
             glyph: None,
-            card: false,
+            question: false,
             text: text.into(),
             decided: None,
             detail: Vec::new(),
             more: Vec::new(),
             plain_words: false,
+            after: None,
+            under: Vec::new(),
         }
     }
 
-    /// `● Claude Code takes over as reviewer · no second try, this error repeats every time`:
+    /// `◆ Keeping the computer and its screen awake until you quit. /awake off lets them sleep
+    /// again.`: a switch you flipped, with the `◆` in the success color, how to undo it dim
+    /// after it, and what it can't do dim on the row under it.
+    pub fn switched(text: impl Into<String>, undo: Option<String>, caveat: Option<String>) -> Self {
+        Self {
+            question: true,
+            after: undo,
+            under: caveat.into_iter().collect(),
+            ..Self::new(Tone::Success, text)
+        }
+    }
+
+    /// `● Fell back to Claude Code as reviewer · no second try, this error repeats every time`:
     /// the bullet in the tone, the words plain, and `after` dim.
     pub fn plain_with_after(tone: Tone, text: impl Into<String>, after: impl Into<String>) -> Self {
         Self {
@@ -53,10 +71,10 @@ impl Notice {
         }
     }
 
-    /// The `◆` takes the success color, since the card no longer needs you.
+    /// The `◆` takes the success color, since the question no longer needs you.
     pub fn answered(title: impl Into<String>, decided: impl Into<String>) -> Self {
         Self {
-            card: true,
+            question: true,
             decided: Some(decided.into()),
             ..Self::new(Tone::Success, title)
         }
@@ -85,8 +103,8 @@ impl HistoryCell for Notice {
         // The ASCII glyph set is for fonts that draw symbols at the wrong width, so a symbol of
         // the caller's own gives way to the bullet there.
         let ascii = theme.glyphs.bullet.is_ascii();
-        let glyph = if self.card {
-            theme.glyphs.card.to_owned()
+        let glyph = if self.question {
+            theme.glyphs.question.to_owned()
         } else {
             self.glyph
                 .as_deref()
@@ -128,11 +146,30 @@ impl HistoryCell for Notice {
                 ));
             }
         }
+        if let Some(after) = &self.after {
+            let after = sanitize_line(after);
+            if !after.trim().is_empty() {
+                spans.push(Span::styled(
+                    format!(" {}", after.trim()),
+                    theme.style(Role::Dim),
+                ));
+            }
+        }
         let hidden = !ctx.expanded && self.more.iter().any(|line| !line.trim().is_empty());
         if hidden && spans_width(&first) + spans_width(&spans) + str_width(EXPAND_HINT) <= width {
             spans.push(Span::styled(EXPAND_HINT, theme.style(Role::Dim)));
         }
         let mut lines = wrap_spans(&spans, width, &first, &rest);
+        for under in &self.under {
+            let under = sanitize_line(under);
+            if !under.trim().is_empty() {
+                let words = [Span::styled(
+                    under.trim().to_owned(),
+                    theme.style(Role::Dim),
+                )];
+                lines.extend(wrap_spans(&words, width, &rest, &rest));
+            }
+        }
         let shown = if ctx.expanded {
             self.detail.iter().chain(&self.more).collect::<Vec<_>>()
         } else {
@@ -156,7 +193,7 @@ impl HistoryCell for Notice {
 }
 
 /// One line hung under the item before it, with no blank row between, such as
-/// `  ⎿  Interrupted · What should Argonauts do instead?` under a stopped answer.
+/// `  ⎿  Interrupted · What should Argonauts Code do instead?` under a stopped answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResultLine {
     pub tone: Tone,
@@ -337,16 +374,16 @@ mod tests {
         let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
         let notice = Notice::new(Tone::Warning, "Merged task-002 into main")
             .with_glyph("◆")
-            .with_detail("Interrupted · What should Argonauts do instead?")
+            .with_detail("Interrupted · What should Argonauts Code do instead?")
             .with_detail("second");
         let lines = notice.lines(&ctx);
         assert_eq!(
             plain_text(&lines),
-            "◆ Merged task-002 into main\n  ⎿  Interrupted · What should Argonauts\n     do instead?\n     second"
+            "◆ Merged task-002 into main\n  ⎿  Interrupted · What should Argonauts\n     Code do instead?\n     second"
         );
         assert_eq!(
             lines[0].spans[0].style,
-            marks::decoration(theme.style(Role::Warning))
+            marks::decoration(theme.style(Role::Warn))
         );
         // A detail set in under the one before hangs under its own words.
         let doctor = Notice::new(Tone::Normal, "Doctor")
@@ -361,12 +398,12 @@ mod tests {
         assert_eq!(plain_text(&plain), "● failed hard");
         assert_eq!(
             plain[0].spans[0].style,
-            marks::decoration(theme.style(Role::Error))
+            marks::decoration(theme.style(Role::Danger))
         );
     }
 
     #[test]
-    fn an_answered_card_says_who_decided_and_when() {
+    fn an_answered_question_says_who_decided_and_when() {
         let mut theme = Theme::dark();
         theme.glyphs = Glyphs::UNICODE;
         let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
@@ -384,25 +421,22 @@ mod tests {
     }
 
     #[test]
-    fn a_takeover_colors_its_bullet_alone_and_dims_why() {
+    fn a_fallback_colors_its_bullet_alone_and_dims_why() {
         let mut theme = Theme::dark();
         theme.glyphs = Glyphs::UNICODE;
         let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now()));
         let lines = Notice::plain_with_after(
             Tone::Warning,
-            "Claude Code takes over as reviewer",
+            "Fell back to Claude Code as reviewer",
             "no second try, this error repeats every time",
         )
         .lines(&ctx);
         assert_eq!(
             plain_text(&lines),
-            "● Claude Code takes over as reviewer · no second try, this error repeats every time"
+            "● Fell back to Claude Code as reviewer · no second try, this error repeats every time"
         );
         let spans = &lines[0].spans;
-        assert_eq!(
-            spans[0].style,
-            marks::decoration(theme.style(Role::Warning))
-        );
+        assert_eq!(spans[0].style, marks::decoration(theme.style(Role::Warn)));
         assert_eq!(spans[2].style, theme.style(Role::Text));
         assert_eq!(spans[3].style, theme.style(Role::Dim));
     }
@@ -432,7 +466,7 @@ mod tests {
         let info = Notice::new(Tone::Dim, "Saved.").lines(&ctx);
         assert_eq!(info[0].spans[2].style, theme.style(Role::Dim));
         let warning = Notice::new(Tone::Warning, "Codex is logged out").lines(&ctx);
-        assert_eq!(warning[0].spans[2].style, theme.style(Role::Warning));
+        assert_eq!(warning[0].spans[2].style, theme.style(Role::Warn));
         let done = Notice::new(Tone::Success, "Set ui.theme = dark").lines(&ctx);
         assert_eq!(done[0].spans[2].style, theme.style(Role::Text));
     }
@@ -455,11 +489,14 @@ mod tests {
         let mut theme = Theme::dark();
         theme.glyphs = Glyphs::UNICODE;
         let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
-        let line = ResultLine::new(Tone::Dim, "Interrupted · What should Argonauts do instead?");
+        let line = ResultLine::new(
+            Tone::Dim,
+            "Interrupted · What should Argonauts Code do instead?",
+        );
         assert!(line.continues_previous());
         assert_eq!(
             plain_text(&line.lines(&ctx)),
-            "  ⎿  Interrupted · What should Argonauts\n     do instead?"
+            "  ⎿  Interrupted · What should Argonauts\n     Code do instead?"
         );
     }
 

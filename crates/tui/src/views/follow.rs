@@ -9,11 +9,11 @@ use std::time::{Duration, Instant};
 
 use argonauts_core::AgentEvent;
 use argonauts_core::RunId;
-use argonauts_core::app::{AppEvent, ChatEvent, UiCommand, ViewData, ViewRequest};
+use argonauts_core::app::{AppEvent, ConversationEvent, UiCommand, ViewData, ViewRequest};
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::session::SessionEvent;
 use argonauts_core::names::{SessionKey, WorkflowId};
-use argonauts_core::views::conversation_run;
+use argonauts_core::views::{AgentRow, InnerAgent, conversation_run};
 
 /// Events that stream in, such as agent output, ask again at most this often.
 const EVERY: Duration = Duration::from_secs(1);
@@ -34,12 +34,33 @@ pub enum Shown {
         run: RunId,
         session: SessionKey,
     },
+    /// One agent of a workflow the CLI of `session` runs itself.
+    InnerAgent {
+        run: RunId,
+        session: SessionKey,
+        agent: InnerAgent,
+    },
 }
 
 impl Shown {
+    /// The agent `row` shows in `run`.
+    pub fn agent(run: RunId, row: &AgentRow) -> Self {
+        let session = row.session.clone();
+        match row.inner.clone() {
+            Some(agent) => Self::InnerAgent {
+                run,
+                session,
+                agent,
+            },
+            None => Self::Agent { run, session },
+        }
+    }
+
     fn run(&self) -> &RunId {
         match self {
-            Self::Workflow { run, .. } | Self::Agent { run, .. } => run,
+            Self::Workflow { run, .. } | Self::Agent { run, .. } | Self::InnerAgent { run, .. } => {
+                run
+            }
         }
     }
 
@@ -53,16 +74,28 @@ impl Shown {
                 run: run.clone(),
                 session: session.clone(),
             },
+            Self::InnerAgent {
+                run,
+                session,
+                agent,
+            } => ViewRequest::InnerAgent {
+                run: run.clone(),
+                session: session.clone(),
+                agent: agent.clone(),
+            },
         }
     }
 
-    fn answered_by(&self, data: &ViewData) -> bool {
+    pub(super) fn answered_by(&self, data: &ViewData) -> bool {
         match (self, data) {
             (Self::Workflow { run, id, .. }, ViewData::Workflow { view }) => {
                 view.run == *run && view.id == *id
             }
             (Self::Agent { run, session }, ViewData::Agent { view }) => {
-                view.run == *run && view.row.session == *session
+                view.run == *run && view.row.session == *session && view.row.inner.is_none()
+            }
+            (Self::InnerAgent { run, agent, .. }, ViewData::Agent { view }) => {
+                view.run == *run && view.row.inner.as_ref() == Some(agent)
             }
             _ => false,
         }
@@ -151,9 +184,9 @@ impl Refresh {
             settles = settles_rows(&event.kind);
         }
         // The conversation's own CLI reports its workflow as it goes.
-        if let AppEvent::Chat {
+        if let AppEvent::Conversation {
             event:
-                ChatEvent::Agent {
+                ConversationEvent::Agent {
                     event: AgentEvent::Workflow { .. },
                     ..
                 },
@@ -204,7 +237,7 @@ fn settles_rows(kind: &RunEventKind) -> bool {
         kind,
         RunEventKind::Run(_)
             | RunEventKind::Phase(_)
-            | RunEventKind::Card(_)
+            | RunEventKind::Task(_)
             | RunEventKind::Workflow(_)
             | RunEventKind::Session(SessionEvent::Started(_) | SessionEvent::Ended(_))
     )
@@ -238,9 +271,9 @@ mod tests {
                 seq: 0,
                 ts: OffsetDateTime::UNIX_EPOCH,
                 run_id: run,
-                card_id: None,
+                task_id: None,
                 session: None,
-                source: "conductor".into(),
+                source: "argonauts-code".into(),
                 kind,
             }),
         }
@@ -285,7 +318,8 @@ mod tests {
                     notes: Vec::new(),
                     required: Vec::new(),
                     goals: Vec::new(),
-                    owner: None,
+                    worker: None,
+                    state: Default::default(),
                 }),
             }),
         }

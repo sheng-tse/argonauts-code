@@ -1,5 +1,5 @@
 //! The registry of agent process groups, `~/.argonauts/agents/<pgid>.json`. Every process group
-//! any app or supervisor starts is listed there while it lives, and the approval path refuses a
+//! any app or run host starts is listed there while it lives, and the approval path refuses a
 //! caller descended from one.
 
 use std::fs;
@@ -21,7 +21,7 @@ pub struct AgentEntry {
     /// The `ARGONAUTS_SESSION` key it runs under.
     pub session: String,
     /// The adapter id, such as `codex`.
-    pub vendor: String,
+    pub agent_id: String,
 }
 
 /// A registered group. Dropping it removes the file, so a reaped group never stays listed.
@@ -79,7 +79,7 @@ pub fn register(paths: &Paths, entry: &AgentEntry) -> io::Result<Registration> {
     })
 }
 
-/// Every listed group whose leader is still alive with the recorded start time. Files of groups
+/// Every listed group whose head is still alive with the recorded start time. Files of groups
 /// that are gone are skipped, not deleted.
 pub fn live(paths: &Paths) -> io::Result<Vec<AgentEntry>> {
     let files = match fs::read_dir(dir(paths)) {
@@ -142,7 +142,7 @@ mod tests {
                 start_time,
             },
             session: session.into(),
-            vendor: "codex".into(),
+            agent_id: "codex".into(),
         }
     }
 

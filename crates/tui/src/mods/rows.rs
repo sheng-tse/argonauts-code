@@ -7,10 +7,10 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
+use crate::kit::{Drawn, Kit, spread};
 use crate::text::{spans_width, str_width, truncate_spans};
 use crate::theme::{Role, Theme};
 use crate::views::panes::{self, Footer};
-use crate::widgets::{Drawn, Kit, spread};
 
 /// Cells a row's name takes, the pointer before it included.
 const LABEL_CELLS: usize = 20;
@@ -118,7 +118,7 @@ pub fn breadcrumb(kit: &Kit<'_>, names: &[&str]) -> Vec<Span<'static>> {
             out.push(kit.dim(format!(" {} ", glyphs.crumb)));
         }
         let role = if index + 1 == names.len() {
-            Role::Card
+            Role::Question
         } else {
             Role::Bright
         };
@@ -139,7 +139,7 @@ fn cells_spans(kit: &Kit<'_>, cells: &Cells, selected: bool) -> Vec<Span<'static
                 if index != *current {
                     out.push(kit.dim(option.clone()));
                 } else if kit.has_color() {
-                    out.push(Span::styled(option.clone(), kit.bold(Role::Card)));
+                    out.push(Span::styled(option.clone(), kit.bold(Role::Question)));
                 } else {
                     // Without color the brackets say which one is in use.
                     out.push(Span::styled(format!("[{option}]"), kit.bold(Role::Bright)));
@@ -158,7 +158,7 @@ fn cells_spans(kit: &Kit<'_>, cells: &Cells, selected: bool) -> Vec<Span<'static
                     glyphs.unticked
                 };
                 let mut style = if item.on {
-                    kit.bold(Role::Card)
+                    kit.bold(Role::Question)
                 } else {
                     kit.style(Role::Dim)
                 };
@@ -171,7 +171,7 @@ fn cells_spans(kit: &Kit<'_>, cells: &Cells, selected: bool) -> Vec<Span<'static
                     // which is what the keys act on.
                     out.push(Span::styled(
                         format!(" {}", ordinal(place)),
-                        kit.bold(Role::Card),
+                        kit.bold(Role::Question),
                     ));
                 }
             }
@@ -186,7 +186,7 @@ fn row_line(kit: &Kit<'_>, row: &Row, selected: bool, width: usize) -> Line<'sta
     let glyphs = PageGlyphs::for_kit(kit);
     let pointer = if selected { glyphs.pointer } else { " " };
     let label_style = if selected {
-        kit.bold(Role::Card)
+        kit.bold(Role::Question)
     } else {
         kit.style(Role::Text)
     };
@@ -363,7 +363,7 @@ mod tests {
         let crumbs = breadcrumb(&kit, &["Config", "Mods", "bottom line"]);
         let last = crumbs.last().expect("the page's name");
         assert_eq!(last.content, "bottom line");
-        assert_eq!(last.style.fg, theme.style(Role::Card).fg);
+        assert_eq!(last.style.fg, theme.style(Role::Question).fg);
     }
 
     #[test]

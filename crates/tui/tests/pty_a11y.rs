@@ -13,38 +13,40 @@ fn screen_reader_flat_lines() {
     let (mut run, crew, events) = crew_run(1);
     let script = Script::idle()
         .await_command("submit")
-        .timed(chat_turn("t-001", "hi", "Hello there.", 5))
+        .timed(conversation_turn("t-001", "hi", "Hello there.", 5))
         .all(0, events)
         .at(
             0,
             run.tool_finished(&crew[0], "s-001-edit", true, "Updated src/export.rs"),
         )
-        .at(0, run.merge_checkpoint("cp-001"));
-    let mut harness = Harness::launch(script).ui("screen_reader = true").start();
-    harness.wait_for("(?m)^.*Argonauts");
-    harness.submit("hi");
-    harness.wait_for("(?m)^you: hi$");
-    harness.wait_for("(?m)^claude-code(/haiku)?: Hello there\\.");
-    harness.wait_for("(?m)^claude-code(/opus)?, worker, task-002: ");
-    harness.wait_for("(?m)^tool: ");
-    let text = harness.wait_for("(?m)^\\s*1\\. Merge").text();
-    harness.wait_for("(?m)^\\s*2\\. Open a pull request");
+        .at(0, run.merge_approval("approval-001"));
+    let mut driver = TestDriver::launch(script)
+        .ui("screen_reader = true")
+        .start();
+    driver.wait_for("(?m)^.*Argonauts Code");
+    driver.submit("hi");
+    driver.wait_for("(?m)^you: hi$");
+    driver.wait_for("(?m)^claude-code(/haiku)?: Hello there\\.");
+    driver.wait_for("(?m)^claude-code(/opus)?, worker, task-002: ");
+    driver.wait_for("(?m)^tool: ");
+    let text = driver.wait_for("(?m)^\\s*1\\. Merge").text();
+    driver.wait_for("(?m)^\\s*2\\. Open a pull request");
     for glyph in ['╭', '│', '╰', '─', '⎿'] {
         assert!(
             !text.contains(glyph),
             "no {glyph} in screen-reader mode:\n{text}"
         );
     }
-    let drawn = plain(&harness.raw());
+    let drawn = plain(&driver.raw());
     let spinner = regex::Regex::new(r"[∙✢✲✶✻✼] [\w'-]+…").unwrap();
     assert!(
         !spinner.is_match(&drawn),
         "no spinner is ever drawn:\n{drawn}"
     );
-    harness.wait_until("the bell for the task", |_| harness.bells() > 0);
+    driver.wait_until("the bell for the task", |_| driver.bells() > 0);
 }
 
-/// Screen-reader mode reads All hands with the default agent's effort and flips it when you type
+/// Screen-reader mode reads Ultracode with the main agent's effort and flips it when you type
 /// `a`, since a typed line never carries Tab.
 #[test]
 fn screen_reader_flips_ultracode_by_typing_a() {
@@ -59,19 +61,21 @@ fn screen_reader_flips_ultracode_by_typing_a() {
         }),
     };
     let script = Script::idle().await_command("slash").at(0, view);
-    let mut harness = Harness::launch(script).ui("screen_reader = true").start();
-    harness.wait_for("(?m)^.*Argonauts");
-    harness.send("/effort");
-    harness.press(Key::Enter);
-    harness.wait_for("(?m)^effort for Haiku 4.5: none, it takes no effort setting$");
-    harness.wait_for("(?m)^ultracode: off$");
-    let text = harness
+    let mut driver = TestDriver::launch(script)
+        .ui("screen_reader = true")
+        .start();
+    driver.wait_for("(?m)^.*Argonauts Code");
+    driver.send("/effort");
+    driver.press(Key::Enter);
+    driver.wait_for("(?m)^effort for Haiku 4.5: none, it takes no effort setting$");
+    driver.wait_for("(?m)^ultracode: off$");
+    let text = driver
         .wait_for("(?m)^ultracode: type a to turn it on\\.$")
         .text();
     assert!(!text.to_lowercase().contains("tab to toggle"), "{text}");
-    harness.send("a");
-    harness.press(Key::Enter);
-    let flipped = harness.wait_command_where("slash", |value| {
+    driver.send("a");
+    driver.press(Key::Enter);
+    let flipped = driver.wait_command_where("slash", |value| {
         value["command"]["ultracode"] == json!(true)
     });
     assert_eq!(flipped["command"]["command"], "effort", "{flipped}");
@@ -85,8 +89,8 @@ fn no_color_env() {
         [
             mode_answering("t-001"),
             turn_started("t-001", "show it"),
-            chat_tool_started("t-001", "c1", "Bash", json!({"command": "cat missing.txt"})),
-            chat_agent(
+            conversation_tool_started("t-001", "c1", "Bash", json!({"command": "cat missing.txt"})),
+            conversation_agent(
                 "t-001",
                 json!({"type": "tool_finished", "id": "c1", "ok": false,
                        "output": "cat: missing.txt: No such file or directory", "parent": null}),
@@ -95,10 +99,10 @@ fn no_color_env() {
             mode_idle(),
         ],
     );
-    let mut harness = Harness::launch(script).env("NO_COLOR", "1").start();
-    harness.wait_visible(MODE_IDLE);
-    harness.submit("show it");
-    let screen = harness.wait_visible("That file doesn't exist\\.");
+    let mut driver = TestDriver::launch(script).env("NO_COLOR", "1").start();
+    driver.wait_visible(MODE_IDLE);
+    driver.submit("show it");
+    let screen = driver.wait_visible("That file doesn't exist\\.");
     // At the default verbosity the call shows whole, and its header says it failed in words.
     let call = expect_row(&screen, "Bash\\(cat missing\\.txt\\)");
     assert!(
@@ -106,15 +110,15 @@ fn no_color_env() {
         "without color a failed call says so:\n{}",
         screen.visible_text()
     );
-    assert!(!sets_color(&harness.raw()), "NO_COLOR sets no color");
+    assert!(!sets_color(&driver.raw()), "NO_COLOR sets no color");
 }
 
 /// The working line's glyphs seen over `window`.
-fn glyphs_over(harness: &Harness, window: Duration) -> BTreeSet<char> {
+fn glyphs_over(driver: &TestDriver, window: Duration) -> BTreeSet<char> {
     let started = Instant::now();
     let mut seen = BTreeSet::new();
     while started.elapsed() < window {
-        let screen = harness.screen();
+        let screen = driver.screen();
         if let Some(row) = row_of(&screen, WORKING_LINE) {
             seen.extend(screen.visible[row].chars().next());
         }
@@ -123,10 +127,10 @@ fn glyphs_over(harness: &Harness, window: Duration) -> BTreeSet<char> {
     seen
 }
 
-fn working_turn(harness: &mut Harness) {
-    harness.wait_visible(MODE_IDLE);
-    harness.submit("check the build");
-    harness.wait_visible(WORKING_LINE);
+fn working_turn(driver: &mut TestDriver) {
+    driver.wait_visible(MODE_IDLE);
+    driver.submit("check the build");
+    driver.wait_visible(WORKING_LINE);
 }
 
 fn thinking_script() -> Script {
@@ -135,14 +139,14 @@ fn thinking_script() -> Script {
         [
             mode_answering("t-001"),
             turn_started("t-001", "check the build"),
-            chat_tool_started("t-001", "c1", "Bash", json!({"command": "cargo build"})),
+            conversation_tool_started("t-001", "c1", "Bash", json!({"command": "cargo build"})),
         ],
     )
 }
 
 #[test]
 fn reduced_motion_static_spinner() {
-    let mut moving = Harness::start(thinking_script());
+    let mut moving = TestDriver::start(thinking_script());
     working_turn(&mut moving);
     let normal = glyphs_over(&moving, Duration::from_millis(1500));
     assert!(
@@ -151,7 +155,7 @@ fn reduced_motion_static_spinner() {
     );
     drop(moving);
 
-    let mut still = Harness::launch(thinking_script())
+    let mut still = TestDriver::launch(thinking_script())
         .ui("motion = \"reduced\"")
         .start();
     working_turn(&mut still);
@@ -184,13 +188,13 @@ fn half_line_script() -> Script {
 
 #[test]
 fn reduced_motion_streams_whole_lines() {
-    let mut moving = Harness::start(half_line_script());
+    let mut moving = TestDriver::start(half_line_script());
     moving.wait_visible(MODE_IDLE);
     moving.submit("explain");
     moving.wait_visible("Second li");
     drop(moving);
 
-    let mut still = Harness::launch(half_line_script())
+    let mut still = TestDriver::launch(half_line_script())
         .ui("motion = \"reduced\"")
         .start();
     still.wait_visible(MODE_IDLE);

@@ -1,8 +1,8 @@
 //! A run whose work is one session running its CLI's own workflow, as when Claude Code's own
-//! workflow runs the crew's. That workflow is the run's: its phases are the view's, its agents
-//! the run's steps, and the reviewers it asked are in the rows they answered. The session that
-//! plans it is the box itself, not a step. Nothing of it nests under the session as a second
-//! run.
+//! workflow runs the crew's. That workflow is the run's, drawn in the one view every workflow
+//! has: its phases are the view's, its agents the run's steps, and the reviewers it asked are
+//! in the rows they answered. The session that plans it is none of its steps. Nothing of it
+//! nests under the session as a second run.
 
 use argonauts_core::RunId;
 use argonauts_core::names::{SessionKey, WorkflowId};
@@ -13,10 +13,10 @@ use super::WorkflowLog;
 /// Puts the one CLI workflow of `view` in place of the phase that holds it. A view with none,
 /// or with several, stays as it is.
 pub(super) fn as_the_runs(view: &mut WorkflowView, log: &WorkflowLog, run: &RunId) {
-    let Some((at, id, host, owner)) = the_one_cli_workflow(&view.phases) else {
+    let Some((at, id, host, worker)) = the_one_cli_workflow(&view.phases) else {
         return;
     };
-    let Some(inner) = log.vendor_view(run, &id) else {
+    let Some(inner) = log.agent_view(run, &id) else {
         return;
     };
     let mut phases = inner.phases;
@@ -28,7 +28,7 @@ pub(super) fn as_the_runs(view: &mut WorkflowView, log: &WorkflowLog, run: &RunI
         .iter()
         .flat_map(|phase| &phase.rows)
         .filter_map(|row| match row {
-            WorkflowRow::Agent(agent) if agent.answered.is_some() => Some(agent.label.clone()),
+            WorkflowRow::Agent(agent) if agent.answered => Some(agent.label.clone()),
             _ => None,
         })
         .collect();
@@ -39,7 +39,7 @@ pub(super) fn as_the_runs(view: &mut WorkflowView, log: &WorkflowLog, run: &RunI
                 || log
                     .sessions
                     .session(&agent.session)
-                    .is_some_and(|facts| facts.card.is_none())
+                    .is_some_and(|facts| facts.task.is_none())
         }
         _ => true,
     });
@@ -85,26 +85,7 @@ pub(super) fn as_the_runs(view: &mut WorkflowView, log: &WorkflowLog, run: &RunI
     }
     view.phases.splice(at..=at, phases);
     (view.agents_done, view.agents_total) = others;
-    // The header names the workflow the run started from, then whose own workflow runs it.
-    view.notes = log
-        .named
-        .as_ref()
-        .and_then(|named| named.based_on.as_deref())
-        .map(str::trim)
-        .filter(|based_on| !based_on.is_empty())
-        .map(|based_on| vec![capitalised(based_on)])
-        .unwrap_or_default();
-    view.owner = owner;
-}
-
-/// `Orchestrator` for `orchestrator`: a workflow's name on screen starts with a capital, and
-/// stays as typed everywhere else.
-fn capitalised(name: &str) -> String {
-    let mut chars = name.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
+    view.worker = worker;
 }
 
 /// The phase holding the view's only CLI workflow, that workflow, the session running it, and
@@ -116,7 +97,7 @@ fn the_one_cli_workflow(
         phase.rows.iter().filter_map(move |row| match row {
             WorkflowRow::Workflow(nested) => {
                 let host = nested.parent.clone()?;
-                Some((at, nested.id.clone(), host, nested.owner.clone()))
+                Some((at, nested.id.clone(), host, nested.worker.clone()))
             }
             _ => None,
         })

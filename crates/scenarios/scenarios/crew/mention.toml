@@ -1,6 +1,6 @@
-# A solo task whose worker is mid-turn when you mention it. The first turn holds for a few
+# A Captain task whose worker is mid-turn when you mention it. The first turn holds for a few
 # seconds so the mention arrives while it works; the worker then waits on stdin for the
-# mention, which Argonauts delivers when the turn ends, and finishes in a second turn.
+# mention, which Argonauts Code delivers when the turn ends, and finishes in a second turn.
 
 [version]
 claude = "2.1.284 (Claude Code)"
@@ -8,26 +8,26 @@ codex = "codex-cli 0.158.0"
 agy = "1.2.13"
 
 
-# triage
+# estimate
 [[rule]]
 argv0 = "claude"
 prompt_contains = "IntakeReply"
 [[rule.step]]
-emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-triage\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-estimate\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-triage\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"kind\":\"change\",\"answer_markdown\":\"A change: per-key rate limiting touches the API middleware, a counter store, and tests.\",\"estimate\":{\"task_type\":\"api-feature\",\"summary\":\"Per-key rate limiting on the public API\",\"files_likely\":[\"src/api/rate-limit.ts\",\"src/limiter/index.ts\",\"src/limiter/store.ts\",\"tests/load/rate-limit.test.ts\",\"docs/rate-limits.md\"],\"file_count\":9,\"risk_labels\":[\"security\"],\"tests_exist\":true,\"unknowns\":[]}}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-estimate\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"kind\":\"change\",\"answer_markdown\":\"A change: per-key rate limiting touches the API middleware, a counter store, and tests.\",\"estimate\":{\"task_type\":\"api-feature\",\"summary\":\"Per-key rate limiting on the public API\",\"files_likely\":[\"src/api/rate-limit.ts\",\"src/limiter/index.ts\",\"src/limiter/store.ts\",\"tests/load/rate-limit.test.ts\",\"docs/rate-limits.md\"],\"file_count\":9,\"risk_labels\":[\"security\"],\"tests_exist\":true,\"unknowns\":[]}}}"
 [[rule.step]]
 exit = 0
 
 
-# adjudicate
+# settle
 [[rule]]
 argv0 = "claude"
-prompt_contains = "AdjudicateOutput"
+prompt_contains = "SettleOutput"
 [[rule.step]]
-emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-adjudicate\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-settle\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-adjudicate\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"verdict\":\"approve\",\"reasons\":[\"Both reviews hold\"],\"required_changes\":[]}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-settle\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"verdict\":\"approve\",\"reasons\":[\"Both reviews hold\"],\"required_changes\":[]}}"
 [[rule.step]]
 exit = 0
 
@@ -51,7 +51,7 @@ prompt_contains = "Predictions"
 [[rule.step]]
 emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-predict\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-predict\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"p_pass_gates_first_try\":0.8,\"p_within_time_cap\":0.9,\"p_at_most_two_attempts\":0.95}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-predict\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"p_pass_checks_first_try\":0.8,\"p_within_time_cap\":0.9,\"p_at_most_two_tries\":0.95}}"
 [[rule.step]]
 exit = 0
 
@@ -59,11 +59,11 @@ exit = 0
 # run review
 [[rule]]
 argv0 = "claude"
-prompt_contains = "RetroOutput"
+prompt_contains = "RunReviewOutput"
 [[rule.step]]
-emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-retro\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-run-review\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-retro\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"change\":null}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-run-review\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"change\":null}}"
 [[rule.step]]
 exit = 0
 
@@ -85,9 +85,9 @@ exit = 0
 argv0 = "claude"
 prompt_contains = "TaskGraphProposal"
 [[rule.step]]
-emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-plan-to-cards\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-plan-to-tasks\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-plan-to-cards\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"cards\":[{\"key\":\"interface\",\"title\":\"The limiter interface with stubs\",\"task\":\"Write the RateLimiter interface in src/limiter/index.ts, with stubs that fail not implemented.\",\"kind\":\"interface\",\"owned_paths\":[\"src/limiter/index.ts\"],\"read_only_paths\":[],\"depends_on\":[],\"criteria\":[\"G1\"]},{\"key\":\"store\",\"title\":\"The Redis store\",\"task\":\"Implement the RateLimiter store on Redis in src/limiter/store.ts.\",\"kind\":\"build\",\"owned_paths\":[\"src/limiter/store.ts\"],\"read_only_paths\":[\"src/limiter/index.ts\"],\"depends_on\":[\"interface\"],\"criteria\":[\"G2\",\"G3\"]},{\"key\":\"middleware\",\"title\":\"The middleware\",\"task\":\"Add the rate-limit middleware after auth in src/api/rate-limit.ts.\",\"kind\":\"build\",\"owned_paths\":[\"src/api/rate-limit.ts\"],\"read_only_paths\":[\"src/limiter/index.ts\"],\"depends_on\":[\"interface\"],\"criteria\":[\"G1\"]},{\"key\":\"load\",\"title\":\"The load test\",\"task\":\"Write a load test of the limit in tests/load/.\",\"kind\":\"build\",\"owned_paths\":[\"tests/load/**\"],\"read_only_paths\":[],\"depends_on\":[\"store\",\"middleware\"],\"criteria\":[\"G3\"]},{\"key\":\"docs\",\"title\":\"The docs\",\"task\":\"Document the limits in docs/rate-limits.md.\",\"kind\":\"docs\",\"owned_paths\":[\"docs/rate-limits.md\"],\"read_only_paths\":[],\"depends_on\":[\"middleware\"],\"criteria\":[]}]}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-plan-to-tasks\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"tasks\":[{\"key\":\"interface\",\"title\":\"The limiter interface with stubs\",\"task\":\"Write the RateLimiter interface in src/limiter/index.ts, with stubs that fail not implemented.\",\"kind\":\"interface\",\"owned_paths\":[\"src/limiter/index.ts\"],\"read_only_paths\":[],\"depends_on\":[],\"criteria\":[\"G1\"]},{\"key\":\"store\",\"title\":\"The Redis store\",\"task\":\"Implement the RateLimiter store on Redis in src/limiter/store.ts.\",\"kind\":\"build\",\"owned_paths\":[\"src/limiter/store.ts\"],\"read_only_paths\":[\"src/limiter/index.ts\"],\"depends_on\":[\"interface\"],\"criteria\":[\"G2\",\"G3\"]},{\"key\":\"middleware\",\"title\":\"The middleware\",\"task\":\"Add the rate-limit middleware after auth in src/api/rate-limit.ts.\",\"kind\":\"build\",\"owned_paths\":[\"src/api/rate-limit.ts\"],\"read_only_paths\":[\"src/limiter/index.ts\"],\"depends_on\":[\"interface\"],\"criteria\":[\"G1\"]},{\"key\":\"load\",\"title\":\"The load test\",\"task\":\"Write a load test of the limit in tests/load/.\",\"kind\":\"build\",\"owned_paths\":[\"tests/load/**\"],\"read_only_paths\":[],\"depends_on\":[\"store\",\"middleware\"],\"criteria\":[\"G3\"]},{\"key\":\"docs\",\"title\":\"The docs\",\"task\":\"Document the limits in docs/rate-limits.md.\",\"kind\":\"docs\",\"owned_paths\":[\"docs/rate-limits.md\"],\"read_only_paths\":[],\"depends_on\":[\"middleware\"],\"criteria\":[]}]}}"
 [[rule.step]]
 exit = 0
 
@@ -95,11 +95,11 @@ exit = 0
 # experiment report
 [[rule]]
 argv0 = "claude"
-prompt_contains = "SpikeReport"
+prompt_contains = "ExperimentReport"
 [[rule.step]]
-emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-spike-report\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-experiment-report\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-spike-report\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"topic\":\"Where counters live\",\"option\":\"In memory\",\"measurements\":[{\"metric\":\"counters_after_restart\",\"value\":0,\"unit\":\"count\"}],\"finding\":\"In memory loses every counter on restart.\",\"works\":false}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-experiment-report\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"topic\":\"Where counters live\",\"option\":\"In memory\",\"measurements\":[{\"metric\":\"counters_after_restart\",\"value\":0,\"unit\":\"count\"}],\"finding\":\"In memory loses every counter on restart.\",\"works\":false}}"
 [[rule.step]]
 exit = 0
 
@@ -107,11 +107,11 @@ exit = 0
 # propose experiment
 [[rule]]
 argv0 = "claude"
-prompt_contains = "SpikeProposals"
+prompt_contains = "ExperimentProposals"
 [[rule.step]]
-emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-propose-spike\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-propose-experiment\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-propose-spike\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"proposals\":[{\"topic\":\"Where counters live\",\"question\":\"Redis or in memory?\",\"options\":[\"Redis\",\"In memory\"],\"measure\":\"p50 overhead, and counters after a restart\",\"decides_by\":\"Redis, unless it adds more than 5 ms p50\",\"est_minutes\":10,\"est_cost_usd\":0.5}]}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-propose-experiment\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"proposals\":[{\"topic\":\"Where counters live\",\"question\":\"Redis or in memory?\",\"options\":[\"Redis\",\"In memory\"],\"measure\":\"p50 overhead, and counters after a restart\",\"decides_by\":\"Redis, unless it adds more than 5 ms p50\",\"est_minutes\":10,\"est_cost_usd\":0.5}]}}"
 [[rule.step]]
 exit = 0
 
@@ -153,14 +153,14 @@ emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result
 exit = 0
 
 
-# differ
+# compare
 [[rule]]
 argv0 = "claude"
-prompt_contains = "DifferOutput"
+prompt_contains = "CompareOutput"
 [[rule.step]]
-emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-differ\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-compare\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-differ\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"agreements\":[\"429 with Retry-After\",\"limits survive restarts\",\"under 5 ms p50 overhead\"],\"differences\":[{\"topic\":\"What a limit counts\",\"readings\":[{\"label\":\"A\",\"reading\":\"per API key\"},{\"label\":\"B\",\"reading\":\"per API key\"},{\"label\":\"C\",\"reading\":\"per user\"}],\"tag\":\"scope\",\"question\":{\"text\":\"Limit per user, or per API key?\",\"options\":[\"Per API key\",\"Per user\"],\"recommended\":0,\"basis\":\"2 of 3 restatements read it this way\"}},{\"topic\":\"Retry-After format\",\"readings\":[{\"label\":\"A\",\"reading\":\"seconds\"},{\"label\":\"B\",\"reading\":\"seconds\"},{\"label\":\"C\",\"reading\":\"an HTTP date\"}],\"tag\":\"detail\",\"question\":null}]}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-compare\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"agreements\":[\"429 with Retry-After\",\"limits survive restarts\",\"under 5 ms p50 overhead\"],\"differences\":[{\"topic\":\"What a limit counts\",\"readings\":[{\"label\":\"A\",\"reading\":\"per API key\"},{\"label\":\"B\",\"reading\":\"per API key\"},{\"label\":\"C\",\"reading\":\"per user\"}],\"tag\":\"scope\",\"question\":{\"text\":\"Limit per user, or per API key?\",\"options\":[\"Per API key\",\"Per user\"],\"recommended\":0,\"basis\":\"2 of 3 readings read it this way\"}},{\"topic\":\"Retry-After format\",\"readings\":[{\"label\":\"A\",\"reading\":\"seconds\"},{\"label\":\"B\",\"reading\":\"seconds\"},{\"label\":\"C\",\"reading\":\"an HTTP date\"}],\"tag\":\"detail\",\"question\":null}]}}"
 [[rule.step]]
 exit = 0
 
@@ -177,14 +177,14 @@ emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result
 exit = 0
 
 
-# restate
+# read
 [[rule]]
 argv0 = "claude"
-prompt_contains = "Restatement"
+prompt_contains = "Reading"
 [[rule.step]]
-emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-restate\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-read\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-restate\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"summary\":\"Limit requests per API key on the public API, answering 429 with a Retry-After header in seconds.\",\"success_criteria\":[\"A key past its limit gets 429 with Retry-After\",\"Limits survive a restart\",\"Under 5 ms p50 overhead\"],\"in_scope\":[\"the public API middleware\",\"a shared counter store\"],\"out_of_scope\":[\"the admin API\"],\"assumptions\":[\"Retry-After is in seconds\"],\"open_questions\":[]}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-read\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"summary\":\"Limit requests per API key on the public API, answering 429 with a Retry-After header in seconds.\",\"success_criteria\":[\"A key past its limit gets 429 with Retry-After\",\"Limits survive a restart\",\"Under 5 ms p50 overhead\"],\"in_scope\":[\"the public API middleware\",\"a shared counter store\"],\"out_of_scope\":[\"the admin API\"],\"assumptions\":[\"Retry-After is in seconds\"],\"open_questions\":[]}}"
 [[rule.step]]
 exit = 0
 
@@ -195,21 +195,21 @@ argv0 = "claude"
 prompt_contains = "Add a Retry-After header to 429 responses"
 stdin_prompt = "line"
 [[rule.step]]
-emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-owner\",\"model\":\"claude-haiku-4-5\",\"tools\":[\"Bash\",\"Read\",\"Edit\"],\"mcp_servers\":[{\"name\":\"argonauts\",\"status\":\"connected\"}]}"
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-worker\",\"model\":\"claude-haiku-4-5\",\"tools\":[\"Bash\",\"Read\",\"Edit\"],\"mcp_servers\":[{\"name\":\"argonauts\",\"status\":\"connected\"}]}"
 [[rule.step]]
-emit = "{\"type\":\"assistant\",\"session_id\":\"claude-owner\",\"parent_tool_use_id\":null,\"message\":{\"id\":\"msg-0024\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"Reading the 429 handler.\"}],\"stop_reason\":null,\"usage\":{\"input_tokens\":50,\"output_tokens\":20}}}"
+emit = "{\"type\":\"assistant\",\"session_id\":\"claude-worker\",\"parent_tool_use_id\":null,\"message\":{\"id\":\"msg-0024\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"Reading the 429 handler.\"}],\"stop_reason\":null,\"usage\":{\"input_tokens\":50,\"output_tokens\":20}}}"
 [[rule.step]]
 sleep_ms = 4000
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"Read the handler.\",\"session_id\":\"claude-owner\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"Read the handler.\",\"session_id\":\"claude-worker\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60}}"
 [[rule.step]]
 expect_stdin_contains = "Retry-After is whole seconds"
 [[rule.step]]
 write = { path = "src/api/retry-after.ts", content = "export function retryAfter(seconds: number): string {\n  return String(Math.ceil(seconds));\n}\n" }
 [[rule.step]]
-emit = "{\"type\":\"assistant\",\"session_id\":\"claude-owner\",\"parent_tool_use_id\":null,\"message\":{\"id\":\"msg-0034\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"Using whole seconds, as you asked.\"}],\"stop_reason\":null,\"usage\":{\"input_tokens\":50,\"output_tokens\":20}}}"
+emit = "{\"type\":\"assistant\",\"session_id\":\"claude-worker\",\"parent_tool_use_id\":null,\"message\":{\"id\":\"msg-0034\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"Using whole seconds, as you asked.\"}],\"stop_reason\":null,\"usage\":{\"input_tokens\":50,\"output_tokens\":20}}}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-owner\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"status\":\"done\",\"summary\":\"Added Retry-After in whole seconds, as the mention asked.\",\"files_changed\":[\"src/api/retry-after.ts\"],\"tests_run\":[],\"concerns\":[],\"questions\":[],\"change_requests\":[],\"memory_proposals\":[]}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-worker\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"status\":\"done\",\"summary\":\"Added Retry-After in whole seconds, as the mention asked.\",\"files_changed\":[\"src/api/retry-after.ts\"],\"tests_run\":[],\"concerns\":[],\"questions\":[],\"change_requests\":[],\"memory_proposals\":[]}}"
 [[rule.step]]
 exit = 0
 
@@ -218,7 +218,7 @@ exit = 0
 [[rule]]
 argv0 = "claude"
 [[rule.step]]
-emit_file = "../../../adapters/claude-code/fixtures/2.1.284/read-only.stdout.jsonl"
+emit_file = "../../../adapters/claude-code/fixtures/read-only-untitled.stdout.jsonl"
 [[rule.step]]
 exit = 0
 
@@ -227,7 +227,7 @@ exit = 0
 [[rule]]
 argv0 = "codex"
 [[rule.step]]
-emit_file = "../../../adapters/codex/fixtures/0.158.0/read_only_ok.stdout.jsonl"
+emit_file = "../../../adapters/codex/fixtures/read_only_ok.stdout.jsonl"
 [[rule.step]]
 exit = 0
 
@@ -236,6 +236,6 @@ exit = 0
 [[rule]]
 argv0 = "agy"
 [[rule.step]]
-emit_file = "../../../adapters/antigravity-cli/fixtures/1.2.13/readonly_ok.stdout.jsonl"
+emit_file = "../../../adapters/antigravity-cli/fixtures/readonly_ok_plain.stdout.jsonl"
 [[rule.step]]
 exit = 0

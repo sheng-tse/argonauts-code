@@ -4,7 +4,7 @@
 use argonauts_core::app::AppEvent;
 use serde_json::{Value, json};
 
-use super::chat::{app, spend};
+use super::conversation::{app, spend};
 use super::run::{Agent, RUN, RunScript};
 
 pub fn view(data: Value) -> AppEvent {
@@ -15,7 +15,7 @@ pub fn view(data: Value) -> AppEvent {
 pub fn label(agent: &Agent) -> String {
     let step = match agent.role.as_str() {
         "worker" => "build",
-        "restater" => "read",
+        "reader" => "read",
         other => other,
     };
     let words: Vec<String> = agent
@@ -33,7 +33,7 @@ pub fn agent_row(agent: &Agent, status: &str) -> Value {
     json!({"session": agent.session, "label": label(agent),
            "worker": agent.worker, "status": status, "tokens": 381_000,
            "spent": spend(18_100, 0.84), "elapsed_ms": 362_000, "subagents": 0,
-           "context": null, "standing_in_for": null})
+           "context": null, "fallback_for": null})
 }
 
 pub fn nested_workflow_row(id: &str, name: &str) -> Value {
@@ -48,19 +48,19 @@ fn tagged_agent(agent: &Agent, status: &str) -> Value {
     row
 }
 
-/// The three agents that restated the goal, all done.
+/// The three agents that read the request back, all done.
 pub fn goal_agents() -> Vec<Agent> {
     (1..=3)
         .map(|n| Agent {
             session: format!("s-{:03}", 10 + n),
-            card: "goal".to_owned(),
-            role: "restater".to_owned(),
+            task: "goal".to_owned(),
+            role: "reader".to_owned(),
             ..Agent::numbered(n)
         })
         .collect()
 }
 
-/// The run's workflow: Goal (three restaters) and Plan done, Build running with `agents` and,
+/// The run's workflow: Understand (three readers) and Plan done, Build running with `agents` and,
 /// when given, a nested workflow row, and Merge waiting.
 pub fn workflow_view(agents: &[Agent], nested: Option<Value>) -> AppEvent {
     let mut rows: Vec<Value> = agents
@@ -81,11 +81,11 @@ pub fn workflow_view(agents: &[Agent], nested: Option<Value>) -> AppEvent {
     };
     view(
         json!({"data": "workflow", "view": {"run": RUN, "id": "wf-001",
-        "name": "council", "description": "Goal, plans, build, review, and merge",
+        "name": "council", "description": "Understand, plans, build, review, and merge",
         "breadcrumb": [], "agents_done": 4, "agents_total": 4 + total,
         "elapsed_ms": 9_840_000, "spent": spend(747_000, 4.10),
         "phases": [
-            phase("Goal", "understand", "done", 3, 3, json!(goal)),
+            phase("Understand", "understand", "done", 3, 3, json!(goal)),
             phase("Plan", "plan", "done", 0, 0, json!([])),
             phase("Build", "do", "running", 1, total, json!(rows)),
             phase("Merge", "decide", "waiting", 0, 0, json!([])),
@@ -96,7 +96,7 @@ pub fn workflow_view(agents: &[Agent], nested: Option<Value>) -> AppEvent {
 pub fn agent_view(agent: &Agent) -> AppEvent {
     view(
         json!({"data": "agent", "view": {"run": RUN, "row": agent_row(agent, "running"),
-        "prompt": format!("You own {}: {}.\nKeep the CSV path.", agent.card, agent.title),
+        "prompt": format!("You own {}: {}.\nKeep the CSV path.", agent.task, agent.title),
         "activity": [
             {"tool": "Read", "summary": "src/export.rs", "ok": true},
             {"tool": "Edit", "summary": "src/export.rs", "ok": null}],
@@ -133,7 +133,7 @@ pub fn config_view(entries: &[(&str, &str, &str)]) -> AppEvent {
     view(json!({"data": "config", "entries": entries}))
 }
 
-/// `state` is `running`, `parked`, `crashed`, `merged`, and so on.
+/// `state` is `running`, `waiting`, `crashed`, `merged`, and so on.
 pub fn run_summary(run: &str, title: &str, state: &str, remind: bool) -> Value {
     json!({"run": run, "title": title, "mode": "crew", "workflow": "council", "state": state,
            "stopped_at": "merge approval", "updated": "2026-09-30T11:00:00Z",
@@ -153,22 +153,22 @@ pub fn all_repos_view(repos: Vec<(&str, Vec<Value>)>) -> AppEvent {
     view(json!({"data": "all_repos", "repos": repos}))
 }
 
-/// The crew panel's rows from the controller, for this repo.
-pub fn crew_view_data(rows: Vec<Value>) -> AppEvent {
-    view(json!({"data": "crew", "panel": {"repo": super::chat::REPO, "rows": rows}}))
+/// The agent panel's rows from the controller, for this repo.
+pub fn agent_panel_view_data(rows: Vec<Value>) -> AppEvent {
+    view(json!({"data": "crew", "panel": {"repo": super::conversation::REPO, "rows": rows}}))
 }
 
 pub fn raw_view(agent: &Agent, lines: &[&str]) -> AppEvent {
     view(
         json!({"data": "raw", "raw": {"session": agent.session, "lines": lines,
-        "truncated": false, "path": "/state/raw.jsonl", "vendor_transcript": null}}),
+        "truncated": false, "path": "/state/raw.jsonl", "cli_transcript": null}}),
     )
 }
 
 pub fn diff_view(agent: &Agent, text: &str) -> AppEvent {
-    view(json!({"data": "diff", "diff": {"card": agent.card,
+    view(json!({"data": "diff", "diff": {"task": agent.task,
         "stat": {"files_changed": 1, "insertions": 2, "deletions": 1}, "text": text,
-        "path": "/state/cards/diff"}}))
+        "path": "/state/tasks/diff"}}))
 }
 
 /// Hands the terminal to `argv` in `cwd`, or refuses when `argv` is empty, as for an
@@ -178,10 +178,10 @@ pub fn take_over(agent: &Agent, argv: &[&str], cwd: &str) -> AppEvent {
         json!({"program": program, "args": args, "env_set": [], "env_remove": [],
                "stdin": null, "cwd": cwd, "files": [], "keep_stdin_open": false})
     });
-    let vendor = agent.worker.split('/').next().unwrap_or(&agent.worker);
+    let agent_id = agent.worker.split('/').next().unwrap_or(&agent.worker);
     app(
-        json!({"type": "take_over", "ticket": {"card": agent.card, "command": command,
-        "worktree": cwd, "vendor": vendor}, "place": "here", "run": RUN}),
+        json!({"type": "take_over", "ticket": {"task": agent.task, "command": command,
+        "worktree": cwd, "agent_id": agent_id}, "place": "here", "run": RUN}),
     )
 }
 
@@ -224,7 +224,7 @@ pub const REPLAY_MILESTONES: [&str; 3] = [
 
 pub const REPLAY_RECAP: &str = "Two tasks are done and the merge waits for you.";
 
-/// Reattaching to a long run: `tool_calls` calls per agent for three agents, a card answered
+/// Reattaching to a long run: `tool_calls` calls per agent for three agents, a question answered
 /// long ago, then the condensed replay and `ReplayDone`. Returns the script for events after
 /// it, and the history's events.
 pub fn long_replayed_run(tool_calls: usize) -> (RunScript, Vec<Agent>, Vec<AppEvent>) {
@@ -233,18 +233,22 @@ pub fn long_replayed_run(tool_calls: usize) -> (RunScript, Vec<Agent>, Vec<AppEv
     let mut events = vec![
         attached(RUN, "Add a --json flag to export"),
         run.started("Add a --json flag to export", "crew"),
-        run.phase("goal", "finished", Some("3 agents agreed on the goal")),
+        run.phase(
+            "understand",
+            "finished",
+            Some("3 agents agreed on the goal"),
+        ),
         run.phase("planning", "finished", Some("Plan 2 won")),
-        run.plan_checkpoint("cp-001"),
+        run.plan_approval("approval-001"),
         run.decided(
-            "cp-001",
+            "approval-001",
             json!({"action": "approve"}),
             json!({"party": "user"}),
         ),
         run.phase("build", "started", None),
     ];
     for (i, agent) in crew.iter().enumerate() {
-        events.push(run.card_created(agent));
+        events.push(run.task_created(agent));
         let key = u8::try_from(i + 1).unwrap_or(u8::MAX);
         events.push(run.session_started(agent, key));
     }

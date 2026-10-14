@@ -1,0 +1,5 @@
+name  = "ablate-no-experiments"
+about = "No experiments"
+
+[experiments]
+enabled = false

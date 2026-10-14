@@ -1,5 +1,5 @@
-//! `~/.argonauts/registry.json`: every live supervisor across repos, with its session count, for
-//! `argonauts status` and the crew view's "All repos" tab. Entries are keyed by pid and process
+//! `~/.argonauts/registry.json`: every live run host across repos, with its session count, for
+//! `argonauts status` and the agent panel's "All repos" tab. Entries are keyed by pid and process
 //! start time, and readers drop those whose process is gone.
 
 use std::fs::{File, OpenOptions};
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::ancestry::Processes;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LiveSupervisor {
+pub struct LiveRunHost {
     pub pid: u32,
     /// Seconds since the epoch, as sysinfo reports it.
     pub start_time: u64,
@@ -29,15 +29,15 @@ pub struct LiveSupervisor {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct RegistryFile {
     #[serde(default)]
-    supervisors: Vec<LiveSupervisor>,
+    run_hosts: Vec<LiveRunHost>,
 }
 
 fn registry_path(home: &Paths) -> PathBuf {
     home.home().join(user_files::REGISTRY)
 }
 
-/// Adds or replaces this supervisor's entry, under a file lock.
-pub(crate) fn register(home: &Paths, entry: &LiveSupervisor) -> anyhow::Result<()> {
+/// Adds or replaces this run host's entry, under a file lock.
+pub(crate) fn register(home: &Paths, entry: &LiveRunHost) -> anyhow::Result<()> {
     update(home, |entries| {
         entries.retain(|existing| existing.pid != entry.pid);
         entries.push(entry.clone());
@@ -57,7 +57,7 @@ pub(crate) fn unregister(home: &Paths, pid: u32) -> anyhow::Result<()> {
 }
 
 /// The live ones, newest first. A missing or unreadable file lists none.
-pub fn live_supervisors(home: &Paths) -> Vec<LiveSupervisor> {
+pub fn live_run_hosts(home: &Paths) -> Vec<LiveRunHost> {
     let Ok(mut file) = File::open(registry_path(home)) else {
         return Vec::new();
     };
@@ -71,7 +71,7 @@ pub fn live_supervisors(home: &Paths) -> Vec<LiveSupervisor> {
 }
 
 /// Reads, drops dead entries, applies `change`, and writes back, all under an exclusive lock.
-fn update(home: &Paths, change: impl FnOnce(&mut Vec<LiveSupervisor>)) -> anyhow::Result<()> {
+fn update(home: &Paths, change: impl FnOnce(&mut Vec<LiveRunHost>)) -> anyhow::Result<()> {
     let path = registry_path(home);
     create_private_dir_all(home.home())
         .with_context(|| format!("creating {}", home.home().display()))?;
@@ -88,9 +88,7 @@ fn update(home: &Paths, change: impl FnOnce(&mut Vec<LiveSupervisor>)) -> anyhow
     let mut entries = read_entries(&mut file);
     drop_dead(&mut entries);
     change(&mut entries);
-    let mut text = serde_json::to_vec_pretty(&RegistryFile {
-        supervisors: entries,
-    })?;
+    let mut text = serde_json::to_vec_pretty(&RegistryFile { run_hosts: entries })?;
     text.push(b'\n');
     file.set_len(0)
         .and_then(|()| file.seek(SeekFrom::Start(0)))
@@ -99,17 +97,17 @@ fn update(home: &Paths, change: impl FnOnce(&mut Vec<LiveSupervisor>)) -> anyhow
 }
 
 /// A torn or foreign file reads as empty, and the next write replaces it.
-fn read_entries(file: &mut File) -> Vec<LiveSupervisor> {
+fn read_entries(file: &mut File) -> Vec<LiveRunHost> {
     let mut text = String::new();
     if file.read_to_string(&mut text).is_err() || text.trim().is_empty() {
         return Vec::new();
     }
     serde_json::from_str::<RegistryFile>(&text)
-        .map(|registry| registry.supervisors)
+        .map(|registry| registry.run_hosts)
         .unwrap_or_default()
 }
 
-fn drop_dead(entries: &mut Vec<LiveSupervisor>) {
+fn drop_dead(entries: &mut Vec<LiveRunHost>) {
     let mut processes = Processes::new();
     entries.retain(|entry| processes.start_time(entry.pid) == Some(entry.start_time));
 }
@@ -121,8 +119,8 @@ mod tests {
     use super::*;
     use crate::ancestry::own_process;
 
-    fn entry(pid: u32, start_time: u64, run: &str) -> LiveSupervisor {
-        LiveSupervisor {
+    fn entry(pid: u32, start_time: u64, run: &str) -> LiveRunHost {
+        LiveRunHost {
             pid,
             start_time,
             repo_root: PathBuf::from("/repo"),
@@ -135,7 +133,7 @@ mod tests {
     fn registry_drops_dead_pids() {
         let home = tempfile::tempdir().unwrap();
         let home = Paths::new(home.path());
-        assert!(live_supervisors(&home).is_empty());
+        assert!(live_run_hosts(&home).is_empty());
 
         let mut gone = Command::new("true").spawn().unwrap();
         let gone_pid = gone.id();
@@ -144,33 +142,33 @@ mod tests {
         register(&home, &entry(gone_pid, started, "run-20260930-010000-0001")).unwrap();
         register(&home, &entry(pid, started + 1, "run-20260930-010000-0002")).unwrap();
         assert!(
-            live_supervisors(&home).is_empty(),
+            live_run_hosts(&home).is_empty(),
             "a gone pid and a reused pid both drop"
         );
 
         register(&home, &entry(pid, started, "run-20260930-010000-0003")).unwrap();
         set_sessions(&home, pid, 3).unwrap();
-        let live = live_supervisors(&home);
+        let live = live_run_hosts(&home);
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].run.as_str(), "run-20260930-010000-0003");
         assert_eq!(live[0].sessions, 3);
 
         let written: RegistryFile =
             serde_json::from_slice(&std::fs::read(registry_path(&home)).unwrap()).unwrap();
-        assert_eq!(written.supervisors.len(), 1, "writes drop dead entries too");
+        assert_eq!(written.run_hosts.len(), 1, "writes drop dead entries too");
 
         unregister(&home, pid).unwrap();
-        assert!(live_supervisors(&home).is_empty());
+        assert!(live_run_hosts(&home).is_empty());
     }
 
     #[test]
     fn a_torn_registry_reads_as_empty_and_is_replaced() {
         let home = tempfile::tempdir().unwrap();
         let home = Paths::new(home.path());
-        std::fs::write(registry_path(&home), "{\"supervisors\": [").unwrap();
-        assert!(live_supervisors(&home).is_empty());
+        std::fs::write(registry_path(&home), "{\"run hosts\": [").unwrap();
+        assert!(live_run_hosts(&home).is_empty());
         let (pid, started) = own_process();
         register(&home, &entry(pid, started, "run-20260930-010000-0004")).unwrap();
-        assert_eq!(live_supervisors(&home).len(), 1);
+        assert_eq!(live_run_hosts(&home).len(), 1);
     }
 }

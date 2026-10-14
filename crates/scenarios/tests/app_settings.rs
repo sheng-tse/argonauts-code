@@ -1,5 +1,5 @@
-//! Settings from the chat: every settings command through its picker and its argument, the
-//! scope question, resets, effort levels, `/vim`, preset files, and where each change lands.
+//! Settings from the conversation: every settings command through its picker and its argument, the
+//! scope question, resets, effort levels, `/vim`, workflow files, and where each change lands.
 
 mod app_support;
 
@@ -29,7 +29,7 @@ struct ArgumentCase {
 const ARGUMENT_CASES: [ArgumentCase; 12] = [
     ArgumentCase {
         line: "/model reviewer codex",
-        key: "roles.reviewer.workers",
+        key: "roles.reviewer.models",
         value: "[\"codex\"]",
     },
     ArgumentCase {
@@ -39,7 +39,7 @@ const ARGUMENT_CASES: [ArgumentCase; 12] = [
     },
     ArgumentCase {
         line: "/model codex",
-        key: "main_agent",
+        key: "crew.main",
         value: "\"codex\"",
     },
     ArgumentCase {
@@ -48,9 +48,9 @@ const ARGUMENT_CASES: [ArgumentCase; 12] = [
         value: "\"low\"",
     },
     ArgumentCase {
-        line: "/workflow solo",
+        line: "/workflow captain",
         key: "workflow",
-        value: "\"solo\"",
+        value: "\"captain\"",
     },
     ArgumentCase {
         line: "/approvals merge.mode auto_preview",
@@ -64,7 +64,7 @@ const ARGUMENT_CASES: [ArgumentCase; 12] = [
     },
     ArgumentCase {
         line: "/fallback reviewer max_fallbacks 2",
-        key: "fallback.reviewers.max_fallbacks",
+        key: "fallback.reviewer.max_fallbacks",
         value: "2",
     },
     ArgumentCase {
@@ -119,7 +119,7 @@ fn next_change(
             .into_iter()
             .find(|c| c.kind == ChoiceKind::ConfirmSafetySetting && !confirmed.contains(&c.id));
         if let Some(confirm) = confirm {
-            answer_card(pty, number_of(&confirm.options, 'y'))?;
+            answer_question(pty, number_of(&confirm.options, 'y'))?;
             confirmed.push(confirm.id);
         }
         Ok(None)
@@ -139,7 +139,7 @@ fn settled(pty: &Pty) -> anyhow::Result<()> {
 }
 
 /// Whether the picker shows a CLI's models, where the pointed one ends the choice. Its about
-/// line reads `The model the default agent runs on Codex`.
+/// line reads `The model the main agent runs on Codex`.
 fn on_models_level(pty: &Pty) -> bool {
     let about = regex::Regex::new(r"The model .+ runs on ").expect("a valid pattern");
     about.is_match(&pty.screen().visible_text())
@@ -183,9 +183,9 @@ fn scope_changes(scenario: &Scenario) -> anyhow::Result<Vec<(String, SettingScop
 /// `⎿  Set model to Opus 5.5`, and any other key by name.
 fn changed_line(key: &str) -> String {
     match key {
-        "main_agent" => "⎿  Set model to".to_owned(),
+        "crew.main" => "⎿  Set model to".to_owned(),
         "roles.main.effort" => "⎿  Set effort to".to_owned(),
-        "roles.reviewer.workers" => "⎿  Set reviewer's model to".to_owned(),
+        "roles.reviewer.models" => "⎿  Set reviewer's model to".to_owned(),
         key => format!("● Set {}", regex::escape(key)),
     }
 }
@@ -202,7 +202,7 @@ fn app_settings_commands_picker_and_argument() -> anyhow::Result<()> {
     // Auto is the goal's default and the last of its values, so start it supervised for the
     // /approvals picker to have another value below it.
     let config = format!(
-        "{}\n[approvals.goal]\nmode = \"supervised\"\n",
+        "{}\n[approvals.understand]\nmode = \"supervised\"\n",
         run_config()
     );
     let scenario = scenario_with(&config)?;
@@ -273,7 +273,7 @@ fn app_settings_commands_picker_and_argument() -> anyhow::Result<()> {
             Some(AppEvent::View { data }) if matches!(data.as_ref(), ViewData::Effort { .. })
         );
         // The first row, another value, then where to save it. `/model` opens a level down, on
-        // the default agent's CLIs, so there it's another CLI, `/limits` opened on a limit's
+        // the main agent's CLIs, so there it's another CLI, `/limits` opened on a limit's
         // values from its tab, and `/effort`'s slider moves to another level. Model lists come
         // a moment later, so each key waits for the rows before it.
         let keys: &[Key] = if command == "model" || command == "limits" {
@@ -315,8 +315,8 @@ fn app_settings_commands_picker_and_argument() -> anyhow::Result<()> {
             Some(false) => pty.press(Key::Char('4'))?,
             None => {}
         }
-        // orchestrator waits for who coordinates: the first CLI, at its pointed model.
-        let coordinator = wait_until("the change or who coordinates", || {
+        // orchestrator waits for who orchestrates: the first CLI, at its pointed model.
+        let orchestrator = wait_until("the change or who orchestrates", || {
             let confirm = open_choices(&scenario)?
                 .iter()
                 .any(|c| c.kind == ChoiceKind::ConfirmSafetySetting);
@@ -330,7 +330,7 @@ fn app_settings_commands_picker_and_argument() -> anyhow::Result<()> {
             Ok(asked.then_some(true))
         })
         .with_context(|| format!("/{command}:\n{}", pty.screen().text()))?;
-        if coordinator {
+        if orchestrator {
             settled(&pty)?;
             pty.press(Key::Enter)?;
             settled(&pty)?;
@@ -355,7 +355,8 @@ fn app_settings_commands_picker_and_argument() -> anyhow::Result<()> {
             &format!("{}|● Reset {}", changed_line(&key), regex::escape(&key)),
             WAIT,
         )?;
-        // A full-screen view such as /config stays open after an edit; Esc goes back to the chat.
+        // A full-screen view such as /config stays open after an edit; Esc goes back to the
+        // conversation.
         if !pty.screen().visible_text().contains("shift+tab to cycle") {
             pty.press(Key::Esc)?;
         }
@@ -363,7 +364,7 @@ fn app_settings_commands_picker_and_argument() -> anyhow::Result<()> {
     }
 
     // The next run records every value.
-    let run_dir = start_solo(&scenario, &mut pty, requests::SMALL_FIX)?;
+    let run_dir = start_captain(&scenario, &mut pty, requests::SMALL_FIX)?;
     let settings = wait_until("the run's settings", || Ok(run_settings(&run_dir).ok()))?;
     for (key, value) in &last {
         let Ok(expected) = serde_json::from_str::<serde_json::Value>(value) else {
@@ -395,7 +396,7 @@ fn app_effort_offers_only_supported_levels() -> anyhow::Result<()> {
     let AppEvent::View { data } = picker else {
         unreachable!("matched a view")
     };
-    // A slider over the default agent's model's levels, or its row where those aren't known.
+    // A slider over the main agent's model's levels, or its row where those aren't known.
     let levels: Vec<String> = match *data {
         ViewData::Effort { slider } => slider.stops.into_iter().map(|stop| stop.level).collect(),
         ViewData::Settings { rows, .. } => rows
@@ -419,7 +420,7 @@ fn app_effort_offers_only_supported_levels() -> anyhow::Result<()> {
 
     let changes_before = setting_changes(&scenario)?.len();
     submit(&mut pty, "/effort turbo")?;
-    // The prompt refuses a level it doesn't know before the app sees it, on the mode line.
+    // The prompt refuses a level it doesn't know before the app sees it, on the bottom line.
     let refusal = wait_until("the refusal", || {
         Ok(pty
             .screen()
@@ -445,7 +446,7 @@ fn app_effort_offers_only_supported_levels() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// All hands from `/effort`: Tab flips it beside the slider, Enter asks where to
+/// Ultracode from `/effort`: Tab flips it beside the slider, Enter asks where to
 /// save it, and only `ultracode` is written. The input rule's label then shows it.
 #[test]
 fn app_effort_tab_turns_ultracode_on() -> anyhow::Result<()> {
@@ -478,15 +479,12 @@ fn app_effort_tab_turns_ultracode_on() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Haiku takes no effort setting, so `/effort` has no slider for it, yet All hands is still
+/// Haiku takes no effort setting, so `/effort` has no slider for it, yet Ultracode is still
 /// there: Tab flips it and Enter saves it.
 #[test]
 fn app_effort_offers_ultracode_on_a_model_without_levels() -> anyhow::Result<()> {
     // Haiku 4.5 takes no effort level; haiku itself now runs Haiku 5.5, which does.
-    let config = GLOBAL_CONFIG.replace(
-        "main_agent = \"claude-code\"",
-        "main_agent = \"claude-code/claude-haiku-4-5\"",
-    );
+    let config = config_with_main_agent("claude-code/claude-haiku-4-5");
     let scenario = scenario_with(&config)?;
     let mut pty = start(&scenario)?;
 
@@ -569,7 +567,7 @@ fn app_setting_reset_falls_back_a_layer() -> anyhow::Result<()> {
 }
 
 #[test]
-fn app_setting_applies_to_next_chat_turn() -> anyhow::Result<()> {
+fn app_setting_applies_to_next_conversation_turn() -> anyhow::Result<()> {
     let scenario = scenario()?;
     let mut pty = start(&scenario)?;
     submit(&mut pty, requests::HI)?;
@@ -589,7 +587,7 @@ fn app_setting_applies_to_next_chat_turn() -> anyhow::Result<()> {
         "the next turn ran without the change: {:?}",
         turns[1].args
     );
-    scenario.shot(&pty, "app_setting_applies_to_next_chat_turn")?;
+    scenario.shot(&pty, "app_setting_applies_to_next_conversation_turn")?;
     Ok(())
 }
 
@@ -637,7 +635,7 @@ fn app_setting_scope_session_project_global() -> anyhow::Result<()> {
             .join("\n")
     );
     assert!(said.contains("won't change this repo"), "{said}");
-    answer_card(&mut pty, number_of(&question.options, 'e'))?;
+    answer_question(&mut pty, number_of(&question.options, 'e'))?;
     wait_choice_closed(&scenario, &question.id)?;
     wait_setting_changed(&scenario, key, 3)?;
     assert!(same_toml(
@@ -699,7 +697,7 @@ fn app_setting_keeps_comments_and_logs_line() -> anyhow::Result<()> {
     assert!(entry.commented, "the new key has no description:\n{text}");
     pty.wait_for(r#"● Set ui\.theme = "?light"? · everywhere · was"#, WAIT)?;
 
-    let run_dir = start_solo(&scenario, &mut pty, requests::SMALL_FIX)?;
+    let run_dir = start_captain(&scenario, &mut pty, requests::SMALL_FIX)?;
     let settings = wait_until("the run's settings", || Ok(run_settings(&run_dir).ok()))?;
     assert_eq!(
         json_at(&settings, "settings.ui.theme"),
@@ -768,7 +766,7 @@ fn app_vim_saved_in_global_config() -> anyhow::Result<()> {
 }
 
 #[test]
-fn app_preset_show_copy_diff() -> anyhow::Result<()> {
+fn app_workflow_show_copy_diff() -> anyhow::Result<()> {
     let scenario = scenario()?;
     let copy = scenario.repo.home().join("workflows").join("council.toml");
     let mut pty = start(&scenario)?;
@@ -799,10 +797,10 @@ fn app_preset_show_copy_diff() -> anyhow::Result<()> {
 
     submit(&mut pty, "/workflow diff council")?;
     pty.wait_for("my change", WAIT)?;
-    scenario.shot(&pty, "app_preset_show_copy_diff")?;
+    scenario.shot(&pty, "app_workflow_show_copy_diff")?;
     pty.press(Key::Char('q'))?;
     pty.press(Key::Esc)?;
-    check_mode_line(&pty)?;
+    check_bottom_row(&pty)?;
     Ok(())
 }
 
@@ -839,18 +837,21 @@ fn pick_in_library(pty: &mut Pty, rows: &[(String, bool)], name: &str) -> anyhow
 #[test]
 fn app_workflows_library_shows_copies_diffs() -> anyhow::Result<()> {
     let scenario = scenario()?;
-    let copy = scenario.repo.home().join("workflows").join("solo.toml");
-    let project_copy = scenario.repo.root().join(".argonauts/workflows/solo.toml");
+    let copy = scenario.repo.home().join("workflows").join("captain.toml");
+    let project_copy = scenario
+        .repo
+        .root()
+        .join(".argonauts/workflows/captain.toml");
     let mut pty = start(&scenario)?;
 
     // With no run on screen, /workflows opens the Library tab alone, on the one in use.
     submit(&mut pty, "/workflows")?;
     let rows = library(&scenario, 1)?;
     pty.wait_for("Workflow library", WAIT)?;
-    pick_in_library(&mut pty, &rows, "solo")?;
+    pick_in_library(&mut pty, &rows, "captain")?;
 
     pty.press(Key::Enter)?;
-    pty.wait_for(r#"phases = "solo""#, WAIT)?;
+    pty.wait_for(r#"force = "captain""#, WAIT)?;
     // A key sent with the Esc would read as Alt and that key, so wait for the library.
     pty.press(Key::Esc)?;
     pty.wait_for("Workflow library", WAIT)?;
@@ -859,7 +860,7 @@ fn app_workflows_library_shows_copies_diffs() -> anyhow::Result<()> {
     wait_until("the workflow file", || Ok(copy.exists().then_some(())))?;
     library(&scenario, 2)?;
     let mut text = read(&copy)?;
-    assert!(text.contains(r#"phases = "solo""#), "{text}");
+    assert!(text.contains(r#"force = "captain""#), "{text}");
     text.push_str("# my change\n");
     std::fs::write(&copy, &text)?;
 
@@ -868,7 +869,7 @@ fn app_workflows_library_shows_copies_diffs() -> anyhow::Result<()> {
     let refusal = wait_until("the refusal", || {
         Ok(notices(&scenario)?.into_iter().nth(notices_before))
     })?;
-    assert!(refusal.contains("/workflow diff solo"), "{refusal}");
+    assert!(refusal.contains("/workflow diff captain"), "{refusal}");
     assert_eq!(read(&copy)?, text, "copy replaced an edited file");
     library(&scenario, 3)?;
 
@@ -889,19 +890,19 @@ fn app_workflows_library_shows_copies_diffs() -> anyhow::Result<()> {
     shared.push_str("# the team's change\n");
     std::fs::write(&project_copy, &shared)?;
     pty.press(Key::Esc)?;
-    check_mode_line(&pty)?;
+    check_bottom_row(&pty)?;
     submit(&mut pty, "/workflows")?;
     let rows = library(&scenario, 5)?;
     pty.wait_for("Workflow library", WAIT)?;
-    pick_in_library(&mut pty, &rows, "solo")?;
+    pick_in_library(&mut pty, &rows, "captain")?;
     pty.press(Key::Enter)?;
     // The file runs past one page, and the team's line is its last.
-    pty.wait_for("Solo · ", WAIT)?;
+    pty.wait_for("Captain · ", WAIT)?;
     pty.press(Key::End)?;
     pty.wait_for("# the team's change", WAIT)?;
     pty.press(Key::Esc)?;
     pty.wait_for("Workflow library", WAIT)?;
     pty.press(Key::Esc)?;
-    check_mode_line(&pty)?;
+    check_bottom_row(&pty)?;
     Ok(())
 }

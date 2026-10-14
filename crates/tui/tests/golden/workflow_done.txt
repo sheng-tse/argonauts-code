@@ -1,0 +1,15 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Add due dates
+ orchestrator workflow · add --due to the todo CLI, each part reviewed on another CLI       6/6 agents · 6m20s · done 
+ ✔ Merged onto main · 3f9c2a1 · 4 files +52 −6
+
+ ╭ Phases ──────────┬ Merge · 3 steps ──────────────────────────────────────────────────────────────────────────────╮
+ │   ✔ Build    2/2 │  ✔ final check             npm test · 15 of 16 pass, as at the start                       7s │
+ │   ✔ Review   2/2 │  ✔ commit message          Opus 5.5 · 11.8k tok · given the diff, no tools                19s │
+ │   ✔ Sign-off 1/1 │  ✔ merge onto main         git · 2 tasks · no conflicts                                    2s │
+ │ ❯ ✔ Merge    1/1 │                                                                                               │
+ ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save
+
+  its row in the bottom list
+  ✔ Add due dates         ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  6/6 · 6m20s · ↓ 177k tokens · merged onto main

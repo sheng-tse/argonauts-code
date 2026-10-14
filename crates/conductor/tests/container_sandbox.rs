@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use argonauts_conductor::sandbox::SandboxWrap;
 use argonauts_conductor::sandbox::container::Container;
 use argonauts_core::CommandSpec;
-use argonauts_core::worker::{SandboxMode, SandboxProfile};
+use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
 
 const IMAGE_ENV: &str = "ARGONAUTS_TEST_CONTAINER_IMAGE";
 
@@ -133,7 +133,7 @@ fn a_container_session_sees_its_worktree_and_nothing_else() {
 #[cfg(target_os = "linux")]
 const LAUNCHER_ENV: &str = "ARGONAUTS_TEST_CONTAINER_LAUNCHER";
 
-/// Without network, the container's harness still reaches the proxy, through the bridge outside
+/// Without network, the container's CLI still reaches the proxy, through the bridge outside
 /// and the relay inside, and nothing else. The image needs bash.
 #[cfg(target_os = "linux")]
 #[test]

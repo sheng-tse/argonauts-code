@@ -431,7 +431,7 @@ fn matched_letters_are_highlighted() {
     let pointed = row.spans.iter().find(|span| span.content == "d").unwrap();
     assert_eq!(
         pointed.style.fg,
-        theme.style(Role::Card).fg,
+        theme.style(Role::Question).fg,
         "the pointed row is in the task color"
     );
 
@@ -460,7 +460,7 @@ fn the_preview_is_dim_and_the_magnifier_is_in_the_text_color() {
     let magnifier = filter.spans.iter().find(|span| span.content.contains('⌕'));
     assert_eq!(magnifier.unwrap().style, theme.style(Role::Text));
     let border = filter.spans.iter().find(|span| span.content == "│");
-    assert_eq!(border.unwrap().style, theme.style(Role::Card));
+    assert_eq!(border.unwrap().style, theme.style(Role::Question));
 }
 
 #[test]

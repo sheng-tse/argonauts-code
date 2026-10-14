@@ -1,6 +1,6 @@
 use argonauts_core::RunId;
-use argonauts_core::names::WorkerRef;
-use argonauts_core::{CardId, Spend};
+use argonauts_core::names::ModelRef;
+use argonauts_core::{Spend, TaskId};
 use time::macros::{date, datetime};
 
 use super::*;
@@ -33,7 +33,7 @@ fn line(day: Date, agent: &str, model: &str, tokens: u64) -> LedgerLine {
         run: None,
         agent: agent.into(),
         model: Some(model.into()),
-        vendor: "google".into(),
+        agent_id: "google".into(),
         input: tokens,
         cached: tokens / 2,
         output: 0,
@@ -41,6 +41,8 @@ fn line(day: Date, agent: &str, model: &str, tokens: u64) -> LedgerLine {
         estimated: false,
         partial: false,
         hour: Some(21),
+        conversation: None,
+        took: 0,
     }
 }
 
@@ -58,6 +60,17 @@ fn build(
     work: &[WorkLine],
     period: OverviewPeriod,
 ) -> OverviewData {
+    build_named(records, lines, work, period, &DisplayNames::default())
+}
+
+/// [`build`], telling models apart by `names`.
+fn build_named(
+    records: &[Record],
+    lines: &[LedgerLine],
+    work: &[WorkLine],
+    period: OverviewPeriod,
+    display: &DisplayNames,
+) -> OverviewData {
     let prices = PriceList::default();
     let sources = Sources {
         records,
@@ -65,6 +78,7 @@ fn build(
         work,
         clock: utc(),
         prices: &prices,
+        names: display,
     };
     overview(
         &sources,
@@ -74,6 +88,56 @@ fn build(
         YearColors::Cli,
         &names,
     )
+}
+
+/// A model's color goes by its tokens in all, so the list is the same whatever the period.
+#[test]
+fn every_model_is_listed_with_its_tokens_in_all_whatever_the_period() {
+    let records = vec![
+        record(
+            datetime!(2025-10-09 21:10 UTC),
+            "claude-code",
+            "claude-opus-5-5",
+            1,
+            1000,
+        ),
+        record(
+            datetime!(2026-10-08 09:00 UTC),
+            "claude-code",
+            "claude-haiku-5-5",
+            2,
+            3000,
+        ),
+    ];
+    let lines = vec![
+        // Claude Code's records hold this work already, so the ledger's line adds only the
+        // name it gave the model.
+        line(date!(2026 - 10 - 08), "claude-code", "haiku", 9_999),
+        line(
+            date!(2026 - 06 - 02),
+            "antigravity-cli",
+            "gemini-3.6-pro",
+            200,
+        ),
+    ];
+    let all = build(&records, &lines, &[], OverviewPeriod::All);
+    let listed: Vec<(&str, Option<&str>, u64)> = all
+        .all_time_models
+        .iter()
+        .map(|model| (model.agent.as_str(), model.model.as_deref(), model.tokens))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("claude-code", Some("claude-haiku-5-5"), 3000),
+            ("claude-code", Some("claude-opus-5-5"), 1000),
+            ("antigravity-cli", Some("gemini-3.6-pro"), 200),
+            ("claude-code", Some("haiku"), 0),
+        ]
+    );
+    let week = build(&records, &lines, &[], OverviewPeriod::Week);
+    assert_eq!(week.models.len(), 1, "only Haiku 5.5 ran this week");
+    assert_eq!(week.all_time_models, all.all_time_models);
 }
 
 #[test]
@@ -186,7 +250,7 @@ fn what_ran_through_argonauts_comes_from_the_work_ledger() {
         run: run.clone(),
         what,
     };
-    let worker = WorkerRef::new("codex", Some("gpt-5.6".into()));
+    let worker = ModelRef::new("codex", Some("gpt-5.6".into()));
     let work = vec![
         work_line(Work::Run {
             by: None,
@@ -205,7 +269,7 @@ fn what_ran_through_argonauts_comes_from_the_work_ledger() {
             answered: 0,
         }),
         work_line(Work::Task {
-            task: CardId::new("t1").unwrap(),
+            task: TaskId::new("t1").unwrap(),
             by: worker.clone(),
             kind: None,
             sent_back: 0,
@@ -213,7 +277,7 @@ fn what_ran_through_argonauts_comes_from_the_work_ledger() {
             reviewed: true,
         }),
         work_line(Work::Task {
-            task: CardId::new("t2").unwrap(),
+            task: TaskId::new("t2").unwrap(),
             by: worker.clone(),
             kind: None,
             sent_back: 1,
@@ -227,7 +291,8 @@ fn what_ran_through_argonauts_comes_from_the_work_ledger() {
             kind: None,
             spent: Spend::default(),
             took: 1,
-            stood_in_for: Some(WorkerRef::new("claude-code", None)),
+            tools: 0,
+            fallback_for: Some(ModelRef::new("claude-code", None)),
             why: "out".into(),
             window: Some("five_hour".into()),
         }),
@@ -361,7 +426,7 @@ fn every_model_has_an_api_value_even_one_no_table_names() {
     assert!((data.api_value - sum).abs() < 1e-9);
 }
 
-/// The Stats tab's summary counts what ran through Argonauts in its own period.
+/// The Stats tab's summary counts what ran through Argonauts Code in its own period.
 #[test]
 fn the_stats_summary_counts_what_ran_through_argonauts_in_its_period() {
     let home = tempfile::tempdir().unwrap();
@@ -402,4 +467,51 @@ fn the_stats_summary_counts_what_ran_through_argonauts_in_its_period() {
             .argonauts
             .is_none()
     );
+}
+
+/// The ledger spells one model three ways, as the alias `haiku`, as `claude-haiku-5-5` and
+/// with a date: the Overview lists it once, with all its tokens and sessions, under the
+/// catalog's spelling, and its days and chart count it as one.
+#[test]
+fn a_model_spelled_three_ways_is_one_model() {
+    use argonauts_core::model_catalog::CatalogEntry;
+
+    let mut display = DisplayNames::default();
+    let mut haiku = CatalogEntry::new(ModelRef::new(
+        "claude-code",
+        Some("claude-haiku-5-5".into()),
+    ));
+    haiku.name = Some("Haiku 5.5".to_owned());
+    haiku.aliases = Some(vec!["haiku".to_owned()]);
+    display.catalog.models.push(haiku);
+    let day = date!(2026 - 10 - 07);
+    let lines = [
+        line(day, "claude-code", "haiku", 1_000),
+        line(day, "claude-code", "claude-haiku-5-5", 2_000),
+        line(day, "claude-code", "claude-haiku-5-5-20261001", 4_000),
+        line(day, "codex", "gpt-5.6", 500),
+    ];
+    let data = build_named(&[], &lines, &[], OverviewPeriod::All, &display);
+    let models: Vec<(&str, Option<&str>, u64)> = data
+        .models
+        .iter()
+        .map(|model| {
+            (
+                model.agent.as_str(),
+                model.model.as_deref(),
+                model.tokens.total(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        models,
+        [
+            ("claude-code", Some("claude-haiku-5-5"), 7_000),
+            ("codex", Some("gpt-5.6"), 500)
+        ]
+    );
+    let year = data.days.iter().find(|part| part.day == day).unwrap();
+    assert_eq!(year.model.as_deref(), Some("claude-haiku-5-5"));
+    let chart = data.model_days.iter().find(|part| part.day == day).unwrap();
+    assert_eq!(chart.tokens, [7_000, 500]);
 }

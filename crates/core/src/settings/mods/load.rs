@@ -42,14 +42,14 @@ pub struct LoadedMod {
     pub origin: ModOrigin,
     /// The file it was read from. `None` for a built-in one.
     pub path: Option<PathBuf>,
-    /// Its file names `mode-line` among its places. That only asks: `file.places` holds
-    /// `mode-line` when the bottom line's own file lists the mod, whatever this says.
+    /// Its file names `bottom-line` among its places. That only asks: `file.places` holds
+    /// `bottom-line` when the bottom line's own file lists the mod, whatever this says.
     pub asks_for_line: bool,
 }
 
 impl LoadedMod {
     /// The same mod with its places as the place lists in `ui` have them, when it is one of
-    /// the built-in cards. The band above the input and the Overview's tabs draw those cards
+    /// the built-in cards. The band above the input and the usage panel's tabs draw those cards
     /// themselves from the lists, so the lists and not the mod's own file say where one shows.
     pub fn placed_by_lists(mut self, ui: &UiSettings) -> Self {
         let Some(card) = builtin::closed_card(&self.file.name) else {
@@ -71,7 +71,7 @@ impl LoadedMod {
     }
 }
 
-/// The file of a mod that draws itself, such as the bottom line's, for the part of Argonauts
+/// The file of a mod that draws itself, such as the bottom line's, for the part of Argonauts Code
 /// that reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnFile {
@@ -155,17 +155,17 @@ impl ModSet {
     }
 
     /// The bottom line shows what its own file lists, so that list says whether a mod is on
-    /// the line. A mod's own `mode-line` only asks to be.
+    /// the line. A mod's own `bottom-line` only asks to be.
     fn place_on_line(&mut self) {
         let line = &self.line;
         for loaded in &mut self.mods {
             let places = &mut loaded.file.places;
-            let asks = places.contains(&ModPlace::ModeLine);
+            let asks = places.contains(&ModPlace::BottomLine);
             let listed = line.has(&loaded.file.name);
             loaded.asks_for_line = asks;
             match (asks, listed) {
-                (true, false) => places.retain(|place| *place != ModPlace::ModeLine),
-                (false, true) => places.push(ModPlace::ModeLine),
+                (true, false) => places.retain(|place| *place != ModPlace::BottomLine),
+                (false, true) => places.push(ModPlace::BottomLine),
                 _ => {}
             }
         }
@@ -457,7 +457,7 @@ mod tests {
     #[test]
     fn a_file_named_like_a_part_the_line_draws_itself_is_hidden_there_and_said() {
         let (_temp, yours, project) = dirs();
-        let asking = MINE.replace("[\"above\"]", "[\"mode-line\"]");
+        let asking = MINE.replace("[\"above\"]", "[\"bottom-line\"]");
         std::fs::write(yours.join("artifact.toml"), &asking).unwrap();
         std::fs::write(yours.join("clock.toml"), &asking).unwrap();
         // Above the input only, it shows where it asks.
@@ -484,14 +484,14 @@ mod tests {
     fn the_bottom_line_s_list_says_which_mods_are_on_the_line() {
         let (_temp, yours, project) = dirs();
         let on_line = |set: &ModSet| -> Vec<String> {
-            set.placed(ModPlace::ModeLine)
+            set.placed(ModPlace::BottomLine)
                 .map(|loaded| loaded.file.name.clone())
                 .collect()
         };
         // As it ships the line lists plan usage, and no file of yours.
         assert_eq!(on_line(&ModSet::built_in()), ["plan-usage"]);
         // One file asks for the line and isn't listed. The other is listed and doesn't ask.
-        let asking = MINE.replace("[\"above\"]", "[\"mode-line\", \"above\"]");
+        let asking = MINE.replace("[\"above\"]", "[\"bottom-line\", \"above\"]");
         std::fs::write(yours.join("clock.toml"), asking).unwrap();
         std::fs::write(yours.join("pulse.toml"), MINE).unwrap();
         let listing = "right = [\"plan-usage\", \"pulse\"]\n";
@@ -503,8 +503,8 @@ mod tests {
         assert_eq!(clock.file.places, [ModPlace::Above]);
         let pulse = set.get("pulse").unwrap();
         assert!(!pulse.asks_for_line);
-        assert_eq!(pulse.file.places, [ModPlace::Above, ModPlace::ModeLine]);
-        assert!(pulse.file.shows(ModPlace::ModeLine));
+        assert_eq!(pulse.file.places, [ModPlace::Above, ModPlace::BottomLine]);
+        assert!(pulse.file.shows(ModPlace::BottomLine));
         // The project's keys lie over yours, as the line itself reads the two files.
         let project_s = "left = [\"mode\", \"clock\"]\n";
         std::fs::write(project.join("bottom-line.toml"), project_s).unwrap();
@@ -514,12 +514,12 @@ mod tests {
         assert_eq!(on_line(&set), ["plan-usage", "clock", "pulse"]);
         let clock = set.get("clock").unwrap();
         assert!(clock.asks_for_line);
-        assert_eq!(clock.file.places, [ModPlace::ModeLine, ModPlace::Above]);
+        assert_eq!(clock.file.places, [ModPlace::BottomLine, ModPlace::Above]);
     }
 
     #[test]
     fn a_built_in_card_shows_where_the_place_lists_say() {
-        use crate::settings::ui::{Place, WidgetName};
+        use crate::settings::ui::{ModName, Place};
 
         let (_temp, yours, _project) = dirs();
         // Your copy of a built-in card, with places of its own, and a mod only you have.
@@ -528,7 +528,7 @@ mod tests {
         std::fs::write(yours.join("clock.toml"), MINE).unwrap();
         let set = ModSet::load(Some(&yours), None);
         let mut ui = UiSettings::default();
-        *ui.place_mut(Place::AboveInput) = vec![WidgetName::Quota];
+        *ui.place_mut(Place::AboveInput) = vec![ModName::PlanUsage];
         *ui.place_mut(Place::Usage) = Vec::new();
         let places = |name: &str| {
             let loaded = set.get(name).unwrap().clone();
@@ -540,14 +540,14 @@ mod tests {
             places("plan-usage"),
             [
                 ModPlace::Overview,
-                ModPlace::ModeLine,
+                ModPlace::BottomLine,
                 ModPlace::Above,
                 ModPlace::Status
             ]
         );
         assert_eq!(places("clock"), [ModPlace::Above]);
-        assert_eq!(builtin::closed_card("plan-usage"), Some(WidgetName::Quota));
-        assert_eq!(builtin::closed_card("waiting"), Some(WidgetName::Waiting));
+        assert_eq!(builtin::closed_card("plan-usage"), Some(ModName::PlanUsage));
+        assert_eq!(builtin::closed_card("waiting"), Some(ModName::Waiting));
         // Neither a mod of yours nor one that draws itself is a card of the lists.
         assert_eq!(builtin::closed_card("clock"), None);
         assert_eq!(builtin::closed_card("stats"), None);

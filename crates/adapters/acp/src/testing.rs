@@ -10,7 +10,7 @@ use argonauts_core::driver::{
 };
 use argonauts_core::events::session::Delivery;
 use argonauts_core::registry::acp::AcpProfile;
-use argonauts_core::worker::Access;
+use argonauts_core::session_runner::Access;
 use serde_json::{Value, json};
 use tokio::io::{
     AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines, ReadHalf, WriteHalf,

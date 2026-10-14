@@ -1,5 +1,5 @@
 //! `argonauts_set_goal`, the main session's tool for a goal: a condition the work keeps going
-//! until it holds, which Argonauts checks itself. The session calls it when you say so in your
+//! until it holds, which Argonauts Code checks itself. The session calls it when you say so in your
 //! own words ("keep going until its tests pass"), and the app states the goal back, with what
 //! checks it, as the call's answer.
 //!
@@ -15,7 +15,7 @@ use super::main_tools::MainTool;
 pub const SET_GOAL_TOOL: &str = "argonauts_set_goal";
 
 pub const DESCRIPTION: &str = "Set, show, pause, resume or clear a goal: a condition the work \
-    keeps going until it holds. Argonauts runs the check itself after each try and sends back \
+    keeps going until it holds. Argonauts Code runs the check itself after each try and sends back \
     what still fails, so saying it's done is never enough. Call it only when the user asks to \
     keep going until something is true, such as \"keep going until its tests pass\", or asks \
     about the goal, never on your own judgment. The answer states the goal back in one line: \
@@ -23,7 +23,7 @@ pub const DESCRIPTION: &str = "Set, show, pause, resume or clear a goal: a condi
 
 /// What the main session's standing lines say about the tool: its name, then what it does.
 pub const ABOUT: &str = "`argonauts_set_goal` sets, shows, pauses, resumes or clears a goal: a \
-    condition the work keeps going until it holds, which Argonauts checks itself. Use it only \
+    condition the work keeps going until it holds, which Argonauts Code checks itself. Use it only \
     when the user asks to keep going until something is true, or asks about the goal.";
 
 /// A JSON object schema for the call's arguments.

@@ -95,7 +95,7 @@ pub fn nav_key(key: &KeyEvent, page: usize) -> Option<Nav> {
 
 /// The key a list's vim key stands for: `j` and `k` the arrows, `g` and `G` Home and End, `h`
 /// the list's `back` key (Esc, or ← where ← goes up a level), and `l` Enter.
-pub fn vim_stand_in(key: &KeyEvent, back: KeyCode) -> Option<KeyEvent> {
+pub fn vim_equivalent(key: &KeyEvent, back: KeyCode) -> Option<KeyEvent> {
     if key
         .modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -114,9 +114,9 @@ pub fn vim_stand_in(key: &KeyEvent, back: KeyCode) -> Option<KeyEvent> {
     Some(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
-/// `key` as the list reads it: with vim keys on, the key it stands for ([`vim_stand_in`]).
+/// `key` as the list reads it: with vim keys on, the key it stands for ([`vim_equivalent`]).
 pub fn standard(key: KeyEvent, vim: bool, back: KeyCode) -> KeyEvent {
-    vim.then(|| vim_stand_in(&key, back))
+    vim.then(|| vim_equivalent(&key, back))
         .flatten()
         .unwrap_or(key)
 }
@@ -145,7 +145,7 @@ pub fn filter_key(key: KeyEvent, filtering: bool) -> FilterKey {
         _ if filtering => FilterKey::Key(key),
         KeyCode::Char('/') if plain => FilterKey::Start,
         KeyCode::Char(_) if plain => {
-            vim_stand_in(&key, KeyCode::Esc).map_or(FilterKey::Nothing, FilterKey::Key)
+            vim_equivalent(&key, KeyCode::Esc).map_or(FilterKey::Nothing, FilterKey::Key)
         }
         _ => FilterKey::Key(key),
     }
@@ -313,7 +313,7 @@ pub(crate) fn keys_state(vim: bool) -> AppState {
     let keys = if vim {
         KeyScheme::Vim
     } else {
-        KeyScheme::Standard
+        KeyScheme::Default
     };
     let ui = argonauts_core::settings::ui::UiSettings {
         keys,
@@ -379,16 +379,16 @@ mod tests {
     }
 
     #[test]
-    fn vim_keys_stand_in_for_the_list_keys_only_in_vim_mode() {
-        let stand_in = |c: char, back: KeyCode| standard(key(KeyCode::Char(c)), true, back).code;
-        assert_eq!(stand_in('j', KeyCode::Esc), KeyCode::Down);
-        assert_eq!(stand_in('k', KeyCode::Esc), KeyCode::Up);
-        assert_eq!(stand_in('g', KeyCode::Esc), KeyCode::Home);
-        assert_eq!(stand_in('G', KeyCode::Esc), KeyCode::End);
-        assert_eq!(stand_in('h', KeyCode::Esc), KeyCode::Esc);
-        assert_eq!(stand_in('h', KeyCode::Left), KeyCode::Left);
-        assert_eq!(stand_in('l', KeyCode::Esc), KeyCode::Enter);
-        assert_eq!(stand_in('x', KeyCode::Esc), KeyCode::Char('x'));
+    fn vim_keys_mean_the_list_keys_only_in_vim_mode() {
+        let meant = |c: char, back: KeyCode| standard(key(KeyCode::Char(c)), true, back).code;
+        assert_eq!(meant('j', KeyCode::Esc), KeyCode::Down);
+        assert_eq!(meant('k', KeyCode::Esc), KeyCode::Up);
+        assert_eq!(meant('g', KeyCode::Esc), KeyCode::Home);
+        assert_eq!(meant('G', KeyCode::Esc), KeyCode::End);
+        assert_eq!(meant('h', KeyCode::Esc), KeyCode::Esc);
+        assert_eq!(meant('h', KeyCode::Left), KeyCode::Left);
+        assert_eq!(meant('l', KeyCode::Esc), KeyCode::Enter);
+        assert_eq!(meant('x', KeyCode::Esc), KeyCode::Char('x'));
         // Shift comes with `G` in most terminals; Ctrl and Alt letters are other keys.
         let shifted = KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT);
         assert_eq!(standard(shifted, true, KeyCode::Esc).code, KeyCode::End);

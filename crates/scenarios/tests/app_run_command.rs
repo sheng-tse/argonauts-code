@@ -4,17 +4,17 @@ mod app_support;
 
 use anyhow::Context as _;
 use app_support::*;
-use argonauts_core::events::checkpoint::{CheckpointEvent, CheckpointKind};
+use argonauts_core::events::approval::{ApprovalEvent, ApprovalKind};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use std::path::Path;
 
-/// The run's phases and cards in order, which timing doesn't change.
+/// The run's phases and tasks in order, which timing doesn't change.
 fn milestones(events: &[RunEvent]) -> Vec<String> {
     events
         .iter()
         .filter_map(|event| match &event.kind {
             RunEventKind::Phase(change) => Some(format!("{:?} {:?}", change.phase, change.status)),
-            RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) => {
+            RunEventKind::Approval(ApprovalEvent::Opened(opened)) => {
                 Some(format!("task {:?}", opened.kind))
             }
             _ => None,
@@ -24,8 +24,8 @@ fn milestones(events: &[RunEvent]) -> Vec<String> {
 
 fn milestones_to_merge(run_dir: &Path) -> anyhow::Result<Vec<String>> {
     wait_journal(run_dir, "the merge approval", |event| {
-        matches!(&event.kind, RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
-            if opened.kind == CheckpointKind::Merge)
+        matches!(&event.kind, RunEventKind::Approval(ApprovalEvent::Opened(opened))
+            if opened.kind == ApprovalKind::Merge)
     })?;
     Ok(milestones(&run_events(run_dir)?))
 }
@@ -34,10 +34,10 @@ fn milestones_to_merge(run_dir: &Path) -> anyhow::Result<Vec<String>> {
 fn app_run_command_same_settings_and_engine() -> anyhow::Result<()> {
     let scenario = scenario_with(&run_config())?;
 
-    // Without a terminal it prints plain lines, and a run parked at a card says how to go on.
+    // Without a terminal it prints plain lines, and a run waiting at an approval says how to go on.
     let output = run_cli(
         &scenario,
-        &["run", "--solo", "--plain", requests::SMALL_FIX],
+        &["run", "--captain", "--plain", requests::SMALL_FIX],
     )?;
     let said = output_text(&output);
     assert!(!output.status.success(), "a waiting run exited 0:\n{said}");
@@ -59,7 +59,7 @@ fn app_run_command_same_settings_and_engine() -> anyhow::Result<()> {
 
     // The same task from the app.
     let mut pty = start(&scenario)?;
-    let app_dir = start_solo(&scenario, &mut pty, requests::SMALL_FIX)?;
+    let app_dir = start_captain(&scenario, &mut pty, requests::SMALL_FIX)?;
     let app_started = run_started(&app_dir)?;
     assert_eq!(
         cli_started.settings_sha256, app_started.settings_sha256,
@@ -72,7 +72,10 @@ fn app_run_command_same_settings_and_engine() -> anyhow::Result<()> {
 
     // With no settings file it runs on the built-in defaults and never opens the setup.
     let fresh = first_run_scenario()?;
-    let output = run_cli(&fresh, &["run", "--solo", "--plain", requests::SMALL_FIX])?;
+    let output = run_cli(
+        &fresh,
+        &["run", "--captain", "--plain", requests::SMALL_FIX],
+    )?;
     let said = output_text(&output);
     assert!(
         run_dirs(&fresh).pop().is_some(),

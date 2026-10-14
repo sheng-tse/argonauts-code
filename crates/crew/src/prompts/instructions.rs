@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
-use argonauts_core::CardId;
-use argonauts_core::events::card::CardKind;
+use argonauts_core::TaskId;
 use argonauts_core::events::session::InputPart;
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::events::task::TaskKind;
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
 use argonauts_core::prompt_parts as parts;
 use argonauts_core::settings::Settings;
@@ -30,14 +30,14 @@ pub struct Agent<'a> {
     /// Its place in the workflow, when it serves a step.
     pub at: Option<&'a StepAt>,
     /// The task it works on, when it has one.
-    pub card: Option<&'a CardId>,
+    pub task: Option<&'a TaskId>,
 }
 
 /// What the orchestrator wrote for one agent, and which model wrote it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Written {
     pub text: String,
-    pub by: WorkerRef,
+    pub by: ModelRef,
 }
 
 /// Who wrote the words a workflow's `agent()` call carries.
@@ -59,12 +59,12 @@ pub enum CallAuthor<'a> {
 /// They are the brief it writes for a task's worker, when it divides the plan or when a
 /// workflow's `agent()` call starts a task, and what it wrote on a step of a workflow it
 /// composed. A call that starts no task hands its words over through [`of_call`] instead. A
-/// solo task holds your own request, which nobody wrote for the worker, so it stays where it
+/// Captain task holds your own request, which nobody wrote for the worker, so it stays where it
 /// is, and a brief that is a workflow file's own words ([`brief_written_by`]) isn't the
 /// orchestrator's either.
 pub fn from_orchestrator(host: &Host, agent: &Agent<'_>) -> Option<Written> {
     let text = if builds_a_task(agent) {
-        if brief_from_workflow(host, agent.card?).is_some() {
+        if brief_from_workflow(host, agent.task?).is_some() {
             return None;
         }
         brief(host, agent)
@@ -77,10 +77,10 @@ pub fn from_orchestrator(host: &Host, agent: &Agent<'_>) -> Option<Written> {
     })
 }
 
-/// What a task's worker leads its prompt with: the task's brief, under the name of whoever
-/// wrote it. `None` for a solo task and for a brief that says nothing.
+/// What a task's worker opens its prompt with: the task's brief, under the name of whoever
+/// wrote it. `None` for a Captain task and for a brief that says nothing.
 pub fn of_task(host: &Host, agent: &Agent<'_>) -> Option<InputPart> {
-    if let Some(step) = agent.card.and_then(|task| brief_from_workflow(host, task)) {
+    if let Some(step) = agent.task.and_then(|task| brief_from_workflow(host, task)) {
         return Some(parts::from_workflow(brief(host, agent)?, step));
     }
     let written = from_orchestrator(host, agent)?;
@@ -98,8 +98,8 @@ fn brief(host: &Host, agent: &Agent<'_>) -> Option<String> {
         return None;
     }
     let brief = host.read(|state| {
-        let spec = &state.cards.get(agent.card?)?.spec;
-        (spec.kind != CardKind::Solo).then(|| spec.task.clone())
+        let spec = &state.tasks.get(agent.task?)?.spec;
+        (spec.kind != TaskKind::Captain).then(|| spec.task.clone())
     })?;
     (!brief.trim().is_empty()).then_some(brief)
 }
@@ -109,7 +109,7 @@ fn brief(host: &Host, agent: &Agent<'_>) -> Option<String> {
 /// dividing a plan leaves.
 ///
 /// Kept in the run's folder, so a run that stops and picks up again still knows.
-pub fn brief_written_by(host: &Host, task: &CardId, author: CallAuthor<'_>) -> EngineResult<()> {
+pub fn brief_written_by(host: &Host, task: &TaskId, author: CallAuthor<'_>) -> EngineResult<()> {
     let workflow = match author {
         CallAuthor::Orchestrator => None,
         CallAuthor::Workflow { name, step } => Some(step_shown(name, step)),
@@ -145,11 +145,11 @@ fn briefs_from_workflows(path: &Path) -> BTreeMap<String, String> {
 }
 
 /// The workflow and the step whose own words the brief of `task` is, when it is.
-fn brief_from_workflow(host: &Host, task: &CardId) -> Option<String> {
+fn brief_from_workflow(host: &Host, task: &TaskId) -> Option<String> {
     briefs_from_workflows(&host.repo().run_dir.join(BRIEFS_FILE)).remove(task.as_str())
 }
 
-/// The part a workflow's `agent()` call leads its prompt with: the call's words, under the
+/// The part a workflow's `agent()` call opens its prompt with: the call's words, under the
 /// name of whoever wrote them. Whatever runs a workflow's calls hands each one's words over
 /// here, and the session's start puts the role's frame before them and your own words after
 /// ([`super::assemble`]), as for every agent.
@@ -157,7 +157,7 @@ pub fn of_call(host: &Host, words: &str, author: CallAuthor<'_>) -> InputPart {
     call_part(words, author, &orchestrator(host.settings()))
 }
 
-fn call_part(words: &str, author: CallAuthor<'_>, orchestrator: &WorkerRef) -> InputPart {
+fn call_part(words: &str, author: CallAuthor<'_>, orchestrator: &ModelRef) -> InputPart {
     match author {
         CallAuthor::Orchestrator => {
             parts::from_orchestrator(words, Some(roles::short_name(orchestrator)))
@@ -221,13 +221,13 @@ pub fn from_step(host: &Host, agent: &Agent<'_>) -> Option<StepWords> {
     })
 }
 
-/// Who plans and delegates: the first seat of the orchestrator, `[crew] orchestrator` or
-/// `roles.orchestrator.workers`, which is the main agent while the main session orchestrates.
-pub fn orchestrator(settings: &Settings) -> WorkerRef {
+/// Who plans and delegates: the orchestrator's first model, `[crew] orchestrator` or
+/// `roles.orchestrator.models`, which is the main agent while the main session orchestrates.
+pub fn orchestrator(settings: &Settings) -> ModelRef {
     roles::candidates(settings, RoleName::Orchestrator)
         .into_iter()
         .next()
-        .unwrap_or_else(|| settings.main_agent.clone())
+        .unwrap_or_else(|| settings.crew.main.clone())
 }
 
 #[cfg(test)]
@@ -260,10 +260,10 @@ mod tests {
     }
 
     /// A call's words are the agent's instructions as they are: the frame goes before them
-    /// and your own words after, and no template of Argonauts' stands in for them.
+    /// and your own words after, and no template of Argonauts Code's replaces them.
     #[test]
     fn a_calls_words_are_read_under_the_name_of_who_wrote_them() {
-        let orchestrator: WorkerRef = "claude-code/claude-opus-5-5".parse().unwrap();
+        let orchestrator: ModelRef = "claude-code/claude-opus-5-5".parse().unwrap();
         let words = "Review the due-date change against docs/due.md.";
 
         let written = call_part(words, CallAuthor::Orchestrator, &orchestrator);

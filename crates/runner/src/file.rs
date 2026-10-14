@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::crew::CrewRole;
 use serde::{Deserialize, Deserializer, Serialize};
 use toml::{Table, Value};
@@ -58,8 +58,8 @@ pub struct Step {
     pub max_rounds: Option<u32>,
     /// A model of its own, in place of the role's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<WorkerRef>,
-    /// Who keeps an `until`: the CLI's own goal, or Argonauts.
+    pub model: Option<ModelRef>,
+    /// Who keeps an `until`: the CLI's own goal, or Argonauts Code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept_by: Option<KeptBy>,
     /// Its workers may each run a workflow of their own, where their CLI has one.
@@ -88,7 +88,7 @@ pub enum KeptBy {
     Argonauts,
 }
 
-/// How many agents a step starts: a number, or `"all"` for every seat of its role.
+/// How many agents a step starts: a number, or `"all"` for every model of its role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Count {
     Fixed(u32),
@@ -311,7 +311,7 @@ impl WorkflowFile {
                     ),
                 ));
             }
-            if step.own_workflow && step.role != CrewRole::Workers {
+            if step.own_workflow && step.role != CrewRole::Worker {
                 problems.push(Problem::step(
                     index,
                     format!(
@@ -345,7 +345,7 @@ impl WorkflowFile {
         let mut per_task = false;
         for step in self.steps.iter().take(index + 1) {
             per_task = step.for_each == Some(ForEach::Task)
-                || (per_task && matches!(step.role, CrewRole::Workers | CrewRole::Reviewers));
+                || (per_task && matches!(step.role, CrewRole::Worker | CrewRole::Reviewer));
         }
         per_task
     }
@@ -466,7 +466,7 @@ mod tests {
         let read = file(
             "name = \"mine\"\nabout = \"Mine.\"\ngoal = \"every test passes\"\n\n\
              [[step]]\nname = \"Plan\"\nrole = \"orchestrator\"\n\n\
-             [[step]]\nname = \"Build\"\nrole = \"workers\"\nfor_each = \"task\"\ncount = \"all\"\n\
+             [[step]]\nname = \"Build\"\nrole = \"worker\"\nfor_each = \"task\"\ncount = \"all\"\n\
              model = \"codex/gpt-5.6\"\nuntil = \"its tests pass\"\nkept_by = \"cli\"\n\n\
              [review]\nper_task = 2\n",
         );
@@ -474,7 +474,7 @@ mod tests {
         assert!(!read.adapt);
         assert_eq!(read.goal.as_deref(), Some("every test passes"));
         let build = &read.steps[1];
-        assert_eq!(build.role, CrewRole::Workers);
+        assert_eq!(build.role, CrewRole::Worker);
         assert_eq!(build.count, Some(Count::All));
         assert_eq!(build.kept_by, Some(KeptBy::Cli));
         assert_eq!(
@@ -488,9 +488,9 @@ mod tests {
     fn per_task_carries_on_through_workers_and_reviewers_until_a_judge() {
         let read = file(
             "[[step]]\nname = \"Spec\"\nrole = \"orchestrator\"\n\
-             [[step]]\nname = \"Build\"\nrole = \"workers\"\nfor_each = \"task\"\n\
-             [[step]]\nname = \"Review\"\nrole = \"reviewers\"\nsend_back_to = \"Revise\"\n\
-             [[step]]\nname = \"Revise\"\nrole = \"workers\"\nthen = \"Review\"\n\
+             [[step]]\nname = \"Build\"\nrole = \"worker\"\nfor_each = \"task\"\n\
+             [[step]]\nname = \"Review\"\nrole = \"reviewer\"\nsend_back_to = \"Revise\"\n\
+             [[step]]\nname = \"Revise\"\nrole = \"worker\"\nthen = \"Review\"\n\
              [[step]]\nname = \"Sign off\"\nrole = \"judge\"\n",
         );
         let per_task: Vec<bool> = (0..5).map(|index| read.per_task(index)).collect();
@@ -507,23 +507,23 @@ mod tests {
             unknown.starts_with("step 1 (Plan): there's no key named sendback"),
             "{unknown}"
         );
-        let role = problems("[[step]]\nname = \"Plan\"\nrole = \"owner\"\n");
+        let role = problems("[[step]]\nname = \"Plan\"\nrole = \"builder\"\n");
         assert!(
-            role.contains("step 1 (Plan)") && role.contains("owner"),
+            role.contains("step 1 (Plan)") && role.contains("builder"),
             "{role}"
         );
         let missing = problems("[[step]]\nname = \"Plan\"\n");
         assert_eq!(missing, "step 1 (Plan): it needs a role");
         let target = problems(
-            "[[step]]\nname = \"Build\"\nrole = \"workers\"\n\
-             [[step]]\nname = \"Review\"\nrole = \"reviewers\"\nsend_back_to = \"Biuld\"\n",
+            "[[step]]\nname = \"Build\"\nrole = \"worker\"\n\
+             [[step]]\nname = \"Review\"\nrole = \"reviewer\"\nsend_back_to = \"Biuld\"\n",
         );
         assert_eq!(
             target,
             "step 2 (Review): send_back_to names Biuld, and no step is called that"
         );
         let twice = problems(
-            "[[step]]\nname = \"Build\"\nrole = \"workers\"\n[[step]]\nname = \"Build\"\nrole = \"judge\"\n",
+            "[[step]]\nname = \"Build\"\nrole = \"worker\"\n[[step]]\nname = \"Build\"\nrole = \"judge\"\n",
         );
         assert!(twice.contains("two steps are named Build"), "{twice}");
     }
@@ -531,39 +531,39 @@ mod tests {
     #[test]
     fn a_loop_nothing_can_end_is_refused() {
         let endless = problems(
-            "[[step]]\nname = \"Build\"\nrole = \"workers\"\n\
-             [[step]]\nname = \"Polish\"\nrole = \"workers\"\nthen = \"Build\"\n",
+            "[[step]]\nname = \"Build\"\nrole = \"worker\"\n\
+             [[step]]\nname = \"Polish\"\nrole = \"worker\"\nthen = \"Build\"\n",
         );
         assert!(endless.contains("goes round forever"), "{endless}");
         file(
-            "[[step]]\nname = \"Build\"\nrole = \"workers\"\n\
-             [[step]]\nname = \"Polish\"\nrole = \"workers\"\nthen = \"Build\"\nmax_rounds = 3\n",
+            "[[step]]\nname = \"Build\"\nrole = \"worker\"\n\
+             [[step]]\nname = \"Polish\"\nrole = \"worker\"\nthen = \"Build\"\nmax_rounds = 3\n",
         );
         // A reviewer that accepts lets the loop go on, so sending back doesn't end it.
         let reviewed = problems(
-            "[[step]]\nname = \"Build\"\nrole = \"workers\"\n\
-             [[step]]\nname = \"Review\"\nrole = \"reviewers\"\nsend_back_to = \"Build\"\n\
-             [[step]]\nname = \"Polish\"\nrole = \"workers\"\nthen = \"Build\"\n",
+            "[[step]]\nname = \"Build\"\nrole = \"worker\"\n\
+             [[step]]\nname = \"Review\"\nrole = \"reviewer\"\nsend_back_to = \"Build\"\n\
+             [[step]]\nname = \"Polish\"\nrole = \"worker\"\nthen = \"Build\"\n",
         );
         assert!(reviewed.contains("goes round forever"), "{reviewed}");
         // Nor does a goal that holds: its max_rounds caps its tries, not the loop.
         let goal = problems(
-            "[[step]]\nname = \"Build\"\nrole = \"workers\"\nuntil = \"tests pass\"\nmax_rounds = 2\n\
-             [[step]]\nname = \"Polish\"\nrole = \"workers\"\nthen = \"Build\"\n",
+            "[[step]]\nname = \"Build\"\nrole = \"worker\"\nuntil = \"tests pass\"\nmax_rounds = 2\n\
+             [[step]]\nname = \"Polish\"\nrole = \"worker\"\nthen = \"Build\"\n",
         );
         assert!(goal.contains("goes round forever"), "{goal}");
     }
 
     #[test]
     fn only_a_worker_step_lets_its_agents_run_a_workflow_of_their_own() {
-        let read = file("[[step]]\nname = \"Build\"\nrole = \"workers\"\nown_workflow = true\n");
+        let read = file("[[step]]\nname = \"Build\"\nrole = \"worker\"\nown_workflow = true\n");
         assert!(read.steps[0].own_workflow);
         let wrong =
-            problems("[[step]]\nname = \"Review\"\nrole = \"reviewers\"\nown_workflow = true\n");
+            problems("[[step]]\nname = \"Review\"\nrole = \"reviewer\"\nown_workflow = true\n");
         assert!(
             wrong.contains(
                 "own_workflow lets a worker run a workflow of its own, and this step's role is \
-                 reviewers"
+                 reviewer"
             ),
             "{wrong}"
         );
@@ -572,7 +572,7 @@ mod tests {
     #[test]
     fn not_the_author_needs_an_author() {
         let none =
-            problems("[[step]]\nname = \"Review\"\nrole = \"workers\"\nnot_the_author = true\n");
+            problems("[[step]]\nname = \"Review\"\nrole = \"worker\"\nnot_the_author = true\n");
         assert!(
             none.contains("not_the_author needs a step before it"),
             "{none}"

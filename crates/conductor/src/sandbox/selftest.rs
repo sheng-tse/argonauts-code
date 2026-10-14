@@ -1,6 +1,6 @@
 //! The sandbox self-test, at startup and in `doctor`: inside a profile with the network on, as
-//! harness sessions have it, a write outside the allowed paths, a read of a denied path, and a
-//! connection to a socket in a denied folder must all fail. If any succeeds, harness sessions are
+//! CLI sessions have it, a write outside the allowed paths, a read of a denied path, and a
+//! connection to a socket in a denied folder must all fail. If any succeeds, CLI sessions are
 //! refused (`sandbox.fail_closed`).
 
 use std::collections::HashMap;
@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use argonauts_core::CommandSpec;
-use argonauts_core::worker::{SandboxMode, SandboxProfile};
+use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
 use tokio::sync::Mutex;
 
 use super::SandboxWrap;
@@ -93,7 +93,7 @@ pub async fn self_test(sandbox: &dyn SandboxWrap, scratch: &Path) -> SelfTest {
 /// for [`RETRY_FAILURE_AFTER`].
 pub async fn self_test_once(sandbox: &dyn SandboxWrap) -> SelfTest {
     static RESULTS: OnceLock<Mutex<HashMap<SandboxKey, (SelfTest, Instant)>>> = OnceLock::new();
-    // The description tells apart two sandboxes with the same mode, such as a test's stand-in.
+    // The description tells apart two sandboxes with the same mode, such as a test's fake.
     let key = (sandbox.mode(), sandbox.describe(&SandboxProfile::default()));
     let mut results = RESULTS.get_or_init(Mutex::default).lock().await;
     if let Some((result, at)) = results.get(&key)
@@ -175,7 +175,7 @@ impl Probe {
     }
 
     /// Only `allowed` is writable, so the scratch directory itself isn't, even in temp. The
-    /// network is on, as in a harness session, or every socket would be blocked anyway.
+    /// network is on, as in a CLI session, or every socket would be blocked anyway.
     fn profile(&self) -> SandboxProfile {
         SandboxProfile {
             mode: SandboxMode::Os,
@@ -230,7 +230,7 @@ impl Probe {
                 stdout.trim().replace('\n', ", ")
             ));
         }
-        // A harness's own sandbox can't start inside this one, and needn't: inside ours it is off.
+        // A CLI's own sandbox can't start inside this one, and needn't: inside ours it is off.
         let name = described.split(" · ").next().unwrap_or(described);
         SelfTest {
             ok: true,
@@ -288,7 +288,7 @@ async fn run(command: &CommandSpec) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::worker::SandboxProfile;
+    use argonauts_core::session_runner::SandboxProfile;
 
     use super::super::{SandboxError, Unsandboxed};
     use super::*;
@@ -457,7 +457,7 @@ mod tests {
             result.detail.contains("sockets in denied folders"),
             "{result:?}"
         );
-        // Inside ours a harness turns its own sandbox off, so that it can't start isn't news.
+        // Inside ours a CLI turns its own sandbox off, so that it can't start isn't news.
         assert!(!result.detail.contains("own sandbox"), "{result:?}");
         assert!(
             self_test_once(&super::super::seatbelt::Seatbelt::new())

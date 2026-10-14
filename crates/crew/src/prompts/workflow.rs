@@ -1,9 +1,9 @@
-//! The lead's workflow design, the one prompt for both a new task and a change at a phase
+//! The main agent's workflow design, the one prompt for both a new task and a change at a phase
 //! boundary.
 
-pub const DESIGN_WORKFLOW: &str = include_str!("workflow/design_workflow.md");
-/// The same lead session, told what code refused in its brief.
-pub const FIX_DESIGN: &str = include_str!("workflow/fix_design.md");
+pub const DESIGN_WORKFLOW: &str = argonauts_core::template!("prompts/workflow/design.md");
+/// The same main agent session, told what code refused in its brief.
+pub const FIX_DESIGN: &str = argonauts_core::template!("prompts/workflow/fix-design.md");
 
 #[cfg(test)]
 mod tests {
@@ -46,7 +46,7 @@ mod tests {
             done_when: Vec::new(),
             plan: Vec::new(),
             questions: Vec::new(),
-            first_attempt: None,
+            first_try: None,
         })
         .unwrap();
         for field in [
@@ -59,7 +59,7 @@ mod tests {
             "done_when",
             "plan",
             "questions",
-            "first_attempt",
+            "first_try",
         ] {
             assert!(output.get(field).is_some(), "{field} left DesignOutput");
             assert!(
@@ -68,7 +68,7 @@ mod tests {
             );
         }
         assert!(DESIGN_WORKFLOW.contains("read-only"));
-        // What a resumed lead is told names every field it may have to fix.
+        // What a resumed main agent is told names every field it may have to fix.
         for field in [
             "errors",
             "name",
@@ -84,7 +84,7 @@ mod tests {
         }
     }
 
-    /// The schema the step enforces meets the strict rules every vendor accepts: closed
+    /// The schema the step enforces meets the strict rules every agent accepts: closed
     /// objects, every property required, and optional values written as nullable.
     #[test]
     fn the_design_schema_is_strict() {
@@ -106,7 +106,7 @@ mod tests {
                 "based_on",
                 "description",
                 "done_when",
-                "first_attempt",
+                "first_try",
                 "name",
                 "params",
                 "plan",

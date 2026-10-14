@@ -4,7 +4,10 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::{PhaseLine, StepMark, Todo, TodoState, ToolCall, ToolItem, ToolState, ToolTitle};
+use super::{
+    PhaseLine, StepMark, Todo, TodoState, ToolCall, ToolItem, ToolState, ToolTitle, WorkflowEnd,
+    WorkflowResult,
+};
 use crate::cell::Tone;
 use crate::cell::layout::{BODY_COL, NEST, hook, indent, more_row};
 use crate::markdown::{Indent, render_markdown};
@@ -56,7 +59,7 @@ pub(super) fn rows(call: &ToolCall, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
 /// `Error: Exit code 1`.
 pub(super) fn output_role(call: &ToolCall) -> Role {
     if call.state == ToolState::Failed {
-        Role::Error
+        Role::Danger
     } else {
         Role::Dim
     }
@@ -101,6 +104,7 @@ pub(in crate::cell) fn item_rows(
         ToolItem::Todos(todos) => todo_rows(todos, ctx, col),
         ToolItem::TodoLine(todos) => vec![checklist_row(todos, ctx, col)],
         ToolItem::Steps(steps) => steps_rows(steps, ctx, col),
+        ToolItem::Workflow(result) => workflow_rows(result, ctx, col),
         ToolItem::Streaming(text) => streaming_rows(text, ctx, col),
         ToolItem::Running { since, background } => running_rows(*since, *background, ctx, col),
     }
@@ -120,11 +124,11 @@ fn running_rows(
         crate::format::duration(elapsed)
     );
     let width = usize::from(ctx.width);
-    let lead = [indent(col)];
-    let mut rows = wrap_spans(&[Span::styled(text, dim)], width, &lead, &lead);
+    let margin = [indent(col)];
+    let mut rows = wrap_spans(&[Span::styled(text, dim)], width, &margin, &margin);
     if background {
         let hint = [Span::styled("(ctrl+b to run in background)", dim)];
-        rows.extend(wrap_spans(&hint, width, &lead, &lead));
+        rows.extend(wrap_spans(&hint, width, &margin, &margin));
     }
     rows
 }
@@ -139,8 +143,8 @@ pub(in crate::cell) fn nested_rows(
     let width = usize::from(ctx.width);
     let role = match call.state {
         ToolState::Running | ToolState::Writing => Role::Dim,
-        ToolState::Stopped => Role::Warning,
-        ToolState::Failed => Role::Error,
+        ToolState::Stopped => Role::Warn,
+        ToolState::Failed => Role::Danger,
         ToolState::Done => Role::Text,
         ToolState::Refused => Role::Dim,
     };
@@ -201,7 +205,7 @@ pub(in crate::cell) fn text_rows(
     wrap_spans(&spans, usize::from(ctx.width), &first, &[indent(col)])
 }
 
-/// A workflow's phases on one line in its order, as the chat's workflow row draws them:
+/// A workflow's phases on one line in its order, as the conversation's workflow row draws them:
 /// `◐ Build · Review · ★ Secrets scan · Merge`. The first is under way when the row prints.
 /// A step you require carries the mark, and a line under them says what it means.
 /// The gap between the phases and the note beside them.
@@ -226,7 +230,7 @@ fn phase_rows(
         }
         let style = if i == 0 {
             spans.push(crate::views::states::span(
-                crate::widgets::State::Working,
+                crate::kit::State::Working,
                 theme,
             ));
             spans.push(Span::raw(" "));
@@ -238,14 +242,14 @@ fn phase_rows(
         if phase.required {
             spans.push(Span::styled(format!("{star} "), theme.style(Role::Accent)));
         }
-        let title = sanitize_line(phase.title.trim()).into_owned();
+        let title = sanitize_line(phase.name.trim()).into_owned();
         spans.push(Span::styled(title, style));
     }
     if let Some(beside) = beside.map(|beside| sanitize_line(beside.trim()).into_owned()) {
         spans.push(Span::styled(format!("{BESIDE_GAP}{beside}"), dim));
     }
-    let lead = [indent(col)];
-    let mut rows = wrap_spans(&spans, usize::from(ctx.width), &lead, &lead);
+    let margin = [indent(col)];
+    let mut rows = wrap_spans(&spans, usize::from(ctx.width), &margin, &margin);
     if phases.iter().any(|phase| phase.required) {
         rows.push(Line::from(vec![
             indent(col),
@@ -266,7 +270,7 @@ fn command_rows(
     let theme = ctx.theme;
     let width = usize::from(ctx.width);
     let dim = theme.style(Role::Dim);
-    let lead = [indent(col)];
+    let margin = [indent(col)];
     let mut rows = Vec::new();
 
     let command = sanitize(command);
@@ -286,7 +290,7 @@ fn command_rows(
             let head = [indent(col), Span::styled("$ ", dim)];
             rows.extend(wrap_spans(&spans, width, &head, &[indent(col + 2)]));
         } else {
-            rows.extend(wrap_spans(&spans, width, &lead, &lead));
+            rows.extend(wrap_spans(&spans, width, &margin, &margin));
         }
     }
 
@@ -305,12 +309,12 @@ fn command_rows(
     let text = theme.style(output_role);
     for line in &output[..kept] {
         let spans = [Span::styled(line.clone(), text)];
-        rows.extend(wrap_spans(&spans, width, &lead, &lead));
+        rows.extend(wrap_spans(&spans, width, &margin, &margin));
     }
     let cut = output.len() - kept + hidden;
     if cut > 0 {
         // In the overlay this counts only lines the host never kept, so there's nothing to expand.
-        rows.push(more_row(lead.to_vec(), theme, cut, !ctx.expanded, width));
+        rows.push(more_row(margin.to_vec(), theme, cut, !ctx.expanded, width));
     }
     rows
 }
@@ -346,7 +350,7 @@ fn steps_rows(steps: &[StepMark], ctx: &RenderCtx<'_>, col: usize) -> Vec<Line<'
         if i > 0 {
             spans.push(Span::styled(" · ", dim));
         }
-        let waiting = step.state == crate::widgets::State::Waiting;
+        let waiting = step.state == crate::kit::State::Waiting;
         let (glyph, role) = crate::views::states::mark(step.state, theme);
         let (glyph_style, label_style) = if waiting {
             (dim, dim)
@@ -358,8 +362,45 @@ fn steps_rows(steps: &[StepMark], ctx: &RenderCtx<'_>, col: usize) -> Vec<Line<'
         let label = sanitize_line(&step.label).trim().to_owned();
         spans.push(Span::styled(label, label_style));
     }
-    let lead = [indent(col)];
-    wrap_spans(&spans, usize::from(ctx.width), &lead, &lead)
+    let margin = [indent(col)];
+    wrap_spans(&spans, usize::from(ctx.width), &margin, &margin)
+}
+
+/// A workflow's result line, dim as Claude Code's: the command that opens it in the text
+/// color while it runs, and once it ended a tick or a cross in that color before the words.
+fn workflow_rows(result: &WorkflowResult, ctx: &RenderCtx<'_>, col: usize) -> Vec<Line<'static>> {
+    let theme = ctx.theme;
+    let dim = theme.style(Role::Dim);
+    let ascii = theme.glyphs.is_ascii();
+    let spans = match result {
+        WorkflowResult::Running => vec![
+            Span::styled("Running in background · ", dim),
+            Span::styled("/workflows", theme.style(Role::Text)),
+            Span::styled(" to monitor and save", dim),
+        ],
+        WorkflowResult::Ended { how, counts } => {
+            let (mark, role, word) = match how {
+                WorkflowEnd::Completed => {
+                    (if ascii { "*" } else { "✔" }, Role::StateDone, "Completed")
+                }
+                WorkflowEnd::Failed => (if ascii { "x" } else { "✘" }, Role::StateFailed, "Failed"),
+                WorkflowEnd::Stopped => {
+                    (if ascii { "x" } else { "✘" }, Role::StateFailed, "Stopped")
+                }
+            };
+            let counts = sanitize_line(counts);
+            let words = match counts.trim() {
+                "" => word.to_owned(),
+                counts => format!("{word} in {counts}"),
+            };
+            vec![
+                Span::styled(format!("{mark} "), theme.style(role)),
+                Span::styled(words, dim),
+            ]
+        }
+    };
+    let margin = [indent(col)];
+    wrap_spans(&spans, usize::from(ctx.width), &margin, &margin)
 }
 
 fn checklist_row(todos: &[Todo], ctx: &RenderCtx<'_>, col: usize) -> Line<'static> {

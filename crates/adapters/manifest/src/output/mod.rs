@@ -1,6 +1,6 @@
 //! How stdout is read, by `output`. Every kind is wrapped in the same checks: the manifest's
 //! `errors` patterns over stderr and error messages, its `exit_codes`, the manifest's own
-//! vendor on every quota reading, and a closing `Result` when the CLI printed none.
+//! agent on every plan usage reading, and a closing `Result` when the CLI printed none.
 
 mod final_json;
 mod jsonl;
@@ -11,9 +11,9 @@ mod text;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use argonauts_core::names::VendorId;
-use argonauts_core::registry::HarnessManifest;
-use argonauts_core::registry::harness::OutputKind;
+use argonauts_core::names::AgentId;
+use argonauts_core::registry::CliManifest;
+use argonauts_core::registry::cli::OutputKind;
 use argonauts_core::{Adapter, AgentEvent, ErrorCategory, StreamParser};
 
 pub(crate) use rules::ErrorRules;
@@ -27,7 +27,7 @@ const MAX_KEPT_BYTES: usize = 16 * 1024 * 1024;
 
 /// The parser `manifest.output` names. `reused` is the built-in adapter for `output = "parser"`.
 pub(crate) fn parser_for(
-    manifest: &HarnessManifest,
+    manifest: &CliManifest,
     reused: Option<&Arc<dyn Adapter>>,
 ) -> Box<dyn StreamParser> {
     let inner: Box<dyn StreamParser> = match manifest.output {
@@ -59,9 +59,9 @@ impl Checked {
     fn pass(&mut self, mut events: Vec<AgentEvent>) -> Vec<AgentEvent> {
         for event in &mut events {
             match event {
-                // Another CLI's readings must never land on the board of the vendor whose
-                // format it borrows, or of any vendor a plugin names.
-                AgentEvent::Quota { reading } => reading.vendor = VendorId(self.id.clone()),
+                // Another CLI's readings must never land on the board of the agent whose
+                // format it borrows, or of any agent a plugin names.
+                AgentEvent::PlanUsage { reading } => reading.agent_id = AgentId(self.id.clone()),
                 AgentEvent::Error {
                     category,
                     message,
@@ -209,10 +209,10 @@ pub(crate) fn overflow_error(id: &str) -> AgentEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::registry::harness::ErrorPattern;
+    use argonauts_core::registry::cli::ErrorPattern;
 
-    fn manifest() -> HarnessManifest {
-        HarnessManifest {
+    fn manifest() -> CliManifest {
+        CliManifest {
             id: "plugin".into(),
             errors: vec![ErrorPattern {
                 pattern: "(?i)quota exceeded".into(),
@@ -220,7 +220,7 @@ mod tests {
                 retryable: true,
             }],
             exit_codes: [("2".to_owned(), ErrorCategory::Timeout)].into(),
-            ..HarnessManifest::default()
+            ..CliManifest::default()
         }
     }
 

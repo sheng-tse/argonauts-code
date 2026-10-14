@@ -1,0 +1,16 @@
+● Still overloaded · fell back to Sonnet 5.5 on Claude Code as reviewer
+  ⎿  same_cli is on, so Codex isn't asked
+
+● Opus 5.5 on Claude Code is off for new tasks: overloaded · tested again at 2:03 PM
+  ⎿  only Opus 5.5 is out · build:due-flag keeps building on Sonnet 5.5
+
+● Claude Code is down: two of its models are out · Haiku 5.5 isn't tried
+  ⎿  Opus 5.5 overloaded · Sonnet 5.5 server errors
+
+● build:due-flag waits for Claude Code · next try 2:05 PM
+  ⎿  work committed in its folder · same_cli keeps it off Codex
+
+● Claude Code is back · its test task passed · build:due-flag carries on with Sonnet 5.5
+
+● Opus 5.5 is back · the next jobs asked for Opus 5.5 get it again
+  ⎿  review:due-tests keeps the review Sonnet 5.5 gave

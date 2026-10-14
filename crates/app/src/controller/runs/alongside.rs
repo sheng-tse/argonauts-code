@@ -1,6 +1,6 @@
 //! Runs that left the screen while they worked, because another workflow took it. Their events
-//! still stream into the chat, so both workflows show there as they work, and the one off
-//! screen still ends with its closing answer. Its cards still open, and say which run they
+//! still stream into the conversation, so both workflows show there as they work, and the one off
+//! screen still ends with its closing answer. Its questions still open, and say which run they
 //! answer.
 
 use std::collections::HashSet;
@@ -17,7 +17,7 @@ use super::{RunNews, RunsState};
 use crate::controller::Ctx;
 use crate::controller::attach::{self, Attached, Stage};
 
-/// A run off screen whose events still stream into the chat.
+/// A run off screen whose events still stream into the conversation.
 pub(super) struct Alongside {
     run: RunId,
     /// Every event since it was first on screen, for its recap.
@@ -32,11 +32,11 @@ impl Drop for Alongside {
     }
 }
 
-/// The runs off screen that stream into the chat, and those that ended there.
+/// The runs off screen that stream into the conversation, and those that ended there.
 #[derive(Default)]
 pub(super) struct Streaming {
     runs: Vec<Alongside>,
-    /// Runs whose ending the chat showed, so the listing doesn't say it again.
+    /// Runs whose ending the conversation showed, so the listing doesn't say it again.
     ended_here: HashSet<RunId>,
 }
 
@@ -73,7 +73,7 @@ pub(super) fn on_screen(runs: &mut RunsState, run: &RunId) {
     runs.streaming.ended_here.remove(run);
 }
 
-/// Whether the chat already showed how the run ended.
+/// Whether the conversation already showed how the run ended.
 pub(super) fn ended_here(runs: &RunsState, run: &RunId) -> bool {
     runs.streaming.ended_here.contains(run)
         || runs
@@ -83,8 +83,8 @@ pub(super) fn ended_here(runs: &RunsState, run: &RunId) -> bool {
             .any(|side| &side.run == run && side.finished)
 }
 
-/// An event of a run off screen goes to the chat. Its finish brings its recap, as the run on
-/// screen's does, and leaves the mode to the run on screen.
+/// An event of a run off screen goes to the conversation. Its finish brings its recap, as the run
+/// on screen's does, and leaves the mode to the run on screen.
 pub(super) async fn on_event(ctx: &mut Ctx, runs: &mut RunsState, run: &RunId, event: RunEvent) {
     let Some(side) = runs.streaming.runs.iter_mut().find(|side| &side.run == run) else {
         return;
@@ -123,7 +123,7 @@ pub(super) async fn on_event(ctx: &mut Ctx, runs: &mut RunsState, run: &RunId, e
     super::refresh_background(ctx);
 }
 
-/// Its stream closed: it ended, or its supervisor went. One that ended was told here.
+/// Its stream closed: it ended, or its run host went. One that ended was told here.
 pub(super) fn on_ended(runs: &mut RunsState, run: &RunId) {
     let streaming = &mut runs.streaming;
     let Some(at) = streaming.runs.iter().position(|side| &side.run == run) else {
@@ -133,14 +133,14 @@ pub(super) fn on_ended(runs: &mut RunsState, run: &RunId) {
     if side.finished {
         streaming.ended_here.insert(side.run.clone());
     } else {
-        let line = "its supervisor exited before parking".to_owned();
+        let line = "its run host exited before waiting".to_owned();
         let outcome = RunOutcome::Failed;
         runs.news
             .push((side.run.clone(), RunNews::Ended { outcome, line }));
     }
 }
 
-/// Whether the run streams into the chat from off screen.
+/// Whether the run streams into the conversation from off screen.
 #[cfg(test)]
 pub(super) fn streams(runs: &RunsState, run: &RunId) -> bool {
     runs.streaming.runs.iter().any(|side| &side.run == run)

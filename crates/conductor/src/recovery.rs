@@ -1,36 +1,38 @@
 //! The limits service: each session's limits from the settings, and what happens after a session
 //! stops for anything but a clean finish, following the recovery table (usage limits, outages,
-//! logins, billing, broken updates, retired models, context, stuck agents, budgets, crashes).
+//! logins, billing, broken updates, retired models, context, stuck agents, limits, crashes).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use argonauts_core::events::card::{CardEvent, CardSpec, CardState};
-use argonauts_core::events::run::ParkReason;
+use argonauts_core::events::agent_status::{FallbackEvent, FallbackPlan};
+use argonauts_core::events::run::WaitReason;
 use argonauts_core::events::session::{EndReason, SessionEvent};
-use argonauts_core::events::vendor::{HandoffEvent, HandoffPlan};
+use argonauts_core::events::task::{TaskEvent, TaskSpec, TaskState};
 use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::fallback::CheckpointTag;
 use argonauts_core::future::BoxFuture;
-use argonauts_core::handoff::CheckpointTag;
 use argonauts_core::limits::{
-    Candidate, CandidateQuery, CostEstimate, HandoffPacket, HandoffPlanner, HealthBoard,
-    HealthState, LimitsService, QuotaBoard, RecoveryAction, Shortlist, StopContext,
+    Candidate, CandidateQuery, CostEstimate, FallbackNote, FallbackPlanner, HealthBoard,
+    HealthState, LimitsService, ModelState, PlanUsageBoard, RecoveryAction, Shortlist, StopContext,
 };
-use argonauts_core::names::{RoleName, VendorId, WorkerRef};
+use argonauts_core::names::{AgentId, ModelRef, RoleName};
 use argonauts_core::registry::{ModelEntry, ModelRegistry};
+use argonauts_core::session_runner::{RunnerDirectory, SessionLimits};
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::budget::BudgetUnit;
-use argonauts_core::settings::handoff::{AppliedHandoff, HandoffMode, HandoffStrategy, OnReturn};
+use argonauts_core::settings::fallback::{
+    AppliedFallback, FallbackMode, FallbackStrategy, OnReturn,
+};
+use argonauts_core::settings::limit::LimitUnit;
 use argonauts_core::settings::sessions::SessionLifetime;
-use argonauts_core::worker::{SessionLimits, WorkerDirectory};
-use argonauts_core::{AgentEvent, CardId, DEFAULT_SOFT_RATIO, ErrorCategory, RunId};
+use argonauts_core::{AgentEvent, DEFAULT_SOFT_RATIO, ErrorCategory, RunId, TaskId};
 use time::OffsetDateTime;
 
-use crate::handoff::history::{CardLog, History, Placements, card_log};
-use crate::handoff::shortlist::{at_plan_limit, auto_check, balance, out_of_quota};
-use crate::handoff::why::{one_line, stop_line};
-use crate::handoff::{applied, entry_rules};
+use crate::fallback::history::{History, Placements, TaskLog, task_log};
+use crate::fallback::shortlist::{at_plan_limit, auto_check, balance, out_of_plan_usage};
+use crate::fallback::why::{one_line, stop_line};
+use crate::fallback::{applied, entry_rules};
 use crate::health::cooldown;
 
 /// The native cap sits this far above the meter's dollar limit, so the meter stops first.
@@ -45,33 +47,33 @@ const NO_AGENT_ISOLATES: &str = "no other agent keeps your plugins out of a blin
 const RESUME_MESSAGE: &str =
     "The run was paused and is resuming. Continue the task from where you stopped.";
 
-/// A card `spread` handed to a worker, and the newest log event read when it did.
-type Picks = HashMap<CardId, (WorkerRef, u64)>;
+/// A task `spread` passed to a model, and the newest log event read when it did.
+type Picks = HashMap<TaskId, (ModelRef, u64)>;
 
 pub struct Limits {
     settings: Arc<Settings>,
-    quota: Arc<dyn QuotaBoard>,
+    plan_usage: Arc<dyn PlanUsageBoard>,
     health: Arc<dyn HealthBoard>,
-    handoff: Arc<dyn HandoffPlanner>,
+    fallback: Arc<dyn FallbackPlanner>,
     registry: Option<Arc<dyn ModelRegistry>>,
     /// Which agents keep your plugins out of a blind role's session. Without it, none do.
-    workers: Option<Arc<dyn WorkerDirectory>>,
-    /// Each run's `spread` picks the log may not show yet, since a vendor's cards stop at once.
+    workers: Option<Arc<dyn RunnerDirectory>>,
+    /// Each run's `spread` picks the log may not show yet, since an agent's tasks stop at once.
     picks: Mutex<HashMap<RunId, Picks>>,
 }
 
 impl Limits {
     pub fn new(
         settings: Arc<Settings>,
-        quota: Arc<dyn QuotaBoard>,
+        plan_usage: Arc<dyn PlanUsageBoard>,
         health: Arc<dyn HealthBoard>,
-        handoff: Arc<dyn HandoffPlanner>,
+        fallback: Arc<dyn FallbackPlanner>,
     ) -> Self {
         Self {
             settings,
-            quota,
+            plan_usage,
             health,
-            handoff,
+            fallback,
             registry: None,
             workers: None,
             picks: Mutex::default(),
@@ -80,30 +82,30 @@ impl Limits {
 
     /// Lets a blind role whose session loaded your plugins go to an agent that keeps them out.
     /// Without it, you're asked.
-    pub fn with_workers(mut self, workers: Arc<dyn WorkerDirectory>) -> Self {
+    pub fn with_workers(mut self, workers: Arc<dyn RunnerDirectory>) -> Self {
         self.workers = Some(workers);
         self
     }
 
-    /// Lets a retired model hand off to its successor and the retry ladder tell families apart.
+    /// Lets a retired model move to its successor and the retry ladder tell providers apart.
     /// Without it, a retired model asks you.
     pub fn with_registry(mut self, registry: Arc<dyn ModelRegistry>) -> Self {
         self.registry = Some(registry);
         self
     }
 
-    /// How long a handoff checkpoint for this role and vendor waits for you before it falls
+    /// How long a fallback approval for this role and agent waits for you before it falls
     /// back to auto. `None` waits for you.
     pub fn ask_timeout(
         &self,
         role: RoleName,
-        vendor: &VendorId,
+        agent_id: &AgentId,
     ) -> Result<Option<Duration>, String> {
-        applied(&self.settings, role, vendor).ask_timeout.parse()
+        applied(&self.settings, role, agent_id).ask_timeout.parse()
     }
 
-    /// When a handoff checkpoint's `ask_timeout` passes: the stop decided as in `auto` mode, so
-    /// the card goes to the next valid candidate within the cost cap, or `Ask` again when none is
+    /// When a fallback approval's `ask_timeout` passes: the stop decided as in `auto` mode, so
+    /// the task goes to the next valid candidate within the cost cap, or `Ask` again when none is
     /// left.
     pub fn after_ask_timeout<'a>(
         &'a self,
@@ -113,15 +115,15 @@ impl Limits {
     }
 
     async fn recover(&self, context: &StopContext, timed_out: bool) -> RecoveryAction {
-        let (log, unread) = match card_log(&context.events, &context.card.id).await {
+        let (log, unread) = match task_log(&context.events, &context.task.id).await {
             Ok(log) => (log, None),
             Err(error) => {
                 tracing::warn!(
                     path = %context.events.display(),
                     %error,
-                    "the fallback packet has only the task, since the event log couldn't be read"
+                    "the fallback note has only the task, since the event log couldn't be read"
                 );
-                (CardLog::default(), Some(error.to_string()))
+                (TaskLog::default(), Some(error.to_string()))
             }
         };
         let stop = self.stop(context, log, unread, timed_out);
@@ -131,17 +133,17 @@ impl Limits {
     fn stop<'a>(
         &self,
         context: &'a StopContext,
-        log: CardLog,
+        log: TaskLog,
         unread: Option<String>,
         timed_out: bool,
     ) -> Stop<'a> {
         let events = &log.events;
         let model = self.stopped_model(events, &context.worker);
-        let mut packet = self.handoff.packet(&context.card, events);
-        packet.why_stopped = match &context.end.reason {
+        let mut note = self.fallback.note(&context.task, events);
+        note.why_stopped = match &context.end.reason {
             // Logged out only where the CLI's own check says so.
             EndReason::Auth { message }
-            | EndReason::VendorError {
+            | EndReason::CliError {
                 category: ErrorCategory::Auth,
                 message,
             } if context.logged_in != Some(false) => {
@@ -156,34 +158,34 @@ impl Limits {
             }
             reason => stop_line(reason),
         };
-        if packet.work.branch.is_empty() {
-            packet.work.branch = format!("argonauts/{}/{}", context.run, context.card.id);
+        if note.work.branch.is_empty() {
+            note.work.branch = format!("argonauts/{}/{}", context.run, context.task.id);
         }
         if let Some(error) = unread {
-            packet.notes.push(format!(
-                "The run's event log couldn't be read ({}), so this packet has only the task.",
+            note.notes.push(format!(
+                "The run's event log couldn't be read ({}), so this note has only the task.",
                 one_line(&error, 160)
             ));
         }
-        let history = History::of(events, &context.card.id);
+        let history = History::of(events, &context.task.id);
         Stop {
             context,
-            rules: applied(&self.settings, context.role, &context.worker.vendor()),
-            handed_off: history.handoffs,
-            gates_ran: history.gates_ran,
-            family: self.family(events, &context.worker),
+            rules: applied(&self.settings, context.role, &context.worker.agent_id()),
+            fell_back: history.fallbacks,
+            checks_ran: history.checks_ran,
+            provider: self.provider(events, &context.worker),
             model,
-            packet,
+            note,
             timed_out,
             placements: log.placements,
         }
     }
 
-    /// The family of the worker that stopped: the registry's, else what its session recorded,
-    /// else the worker's own name.
-    fn family(&self, events: &[RunEvent], worker: &WorkerRef) -> String {
+    /// The provider of the model that stopped: the registry's, else what its session recorded,
+    /// else the agent's own name.
+    fn provider(&self, events: &[RunEvent], worker: &ModelRef) -> String {
         if let Some(registry) = &self.registry {
-            return registry.family(worker);
+            return registry.provider(worker);
         }
         events
             .iter()
@@ -192,21 +194,21 @@ impl Limits {
                 RunEventKind::Session(SessionEvent::Started(started))
                     if &started.worker == worker =>
                 {
-                    Some(started.family.clone())
+                    Some(started.provider.clone())
                 }
                 _ => None,
             })
-            .unwrap_or_else(|| worker.worker.clone())
+            .unwrap_or_else(|| worker.agent.clone())
     }
 
-    /// The model the stopped worker ran: its own, else `agents.<id>.model`, else the one its
-    /// session's CLI reported. The vendor's error text is prose, so it never names the model.
-    fn stopped_model(&self, events: &[RunEvent], worker: &WorkerRef) -> Option<String> {
+    /// The model the stopped agent ran: its own, else `agents.<id>.model`, else the one its
+    /// session's CLI reported. The agent's error text is prose, so it never names the model.
+    fn stopped_model(&self, events: &[RunEvent], worker: &ModelRef) -> Option<String> {
         worker
             .model
             .clone()
             .or_else(|| {
-                let agent = self.settings.agents.get(&worker.worker);
+                let agent = self.settings.agents.get(&worker.agent);
                 agent.and_then(|agent| agent.model.clone())
             })
             .or_else(|| reported_model(events, worker))
@@ -218,16 +220,16 @@ impl Limits {
             EndReason::Paused => RecoveryAction::ResumeSame {
                 message: RESUME_MESSAGE.to_owned(),
             },
-            EndReason::Stopped => RecoveryAction::Escalate {
+            EndReason::Stopped => RecoveryAction::AskYou {
                 reason: "you stopped its session".to_owned(),
             },
-            EndReason::UsageLimit { resets_at } => self.vendor_out(stop, Out::Quota(*resets_at)),
-            EndReason::RateLimited => self.vendor_out(stop, Out::Quota(None)),
-            EndReason::VendorError { category, .. } => self.vendor_error(stop, *category),
+            EndReason::UsageLimit { resets_at } => self.agent_out(stop, Out::PlanUsage(*resets_at)),
+            EndReason::RateLimited => self.agent_out(stop, Out::PlanUsage(None)),
+            EndReason::CliError { category, .. } => self.cli_error(stop, *category),
             EndReason::Auth { message } => self.logged_out(stop, message),
             EndReason::Billing { message } => self.billing(stop, message),
             EndReason::ContextFull => RecoveryAction::Rotate {
-                packet: Box::new(stop.packet.clone()),
+                note: Box::new(stop.note.clone()),
             },
             EndReason::ModelUnavailable { .. } => self.successor(stop),
             EndReason::AdapterBroken { .. } => self.adapter_broken(stop),
@@ -235,29 +237,29 @@ impl Limits {
             EndReason::Stuck { .. } | EndReason::StartFailed { .. } | EndReason::Crashed { .. } => {
                 self.ladder(stop)
             }
-            EndReason::BudgetHit { .. } => {
-                RecoveryAction::BudgetHit(self.settings.limits.budget.when_reached)
+            EndReason::LimitHit { .. } => {
+                RecoveryAction::LimitHit(self.settings.limits.spend.when_reached)
             }
         }
     }
 
-    fn vendor_error(&self, stop: &Stop<'_>, category: ErrorCategory) -> RecoveryAction {
+    fn cli_error(&self, stop: &Stop<'_>, category: ErrorCategory) -> RecoveryAction {
         match category {
             ErrorCategory::Overloaded
             | ErrorCategory::Server
             | ErrorCategory::Network
-            | ErrorCategory::Timeout => self.vendor_out(stop, Out::Outage),
+            | ErrorCategory::Timeout => self.agent_out(stop, Out::Outage),
             ErrorCategory::UsageLimit | ErrorCategory::RateLimit => {
-                self.vendor_out(stop, Out::Quota(None))
+                self.agent_out(stop, Out::PlanUsage(None))
             }
             ErrorCategory::Auth => self.logged_out(stop, ""),
             ErrorCategory::Billing => self.billing(stop, ""),
             ErrorCategory::ContextFull => RecoveryAction::Rotate {
-                packet: Box::new(stop.packet.clone()),
+                note: Box::new(stop.note.clone()),
             },
             ErrorCategory::ModelUnavailable => self.successor(stop),
-            ErrorCategory::Budget => {
-                RecoveryAction::BudgetHit(self.settings.limits.budget.when_reached)
+            ErrorCategory::Limit => {
+                RecoveryAction::LimitHit(self.settings.limits.spend.when_reached)
             }
             ErrorCategory::InvalidRequest
             | ErrorCategory::AnswerMissed
@@ -269,51 +271,66 @@ impl Limits {
         }
     }
 
-    /// A usage limit or an outage: the vendor is out for a while, so the handoff mode decides.
-    fn vendor_out(&self, stop: &Stop<'_>, out: Out) -> RecoveryAction {
-        let vendor = stop.vendor();
+    /// A usage limit or an outage: the agent is out for a while, so the fallback mode decides.
+    fn agent_out(&self, stop: &Stop<'_>, out: Out) -> RecoveryAction {
+        let agent_id = stop.agent_id();
         let until = match out {
-            Out::Quota(resets_at) => resets_at.or_else(|| {
-                self.quota
-                    .get(&vendor)
+            Out::PlanUsage(resets_at) => resets_at.or_else(|| {
+                self.plan_usage
+                    .get(&agent_id)
                     .and_then(|reading| reading.resets_at)
             }),
-            Out::Outage => self.health.state(&vendor).next_test_at,
+            // The whole CLI's test when it is down, else the stopped model's own.
+            Out::Outage => self
+                .health
+                .state(&agent_id)
+                .next_test_at
+                .or_else(|| self.health.model(&stop.context.worker).next_test_at),
         };
         let mode = stop.mode();
-        if mode != HandoffMode::Wait && stop.handed_off >= stop.rules.max_fallbacks {
-            return too_many_handoffs(stop);
+        if mode != FallbackMode::Wait && stop.fell_back >= stop.rules.max_fallbacks {
+            return too_many_fallbacks(stop);
         }
         let reason = stop.reason();
         match mode {
-            HandoffMode::Ask => self.ask(stop, reason, until, self.others(stop)),
-            // With no known return, as for an error before the board marks the vendor Down or a
+            FallbackMode::Ask => self.ask(stop, reason, until, self.others(stop)),
+            // With no known return, as for an error before the board marks the agent Down or a
             // limit with no reset, the wait is a retry after the breaker's cool-down, so the
-            // parked card always has something to wake it.
-            HandoffMode::Wait => RecoveryAction::Wait {
-                vendor,
+            // waiting task always has something to wake it.
+            FallbackMode::Wait => RecoveryAction::Wait {
+                agent_id,
                 until: until.or_else(|| Some(self.retry_at())),
+                kept_off: None,
             },
-            HandoffMode::Auto => {
+            FallbackMode::Auto => {
                 let shortlist = self.others(stop);
                 let none_to_take_it = !shortlist
                     .candidates
                     .iter()
                     .any(|candidate| auto_check(candidate).is_ok());
-                // Every agent of the crew is out, so the run parks until the first one is back
-                // and the card goes on then.
-                if none_to_take_it && let Some(out) = self.all_out(&self.crew(stop)) {
-                    return RecoveryAction::Park(out);
+                // Staying on the CLI that stopped comes before finishing sooner elsewhere, so
+                // with none of its models left the task waits for it, and says until when.
+                if none_to_take_it && stop.rules.same_cli {
+                    return RecoveryAction::Wait {
+                        kept_off: self.elsewhere(stop),
+                        agent_id,
+                        until: until.or_else(|| Some(self.retry_at())),
+                    };
                 }
-                self.hand_off(stop, reason, until, shortlist)
+                // Every agent of the crew is out, so the run waits until the first one is back
+                // and the task goes on then.
+                if none_to_take_it && let Some(out) = self.all_out(&self.crew(stop)) {
+                    return RecoveryAction::RunWaits(out);
+                }
+                self.fallback(stop, reason, until, shortlist)
             }
         }
     }
 
-    /// The crew the run draws on: your `crew`, the default agent, and the worker that stopped.
-    fn crew(&self, stop: &Stop<'_>) -> Vec<WorkerRef> {
+    /// The crew the run draws on: your `crew`, the main agent, and the one that stopped.
+    fn crew(&self, stop: &Stop<'_>) -> Vec<ModelRef> {
         let mut workers = self.settings.crew.members();
-        for worker in [&self.settings.main_agent, &stop.context.worker] {
+        for worker in [&self.settings.crew.main, &stop.context.worker] {
             if !workers.contains(worker) {
                 workers.push(worker.clone());
             }
@@ -327,15 +344,15 @@ impl Limits {
 
     /// A sign-in error. A login is the fix only where the CLI's own check says it's logged out:
     /// then it always asks, with the retry the engine lists first, and candidates still offered.
-    /// Otherwise the error was passing, so the card goes on as for an outage, by the handoff
+    /// Otherwise the error was passing, so the task goes on as for an outage, by the fallback
     /// mode.
     fn logged_out(&self, stop: &Stop<'_>, message: &str) -> RecoveryAction {
         if stop.context.logged_in != Some(false) {
-            return self.vendor_out(stop, Out::Outage);
+            return self.agent_out(stop, Out::Outage);
         }
-        let vendor = stop.vendor();
+        let agent_id = stop.agent_id();
         let reason = with_detail(
-            format!("logged out of {vendor}: log in to {vendor}, then retry"),
+            format!("logged out of {agent_id}: log in to {agent_id}, then retry"),
             message,
         );
         self.ask_until_timeout(stop, reason, self.others(stop))
@@ -343,9 +360,9 @@ impl Limits {
 
     /// Always asks, and never moves on to another paid API by itself, even after the timeout.
     fn billing(&self, stop: &Stop<'_>, message: &str) -> RecoveryAction {
-        let vendor = stop.vendor();
+        let agent_id = stop.agent_id();
         let reason = with_detail(
-            format!("{vendor} hit its billing cap: top up, then retry"),
+            format!("{agent_id} hit its billing cap: top up, then retry"),
             message,
         );
         let mut shortlist = self.others(stop);
@@ -357,15 +374,15 @@ impl Limits {
         self.ask_until_timeout(stop, reason, shortlist)
     }
 
-    /// The registry's successor in the same family, on the same worker; else you decide.
+    /// The registry's successor in the same provider, on the same agent; else you decide.
     fn successor(&self, stop: &Stop<'_>) -> RecoveryAction {
         let next = self.registry.as_deref().and_then(|registry| {
             successor_of(registry, &stop.context.worker, stop.model.as_deref())
         });
         match next {
-            Some(to) => RecoveryAction::HandOff {
+            Some(to) => RecoveryAction::Fallback {
                 to,
-                packet: Box::new(stop.packet.clone()),
+                note: Box::new(stop.note.clone()),
                 checkpoint: stop.checkpoint(),
             },
             None => {
@@ -375,24 +392,26 @@ impl Limits {
         }
     }
 
-    /// The vendor stays disabled until you pin a working version, so waiting doesn't help.
+    /// The agent stays disabled until you pin a working version, so waiting doesn't help.
     fn adapter_broken(&self, stop: &Stop<'_>) -> RecoveryAction {
-        if stop.handed_off >= stop.rules.max_fallbacks {
-            return too_many_handoffs(stop);
+        if stop.fell_back >= stop.rules.max_fallbacks {
+            return too_many_fallbacks(stop);
         }
         let reason = stop.reason();
         match stop.mode() {
-            HandoffMode::Auto => self.hand_off(stop, reason, None, self.others(stop)),
-            HandoffMode::Ask | HandoffMode::Wait => self.ask(stop, reason, None, self.others(stop)),
+            FallbackMode::Auto => self.fallback(stop, reason, None, self.others(stop)),
+            FallbackMode::Ask | FallbackMode::Wait => {
+                self.ask(stop, reason, None, self.others(stop))
+            }
         }
     }
 
-    /// Every isolated session on this CLI would load the same, so another vendor takes the role,
-    /// as for a broken adapter, but only one whose CLI keeps your plugins out. Handing it to one
+    /// Every isolated session on this CLI would load the same, so another agent takes the role,
+    /// as for a broken adapter, but only one whose CLI keeps your plugins out. Giving it to one
     /// that loads everything would undo the stop.
     fn isolation_broken(&self, stop: &Stop<'_>) -> RecoveryAction {
-        if stop.handed_off >= stop.rules.max_fallbacks {
-            return too_many_handoffs(stop);
+        if stop.fell_back >= stop.rules.max_fallbacks {
+            return too_many_fallbacks(stop);
         }
         let mut shortlist = self.others(stop);
         let before = shortlist.candidates.len();
@@ -404,71 +423,148 @@ impl Limits {
             reason = format!("{reason} · {NO_AGENT_ISOLATES}");
         }
         match stop.mode() {
-            HandoffMode::Auto => self.hand_off(stop, reason, None, shortlist),
-            HandoffMode::Ask | HandoffMode::Wait => self.ask(stop, reason, None, shortlist),
+            FallbackMode::Auto => self.fallback(stop, reason, None, shortlist),
+            FallbackMode::Ask | FallbackMode::Wait => self.ask(stop, reason, None, shortlist),
         }
     }
 
-    fn isolates(&self, worker: &WorkerRef) -> bool {
+    fn isolates(&self, worker: &ModelRef) -> bool {
         self.workers
             .as_ref()
             .is_some_and(|workers| workers.isolates(worker))
     }
 
-    /// Stuck, crashed, or failed to start: one fresh session on another family, then you.
+    /// Stuck, crashed, or failed to start: one fresh session on another provider, then you.
+    /// With `same_cli` the fresh session is another model on the same CLI.
     fn ladder(&self, stop: &Stop<'_>) -> RecoveryAction {
         let why = stop.reason();
         if stop.context.reassigned_once {
-            return RecoveryAction::Escalate {
+            return RecoveryAction::AskYou {
                 reason: format!("{why}, and it was already retried on another agent"),
             };
         }
-        let shortlist = self.shortlist(stop, true, vec![stop.family.clone()]);
+        let shortlist = if stop.rules.same_cli {
+            let agent_id = stop.agent_id();
+            let mut shortlist = self.shortlist(stop, true, Vec::new());
+            shortlist
+                .candidates
+                .retain(|candidate| candidate.worker.agent_id() == agent_id);
+            shortlist
+        } else {
+            self.shortlist(stop, true, vec![stop.provider.clone()])
+        };
         match shortlist
             .candidates
             .iter()
             .find(|candidate| auto_check(candidate).is_ok())
         {
-            Some(candidate) => RecoveryAction::HandOff {
+            Some(candidate) => RecoveryAction::Fallback {
                 to: candidate.worker.clone(),
-                packet: Box::new(self.packet_for(stop, std::slice::from_ref(&candidate.worker))),
+                note: Box::new(self.note_for(stop, std::slice::from_ref(&candidate.worker))),
                 checkpoint: stop.checkpoint(),
             },
-            None => RecoveryAction::Escalate {
+            None if stop.rules.same_cli => RecoveryAction::AskYou {
+                reason: format!(
+                    "{why}, and no other model on {} can retry it, where fallback.same_cli \
+                     keeps it",
+                    stop.agent_id()
+                ),
+            },
+            None => RecoveryAction::AskYou {
                 reason: format!("{why}, and no agent of another provider can retry it"),
             },
         }
     }
 
-    /// Candidates on any vendor but the stopped one, which is out as a whole.
+    /// Who the task may fall back to. While only the stopped model is out, any model may, its
+    /// own CLI's others among them. Once the CLI stopped as a whole (the network, the account,
+    /// the CLI itself, or two of its models out), none of it may. With `same_cli`, only the
+    /// stopped CLI's own models may, so a CLI that stopped as a whole leaves nobody. A model
+    /// another CLI serves from the provider that is failing would fail the same way, so it is
+    /// left out too.
     fn others(&self, stop: &Stop<'_>) -> Shortlist {
         let mut shortlist = self.shortlist(stop, false, Vec::new());
-        let vendor = stop.vendor();
+        let agent_id = stop.agent_id();
+        let whole_cli = stop.cli_wide() || self.cli_down(&agent_id);
+        let failing = self.failing_providers(stop);
+        shortlist.candidates.retain(|candidate| {
+            let same_cli = candidate.worker.agent_id() == agent_id;
+            if same_cli {
+                return !whole_cli;
+            }
+            let fails_too = self
+                .registry
+                .as_ref()
+                .is_some_and(|registry| failing.contains(&registry.provider(&candidate.worker)));
+            !stop.rules.same_cli && !fails_too
+        });
         shortlist
+    }
+
+    /// The CLI the task would have gone to if it didn't have to stay on its own: the first
+    /// other one with a model that could take it now.
+    fn elsewhere(&self, stop: &Stop<'_>) -> Option<AgentId> {
+        let agent_id = stop.agent_id();
+        let failing = self.failing_providers(stop);
+        let fails_too = |worker: &ModelRef| {
+            self.registry
+                .as_ref()
+                .is_some_and(|registry| failing.contains(&registry.provider(worker)))
+        };
+        self.shortlist(stop, true, Vec::new())
             .candidates
-            .retain(|candidate| candidate.worker.vendor() != vendor);
-        shortlist
+            .iter()
+            .filter(|candidate| candidate.worker.agent_id() != agent_id)
+            .find(|candidate| auto_check(candidate).is_ok() && !fails_too(&candidate.worker))
+            .map(|candidate| candidate.worker.agent_id())
+    }
+
+    fn cli_down(&self, agent_id: &AgentId) -> bool {
+        matches!(
+            self.health.state(agent_id).state,
+            HealthState::Down | HealthState::Testing
+        )
+    }
+
+    /// The providers behind a CLI that went down on overloads or server errors: the stopped
+    /// model's, and those of its other models that are out. Empty while the CLI is up, since one
+    /// model's trouble says nothing of its provider's other models.
+    fn failing_providers(&self, stop: &Stop<'_>) -> Vec<String> {
+        let agent_id = stop.agent_id();
+        if !stop.is_outage() || !self.cli_down(&agent_id) {
+            return Vec::new();
+        }
+        let mut providers = vec![stop.provider.clone()];
+        if let Some(registry) = &self.registry {
+            for health in self.health.models(&agent_id) {
+                let provider = registry.provider(&health.model);
+                if health.state == ModelState::Out && !providers.contains(&provider) {
+                    providers.push(provider);
+                }
+            }
+        }
+        providers
     }
 
     fn shortlist(
         &self,
         stop: &Stop<'_>,
         all_valid: bool,
-        exclude_families: Vec<String>,
+        exclude_providers: Vec<String>,
     ) -> Shortlist {
         let context = stop.context;
-        self.handoff.shortlist(&CandidateQuery {
-            card: context.card.clone(),
+        self.fallback.shortlist(&CandidateQuery {
+            task: context.task.clone(),
             role: context.role,
             stopped: context.worker.clone(),
-            exclude_families,
+            exclude_providers,
             fallback: Vec::new(),
             all_valid,
         })
     }
 
     /// Auto mode: by the strategy, to the candidates auto may take. A race needs two of them.
-    fn hand_off(
+    fn fallback(
         &self,
         stop: &Stop<'_>,
         reason: String,
@@ -481,27 +577,27 @@ impl Limits {
             .filter(|candidate| auto_check(candidate).is_ok())
             .collect();
         let racers = usize::try_from(shortlist.race_count).unwrap_or(usize::MAX);
-        if shortlist.strategy == HandoffStrategy::Race && racers >= 2 && eligible.len() >= 2 {
-            let to: Vec<WorkerRef> = eligible
+        if shortlist.strategy == FallbackStrategy::Race && racers >= 2 && eligible.len() >= 2 {
+            let to: Vec<ModelRef> = eligible
                 .iter()
                 .take(racers)
                 .map(|candidate| candidate.worker.clone())
                 .collect();
             return RecoveryAction::Race {
-                packet: Box::new(self.packet_for(stop, &to)),
+                note: Box::new(self.note_for(stop, &to)),
                 to,
                 pick: shortlist.pick,
                 checkpoint: stop.checkpoint(),
             };
         }
-        let to = if shortlist.strategy == HandoffStrategy::Spread {
+        let to = if shortlist.strategy == FallbackStrategy::Spread {
             self.spread_pick(stop, &mut shortlist.candidates)
         } else {
             eligible.first().map(|candidate| candidate.worker.clone())
         };
         match to {
-            Some(to) => RecoveryAction::HandOff {
-                packet: Box::new(self.packet_for(stop, std::slice::from_ref(&to))),
+            Some(to) => RecoveryAction::Fallback {
+                note: Box::new(self.note_for(stop, std::slice::from_ref(&to))),
                 to,
                 checkpoint: stop.checkpoint(),
             },
@@ -509,13 +605,13 @@ impl Limits {
         }
     }
 
-    /// The valid candidate `spread` gives this card, noted until the log shows it, so the
-    /// vendor's next stop goes to someone else.
-    fn spread_pick(&self, stop: &Stop<'_>, candidates: &mut [Candidate]) -> Option<WorkerRef> {
+    /// The valid candidate `spread` gives this task, noted until the log shows it, so the
+    /// agent's next stop goes to someone else.
+    fn spread_pick(&self, stop: &Stop<'_>, candidates: &mut [Candidate]) -> Option<ModelRef> {
         let mut picks = self.picks();
         let run = picks.entry(stop.context.run.clone()).or_default();
         let placements = overlay(&stop.placements, run);
-        balance(candidates, |worker| placements.handed_to(worker));
+        balance(candidates, |worker| placements.fell_back_to(worker));
         let to = candidates
             .iter()
             .find(|candidate| auto_check(candidate).is_ok())
@@ -523,7 +619,7 @@ impl Limits {
         match &to {
             Some(to) => {
                 run.insert(
-                    stop.context.card.id.clone(),
+                    stop.context.task.id.clone(),
                     (to.clone(), stop.placements.last_seq),
                 );
             }
@@ -561,7 +657,7 @@ impl Limits {
         shortlist: Shortlist,
     ) -> RecoveryAction {
         if stop.timed_out {
-            self.hand_off(stop, reason, None, shortlist)
+            self.fallback(stop, reason, None, shortlist)
         } else {
             self.ask(stop, reason, None, shortlist)
         }
@@ -576,13 +672,13 @@ impl Limits {
     ) -> RecoveryAction {
         let context = stop.context;
         let mut also_moving = Vec::new();
-        if shortlist.strategy == HandoffStrategy::Spread {
+        if shortlist.strategy == FallbackStrategy::Spread {
             let placements = self.placements(stop);
             balance(&mut shortlist.candidates, |worker| {
-                placements.handed_to(worker)
+                placements.fell_back_to(worker)
             });
-            if stop.vendor_wide() {
-                also_moving = placements.on_vendor(&stop.vendor(), &context.card.id);
+            if stop.agent_wide() {
+                also_moving = placements.on_agent(&stop.agent_id(), &context.task.id);
             }
         }
         // Unless the reason already says why no one is left.
@@ -591,14 +687,14 @@ impl Limits {
         } else {
             reason
         };
-        RecoveryAction::Ask(Box::new(HandoffPlan {
-            card: context.card.id.clone(),
-            title: context.card.title.clone(),
+        RecoveryAction::Ask(Box::new(FallbackPlan {
+            task: context.task.id.clone(),
+            title: context.task.title.clone(),
             stopped: context.worker.clone(),
             reason,
             resets_at,
-            work: stop.packet.work.stat,
-            gates_ran: stop.gates_ran,
+            work: stop.note.work.stat,
+            checks_ran: stop.checks_ran,
             candidates: shortlist.candidates,
             mode: stop.rules.mode,
             strategy: shortlist.strategy,
@@ -607,9 +703,9 @@ impl Limits {
         }))
     }
 
-    /// The packet with any instructions the replacements' fallback entries carry.
-    fn packet_for(&self, stop: &Stop<'_>, to: &[WorkerRef]) -> HandoffPacket {
-        let mut packet = stop.packet.clone();
+    /// The note with any instructions their fallback entries carry.
+    fn note_for(&self, stop: &Stop<'_>, to: &[ModelRef]) -> FallbackNote {
+        let mut note = stop.note.clone();
         for worker in to {
             let Some(rules) = entry_rules(&stop.rules.candidates, worker) else {
                 continue;
@@ -620,106 +716,103 @@ impl Limits {
                 String::new()
             };
             if let Some(instructions) = &rules.instructions {
-                packet
-                    .notes
+                note.notes
                     .push(format!("Instructions{whom}: {instructions}"));
             }
             if rules.read_only {
-                packet
-                    .notes
+                note.notes
                     .push(format!("Read-only{whom}: don't edit files on this task."));
             }
         }
-        packet
+        note
     }
 }
 
-/// What a card handed away from a vendor does once that vendor is healthy again.
+/// What a task that fell back from an agent does once that agent is healthy again.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OriginalBack {
-    /// No quality debt and no `hand_back`, so the card stays with its holder, and the notice
+    /// No quality debt and no `give_back`, so the task stays with its holder, and the notice
     /// says how to move it back.
-    Stays { card: CardId, notice: String },
-    /// `on_return = "hand_back"`, or `return_to_original`: the original takes the card at its
-    /// next attempt.
-    HandBack { card: CardId, to: WorkerRef },
-    /// The card carries quality debt, so `on_return` decides, and `ask` opens
+    Stays { task: TaskId, notice: String },
+    /// `on_return = "give_back"`: the original takes the task at its next try.
+    GiveBack { task: TaskId, to: ModelRef },
+    /// The task carries quality debt, so `on_return` decides, and `ask` opens
     /// `OriginalReturned`.
     Debt {
-        card: CardId,
-        original: WorkerRef,
-        holder: WorkerRef,
+        task: TaskId,
+        original: ModelRef,
+        holder: ModelRef,
         on_return: OnReturn,
     },
 }
 
 impl Limits {
-    /// For each open card handed away from `vendor` that still sits elsewhere, what its return
-    /// means, read from the run's events. `name` is the vendor's display name. A running step
-    /// finishes first, so the engine applies each outcome at the card's next attempt.
+    /// For each open task that fell back from `agent` and still sits elsewhere, what its return
+    /// means, read from the run's events. `name` is the agent's display name. A running step
+    /// finishes first, so the engine applies each outcome at the task's next try.
     pub fn original_returned(
         &self,
-        vendor: &VendorId,
+        agent_id: &AgentId,
         name: &str,
         events: &[RunEvent],
     ) -> Vec<OriginalBack> {
-        let mut cards: BTreeMap<CardId, AwayCard> = BTreeMap::new();
+        let mut tasks: BTreeMap<TaskId, AwayTask> = BTreeMap::new();
         for event in events {
-            let Some(card) = card_of(event) else {
+            let Some(task) = task_of(event) else {
                 continue;
             };
-            cards.entry(card.clone()).or_default().follow(&event.kind);
+            tasks.entry(task.clone()).or_default().follow(&event.kind);
         }
-        // Handoffs move a card's owner, so the owner's rules decide.
-        let on_return = applied(&self.settings, RoleName::Worker, vendor).on_return;
-        cards
+        // Fallbacks move a task's worker, so the worker's rules decide.
+        let on_return = applied(&self.settings, RoleName::Worker, agent_id).on_return;
+        tasks
             .into_iter()
             .filter(|(_, away)| !away.done)
-            .filter_map(|(card, away)| {
+            .filter_map(|(task, away)| {
                 let holder = away.holder?;
                 let original = away
                     .taken_from
                     .into_iter()
-                    .find(|worker| &worker.vendor() == vendor)?;
+                    .find(|worker| &worker.agent_id() == agent_id)?;
                 Some(if away.debt {
                     OriginalBack::Debt {
-                        card,
+                        task,
                         original,
                         holder,
                         on_return,
                     }
-                } else if on_return == OnReturn::HandBack {
-                    OriginalBack::HandBack { card, to: original }
+                } else if on_return == OnReturn::GiveBack {
+                    OriginalBack::GiveBack { task, to: original }
                 } else {
                     let notice = format!(
-                        "{name} is back · {card} stays with {holder} · /reassign {card} {original} moves it back"
+                        "{name} is back · {task} stays with {holder} · /reassign {task} {original} moves it back"
                     );
-                    OriginalBack::Stays { card, notice }
+                    OriginalBack::Stays { task, notice }
                 })
             })
             .collect()
     }
 }
 
-/// One card's owners as the events tell them.
+/// One task's models as the events tell them.
 #[derive(Default)]
-struct AwayCard {
-    holder: Option<WorkerRef>,
-    /// Workers the card was handed away from, oldest first, while it sits on another vendor.
-    taken_from: Vec<WorkerRef>,
-    /// The worker whose stop asked for the pending handoff.
-    stopped: Option<WorkerRef>,
+struct AwayTask {
+    holder: Option<ModelRef>,
+    /// Models the task fell back from, oldest first, while it sits on another agent.
+    taken_from: Vec<ModelRef>,
+    /// The model whose stop asked for the pending fallback.
+    stopped: Option<ModelRef>,
     debt: bool,
     done: bool,
 }
 
-impl AwayCard {
+impl AwayTask {
     fn follow(&mut self, kind: &RunEventKind) {
         match kind {
-            RunEventKind::Handoff(HandoffEvent::Needed(plan)) => {
+            RunEventKind::Fallback(FallbackEvent::Needed(plan)) => {
                 self.stopped = Some(plan.stopped.clone());
             }
-            RunEventKind::Handoff(HandoffEvent::HandedOff { to, .. }) => {
+            RunEventKind::Fallback(FallbackEvent::FellBack { to, .. }) => {
                 let from = self.stopped.take().or_else(|| self.holder.clone());
                 if let Some(from) = from
                     && !self.taken_from.contains(&from)
@@ -728,71 +821,71 @@ impl AwayCard {
                 }
                 self.moved_to(to);
             }
-            RunEventKind::Card(
-                CardEvent::Attempt { worker: to, .. } | CardEvent::Reassigned { to, .. },
+            RunEventKind::Task(
+                TaskEvent::Try { worker: to, .. } | TaskEvent::Reassigned { to, .. },
             ) => self.moved_to(to),
-            RunEventKind::Card(CardEvent::QualityDebt(_)) => self.debt = true,
-            RunEventKind::Card(CardEvent::DebtCleared { .. }) => self.debt = false,
-            RunEventKind::Card(CardEvent::State { to, .. }) => {
-                self.done = matches!(to, CardState::Integrated | CardState::Cancelled);
+            RunEventKind::Task(TaskEvent::QualityDebt(_)) => self.debt = true,
+            RunEventKind::Task(TaskEvent::DebtCleared { .. }) => self.debt = false,
+            RunEventKind::Task(TaskEvent::State { to, .. }) => {
+                self.done = matches!(to, TaskState::Merged | TaskState::Cancelled);
             }
             _ => {}
         }
     }
 
-    /// A card back on a vendor it was taken from is no longer away from it.
-    fn moved_to(&mut self, to: &WorkerRef) {
-        let vendor = to.vendor();
-        self.taken_from.retain(|from| from.vendor() != vendor);
+    /// A task back on an agent it was taken from is no longer away from it.
+    fn moved_to(&mut self, to: &ModelRef) {
+        let agent_id = to.agent_id();
+        self.taken_from.retain(|from| from.agent_id() != agent_id);
         self.holder = Some(to.clone());
     }
 }
 
-fn card_of(event: &RunEvent) -> Option<&CardId> {
+fn task_of(event: &RunEvent) -> Option<&TaskId> {
     match &event.kind {
-        RunEventKind::Handoff(HandoffEvent::Needed(plan)) => Some(&plan.card),
-        RunEventKind::Handoff(HandoffEvent::HandedOff { card, .. }) => Some(card),
-        _ => event.card_id.as_ref(),
+        RunEventKind::Fallback(FallbackEvent::Needed(plan)) => Some(&plan.task),
+        RunEventKind::Fallback(FallbackEvent::FellBack { task, .. }) => Some(task),
+        _ => event.task_id.as_ref(),
     }
 }
 
 impl LimitsService for Limits {
-    fn session_limits(&self, card: Option<&CardSpec>, role: RoleName) -> SessionLimits {
+    fn session_limits(&self, task: Option<&TaskSpec>, role: RoleName) -> SessionLimits {
         let settings = &self.settings;
         let lifetime = settings
             .roles
             .get(&role)
             .and_then(|role| role.lifetime)
             .unwrap_or(settings.sessions.lifetime);
-        // A session that lives past one card answers to the run's budget lines, not a card's.
-        let per_task = card.is_some() || lifetime == SessionLifetime::Task;
-        let own = card.map(|card| &card.budget);
-        let budget = if per_task {
-            own.and_then(|budget| budget.limit)
-                .or_else(|| settings.limits.budget.task_limit())
+        // A session that lives past one task answers to the run's limit lines, not a task's.
+        let per_task = task.is_some() || lifetime == SessionLifetime::Task;
+        let own = task.map(|task| &task.limit);
+        let limit = if per_task {
+            own.and_then(|limit| limit.limit)
+                .or_else(|| settings.limits.spend.task_limit())
         } else {
             None
         };
         let watchdogs = &settings.watchdogs;
         SessionLimits {
-            budget,
-            soft_stop: soft_stop(settings.limits.budget.soft_stop),
+            limit,
+            soft_stop: soft_stop(settings.limits.spend.soft_stop),
             max_minutes: own
-                .and_then(|budget| budget.max_minutes)
+                .and_then(|limit| limit.max_minutes)
                 .or(watchdogs.wall_clock_min.filter(|_| per_task))
                 .filter(|minutes| *minutes > 0.0),
             max_tool_calls: own
-                .and_then(|budget| budget.max_tool_calls)
+                .and_then(|limit| limit.max_tool_calls)
                 .or(watchdogs.max_tool_calls.filter(|_| per_task))
                 .filter(|calls| *calls > 0),
             inactivity_min: own
-                .and_then(|budget| budget.inactivity_min)
+                .and_then(|limit| limit.inactivity_min)
                 .or(Some(watchdogs.inactivity_min))
                 .filter(|minutes| *minutes > 0.0),
             repeat_limit: Some(watchdogs.repeat_limit).filter(|limit| *limit > 0),
-            native_cap_usd: budget
-                .filter(|budget| budget.unit == BudgetUnit::Usd)
-                .map(|budget| budget.amount * NATIVE_CAP_MARGIN),
+            native_cap_usd: limit
+                .filter(|limit| limit.unit == LimitUnit::Usd)
+                .map(|limit| limit.amount * NATIVE_CAP_MARGIN),
         }
     }
 
@@ -800,22 +893,22 @@ impl LimitsService for Limits {
         Box::pin(self.recover(context, false))
     }
 
-    /// Every vendor among `workers` is down or out of quota. The run parks until the earliest
+    /// Every agent among `workers` is down or out of plan usage. The run waits until the earliest
     /// time one is known to come back.
-    fn all_out(&self, workers: &[WorkerRef]) -> Option<ParkReason> {
+    fn all_out(&self, workers: &[ModelRef]) -> Option<WaitReason> {
         if workers.is_empty() {
             return None;
         }
         let now = OffsetDateTime::now_utc();
-        let mut vendors: Vec<VendorId> = workers.iter().map(WorkerRef::vendor).collect();
-        vendors.sort();
-        vendors.dedup();
+        let mut agent_ids: Vec<AgentId> = workers.iter().map(ModelRef::agent_id).collect();
+        agent_ids.sort();
+        agent_ids.dedup();
         let mut until: Option<OffsetDateTime> = None;
-        for vendor in &vendors {
-            let health = self.health.state(vendor);
+        for agent_id in &agent_ids {
+            let health = self.health.state(agent_id);
             // Out of plan: its provider refused it, or it is as full as you let it get.
-            let rejected = self.quota.get(vendor).filter(|reading| {
-                out_of_quota(reading, now) || at_plan_limit(reading, &self.settings, now)
+            let rejected = self.plan_usage.get(agent_id).filter(|reading| {
+                out_of_plan_usage(reading, now) || at_plan_limit(reading, &self.settings, now)
             });
             let down = health.state == HealthState::Down;
             if !down && rejected.is_none() {
@@ -831,12 +924,12 @@ impl LimitsService for Limits {
                 until = Some(until.map_or(back, |until| until.min(back)));
             }
         }
-        Some(ParkReason::AllVendorsOut { until })
+        Some(WaitReason::AllAgentsOut { until })
     }
 }
 
-/// The model the CLI reported at the start of the worker's latest session on the card.
-fn reported_model(events: &[RunEvent], worker: &WorkerRef) -> Option<String> {
+/// The model the CLI reported at the start of `worker`'s latest session on the task.
+fn reported_model(events: &[RunEvent], worker: &ModelRef) -> Option<String> {
     let session = events.iter().rev().find_map(|event| match &event.kind {
         RunEventKind::Session(SessionEvent::Started(started)) if &started.worker == worker => {
             Some(event.session.as_ref())
@@ -852,18 +945,18 @@ fn reported_model(events: &[RunEvent], worker: &WorkerRef) -> Option<String> {
 }
 
 /// The first model along the registry's successor chain that isn't retired, in the stopped
-/// model's family. It stays on the same worker, since another one could bill you differently.
+/// model's provider. It stays on the same agent, since another one could bill you differently.
 fn successor_of(
     registry: &dyn ModelRegistry,
-    worker: &WorkerRef,
+    worker: &ModelRef,
     model: Option<&str>,
-) -> Option<WorkerRef> {
-    let stopped = WorkerRef::new(worker.worker.clone(), model.map(str::to_owned));
+) -> Option<ModelRef> {
+    let stopped = ModelRef::new(worker.agent.clone(), model.map(str::to_owned));
     let entry = registry.get(&stopped).or_else(|| registry.get(worker))?;
     let mut current = entry.clone();
     for _ in 0..MAX_SUCCESSOR_HOPS {
         let to = successor_ref(&current)?;
-        if to.worker != worker.worker || to == stopped || registry.family(&to) != entry.family {
+        if to.agent != worker.agent || to == stopped || registry.provider(&to) != entry.provider {
             return None;
         }
         match registry.get(&to) {
@@ -874,13 +967,13 @@ fn successor_of(
     None
 }
 
-/// A registry `successor` is a full `worker/model` reference, or a model on the entry's own
-/// worker.
-fn successor_ref(entry: &ModelEntry) -> Option<WorkerRef> {
+/// A registry `successor` is a full `agent/model` reference, or a model on the entry's own
+/// agent.
+fn successor_ref(entry: &ModelEntry) -> Option<ModelRef> {
     let successor = entry.successor.as_deref()?;
     if !successor.contains('/') {
-        return Some(WorkerRef::new(
-            entry.id.worker.clone(),
+        return Some(ModelRef::new(
+            entry.id.agent.clone(),
             Some(successor.to_owned()),
         ));
     }
@@ -903,49 +996,74 @@ fn soft_stop(ratio: f64) -> f64 {
 }
 
 enum Out {
-    Quota(Option<OffsetDateTime>),
+    PlanUsage(Option<OffsetDateTime>),
     Outage,
 }
 
 /// One stop, with what the decision reads.
 struct Stop<'a> {
     context: &'a StopContext,
-    rules: AppliedHandoff,
-    /// Earlier handoffs of this card.
-    handed_off: u32,
-    /// Gates ran on the card's latest commit.
-    gates_ran: bool,
-    family: String,
+    rules: AppliedFallback,
+    /// Earlier fallbacks of this task.
+    fell_back: u32,
+    /// Checks ran on the task's latest commit.
+    checks_ran: bool,
+    provider: String,
     /// The model it ran, when known.
     model: Option<String>,
-    packet: HandoffPacket,
+    note: FallbackNote,
     timed_out: bool,
     placements: Placements,
 }
 
 impl Stop<'_> {
-    fn vendor(&self) -> VendorId {
-        self.context.worker.vendor()
+    fn agent_id(&self) -> AgentId {
+        self.context.worker.agent_id()
     }
 
-    fn mode(&self) -> HandoffMode {
+    fn mode(&self) -> FallbackMode {
         if self.timed_out {
-            HandoffMode::Auto
+            FallbackMode::Auto
         } else {
             self.rules.mode
         }
     }
 
     fn reason(&self) -> String {
-        self.packet.why_stopped.clone()
+        self.note.why_stopped.clone()
     }
 
-    /// The whole vendor stopped, not only its model, so its other cards stop too.
-    fn vendor_wide(&self) -> bool {
+    /// An overload or a server error, which is the provider's doing.
+    fn is_outage(&self) -> bool {
+        matches!(
+            self.context.end.reason,
+            EndReason::CliError {
+                category: ErrorCategory::Overloaded | ErrorCategory::Server,
+                ..
+            }
+        )
+    }
+
+    /// The failure is no one model's doing (the network, the account, the CLI itself), so the
+    /// CLI's other models would meet it too. An overload, a server error, and a model that's
+    /// gone are about the model alone.
+    fn cli_wide(&self) -> bool {
+        match &self.context.end.reason {
+            EndReason::ModelUnavailable { .. } => false,
+            EndReason::CliError { category, .. } => !matches!(
+                category,
+                ErrorCategory::Overloaded | ErrorCategory::Server | ErrorCategory::ModelUnavailable
+            ),
+            _ => true,
+        }
+    }
+
+    /// The whole agent stopped, not only its model, so its other tasks stop too.
+    fn agent_wide(&self) -> bool {
         !matches!(
             self.context.end.reason,
             EndReason::ModelUnavailable { .. }
-                | EndReason::VendorError {
+                | EndReason::CliError {
                     category: ErrorCategory::ModelUnavailable,
                     ..
                 }
@@ -955,8 +1073,8 @@ impl Stop<'_> {
     fn checkpoint(&self) -> Option<CheckpointTag> {
         self.rules.checkpoint.then(|| CheckpointTag {
             run: self.context.run.clone(),
-            card: self.context.card.id.clone(),
-            n: self.handed_off + 1,
+            task: self.context.task.id.clone(),
+            n: self.fell_back + 1,
         })
     }
 }
@@ -965,16 +1083,16 @@ impl Stop<'_> {
 /// dropped.
 fn overlay(log: &Placements, picks: &mut Picks) -> Placements {
     let mut placements = log.clone();
-    picks.retain(|card, (worker, seen)| placements.pick(card, worker, *seen));
+    picks.retain(|task, (worker, seen)| placements.pick(task, worker, *seen));
     placements
 }
 
-fn too_many_handoffs(stop: &Stop<'_>) -> RecoveryAction {
-    RecoveryAction::Escalate {
+fn too_many_fallbacks(stop: &Stop<'_>) -> RecoveryAction {
+    RecoveryAction::AskYou {
         reason: format!(
             "\"{}\" stopped after {} fallbacks, the most /fallback allows",
-            stop.context.card.title.trim(),
-            stop.handed_off
+            stop.context.task.title.trim(),
+            stop.fell_back
         ),
     }
 }
@@ -989,5 +1107,5 @@ fn with_detail(reason: String, detail: &str) -> String {
 }
 
 #[cfg(test)]
-#[path = "handoff/recovery_tests.rs"]
+#[path = "fallback/recovery_tests.rs"]
 mod tests;

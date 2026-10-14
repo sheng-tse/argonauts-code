@@ -1,9 +1,9 @@
-//! Every answer format Argonauts sends a CLI, held to Codex's strict rules, the strictest any
+//! Every answer format Argonauts Code sends a CLI, held to Codex's strict rules, the strictest any
 //! CLI has. A format Codex refuses fails its session in two seconds, every time.
 
 use argonauts_core::answer_format::{codex_problems, strict};
-use argonauts_core::card::report_json_schema;
 use argonauts_core::steps::StepName;
+use argonauts_core::task::report_json_schema;
 use argonauts_crew::claude_codes::verdict_schema;
 use serde_json::{Value, json};
 
@@ -61,7 +61,7 @@ fn every_format() -> Vec<(String, Value)> {
 fn every_step_but_the_plain_text_ones_has_a_format() {
     let names: Vec<String> = every_format().into_iter().map(|(name, _)| name).collect();
     for step in StepName::ALL {
-        let plain_text = matches!(step, StepName::VendorCommand | StepName::Direct);
+        let plain_text = matches!(step, StepName::CliCommand | StepName::Direct);
         assert_eq!(
             names.contains(&format!("{step:?}")),
             !plain_text,

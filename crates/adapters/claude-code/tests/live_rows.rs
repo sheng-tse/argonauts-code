@@ -16,7 +16,7 @@ fn feed(lines: &[Value]) -> Vec<AgentEvent> {
 }
 
 fn init() -> Value {
-    json!({"type": "system", "subtype": "init", "cwd": "/work/solo", "session_id": "s-1",
+    json!({"type": "system", "subtype": "init", "cwd": "/work/captain", "session_id": "s-1",
            "tools": ["Bash", "Edit", "Read"], "model": "claude-haiku-5-5"})
 }
 
@@ -77,13 +77,13 @@ fn tool_steps(events: &[AgentEvent]) -> Vec<String> {
 
 #[test]
 fn a_call_is_known_as_the_model_starts_writing_it() {
-    let edit = json!({"file_path": "/work/solo/invoice/money.py",
+    let edit = json!({"file_path": "/work/captain/invoice/money.py",
                       "old_string": "a", "new_string": "b"});
     let events = feed(&[
         init(),
         message_start("m1"),
         block_start(0, "e1", "Edit"),
-        input_piece(0, "{\"file_path\": \"/work/solo/invoice/"),
+        input_piece(0, "{\"file_path\": \"/work/captain/invoice/"),
         whole_call("m1", "e1", "Edit", edit),
         block_stop(0),
         block_start(1, "b1", "Bash"),

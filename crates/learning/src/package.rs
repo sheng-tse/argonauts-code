@@ -1,4 +1,4 @@
-//! The delegation package: one folder other agents install with their own plugin commands, so
+//! The outside agent package: one folder other agents install with their own plugin commands, so
 //! they can hand work to the crew. An Agent Plugins manifest, one MCP entry that runs
 //! `argonauts mcp serve` in the repo by absolute path with no credentials, the
 //! `delegate-to-argonauts` skill, and Claude Code's plugin layout beside them.
@@ -25,7 +25,7 @@ pub const AGENT_PLUGINS_MCP: &str = "mcp.json";
 pub const CLAUDE_MANIFEST: &str = ".claude-plugin/plugin.json";
 pub const CLAUDE_MCP: &str = ".mcp.json";
 
-const DESCRIPTION: &str = "Hand coding tasks to the Argonauts crew, which runs several coding \
+const DESCRIPTION: &str = "Hand coding tasks to the Argonauts Code crew, which runs several coding \
     agents under your rules, and relay when a run needs a person.";
 
 /// Writes the package into `dir` for `repo`, with `argonauts` at `binary`, and returns the
@@ -66,12 +66,12 @@ pub fn write(dir: &Path, repo: &Path, binary: &Path) -> Result<Vec<PathBuf>> {
         "version": version,
         "description": DESCRIPTION,
     });
-    let skill = delegation_skill(version);
+    let skill = outside_agent_skill(version);
     let skill_text = render(&skill);
     let problems = validate(&skill_text, SKILL_NAME);
     if !problems.is_empty() {
         return Err(LearningError::Refused(format!(
-            "The delegation skill breaks the Agent Skills spec: {}.",
+            "The {SKILL_NAME} skill breaks the Agent Skills spec: {}.",
             problems.join("; ")
         )));
     }
@@ -107,16 +107,16 @@ fn pretty(value: &Value) -> Result<String> {
     Ok(format!("{}\n", serde_json::to_string_pretty(value)?))
 }
 
-fn delegation_skill(version: &str) -> Skill {
+fn outside_agent_skill(version: &str) -> Skill {
     let mut metadata = BTreeMap::new();
     metadata.insert("argonauts-version".to_owned(), version.to_owned());
     Skill {
         frontmatter: Frontmatter {
             name: SKILL_NAME.to_owned(),
-            description: "Use when a coding task is big enough for a crew: several files, a \
-                plan worth critiquing, or work that needs review from another provider. \
-                Starts an Argonauts run through its MCP server, follows it, and relays when it \
-                needs a person, without ever approving anything itself."
+            description: "Use when a coding task is big enough for a crew: several files, a plan \
+                worth critiquing, or work that needs review from another provider. Starts an \
+                Argonauts Code run through its MCP server, follows it, and relays when it needs a \
+                person, without ever approving anything itself."
                 .to_owned(),
             license: None,
             compatibility: Some(
@@ -126,13 +126,13 @@ fn delegation_skill(version: &str) -> Skill {
             metadata,
             allowed_tools: None,
         },
-        body: DELEGATION_BODY.to_owned(),
+        body: SKILL_BODY.to_owned(),
     }
 }
 
-const DELEGATION_BODY: &str = "# Delegate to Argonauts
+const SKILL_BODY: &str = "# Delegate to Argonauts Code
 
-Argonauts runs a crew of coding agents on one repository: they plan, critique, build, and \
+Argonauts Code runs a crew of coding agents on one repository: they plan, critique, build, and \
 review each other's work under rules the person set. This skill tells you when to hand a task \
 to the crew and how to follow it.
 
@@ -158,7 +158,7 @@ waiting and give them its link, word for word.
 ## Never
 
 - Never approve, answer an approval, or claim that something was approved. Approvals belong \
-to the person, in Argonauts itself. An answer given through you never counts as one.
+to the person, in Argonauts Code itself. An answer given through you never counts as one.
 - Never pass credentials, tokens, or keys to the crew.
 - Never start a run in a repository the server wasn't set up for.
 ";
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn the_skill_passes_the_validator() {
-        let text = render(&delegation_skill("0.0.1"));
+        let text = render(&outside_agent_skill("0.0.1"));
         assert_eq!(validate(&text, SKILL_NAME), Vec::<String>::new());
     }
 }

@@ -11,10 +11,10 @@ use argonauts_core::{AgentEvent, MessageStage, ReportedCommand};
 use serde_json::{Value, json};
 
 use crate::json::{array_at, bool_at, str_at, string_at, strings_at};
-use crate::{context, models, surface};
+use crate::{context_usage, models, surface};
 
-/// How Argonauts joins a session as a screen. Only `desktop`, `mobile`, and `vscode` are
-/// accepted, and a mod that draws for a terminal draws the desktop look closest.
+/// How Argonauts Code joins a session as a screen. Only `desktop`, `mobile`, and `vscode` are
+/// accepted, and a plugin that draws for a terminal draws the desktop look closest.
 const SURFACE: &str = "desktop";
 const CLIENT_ID: &str = "argonauts";
 /// The component above the input, where You should know draws.
@@ -144,7 +144,7 @@ pub fn from_response(line: &Value) -> Vec<AgentEvent> {
         if !ok {
             return Vec::new();
         }
-        return context::breakdown(body).into_iter().collect();
+        return context_usage::breakdown(body).into_iter().collect();
     }
     if let Some(uuid) = id.strip_prefix(CANCEL) {
         let state = if ok && bool_at(body, "cancelled") {
@@ -322,15 +322,18 @@ mod tests {
         let asked = parsed(&context_usage_line(ContextDetail::Summary));
         assert_eq!(asked["request"]["subtype"], "get_context_usage");
         assert_eq!(asked["request"]["detail"], "summary");
+        let counted = parsed(&context_usage_line(ContextDetail::Full));
+        assert_eq!(counted["request"]["detail"], "full");
         let id = asked["request_id"].as_str().unwrap().to_owned();
         assert!(id.starts_with(CONTEXT));
         let reply = json!({"type": "control_response", "response": {"subtype": "success",
             "request_id": id, "response": {"maxTokens": 200000, "categories": [
                 {"name": "Messages", "tokens": 900, "kind": "used"}]}}});
-        assert!(matches!(
-            from_response(&reply).as_slice(),
-            [AgentEvent::ContextBreakdown { window: 200000, .. }]
-        ));
+        let events = from_response(&reply);
+        let [AgentEvent::ContextBreakdown { usage }] = events.as_slice() else {
+            panic!("{events:?}");
+        };
+        assert_eq!(usage.window, 200_000);
         // An error gives no breakdown, and nothing else that would ask again.
         let refused = json!({"type": "control_response", "response": {"subtype": "error",
             "request_id": id, "error": "get_context_usage is not supported in this context"}});
@@ -400,7 +403,7 @@ mod tests {
         let reply = json!({"type": "control_response", "response": {"subtype": "success",
         "request_id": "initialize", "response": {"commands": [
             {"name": "compact", "description": "Compact", "argumentHint": "", "builtin": true},
-            {"name": "probe-cmd", "description": "Argonauts probe", "argumentHint": ""},
+            {"name": "probe-cmd", "description": "Argonauts Code probe", "argumentHint": ""},
             {"name": "example-c", "description": "An example skill (claude.ai sync)",
              "argumentHint": "", "aliases": ["anthropic-skills:example-c"]}
         ]}}});

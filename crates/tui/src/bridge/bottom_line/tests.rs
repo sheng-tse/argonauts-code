@@ -1,6 +1,6 @@
-use argonauts_core::app::{PublishedArtifact, QuotaChip};
-use argonauts_core::limits::QuotaSource;
-use argonauts_core::names::VendorId;
+use argonauts_core::app::{PlanUsageChip, PublishedArtifact};
+use argonauts_core::limits::PlanUsageSource;
+use argonauts_core::names::AgentId;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::bottom_line::BottomLineSettings;
 use time::macros::datetime;
@@ -16,24 +16,24 @@ fn clock() -> Clock {
     }
 }
 
-fn reading(vendor: &str, window: &str, used: f64) -> QuotaReading {
-    QuotaReading {
-        vendor: VendorId(vendor.to_owned()),
-        status: QuotaStatus::Allowed,
+fn reading(agent_id: &str, window: &str, used: f64) -> PlanUsageReading {
+    PlanUsageReading {
+        agent_id: AgentId(agent_id.to_owned()),
+        status: PlanUsageStatus::Allowed,
         used: Some(used),
         resets_at: None,
         window: Some(window.to_owned()),
-        source: QuotaSource::RateLimitEvent,
+        source: PlanUsageSource::RateLimitEvent,
         observed_at: T0,
         detail: None,
         wrap_up: false,
     }
 }
 
-fn cli(label: &str, vendor: &str, readings: Vec<QuotaReading>) -> CrewCli {
+fn cli(label: &str, agent_id: &str, readings: Vec<PlanUsageReading>) -> CrewCli {
     CrewCli {
         label: label.to_owned(),
-        vendor: Some(vendor.to_owned()),
+        agent_id: Some(agent_id.to_owned()),
         health: HealthState::Healthy,
         readings,
     }
@@ -143,9 +143,9 @@ fn a_window_near_its_limit_shows_its_reset_time_and_is_never_hidden() {
 fn a_cli_that_is_out_down_or_wrapping_up_says_so() {
     let set = PlanUsageLine::default();
     let mut out = reading("antigravity-cli", "daily", 1.0);
-    out.status = QuotaStatus::Rejected;
+    out.status = PlanUsageStatus::Rejected;
     out.resets_at = Some(datetime!(2026-10-06 15:45 UTC));
-    let agy = |reading: QuotaReading| cli("agy", "antigravity-cli", vec![reading]);
+    let agy = |reading: PlanUsageReading| cli("agy", "antigravity-cli", vec![reading]);
     let chip = cli_use(&agy(out.clone()), false, &set, None, &clock());
     assert_eq!(
         chip.state,
@@ -155,7 +155,7 @@ fn a_cli_that_is_out_down_or_wrapping_up_says_so() {
     );
     assert_eq!(chip.color, Role::CliAgy);
 
-    let today = QuotaReading {
+    let today = PlanUsageReading {
         resets_at: Some(datetime!(2026-09-30 15:45 UTC)),
         ..out.clone()
     };
@@ -166,7 +166,7 @@ fn a_cli_that_is_out_down_or_wrapping_up_says_so() {
             until: Some("3:45pm".into())
         }
     );
-    let no_reset = QuotaReading {
+    let no_reset = PlanUsageReading {
         resets_at: None,
         ..out.clone()
     };
@@ -174,7 +174,7 @@ fn a_cli_that_is_out_down_or_wrapping_up_says_so() {
     assert_eq!(chip.state, CliState::Out { until: None });
 
     // On the wrap-up allowance the agent finishes, so the chip says so rather than out.
-    let wrapping_up = QuotaReading {
+    let wrapping_up = PlanUsageReading {
         wrap_up: true,
         ..out
     };
@@ -187,8 +187,8 @@ fn a_cli_that_is_out_down_or_wrapping_up_says_so() {
     assert_eq!(chip.state, CliState::Down);
     assert!(chip.needs_you());
 
-    let warned = QuotaReading {
-        status: QuotaStatus::Warning,
+    let warned = PlanUsageReading {
+        status: PlanUsageStatus::Warning,
         used: None,
         ..reading("codex", "five_hour", 0.0)
     };
@@ -244,7 +244,7 @@ fn a_reading_is_dropped_once_its_window_resets_and_says_its_age_before() {
 
     // Out until a reset that has passed is no longer out.
     let mut out = reading("codex", "five_hour", 1.0);
-    out.status = QuotaStatus::Rejected;
+    out.status = PlanUsageStatus::Rejected;
     out.resets_at = Some(T0 + time::Duration::hours(1));
     let codex = cli("Codex", "codex", vec![out]);
     assert!(matches!(
@@ -270,8 +270,8 @@ fn a_cli_nothing_was_read_for_keeps_its_name_and_one_without_a_plan_its_spend() 
     assert_eq!((codex.windows.len(), codex.note.as_deref()), (0, None));
     assert_eq!(codex.state, CliState::Fine);
 
-    let unreadable = QuotaReading {
-        status: QuotaStatus::Unknown,
+    let unreadable = PlanUsageReading {
+        status: PlanUsageStatus::Unknown,
         used: None,
         ..reading("codex", "five_hour", 0.0)
     };
@@ -298,15 +298,15 @@ fn a_cli_nothing_was_read_for_keeps_its_name_and_one_without_a_plan_its_spend() 
     assert_eq!(local.note, None);
 }
 
-fn status(main: &str, quotas: Vec<QuotaChip>) -> StatusLine {
-    StatusLine {
+fn status(main: &str, plan_chips: Vec<PlanUsageChip>) -> HeaderAndBottomLine {
+    HeaderAndBottomLine {
         title: String::new(),
         repo: "~/code".into(),
-        workflow: "solo".into(),
+        workflow: "captain".into(),
         ultracode: false,
         run: None,
         main_agent: main.parse().unwrap(),
-        quotas,
+        plan_chips,
         line: Default::default(),
         spent: None,
         limit: None,
@@ -316,8 +316,8 @@ fn status(main: &str, quotas: Vec<QuotaChip>) -> StatusLine {
     }
 }
 
-fn chip(label: &str, windows: Vec<QuotaReading>) -> QuotaChip {
-    QuotaChip {
+fn chip(label: &str, windows: Vec<PlanUsageReading>) -> PlanUsageChip {
+    PlanUsageChip {
         label: label.into(),
         reading: binding_reading(&windows).cloned(),
         health: HealthState::Healthy,
@@ -325,7 +325,7 @@ fn chip(label: &str, windows: Vec<QuotaReading>) -> QuotaChip {
     }
 }
 
-fn crew_status(main: &str) -> StatusLine {
+fn crew_status(main: &str) -> HeaderAndBottomLine {
     status(
         main,
         vec![
@@ -420,13 +420,13 @@ fn gauges_show_both_windows_of_every_cli() {
 fn the_main_cli_has_a_chip_even_outside_the_crew_and_newer_readings_win() {
     let mut state = AppState::default();
     let mut status = crew_status("opencode");
-    status.quotas.remove(0);
+    status.plan_chips.remove(0);
     state.status = Some(status);
     // A run's event read Codex's week again, and found a CLI the controller didn't list.
     let mut newer = reading("codex", "seven_day", 0.42);
     newer.observed_at = T0 + time::Duration::seconds(30);
-    state.quotas.insert("codex".into(), vec![newer]);
-    state.quotas.insert(
+    state.plan_windows.insert("codex".into(), vec![newer]);
+    state.plan_windows.insert(
         "claude-code".into(),
         vec![reading("claude-code", "five_hour", 0.2)],
     );
@@ -516,11 +516,11 @@ fn the_settings_pick_the_parts_their_sides_and_who_shows() {
 /// are merged, from the plan's first task until the run ends. A cancelled task doesn't count.
 #[test]
 fn the_run_mod_draws_the_workflow_under_way() {
-    use crate::state::{CardRow, RunState};
-    use argonauts_core::events::card::CardState;
+    use crate::state::{RunState, TaskRow};
     use argonauts_core::events::run::{RunNamed, RunOutcome};
+    use argonauts_core::events::task::TaskState;
     use argonauts_core::settings::workflows::RunStyle;
-    use argonauts_core::{CardId, RunId};
+    use argonauts_core::{RunId, TaskId};
 
     let run_id = RunId::new("run-20260930-101500-3fa2").unwrap();
     let mut status = crew_status("claude-code");
@@ -539,18 +539,18 @@ fn the_run_mod_draws_the_workflow_under_way() {
     assert_eq!(part(&state), None, "no tasks to count yet");
 
     let states = [
-        Some(CardState::Integrated),
-        Some(CardState::Integrated),
-        Some(CardState::Integrated),
+        Some(TaskState::Merged),
+        Some(TaskState::Merged),
+        Some(TaskState::Merged),
         None,
         None,
-        Some(CardState::Cancelled),
+        Some(TaskState::Cancelled),
     ];
     let run = state.runs.get_mut(&run_id).unwrap();
-    for (n, card_state) in (1..).zip(states) {
-        let mut card = CardRow::new(CardId::numbered(n), "a task");
-        card.state = card_state;
-        run.cards.insert(card.id.clone(), card);
+    for (n, task_state) in (1..).zip(states) {
+        let mut task = TaskRow::new(TaskId::numbered(n), "a task");
+        task.state = task_state;
+        run.tasks.insert(task.id.clone(), task);
     }
     let meter = |label: &str| PartBody::Meter {
         label: label.into(),
@@ -617,8 +617,8 @@ fn the_spend_part_is_the_week_unless_the_run_has_a_limit() {
         }
     );
 
-    state.status.as_mut().unwrap().limit = Some(BudgetAmount {
-        unit: BudgetUnit::Usd,
+    state.status.as_mut().unwrap().limit = Some(LimitAmount {
+        unit: LimitUnit::Usd,
         amount: 5.0,
     });
     assert_eq!(
@@ -659,9 +659,9 @@ fn parts_with_nothing_to_show_draw_nothing() {
 
 /// A turn's own reading shows before the controller's first status names the crew.
 #[test]
-fn a_chat_turns_reading_shows_before_any_status() {
+fn a_conversation_turns_reading_shows_before_any_status() {
     let mut state = AppState::default();
-    state.quotas.insert(
+    state.plan_windows.insert(
         "claude-code".into(),
         vec![reading("claude-code", "five_hour", 0.71)],
     );
@@ -677,7 +677,7 @@ fn a_chat_turns_reading_shows_before_any_status() {
 fn a_mods_status_text_sits_last_unless_you_place_it() {
     let mut state = AppState::default();
     state.status = Some(crew_status("claude-code"));
-    state.chat.mod_status = vec![("weather".to_owned(), "sunny".to_owned())];
+    state.conversation.plugin_status = vec![("weather".to_owned(), "sunny".to_owned())];
     let line = built(&state);
     let Some(LinePart::Added(last)) = line.right.last() else {
         panic!("the mod's text");
@@ -693,7 +693,7 @@ fn a_mods_status_text_sits_last_unless_you_place_it() {
     assert_eq!(line.right.len(), 1, "placed once, on the left");
 
     let hidden = UiSettings {
-        mod_output: ModOutput::Off,
+        plugin_output: PluginOutput::Off,
         ..UiSettings::default()
     };
     let line = build(&state, &hidden, &BTreeMap::new(), clock().now);
@@ -753,19 +753,19 @@ fn reset_times_read_as_claude_code_writes_them() {
 #[test]
 fn a_page_the_conversation_published_names_the_artifact_part() {
     use argonauts_core::AgentEvent;
-    use argonauts_core::app::{AppEvent, ChatEvent};
+    use argonauts_core::app::{AppEvent, ConversationEvent};
     use argonauts_core::names::TurnId;
 
     let mut state = AppState::default();
     state.status = Some(crew_status("claude-code"));
-    let said = |event| AppEvent::Chat {
-        event: ChatEvent::Agent {
+    let said = |event| AppEvent::Conversation {
+        event: ConversationEvent::Agent {
             turn: TurnId::numbered(1),
             event,
         },
     };
-    state.apply(&AppEvent::Chat {
-        event: ChatEvent::TurnStarted {
+    state.apply(&AppEvent::Conversation {
+        event: ConversationEvent::TurnStarted {
             turn: TurnId::numbered(1),
             text: "write it up".into(),
             worker: "claude-code/opus".parse().unwrap(),
@@ -820,7 +820,7 @@ fn a_mod_of_yours_the_line_lists_is_its_chip() {
         .find(|(starter, _)| *starter == "checks")
         .unwrap();
     let mut file = check::read(name, text).unwrap();
-    file.places = vec![ModPlace::ModeLine];
+    file.places = vec![ModPlace::BottomLine];
     let reading = ModReading::sample(ModBody::Stack);
     let mut state = AppState::default();
     let mut status = crew_status("claude-code");
@@ -887,46 +887,130 @@ fn the_stats_part_says_the_periods_tokens() {
     assert_eq!(tone, Tone::Dim);
 }
 
-/// With no run on screen, the `context` part is the conversation's own session: its categories
-/// against where its CLI compacts, the free space left out.
+/// The `context` part of a line built from `state`.
+fn context_part(state: &AppState) -> Option<PartBody> {
+    built(state).left.iter().find_map(|part| match part {
+        LinePart::Added(part) if part.name == "context" => Some(part.body.clone()),
+        _ => None,
+    })
+}
+
+fn fill(who: &str, percent: u32, level: crate::kit::Level) -> Option<PartBody> {
+    Some(PartBody::Fill {
+        label: "context".to_owned(),
+        who: who.to_owned(),
+        who_role: Role::Label,
+        percent,
+        level,
+    })
+}
+
+/// A run on screen with a working session for each `(label, used, cap)`.
+fn with_sessions(state: &mut AppState, sessions: &[(&str, u64, u64)]) -> argonauts_core::RunId {
+    use crate::state::{RunState, SessionState, SessionStatus};
+    use argonauts_core::names::{RoleName, SessionKey};
+    use argonauts_core::views::ContextUse;
+
+    let run_id = argonauts_core::RunId::new("run-20260930-101500-3fa2").unwrap();
+    let mut run = RunState::new(run_id.clone());
+    for (n, (label, used, cap)) in (1..).zip(sessions) {
+        let key = SessionKey::numbered(n);
+        let worker = "claude-code/claude-sonnet-5-5".parse().unwrap();
+        let started = time::OffsetDateTime::UNIX_EPOCH;
+        let mut session = SessionState::new(
+            key.clone(),
+            worker,
+            "claude-code",
+            RoleName::Worker,
+            started,
+        );
+        session.label = Some((*label).to_owned());
+        session.status = SessionStatus::Working;
+        session.context = Some(ContextUse {
+            used: *used,
+            cap: *cap,
+        });
+        run.session_order.push(key.clone());
+        run.sessions.insert(key, session);
+    }
+    state.attached = Some(run_id.clone());
+    state.runs.insert(run_id.clone(), run);
+    run_id
+}
+
+fn set_used(state: &mut AppState, run: &argonauts_core::RunId, label: &str, used: u64) {
+    let sessions = &mut state.runs.get_mut(run).unwrap().sessions;
+    let session = sessions
+        .values_mut()
+        .find(|session| session.label.as_deref() == Some(label))
+        .unwrap();
+    session.context.as_mut().unwrap().used = used;
+}
+
+/// The conversation's count: `total` tokens in a 1M window that compacts at 967k.
+fn counted(total: u64) -> crate::state::ContextCount {
+    use argonauts_core::events::context::ContextUsage;
+    crate::state::ContextCount {
+        usage: ContextUsage {
+            total_tokens: total,
+            window: 1_000_000,
+            raw_window: 1_000_000,
+            auto_compact: true,
+            auto_compact_threshold: Some(967_000),
+            ..ContextUsage::default()
+        },
+        counted: time::OffsetDateTime::UNIX_EPOCH,
+    }
+}
+
+/// With no run on screen, the `context` part is the main session's, against where its CLI
+/// compacts.
 #[test]
-fn the_context_part_reads_the_conversation_without_a_run() {
-    use argonauts_core::events::context::{ContextCategory, ContextPart};
+fn the_context_part_names_the_main_session_without_a_run() {
+    use crate::kit::Level;
     let mut state = AppState::default();
     let mut status = crew_status("claude-code");
     status.line.settings =
         BottomLineSettings::from_toml("left = [\"mode\", \"context\"]\n").unwrap();
     state.status = Some(status);
-    state.chat.context = Some(crate::state::ContextBreakdown {
-        categories: vec![
-            ContextCategory {
-                part: ContextPart::Messages,
-                tokens: 90_000,
-            },
-            ContextCategory {
-                part: ContextPart::SystemPrompt,
-                tokens: 10_000,
-            },
-            ContextCategory {
-                part: ContextPart::Free,
-                tokens: 100_000,
-            },
+    assert_eq!(context_part(&state), None, "nothing counted yet");
+    state.conversation.context = Some(counted(609_210));
+    assert_eq!(context_part(&state), fill("main", 63, Level::Ok));
+    state.conversation.context = Some(counted(944_619));
+    assert_eq!(context_part(&state), fill("main", 98, Level::Danger));
+}
+
+/// With a run on screen the part names its busiest live session, against where that starts
+/// afresh. The main session's shows only while it alone is close to compacting.
+#[test]
+fn the_context_part_names_the_busiest_agent_unless_only_the_main_session_is_close() {
+    use crate::kit::Level;
+    let mut state = AppState::default();
+    let mut status = crew_status("claude-code");
+    status.line.settings =
+        BottomLineSettings::from_toml("left = [\"mode\", \"context\"]\n").unwrap();
+    state.status = Some(status);
+    let run_id = with_sessions(
+        &mut state,
+        &[
+            ("build:due-flag", 36_200, 180_000),
+            ("build:due-tests", 13_400, 244_800),
         ],
-        auto_compact_at: Some(160_000),
-        window: 200_000,
-        ..Default::default()
-    });
-    let line = built(&state);
-    let context = line
-        .left
-        .iter()
-        .find_map(|part| match part {
-            LinePart::Added(part) if part.name == "context" => Some(part.body.clone()),
-            _ => None,
-        })
-        .expect("the context part draws");
-    let PartBody::Meter { value, .. } = context else {
-        panic!("a meter: {context:?}");
-    };
-    assert_eq!(value, "63%");
+    );
+    state.conversation.context = Some(counted(750_000));
+    assert_eq!(context_part(&state), fill("build:due-flag", 20, Level::Ok));
+
+    // Both are close: the agent's stays.
+    set_used(&mut state, &run_id, "build:due-flag", 171_400);
+    state.conversation.context = Some(counted(944_619));
+    assert_eq!(
+        context_part(&state),
+        fill("build:due-flag", 95, Level::Danger)
+    );
+
+    // Only the main session is close.
+    set_used(&mut state, &run_id, "build:due-flag", 36_200);
+    assert_eq!(context_part(&state), fill("main", 98, Level::Danger));
+    state.conversation.context = Some(counted(800_000));
+    assert_eq!(context_part(&state), fill("main", 83, Level::Warn));
 }

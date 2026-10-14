@@ -1,0 +1,62 @@
+# Best of N: the same task, tried several times.
+name  = "best-of-n"
+about = "Several workers try the same task and the judge picks one"
+adapt = true
+
+[[step]]
+name        = "Try"
+role        = "worker"
+count       = 3
+independent = true           # each in its own worktree, without seeing the others
+
+[[step]]
+name = "Pick"
+role = "judge"
+does = "Compare the tries against the request and keep the one that holds up best."
+
+[captain_or_crew]
+force = "captain"
+
+[captain]
+tries = 3
+
+# Its phases, which run in place of the steps above when workflows.adapt_with = "phases".
+[params]
+tries = 3
+
+[[phases]]
+name     = "Understand"
+detail   = "your prompt is the goal, unless captain.understand_first asks the agent to read it back"
+standard = "understand"
+
+  [[phases.steps]]
+  kind  = "read"
+  name  = "reading"
+  role  = "main"
+  label = "read:{provider}"
+
+  [[phases.steps]]
+  kind     = "approval"
+  approval = "understand"
+  when     = "understand_first"
+
+[[phases]]
+name     = "Build"
+detail   = "independent tries at the task, each in its own worktree, keeping one that passes the checks"
+standard = "do"
+
+  [[phases.steps]]
+  kind  = "build"
+  role  = "worker"
+  input = "goal"
+  count = "{{tries}}"
+  label = "build:{item}"
+
+[[phases]]
+name     = "Merge"
+detail   = "the final check, then the merge into your branch"
+standard = "decide"
+
+  [[phases.steps]]
+  kind  = "merge"
+  label = "merge:{branch}"

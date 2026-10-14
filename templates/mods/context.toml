@@ -1,0 +1,13 @@
+# How full the main session's context is, as a stacked bar. /mods lists it beside the others.
+name   = "context"             # /mods context opens its page
+title  = "context"
+body   = "stack"               # stack · meters · list · columns · sparkline · marks · text
+places = ["context"]           # above · bottom-line · overview · status · usage · context · limits · stats
+form   = "full"                # full · compact · line
+
+[data]
+source = "context"             # a built-in source: context · plan_usage · spend · tokens · runs · waiting
+
+[levels]
+warn   = 80                    # amber from this percent of the window
+danger = 95                    # red from this one

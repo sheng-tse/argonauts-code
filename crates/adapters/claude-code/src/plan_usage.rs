@@ -10,8 +10,8 @@
 
 use std::path::Path;
 
-use argonauts_core::limits::{QuotaAnswer, QuotaSource};
-use argonauts_core::names::VendorId;
+use argonauts_core::limits::{PlanUsageAnswer, PlanUsageSource};
+use argonauts_core::names::AgentId;
 use argonauts_core::plan_usage::{
     Behavior, Behaviors, ExtraUsage, LiveUsage, LiveWindow, UsageReport, UsageShare, plan_name,
 };
@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::command::SUBSCRIPTION_KEYS;
+use crate::command::{SUBSCRIPTION_KEYS, flag_value};
 use crate::json::{array_at, bool_at, str_at, string_at};
 
 const ID: &str = "claude-code";
@@ -31,7 +31,10 @@ const BEHAVIORS: &str = "usage-behaviors";
 /// Plans whose `/usage` lists the Sonnet week, as Claude Code 2.1.295 decides it.
 const SONNET_WEEK_PLANS: &[&str] = &["max", "team"];
 
-pub fn probe_command(program: &str, workdir: &Path) -> CommandSpec {
+/// The command that reads the plan's windows. It sends no message, and names `model` all the
+/// same, as every session does: whatever the CLI did with one, it would never be on the
+/// model your settings make its default.
+pub fn probe_command(program: &str, workdir: &Path, model: &str) -> CommandSpec {
     let args = [
         "-p",
         "--input-format",
@@ -45,6 +48,10 @@ pub fn probe_command(program: &str, workdir: &Path) -> CommandSpec {
         "",
     ];
     let mut spec = CommandSpec::new(program, workdir).args(args);
+    // One that isn't a plain name is left off, since a reading is still worth having.
+    if let Ok(model) = flag_value("model", model) {
+        spec = spec.args(["--model", model]);
+    }
     let requests = [
         (INITIALIZE, json!({"subtype": "initialize"})),
         (
@@ -71,7 +78,7 @@ pub fn probe_command(program: &str, workdir: &Path) -> CommandSpec {
 
 /// The answer once both `get_usage` replies are in, or at once when the windows failed.
 /// `None` until then.
-pub fn answer(stdout: &str, read_at: OffsetDateTime) -> Option<QuotaAnswer> {
+pub fn answer(stdout: &str, read_at: OffsetDateTime) -> Option<PlanUsageAnswer> {
     let replies = Replies::of(stdout);
     if replies.failed.is_none() {
         replies.behaviors.as_ref()?;
@@ -81,7 +88,7 @@ pub fn answer(stdout: &str, read_at: OffsetDateTime) -> Option<QuotaAnswer> {
 
 /// The windows, to show while the behaviors scan goes on. Only once `initialize` has named the
 /// account, so they're kept for the account the whole answer will name.
-pub fn windows_first(stdout: &str, read_at: OffsetDateTime) -> Option<QuotaAnswer> {
+pub fn windows_first(stdout: &str, read_at: OffsetDateTime) -> Option<PlanUsageAnswer> {
     let replies = Replies::of(stdout);
     replies.account.as_ref()?;
     replies.windows.as_ref()?;
@@ -90,7 +97,7 @@ pub fn windows_first(stdout: &str, read_at: OffsetDateTime) -> Option<QuotaAnswe
 
 /// The answer from whatever came before the probe ended: the windows without the behaviors
 /// when the scan was slow.
-pub fn answer_at_end(stdout: &str, read_at: OffsetDateTime) -> Option<QuotaAnswer> {
+pub fn answer_at_end(stdout: &str, read_at: OffsetDateTime) -> Option<PlanUsageAnswer> {
     Replies::of(stdout).answer(read_at)
 }
 
@@ -130,9 +137,9 @@ impl Replies {
         replies
     }
 
-    fn answer(self, read_at: OffsetDateTime) -> Option<QuotaAnswer> {
+    fn answer(self, read_at: OffsetDateTime) -> Option<PlanUsageAnswer> {
         if let Some(failed) = self.failed {
-            return Some(QuotaAnswer::failed(failed));
+            return Some(PlanUsageAnswer::failed(failed));
         }
         let usage = self.windows.filter(|body| !body.is_null())?;
         let mut live = reading(&usage, self.account.as_ref(), read_at);
@@ -141,8 +148,8 @@ impl Replies {
             .as_ref()
             .and_then(|body| body.get("behaviors"))
             .and_then(behaviors);
-        Some(QuotaAnswer {
-            windows: live.quota_readings(),
+        Some(PlanUsageAnswer {
+            windows: live.plan_usage_readings(),
             plan: live.plan.clone(),
             live: Some(live),
             failed: None,
@@ -152,7 +159,7 @@ impl Replies {
 
 /// `get_usage`'s answer as a reading of the account `initialize` named.
 fn reading(usage: &Value, account: Option<&Value>, read_at: OffsetDateTime) -> LiveUsage {
-    let mut live = LiveUsage::new(VendorId(ID.to_owned()), QuotaSource::GetUsage, read_at);
+    let mut live = LiveUsage::new(AgentId(ID.to_owned()), PlanUsageSource::GetUsage, read_at);
     live.account = account
         .and_then(|account| string_at(account, "email"))
         .map(|email| email.trim().to_owned())
@@ -300,14 +307,13 @@ fn time_at(value: &Value, key: &str) -> Option<OffsetDateTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::limits::QuotaStatus;
+    use argonauts_core::limits::PlanUsageStatus;
     use time::macros::datetime;
 
     const READ: OffsetDateTime = datetime!(2026-10-09 02:55:16 UTC);
 
     fn recorded() -> String {
-        let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/2.1.295/plan_usage.stdout.jsonl");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/plan_usage.stdout.jsonl");
         std::fs::read_to_string(path).unwrap()
     }
 
@@ -319,8 +325,21 @@ mod tests {
 
     #[test]
     fn the_probe_sends_three_requests_and_never_a_message() {
-        let spec = probe_command("claude", Path::new("/work"));
+        let spec = probe_command("claude", Path::new("/work"), "haiku");
         assert!(spec.keep_stdin_open);
+        let named = spec.args.iter().position(|arg| arg == "--model");
+        let model = named.and_then(|at| spec.args.get(at + 1));
+        assert_eq!(model.map(String::as_str), Some("haiku"));
+        let odd = probe_command(
+            "claude",
+            Path::new("/work"),
+            "--dangerously-skip-permissions",
+        );
+        assert!(
+            !odd.args
+                .iter()
+                .any(|arg| arg == "--model" || arg.starts_with("--danger"))
+        );
         let lines: Vec<Value> = spec
             .stdin
             .as_deref()
@@ -381,7 +400,7 @@ mod tests {
             answer
                 .windows
                 .iter()
-                .all(|r| r.status == QuotaStatus::Allowed)
+                .all(|r| r.status == PlanUsageStatus::Allowed)
         );
         assert_eq!(answer.windows[0].window.as_deref(), Some("five_hour"));
         assert!(live.behaviors.is_none());
@@ -510,7 +529,7 @@ mod tests {
         let live = answer.live.unwrap();
         assert_eq!(live.windows.len(), 1);
         assert_eq!(live.plan.as_deref(), Some("Pro"));
-        assert_eq!(answer.windows[0].status, QuotaStatus::Warning);
+        assert_eq!(answer.windows[0].status, PlanUsageStatus::Warning);
         let extra = live.extra.unwrap();
         assert!(!extra.enabled && extra.limit.is_none());
     }

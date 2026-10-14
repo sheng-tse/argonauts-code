@@ -6,23 +6,23 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, MutexGuard};
 
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::session::{EndReason, InputPartKind, VendorWorkflow};
+use argonauts_core::events::session::{CliWorkflowRun, EndReason, InputPartKind};
 use argonauts_core::events::workflow::{AgentSession, RunNote, WorkflowEvent, WorkflowReport};
 use argonauts_core::log::{Note, NoteLevel};
-use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::session_runner::Access;
 use argonauts_core::settings::crew::CrewRole;
-use argonauts_core::worker::Access;
 use argonauts_runner::{AgentCall, AgentEnd, Check, Checked, JournalEntry, Kept, Script};
 use futures::future::BoxFuture;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use super::{goal, journal, tasks};
-use crate::card::support::part;
-use crate::engine::host::{Host, Ran, SessionPlan, StandIns};
+use crate::engine::host::{Fallbacks, Host, Ran, SessionPlan};
 use crate::error::{EngineError, EngineResult};
 use crate::prompts::instructions::{self, CallAuthor};
 use crate::roles;
+use crate::task::support::part;
 use crate::workflow::StepCall;
 
 /// As much of a task's change as a reviewer is handed in its prompt. It reads the rest in the
@@ -117,7 +117,7 @@ impl<'a> Bridge<'a> {
     }
 
     /// The session behind each row that has one yet, in the rows' order.
-    fn seated(&self) -> Vec<AgentSession> {
+    fn row_sessions(&self) -> Vec<AgentSession> {
         let sessions = lock(&self.sessions);
         lock(&self.rows)
             .iter()
@@ -181,13 +181,13 @@ impl<'a> Bridge<'a> {
             None => None,
         };
         if let Some(checks) = checks {
-            parts.push(part(InputPartKind::GateOutput, "the checks", checks, None));
+            parts.push(part(InputPartKind::CheckOutput, "the checks", checks, None));
         }
         let plan = SessionPlan {
             at: Some(self.call.at.clone()),
             role: call.role.fine_role(),
             worker,
-            card: None,
+            task: None,
             access: Access::ReadOnly,
             step: None,
             workdir,
@@ -204,9 +204,9 @@ impl<'a> Bridge<'a> {
         let keep = |key: &SessionKey| self.ran(call, key);
         let ran = self
             .host
-            .run_session_in_turn(plan, known.as_ref(), StandIns::Allowed, &keep)
+            .run_session_in_turn(plan, known.as_ref(), Fallbacks::Allowed, &keep)
             .await?;
-        // A fallback may have taken the seat under a session of its own.
+        // It may have fallen back to another agent, under a session of its own.
         self.ran(call, &ran.key)?;
         let end = answer(call, &ran);
         if let Ok(verdict) = &end.result {
@@ -215,35 +215,35 @@ impl<'a> Bridge<'a> {
         Ok(end)
     }
 
-    /// Who takes the call: the model it names, else the seat of its role. A reviewer or a
-    /// judge of a task comes from another provider than its author where one is seated, and a
-    /// call that mustn't be the author never is.
-    fn pick(&self, call: &AgentCall) -> EngineResult<WorkerRef> {
+    /// Who takes the call: the model it names, else the one of its role's models it numbers.
+    /// A reviewer or a judge of a task comes from another provider than its author where the
+    /// role has one, and a call that mustn't be the author never is.
+    fn pick(&self, call: &AgentCall) -> EngineResult<ModelRef> {
         if let Some(model) = &call.model {
             return model
                 .parse()
                 .map_err(|err| EngineError::Refused(format!("{}: {err}", call.label)));
         }
         let host = self.host;
-        let mut seats = roles::candidates(host.settings(), call.role.fine_role());
+        let mut models = roles::candidates(host.settings(), call.role.fine_role());
         let available = host.services().workers.available();
-        if seats.iter().any(|seat| available.contains(seat)) {
-            seats.retain(|seat| available.contains(seat));
+        if models.iter().any(|model| available.contains(model)) {
+            models.retain(|model| available.contains(model));
         }
         if let Some(author) = tasks::author(self, call) {
-            if call.not_the_author && seats.iter().any(|seat| *seat != author) {
-                seats.retain(|seat| *seat != author);
+            if call.not_the_author && models.iter().any(|model| *model != author) {
+                models.retain(|model| *model != author);
             }
-            if matches!(call.role, CrewRole::Reviewers | CrewRole::Judge) || call.not_the_author {
-                let theirs = roles::family(host, &author);
+            if matches!(call.role, CrewRole::Reviewer | CrewRole::Judge) || call.not_the_author {
+                let theirs = roles::provider(host, &author);
                 // Stable, so the list's own order still decides among the others.
-                seats.sort_by_key(|seat| roles::family(host, seat) == theirs);
+                models.sort_by_key(|model| roles::provider(host, model) == theirs);
             }
         }
-        let seat = call.seat as usize % seats.len().max(1);
-        seats.into_iter().nth(seat).ok_or_else(|| {
+        let nth = call.model_index as usize % models.len().max(1);
+        models.into_iter().nth(nth).ok_or_else(|| {
             EngineError::Refused(format!(
-                "nobody is seated as {} to take {}",
+                "no model is set for the {} to take {}",
                 call.role, call.label
             ))
         })
@@ -278,7 +278,7 @@ impl argonauts_runner::Host for Bridge<'_> {
                 Ok(Some(tree)) => tree,
                 _ => self.host.repo().base_worktree.clone(),
             };
-            let task = tasks::card_of(self, check.task.as_deref());
+            let task = tasks::task_of(self, check.task.as_deref());
             let max_rounds = self.max_rounds.get(&check.step).copied();
             let checked = goal::check(
                 self.host,
@@ -311,7 +311,7 @@ impl argonauts_runner::Host for Bridge<'_> {
         lock(&self.rows).insert(call.row, call.index);
     }
 
-    fn report(&self, workflow: &VendorWorkflow) {
+    fn report(&self, workflow: &CliWorkflowRun) {
         // A row's prompt and answer are its session's to show, and would make every report
         // as long as the whole run's talk.
         let mut workflow = workflow.clone();
@@ -322,7 +322,7 @@ impl argonauts_runner::Host for Bridge<'_> {
         let report = WorkflowReport {
             step: self.call.at.step.clone(),
             workflow,
-            sessions: self.seated(),
+            sessions: self.row_sessions(),
             size_asked: self.size_asked.clone(),
         };
         let event = RunEventKind::Workflow(WorkflowEvent::Reported(Box::new(report)));
@@ -384,9 +384,8 @@ pub(super) fn answer(call: &AgentCall, ran: &Ran) -> AgentEnd {
         .filter(|text| !text.is_empty());
     let result = if end.reason != EndReason::Completed {
         // The same plain cause the agent's own row gives, such as "Codex refused the answer
-        // format Argonauts asked for".
-        let cli =
-            argonauts_core::display_names::DisplayNames::default().harness(&ran.worker.worker);
+        // format Argonauts Code asked for".
+        let cli = argonauts_core::display_names::DisplayNames::default().cli(&ran.worker.agent);
         Err(match end.reason.plain_line(&cli) {
             Some(why) => format!("{}: {why}", call.label),
             None => format!(

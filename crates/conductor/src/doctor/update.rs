@@ -1,13 +1,17 @@
-//! `/update` and `argonauts update`: each installed agent CLI's own updater in turn, such as
-//! `claude update`, with the version read before and after. Never a model call.
+//! `/update` and `argonauts update`: each installed agent CLI updated in turn the way it was
+//! installed, by Homebrew's or npm's command or by its own updater, such as `claude update`,
+//! with the version read before and after. Never a model call.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use argonauts_core::Adapter;
 use argonauts_core::settings::Settings;
 
+use super::newest::{install_source, update_program};
 use super::{BinaryProblem, VERSION_TIMEOUT, command, find_binary, first_line, read_version};
+use crate::plan_usage::find_unsandboxed;
 
 /// An updater downloads, so it gets far longer than a version check.
 pub const UPDATE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -24,7 +28,7 @@ pub enum UpdateOutcome {
     NotInstalled {
         install: Option<String>,
     },
-    /// Argonauts knows no updater of its own for this CLI.
+    /// Argonauts Code knows no updater of its own for this CLI.
     NoUpdater {
         version: Option<String>,
     },
@@ -41,7 +45,7 @@ pub enum UpdateOutcome {
     },
 }
 
-/// Runs each adapter's updater, one after another, as `timeout` allows each.
+/// Updates each adapter's CLI, one after another, as `timeout` allows each.
 pub async fn update_clis(
     adapters: &[Arc<dyn Adapter>],
     settings: &Settings,
@@ -49,21 +53,30 @@ pub async fn update_clis(
 ) -> Vec<CliUpdate> {
     let mut updates = Vec::new();
     for adapter in adapters {
-        let binary = settings
-            .agents
-            .get(adapter.id())
-            .and_then(|agent| agent.binary.as_deref());
-        updates.push(CliUpdate {
-            name: adapter.display_name().to_owned(),
-            outcome: update_one(adapter.as_ref(), binary, timeout).await,
-        });
+        updates.push(update_cli(adapter.as_ref(), settings, timeout).await);
     }
     updates
 }
 
+/// Updates one CLI, found where `agents.<id>.binary` points or on `PATH`.
+pub async fn update_cli(
+    adapter: &dyn Adapter,
+    settings: &Settings,
+    timeout: Duration,
+) -> CliUpdate {
+    let binary = settings
+        .agents
+        .get(adapter.id())
+        .and_then(|agent| agent.binary.as_deref());
+    CliUpdate {
+        name: adapter.display_name().to_owned(),
+        outcome: update_one(adapter, binary, timeout).await,
+    }
+}
+
 async fn update_one(
     adapter: &dyn Adapter,
-    binary: Option<&std::path::Path>,
+    binary: Option<&Path>,
     timeout: Duration,
 ) -> UpdateOutcome {
     let path = match find_binary(adapter, binary) {
@@ -80,17 +93,48 @@ async fn update_one(
             };
         }
     };
-    let version = || async {
-        read_version(&path, adapter.version_args(), VERSION_TIMEOUT)
-            .await
-            .ok()
-            .and_then(|output| adapter.parse_version(&output))
+    let source = install_source(&path, &adapter.install_sources());
+    let Some((program, args)) = update_program(adapter, source.as_ref()) else {
+        return UpdateOutcome::NoUpdater {
+            version: version_at(adapter, &path).await,
+        };
     };
-    let before = version().await;
-    let Some(args) = adapter.update_args() else {
-        return UpdateOutcome::NoUpdater { version: before };
+    // Homebrew and npm update what they installed. Anything else updates itself.
+    let updater = if program.is_empty() {
+        path.clone()
+    } else {
+        match find_unsandboxed(&program, None) {
+            Ok(found) => found,
+            Err(err) => {
+                return UpdateOutcome::Failed {
+                    version: version_at(adapter, &path).await,
+                    why: err.to_string(),
+                };
+            }
+        }
     };
-    let answer = match command::ask(&path, args, timeout).await {
+    update_with(adapter, &path, &updater, &args, timeout).await
+}
+
+async fn version_at(adapter: &dyn Adapter, path: &Path) -> Option<String> {
+    read_version(path, adapter.version_args(), VERSION_TIMEOUT)
+        .await
+        .ok()
+        .and_then(|output| adapter.parse_version(&output))
+}
+
+/// Runs `updater` with `args` and says what it did to the CLI at `path`, from that CLI's
+/// version before and after.
+async fn update_with(
+    adapter: &dyn Adapter,
+    path: &Path,
+    updater: &Path,
+    args: &[String],
+    timeout: Duration,
+) -> UpdateOutcome {
+    let before = version_at(adapter, path).await;
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let answer = match command::ask(updater, &args, timeout).await {
         Ok(answer) if answer.success => answer,
         Ok(answer) => {
             return UpdateOutcome::Failed {
@@ -105,7 +149,7 @@ async fn update_one(
             };
         }
     };
-    match (before, version().await) {
+    match (before, version_at(adapter, path).await) {
         (Some(before), Some(after)) if before == after => {
             UpdateOutcome::UpToDate { version: after }
         }
@@ -158,7 +202,7 @@ pub fn update_lines(updates: &[CliUpdate]) -> Vec<String> {
                 }
                 UpdateOutcome::NotInstalled { install: None } => format!("{name}   not installed"),
                 UpdateOutcome::NoUpdater { .. } => {
-                    format!("{name}   {version}   has no updater Argonauts knows")
+                    format!("{name}   {version}   has no updater Argonauts Code knows")
                 }
                 UpdateOutcome::UpToDate { .. } => format!("{name}   {version}   up to date"),
                 UpdateOutcome::Updated { to, .. } => format!("{name}   {version} → {to}"),
@@ -185,7 +229,7 @@ fn before(outcome: &UpdateOutcome) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doctor::tests::FakeHarness;
+    use crate::doctor::tests::FakeCli;
 
     /// A CLI whose version lives in a file its updater rewrites.
     fn updating(id: &'static str, dir: &std::path::Path, update: &str) -> Arc<dyn Adapter> {
@@ -196,7 +240,7 @@ mod tests {
             version.display()
         );
         let body = body.replace("$VERSION", &version.display().to_string());
-        Arc::new(FakeHarness::script(id, dir, &body, &["1.0.0"]).with_update(&["update"]))
+        Arc::new(FakeCli::script(id, dir, &body, &["1.0.0"]).with_update(&["update"]))
     }
 
     #[tokio::test]
@@ -210,9 +254,8 @@ mod tests {
                 dir.path(),
                 "echo checking; echo 'no network' >&2; exit 1",
             ),
-            Arc::new(FakeHarness::script("plain", dir.path(), "echo 3.1.4", &[]))
-                as Arc<dyn Adapter>,
-            Arc::new(FakeHarness::named("absent")) as Arc<dyn Adapter>,
+            Arc::new(FakeCli::script("plain", dir.path(), "echo 3.1.4", &[])) as Arc<dyn Adapter>,
+            Arc::new(FakeCli::named("absent")) as Arc<dyn Adapter>,
         ];
         let updates = update_clis(&adapters, &Settings::default(), VERSION_TIMEOUT).await;
         let outcomes: Vec<&UpdateOutcome> = updates.iter().map(|update| &update.outcome).collect();
@@ -235,6 +278,40 @@ mod tests {
                 },
                 &UpdateOutcome::NotInstalled { install: None },
             ]
+        );
+    }
+
+    /// An install from Homebrew or npm is updated by that program, never by the CLI itself.
+    #[tokio::test]
+    async fn another_program_updates_the_cli_it_installed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let adapter = updating("installed", dir.path(), "echo 'the wrong updater'; exit 1");
+        let version = dir.path().join("installed-version");
+        let installer = dir.path().join("installer");
+        let body = format!(
+            "#!/bin/sh\n[ \"$1 $2\" = 'upgrade installed' ] || exit 2\necho 2.0.0 > '{}'\n",
+            version.display()
+        );
+        std::fs::write(&installer, body).unwrap();
+        std::fs::set_permissions(&installer, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cli = find_binary(adapter.as_ref(), None).ok().unwrap();
+        let args = ["upgrade".to_owned(), "installed".to_owned()];
+        let outcome = update_with(adapter.as_ref(), &cli, &installer, &args, VERSION_TIMEOUT).await;
+        assert_eq!(
+            outcome,
+            UpdateOutcome::Updated {
+                from: Some("1.0.0".into()),
+                to: "2.0.0".into()
+            }
+        );
+        // The same again changes nothing, and says so.
+        let outcome = update_with(adapter.as_ref(), &cli, &installer, &args, VERSION_TIMEOUT).await;
+        assert_eq!(
+            outcome,
+            UpdateOutcome::UpToDate {
+                version: "2.0.0".into()
+            }
         );
     }
 

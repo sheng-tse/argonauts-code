@@ -1,10 +1,10 @@
-//! Labels: the one-token names agents and commands go by in the chat, the panel, and the
-//! workflow view, such as `fix:slugify`, `read:claude`, or `review:median:r2`. They're
-//! `phase:item`, lowercase, and unique in a run. Card ids stay where ids belong (Ctrl+O, the
+//! Labels: the one-token names agents and commands go by in the conversation, the panel, and the
+//! workflow view, such as `fix:slugify`, `read:anthropic`, or `review:median:r2`. They're
+//! `phase:item`, lowercase, and unique in a run. Task ids stay where ids belong (Ctrl+O, the
 //! agent view's id line, and commands).
 //!
-//! A step's `label` is a pattern. Code fills `{phase}`, `{item}`, `{family}`, `{n}`, `{round}`,
-//! `{attempt}`, and `{branch}`, adds `:r2` from the second round on, and `-2` when two agents
+//! A step's `label` is a pattern. Code fills `{phase}`, `{item}`, `{provider}`, `{n}`, `{round}`,
+//! `{try}`, and `{branch}`, adds `:r2` from the second round on, and `-2` when two agents
 //! would share a label.
 
 use unicode_width::UnicodeWidthStr;
@@ -18,47 +18,47 @@ pub const MAX_CELLS: usize = 20;
 /// What a label pattern's placeholders stand for. Unset ones fill from the phase.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LabelParts<'a> {
-    /// The phase title, such as `Fix`.
+    /// The phase name, such as `Fix`.
     pub phase: &'a str,
-    /// The card or plan item, such as `slugify`.
+    /// The task or plan item, such as `slugify`.
     pub item: Option<&'a str>,
-    /// The model family, such as `claude`.
-    pub family: Option<&'a str>,
+    /// The model's provider, such as `anthropic`.
+    pub provider: Option<&'a str>,
     /// The agent's number among the step's agents, from 1.
     pub n: Option<u32>,
     /// 1 the first time.
     pub round: u32,
-    /// A goal's attempt.
-    pub attempt: Option<u32>,
+    /// A goal's try.
+    pub try_number: Option<u32>,
     /// The branch a merge lands on.
     pub branch: Option<&'a str>,
 }
 
-/// The pattern a step takes when the lead left its label out.
+/// The pattern a step takes when the main agent left its label out.
 pub fn default_pattern(kind: StepKind, role: Option<RoleName>) -> &'static str {
     match (kind, role) {
-        (StepKind::Restate, _) => "read:{family}",
-        (StepKind::Differ, _) => "compare:{n}",
+        (StepKind::Read, _) => "read:{provider}",
+        (StepKind::Compare, _) => "compare:{n}",
         (StepKind::Draft, Some(RoleName::Orchestrator)) => "plan:orchestrator",
-        (StepKind::Draft, _) => "draft:{family}",
+        (StepKind::Draft, _) => "draft:{provider}",
         (StepKind::Map, _) => "map:{n}",
-        (StepKind::Refute, _) => "critique:{family}",
-        (StepKind::Judge, _) => "judge:{family}",
-        (StepKind::Synthesize, _) => "{phase}:{family}",
+        (StepKind::Critique, _) => "critique:{provider}",
+        (StepKind::Judge, _) => "judge:{provider}",
+        (StepKind::Synthesize, _) => "{phase}:{provider}",
         (StepKind::Review, _) => "review:{item}",
-        (StepKind::Gate, _) => "tests:{item}",
-        (StepKind::Check, _) => "check:final",
+        (StepKind::Checks, _) => "checks:{item}",
+        (StepKind::GoalCheck, _) => "check:final",
         (StepKind::Merge, _) => "merge:{branch}",
         _ => "{phase}:{item}",
     }
 }
 
-/// The label a build card's gates take, beside its owner's.
-pub fn gates(item: &str) -> String {
-    format!("tests:{}", slug(item, 3))
+/// The label a build task's checks take, beside its worker's.
+pub fn checks(item: &str) -> String {
+    format!("checks:{}", slug(item, 3))
 }
 
-/// The label a build card's review takes, beside its owner's.
+/// The label a build task's review takes, beside its worker's.
 pub fn review(item: &str) -> String {
     format!("review:{}", slug(item, 3))
 }
@@ -67,7 +67,7 @@ pub fn review(item: &str) -> String {
 /// number, so a label is never left with braces in it.
 pub fn fill(pattern: &str, parts: &LabelParts<'_>) -> String {
     let n = parts.n.unwrap_or(1).to_string();
-    let attempt = parts.attempt.map(|a| a.to_string());
+    let try_number = parts.try_number.map(|a| a.to_string());
     let filled = pattern
         .replace("{phase}", &slug(parts.phase, 2))
         .replace(
@@ -75,10 +75,10 @@ pub fn fill(pattern: &str, parts: &LabelParts<'_>) -> String {
             &parts.item.map(|i| slug(i, 3)).unwrap_or(n.clone()),
         )
         .replace(
-            "{family}",
-            &parts.family.map(|f| slug(f, 2)).unwrap_or(n.clone()),
+            "{provider}",
+            &parts.provider.map(|f| slug(f, 2)).unwrap_or(n.clone()),
         )
-        .replace("{attempt}", attempt.as_deref().unwrap_or(&n))
+        .replace("{try}", try_number.as_deref().unwrap_or(&n))
         .replace(
             "{branch}",
             &parts.branch.map(|b| slug(b, 3)).unwrap_or("main".into()),
@@ -110,7 +110,7 @@ pub fn unique(label: &str, taken: impl Fn(&str) -> bool) -> String {
         .unwrap_or_else(|| label.to_owned())
 }
 
-/// Why a label the lead wrote can't be used, or `None` when it can.
+/// Why a label the main agent wrote can't be used, or `None` when it can.
 pub fn problem(label: &str) -> Option<String> {
     if label.is_empty() {
         return Some("a label is empty".to_owned());
@@ -141,19 +141,17 @@ pub fn pattern_problem(pattern: &str) -> Option<String> {
     let sample = LabelParts {
         phase: "phase",
         item: Some("item"),
-        family: Some("claude"),
+        provider: Some("anthropic"),
         n: Some(1),
         round: 1,
-        attempt: Some(1),
+        try_number: Some(1),
         branch: Some("main"),
     };
     let unknown = pattern
         .split('{')
         .skip(1)
         .filter_map(|rest| rest.split_once('}').map(|(name, _)| name))
-        .find(|name| {
-            !["phase", "item", "family", "n", "round", "attempt", "branch"].contains(name)
-        });
+        .find(|name| !["phase", "item", "provider", "n", "round", "try", "branch"].contains(name));
     if let Some(name) = unknown {
         return Some(format!(
             "label `{pattern}` uses an unknown placeholder `{{{name}}}`"
@@ -162,7 +160,7 @@ pub fn pattern_problem(pattern: &str) -> Option<String> {
     let raw = pattern
         .replace("{phase}", "phase")
         .replace("{item}", "item")
-        .replace("{family}", "claude")
+        .replace("{provider}", "anthropic")
         .replace("{branch}", "main")
         .replace(['{', '}'], "");
     problem(&raw).or_else(|| problem(&fill(pattern, &sample)))
@@ -201,7 +199,7 @@ pub fn id_slug(text: &str, words: usize) -> String {
     }
 }
 
-/// A card's item from its title: its first two words, less a leading verb that only repeats
+/// A task's item from its title: its first two words, less a leading verb that only repeats
 /// the phase (`Fix slugify's dashes` under `Fix` is `slugify-dashes`).
 pub fn item_from_title(title: &str, phase: &str) -> String {
     let phase = phase.to_lowercase();
@@ -234,22 +232,32 @@ fn tidy(label: &str) -> String {
     out.trim_end_matches([':', '-']).to_owned()
 }
 
-/// `label` then `suffix` in [`MAX_CELLS`]: the label is cut from the item's end, never
-/// mid-character, so the round or the repeat number always shows.
+/// `label` then `suffix` in [`MAX_CELLS`]: whole words go from the item's end, so a label never
+/// stops mid-word and the round or the repeat number always shows. An item that is one long
+/// word is cut, never mid-character.
 fn fit(label: &str, suffix: &str) -> String {
     let room = MAX_CELLS.saturating_sub(suffix.width());
     if label.width() <= room {
         return format!("{label}{suffix}");
     }
+    let item_starts = label.find(':').map_or(0, |colon| colon + 1);
+    let mut kept = label;
+    while kept.width() > room {
+        // A label code gives outright, such as `commit message`, has its words apart.
+        match kept.rfind(['-', ' ']) {
+            Some(at) if at > item_starts => kept = &kept[..at],
+            _ => break,
+        }
+    }
     let mut out = String::new();
-    for c in label.chars() {
+    for c in kept.chars() {
         let next = format!("{out}{c}");
         if next.width() > room {
             break;
         }
         out = next;
     }
-    format!("{}{suffix}", out.trim_end_matches([':', '-']))
+    format!("{}{suffix}", out.trim_end_matches([':', '-', ' ']))
 }
 
 #[cfg(test)]
@@ -272,7 +280,7 @@ mod tests {
         let long = id_slug(&"abcdefghij ".repeat(10), 10);
         assert!(long.len() <= MAX_SLUG, "{long}");
         for slug in [id_slug("修復 x", 4), long] {
-            crate::CardId::new(format!("task-{slug}-99")).expect("a valid id");
+            crate::TaskId::new(format!("task-{slug}-99")).expect("a valid id");
         }
     }
 
@@ -280,7 +288,7 @@ mod tests {
     const MAX_SLUG: usize = crate::ids::MAX_ID_LEN - 8;
 
     #[test]
-    fn patterns_fill_from_the_item_and_the_family() {
+    fn patterns_fill_from_the_item_and_the_provider() {
         let fix = LabelParts {
             item: Some("slugify"),
             ..parts("Fix")
@@ -288,10 +296,10 @@ mod tests {
         assert_eq!(fill("fix:{item}", &fix), "fix:slugify");
         assert_eq!(fill("{phase}:{item}", &fix), "fix:slugify");
         let read = LabelParts {
-            family: Some("Claude"),
+            provider: Some("Anthropic"),
             ..parts("Understand")
         };
-        assert_eq!(fill("read:{family}", &read), "read:claude");
+        assert_eq!(fill("read:{provider}", &read), "read:anthropic");
         assert_eq!(
             fill(
                 "compare:{n}",
@@ -313,12 +321,12 @@ mod tests {
             ..parts("Review")
         };
         assert_eq!(fill("review:{item}", &review), "review:median:r2");
-        let taken = ["read:claude", "read:claude-2"];
+        let taken = ["read:anthropic", "read:anthropic-2"];
         assert_eq!(
-            unique("read:claude", |l| taken.contains(&l)),
-            "read:claude-3"
+            unique("read:anthropic", |l| taken.contains(&l)),
+            "read:anthropic-3"
         );
-        assert_eq!(unique("read:gpt", |l| taken.contains(&l)), "read:gpt");
+        assert_eq!(unique("read:openai", |l| taken.contains(&l)), "read:openai");
         // The round and the repeat number show, inside twenty cells.
         let long = LabelParts {
             item: Some("verbose-flag-parsing"),
@@ -356,6 +364,42 @@ mod tests {
     }
 
     #[test]
+    fn a_label_too_wide_drops_whole_words() {
+        let build = LabelParts {
+            item: Some("add-explicit-burst"),
+            ..parts("Build")
+        };
+        assert_eq!(fill("build:{item}", &build), "build:add-explicit");
+        let review = LabelParts {
+            item: Some("document-the-burst"),
+            round: 2,
+            ..parts("Review")
+        };
+        assert_eq!(fill("review:{item}", &review), "review:document:r2");
+        assert_eq!(
+            unique("build:add-explicit", |label| label == "build:add-explicit"),
+            "build:add-explicit-2"
+        );
+        // One word wider than the label is all there is to cut.
+        let word = LabelParts {
+            item: Some("internationalization"),
+            ..parts("Review")
+        };
+        assert_eq!(fill("review:{item}", &word), "review:international");
+        assert_eq!(
+            unique("fix after main moved", |label| label
+                == "fix after main moved"),
+            "fix after main-2"
+        );
+        // The phase's own dash is never where a label ends.
+        let phase = LabelParts {
+            item: Some("verbose-flag-parsing"),
+            ..parts("Sign off")
+        };
+        assert_eq!(fill("{phase}:{item}", &phase), "sign-off:verbose");
+    }
+
+    #[test]
     fn written_labels_are_checked() {
         assert_eq!(problem("fix:slugify"), None);
         assert!(problem("Fix:slugify").is_some());
@@ -369,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn items_come_from_card_titles() {
+    fn items_come_from_task_titles() {
         assert_eq!(
             item_from_title("Fix slugify's dashes", "Fix"),
             "slugify-dashes"

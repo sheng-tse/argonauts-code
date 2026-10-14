@@ -132,13 +132,13 @@ fn classify_text(message: &str) -> Option<ErrorCategory> {
 
 fn classify(status: Option<&str>, code: Option<u16>, message: &str) -> Option<ErrorCategory> {
     let from_message = category_from_message(message);
-    let quota = || match from_message {
+    let plan_usage = || match from_message {
         Some(c @ (ErrorCategory::Billing | ErrorCategory::UsageLimit)) => c,
         _ => ErrorCategory::RateLimit,
     };
     let from_status = status.and_then(|s| match s.to_ascii_uppercase().as_str() {
         "UNAUTHENTICATED" | "PERMISSION_DENIED" => Some(ErrorCategory::Auth),
-        "RESOURCE_EXHAUSTED" => Some(quota()),
+        "RESOURCE_EXHAUSTED" => Some(plan_usage()),
         "UNAVAILABLE" => Some(ErrorCategory::Overloaded),
         "INTERNAL" | "DATA_LOSS" => Some(ErrorCategory::Server),
         "DEADLINE_EXCEEDED" => Some(ErrorCategory::Timeout),
@@ -150,7 +150,7 @@ fn classify(status: Option<&str>, code: Option<u16>, message: &str) -> Option<Er
     });
     let from_code = code.and_then(|c| match c {
         401 | 403 => Some(ErrorCategory::Auth),
-        429 => Some(quota()),
+        429 => Some(plan_usage()),
         400 | 404 | 409 | 413 | 422 => Some(from_message.unwrap_or(ErrorCategory::InvalidRequest)),
         408 | 504 => Some(ErrorCategory::Timeout),
         503 | 529 => Some(ErrorCategory::Overloaded),

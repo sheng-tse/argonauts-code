@@ -1,39 +1,30 @@
-//! The built-in workflows, compiled into the binary. A preset is a workflow plus settings.
+//! The built-in workflows' phases, compiled into the binary. A workflow is one file, and its
+//! phases are the part of it the crew runs.
 
 use argonauts_core::workflow::Workflow;
+use argonauts_core::workflow_files;
 
 use crate::workflow::yaml;
 
-/// `(name, YAML source)` for every built-in workflow.
-pub const BUILTIN: &[(&str, &str)] = &[
-    ("council", include_str!("../../workflows/council.yaml")),
-    (
-        "orchestrator",
-        include_str!("../../workflows/orchestrator.yaml"),
-    ),
-    ("solo", include_str!("../../workflows/solo.yaml")),
-    (
-        "maker-checker",
-        include_str!("../../workflows/maker-checker.yaml"),
-    ),
-    ("best-of-n", include_str!("../../workflows/best-of-n.yaml")),
-    (
-        "draft-and-vote",
-        include_str!("../../workflows/draft-and-vote.yaml"),
-    ),
-];
+/// The built-in workflows that have phases of their own, in the order the picker shows them.
+pub fn names() -> impl Iterator<Item = &'static str> {
+    workflow_files::with_phases().map(|(name, _)| name)
+}
 
+/// The file of a built-in workflow that has phases.
 pub fn source(name: &str) -> Option<&'static str> {
-    BUILTIN
-        .iter()
+    workflow_files::with_phases()
         .find(|(builtin, _)| *builtin == name)
-        .map(|(_, text)| *text)
+        .map(|(_, text)| text)
 }
 
 /// The parsed built-in, or why it didn't parse.
 pub fn load(name: &str) -> Result<Workflow, String> {
-    let text = source(name).ok_or_else(|| format!("no built-in workflow is named `{name}`"))?;
-    let workflow = yaml::parse(text).map_err(|err| format!("built-in workflow `{name}`: {err}"))?;
+    let no_such = || format!("no built-in workflow is named `{name}`");
+    let text = source(name).ok_or_else(no_such)?;
+    let workflow = workflow_files::phases(text, name)
+        .map_err(|err| format!("built-in workflow `{name}`: {err}"))?
+        .ok_or_else(no_such)?;
     if workflow.name != name {
         return Err(format!(
             "built-in workflow `{name}` calls itself `{}`",
@@ -41,6 +32,11 @@ pub fn load(name: &str) -> Result<Workflow, String> {
         ));
     }
     Ok(workflow)
+}
+
+/// The built-in's phases as the YAML the main agent reads and writes workflows in.
+pub fn example(name: &str) -> Result<String, String> {
+    yaml::print(&load(name)?)
 }
 
 #[cfg(test)]
@@ -55,23 +51,23 @@ mod tests {
     fn every_builtin_parses_round_trips_and_validates() {
         let settings = Settings::default();
         let allowed = allowed_workers(&settings);
-        let families = allowed
+        let providers = allowed
             .iter()
             .map(|worker| (worker.clone(), worker.to_string()))
             .collect();
         let context = Context {
             settings: &settings,
             allowed: &allowed,
-            families: &families,
+            providers: &providers,
             lookup: &load,
             depth: 0,
-            budget_left_usd: None,
+            limit_left_usd: None,
             as_you_asked: &[],
         };
-        for (name, _) in BUILTIN {
+        for name in names() {
             let workflow = load(name).unwrap_or_else(|err| panic!("{err}"));
             assert!(!workflow.description.is_empty(), "{name}");
-            let text = yaml::print(&workflow).unwrap_or_else(|err| panic!("{err}"));
+            let text = example(name).unwrap_or_else(|err| panic!("{err}"));
             assert_eq!(yaml::parse(&text).as_ref(), Ok(&workflow), "{name}");
             if let Err(errors) = validate(&workflow, &context) {
                 panic!("{name}: {errors:?}");

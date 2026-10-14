@@ -1,12 +1,11 @@
-//! The model registry and harness manifests, read from `models.toml` in `~/.argonauts/` and a
+//! The model registry and CLI manifests, read from `models.toml` in `~/.argonauts/` and a
 //! project's `.argonauts/`, so new models need no code change.
 
 pub mod acp;
-pub mod company;
-pub mod harness;
+pub mod cli;
+pub mod provider;
 
-pub use company::company_of;
-pub use harness::HarnessManifest;
+pub use cli::CliManifest;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -15,29 +14,29 @@ use time::OffsetDateTime;
 use crate::future::BoxFuture;
 use crate::limits::CostEstimate;
 use crate::model_catalog::ModelCatalog;
-use crate::names::{RoleName, WorkerRef};
-use crate::worker::WorkerKind;
+use crate::names::{ModelRef, RoleName};
+use crate::session_runner::RunnerKind;
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct RegistryFile {
     #[serde(rename = "model")]
     pub models: Vec<ModelEntry>,
-    #[serde(rename = "harness")]
-    pub harnesses: Vec<HarnessManifest>,
+    #[serde(rename = "cli")]
+    pub clis: Vec<CliManifest>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelEntry {
-    pub id: WorkerRef,
+    pub id: ModelRef,
     /// What review and judging rules compare, such as `claude`, `gpt`, `gemini`.
-    pub family: String,
+    pub provider: String,
     pub kind: RegistryKind,
     pub access: ModelAccess,
     #[serde(default)]
     pub tools: bool,
     pub cost: CostModel,
-    /// A prior on what it's good at; track records take over.
+    /// A prior on what it's good at, until track records say more.
     #[serde(default)]
     pub strengths: Vec<String>,
     #[serde(default)]
@@ -52,7 +51,7 @@ pub struct ModelEntry {
     pub efforts: Vec<String>,
     #[serde(default)]
     pub aliases: Vec<String>,
-    /// The harness rejects it; `successor` names the family's replacement.
+    /// The CLI rejects it; `successor` names the model that replaces it.
     #[serde(default)]
     pub retired: bool,
     #[serde(default)]
@@ -68,7 +67,7 @@ pub struct ModelEntry {
     pub default_effort: Option<String>,
     #[serde(default)]
     pub launch: Option<LaunchHints>,
-    /// Your own strength rating, 1 to 5, which decides who counts as weaker after a handoff.
+    /// Your own strength rating, 1 to 5, which decides who counts as weaker after a fallback.
     /// Track records decide when it's unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<u8>,
@@ -84,15 +83,15 @@ pub struct ModelEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RegistryKind {
-    Harness,
+    Cli,
     Endpoint,
 }
 
-impl From<RegistryKind> for WorkerKind {
+impl From<RegistryKind> for RunnerKind {
     fn from(kind: RegistryKind) -> Self {
         match kind {
-            RegistryKind::Harness => WorkerKind::Harness,
-            RegistryKind::Endpoint => WorkerKind::Endpoint,
+            RegistryKind::Cli => RunnerKind::Cli,
+            RegistryKind::Endpoint => RunnerKind::Endpoint,
         }
     }
 }
@@ -100,7 +99,7 @@ impl From<RegistryKind> for WorkerKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum ModelAccess {
-    /// Your plan's quota, through the official CLI.
+    /// Your plan's usage, through the official CLI.
     Subscription,
     ApiKey,
     Local,
@@ -121,7 +120,7 @@ pub struct CostModel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CostUnit {
-    Quota,
+    PlanUsage,
     Usd,
     /// Free, local.
     None,
@@ -139,13 +138,36 @@ pub struct LaunchHints {
     pub provider_model: Option<String>,
 }
 
+/// The model a session of `worker` runs, spelled one way, so the same model counts once
+/// however a session named it: the model an alias names, and for a worker that names none
+/// the one its CLI's own list marks as the default, else the one the catalog's default runs.
+/// A name the registry doesn't know stays as it is, without the variant a CLI adds in
+/// brackets, such as `[1m]`. `None` only for a CLI named alone whose default nothing knows.
+pub fn model_run(registry: &dyn ModelRegistry, worker: &ModelRef) -> Option<String> {
+    let named = worker
+        .model
+        .as_deref()
+        .map(|model| model.split('[').next().unwrap_or(model).trim())
+        .filter(|model| !model.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            registry
+                .list()
+                .into_iter()
+                .find(|entry| entry.cli_default && entry.id.agent == worker.agent)
+                .and_then(|entry| entry.id.model)
+        });
+    let id = ModelRef::new(worker.agent.clone(), named.clone());
+    registry.catalog().runs(&id).or(named)
+}
+
 pub trait ModelRegistry: Send + Sync {
     /// Matches aliases too.
-    fn get(&self, worker: &WorkerRef) -> Option<ModelEntry>;
-    /// Falls back to the worker's default family.
-    fn family(&self, worker: &WorkerRef) -> String;
+    fn get(&self, worker: &ModelRef) -> Option<ModelEntry>;
+    /// Falls back to the agent's default provider.
+    fn provider(&self, worker: &ModelRef) -> String;
     fn list(&self) -> Vec<ModelEntry>;
-    fn estimate(&self, worker: &WorkerRef, input_tokens: u64, output_tokens: u64) -> CostEstimate;
+    fn estimate(&self, worker: &ModelRef, input_tokens: u64, output_tokens: u64) -> CostEstimate;
     /// Runs discovery (`agy models`, `codex debug models`, Claude Code aliases, `GET /models`)
     /// and returns what it found. Never makes a model call.
     fn discover(&self) -> BoxFuture<'_, Vec<ModelEntry>>;
@@ -160,17 +182,17 @@ pub trait ModelRegistry: Send + Sync {
         ModelCatalog::default()
     }
 
-    /// `harness`'s CLI listed its own models, as Claude Code does when a session starts. The
+    /// The CLI `cli` listed its own models, as Claude Code does when a session starts. The
     /// list counts over the fetched catalog and under your files, and is kept for later runs.
-    fn models_reported(&self, harness: &str, models: &[crate::ReportedModel]) {
-        let _ = (harness, models);
+    fn models_reported(&self, cli: &str, models: &[crate::ReportedModel]) {
+        let _ = (cli, models);
     }
 }
 
 /// The levels `worker`'s model takes, as the catalog or its CLI's own list says: empty for a
-/// model that takes no effort setting. `None` when nothing says, and for a harness's own
+/// model that takes no effort setting. `None` when nothing says, and for a CLI's own
 /// default, whose model the CLI picks.
-pub fn known_efforts(registry: &dyn ModelRegistry, worker: &WorkerRef) -> Option<Vec<String>> {
+pub fn known_efforts(registry: &dyn ModelRegistry, worker: &ModelRef) -> Option<Vec<String>> {
     worker.model.as_ref()?;
     registry
         .catalog()
@@ -189,7 +211,7 @@ pub fn known_efforts(registry: &dyn ModelRegistry, worker: &WorkerRef) -> Option
 /// set before. Any other model runs at what's set.
 pub fn effort_to_run(
     registry: &dyn ModelRegistry,
-    worker: &WorkerRef,
+    worker: &ModelRef,
     set: Option<String>,
 ) -> Option<String> {
     match known_efforts(registry, worker).as_deref() {

@@ -1,12 +1,12 @@
-//! The vendor-neutral events every adapter's parser produces.
+//! The CLI-neutral events every adapter's parser produces.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::events::context::{ContextCategory, ContextItem};
-use crate::events::session::{SubagentUpdate, VendorWorkflow};
-use crate::limits::QuotaReading;
+use crate::events::context::ContextUsage;
+use crate::events::session::{CliWorkflowRun, SubagentUpdate};
+use crate::limits::PlanUsageReading;
 use crate::screen::ScreenChange;
 
 /// `parent` is the id of the tool call that spawned a subagent, when the event came from one.
@@ -56,7 +56,7 @@ pub enum AgentEvent {
     ToolStarted {
         /// Matched by `ToolFinished`.
         id: String,
-        /// As the vendor reports it, such as `Bash` or `command_execution`.
+        /// As the agent reports it, such as `Bash` or `command_execution`.
         name: String,
         input: Value,
         parent: Option<String>,
@@ -64,7 +64,7 @@ pub enum AgentEvent {
     ToolFinished {
         id: String,
         ok: bool,
-        /// Possibly truncated by the vendor.
+        /// Possibly truncated by the agent.
         output: Option<String>,
         parent: Option<String>,
     },
@@ -81,7 +81,7 @@ pub enum AgentEvent {
         parent: Option<String>,
     },
     FileChanged {
-        /// Relative to the workdir where the vendor gives one.
+        /// Relative to the workdir where the agent gives one.
         path: String,
         /// Such as `add`, `update`, or `delete`.
         kind: String,
@@ -104,34 +104,19 @@ pub enum AgentEvent {
     /// How full the session's context is, in tokens, so rotation can act before it's full.
     ContextFill {
         used: u64,
-        /// The window's size. `None` when the stream doesn't say, and the worker then fills it
-        /// in from the registry.
+        /// The window's size. `None` when the stream doesn't say, and the session runner then fills
+        /// it in from the registry.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         size: Option<u64>,
-        /// What Argonauts sent the session so far (brief, card, handoff pack, messages), by
-        /// the budget's estimate. The worker fills it in; a CLI never reports it.
+        /// What Argonauts Code sent the session so far (brief, task, fallback note, messages), by
+        /// the limit's estimate. The session runner fills it in; a CLI never reports it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sent: Option<u64>,
     },
-    /// The session's context by category, as the CLI's own /context counts it. Claude Code's
+    /// The session's context as the CLI's own /context counts it: Claude Code's
     /// `get_context_usage` reply. Each one replaces the last.
     ContextBreakdown {
-        /// In /context's order, each part once. Rows out of the window are left out.
-        categories: Vec<ContextCategory>,
-        /// Where the CLI compacts on its own, when it does.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        auto_compact_at: Option<u64>,
-        window: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        model: Option<String>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        memory_files: Vec<ContextItem>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        mcp_tools: Vec<ContextItem>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        agents: Vec<ContextItem>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        skills: Vec<ContextItem>,
+        usage: Box<ContextUsage>,
     },
     /// The account's plan, as the CLI names it, such as Claude Code's `Claude Max`.
     Plan {
@@ -141,11 +126,11 @@ pub enum AgentEvent {
         reason: RetryReason,
         delay_ms: Option<u64>,
     },
-    /// Quota or rate limit information, kept as the vendor sent it.
-    QuotaSignal {
+    /// Plan usage or rate limit information, kept as the agent sent it.
+    PlanUsageSignal {
         detail: Value,
     },
-    /// A vendor subagent, workflow, or thread changed state: Claude Code's
+    /// An agent's subagent, workflow, or thread changed state: Claude Code's
     /// `parent_tool_use_id`, Codex's `collab_tool_call`, agy's `subagent_info`.
     Subagent {
         update: SubagentUpdate,
@@ -153,16 +138,16 @@ pub enum AgentEvent {
     /// A workflow the agent's own CLI runs, with its phases and agents, replacing any earlier
     /// state of the same id.
     Workflow {
-        workflow: Box<VendorWorkflow>,
+        workflow: Box<CliWorkflowRun>,
     },
-    /// A normalized quota reading. `QuotaSignal` still carries raw payloads.
-    Quota {
-        reading: QuotaReading,
+    /// A normalized plan usage reading. `PlanUsageSignal` still carries raw payloads.
+    PlanUsage {
+        reading: PlanUsageReading,
     },
     /// Something a plugin's mod pushed for the screen, or a notice the CLI shows outside the
     /// conversation. Never sent to the model.
-    ModOutput {
-        kind: ModOutputKind,
+    PluginOutput {
+        kind: PluginOutputKind,
         /// The plugin that pushed it, when one did.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         plugin: Option<String>,
@@ -252,11 +237,11 @@ impl AgentEvent {
             Self::ContextBreakdown { .. } => "context_breakdown",
             Self::Plan { .. } => "plan",
             Self::Retry { .. } => "retry",
-            Self::QuotaSignal { .. } => "quota_signal",
+            Self::PlanUsageSignal { .. } => "plan_usage_signal",
             Self::Subagent { .. } => "subagent",
             Self::Workflow { .. } => "workflow",
-            Self::Quota { .. } => "quota",
-            Self::ModOutput { .. } => "mod_output",
+            Self::PlanUsage { .. } => "plan_usage",
+            Self::PluginOutput { .. } => "plugin_output",
             Self::ModelsReported { .. } => "models_reported",
             Self::IsolationLeak { .. } => "isolation_leak",
             Self::CommandsChanged { .. } => "commands_changed",
@@ -275,10 +260,10 @@ impl AgentEvent {
     }
 }
 
-/// Where Claude Code draws what a mod pushes, which is where Argonauts draws it too.
+/// Where Claude Code draws what a plugin pushes, which is where Argonauts Code draws it too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ModOutputKind {
+pub enum PluginOutputKind {
     /// The notification bar under the input, for a few seconds.
     Toast,
     /// A line pinned under the input, one per plugin.
@@ -380,7 +365,7 @@ pub enum RetryReason {
     Overloaded,
     Network,
     ServerError,
-    /// The vendor's description.
+    /// The agent's description.
     Other(String),
 }
 
@@ -406,8 +391,8 @@ pub enum ErrorCategory {
     AnswerMissed,
     /// A tool or action was denied.
     Permission,
-    /// A native budget cap was hit.
-    Budget,
+    /// A native spend cap was hit.
+    Limit,
     Timeout,
     Interrupted,
     /// The CLI failed in a way the adapter did not expect.
@@ -421,10 +406,10 @@ pub enum ErrorCategory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::context::ContextPart;
+    use crate::events::context::{ContextCategory, ContextKind, MemoryFile};
     use crate::events::session::{SubagentKind, SubagentStatus};
-    use crate::limits::{QuotaSource, QuotaStatus};
-    use crate::names::VendorId;
+    use crate::limits::{PlanUsageSource, PlanUsageStatus};
+    use crate::names::AgentId;
     use serde_json::json;
     use time::macros::datetime;
 
@@ -497,27 +482,35 @@ mod tests {
                 sent: Some(3_400),
             },
             AgentEvent::ContextBreakdown {
-                categories: vec![
-                    ContextCategory {
-                        part: ContextPart::Messages,
-                        tokens: 186_000,
-                    },
-                    ContextCategory {
-                        part: ContextPart::Free,
-                        tokens: 788_000,
-                    },
-                ],
-                auto_compact_at: Some(950_000),
-                window: 1_000_000,
-                model: Some("claude-opus-5-5".into()),
-                memory_files: vec![ContextItem {
-                    name: "CLAUDE.md".into(),
-                    tokens: 4_900,
-                    source: Some("Project".into()),
-                }],
-                mcp_tools: Vec::new(),
-                agents: Vec::new(),
-                skills: Vec::new(),
+                usage: Box::new(ContextUsage {
+                    categories: vec![
+                        ContextCategory {
+                            name: "Messages".into(),
+                            tokens: 186_000,
+                            color: "purple_FOR_SUBAGENTS_ONLY".into(),
+                            kind: ContextKind::Used,
+                        },
+                        ContextCategory {
+                            name: "Free space".into(),
+                            tokens: 788_000,
+                            color: "promptBorder".into(),
+                            kind: ContextKind::Free,
+                        },
+                    ],
+                    total_tokens: 186_000,
+                    window: 1_000_000,
+                    raw_window: 1_000_000,
+                    percentage: 19,
+                    model: Some("claude-opus-5-5".into()),
+                    auto_compact: true,
+                    auto_compact_threshold: Some(950_000),
+                    memory_files: vec![MemoryFile {
+                        path: "CLAUDE.md".into(),
+                        scope: "Project".into(),
+                        tokens: 4_900,
+                    }],
+                    ..ContextUsage::default()
+                }),
             },
             AgentEvent::Plan {
                 plan: "Claude Max".into(),
@@ -526,7 +519,7 @@ mod tests {
                 reason: RetryReason::Other("flaky".into()),
                 delay_ms: Some(500),
             },
-            AgentEvent::QuotaSignal {
+            AgentEvent::PlanUsageSignal {
                 detail: json!({"remaining": 3}),
             },
             AgentEvent::Subagent {
@@ -543,14 +536,14 @@ mod tests {
                     tokens: None,
                 },
             },
-            AgentEvent::Quota {
-                reading: QuotaReading {
-                    vendor: VendorId("claude-code".into()),
-                    status: QuotaStatus::Warning,
+            AgentEvent::PlanUsage {
+                reading: PlanUsageReading {
+                    agent_id: AgentId("claude-code".into()),
+                    status: PlanUsageStatus::Warning,
                     used: Some(0.71),
                     resets_at: Some(datetime!(2026-09-29 18:00 UTC)),
                     window: Some("five_hour".into()),
-                    source: QuotaSource::RateLimitEvent,
+                    source: PlanUsageSource::RateLimitEvent,
                     observed_at: datetime!(2026-09-29 12:00 UTC),
                     detail: None,
                     wrap_up: false,

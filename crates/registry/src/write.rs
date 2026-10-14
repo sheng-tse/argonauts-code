@@ -12,16 +12,16 @@ use toml_edit::{Decor, DocumentMut, InlineTable, Item, Key, Table, TableLike, Va
 
 use crate::SettingsError;
 use crate::catalog::{fits, quote, setting_meta, settings_catalog};
-use crate::presets::{is_preset_name, not_a_preset_name, presets_in};
 use crate::resolve::{SESSION_ENV, is_plain_key, is_safety_path, key_matches};
-use crate::settings::budget_units::{BudgetUnits, other_units};
-use crate::settings::handoff::entry_billing;
+use crate::settings::fallback::entry_billing;
+use crate::settings::limit_units::{LimitUnits, other_units};
 use crate::settings::plain::{one_of, syntax_message};
 use crate::settings::validate::{file_problems, type_message};
+use crate::workflows::{is_workflow_name, not_a_workflow_name, workflow_choices_in};
 
 /// Sets one dotted key in a TOML file. A new key gets its catalog description as a comment, a
 /// bare word reads as a string as with `--set`, and a table value merges key by key. Picking a
-/// budget unit drops the file's other unit for that limit. Nothing is written when the file
+/// limit unit drops the file's other unit for that limit. Nothing is written when the file
 /// would then fail to resolve on its own, when the key is unknown or takes other values, when a
 /// project file would hold a key only your global config may set, or when a safety key would
 /// change inside an agent session. A repo's `config.local.toml` is git-excluded before it's
@@ -99,7 +99,7 @@ fn write(
     {
         return Err(global_only_in_project(global_only, file));
     }
-    check(key, &value, &|| preset_names(file)).map_err(invalid)?;
+    check(key, &value, &|| workflow_names(file)).map_err(invalid)?;
 
     let target = real_path(file)?;
     let _turn = lock_folder(&target)?;
@@ -195,7 +195,7 @@ fn resolves_alone(file: &Path, text: &str) -> Result<(), SettingsError> {
         .try_into()
         .map_err(|err: toml::de::Error| invalid(type_message(&err, &table).1))?;
     // The layer name only labels what a later unit clears, and nothing is cleared here.
-    BudgetUnits::default().note("file", &shown(file), &table)?;
+    LimitUnits::default().note("file", &shown(file), &table)?;
     match file_problems(&settings).into_iter().next() {
         Some(problem) => Err(invalid(problem.message)),
         None => Ok(()),
@@ -223,7 +223,7 @@ fn is_global_only(key: &str) -> bool {
 fn global_only_in_project(key: &str, file: &Path) -> SettingsError {
     SettingsError::Refused(format!(
         "{key} in {} can only be set in your global config, since it names a program for \
-         Argonauts to run",
+         Argonauts Code to run",
         shown(file)
     ))
 }
@@ -356,13 +356,13 @@ fn key_path(key: &str) -> Result<Vec<&str>, String> {
 
 /// Refuses a key the catalog doesn't know, naming the nearest one it does, and a value outside
 /// the key's allowed list, naming the values it takes. A table value is checked key by key.
-/// `presets` lists the presets `preset` may name beyond the built-ins.
-fn check(key: &str, value: &Value, presets: &dyn Fn() -> Vec<String>) -> Result<(), String> {
+/// `workflows` lists the workflows `workflow` may name beyond the built-ins.
+fn check(key: &str, value: &Value, workflows: &dyn Fn() -> Vec<String>) -> Result<(), String> {
     let catalog = settings_catalog();
     let inner = catalog.iter().find(|meta| holds(&meta.key, key));
     if let (Value::InlineTable(table), Some(_)) = (value, inner) {
         for (name, value) in table.iter() {
-            check(&format!("{key}.{name}"), value, presets)?;
+            check(&format!("{key}.{name}"), value, workflows)?;
         }
         return Ok(());
     }
@@ -371,11 +371,11 @@ fn check(key: &str, value: &Value, presets: &dyn Fn() -> Vec<String>) -> Result<
             let mut allowed = meta.allowed;
             if key == "workflow" {
                 if let Some(name) = value.as_str()
-                    && !is_preset_name(name)
+                    && !is_workflow_name(name)
                 {
-                    return Err(not_a_preset_name(name));
+                    return Err(not_a_workflow_name(name));
                 }
-                for name in presets() {
+                for name in workflows() {
                     let name = quote(&name);
                     if !allowed.contains(&name) {
                         allowed.push(name);
@@ -484,16 +484,16 @@ fn edit_distance(a: &str, b: &str) -> usize {
     row[b.len()]
 }
 
-/// The presets a file's `preset` may name besides the built-ins: the files in the `presets`
+/// The workflows a file's `workflow` may name besides the built-ins: the files in the `workflows`
 /// folder beside it and in your global one.
-fn preset_names(file: &Path) -> Vec<String> {
+fn workflow_names(file: &Path) -> Vec<String> {
     let beside = folder_of(file).join("workflows");
-    let global = Paths::from_env().map(|paths| paths.global_presets());
+    let global = Paths::from_env().map(|paths| paths.global_workflows());
     let all = match &global {
-        Ok(global) => presets_in(global, Some(&beside)),
-        Err(_) => presets_in(&beside, None),
+        Ok(global) => workflow_choices_in(global, Some(&beside)),
+        Err(_) => workflow_choices_in(&beside, None),
     };
-    all.into_iter().map(|preset| preset.name).collect()
+    all.into_iter().map(|workflow| workflow.name).collect()
 }
 
 fn refused_in_agent_session(safety: &str) -> SettingsError {
@@ -503,7 +503,7 @@ fn refused_in_agent_session(safety: &str) -> SettingsError {
 }
 
 /// Every safety key that writing `toml_value` at `key` would change, including keys inside a
-/// table value such as `endpoints.ollama = { base_url = "..." }`. The confirm card names them.
+/// table value such as `endpoints.ollama = { base_url = "..." }`. The confirm question names them.
 pub fn safety_keys_in(key: &str, toml_value: &str) -> Vec<String> {
     let key: Vec<&str> = key.split('.').map(str::trim).collect();
     let value = parse_value(toml_value).unwrap_or_else(|_| Value::from(toml_value));
@@ -837,7 +837,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("config.toml");
         let before = "\
-# My settings. Hands off, robots.
+# My settings. Leave them alone, robots.
 workflow = \"council\"   # the default
 
 [ui]
@@ -851,7 +851,7 @@ keys = \"default\"
         write(&file, "approvals.merge.mode", "\"auto\"", false).unwrap();
         let after = fs::read_to_string(&file).unwrap();
         assert!(
-            after.starts_with("# My settings. Hands off, robots.\n"),
+            after.starts_with("# My settings. Leave them alone, robots.\n"),
             "{after}"
         );
         assert!(
@@ -897,11 +897,11 @@ keys = \"default\"
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("home/.argonauts/config.toml");
         write(&file, "agents.codex.model", "gpt-x", false).unwrap();
-        write(&file, "roles.reviewer.workers", "[\"codex\"]", false).unwrap();
+        write(&file, "roles.reviewer.models", "[\"codex\"]", false).unwrap();
         let settings: Settings = toml::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(settings.agents["codex"].model.as_deref(), Some("gpt-x"));
         let reviewer = &settings.roles[&argonauts_core::names::RoleName::Reviewer];
-        assert_eq!(reviewer.workers.len(), 1);
+        assert_eq!(reviewer.models.len(), 1);
     }
 
     #[test]
@@ -935,10 +935,10 @@ keys = \"default\"
         let text = fs::read_to_string(&file).unwrap();
         assert!(text.contains("native_fanout = \"off\""), "{text}");
         let settings: Settings = toml::from_str(&text).unwrap();
-        let owner = &settings.roles[&argonauts_core::names::RoleName::Worker];
+        let worker = &settings.roles[&argonauts_core::names::RoleName::Worker];
         use argonauts_core::settings::sessions::{FanoutSwitch, NativeFanout};
         assert_eq!(
-            owner.native_fanout,
+            worker.native_fanout,
             Some(NativeFanout::Switch(FanoutSwitch::Off))
         );
     }
@@ -991,19 +991,18 @@ keys = \"default\"
         fs::write(
             &file,
             "[limits]\nspend_per_run = 5.0\n[agents.codex]\nbinary = \"/opt/codex\"\n\
-             [fallback.workers]\nallow_api_billing = true\n",
+             [fallback.worker]\nallow_api_billing = true\n",
         )
         .unwrap();
         write(&file, "limits", "{}", true).unwrap();
         write(&file, "agents.codex", "{ model = \"x\" }", true).unwrap();
-        write(&file, "fallback.workers", "{ mode = \"auto\" }", true).unwrap();
+        write(&file, "fallback.worker", "{ mode = \"auto\" }", true).unwrap();
         let settings: Settings = toml::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
-        assert_eq!(settings.limits.budget.spend_per_run, Some(5.0));
+        assert_eq!(settings.limits.spend.spend_per_run, Some(5.0));
         let codex = &settings.agents["codex"];
         assert_eq!(codex.binary.as_deref(), Some(Path::new("/opt/codex")));
         assert_eq!(codex.model.as_deref(), Some("x"));
-        let workers =
-            &settings.fallback.roles[&argonauts_core::settings::handoff::CrewRole::Workers];
+        let workers = &settings.fallback.roles[&argonauts_core::settings::crew::CrewRole::Worker];
         assert!(workers.allow_api_billing);
         fs::remove_file(&file).unwrap();
         assert_eq!(
@@ -1027,17 +1026,17 @@ keys = \"default\"
     fn fallback_billing_never_changes_inside_an_agent_session() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("config.toml");
-        let billing = "{ worker = \"codex\", allow_api_billing = true }";
+        let billing = "{ model = \"codex\", allow_api_billing = true }";
         for (key, value) in [
             ("fallback.order", format!("[{billing}]")),
             (
                 "fallback.replace.codex.with",
                 format!("[\"claude-code\", {billing}]"),
             ),
-            ("fallback.workers", format!("{{ order = [{billing}] }}")),
+            ("fallback.worker", format!("{{ order = [{billing}] }}")),
             (
                 "fallback",
-                format!("{{ workers = {{ replace = {{ codex = {{ with = [{billing}] }} }} }} }}"),
+                format!("{{ worker = {{ replace = {{ codex = {{ with = [{billing}] }} }} }} }}"),
             ),
         ] {
             let err = write(&file, key, &value, true).unwrap_err();
@@ -1050,12 +1049,12 @@ keys = \"default\"
         );
         assert_eq!(
             safety_keys_in(
-                "fallback.workers",
+                "fallback.worker",
                 &format!("{{ replace = {{ codex = {{ with = [{billing}] }} }} }}")
             ),
-            ["fallback.workers.replace.codex.with[0].allow_api_billing"]
+            ["fallback.worker.replace.codex.with[0].allow_api_billing"]
         );
-        let no_billing = "[\"claude-code\", { worker = \"codex\", allow_api_billing = false }]";
+        let no_billing = "[\"claude-code\", { model = \"codex\", allow_api_billing = false }]";
         assert!(safety_keys_in("fallback.order", no_billing).is_empty());
         write(&file, "fallback.order", no_billing, true).unwrap();
     }
@@ -1069,7 +1068,7 @@ keys = \"default\"
     }
 
     #[test]
-    fn a_budget_unit_replaces_the_other_units_of_its_limit() {
+    fn a_limit_unit_replaces_the_other_units_of_its_limit() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("config.toml");
         fs::write(
@@ -1081,11 +1080,11 @@ keys = \"default\"
         write(&file, "limits", "{ per_task_minutes = 30 }", false).unwrap();
         let text = fs::read_to_string(&file).unwrap();
         assert!(!text.contains("usd") && !text.contains("Dollars"), "{text}");
-        let budget = resolve_alone(&file).unwrap().settings.limits.budget;
-        assert_eq!(budget.run_tokens, Some(2_000_000));
-        assert_eq!(budget.spend_per_run, None);
-        assert_eq!(budget.per_task_usd, None);
-        assert_eq!(budget.soft_stop, 0.8);
+        let limit = resolve_alone(&file).unwrap().settings.limits.spend;
+        assert_eq!(limit.run_tokens, Some(2_000_000));
+        assert_eq!(limit.spend_per_run, None);
+        assert_eq!(limit.per_task_usd, None);
+        assert_eq!(limit.soft_stop, 0.8);
 
         let message = refusal(
             &file,
@@ -1112,8 +1111,8 @@ keys = \"default\"
                 "workflows.max_depth is at most 2",
             ),
             ("sessions.rotate_at", "0", "sessions.rotate_at"),
-            ("critique.critic", "\"not a worker!\"", "critique.critic is"),
-            ("main_agent", "ollama", "main_agent is ollama, an endpoint"),
+            ("critique.critic", "\"not a model!\"", "critique.critic is"),
+            ("crew.main", "ollama", "crew.main is ollama, an endpoint"),
             (
                 "limits.soft_stop",
                 "1.5",
@@ -1145,8 +1144,11 @@ keys = \"default\"
         let local = argonauts_core::paths::project_local_config_path(&repo);
         for file in [&shared, &local] {
             for (key, value) in [
-                ("notifications.chat.on", "[\"finished\"]"),
-                ("notifications", "{ chat = { on = [\"finished\"] } }"),
+                ("notifications.conversation.on", "[\"finished\"]"),
+                (
+                    "notifications",
+                    "{ conversation = { on = [\"finished\"] } }",
+                ),
             ] {
                 let err = write(file, key, value, false).unwrap_err();
                 assert!(matches!(err, SettingsError::Refused(_)), "{key}: {err}");
@@ -1155,9 +1157,19 @@ keys = \"default\"
         assert!(!shared.exists() && !local.exists());
 
         // The refusal is the one resolve gives for the file, trusted or not.
-        let err = write(&shared, "notifications.chat.on", "[\"finished\"]", false).unwrap_err();
+        let err = write(
+            &shared,
+            "notifications.conversation.on",
+            "[\"finished\"]",
+            false,
+        )
+        .unwrap_err();
         fs::create_dir_all(shared.parent().unwrap()).unwrap();
-        fs::write(&shared, "[notifications.chat]\non = [\"finished\"]\n").unwrap();
+        fs::write(
+            &shared,
+            "[notifications.conversation]\non = [\"finished\"]\n",
+        )
+        .unwrap();
         let sources = crate::SettingsSources {
             project: Some(shared.clone()),
             project_trusted: true,
@@ -1183,7 +1195,7 @@ keys = \"default\"
         );
         write(
             &dir.path().join("config.toml"),
-            "notifications.chat.on",
+            "notifications.conversation.on",
             "[\"finished\"]",
             false,
         )
@@ -1222,7 +1234,7 @@ keys = \"default\"
         let shared = argonauts_core::paths::project_config_path(repo);
         write(&local, "agents.codex.effort", "high", false).unwrap();
         write(&local, "agents.codex.model", "gpt-x", false).unwrap();
-        write(&shared, "workflow", "solo", false).unwrap();
+        write(&shared, "workflow", "captain", false).unwrap();
         let exclude = fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
         assert_eq!(
             exclude.matches(".argonauts/config.local.toml").count(),
@@ -1286,7 +1298,7 @@ keys = \"default\"
         fs::write(
             &file,
             "\
-# My settings. Hands off, robots.
+# My settings. Leave them alone, robots.
 workflow = \"council\"   # the default
 
 [ui]
@@ -1306,7 +1318,7 @@ model = \"ollama/llama3.2\"
         assert!(!remove(&file, "notifications.os", false).unwrap());
         let after = fs::read_to_string(&file).unwrap();
         assert!(
-            after.starts_with("# My settings. Hands off, robots.\n"),
+            after.starts_with("# My settings. Leave them alone, robots.\n"),
             "{after}"
         );
         assert!(
@@ -1333,29 +1345,29 @@ model = \"ollama/llama3.2\"
         let file = dir.path().join("config.toml");
         fs::write(
             &file,
-            "# My settings. Hands off, robots.\nmain_agent = \"codex\"\nworkflow = \"solo\"\n",
+            "# My settings. Leave them alone, robots.\nultracode = true\nworkflow = \"captain\"\n",
         )
         .unwrap();
-        assert!(remove(&file, "main_agent", false).unwrap());
+        assert!(remove(&file, "ultracode", false).unwrap());
         let after = fs::read_to_string(&file).unwrap();
         assert_eq!(
             after,
-            "# My settings. Hands off, robots.\nworkflow = \"solo\"\n"
+            "# My settings. Leave them alone, robots.\nworkflow = \"captain\"\n"
         );
 
         // With no key left, the first table carries it, and the key's description goes.
         write_setting(&file, "ui.theme", "dark").unwrap();
         remove(&file, "workflow", false).unwrap();
-        write_setting(&file, "main_agent", "codex").unwrap();
+        write_setting(&file, "ultracode", "true").unwrap();
         let text = fs::read_to_string(&file).unwrap();
-        fs::write(&file, text.replace("main_agent", "# opening\nmain_agent")).unwrap();
-        assert!(remove(&file, "main_agent", false).unwrap());
+        fs::write(&file, text.replace("ultracode", "# opening\nultracode")).unwrap();
+        assert!(remove(&file, "ultracode", false).unwrap());
         let after = fs::read_to_string(&file).unwrap();
         assert!(
-            after.starts_with("# opening\n# My settings. Hands off, robots.\n\n[ui]\n"),
+            after.starts_with("# opening\n# My settings. Leave them alone, robots.\n\n[ui]\n"),
             "{after}"
         );
-        assert!(!after.contains("main_agent") && !after.contains("Who you chat with"));
+        assert!(!after.contains("ultracode") && !after.contains("Ultracode:"));
     }
 
     #[test]
@@ -1427,7 +1439,7 @@ model = \"ollama/llama3.2\"
     }
 
     #[test]
-    fn a_gate_written_as_a_string_is_refused_with_the_table_to_write() {
+    fn a_check_written_as_a_string_is_refused_with_the_table_to_write() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("repo/.argonauts/config.toml");
         fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -1457,9 +1469,9 @@ model = \"ollama/llama3.2\"
             ("limts.spend_per_run", "5", "limits.spend_per_run"),
             ("limts", "{ spend_per_run = 5 }", "limits"),
             (
-                "fallback.workers.stratgy",
+                "fallback.worker.stratgy",
                 "race",
-                "fallback.workers.strategy",
+                "fallback.worker.strategy",
             ),
             (
                 "fallback.replace.codex.wth",
@@ -1488,10 +1500,10 @@ model = \"ollama/llama3.2\"
         // Map keys you choose are known wherever the catalog has a `*`.
         for (key, value) in [
             ("roles.worker.native_fanout.max", "2"),
-            ("fallback.workers.replace.codex.strategy", "spread"),
+            ("fallback.worker.replace.codex.strategy", "spread"),
             ("visibility.status_summary.worker", "false"),
             ("endpoints.ollama.header_env.X-Team", "TEAM_HEADER"),
-            ("ui.keymap.crew_view", "\"ctrl+left\""),
+            ("ui.keymap.agent_panel_view", "\"ctrl+left\""),
             (
                 "agents.codex",
                 "{ model = \"gpt-x\", price = { input_per_mtok = 1.5, output_per_mtok = 6.0 } }",
@@ -1506,7 +1518,7 @@ model = \"ollama/llama3.2\"
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join(".argonauts/config.toml");
         fs::create_dir_all(file.parent().unwrap()).unwrap();
-        let before = "# mine\nworkflow = \"solo\"\n";
+        let before = "# mine\nworkflow = \"captain\"\n";
         fs::write(&file, before).unwrap();
         for (key, value, wanted) in [
             (
@@ -1530,30 +1542,30 @@ model = \"ollama/llama3.2\"
                 "approvals.merge.mode can't be \"sometimes\"",
             ),
             (
-                "fallback.workers.on_return",
+                "fallback.worker.on_return",
                 "later",
-                "\"ask\", \"keep\", \"review\", \"hand_back\", or \"redo\"",
+                "\"ask\", \"keep\", \"review\", \"give_back\", or \"redo\"",
             ),
         ] {
             let message = refusal(&file, key, value);
             assert!(message.contains(wanted), "{key}: {message}");
         }
-        let preset = "a-preset-only-this-test-writes";
-        let message = refusal(&file, "workflow", preset);
+        let chosen = "a-workflow-only-this-test-writes";
+        let message = refusal(&file, "workflow", chosen);
         assert_eq!(message.matches("\"council\"").count(), 1, "{message}");
         assert_eq!(fs::read_to_string(&file).unwrap(), before);
 
-        // A preset file beside the settings makes its name a value `preset` takes.
-        let presets = dir.path().join(".argonauts/workflows");
-        fs::create_dir_all(&presets).unwrap();
+        // A workflow file beside the settings makes its name a value `workflow` takes.
+        let workflows = dir.path().join(".argonauts/workflows");
+        fs::create_dir_all(&workflows).unwrap();
         fs::write(
-            presets.join(format!("{preset}.toml")),
+            workflows.join(format!("{chosen}.toml")),
             "[review]\nper_task = 2\n",
         )
         .unwrap();
-        write(&file, "workflow", preset, false).unwrap();
-        // A file whose name the lookup refuses doesn't make that name a value `preset` takes.
-        fs::write(presets.join("my team.toml"), "[review]\nper_task = 2\n").unwrap();
+        write(&file, "workflow", chosen, false).unwrap();
+        // A file whose name the lookup refuses doesn't make that name a value `workflow` takes.
+        fs::write(workflows.join("my team.toml"), "[review]\nper_task = 2\n").unwrap();
         let message = refusal(&file, "workflow", "\"my team\"");
         assert!(message.contains("isn't a workflow name"), "{message}");
         for (key, value) in [
@@ -1561,12 +1573,11 @@ model = \"ollama/llama3.2\"
             ("ui.ambiguous_width", "2"),
             ("roles.worker.native_fanout", "off"),
             ("agents.codex.effort", "xhigh"),
-            ("phases", "any-workflow-name"),
         ] {
             write(&file, key, value, false).unwrap_or_else(|err| panic!("{key}: {err}"));
         }
         let settings: Settings = toml::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
-        assert_eq!(settings.workflow, preset);
+        assert_eq!(settings.workflow, chosen);
     }
 
     #[test]

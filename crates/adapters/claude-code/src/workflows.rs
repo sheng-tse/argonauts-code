@@ -3,13 +3,13 @@
 //! `task_started` carries the script, whose `meta` names the workflow and its phases;
 //! `task_progress` carries `workflow_progress`, every phase and agent so far; `task_updated` and
 //! `task_notification` end it. Each becomes a whole `AgentEvent::Workflow`, so the views draw it
-//! like one of Argonauts' own, with whatever names it uses.
+//! like one of Argonauts Code's own, with whatever names it uses.
 
 use std::collections::HashMap;
 
 use argonauts_core::AgentEvent;
 use argonauts_core::events::session::{
-    SubagentStatus, VendorAgent, VendorAgentState, VendorPhase, VendorWorkflow,
+    CliAgent, CliAgentState, CliPhase, CliTool, CliWorkflowRun, SubagentStatus,
 };
 use serde_json::Value;
 
@@ -19,11 +19,13 @@ use crate::script_meta;
 const LOCAL_WORKFLOW: &str = "local_workflow";
 const PROMPT_CHARS: usize = 200;
 const RESULT_CHARS: usize = 400;
+/// What a tool was called with, which the opened agent shows on one row.
+const TOOL_CHARS: usize = 120;
 
 #[derive(Debug, Default)]
 pub struct WorkflowTracker {
     /// By task id.
-    running: HashMap<String, VendorWorkflow>,
+    running: HashMap<String, CliWorkflowRun>,
 }
 
 impl WorkflowTracker {
@@ -102,7 +104,7 @@ impl WorkflowTracker {
     /// The stream ended with workflows still going, as when the session was stopped, paused,
     /// or killed before they reported their end: each ends with it.
     pub fn close(&mut self, why: &str) -> Vec<AgentEvent> {
-        let mut open: Vec<&mut VendorWorkflow> = self
+        let mut open: Vec<&mut CliWorkflowRun> = self
             .running
             .values_mut()
             .filter(|workflow| !workflow.ended())
@@ -121,7 +123,7 @@ impl WorkflowTracker {
 
 /// The workflow as its script declares it: the `meta`'s name, description, and phases, else
 /// what the event itself says.
-fn started(task: &str, line: &Value) -> VendorWorkflow {
+fn started(task: &str, line: &Value) -> CliWorkflowRun {
     let meta = str_at(line, "prompt").and_then(script_meta::meta);
     let meta_str = |key: &str| {
         meta.as_ref()
@@ -135,14 +137,14 @@ fn started(task: &str, line: &Value) -> VendorWorkflow {
         .iter()
         .enumerate()
         .filter_map(|(index, phase)| {
-            Some(VendorPhase {
+            Some(CliPhase {
                 index: u32::try_from(index + 1).ok()?,
                 title: str_at(phase, "title")?.to_owned(),
                 detail: string_at(phase, "detail").unwrap_or_default(),
             })
         })
         .collect();
-    VendorWorkflow {
+    CliWorkflowRun {
         id: task.to_owned(),
         call: string_at(line, "tool_use_id"),
         name: meta_str("name")
@@ -164,7 +166,7 @@ fn started(task: &str, line: &Value) -> VendorWorkflow {
 
 /// A progress report: the totals, what it's doing now, and every phase and agent it lists.
 /// Some reports carry only the totals.
-fn progress(workflow: &mut VendorWorkflow, line: &Value) {
+fn progress(workflow: &mut CliWorkflowRun, line: &Value) {
     totals(workflow, line);
     if let Some(now) = str_at(line, "description") {
         workflow.summary = Some(now.to_owned());
@@ -178,7 +180,7 @@ fn progress(workflow: &mut VendorWorkflow, line: &Value) {
     }
 }
 
-fn totals(workflow: &mut VendorWorkflow, line: &Value) {
+fn totals(workflow: &mut CliWorkflowRun, line: &Value) {
     let Some(usage) = line.get("usage") else {
         return;
     };
@@ -190,7 +192,7 @@ fn totals(workflow: &mut VendorWorkflow, line: &Value) {
 }
 
 /// A phase the script didn't declare in its `meta` still appears, in its place.
-fn phase(workflow: &mut VendorWorkflow, entry: &Value) {
+fn phase(workflow: &mut CliWorkflowRun, entry: &Value) {
     let (Some(index), Some(title)) = (index_at(entry, "index"), str_at(entry, "title")) else {
         return;
     };
@@ -201,7 +203,7 @@ fn phase(workflow: &mut VendorWorkflow, entry: &Value) {
     {
         Some(known) => title.clone_into(&mut known.title),
         None => {
-            workflow.phases.push(VendorPhase {
+            workflow.phases.push(CliPhase {
                 index,
                 title: title.to_owned(),
                 detail: String::new(),
@@ -211,7 +213,7 @@ fn phase(workflow: &mut VendorWorkflow, entry: &Value) {
     }
 }
 
-fn agent(workflow: &mut VendorWorkflow, entry: &Value) {
+fn agent(workflow: &mut CliWorkflowRun, entry: &Value) {
     let Some(index) = index_at(entry, "index") else {
         return;
     };
@@ -224,19 +226,40 @@ fn agent(workflow: &mut VendorWorkflow, entry: &Value) {
             .find(|phase| phase.title == title)
             .map(|phase| phase.index)
     });
-    let agent = VendorAgent {
+    // An agent waiting for a slot is reported as started, with when it was queued and no
+    // start time yet. Claude Code's own view reads that as queued, and so does this.
+    let known = |key: &str| entry.get(key).is_some_and(|value| !value.is_null());
+    let waits_for_a_slot = known("queuedAt") && !known("startedAt");
+    let flagged = |key: &str| entry.get(key).and_then(Value::as_bool) == Some(true);
+    // An error says with a flag when nothing went wrong in the agent itself: you skipped it,
+    // or it was refused before it started. Claude Code's own view reads them in this order.
+    let state = match agent_state(str_at(entry, "state")) {
+        CliAgentState::Running | CliAgentState::Other if waits_for_a_slot => CliAgentState::Queued,
+        CliAgentState::Failed if flagged("skipped") => CliAgentState::Skipped,
+        CliAgentState::Failed if flagged("blocked") => CliAgentState::Blocked,
+        state => state,
+    };
+    let agent = CliAgent {
         index,
         label: string_at(entry, "label").unwrap_or_else(|| format!("agent:{index}")),
         phase,
         model: string_at(entry, "model"),
-        state: agent_state(str_at(entry, "state")),
+        state,
         tokens: u64_at(entry, "tokens"),
         tool_calls: u32::try_from(u64_at(entry, "toolCalls")).unwrap_or(u32::MAX),
         duration_ms: u64_at(entry, "durationMs"),
         started_at_ms: entry.get("startedAt").and_then(Value::as_u64),
-        attempt: u32::try_from(u64_at(entry, "attempt").max(1)).unwrap_or(1),
+        try_number: u32::try_from(u64_at(entry, "attempt").max(1)).unwrap_or(1),
         prompt: str_at(entry, "promptPreview").map(|text| shorten(text, PROMPT_CHARS)),
         result: str_at(entry, "resultPreview").map(|text| shorten(text, RESULT_CHARS)),
+        agent_type: string_at(entry, "agentType"),
+        isolation: string_at(entry, "isolation"),
+        fallback_model: string_at(entry, "fallbackModel"),
+        last_tool: string_at(entry, "lastToolName").map(|name| CliTool {
+            name,
+            summary: str_at(entry, "lastToolSummary").map(|text| shorten(text, TOOL_CHARS)),
+        }),
+        error: str_at(entry, "error").map(|text| shorten(text, RESULT_CHARS)),
     };
     match workflow
         .agents
@@ -255,13 +278,13 @@ fn index_at(value: &Value, key: &str) -> Option<u32> {
         .and_then(|n| u32::try_from(n).ok())
 }
 
-fn agent_state(state: Option<&str>) -> VendorAgentState {
+fn agent_state(state: Option<&str>) -> CliAgentState {
     match state {
-        Some("queued" | "pending" | "waiting") => VendorAgentState::Queued,
-        Some("start" | "started" | "running") => VendorAgentState::Running,
-        Some("done" | "completed" | "success") => VendorAgentState::Done,
-        Some("failed" | "error" | "killed" | "cancelled" | "stopped") => VendorAgentState::Failed,
-        _ => VendorAgentState::Other,
+        Some("queued" | "pending" | "waiting") => CliAgentState::Queued,
+        Some("start" | "started" | "running") => CliAgentState::Running,
+        Some("done" | "completed" | "success") => CliAgentState::Done,
+        Some("failed" | "error" | "killed" | "cancelled" | "stopped") => CliAgentState::Failed,
+        _ => CliAgentState::Other,
     }
 }
 
@@ -302,7 +325,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn workflow(event: Option<AgentEvent>) -> VendorWorkflow {
+    fn workflow(event: Option<AgentEvent>) -> CliWorkflowRun {
         match event {
             Some(AgentEvent::Workflow { workflow }) => *workflow,
             other => panic!("expected a workflow, got {other:?}"),
@@ -322,12 +345,12 @@ mod tests {
     fn names_come_from_the_event_when_the_script_has_no_meta() {
         let mut tracker = WorkflowTracker::default();
         let started = json!({"task_id": "w1", "task_type": "local_workflow",
-            "workflow_name": "triage", "description": "Sort the issues",
+            "workflow_name": "sort-issues", "description": "Sort the issues",
             "prompt": "await agent('go', { label: 'sort:all', phase: 'Sort' })"});
         let started = workflow(tracker.task_event("task_started", &started));
         assert_eq!(
             (started.name.as_str(), started.description.as_str()),
-            ("triage", "Sort the issues")
+            ("sort-issues", "Sort the issues")
         );
         assert!(started.phases.is_empty());
 
@@ -341,7 +364,7 @@ mod tests {
         let now = workflow(tracker.task_event("task_progress", &progress));
         assert_eq!(now.phases[0].title, "Sort");
         assert_eq!(now.agents[0].phase, Some(1));
-        assert_eq!(now.agents[0].state, VendorAgentState::Queued);
+        assert_eq!(now.agents[0].state, CliAgentState::Queued);
         assert_eq!((now.tokens, now.tool_calls, now.duration_ms), (5, 1, 9));
         // The same report again changes nothing.
         assert_eq!(tracker.task_event("task_progress", &progress), None);
@@ -349,5 +372,130 @@ mod tests {
         let failed = json!({"task_id": "w1", "patch": {"status": "failed"}});
         let ended = workflow(tracker.task_event("task_updated", &failed));
         assert_eq!(ended.status, SubagentStatus::Failed);
+    }
+
+    /// Claude Code reports an agent as started from the moment it is queued, and gives it a
+    /// start time only once a slot is free. Until then it reads as queued, as in Claude Code's
+    /// own view of the workflow.
+    #[test]
+    fn an_agent_with_no_start_time_yet_waits_for_a_slot() {
+        let mut tracker = WorkflowTracker::default();
+        let started = json!({"task_id": "w1", "task_type": "local_workflow",
+            "workflow_name": "review-all", "prompt": ""});
+        tracker.task_event("task_started", &started);
+        let report = |agent: Value| {
+            json!({"task_id": "w1", "workflow_progress": [
+                {"type": "workflow_phase", "index": 1, "title": "Review"}, agent]})
+        };
+        let queued = report(
+            json!({"type": "workflow_agent", "index": 1, "label": "review:one",
+            "phaseIndex": 1, "state": "start", "queuedAt": 1_791_076_604_609_u64}),
+        );
+        let now = workflow(tracker.task_event("task_progress", &queued));
+        assert_eq!(now.agents[0].state, CliAgentState::Queued);
+
+        let running = report(
+            json!({"type": "workflow_agent", "index": 1, "label": "review:one",
+            "phaseIndex": 1, "state": "progress", "queuedAt": 1_791_076_604_609_u64,
+            "startedAt": 1_791_076_604_610_u64}),
+        );
+        let now = workflow(tracker.task_event("task_progress", &running));
+        assert_ne!(now.agents[0].state, CliAgentState::Queued);
+
+        // One that failed before it got a slot failed, whatever its times say.
+        let failed = report(
+            json!({"type": "workflow_agent", "index": 1, "label": "review:one",
+            "phaseIndex": 1, "state": "error", "queuedAt": 1_791_076_604_609_u64}),
+        );
+        let now = workflow(tracker.task_event("task_progress", &failed));
+        assert_eq!(now.agents[0].state, CliAgentState::Failed);
+    }
+
+    /// One report of each agent as Claude Code 2.1.296 writes them, with `more` beside what
+    /// every agent has.
+    fn agent_reported(more: Value) -> CliAgent {
+        let mut tracker = WorkflowTracker::default();
+        let started = json!({"task_id": "w1", "task_type": "local_workflow",
+            "tool_use_id": "toolu_1", "workflow_name": "review-twice"});
+        tracker.task_event("task_started", &started);
+        let mut agent = json!({"type": "workflow_agent", "index": 1, "label": "review:one",
+            "phaseIndex": 1, "model": "claude-opus-5-5", "startedAt": 1_791_076_604_610_u64,
+            "tokens": 21_400, "toolCalls": 14});
+        agent
+            .as_object_mut()
+            .unwrap()
+            .extend(more.as_object().unwrap().clone());
+        let report = json!({"task_id": "w1", "workflow_progress": [
+            {"type": "workflow_phase", "index": 1, "title": "Review"}, agent]});
+        workflow(tracker.task_event("task_progress", &report))
+            .agents
+            .remove(0)
+    }
+
+    #[test]
+    fn an_agent_at_work_says_its_last_tool_and_where_it_works() {
+        let agent = agent_reported(json!({"state": "progress", "agentType": "Explore",
+            "isolation": "worktree", "fallbackModel": "claude-sonnet-5-5",
+            "lastToolName": "Read", "lastToolSummary": "src/cli.js"}));
+        assert_eq!(agent.state, CliAgentState::Other);
+        assert_eq!(agent.agent_type.as_deref(), Some("Explore"));
+        assert_eq!(agent.isolation.as_deref(), Some("worktree"));
+        assert_eq!(agent.fallback_model.as_deref(), Some("claude-sonnet-5-5"));
+        assert_eq!(
+            agent.last_tool,
+            Some(CliTool {
+                name: "Read".into(),
+                summary: Some("src/cli.js".into())
+            })
+        );
+        assert_eq!(agent.error, None);
+
+        // A tool called with nothing to say of it has a name alone, and an agent that has
+        // called none yet has no last tool.
+        let bare = agent_reported(json!({"state": "progress", "lastToolName": "TodoWrite"}));
+        assert_eq!(
+            bare.last_tool,
+            Some(CliTool {
+                name: "TodoWrite".into(),
+                summary: None
+            })
+        );
+        let none = agent_reported(json!({"state": "start"}));
+        assert_eq!(
+            (none.last_tool, none.agent_type, none.isolation),
+            (None, None, None)
+        );
+    }
+
+    /// Claude Code ends an agent that didn't finish with one state, `error`, and says with a
+    /// flag when it was skipped or blocked. Each keeps the words it ended with.
+    #[test]
+    fn an_agent_skipped_or_blocked_is_not_one_that_failed() {
+        let failed = agent_reported(json!({"state": "error",
+            "error": "stalled — no progress for 180000ms"}));
+        assert_eq!(failed.state, CliAgentState::Failed);
+        assert_eq!(
+            failed.error.as_deref(),
+            Some("stalled — no progress for 180000ms")
+        );
+
+        let skipped = agent_reported(json!({"state": "error", "skipped": true,
+            "error": "skipped by user"}));
+        assert_eq!(skipped.state, CliAgentState::Skipped);
+
+        let blocked = agent_reported(json!({"state": "error", "blocked": true,
+            "error": "[review:one] blocked by safety classifier: asks for a secret"}));
+        assert_eq!(blocked.state, CliAgentState::Blocked);
+        assert_eq!(
+            blocked.error.as_deref(),
+            Some("[review:one] blocked by safety classifier: asks for a secret")
+        );
+
+        // Skipped is read before blocked, as Claude Code's own view reads them, and a flag
+        // that isn't set changes nothing.
+        let both = agent_reported(json!({"state": "error", "skipped": true, "blocked": true}));
+        assert_eq!(both.state, CliAgentState::Skipped);
+        let neither = agent_reported(json!({"state": "error", "skipped": false}));
+        assert_eq!(neither.state, CliAgentState::Failed);
     }
 }

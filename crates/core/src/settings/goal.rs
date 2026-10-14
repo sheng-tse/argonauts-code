@@ -48,7 +48,7 @@ pub enum GoalDefault {
     #[default]
     #[serde(rename = "off")]
     Off,
-    #[serde(rename = "from-request", alias = "from_request")]
+    #[serde(rename = "from-request")]
     FromRequest,
 }
 
@@ -88,10 +88,10 @@ pub enum RoleGoal {
     #[default]
     Off,
     /// The CLI's own goal, which Codex has: the task's done-when lines are set as its goal and
-    /// it keeps going by itself. Argonauts still runs the check. A CLI with no goal of its own
-    /// is kept by Argonauts.
+    /// it keeps going by itself. Argonauts Code still runs the check. A CLI with no goal of its own
+    /// is kept by Argonauts Code.
     Cli,
-    /// Argonauts keeps it: after each try it runs the check and sends back what still fails.
+    /// Argonauts Code keeps it: after each try it runs the check and sends back what still fails.
     Argonauts,
 }
 

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use anyhow::{Context, anyhow};
 use argonauts_core::ErrorCategory;
-use argonauts_core::registry::HarnessManifest;
+use argonauts_core::registry::CliManifest;
 use regex::Regex;
 
 pub(crate) struct ErrorRules {
@@ -15,7 +15,7 @@ pub(crate) struct ErrorRules {
 impl ErrorRules {
     /// Refuses a pattern that doesn't compile or an exit code that isn't a number, so
     /// `command` can say so before anything runs.
-    pub(crate) fn compile(manifest: &HarnessManifest) -> anyhow::Result<Self> {
+    pub(crate) fn compile(manifest: &CliManifest) -> anyhow::Result<Self> {
         let patterns = manifest
             .errors
             .iter()
@@ -42,7 +42,7 @@ impl ErrorRules {
     }
 
     /// Keeps the rules that compile. `command` has already refused a manifest with any other.
-    pub(crate) fn lenient(manifest: &HarnessManifest) -> Self {
+    pub(crate) fn lenient(manifest: &CliManifest) -> Self {
         Self {
             patterns: manifest
                 .errors

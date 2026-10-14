@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use argonauts_core::Adapter as _;
+use argonauts_core::cli_sessions::CliCall;
 use time::macros::datetime;
 
 use super::*;
@@ -31,15 +32,15 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
-fn scan(home: &Path) -> VendorScan {
-    VendorScan::new("/work/shop", home)
+fn scan(home: &Path) -> CliScan {
+    CliScan::new("/work/shop", home)
 }
 
 #[test]
 fn lists_this_folders_sessions_newest_first() {
     let home = home();
     let sessions = CodexAdapter::new()
-        .vendor_sessions(&scan(home.path()), 20)
+        .cli_sessions(&scan(home.path()), 20)
         .unwrap();
     let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
     // Left out: an exec run, a subagent, another folder's, and one with no words of yours.
@@ -47,7 +48,7 @@ fn lists_this_folders_sessions_newest_first() {
 
     // An older rollout names no source, and the index no title.
     let export = &sessions[0];
-    assert_eq!(export.vendor.0.as_str(), "codex");
+    assert_eq!(export.agent_id.0.as_str(), "codex");
     assert_eq!(
         export.title,
         "Fix the flaky export test. It fails on CI about once a day."
@@ -110,10 +111,10 @@ fn a_missing_store_lists_nothing() {
 }
 
 #[test]
-fn turns_leave_out_tools_and_what_codex_adds() {
+fn turns_leave_out_what_codex_adds() {
     let home = home();
     let all = CodexAdapter::new()
-        .vendor_session_turns(&scan(home.path()), INPUT, 10)
+        .cli_session_turns(&scan(home.path()), INPUT, 10)
         .unwrap();
     let said: Vec<(Speaker, &str)> = all.iter().map(|t| (t.from, t.text.as_str())).collect();
     assert_eq!(
@@ -133,6 +134,144 @@ fn turns_leave_out_tools_and_what_codex_adds() {
 }
 
 #[test]
+fn an_agents_turn_keeps_what_it_ran_as_the_live_stream_names_it() {
+    let home = home();
+    let all = turns(&scan(home.path()), INPUT, 10).unwrap();
+    assert!(all[0].steps.is_empty(), "a person's turn has no steps");
+    let search = CliCall {
+        ok: Some(true),
+        output: Some("src/input.rs:3:fn read_key()".to_owned()),
+        ..CliCall::new(
+            "call_1",
+            "command_execution",
+            serde_json::json!({"command": "rg read_key"}),
+        )
+    };
+    assert_eq!(
+        all[1].steps,
+        vec![
+            // Codex keeps its reasoning encrypted, so only that it thought is known.
+            CliStep::Thought {
+                text: String::new()
+            },
+            CliStep::Ran(search),
+            CliStep::Wrote {
+                text: "It reads keys in one loop.".to_owned()
+            },
+        ]
+    );
+}
+
+/// A command left running reports after your next prompt. Its result still reaches the call
+/// that started it, in the turn before.
+#[test]
+fn a_result_reaches_its_call_in_an_earlier_turn() {
+    let home = home();
+    let store = home.path().join(".codex/sessions/2026/09/28");
+    let file = store.join(format!("rollout-2026-09-28T09-00-00-{INPUT}.jsonl"));
+    let recorded = fs::read_to_string(&file).unwrap();
+    let prompt = serde_json::json!({
+        "timestamp": "2026-09-28T09:01:03.500Z", "type": "response_item",
+        "payload": {"type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": "And the mouse?"}]}
+    });
+    // Your next prompt lands between the call and its output.
+    let lines: Vec<String> = recorded
+        .lines()
+        .flat_map(|line| {
+            let output = line.contains("\"function_call_output\"") && line.contains("call_1");
+            output
+                .then(|| prompt.to_string())
+                .into_iter()
+                .chain([line.to_owned()])
+        })
+        .collect();
+    assert_eq!(lines.len(), recorded.lines().count() + 1);
+    fs::write(&file, lines.join("\n")).unwrap();
+
+    let all = turns(&scan(home.path()), INPUT, 10).unwrap();
+    assert_eq!(all[2].text, "And the mouse?", "{all:?}");
+    let ran: Vec<&CliCall> = all[1]
+        .steps
+        .iter()
+        .filter_map(|step| match step {
+            CliStep::Ran(call) => Some(call),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ran.len(), 1, "{:?}", all[1].steps);
+    assert_eq!(ran[0].ok, Some(true));
+    assert_eq!(
+        ran[0].output.as_deref(),
+        Some("src/input.rs:3:fn read_key()")
+    );
+}
+
+#[test]
+fn a_patch_reads_as_a_file_change_with_each_files_hunks() {
+    let patch = "*** Begin Patch\n*** Update File: src/tax.rs\n@@ fn total()\n     let sum = \
+                 add();\n-    sum.round()\n+    sum.floor()\n*** Add File: notes.md\n+# Notes\n\
+                 *** Delete File: old.rs\n*** End Patch";
+    let call = calls::call("call_7", "apply_patch", Some(patch));
+    assert_eq!(call.name, "file_change");
+    assert_eq!(
+        call.input,
+        serde_json::json!({"changes": [
+            {"path": "src/tax.rs", "kind": "update"},
+            {"path": "notes.md", "kind": "add"},
+            {"path": "old.rs", "kind": "delete"},
+        ]})
+    );
+    let hunks: Vec<(&str, &str, bool)> = call
+        .patches
+        .iter()
+        .map(|patch| (patch.path.as_str(), patch.hunks.as_str(), patch.numbered))
+        .collect();
+    assert_eq!(
+        hunks,
+        vec![
+            (
+                "src/tax.rs",
+                "@@ -1,2 +1,2 @@\n     let sum = add();\n-    sum.round()\n+    sum.floor()\n",
+                false
+            ),
+            ("notes.md", "@@ -1,0 +1,1 @@\n+# Notes\n", false),
+        ]
+    );
+    // As a function, the patch is the `input` of its arguments.
+    let wrapped = serde_json::json!({ "input": patch }).to_string();
+    assert_eq!(
+        calls::call("call_8", "apply_patch", Some(&wrapped)).patches,
+        call.patches
+    );
+}
+
+#[test]
+fn a_calls_result_says_how_it_ended_in_each_shape_codex_wrote() {
+    let text = |text: &str| serde_json::Value::String(text.to_owned());
+    assert_eq!(
+        calls::result(Some(&text("found"))),
+        (true, Some("found".to_owned()))
+    );
+    let json = r#"{"output":"boom\n","metadata":{"exit_code":2,"duration_seconds":0.1}}"#;
+    assert_eq!(
+        calls::result(Some(&text(json))),
+        (false, Some("boom\n".to_owned()))
+    );
+    let plain = "Exit code: 0\nWall time: 0.2 seconds\nOutput:\nok\n";
+    assert_eq!(
+        calls::result(Some(&text(plain))),
+        (true, Some("ok\n".to_owned()))
+    );
+    let object = serde_json::json!({"content": "denied", "success": false});
+    assert_eq!(
+        calls::result(Some(&object)),
+        (false, Some("denied".to_owned()))
+    );
+    assert_eq!(calls::result(None), (true, None));
+}
+
+#[test]
 fn turns_of_an_unknown_or_unsafe_id_fail() {
     let home = home();
     let missing = turns(&scan(home.path()), "019a0000", 4).unwrap_err();
@@ -148,4 +287,44 @@ fn what_codex_adds_is_told_from_your_words() {
     assert!(added_by_codex("# AGENTS.md instructions for /w\n\nhi"));
     assert!(!added_by_codex("<div> is off by one"));
     assert!(!added_by_codex("Read AGENTS.md first"));
+}
+
+#[test]
+fn every_folder_lists_the_other_folders_sessions_with_where_each_ran() {
+    let home = home();
+    let adapter = CodexAdapter::new();
+    let here = adapter.cli_sessions(&scan(home.path()), 20).unwrap();
+    let all = adapter
+        .cli_sessions(&scan(home.path()).everywhere(), 20)
+        .unwrap();
+    assert!(all.len() > here.len(), "{} of {}", here.len(), all.len());
+    assert!(here.iter().all(|s| s.folder == Path::new("/work/shop")));
+    assert!(all.iter().any(|s| s.folder != Path::new("/work/shop")));
+    for session in &here {
+        assert!(all.iter().any(|s| s.id == session.id), "{}", session.id);
+    }
+    assert!(
+        all.windows(2)
+            .all(|pair| pair[0].updated >= pair[1].updated)
+    );
+}
+
+#[test]
+fn a_sessions_length_counts_your_prompts() {
+    let home = home();
+    let adapter = CodexAdapter::new();
+    let scan = scan(home.path());
+    let sessions = adapter.cli_sessions(&scan, 20).unwrap();
+    assert!(!sessions.is_empty());
+    for session in sessions {
+        let turns = adapter
+            .cli_session_turns(&scan, &session.id, usize::MAX)
+            .unwrap();
+        let prompts = turns
+            .iter()
+            .filter(|turn| turn.from == Speaker::User)
+            .count();
+        assert!(prompts > 0);
+        assert_eq!(session.turns as usize, prompts, "{}", session.id);
+    }
 }

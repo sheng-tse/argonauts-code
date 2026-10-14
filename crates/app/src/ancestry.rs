@@ -41,7 +41,7 @@ impl AgentMarkers {
         Self::with(&ApprovalSettings::default().refuse_ancestor_env)
     }
 
-    /// `ARGONAUTS_SESSION` alone: Argonauts' own agents, which must never host a run.
+    /// `ARGONAUTS_SESSION` alone: Argonauts Code's own agents, which must never host a run.
     pub(crate) fn own() -> Self {
         Self::with(&[])
     }
@@ -104,11 +104,11 @@ pub(crate) fn registered_agents(
     Ok(groups)
 }
 
-/// The leader still runs, or it exited and left members behind. A leader pid now held by a
-/// process with another start time is a reused pid, so its group is someone else's.
+/// The group's first process still runs, or it exited and left members behind. Its pid now
+/// held by a process with another start time is a reused pid, so the group is someone else's.
 fn group_is_live(group: &AgentGroup, processes: &mut dyn ProcessSource) -> bool {
     match processes.inspect(group.pid) {
-        Some(leader) => leader.start_time == group.start_time,
+        Some(first) => first.start_time == group.start_time,
         None => processes.group_has_members(group.pgid),
     }
 }
@@ -173,10 +173,10 @@ pub(crate) fn agent_ancestor_in(
 /// Refuses when this process runs inside an agent session or descends from an agent.
 pub(crate) fn check_self(home: &Paths, markers: &AgentMarkers) -> anyhow::Result<()> {
     if let Some(name) = markers.set_here() {
-        bail!("Argonauts won't do this inside an agent session ({name} is set).");
+        bail!("Argonauts Code won't do this inside an agent session ({name} is set).");
     }
     if let Some(reason) = agent_ancestor(std::process::id(), home, markers)? {
-        bail!("Argonauts won't do this from inside an agent: {reason}.");
+        bail!("Argonauts Code won't do this from inside an agent: {reason}.");
     }
     Ok(())
 }
@@ -326,7 +326,7 @@ pub(crate) mod tests {
         .unwrap();
     }
 
-    /// Registers the real group that `pid` leads.
+    /// Registers the real group that `pid` is first in.
     pub(crate) fn register_group(home: &Paths, pid: u32) {
         let start_time = Processes::new().start_time(pid).unwrap();
         write_agent(
@@ -384,8 +384,9 @@ pub(crate) mod tests {
             self.table.insert(pid, (info, group));
         }
 
-        /// Agent leaders 20 and 21, started by a clean 10. Peer 30 runs in 20's group, peer 31
-        /// is a child of 21 in a group of its own, and peer 32 sits right under 10.
+        /// Agents 20 and 21, each first in its group, started by a clean 10. Peer 30 runs in
+        /// 20's group, peer 31 is a child of 21 in a group of its own, and peer 32 sits right
+        /// under 10.
         pub(crate) fn agent_shells() -> Self {
             let mut table = Self::default();
             table.add(10, None, 10);
@@ -397,15 +398,15 @@ pub(crate) mod tests {
             table
         }
 
-        /// Writes the `agents/` entries for the leaders of [`Self::agent_shells`].
+        /// Writes the `agents/` entries for the agents of [`Self::agent_shells`].
         pub(crate) fn register_agents(&self, home: &Paths) {
-            for leader in [20, 21] {
-                let (info, group) = &self.table[&leader];
+            for pid in [20, 21] {
+                let (info, group) = &self.table[&pid];
                 write_agent(
                     home,
                     &AgentGroup {
                         pgid: *group,
-                        pid: leader,
+                        pid,
                         start_time: info.start_time,
                     },
                 );
@@ -452,7 +453,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_leader_that_left_counts_while_its_group_has_members() {
+    fn a_group_counts_while_it_has_members_though_its_first_process_left() {
         let home = tempfile::tempdir().unwrap();
         let home = Paths::new(home.path());
         let mut table = ScriptedProcesses::agent_shells();
@@ -604,7 +605,7 @@ pub(crate) mod tests {
             "pid": shell.id(),
             "start_time": start_time,
             "session": "s-001",
-            "vendor": "codex",
+            "agent_id": "codex",
         });
         std::fs::write(
             dir.join(format!("{}.json", shell.id())),

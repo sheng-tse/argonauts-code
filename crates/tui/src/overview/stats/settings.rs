@@ -13,9 +13,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Modifier;
 use ratatui::text::Span;
 
+use crate::kit::{Drawn, Kit, spread};
 use crate::text::{spans_width, str_width};
 use crate::theme::Role;
-use crate::widgets::{Drawn, Kit, spread};
 
 /// One setting, a row of the page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -368,7 +368,7 @@ impl SettingsPage {
             drawn.push(vec![kit.dim(format!(" {said}"))]);
         }
         if self.changed() {
-            drawn.push(vec![kit.span(" Not saved yet. s saves it", Role::Warning)]);
+            drawn.push(vec![kit.span(" Not saved yet. s saves it", Role::Warn)]);
         }
         drawn
     }
@@ -384,19 +384,19 @@ impl SettingsPage {
     ) -> Vec<Vec<Span<'static>>> {
         let glyphs = &kit.theme.glyphs;
         let pointer = if picked {
-            Span::styled(format!(" {} ", glyphs.prompt), kit.bold(Role::Card))
+            Span::styled(format!(" {} ", glyphs.prompt), kit.bold(Role::Question))
         } else {
             Span::raw("   ")
         };
         let label = format!("{:<LABEL$}", setting.label());
         let label = if picked {
-            Span::styled(label, kit.bold(Role::Card))
+            Span::styled(label, kit.bold(Role::Question))
         } else {
             Span::raw(label)
         };
         let source = vec![kit.dim(format!("{} ", self.sources.of(setting.key()).word()))];
-        let lead = str_width(&format!("   {:<LABEL$}", ""));
-        let room = width.saturating_sub(lead + spans_width(&source) + 2);
+        let margin = str_width(&format!("   {:<LABEL$}", ""));
+        let room = width.saturating_sub(margin + spans_width(&source) + 2);
         let choices = self.choices(kit, setting, picked);
         let mut lines = Vec::new();
         let mut line: Vec<Span<'static>> = Vec::new();
@@ -418,7 +418,7 @@ impl SettingsPage {
                 let mut left = if at == 0 {
                     vec![pointer.clone(), label.clone()]
                 } else {
-                    vec![Span::raw(" ".repeat(lead))]
+                    vec![Span::raw(" ".repeat(margin))]
                 };
                 left.extend(choices);
                 if at == 0 {
@@ -434,7 +434,7 @@ impl SettingsPage {
     fn choices(&self, kit: &Kit<'_>, setting: Setting, picked: bool) -> Vec<Vec<Span<'static>>> {
         let pick = |words: &str, on: bool| {
             vec![if on {
-                Span::styled(words.to_owned(), kit.bold(Role::Card))
+                Span::styled(words.to_owned(), kit.bold(Role::Question))
             } else {
                 kit.dim(words.to_owned())
             }]
@@ -461,7 +461,7 @@ impl SettingsPage {
                     .enumerate()
                     .map(|(at, (column, on))| {
                         let mut words = if on {
-                            Span::styled(column.word(), kit.bold(Role::Card))
+                            Span::styled(column.word(), kit.bold(Role::Question))
                         } else {
                             kit.dim(column.word())
                         };
@@ -473,7 +473,7 @@ impl SettingsPage {
                             vec![
                                 Span::styled(
                                     format!("{} ", glyphs.checkbox_on),
-                                    kit.bold(Role::Card),
+                                    kit.bold(Role::Question),
                                 ),
                                 words,
                             ]
@@ -485,7 +485,7 @@ impl SettingsPage {
                             let place = place.map_or(0, |place| place + 1);
                             spans.push(Span::styled(
                                 format!(" {}", ordinal(place)),
-                                kit.bold(Role::Card),
+                                kit.bold(Role::Question),
                             ));
                         }
                         spans

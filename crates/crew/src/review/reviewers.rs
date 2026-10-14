@@ -1,37 +1,41 @@
-//! Who reviews: the card's reviewers from the ring, other families than the owner, never the
-//! owner's notes.
+//! Who reviews: the task's reviewers from the ring, never the worker, other providers than the
+//! worker's while `review.other_provider` holds, and never the worker's notes.
 
-use argonauts_core::CardId;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::TaskId;
+use argonauts_core::names::ModelRef;
 
 use crate::state::RunState;
 
-/// The card's reviewers, skipping the owner and any reviewer now of the owner's family (after
-/// a handoff, say). `families` gives a worker's model family from the registry.
-pub fn for_card(
+/// The task's reviewers, skipping the worker and, under `other_provider`, any reviewer now of the
+/// worker's provider (after a fallback, say). `providers` gives a worker's model provider from
+/// the registry.
+pub fn for_task(
     state: &RunState,
-    card: &CardId,
-    families: &dyn Fn(&WorkerRef) -> String,
-) -> Vec<WorkerRef> {
-    let Some(record) = state.cards.get(card) else {
+    task: &TaskId,
+    providers: &dyn Fn(&ModelRef) -> String,
+    other_provider: bool,
+) -> Vec<ModelRef> {
+    let Some(record) = state.tasks.get(task) else {
         return Vec::new();
     };
-    let owner = record.owner.as_ref().or(record.spec.owner.as_ref());
-    eligible(&record.spec.reviewers, owner, families)
+    let worker = record.worker.as_ref().or(record.spec.worker.as_ref());
+    eligible(&record.spec.reviewers, worker, providers, other_provider)
 }
 
-/// `reviewers` without the owner, the owner's family, or repeats.
+/// `reviewers` without the worker, the worker's provider under `other_provider`, or repeats.
 pub fn eligible(
-    reviewers: &[WorkerRef],
-    owner: Option<&WorkerRef>,
-    families: &dyn Fn(&WorkerRef) -> String,
-) -> Vec<WorkerRef> {
-    let owner_family = owner.map(families);
-    let mut kept: Vec<WorkerRef> = Vec::new();
+    reviewers: &[ModelRef],
+    worker: Option<&ModelRef>,
+    providers: &dyn Fn(&ModelRef) -> String,
+    other_provider: bool,
+) -> Vec<ModelRef> {
+    let worker_provider = worker.map(providers);
+    let mut kept: Vec<ModelRef> = Vec::new();
     for reviewer in reviewers {
-        let own = Some(reviewer) == owner;
-        let same_family = owner_family.as_deref() == Some(families(reviewer).as_str());
-        if !own && !same_family && !kept.contains(reviewer) {
+        let own = Some(reviewer) == worker;
+        let same_provider =
+            other_provider && worker_provider.as_deref() == Some(providers(reviewer).as_str());
+        if !own && !same_provider && !kept.contains(reviewer) {
             kept.push(reviewer.clone());
         }
     }
@@ -42,8 +46,8 @@ pub fn eligible(
 mod tests {
     use super::*;
 
-    fn family(worker: &WorkerRef) -> String {
-        match worker.worker.as_str() {
+    fn provider(worker: &ModelRef) -> String {
+        match worker.agent.as_str() {
             "claude-code" => "claude",
             "codex" | "opencode" => "gpt",
             _ => "gemini",
@@ -51,31 +55,34 @@ mod tests {
         .to_owned()
     }
 
-    fn workers(names: &[&str]) -> Vec<WorkerRef> {
+    fn workers(names: &[&str]) -> Vec<ModelRef> {
         names.iter().map(|n| n.parse().unwrap()).collect()
     }
 
     #[test]
-    fn reviewers_of_the_owners_family_are_skipped() {
-        // After a handoff to codex, the gpt-family reviewer can't review.
+    fn reviewers_of_the_workers_provider_are_skipped() {
+        // After a fallback to codex, the reviewer of Codex's own provider can't review.
         let reviewers = workers(&["opencode", "antigravity-cli", "codex", "antigravity-cli"]);
-        let owner: WorkerRef = "codex".parse().unwrap();
-        let kept = eligible(&reviewers, Some(&owner), &family);
+        let worker: ModelRef = "codex".parse().unwrap();
+        let kept = eligible(&reviewers, Some(&worker), &provider, true);
         assert_eq!(kept, workers(&["antigravity-cli"]));
+        // With review across providers off, only the worker itself is skipped.
+        let kept = eligible(&reviewers, Some(&worker), &provider, false);
+        assert_eq!(kept, workers(&["opencode", "antigravity-cli"]));
     }
 
     #[test]
-    fn with_no_owner_every_distinct_reviewer_stays() {
+    fn with_no_worker_every_distinct_reviewer_stays() {
         let reviewers = workers(&["codex", "codex", "claude-code"]);
         assert_eq!(
-            eligible(&reviewers, None, &family),
+            eligible(&reviewers, None, &provider, true),
             workers(&["codex", "claude-code"])
         );
     }
 
     #[test]
-    fn an_unknown_card_has_no_reviewers() {
-        let other = CardId::new("task-009").unwrap();
-        assert!(for_card(&RunState::default(), &other, &family).is_empty());
+    fn an_unknown_task_has_no_reviewers() {
+        let other = TaskId::new("task-009").unwrap();
+        assert!(for_task(&RunState::default(), &other, &provider, true).is_empty());
     }
 }

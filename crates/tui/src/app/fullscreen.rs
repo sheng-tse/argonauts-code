@@ -1,11 +1,11 @@
-//! The chat with the whole alternate screen, for `ui.screen = "fullscreen"`. What the inline
-//! screen prints into the terminal's scrollback stays in [`Scrollback`] instead, and the
+//! The conversation with the whole alternate screen, for `ui.screen = "fullscreen"`. What the
+//! inline screen prints into the terminal's scrollback stays in [`Scrollback`] instead, and the
 //! conversation scrolls inside the app with the wheel, PgUp, and PgDn. New output follows the
 //! bottom unless you scrolled up.
 //!
 //! The app takes the mouse as SGR reports, with motion while a button is down. Alternate
 //! scroll mode would leave the mouse alone, but it turns the wheel into ↑ and ↓, which in the
-//! chat walk the prompt history. So the app selects text itself, as [`Selecting`] does, and
+//! conversation walk the prompt history. So the app selects text itself, as [`Selecting`] does, and
 //! the terminal's own selection still works with its bypass key held, such as Shift.
 
 use std::io::{self, Write};
@@ -274,7 +274,7 @@ impl Scrollback {
             let unit = if self.offset == 1 { "row" } else { "rows" };
             format!("{} {unit} below", self.offset)
         };
-        // The same down arrow token counts use, with its ASCII stand-in.
+        // The same down arrow token counts use, with its ASCII form.
         let arrow = ctx.theme.glyphs.tokens;
         let line = Line::from(Span::styled(
             format!("  {arrow} {what} · pgdn to scroll"),
@@ -376,7 +376,7 @@ impl<W: Write> Ui<W> {
             let row = top.checked_add(row.checked_sub(trailing_rows)?)?;
             (row < screen.height).then_some(Position::new(column, row))
         });
-        self.terminal.draw_buffer_parked(&buffer, cursor)
+        self.terminal.draw_buffer_resting(&buffer, cursor)
     }
 
     /// PgUp and PgDn scroll the conversation. False on the inline screen, where the terminal

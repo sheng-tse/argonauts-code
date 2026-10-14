@@ -1,5 +1,5 @@
-//! Long-lived vendor sessions for roles with lifetime `project`, one per role and worker. A file
-//! lock lease keeps two supervisors from resuming one at once, and a crash never leaves it taken.
+//! Long-lived CLI sessions for roles with lifetime `project`, one per role and model. A file
+//! lock lease keeps two run hosts from resuming one at once, and a crash never leaves it taken.
 
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io;
@@ -11,15 +11,15 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::layout::repo_state;
-use crate::names::{RoleName, WorkerRef};
+use crate::names::{ModelRef, RoleName};
 use crate::paths::{create_private_dir_all, write_private_file};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MainSession {
     pub role: RoleName,
-    /// A role moving to another vendor starts over.
-    pub worker: WorkerRef,
-    pub vendor_session: String,
+    /// A role moving to another agent starts over.
+    pub worker: ModelRef,
+    pub cli_session: String,
     #[serde(with = "time::serde::rfc3339")]
     pub started: OffsetDateTime,
     pub runs: u32,
@@ -34,7 +34,7 @@ pub struct MainSessions {
 pub struct MainSessionLease {
     _lock: File,
     role: RoleName,
-    worker: WorkerRef,
+    worker: ModelRef,
 }
 
 impl MainSessionLease {
@@ -42,7 +42,7 @@ impl MainSessionLease {
         self.role
     }
 
-    pub fn worker(&self) -> &WorkerRef {
+    pub fn worker(&self) -> &ModelRef {
         &self.worker
     }
 }
@@ -57,8 +57,8 @@ impl MainSessions {
         }
     }
 
-    /// `<role>--<worker>`, with the worker percent-encoded so every worker gets its own name.
-    fn stem(role: RoleName, worker: &WorkerRef) -> String {
+    /// `<role>--<model>`, with the model percent-encoded so every model gets its own name.
+    fn stem(role: RoleName, worker: &ModelRef) -> String {
         let mut stem = format!("{}--", role.as_str());
         for byte in worker.to_string().bytes() {
             if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
@@ -70,17 +70,17 @@ impl MainSessions {
         stem
     }
 
-    fn file(&self, role: RoleName, worker: &WorkerRef) -> PathBuf {
+    fn file(&self, role: RoleName, worker: &ModelRef) -> PathBuf {
         self.dir.join(format!("{}.json", Self::stem(role, worker)))
     }
 
-    fn lock_file(&self, role: RoleName, worker: &WorkerRef) -> PathBuf {
+    fn lock_file(&self, role: RoleName, worker: &ModelRef) -> PathBuf {
         self.dir.join(format!("{}.lock", Self::stem(role, worker)))
     }
 
     /// An unreadable file counts as none, so the next run starts a fresh session instead of
     /// failing.
-    pub fn get(&self, role: RoleName, worker: &WorkerRef) -> Option<MainSession> {
+    pub fn get(&self, role: RoleName, worker: &ModelRef) -> Option<MainSession> {
         let text = fs::read_to_string(self.file(role, worker)).ok()?;
         let session: MainSession = serde_json::from_str(&text).ok()?;
         (session.role == role && &session.worker == worker).then_some(session)
@@ -103,7 +103,7 @@ impl MainSessions {
         fs::rename(&partial, &path)
     }
 
-    pub fn clear(&self, role: RoleName, worker: &WorkerRef) -> io::Result<()> {
+    pub fn clear(&self, role: RoleName, worker: &ModelRef) -> io::Result<()> {
         match fs::remove_file(self.file(role, worker)) {
             Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
             _ => Ok(()),
@@ -111,11 +111,7 @@ impl MainSessions {
     }
 
     /// `None` when another task or process holds it; that work then runs in an ordinary session.
-    pub fn lease(
-        &self,
-        role: RoleName,
-        worker: &WorkerRef,
-    ) -> io::Result<Option<MainSessionLease>> {
+    pub fn lease(&self, role: RoleName, worker: &ModelRef) -> io::Result<Option<MainSessionLease>> {
         create_private_dir_all(&self.dir)?;
         let lock = OpenOptions::new()
             .create(true)
@@ -146,7 +142,7 @@ mod tests {
         MainSession {
             role,
             worker: worker.parse().unwrap(),
-            vendor_session: "vendor-1".into(),
+            cli_session: "cli-1".into(),
             started: datetime!(2026-09-29 10:00 UTC),
             runs: 2,
         }
@@ -156,8 +152,8 @@ mod tests {
     fn one_session_per_role_and_worker() {
         let dir = tempfile::tempdir().unwrap();
         let store = MainSessions::open(dir.path());
-        let claude: WorkerRef = "claude-code/opus".parse().unwrap();
-        let codex: WorkerRef = "codex".parse().unwrap();
+        let claude: ModelRef = "claude-code/opus".parse().unwrap();
+        let codex: ModelRef = "codex".parse().unwrap();
         assert!(store.get(RoleName::Reviewer, &claude).is_none());
 
         let reviewer = session(RoleName::Reviewer, "claude-code/opus");
@@ -171,7 +167,7 @@ mod tests {
         assert_eq!(
             store.get(RoleName::Reviewer, &codex),
             Some(other),
-            "two workers in one role keep their own sessions"
+            "two models in one role keep their own sessions"
         );
         assert!(store.get(RoleName::Worker, &claude).is_none());
 
@@ -193,12 +189,12 @@ mod tests {
     fn a_second_put_replaces_and_a_broken_file_reads_as_none() {
         let dir = tempfile::tempdir().unwrap();
         let store = MainSessions::open(dir.path());
-        let worker: WorkerRef = "codex".parse().unwrap();
-        let mut owner = session(RoleName::Worker, "codex");
-        store.put(&owner).unwrap();
-        owner.runs = 3;
-        store.put(&owner).unwrap();
-        assert_eq!(store.get(RoleName::Worker, &worker).unwrap().runs, 3);
+        let model: ModelRef = "codex".parse().unwrap();
+        let mut worker = session(RoleName::Worker, "codex");
+        store.put(&worker).unwrap();
+        worker.runs = 3;
+        store.put(&worker).unwrap();
+        assert_eq!(store.get(RoleName::Worker, &model).unwrap().runs, 3);
         let leftovers: Vec<_> = std::fs::read_dir(dir.path().join("sessions"))
             .unwrap()
             .filter_map(|entry| entry.ok())
@@ -211,7 +207,7 @@ mod tests {
             "{ torn",
         )
         .unwrap();
-        assert!(store.get(RoleName::Worker, &worker).is_none());
+        assert!(store.get(RoleName::Worker, &model).is_none());
     }
 
     // The lock belongs to the open file, so two opens conflict even inside one process.
@@ -220,7 +216,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let first = MainSessions::open(dir.path());
         let second = MainSessions::open(dir.path());
-        let worker: WorkerRef = "claude-code/opus".parse().unwrap();
+        let worker: ModelRef = "claude-code/opus".parse().unwrap();
 
         let lease = first.lease(RoleName::Worker, &worker).unwrap().unwrap();
         assert_eq!(lease.role(), RoleName::Worker);

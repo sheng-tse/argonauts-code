@@ -1,5 +1,5 @@
 //! Checks the interface's settings as they load. A bad value is named and its default used, so
-//! a typo never blanks a widget or stops the app from starting.
+//! a typo never blanks a mod or stops the app from starting.
 
 use std::collections::BTreeSet;
 
@@ -7,7 +7,7 @@ use toml::{Table, Value};
 
 use super::UiSettings;
 use super::look::Threshold;
-use super::widgets::{Place, SharedKey, WidgetName};
+use super::mods::{ModName, Place, SharedKey};
 
 /// The keys under `[ui]` where a value that doesn't read falls back instead of failing.
 const FORGIVING: &[&str] = &[
@@ -138,11 +138,11 @@ fn put(table: &mut Table, path: &[String], value: Option<Value>) {
 }
 
 impl UiSettings {
-    /// Leaves out what read but can't work: a widget in a place it can't draw, a form or
-    /// units a widget doesn't have, a duration that isn't one. Returns what it changed.
+    /// Leaves out what read but can't work: a mod in a place it can't draw, a form or
+    /// units a mod doesn't have, a duration that isn't one. Returns what it changed.
     pub fn tidy(&mut self) -> Vec<UiProblem> {
         let mut problems = self.tidy_places();
-        problems.extend(self.tidy_widgets());
+        problems.extend(self.tidy_mods());
         problems.extend(self.tidy_spans());
         if self.levels.warn.value() > self.levels.danger.value() {
             problems.push(UiProblem::new(
@@ -161,22 +161,25 @@ impl UiSettings {
         let mut problems = Vec::new();
         for place in Place::ALL {
             let mut seen = BTreeSet::new();
-            self.place_mut(place).retain(|&widget| {
-                if !widget.fits(place) {
+            self.place_mut(place).retain(|&the_mod| {
+                if !the_mod.fits(place) {
                     problems.push(UiProblem::new(
                         place.key(),
                         format!(
-                            "{}: {widget} can't show {}, so it's left out",
+                            "{}: {the_mod} can't show {}, so it's left out",
                             place.key(),
                             place.phrase()
                         ),
                     ));
                     return false;
                 }
-                if !seen.insert(widget) {
+                if !seen.insert(the_mod) {
                     problems.push(UiProblem::new(
                         place.key(),
-                        format!("{}: {widget} is listed twice; the first stays", place.key()),
+                        format!(
+                            "{}: {the_mod} is listed twice; the first stays",
+                            place.key()
+                        ),
                     ));
                     return false;
                 }
@@ -186,9 +189,9 @@ impl UiSettings {
         problems
     }
 
-    fn tidy_widgets(&mut self) -> Vec<UiProblem> {
+    fn tidy_mods(&mut self) -> Vec<UiProblem> {
         let mut problems = Vec::new();
-        for name in WidgetName::ALL {
+        for name in ModName::ALL {
             let mut clear = Vec::new();
             let shared = self.mods.shared(name);
             let key = |field: &str| format!("ui.mods.{name}.{field}");
@@ -219,7 +222,7 @@ impl UiSettings {
                 problems.push(UiProblem::new(
                     key("units"),
                     format!(
-                        "{}: {name} can't lead with {}; {takes}",
+                        "{}: {name} can't show {} first; {takes}",
                         key("units"),
                         units.word()
                     ),
@@ -230,12 +233,12 @@ impl UiSettings {
                 ("warn", shared.warn, SharedKey::Warn),
                 ("danger", shared.danger, SharedKey::Danger),
             ] {
-                if threshold == Some(Threshold::SoftStop) && !name.counts_budget() {
+                if threshold == Some(Threshold::SoftStop) && !name.counts_limit() {
                     problems.push(UiProblem::new(
                         key(field),
                         format!(
-                            "{}: soft_stop is limits.soft_stop, which only the budget and tasks mods \
-                             measure against",
+                            "{}: soft_stop is limits.soft_stop, which only the run-limits and tasks \
+                             mods measure against",
                             key(field)
                         ),
                     ));
@@ -282,9 +285,9 @@ impl UiSettings {
                 defaults.above_input.settle,
             ),
             (
-                "ui.mods.quota.stale_after",
-                &mut self.mods.quota.own.stale_after,
-                defaults.mods.quota.own.stale_after,
+                "ui.mods.plan_usage.stale_after",
+                &mut self.mods.plan_usage.own.stale_after,
+                defaults.mods.plan_usage.own.stale_after,
             ),
         ];
         for (key, span, default) in spans {
@@ -302,7 +305,7 @@ impl UiSettings {
 
 #[cfg(test)]
 mod tests {
-    use super::super::widgets::WidgetForm;
+    use super::super::mods::ModShape;
     use super::*;
     use crate::settings::Span;
 
@@ -352,7 +355,7 @@ mod tests {
             [ui.levels]
             warn = "0.8"
             [ui.above_input]
-            mods = ["context", "quotaa"]
+            mods = ["context", "plan_usagea"]
             max_rows = -3
             [ui.mods.context]
             form = "fulll"
@@ -402,7 +405,7 @@ mod tests {
         assert_eq!(ui.mods.context.colors.len(), 1);
         assert_eq!(ui.states.done.glyph.as_deref(), Some("+"));
         assert_eq!(ui.states.done.color, default.states.done.color);
-        assert_eq!(ui.panel.bar, super::super::places::PanelBar::Cards);
+        assert_eq!(ui.panel.bar, super::super::places::PanelBar::Tasks);
         assert_eq!(ui.panel.context, default.panel.context);
     }
 
@@ -419,21 +422,18 @@ mod tests {
     }
 
     #[test]
-    fn widgets_leave_places_they_cant_draw_in() {
+    fn mods_leave_places_they_cant_draw_in() {
         let mut ui = UiSettings::default();
         ui.above_input.mods = vec![
-            WidgetName::Context,
-            WidgetName::Agent,
-            WidgetName::Context,
-            WidgetName::Quota,
+            ModName::Context,
+            ModName::Agent,
+            ModName::Context,
+            ModName::PlanUsage,
         ];
-        ui.views.status.mods.push(WidgetName::Limits);
+        ui.views.status.mods.push(ModName::Limits);
         let problems = ui.tidy();
-        assert_eq!(
-            ui.above_input.mods,
-            [WidgetName::Context, WidgetName::Quota]
-        );
-        assert!(!ui.views.status.mods.contains(&WidgetName::Limits));
+        assert_eq!(ui.above_input.mods, [ModName::Context, ModName::PlanUsage]);
+        assert!(!ui.views.status.mods.contains(&ModName::Limits));
         let messages: Vec<&str> = problems.iter().map(|p| p.message.as_str()).collect();
         assert_eq!(
             messages,
@@ -446,10 +446,10 @@ mod tests {
     }
 
     #[test]
-    fn a_widget_keeps_only_the_forms_units_parts_and_levels_it_has() {
+    fn a_mod_keeps_only_the_forms_units_parts_and_levels_it_has() {
         let mut ui = UiSettings::default();
-        ui.mods.sessions.form = Some(WidgetForm::Columns);
-        ui.mods.quota.units = Some(super::super::widgets::Units::Usd);
+        ui.mods.sessions.form = Some(ModShape::Columns);
+        ui.mods.plan_usage.units = Some(super::super::mods::Units::Usd);
         ui.mods.context.parts = Some(vec!["bar".into(), "sparkle".into()]);
         ui.mods.run.warn = Some(Threshold::SoftStop);
         ui.mods.tasks.warn = Some(Threshold::SoftStop);
@@ -467,7 +467,7 @@ mod tests {
             ]
         );
         assert_eq!(ui.mods.sessions.form, None);
-        assert_eq!(ui.mods.quota.units, None);
+        assert_eq!(ui.mods.plan_usage.units, None);
         assert_eq!(ui.mods.context.parts, Some(vec!["bar".to_owned()]));
         assert_eq!(ui.mods.run.warn, None);
         assert_eq!(ui.mods.tasks.warn, Some(Threshold::SoftStop));

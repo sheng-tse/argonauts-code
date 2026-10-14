@@ -28,7 +28,7 @@ pub(crate) fn last_event(events: &Path) -> Option<RunEvent> {
         .find_map(|line| serde_json::from_slice(line).ok())
 }
 
-/// The latest event that moves the run between going, parked, and finished. `Parked` and
+/// The latest event that moves the run between going, waiting, and finished. `Waiting` and
 /// `Finished` are always among the last few lines, so the end of the log is enough.
 pub(crate) fn last_stage_event(events: &Path) -> Option<RunEvent> {
     last_lines(events)
@@ -43,7 +43,7 @@ pub(crate) fn last_stage_event(events: &Path) -> Option<RunEvent> {
                         | RunLifecycle::Resumed(_)
                         | RunLifecycle::PauseRequested { .. }
                         | RunLifecycle::PauseCancelled
-                        | RunLifecycle::Parked { .. }
+                        | RunLifecycle::Waiting { .. }
                         | RunLifecycle::Finished { .. }
                 )
             )
@@ -70,17 +70,17 @@ pub(crate) fn resumed_after(events: &Path, seq: u64) -> bool {
     false
 }
 
-/// True when the log ends parked or finished, so a supervisor that left did so on purpose.
+/// True when the log ends waiting or finished, so a run host that left did so on purpose.
 pub(crate) fn ends_settled(events: &Path) -> bool {
     last_stage_event(events).is_some_and(|event| {
         matches!(
             event.kind,
-            RunEventKind::Run(RunLifecycle::Parked { .. } | RunLifecycle::Finished { .. })
+            RunEventKind::Run(RunLifecycle::Waiting { .. } | RunLifecycle::Finished { .. })
         )
     })
 }
 
-/// The `seq` of the last complete line, even one from a newer Argonauts that doesn't parse.
+/// The `seq` of the last complete line, even one from a newer Argonauts Code that doesn't parse.
 pub(crate) fn last_seq(events: &Path) -> Option<u64> {
     #[derive(Deserialize)]
     struct Envelope {
@@ -130,7 +130,7 @@ fn last_lines(events: &Path) -> Vec<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::client::test_support::{event, write_journal};
-    use argonauts_core::events::run::{ParkReason, ResumeCause, RunOutcome, RunResumed};
+    use argonauts_core::events::run::{ResumeCause, RunOutcome, RunResumed, WaitReason};
     use std::io::Write as _;
 
     #[test]
@@ -143,8 +143,8 @@ mod tests {
                 event(0, RunEventKind::Run(RunLifecycle::PauseCancelled)),
                 event(
                     1,
-                    RunEventKind::Run(RunLifecycle::Parked {
-                        reason: ParkReason::Paused,
+                    RunEventKind::Run(RunLifecycle::Waiting {
+                        reason: WaitReason::Paused,
                         waiting_on: Vec::new(),
                     }),
                 ),
@@ -178,7 +178,7 @@ mod tests {
         let resumed = RunEventKind::Run(RunLifecycle::Resumed(RunResumed {
             cause: ResumeCause::User,
             settings_changed: false,
-            harness_versions_changed: Vec::new(),
+            cli_versions_changed: Vec::new(),
             main_moved_by: None,
             sessions: Vec::new(),
         }));
@@ -218,20 +218,20 @@ mod tests {
         let path = dir.path().join("events.jsonl");
         assert!(last_stage_event(&path).is_none());
         assert!(!ends_settled(&path));
-        let parked = RunEventKind::Run(RunLifecycle::Parked {
-            reason: ParkReason::Paused,
+        let waiting = RunEventKind::Run(RunLifecycle::Waiting {
+            reason: WaitReason::Paused,
             waiting_on: Vec::new(),
         });
         write_journal(
             &path,
             &[
                 event(0, RunEventKind::Run(RunLifecycle::PauseCancelled)),
-                event(1, parked),
+                event(1, waiting),
                 event(
                     2,
                     RunEventKind::Note(argonauts_core::Note {
                         level: argonauts_core::NoteLevel::Info,
-                        text: "a note after parking".to_owned(),
+                        text: "a note after waiting".to_owned(),
                     }),
                 ),
             ],

@@ -1,0 +1,15 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Add due dates
+ orchestrator workflow · add --due to the todo CLI, each part reviewed on another CLI       5/5 agents · 6m20s · done 
+ ✔ Written into your folder · 4 files +52 −6 · /rewind puts it back
+
+ ╭ Phases ──────────┬ Merge · 2 steps ──────────────────────────────────────────────────────────────────────────────╮
+ │   ✔ Build    2/2 │  ✔ final check             npm test · 15 of 16 pass, as at the start                       7s │
+ │   ✔ Review   2/2 │  ✔ write into your folder  history kept by Argonauts · 2 tasks                             2s │
+ │   ✔ Sign-off 1/1 │                                                                                               │
+ │ ❯ ✔ Merge        │                                                                                               │
+ ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save
+
+  its row in the bottom list
+  ✔ Add due dates         ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  5/5 · 6m20s · ↓ 165k tokens · written into your folder

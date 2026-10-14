@@ -1,5 +1,5 @@
 //! `argonauts sync`: one source, `.argonauts/conventions.md`, rendered into one `AGENTS.md`
-//! and a short `CLAUDE.md` that starts with `@AGENTS.md`, so every harness reads the same
+//! and a short `CLAUDE.md` that starts with `@AGENTS.md`, so every CLI reads the same
 //! conventions once. It also checks exported skills against their hashes. A file or skill
 //! edited by hand is reported as drift and never overwritten.
 
@@ -54,7 +54,7 @@ static HEADING: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// `AGENTS.md` and `CLAUDE.md` for these conventions. A section headed "Claude Code only" goes
-/// only into `CLAUDE.md`, since the other harnesses would read it as theirs.
+/// only into `CLAUDE.md`, since the other CLIs would read it as theirs.
 pub fn render(conventions: &str) -> (String, String) {
     let (shared, claude_only) = split_claude_only(conventions);
     let shared = tidy(&shared);
@@ -245,18 +245,18 @@ fn imports_agents(claude: &str) -> bool {
 fn size_warnings(agents: &str) -> Vec<String> {
     let bytes = agents.len();
     let mut warnings = Vec::new();
-    for (harness, cap, cap_text) in [
+    for (cli, cap, cap_text) in [
         ("Codex", CODEX_CAP, "32 KiB"),
         ("Antigravity CLI", ANTIGRAVITY_CAP, "24,000 bytes"),
     ] {
         if bytes > cap {
             warnings.push(format!(
-                "AGENTS.md is {bytes} bytes, over {harness}'s {cap_text}, so {harness} drops the \
+                "AGENTS.md is {bytes} bytes, over {cli}'s {cap_text}, so {cli} drops the \
                  rest. Shorten the conventions."
             ));
         } else if bytes * 100 >= cap * NEAR_CAP_PERCENT {
             warnings.push(format!(
-                "AGENTS.md is {bytes} bytes, near {harness}'s {cap_text}, past which {harness} \
+                "AGENTS.md is {bytes} bytes, near {cli}'s {cap_text}, past which {cli} \
                  drops the rest."
             ));
         }

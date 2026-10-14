@@ -1,13 +1,14 @@
-//! What ran through Argonauts itself over the period, as a card under who did what: the
+//! What ran through Argonauts Code itself over the period, as a card under who did what: the
 //! workflows by kind, the tasks merged and how many passed review first time, the fallbacks
 //! and how many a plan window forced, and the questions settled on autopilot.
 
 use argonauts_core::overview::ThroughArgonauts;
 use ratatui::text::Span;
 
+use crate::format::thousands;
+use crate::kit::{Drawn, Frame, Header, Kit, fit, spread};
 use crate::text::{spans_width, truncate_spans};
 use crate::theme::Role;
-use crate::widgets::{Drawn, Frame, Header, Kit, fit, spread};
 
 /// Cells the row names take.
 const NAMES: usize = 18;
@@ -16,21 +17,21 @@ const NAMES: usize = 18;
 pub fn card(kit: &Kit<'_>, frame: Frame, through: Option<&ThroughArgonauts>) -> Drawn {
     let inner = frame.inner();
     let mut drawn = Drawn::new();
-    let left = Header::new("through Argonauts", Role::Card).left(kit);
-    let note = vec![kit.dim("the crew's runs, as Argonauts ran them")];
+    let left = Header::new("through Argonauts Code", Role::Question).left(kit);
+    let note = vec![kit.dim("the crew's runs, as Argonauts Code ran them")];
     let room = inner.saturating_sub(spans_width(&left) + 2);
     drawn.push(spread(left, truncate_spans(&note, room), inner));
     let Some(through) = through.filter(|through| {
         through.workflows > 0 || through.merged > 0 || through.answered > 0 || through.fallbacks > 0
     }) else {
         drawn.push(vec![
-            kit.dim("Nothing ran through Argonauts in this period."),
+            kit.dim("Nothing ran through Argonauts Code in this period."),
         ]);
         return frame.draw(kit, drawn);
     };
     for (name, count, tail) in rows(through) {
         let mut row = fit(vec![Span::raw(name)], NAMES);
-        row.push(kit.strong(thousands(count)));
+        row.push(kit.strong(thousands(u64::from(count))));
         if !tail.is_empty() {
             row.push(kit.dim(tail));
         }
@@ -88,25 +89,9 @@ fn rows(through: &ThroughArgonauts) -> [(&'static str, u32, String); 4] {
     ]
 }
 
-/// The workflows Argonauts ships; any other name is one of yours.
+/// The workflows Argonauts Code ships; any other name is one of yours.
 fn is_builtin_workflow(name: &str) -> bool {
-    matches!(
-        name,
-        "council" | "orchestrator" | "solo" | "maker-checker" | "best-of-n" | "draft-and-vote"
-    ) || name.starts_with("ablate-")
-}
-
-/// `1,086`.
-fn thousands(n: u32) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (at, digit) in digits.chars().enumerate() {
-        if at > 0 && (digits.len() - at).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    out
+    argonauts_core::workflow_files::built_in(name).is_some()
 }
 
 #[cfg(test)]
@@ -149,7 +134,7 @@ mod tests {
         };
         let rows = text(&card(&kit, Frame::view(90), Some(&through)));
         let has = |words: &str| rows.iter().any(|row| row.contains(words));
-        assert!(has("◆ through Argonauts"), "{rows:#?}");
+        assert!(has("◆ through Argonauts Code"), "{rows:#?}");
         assert!(
             has("workflows         14 · Council 8 · Orchestrator 5 · yours 1"),
             "{rows:#?}"
@@ -170,7 +155,7 @@ mod tests {
         assert!(
             empty
                 .iter()
-                .any(|row| row.contains("Nothing ran through Argonauts"))
+                .any(|row| row.contains("Nothing ran through Argonauts Code"))
         );
     }
 
@@ -218,7 +203,7 @@ mod tests {
             .collect();
         let at = |words: &str| rows.iter().position(|row| row.contains(words));
         let who = at("◆ who did what").expect("who did what");
-        let through = at("◆ through Argonauts").expect("through Argonauts");
+        let through = at("◆ through Argonauts Code").expect("through Argonauts Code");
         assert!(who < through, "{rows:#?}");
         assert!(at("workflows         3 · Council 3").is_some(), "{rows:#?}");
     }

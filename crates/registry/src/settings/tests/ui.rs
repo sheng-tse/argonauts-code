@@ -1,7 +1,7 @@
 //! How the screen looks loads forgivingly: a bad value is named with its file, and its default
-//! is used, so a typo never blanks a widget or stops the app.
+//! is used, so a typo never blanks a mod or stops the app.
 
-use argonauts_core::settings::ui::{Theme, Threshold, TokenStyle, WidgetName};
+use argonauts_core::settings::ui::{ModName, Theme, Threshold, TokenStyle};
 
 use super::{Repo, layer_of};
 use crate::{resolve, write_setting};
@@ -24,7 +24,7 @@ fn a_bad_value_is_named_with_its_file_and_the_default_used() {
     let resolved = resolve(&repo.trusted()).unwrap();
     let ui = &resolved.settings.ui;
     assert_eq!(ui.format.tokens, TokenStyle::Short);
-    assert_eq!(ui.above_input.mods, [WidgetName::Context]);
+    assert_eq!(ui.above_input.mods, [ModName::Context]);
     assert_eq!(ui.mods.context.form, None);
     assert_eq!(ui.mods.context.warn, Some(Threshold::percent(85.0)));
 

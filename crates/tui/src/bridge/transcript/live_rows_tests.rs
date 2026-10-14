@@ -3,8 +3,8 @@
 
 use std::time::Instant;
 
-use argonauts_core::app::{AppEvent, ChatEvent};
-use argonauts_core::names::{TurnId, WorkerRef};
+use argonauts_core::app::{AppEvent, ConversationEvent};
+use argonauts_core::names::{ModelRef, TurnId};
 use argonauts_core::settings::ui::UiSettings;
 use argonauts_core::{AgentEvent, ErrorCategory, Verbosity};
 use serde_json::{Value, json};
@@ -42,7 +42,12 @@ impl Screen {
         }
     }
 
-    pub fn send(&mut self, event: ChatEvent) {
+    pub fn send(&mut self, event: ConversationEvent) {
+        self.app(AppEvent::Conversation { event });
+    }
+
+    /// An event of the app's own, such as what a command says it did.
+    pub fn app(&mut self, event: AppEvent) {
         let mut out = Effects::default();
         let mut cx = Cx {
             model: &mut self.model,
@@ -51,14 +56,14 @@ impl Screen {
             now: Instant::now(),
             out: &mut out,
         };
-        self.transcript.on_event(&AppEvent::Chat { event }, &mut cx);
+        self.transcript.on_event(&event, &mut cx);
     }
 
     pub fn ask(&mut self, text: &str) {
-        self.send(ChatEvent::TurnStarted {
+        self.send(ConversationEvent::TurnStarted {
             turn: self.turn.clone(),
             text: text.into(),
-            worker: WorkerRef::new("claude-code", Some("haiku".into())),
+            worker: ModelRef::new("claude-code", Some("haiku".into())),
             read_only: false,
             commit: "8b41d07".into(),
             uncommitted: vec![],
@@ -68,7 +73,7 @@ impl Screen {
     }
 
     pub fn agent(&mut self, event: AgentEvent) {
-        self.send(ChatEvent::Agent {
+        self.send(ConversationEvent::Agent {
             turn: self.turn.clone(),
             event,
         });
@@ -251,18 +256,21 @@ fn a_call_shows_once_from_written_to_done() {
 fn paths_show_from_the_folder_then_home_and_whole_outside_both() {
     use crate::bridge::tools::Places;
     let places = Places {
-        folder: Some("/Users/me/code/solo".into()),
+        folder: Some("/Users/me/code/captain".into()),
         home: Some("/Users/me".into()),
     };
     for (path, shown) in [
-        ("/Users/me/code/solo/invoice/money.py", "invoice/money.py"),
-        ("/Users/me/code/solo", "."),
-        ("/Users/me/code/solo-two/a.py", "~/code/solo-two/a.py"),
+        (
+            "/Users/me/code/captain/invoice/money.py",
+            "invoice/money.py",
+        ),
+        ("/Users/me/code/captain", "."),
+        ("/Users/me/code/captain-two/a.py", "~/code/captain-two/a.py"),
         ("/Users/me/.zshrc", "~/.zshrc"),
         ("/etc/hosts", "/etc/hosts"),
-        ("file:///Users/me/code/solo/README.md", "README.md"),
+        ("file:///Users/me/code/captain/README.md", "README.md"),
         (
-            "/Users/me/.argonauts/worktrees/solo/run-01/task-002/src/lib.rs",
+            "/Users/me/.argonauts/worktrees/captain/run-01/task-002/src/lib.rs",
             "src/lib.rs",
         ),
         ("invoice/money.py", "invoice/money.py"),
@@ -275,11 +283,11 @@ fn paths_show_from_the_folder_then_home_and_whole_outside_both() {
 fn a_codex_edit_names_its_files_from_the_folder_too() {
     use crate::bridge::tools::{Places, start_call_in};
     let places = Places {
-        folder: Some("/work/solo".into()),
+        folder: Some("/work/captain".into()),
         home: Some("/home/you".into()),
     };
     let changes = json!({"changes": [
-        {"path": "/work/solo/invoice/money.py", "kind": "update"},
+        {"path": "/work/captain/invoice/money.py", "kind": "update"},
         {"path": "/home/you/notes.md", "kind": "update"},
     ]});
     let call = start_call_in("codex", "file_change", &changes, &places);
@@ -290,7 +298,7 @@ fn a_codex_edit_names_its_files_from_the_folder_too() {
     );
 }
 
-/// What the session asks of Argonauts reads as a plain line, never a tool's internal name, and
+/// What the session asks of Argonauts Code reads as a plain line, never a tool's internal name, and
 /// its answer, which is for the session, stays out.
 #[test]
 fn argonauts_own_calls_read_as_plain_lines() {
@@ -305,7 +313,7 @@ fn argonauts_own_calls_read_as_plain_lines() {
     ));
     let rows = screen.text(80);
     assert!(
-        rows.contains("● Looked up reviews in Argonauts' records"),
+        rows.contains("● Looked up reviews in Argonauts Code's records"),
         "{rows}"
     );
     for internal in ["argonauts_", "(MCP)", "gpt-5.6-luna", "⎿"] {
@@ -314,7 +322,7 @@ fn argonauts_own_calls_read_as_plain_lines() {
 }
 
 /// Starting a workflow shows as the session's line and the workflow's row, so its call draws
-/// nothing, unless Argonauts turned it down.
+/// nothing, unless Argonauts Code turned it down.
 #[test]
 fn a_start_draws_a_line_only_when_turned_down() {
     let start = "mcp__argonauts_status__argonauts_start_workflow";
@@ -413,7 +421,7 @@ fn reads_and_look_around_commands_written_one_by_one_fold_into_one_line() {
 fn a_cli_command_is_never_kept_at_the_top_as_your_prompt() {
     for (asked, kept) in [("/ship 12", 0), ("/tmp/out.log is empty, why?", 1)] {
         let mut screen = Screen::new();
-        screen.state.vendor_commands = Some(crate::commands::tests::claude_commands());
+        screen.state.cli_commands = Some(crate::commands::tests::claude_commands());
         screen.ask(asked);
         screen.lines(100);
         let prompts = screen.model.history.take_prompt_rows();

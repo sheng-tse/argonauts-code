@@ -7,20 +7,20 @@ Who decides each approval, and how auto matched you         1 spot check waiting
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Who checks                                                  GPT 5.6 on Codex │
-│ ❯ The judge                     GPT 5.6 on Codex         everywhere (global) │
-│   Rules file                    ~/.argonauts/approver.…  everywhere (global) │
+│ ❯ The judge                     GPT 5.6 on Codex       everywhere (global)   │
+│   Rules file                    ~/.argonauts/judge.md  everywhere (global)   │
 │                                                                              │
 │ Merge · auto preview · your rules decide  12 matches in a row · 1 miss · re… │
-│   How it's decided              auto_preview             this project        │
-│   Who decides in auto           your rules               built-in            │
-│   Changed lines tests cover     0.8                      built-in            │
-│   When auto doesn't approve     ask you                  built-in            │
+│   How it's decided              auto_preview           this project          │
+│   Who decides in auto           your rules             built-in              │
+│   Changed lines tests cover     0.8                    built-in              │
+│   When auto doesn't approve     ask you                built-in              │
 │                                                                              │
 │ Everything else                                                              │
-│   Share of auto calls to check  0.1                      built-in            │
+│   Share of auto calls to check  0.1                    built-in              │
 │                                                                              │
 │ Spot checks                                                        1 waiting │
-│   Fix the flaky export test · cp-003                       y right · n wrong │
+│   Fix the flaky export test · approval-003                 y right · n wrong │
 │                                                                              │
 │                                                                              │
 │                                                                              │

@@ -1,4 +1,4 @@
-//! The title says `◆ needs you` while a card waits, since a crew can wait on you for hours in a
+//! The title says `◆ needs you` while a question waits, since a crew can wait on you for hours in a
 //! tab you aren't looking at.
 //!
 //! Title text comes from session names and agent output, so it is sanitized the way Codex's
@@ -29,9 +29,9 @@ pub fn title_text(status: TitleStatus, session: &str, frame: usize, glyphs: &Gly
     let glyph = match status {
         TitleStatus::NeedsYou => {
             return if session.is_empty() {
-                format!("{} needs you", glyphs.card)
+                format!("{} needs you", glyphs.question)
             } else {
-                format!("{} needs you · {session}", glyphs.card)
+                format!("{} needs you · {session}", glyphs.question)
             };
         }
         TitleStatus::Working if !glyphs.title_busy.is_empty() => {
@@ -138,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn a_waiting_card_says_so_in_the_title() {
+    fn a_waiting_question_says_so_in_the_title() {
         let g = Glyphs::UNICODE;
         assert_eq!(
             title_text(TitleStatus::NeedsYou, "Add --json to export", 1, &g),

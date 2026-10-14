@@ -5,30 +5,30 @@ use std::collections::VecDeque;
 
 use serde::Serialize;
 
-use argonauts_core::api::{CardBrief, StatusSummary};
-use argonauts_core::events::card::{
-    CardEvent, CardSpec, CardState, GateOutcome, IntegrationEvent, ReviewEvent,
-};
-use argonauts_core::events::checkpoint::{AnswerAction, CheckpointEvent, CheckpointPacket};
+use argonauts_core::api::{StatusSummary, TaskBrief};
+use argonauts_core::events::agent_status::{AgentStatusEvent, FallbackEvent, RunSpend, SpendEvent};
+use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalPacket};
 use argonauts_core::events::goal::GoalEvent;
 use argonauts_core::events::plan::{DivideEvent, JudgingResult, PlanEvent};
 use argonauts_core::events::run::{Party, PhaseChange, RunLifecycle};
 use argonauts_core::events::shared::{
     BlackboardEvent, BlackboardKind, BlackboardMessage, Recipient,
 };
-use argonauts_core::events::vendor::{BudgetEvent, HandoffEvent, RunBudget, VendorEvent};
+use argonauts_core::events::task::{
+    CheckOutcome, MergeEvent, ReviewEvent, TaskEvent, TaskSpec, TaskState,
+};
 use argonauts_core::events::workflow::{StepEnd, WorkflowEvent};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::limits::QuotaReading;
-use argonauts_core::names::{CheckpointId, DecisionId, MessageId};
+use argonauts_core::limits::PlanUsageReading;
+use argonauts_core::names::{ApprovalId, DecisionId, MessageId};
 use argonauts_core::settings::protocol::VisibilitySettings;
-use argonauts_core::{CardId, PhaseStatus, RunId};
+use argonauts_core::{PhaseStatus, RunId, TaskId};
 
-use crate::goal::materiality::one_line;
 use crate::state::workflow::Workflows;
 use crate::status::Viewer;
 use crate::status::visibility::{self, Audience, Moment};
 use crate::status::working;
+use crate::understand::materiality::one_line;
 
 /// Lines kept in `recent`, newest last.
 pub const RECENT_LINES: usize = 20;
@@ -42,10 +42,10 @@ pub struct Line {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Card {
-    pub brief: CardBrief,
+pub struct Task {
+    pub brief: TaskBrief,
     pub audience: Audience,
-    pub depends_on: Vec<CardId>,
+    pub depends_on: Vec<TaskId>,
 }
 
 /// Everything any viewer's summary is filtered from.
@@ -55,13 +55,13 @@ pub struct Tagged {
     pub goal: Vec<String>,
     pub plan: Option<String>,
     pub decisions: Vec<(DecisionId, String)>,
-    pub cards: Vec<Card>,
+    pub tasks: Vec<Task>,
     pub recent: VecDeque<Line>,
     /// Where the run's workflow is, shown after the recent lines.
     pub now: Option<Line>,
-    pub budget: Option<RunBudget>,
-    pub quotas: Vec<QuotaReading>,
-    pub waiting: Vec<(CheckpointId, String)>,
+    pub spend: Option<RunSpend>,
+    pub plan_windows: Vec<PlanUsageReading>,
+    pub waiting: Vec<(ApprovalId, String)>,
     pub moment: Moment,
 }
 
@@ -69,20 +69,20 @@ pub struct Tagged {
 pub struct Folder {
     tagged: Tagged,
     rules: VisibilitySettings,
-    /// Every card's hidden paths. No agent sees a line that names one.
+    /// Every task's hidden paths. No agent sees a line that names one.
     hidden: Vec<String>,
     /// The newest draft round sealed so far.
     drafted_round: u8,
     /// Composed workflows may run no step that records a legacy phase, so the working line
     /// comes from the workflow events alone.
     workflows: Workflows,
-    /// The open plan checkpoint's summary, which becomes the plan when you approve it.
-    proposed_plan: Option<(CheckpointId, String)>,
+    /// The open plan approval's summary, which becomes the plan when you approve it.
+    proposed_plan: Option<(ApprovalId, String)>,
     /// Who the last pushed event changed the summary for.
     changed: Option<Audience>,
     /// Agents' questions meant for you, by id, until one is answered.
     asked_you: Vec<(MessageId, String)>,
-    /// What full auto answered in your place, kept with the goal for you to review.
+    /// What autopilot answered in your place, kept with the goal for you to review.
     answered_for_you: Vec<String>,
 }
 
@@ -125,26 +125,26 @@ impl Folder {
     }
 
     fn fold(&mut self, event: &RunEvent) -> Option<Audience> {
-        let card = event.card_id.as_ref();
+        let task = event.task_id.as_ref();
         match &event.kind {
             RunEventKind::Run(e) => self.run(e),
             RunEventKind::Phase(e) => self.phase(e),
             RunEventKind::Goal(e) => self.goal(e),
             RunEventKind::Plan(e) => self.plan(e),
-            RunEventKind::Divide(DivideEvent::Owner { card, worker, .. }) => {
-                let known = self.card_mut(card)?;
-                known.brief.owner = Some(worker.clone());
+            RunEventKind::Divide(DivideEvent::Worker { task, worker, .. }) => {
+                let known = self.task_mut(task)?;
+                known.brief.worker = Some(worker.clone());
                 Some(known.audience.clone())
             }
             RunEventKind::Divide(_) => None,
-            RunEventKind::Card(e) => self.card(card?, e),
-            RunEventKind::Gate(outcome) => self.gate(card, outcome),
-            RunEventKind::Review(e) => self.review(card?, e),
-            RunEventKind::Integration(e) => self.integration(e),
-            RunEventKind::Checkpoint(e) => self.checkpoint(e),
-            RunEventKind::Handoff(e) => self.handoff(e),
-            RunEventKind::Vendor(e) => self.vendor(e),
-            RunEventKind::Budget(e) => self.budget(e),
+            RunEventKind::Task(e) => self.task(task?, e),
+            RunEventKind::Check(outcome) => self.check(task, outcome),
+            RunEventKind::Review(e) => self.review(task?, e),
+            RunEventKind::Merge(e) => self.merge(e),
+            RunEventKind::Approval(e) => self.approval(e),
+            RunEventKind::Fallback(e) => self.fallback(e),
+            RunEventKind::AgentStatus(e) => self.agent_id(e),
+            RunEventKind::Spend(e) => self.limit(e),
             RunEventKind::Workflow(e) => self.workflow(e, event),
             RunEventKind::Blackboard(BlackboardEvent::Posted(message))
                 if self.answered_for_you(message) =>
@@ -154,7 +154,7 @@ impl Folder {
             RunEventKind::Blackboard(BlackboardEvent::Posted(message)) => {
                 // Only settled records count as decisions; the traffic itself isn't state.
                 let record = message.kind == BlackboardKind::Decision
-                    && matches!(message.from, Party::Conductor | Party::User);
+                    && matches!(message.from, Party::ArgonautsCode | Party::User);
                 if !record {
                     return None;
                 }
@@ -165,7 +165,7 @@ impl Folder {
             RunEventKind::Blackboard(BlackboardEvent::Delivered { .. })
             | RunEventKind::Session(_)
             | RunEventKind::Agent(_)
-            | RunEventKind::Retro(_)
+            | RunEventKind::RunReview(_)
             | RunEventKind::Note(_) => None,
         }
     }
@@ -189,7 +189,7 @@ impl Folder {
 
     fn workflow(&mut self, event: &WorkflowEvent, envelope: &RunEvent) -> Option<Audience> {
         self.workflows.apply(event, envelope);
-        // Steps that finish well show up through their cards, gates, and checkpoints. The
+        // Steps that finish well show up through their tasks, checks, and approvals. The
         // step's own summary stays out, since a draft or review summary can name authors.
         let pushed = match event {
             WorkflowEvent::StepFinished(finished) if finished.end == StepEnd::Failed => {
@@ -223,11 +223,11 @@ impl Folder {
     fn goal(&mut self, event: &GoalEvent) -> Option<Audience> {
         match event {
             GoalEvent::Approved { file, .. } => {
-                // The lead's answers for you stay in view for you to review.
-                let by_lead = file
+                // The main agent's answers for you stay in view for you to review.
+                let by_main_agent = file
                     .assumptions
                     .iter()
-                    .filter(|assumption| assumption.by_lead())
+                    .filter(|assumption| assumption.by_main_agent())
                     .map(|assumption| format!("Answered by the main agent · {}", assumption.text));
                 self.tagged.goal = std::iter::once(file.summary.clone())
                     .chain(
@@ -235,7 +235,7 @@ impl Folder {
                             .iter()
                             .map(|criterion| format!("{}: {}", criterion.id, criterion.text)),
                     )
-                    .chain(by_lead)
+                    .chain(by_main_agent)
                     .chain(self.answered_for_you.iter().cloned())
                     .collect();
                 self.line(format!("Goal approved, version {}", file.version))
@@ -247,9 +247,9 @@ impl Folder {
         }
     }
 
-    /// Notes an agent's question meant for you, and, once full auto answers one in your place,
-    /// keeps the answer with the goal, beside the lead's answers to the goal's questions. True
-    /// when the summary changed.
+    /// Notes an agent's question meant for you, and, once autopilot answers one in your place,
+    /// keeps the answer with the goal, beside the main agent's answers to the goal's questions.
+    /// True when the summary changed.
     fn answered_for_you(&mut self, message: &BlackboardMessage) -> bool {
         match message.kind {
             BlackboardKind::Question if message.to == Recipient::User => {
@@ -309,13 +309,13 @@ impl Folder {
                 self.line("No disputed topics, so the drafts were merged".to_owned())
             }
             PlanEvent::Critiqued { .. }
-            | PlanEvent::SpikeProposed { .. }
+            | PlanEvent::ExperimentProposed { .. }
             | PlanEvent::Scored { .. } => {
                 self.all_sealed(self.drafted_round);
                 Some(Audience::Everyone)
             }
-            PlanEvent::SpikeFinished { card, report } => self.line(format!(
-                "{card} experiment on {}: {}",
+            PlanEvent::ExperimentFinished { task, report } => self.line(format!(
+                "{task} experiment on {}: {}",
                 report.topic, report.finding
             )),
             PlanEvent::Judged(result) => {
@@ -329,7 +329,7 @@ impl Folder {
                 ));
                 Some(Audience::Everyone)
             }
-            PlanEvent::Coordinated { rejection, .. } => match rejection {
+            PlanEvent::Orchestrated { rejection, .. } => match rejection {
                 None => self.line("The orchestrator's plan was accepted".to_owned()),
                 Some(rule) => self.line(format!("The orchestrator's plan was rejected: {rule}")),
             },
@@ -355,73 +355,73 @@ impl Folder {
         })
     }
 
-    fn card(&mut self, id: &CardId, event: &CardEvent) -> Option<Audience> {
+    fn task(&mut self, id: &TaskId, event: &TaskEvent) -> Option<Audience> {
         match event {
-            CardEvent::Created(spec) => Some(self.created(spec)),
-            CardEvent::State { to, reason, .. } => {
-                let known = self.card_mut(id)?;
+            TaskEvent::Created(spec) => Some(self.created(spec)),
+            TaskEvent::State { to, reason, .. } => {
+                let known = self.task_mut(id)?;
                 known.brief.state = *to;
-                // A waiting card's note lists what it waits for; the refresh below writes it.
+                // A waiting task's note lists what it waits for; the refresh below writes it.
                 known.brief.note = match to {
-                    CardState::Blocked
-                    | CardState::NeedsDecision
-                    | CardState::Failed
-                    | CardState::Escalated
-                    | CardState::Deferred => reason.clone(),
+                    TaskState::Blocked
+                    | TaskState::NeedsDecision
+                    | TaskState::Failed
+                    | TaskState::NeedsYou
+                    | TaskState::Deferred => reason.clone(),
                     _ => String::new(),
                 };
                 let audience = known.audience.clone();
                 self.refresh_waiting_notes();
                 match to {
-                    CardState::Integrated
-                    | CardState::Failed
-                    | CardState::Escalated
-                    | CardState::NeedsDecision
-                    | CardState::Blocked => {
+                    TaskState::Merged
+                    | TaskState::Failed
+                    | TaskState::NeedsYou
+                    | TaskState::NeedsDecision
+                    | TaskState::Blocked => {
                         let reason = if reason.is_empty() {
                             String::new()
                         } else {
                             format!(": {reason}")
                         };
-                        self.card_line(audience, format!("{id} {}{reason}", words(to)))
+                        self.task_line(audience, format!("{id} {}{reason}", words(to)))
                     }
                     _ => Some(audience),
                 }
             }
-            CardEvent::Attempt {
-                attempt, worker, ..
-            } if *attempt > 1 => {
-                let audience = self.card_mut(id)?.audience.clone();
-                self.card_line(audience, format!("{id} attempt {attempt} on {worker}"))
+            TaskEvent::Try {
+                try_number, worker, ..
+            } if *try_number > 1 => {
+                let audience = self.task_mut(id)?.audience.clone();
+                self.task_line(audience, format!("{id} try {try_number} on {worker}"))
             }
-            CardEvent::Reported(report) => {
-                let audience = self.card_mut(id)?.audience.clone();
-                // The summary stays out: reviewers never see the owner's notes.
-                self.card_line(audience, format!("{id} reported {}", words(&report.status)))
+            TaskEvent::Reported(report) => {
+                let audience = self.task_mut(id)?.audience.clone();
+                // The summary stays out: reviewers never see the worker's notes.
+                self.task_line(audience, format!("{id} reported {}", words(&report.status)))
             }
-            CardEvent::Reassigned { to, .. } => {
-                let known = self.card_mut(id)?;
-                known.brief.owner = Some(to.clone());
+            TaskEvent::Reassigned { to, .. } => {
+                let known = self.task_mut(id)?;
+                known.brief.worker = Some(to.clone());
                 let audience = known.audience.clone();
-                self.card_line(audience, format!("{id} reassigned to {to}"))
+                self.task_line(audience, format!("{id} reassigned to {to}"))
             }
-            CardEvent::TakenOver { .. } => {
-                let audience = self.card_mut(id)?.audience.clone();
-                self.card_line(audience, format!("{id} taken over by you"))
+            TaskEvent::TakenOver { .. } => {
+                let audience = self.task_mut(id)?.audience.clone();
+                self.task_line(audience, format!("{id} taken over by you"))
             }
-            CardEvent::TakeOverEnded { .. } => {
-                let audience = self.card_mut(id)?.audience.clone();
-                self.card_line(audience, format!("{id} handed back after your take over"))
+            TaskEvent::TakeOverEnded { .. } => {
+                let audience = self.task_mut(id)?.audience.clone();
+                self.task_line(audience, format!("{id} given back after your take over"))
             }
-            CardEvent::Reverted { to, .. } => {
-                let audience = self.card_mut(id)?.audience.clone();
-                self.card_line(audience, format!("{id} reverted to fallback-{to}"))
+            TaskEvent::Rewound { to, .. } => {
+                let audience = self.task_mut(id)?.audience.clone();
+                self.task_line(audience, format!("{id} rewound to fallback-{to}"))
             }
             _ => None,
         }
     }
 
-    fn created(&mut self, spec: &CardSpec) -> Audience {
+    fn created(&mut self, spec: &TaskSpec) -> Audience {
         let hidden = !spec.hidden_paths.is_empty()
             && spec
                 .owned_paths
@@ -433,12 +433,12 @@ impl Folder {
         } else {
             Audience::Everyone
         };
-        let card = Card {
-            brief: CardBrief {
-                card: spec.id.clone(),
+        let task = Task {
+            brief: TaskBrief {
+                task: spec.id.clone(),
                 title: spec.title.clone(),
-                state: CardState::Waiting,
-                owner: spec.owner.clone(),
+                state: TaskState::Waiting,
+                worker: spec.worker.clone(),
                 note: String::new(),
             },
             audience: audience.clone(),
@@ -446,37 +446,37 @@ impl Folder {
         };
         match self
             .tagged
-            .cards
+            .tasks
             .iter_mut()
-            .find(|known| known.brief.card == spec.id)
+            .find(|known| known.brief.task == spec.id)
         {
-            Some(known) => *known = card,
-            None => self.tagged.cards.push(card),
+            Some(known) => *known = task,
+            None => self.tagged.tasks.push(task),
         }
         self.refresh_waiting_notes();
         audience
     }
 
-    /// "needs card-002 and card-003" on each waiting card, for dependencies not integrated yet.
+    /// "needs task-002 and task-003" on each waiting task, for dependencies not merged yet.
     fn refresh_waiting_notes(&mut self) {
-        let integrated: Vec<CardId> = self
+        let merged: Vec<TaskId> = self
             .tagged
-            .cards
+            .tasks
             .iter()
-            .filter(|card| card.brief.state == CardState::Integrated)
-            .map(|card| card.brief.card.clone())
+            .filter(|task| task.brief.state == TaskState::Merged)
+            .map(|task| task.brief.task.clone())
             .collect();
-        for card in &mut self.tagged.cards {
-            if card.brief.state != CardState::Waiting {
+        for task in &mut self.tagged.tasks {
+            if task.brief.state != TaskState::Waiting {
                 continue;
             }
-            let missing: Vec<String> = card
+            let missing: Vec<String> = task
                 .depends_on
                 .iter()
-                .filter(|dependency| !integrated.contains(dependency))
+                .filter(|dependency| !merged.contains(dependency))
                 .map(ToString::to_string)
                 .collect();
-            card.brief.note = if missing.is_empty() {
+            task.brief.note = if missing.is_empty() {
                 String::new()
             } else {
                 format!("needs {}", and_list(&missing))
@@ -484,21 +484,21 @@ impl Folder {
         }
     }
 
-    fn gate(&mut self, card: Option<&CardId>, outcome: &GateOutcome) -> Option<Audience> {
+    fn check(&mut self, task: Option<&TaskId>, outcome: &CheckOutcome) -> Option<Audience> {
         let verdict = if outcome.passed { "passed" } else { "failed" };
-        let scope = card.map(|card| format!("{card} ")).unwrap_or_default();
+        let scope = task.map(|task| format!("{task} ")).unwrap_or_default();
         let text = format!(
             "{scope}check {} {verdict}: {}",
             outcome.name, outcome.summary
         );
-        let audience = card
-            .and_then(|card| self.card_mut(card))
+        let audience = task
+            .and_then(|task| self.task_mut(task))
             .map(|known| known.audience.clone())
             .unwrap_or(Audience::Everyone);
-        self.card_line(audience, text)
+        self.task_line(audience, text)
     }
 
-    fn review(&mut self, card: &CardId, event: &ReviewEvent) -> Option<Audience> {
+    fn review(&mut self, task: &TaskId, event: &ReviewEvent) -> Option<Audience> {
         match event {
             ReviewEvent::Reviewed {
                 reviewer,
@@ -507,78 +507,81 @@ impl Folder {
                 ..
             } => {
                 let audience = if *blind {
-                    Audience::BlindReview(card.clone())
+                    Audience::BlindReview(task.clone())
                 } else {
                     Audience::Everyone
                 };
                 self.push_line(Line {
                     audience,
-                    text: format!("{card} reviewed by {reviewer}: {}", words(&review.verdict)),
+                    text: format!("{task} reviewed by {reviewer}: {}", words(&review.verdict)),
                     with_authors: None,
                 })
             }
-            ReviewEvent::Adjudicated { ruling, .. } => {
-                self.tagged.moment.adjudicated.insert(card.clone());
-                self.line(format!("{card} adjudicated: {}", words(&ruling.verdict)))
+            ReviewEvent::Settled { ruling, .. } => {
+                self.tagged.moment.settled.insert(task.clone());
+                self.line(format!(
+                    "{task} settled by the judge: {}",
+                    words(&ruling.verdict)
+                ))
             }
             ReviewEvent::TestsWritten {
                 reviewer,
-                for_card,
+                for_task,
                 files,
             } => self.line(format!(
-                "{reviewer} wrote {} acceptance test files for {for_card}",
+                "{reviewer} wrote {} acceptance test files for {for_task}",
                 files.len()
             )),
         }
     }
 
-    fn integration(&mut self, event: &IntegrationEvent) -> Option<Audience> {
+    fn merge(&mut self, event: &MergeEvent) -> Option<Audience> {
         let text = match event {
-            IntegrationEvent::BranchCreated { branch, .. } => {
-                format!("Integration branch {branch} created")
+            MergeEvent::BranchCreated { branch, .. } => {
+                format!("Run branch {branch} created")
             }
-            IntegrationEvent::Merged { card, .. } => {
-                format!("{card} merged into the integration branch")
+            MergeEvent::Merged { task, .. } => {
+                format!("{task} merged into the run branch")
             }
-            IntegrationEvent::Conflict {
-                card,
+            MergeEvent::Conflict {
+                task,
                 files,
                 assigned_to,
             } => format!(
-                "{card} conflicts in {} files, assigned to {assigned_to}",
+                "{task} conflicts in {} files, assigned to {assigned_to}",
                 files.len()
             ),
-            IntegrationEvent::MainMoved { commits, .. } => {
+            MergeEvent::MainMoved { commits, .. } => {
                 format!("main moved {commits} commits since the run started")
             }
-            IntegrationEvent::MainMergedIn { .. } => {
-                "main merged into the integration branch".to_owned()
-            }
-            IntegrationEvent::FinalCheck { passed: true } => "The final check passed".to_owned(),
-            IntegrationEvent::FinalCheck { passed: false } => "The final check failed".to_owned(),
-            IntegrationEvent::Landed { target, .. } => format!("Merged into {target}"),
-            IntegrationEvent::WaitingToMerge { target, in_the_way } => format!(
+            MergeEvent::MainMergedIn { .. } => "main merged into the run branch".to_owned(),
+            MergeEvent::FinalCheck { passed: true } => "The final check passed".to_owned(),
+            MergeEvent::FinalCheck { passed: false } => "The final check failed".to_owned(),
+            MergeEvent::RunMerged { target, .. } => format!("Merged into {target}"),
+            MergeEvent::WaitingToMerge { target, in_the_way } => format!(
                 "Waiting to merge into {target}: {} in your checkout in the way",
                 and_list(in_the_way)
             ),
-            IntegrationEvent::PullRequest { url: Some(url), .. } => {
+            MergeEvent::PullRequest { url: Some(url), .. } => {
                 format!("Pull request opened: {url}")
             }
-            IntegrationEvent::PullRequest { branch, .. } => {
+            MergeEvent::PullRequest { branch, .. } => {
                 format!("A pull request for {branch} is ready to open")
             }
-            IntegrationEvent::Abandoned { .. } => "The run was abandoned, branches kept".to_owned(),
-            IntegrationEvent::DependenciesAdded { packages, .. } => {
+            MergeEvent::Abandoned { .. } => {
+                "The run was abandoned, and its work is removed".to_owned()
+            }
+            MergeEvent::DependenciesAdded { packages, .. } => {
                 format!("Added {}", and_list(packages))
             }
         };
         self.line(text)
     }
 
-    fn checkpoint(&mut self, event: &CheckpointEvent) -> Option<Audience> {
+    fn approval(&mut self, event: &ApprovalEvent) -> Option<Audience> {
         match event {
-            CheckpointEvent::Opened(opened) => {
-                if let CheckpointPacket::Plan(packet) = &opened.packet {
+            ApprovalEvent::Opened(opened) => {
+                if let ApprovalPacket::Plan(packet) = &opened.packet {
                     self.all_sealed(self.drafted_round);
                     self.proposed_plan = Some((opened.id.clone(), packet.summary.clone()));
                 }
@@ -587,7 +590,7 @@ impl Folder {
                     .push((opened.id.clone(), opened.title.clone()));
                 Some(Audience::Everyone)
             }
-            CheckpointEvent::Decided(decided) => {
+            ApprovalEvent::Decided(decided) => {
                 let title = self.close(&decided.id);
                 let approved = matches!(
                     decided.action,
@@ -603,16 +606,16 @@ impl Folder {
                 let title = title.unwrap_or_else(|| format!("Approval {}", decided.id));
                 self.line(format!("{title}: {}", words(&decided.action)))
             }
-            CheckpointEvent::Withdrawn { id, .. } => {
+            ApprovalEvent::Withdrawn { id, .. } => {
                 self.close(id);
                 Some(Audience::Everyone)
             }
-            CheckpointEvent::Checked(_) | CheckpointEvent::SpotCheckQueued { .. } => None,
+            ApprovalEvent::Checked(_) | ApprovalEvent::SpotCheckQueued { .. } => None,
         }
     }
 
-    /// Takes a checkpoint off the waiting list and returns its title.
-    fn close(&mut self, id: &CheckpointId) -> Option<String> {
+    /// Takes an approval off the waiting list and returns its title.
+    fn close(&mut self, id: &ApprovalId) -> Option<String> {
         let at = self
             .tagged
             .waiting
@@ -621,60 +624,66 @@ impl Folder {
         Some(self.tagged.waiting.remove(at).1)
     }
 
-    fn handoff(&mut self, event: &HandoffEvent) -> Option<Audience> {
+    fn fallback(&mut self, event: &FallbackEvent) -> Option<Audience> {
         match event {
-            HandoffEvent::Needed(plan) => {
-                self.line(format!("{} stopped: {}", plan.card, plan.reason))
+            FallbackEvent::Needed(plan) => {
+                self.line(format!("{} stopped: {}", plan.task, plan.reason))
             }
-            HandoffEvent::HandedOff { card, to, .. } => {
-                if let Some(known) = self.card_mut(card) {
-                    known.brief.owner = Some(to.clone());
+            FallbackEvent::FellBack { task, to, .. } => {
+                if let Some(known) = self.task_mut(task) {
+                    known.brief.worker = Some(to.clone());
                 }
-                self.line(format!("{card} handed off to {to}"))
+                self.line(format!("{task} fell back to {to}"))
             }
-            HandoffEvent::Waiting { card, vendor, .. } => {
-                self.line(format!("{card} waits for {vendor}"))
+            FallbackEvent::Waiting { task, agent_id, .. } => {
+                self.line(format!("{task} waits for {agent_id}"))
             }
-            HandoffEvent::Packet { .. } => None,
+            FallbackEvent::JobWaiting(wait) => self.line(format!(
+                "{}: its {} waits for {}",
+                wait.title,
+                wait.job.role.as_str(),
+                wait.stopped.agent_id()
+            )),
+            FallbackEvent::Note { .. } | FallbackEvent::JobFreed { .. } => None,
         }
     }
 
-    fn vendor(&mut self, event: &VendorEvent) -> Option<Audience> {
+    fn agent_id(&mut self, event: &AgentStatusEvent) -> Option<Audience> {
         match event {
-            VendorEvent::Quota(reading) => {
+            AgentStatusEvent::PlanUsage(reading) => {
                 match self
                     .tagged
-                    .quotas
+                    .plan_windows
                     .iter_mut()
-                    .find(|known| known.vendor == reading.vendor)
+                    .find(|known| known.agent_id == reading.agent_id)
                 {
                     Some(known) => *known = reading.clone(),
-                    None => self.tagged.quotas.push(reading.clone()),
+                    None => self.tagged.plan_windows.push(reading.clone()),
                 }
                 Some(Audience::Everyone)
             }
-            VendorEvent::Disabled { vendor, reason } => {
-                self.line(format!("{vendor} disabled for new tasks: {reason}"))
+            AgentStatusEvent::Disabled { agent_id, reason } => {
+                self.line(format!("{agent_id} disabled for new tasks: {reason}"))
             }
-            VendorEvent::Health(_) => None,
+            AgentStatusEvent::Health(_) | AgentStatusEvent::Model(_) => None,
         }
     }
 
-    fn budget(&mut self, event: &BudgetEvent) -> Option<Audience> {
+    fn limit(&mut self, event: &SpendEvent) -> Option<Audience> {
         match event {
-            BudgetEvent::Run(budget) => {
-                self.tagged.budget = Some(budget.clone());
+            SpendEvent::Run(limit) => {
+                self.tagged.spend = Some(limit.clone());
                 Some(Audience::Everyone)
             }
-            BudgetEvent::Hit {
-                card, dimension, ..
-            } => self.line(format!("{card} hit its {} limit", words(dimension))),
-            BudgetEvent::Extended { card, .. } => self.line(format!("{card} got more limit")),
-            BudgetEvent::Deferred { cards } => {
-                let cards: Vec<String> = cards.iter().map(ToString::to_string).collect();
+            SpendEvent::Hit {
+                task, dimension, ..
+            } => self.line(format!("{task} hit its {} limit", words(dimension))),
+            SpendEvent::Extended { task, .. } => self.line(format!("{task}'s limit went up")),
+            SpendEvent::Deferred { tasks } => {
+                let tasks: Vec<String> = tasks.iter().map(ToString::to_string).collect();
                 self.line(format!(
-                    "Deferred until limit frees up: {}",
-                    and_list(&cards)
+                    "Deferred until the limit has room: {}",
+                    and_list(&tasks)
                 ))
             }
         }
@@ -685,18 +694,18 @@ impl Folder {
         moment.sealed_through = moment.sealed_through.max(round);
     }
 
-    fn card_mut(&mut self, id: &CardId) -> Option<&mut Card> {
+    fn task_mut(&mut self, id: &TaskId) -> Option<&mut Task> {
         self.tagged
-            .cards
+            .tasks
             .iter_mut()
-            .find(|card| &card.brief.card == id)
+            .find(|task| &task.brief.task == id)
     }
 
     fn line(&mut self, text: String) -> Option<Audience> {
-        self.card_line(Audience::Everyone, text)
+        self.task_line(Audience::Everyone, text)
     }
 
-    fn card_line(&mut self, audience: Audience, text: String) -> Option<Audience> {
+    fn task_line(&mut self, audience: Audience, text: String) -> Option<Audience> {
         self.push_line(Line {
             audience,
             text,
@@ -783,9 +792,9 @@ mod tests {
             seq,
             ts: OffsetDateTime::UNIX_EPOCH,
             run_id: RunId::new("run-01").unwrap(),
-            card_id: None,
+            task_id: None,
             session: None,
-            source: "conductor".to_owned(),
+            source: "argonauts-code".to_owned(),
             kind: RunEventKind::Workflow(kind),
         }
     }
@@ -861,7 +870,7 @@ mod tests {
             "name": "composed",
             "phases": [
                 {"name": "Look", "standard": "check", "steps": [
-                    {"kind": "gate"},
+                    {"kind": "checks"},
                     {"kind": "fan_out", "name": "Second opinions", "roles": ["reviewer"]},
                     {"kind": "review"},
                 ]},
@@ -876,30 +885,30 @@ mod tests {
             "phases": [{"name": "Panel", "standard": "check", "steps": [{"kind": "review"}]}],
         }))
         .unwrap();
-        let owner = Viewer::Session {
+        let worker = Viewer::Session {
             role: RoleName::Worker,
-            card: None,
+            task: None,
             label: None,
         };
         let mut folder = Folder::default();
         folder.push(&event(1, started_workflow(&outer_id, None, outer)));
         assert_eq!(now(&folder, &Viewer::User), None);
 
-        let gate = at(&outer_id, 0, 0);
+        let check = at(&outer_id, 0, 0);
         folder.push(&event(
             2,
-            started(gate.clone(), StepKind::Gate, StandardPhase::Check, 1),
+            started(check.clone(), StepKind::Checks, StandardPhase::Check, 1),
         ));
-        assert!(folder.changed_for(&owner));
+        assert!(folder.changed_for(&worker));
         assert_eq!(
-            now(&folder, &owner).as_deref(),
-            Some("Now: check · Look, step 1 of 3: gate")
+            now(&folder, &worker).as_deref(),
+            Some("Now: check · Look, step 1 of 3: checks")
         );
         folder.push(&event(
             3,
-            finished(gate, StepKind::Gate, StandardPhase::Check, StepEnd::Done),
+            finished(check, StepKind::Checks, StandardPhase::Check, StepEnd::Done),
         ));
-        assert_eq!(now(&folder, &owner), None);
+        assert_eq!(now(&folder, &worker), None);
 
         let fan_out = at(&outer_id, 0, 1);
         folder.push(&event(
@@ -907,7 +916,7 @@ mod tests {
             started(fan_out.clone(), StepKind::FanOut, StandardPhase::Check, 1),
         ));
         assert_eq!(
-            now(&folder, &owner).as_deref(),
+            now(&folder, &worker).as_deref(),
             Some("Now: check · Look, step 2 of 3: Second opinions")
         );
         folder.push(&event(
@@ -919,7 +928,7 @@ mod tests {
                 StepEnd::Failed,
             ),
         ));
-        let recent = folder.summary(&owner).recent;
+        let recent = folder.summary(&worker).recent;
         assert_eq!(recent, ["Look, step 2 of 3: Second opinions failed"]);
 
         let parent = at(&outer_id, 1, 0);
@@ -929,7 +938,7 @@ mod tests {
         ));
         folder.push(&event(7, started_workflow(&inner_id, Some(parent), inner)));
         assert_eq!(
-            now(&folder, &owner).as_deref(),
+            now(&folder, &worker).as_deref(),
             Some("Now: decide · Settle, step 1 of 1: workflow")
         );
         folder.push(&event(
@@ -946,7 +955,7 @@ mod tests {
             Some("Now: check · Settle › review-panel › Panel, step 1 of 1: review, round 2")
         );
         // The step summaries never reach the status: they can name plan authors.
-        let text = crate::status::render(&folder.summary(&owner));
+        let text = crate::status::render(&folder.summary(&worker));
         assert!(!text.contains("claude"), "{text}");
     }
 
@@ -956,7 +965,7 @@ mod tests {
         let id = WorkflowId::numbered(1);
         let workflow: Workflow = serde_json::from_value(json!({
             "name": "hidden",
-            "phases": [{"name": "Check tests/hidden", "standard": "check", "steps": [{"kind": "gate"}]}],
+            "phases": [{"name": "Check tests/hidden", "standard": "check", "steps": [{"kind": "checks"}]}],
         }))
         .unwrap();
         let mut folder = Folder::default();
@@ -964,20 +973,20 @@ mod tests {
         folder.push(&event(1, started_workflow(&id, None, workflow)));
         folder.push(&event(
             2,
-            started(at(&id, 0, 0), StepKind::Gate, StandardPhase::Check, 1),
+            started(at(&id, 0, 0), StepKind::Checks, StandardPhase::Check, 1),
         ));
-        let owner = Viewer::Session {
+        let worker = Viewer::Session {
             role: RoleName::Worker,
-            card: None,
+            task: None,
             label: None,
         };
-        assert_eq!(now(&folder, &owner), None);
+        assert_eq!(now(&folder, &worker), None);
         assert!(now(&folder, &Viewer::User).is_some());
     }
 
     #[test]
-    fn status_lists_what_the_lead_answered_for_you() {
-        use argonauts_core::events::goal::{Assumption, GoalFile, GoalSource, LEAD_ANSWER};
+    fn status_lists_what_the_main_agent_answered_for_you() {
+        use argonauts_core::events::goal::{Assumption, GoalFile, GoalSource, MAIN_AGENT_ANSWER};
         use argonauts_core::events::run::Party;
 
         let assumption = |text: &str, basis: String| Assumption {
@@ -995,12 +1004,12 @@ mod tests {
             assumptions: vec![
                 assumption(
                     "Which log level: trace",
-                    format!("{LEAD_ANSWER}: the README"),
+                    format!("{MAIN_AGENT_ANSWER}: the README"),
                 ),
                 assumption("the flag's name: --verbose", "a detail".to_owned()),
             ],
             answers: Vec::new(),
-            source: GoalSource::Restatements,
+            source: GoalSource::Readings,
             path: Default::default(),
             sha256: String::new(),
         };
@@ -1009,9 +1018,9 @@ mod tests {
             seq: 1,
             ts: OffsetDateTime::UNIX_EPOCH,
             run_id: RunId::new("run-01").unwrap(),
-            card_id: None,
+            task_id: None,
             session: None,
-            source: "conductor".to_owned(),
+            source: "argonauts-code".to_owned(),
             kind: RunEventKind::Goal(GoalEvent::Approved {
                 file,
                 by: Party::User,
@@ -1028,7 +1037,7 @@ mod tests {
 
     #[test]
     fn words_reads_plain_and_tagged_enums() {
-        assert_eq!(words(&CardState::NeedsDecision), "needs decision");
+        assert_eq!(words(&TaskState::NeedsDecision), "needs decision");
         assert_eq!(words(&AnswerAction::RequestChanges), "request changes");
     }
 

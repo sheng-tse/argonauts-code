@@ -1,10 +1,10 @@
-//! Who sees what. Drafters never see other drafts until all are sealed; judges never see
-//! authors; blind reviewers never see each other's reviews before adjudication; hidden tests
-//! are never shown; the narrator sees digests only, and narrator lines appear nowhere.
+//! Who sees what. Drafting agents never see other drafts until all are sealed; judges never see
+//! authors; blind reviewers never see each other's reviews before the judge settles them; hidden
+//! tests are never shown; the narrator sees digests only, and narrator lines appear nowhere.
 
 use std::collections::BTreeSet;
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::api::StatusSummary;
 use argonauts_core::names::{PlanLabel, RoleName};
 use argonauts_core::settings::protocol::VisibilitySettings;
@@ -12,18 +12,18 @@ use argonauts_core::settings::protocol::VisibilitySettings;
 use crate::status::Viewer;
 use crate::status::folder::Tagged;
 
-/// Who may see one line or card of the summary.
+/// Who may see one line or task of the summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Audience {
     Everyone,
-    /// A sealed draft plan of this label and round: its author, and the other drafters once
+    /// A sealed draft plan of this label and round: its author, and the other drafting agents once
     /// every draft of the round is sealed.
     Draft {
         label: PlanLabel,
         round: u8,
     },
-    /// A blind review of this card, hidden from the card's reviewers until adjudication.
-    BlindReview(CardId),
+    /// A blind review of this task, hidden from the task's reviewers until the judge settles them.
+    BlindReview(TaskId),
     /// Hidden tests. Never shown to an agent.
     UserOnly,
 }
@@ -33,7 +33,7 @@ pub enum Audience {
 pub struct Moment {
     /// Every draft of rounds up to this one is sealed.
     pub sealed_through: u8,
-    pub adjudicated: BTreeSet<CardId>,
+    pub settled: BTreeSet<TaskId>,
 }
 
 /// Sessions of a role switched off in `visibility.status_summary` get no summary at all.
@@ -59,16 +59,16 @@ pub fn sees(
                 round,
             },
         ) => {
-            *role != RoleName::Drafter
+            *role != RoleName::Draft
                 || !rules.drafts_hidden_until_sealed
                 || *round <= moment.sealed_through
                 || *label == Some(*draft)
         }
-        (Viewer::Session { role, card, .. }, Audience::BlindReview(reviewed)) => {
-            let fellow_reviewer = *role == RoleName::Reviewer && card.as_ref() == Some(reviewed);
+        (Viewer::Session { role, task, .. }, Audience::BlindReview(reviewed)) => {
+            let fellow_reviewer = *role == RoleName::Reviewer && task.as_ref() == Some(reviewed);
             !fellow_reviewer
-                || !rules.reviews_hidden_until_adjudicated
-                || moment.adjudicated.contains(reviewed)
+                || !rules.reviews_hidden_until_settled
+                || moment.settled.contains(reviewed)
         }
     }
 }
@@ -99,11 +99,11 @@ pub fn filter(tagged: &Tagged, viewer: &Viewer, rules: &VisibilitySettings) -> S
         goal: tagged.goal.clone(),
         plan: tagged.plan.clone(),
         decisions: tagged.decisions.clone(),
-        cards: tagged
-            .cards
+        tasks: tagged
+            .tasks
             .iter()
-            .filter(|card| seen(&card.audience))
-            .map(|card| card.brief.clone())
+            .filter(|task| seen(&task.audience))
+            .map(|task| task.brief.clone())
             .collect(),
         recent: tagged
             .recent
@@ -115,8 +115,8 @@ pub fn filter(tagged: &Tagged, viewer: &Viewer, rules: &VisibilitySettings) -> S
                 _ => line.text.clone(),
             })
             .collect(),
-        budget: tagged.budget.clone(),
-        quotas: tagged.quotas.clone(),
+        spend: tagged.spend.clone(),
+        plan_windows: tagged.plan_windows.clone(),
         waiting: tagged
             .waiting
             .iter()
@@ -143,23 +143,23 @@ mod tests {
     use time::OffsetDateTime;
 
     use argonauts_core::RunId;
-    use argonauts_core::events::card::{CardEvent, CardKind, CardSpec, GateKind, ReviewEvent};
     use argonauts_core::events::plan::PlanEvent;
+    use argonauts_core::events::task::{CheckKind, ReviewEvent, TaskEvent, TaskKind, TaskSpec};
     use argonauts_core::events::{RunEvent, RunEventKind};
-    use argonauts_core::names::{DraftId, WorkerRef};
-    use argonauts_core::steps::judgment::{AdjudicateOutput, ReviewOutput, ReviewVerdict};
+    use argonauts_core::names::{DraftId, ModelRef};
+    use argonauts_core::steps::judgment::{ReviewOutput, ReviewVerdict, SettleOutput};
 
     use super::*;
     use crate::status::folder::Folder;
 
-    fn event(seq: u64, card: Option<&str>, kind: RunEventKind) -> RunEvent {
+    fn event(seq: u64, task: Option<&str>, kind: RunEventKind) -> RunEvent {
         RunEvent {
             seq,
             ts: OffsetDateTime::UNIX_EPOCH,
             run_id: RunId::new("run-01").unwrap(),
-            card_id: card.map(|card| CardId::new(card).unwrap()),
+            task_id: task.map(|task| TaskId::new(task).unwrap()),
             session: None,
-            source: "conductor".to_owned(),
+            source: "argonauts-code".to_owned(),
             kind,
         }
     }
@@ -180,30 +180,30 @@ mod tests {
         )
     }
 
-    fn spec(id: &str, owned: &[&str], hidden: &[&str]) -> CardSpec {
-        CardSpec {
-            id: CardId::new(id).unwrap(),
+    fn spec(id: &str, owned: &[&str], hidden: &[&str]) -> TaskSpec {
+        TaskSpec {
+            id: TaskId::new(id).unwrap(),
             title: format!("{id} title"),
             task: String::new(),
-            kind: CardKind::Build,
+            kind: TaskKind::Build,
             owned_paths: owned.iter().map(|path| (*path).to_owned()).collect(),
             read_only_paths: Vec::new(),
             forbidden_paths: Vec::new(),
             hidden_paths: hidden.iter().map(|path| (*path).to_owned()).collect(),
             depends_on: Vec::new(),
             criteria: Vec::new(),
-            owner: Some(WorkerRef::new("codex", None)),
+            worker: Some(ModelRef::new("codex", None)),
             reviewers: Vec::new(),
-            budget: Default::default(),
+            limit: Default::default(),
             predictions: None,
             item: None,
         }
     }
 
-    fn review(seq: u64, card: &str, reviewer: &str) -> RunEvent {
+    fn review(seq: u64, task: &str, reviewer: &str) -> RunEvent {
         event(
             seq,
-            Some(card),
+            Some(task),
             RunEventKind::Review(ReviewEvent::Reviewed {
                 reviewer: reviewer.parse().unwrap(),
                 blind: true,
@@ -218,18 +218,18 @@ mod tests {
         )
     }
 
-    fn drafter(label: Option<PlanLabel>) -> Viewer {
+    fn drafting_agent(label: Option<PlanLabel>) -> Viewer {
         Viewer::Session {
-            role: RoleName::Drafter,
-            card: None,
+            role: RoleName::Draft,
+            task: None,
             label,
         }
     }
 
-    fn reviewer(card: &str) -> Viewer {
+    fn reviewer(task: &str) -> Viewer {
         Viewer::Session {
             role: RoleName::Reviewer,
-            card: Some(CardId::new(card).unwrap()),
+            task: Some(TaskId::new(task).unwrap()),
             label: None,
         }
     }
@@ -237,7 +237,7 @@ mod tests {
     fn judge() -> Viewer {
         Viewer::Session {
             role: RoleName::Judge,
-            card: None,
+            task: None,
             label: None,
         }
     }
@@ -252,11 +252,11 @@ mod tests {
         folder.push(&sealed(0, 1, "claude-code", 1));
         folder.push(&sealed(1, 2, "codex", 1));
 
-        // Drafters see only their own draft until every draft is sealed.
-        let one = folder.summary(&drafter(Some(1)));
+        // Drafting agents see only their own draft until every draft is sealed.
+        let one = folder.summary(&drafting_agent(Some(1)));
         assert!(mentions(&one, "Plan 1 sealed"));
         assert!(!mentions(&one, "Plan 2"));
-        assert!(!mentions(&folder.summary(&drafter(None)), "Plan"));
+        assert!(!mentions(&folder.summary(&drafting_agent(None)), "Plan"));
         // You see both, with their authors.
         let you = folder.summary(&Viewer::User);
         assert!(mentions(&you, "Plan 1 (claude-code) sealed"));
@@ -271,7 +271,7 @@ mod tests {
                 topics: Vec::new(),
             }),
         ));
-        let one = folder.summary(&drafter(Some(1)));
+        let one = folder.summary(&drafting_agent(Some(1)));
         assert!(mentions(&one, "Plan 2 sealed"), "{:?}", one.recent);
 
         // Judges never see authors; the narrator does.
@@ -287,11 +287,11 @@ mod tests {
         open_folder.push(&sealed(0, 1, "codex", 1));
         assert!(mentions(&open_folder.summary(&judge()), "(codex)"));
 
-        // Blind reviewers of a card never see each other's reviews before adjudication.
+        // Blind reviewers of a task never see each other's reviews before the judge settles them.
         folder.push(&event(
             3,
             Some("task-002"),
-            RunEventKind::Card(CardEvent::Created(Box::new(spec(
+            RunEventKind::Task(TaskEvent::Created(Box::new(spec(
                 "task-002",
                 &["src/limiter/**"],
                 &[],
@@ -313,9 +313,9 @@ mod tests {
         folder.push(&event(
             5,
             Some("task-002"),
-            RunEventKind::Review(ReviewEvent::Adjudicated {
-                adjudicator: "agy".parse().unwrap(),
-                ruling: AdjudicateOutput {
+            RunEventKind::Review(ReviewEvent::Settled {
+                judge: "agy".parse().unwrap(),
+                ruling: SettleOutput {
                     verdict: ReviewVerdict::Approve,
                     reasons: vec!["both fine".to_owned()],
                     required_changes: Vec::new(),
@@ -328,7 +328,7 @@ mod tests {
         folder.push(&event(
             6,
             Some("test-009"),
-            RunEventKind::Card(CardEvent::Created(Box::new(spec(
+            RunEventKind::Task(TaskEvent::Created(Box::new(spec(
                 "test-009",
                 &["tests/hidden/**"],
                 &["tests/hidden/**"],
@@ -337,9 +337,9 @@ mod tests {
         folder.push(&event(
             7,
             Some("task-002"),
-            RunEventKind::Gate(argonauts_core::events::card::GateOutcome {
+            RunEventKind::Check(argonauts_core::events::task::CheckOutcome {
                 name: "tests/hidden/limits.rs".to_owned(),
-                kind: GateKind::Command,
+                kind: CheckKind::Command,
                 passed: false,
                 command: None,
                 exit_code: Some(1),
@@ -353,23 +353,23 @@ mod tests {
         ));
         let you = folder.summary(&Viewer::User);
         assert!(
-            you.cards
+            you.tasks
                 .iter()
-                .any(|card| card.card.as_str() == "test-009")
+                .any(|task| task.task.as_str() == "test-009")
         );
         assert!(mentions(&you, "tests/hidden"));
         for agent in [
             Viewer::Narrator,
             judge(),
             reviewer("task-003"),
-            drafter(Some(1)),
+            drafting_agent(Some(1)),
         ] {
             let seen = folder.summary(&agent);
             assert!(
                 !seen
-                    .cards
+                    .tasks
                     .iter()
-                    .any(|card| card.card.as_str() == "test-009")
+                    .any(|task| task.task.as_str() == "test-009")
             );
             assert!(
                 !mentions(&seen, "tests/hidden"),
@@ -382,6 +382,6 @@ mod tests {
         let mut off = VisibilitySettings::default();
         off.status_summary.insert(RoleName::Judge, false);
         let judged = filter(folder.tagged(), &judge(), &off);
-        assert!(judged.run.is_some() && judged.cards.is_empty() && judged.recent.is_empty());
+        assert!(judged.run.is_some() && judged.tasks.is_empty() && judged.recent.is_empty());
     }
 }

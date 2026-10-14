@@ -10,10 +10,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::Context as _;
-use argonauts_core::names::VendorId;
-use argonauts_core::vendor_sessions::{
-    Speaker, VendorScan, VendorSession, VendorTurn, is_session_id,
-};
+use argonauts_core::cli_sessions::{CliScan, CliSession, CliStep, CliTurn, Speaker, is_session_id};
+use argonauts_core::names::AgentId;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -25,8 +23,8 @@ const LINE_CHARS: usize = 200;
 
 /// The sessions that ran in `scan.folder`, newest first, at most `limit`. Like `codex resume`,
 /// it lists the ones you started in the CLI or an editor, and leaves out `codex exec` runs, such
-/// as Argonauts' own chat turns, and subagents.
-pub(crate) fn list(scan: &VendorScan, limit: usize) -> anyhow::Result<Vec<VendorSession>> {
+/// as Argonauts Code's own conversation turns, and subagents.
+pub(crate) fn list(scan: &CliScan, limit: usize) -> anyhow::Result<Vec<CliSession>> {
     let mut files = rollouts(&scan.home);
     // Newest written first, so a short list reads only the files it shows.
     files.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
@@ -39,7 +37,8 @@ pub(crate) fn list(scan: &VendorScan, limit: usize) -> anyhow::Result<Vec<Vendor
         let Some(meta) = first_record(&path) else {
             continue;
         };
-        if meta.cwd.as_deref() != Some(scan.folder.as_path()) || !meta.interactive() {
+        let here = meta.cwd.is_some() && scan.lists(meta.cwd.as_deref());
+        if !here || !meta.interactive() {
             continue;
         }
         let Ok(rollout) = Rollout::read(&path) else {
@@ -54,7 +53,7 @@ pub(crate) fn list(scan: &VendorScan, limit: usize) -> anyhow::Result<Vec<Vendor
 }
 
 /// The last `count` turns of session `id`, oldest first.
-pub(crate) fn turns(scan: &VendorScan, id: &str, count: usize) -> anyhow::Result<Vec<VendorTurn>> {
+pub(crate) fn turns(scan: &CliScan, id: &str, count: usize) -> anyhow::Result<Vec<CliTurn>> {
     anyhow::ensure!(is_session_id(id), "{id:?} isn't a Codex session id");
     let ending = format!("-{id}.jsonl");
     let path = rollouts(&scan.home)
@@ -185,6 +184,16 @@ struct Item {
     kind: String,
     role: Option<String>,
     content: Option<Value>,
+    /// A call's name and id, and what it was given: `arguments` as JSON text, or a custom
+    /// tool's `input` as plain text.
+    name: Option<String>,
+    call_id: Option<String>,
+    arguments: Option<String>,
+    input: Option<String>,
+    /// A call's result.
+    output: Option<Value>,
+    /// What reasoning leaves readable. The reasoning itself is kept encrypted.
+    summary: Vec<Value>,
 }
 
 fn first_record(path: &Path) -> Option<Meta> {
@@ -201,7 +210,7 @@ fn first_record(path: &Path) -> Option<Meta> {
 struct Rollout {
     model: Option<String>,
     updated: Option<OffsetDateTime>,
-    turns: Vec<VendorTurn>,
+    turns: Vec<CliTurn>,
 }
 
 impl Rollout {
@@ -235,9 +244,46 @@ impl Rollout {
     }
 
     fn item(&mut self, item: Item) {
-        if item.kind != "message" {
-            return;
+        match item.kind.as_str() {
+            "message" => self.message(&item),
+            "reasoning" => {
+                let text = calls::summary_text(&item.summary);
+                let steps = &mut self.agent_turn().steps;
+                // Reasoning with no summary says only that it thought, which once is enough.
+                let again =
+                    text.is_empty() && matches!(steps.last(), Some(CliStep::Thought { .. }));
+                if !again {
+                    steps.push(CliStep::Thought { text });
+                }
+            }
+            "function_call" | "custom_tool_call" => {
+                let call = calls::call(
+                    item.call_id.as_deref().unwrap_or_default(),
+                    item.name.as_deref().unwrap_or_default(),
+                    item.arguments.as_deref().or(item.input.as_deref()),
+                );
+                self.agent_turn().steps.push(CliStep::Ran(call));
+            }
+            "function_call_output" | "custom_tool_call_output" => {
+                let id = item.call_id.as_deref().unwrap_or_default();
+                // The call may sit in an earlier turn: a command left running reports after
+                // your next prompt.
+                let made_by_the_agent = self
+                    .turns
+                    .iter_mut()
+                    .rev()
+                    .filter(|turn| turn.from == Speaker::Agent);
+                if let Some(call) = made_by_the_agent.flat_map(|turn| turn.call_mut(id)).next() {
+                    let (ok, output) = calls::result(item.output.as_ref());
+                    call.ok = Some(ok);
+                    call.output = output;
+                }
+            }
+            _ => {}
         }
+    }
+
+    fn message(&mut self, item: &Item) {
         let (from, text_kind) = match item.role.as_deref() {
             Some("user") => (Speaker::User, "input_text"),
             Some("assistant") => (Speaker::Agent, "output_text"),
@@ -257,25 +303,31 @@ impl Rollout {
         if text.is_empty() || (from == Speaker::User && added_by_codex(text)) {
             return;
         }
-        match self.turns.last_mut() {
-            Some(turn) if turn.from == from && from == Speaker::Agent => {
-                turn.text.push_str("\n\n");
-                turn.text.push_str(text);
-            }
-            _ => self.turns.push(VendorTurn {
-                from,
-                text: text.to_owned(),
-            }),
+        match from {
+            Speaker::User => self.turns.push(CliTurn::prompt(text)),
+            Speaker::Agent => self.agent_turn().wrote(text),
         }
+    }
+
+    /// The agent's turn being read, started by the first thing it does after a prompt.
+    fn agent_turn(&mut self) -> &mut CliTurn {
+        if self
+            .turns
+            .last()
+            .is_none_or(|turn| turn.from != Speaker::Agent)
+        {
+            self.turns.push(CliTurn::of_the_agent());
+        }
+        self.turns.last_mut().expect("a turn was just pushed")
     }
 
     fn session(
         self,
         meta: Meta,
         names: &HashMap<String, String>,
-        scan: &VendorScan,
+        scan: &CliScan,
         modified: SystemTime,
-    ) -> Option<VendorSession> {
+    ) -> Option<CliSession> {
         if !is_session_id(&meta.id) {
             return None;
         }
@@ -292,14 +344,20 @@ impl Rollout {
             .turns
             .iter()
             .rev()
-            .find(|turn| turn.from == Speaker::Agent)
+            .find(|turn| turn.from == Speaker::Agent && !turn.text.is_empty())
             .map(|turn| one_line(&turn.text));
-        Some(VendorSession {
-            vendor: VendorId("codex".to_owned()),
+        let prompts = self
+            .turns
+            .iter()
+            .filter(|turn| turn.from == Speaker::User)
+            .count();
+        let turns = u32::try_from(prompts).unwrap_or(u32::MAX);
+        Some(CliSession {
+            agent_id: AgentId("codex".to_owned()),
             id: meta.id,
             title,
             prompt: Some(prompt),
-            folder: scan.folder.clone(),
+            folder: meta.cwd.unwrap_or_else(|| scan.folder.clone()),
             updated: self
                 .updated
                 .unwrap_or_else(|| OffsetDateTime::from(modified)),
@@ -309,6 +367,7 @@ impl Rollout {
                 .and_then(|git| git.branch)
                 .filter(|branch| !branch.is_empty()),
             last_message,
+            turns,
         })
     }
 }
@@ -353,5 +412,6 @@ fn one_line(text: &str) -> String {
     line
 }
 
+mod calls;
 #[cfg(test)]
 mod tests;

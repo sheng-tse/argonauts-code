@@ -1,8 +1,8 @@
 //! Claude Code's models. Claude Code can't list them, so they come from Anthropic: `GET
-//! /v1/models` when Argonauts has an Anthropic key, else Anthropic's public model pages, which
+//! /v1/models` when Argonauts Code has an Anthropic key, else Anthropic's public model pages, which
 //! need no login. Neither calls a model.
 //!
-//! The newest model of each family is current. The rest are older and name that newest one as
+//! The newest model of each line is current. The rest are older and name that newest one as
 //! their `successor`, so `/model` can list them under "Older" and a session on one that stops
 //! answering can move up.
 
@@ -11,7 +11,7 @@ use argonauts_core::settings::Settings;
 use serde_json::Value;
 
 use super::{ENDPOINT_TIMEOUT, MAX_MODELS_BYTES};
-use crate::models::builtin::harness_entry;
+use crate::models::builtin::cli_entry;
 use crate::models::endpoint_settings;
 
 /// The models overview: the current lineup with each model's API id and alias. The `.md` form
@@ -337,48 +337,48 @@ pub fn parse_anthropic_models(json: &str) -> Result<Vec<ListedModel>, String> {
         .collect())
 }
 
-/// What a model id says of itself: its family (`opus`, `sonnet`, …) and version, from
+/// What a model id says of itself: its line (`opus`, `sonnet`, …) and version, from
 /// `claude-opus-4-5-20251101` and the older `claude-3-7-sonnet-20250219` alike. A dated
 /// snapshot's date doesn't count as version.
-fn family_and_version(id: &str) -> (String, Vec<u32>) {
-    let mut family = None;
+fn line_and_version(id: &str) -> (String, Vec<u32>) {
+    let mut line = None;
     let mut version = Vec::new();
     for part in id.trim_start_matches("claude-").split(['-', '.']) {
         match part.parse::<u32>() {
             Ok(_) if part.len() >= 8 => {}
             Ok(number) => version.push(number),
-            Err(_) if family.is_none() => family = Some(part.to_owned()),
+            Err(_) if line.is_none() => line = Some(part.to_owned()),
             Err(_) => {}
         }
     }
-    (family.unwrap_or_else(|| "claude".to_owned()), version)
+    (line.unwrap_or_else(|| "claude".to_owned()), version)
 }
 
-/// Registry entries for Claude Code. The current one of each family is its lineup model, or
+/// Registry entries for Claude Code. The current one of each line is its lineup model, or
 /// its newest when the lineup has none (the API names no lineup). Every other model is older,
 /// with that one as its `successor`.
 pub fn claude_code_entries(settings: &Settings, listed: Vec<ListedModel>) -> Vec<ModelEntry> {
     let mut current: Vec<(String, String)> = listed
         .iter()
         .filter(|model| model.lineup && !model.retired)
-        .map(|model| (family_and_version(&model.id).0, model.id.clone()))
+        .map(|model| (line_and_version(&model.id).0, model.id.clone()))
         .collect();
     let mut newest: Vec<(String, Vec<u32>, String)> = Vec::new();
     for model in listed.iter().filter(|model| !model.retired) {
-        let (family, version) = family_and_version(&model.id);
-        if current.iter().any(|(f, _)| *f == family) {
+        let (line, version) = line_and_version(&model.id);
+        if current.iter().any(|(f, _)| *f == line) {
             continue;
         }
-        match newest.iter_mut().find(|(f, ..)| *f == family) {
+        match newest.iter_mut().find(|(f, ..)| *f == line) {
             Some(slot) if version > slot.1 => {
                 slot.1 = version;
                 slot.2 = model.id.clone();
             }
             Some(_) => {}
-            None => newest.push((family, version, model.id.clone())),
+            None => newest.push((line, version, model.id.clone())),
         }
     }
-    current.extend(newest.into_iter().map(|(family, _, id)| (family, id)));
+    current.extend(newest.into_iter().map(|(line, _, id)| (line, id)));
 
     let is_current = |id: &str| current.iter().any(|(_, current)| current == id);
     let (now, older): (Vec<ListedModel>, Vec<ListedModel>) =
@@ -386,16 +386,16 @@ pub fn claude_code_entries(settings: &Settings, listed: Vec<ListedModel>) -> Vec
     now.into_iter()
         .chain(older)
         .map(|model| {
-            let mut entry = harness_entry(settings, "claude-code", Some(&model.id));
+            let mut entry = cli_entry(settings, "claude-code", Some(&model.id));
             entry.discovered = true;
             entry.context_window = model.context_window;
             entry.aliases = model.alias.into_iter().collect();
             entry.retired = model.retired;
             if !is_current(&model.id) {
-                let family = family_and_version(&model.id).0;
+                let line = line_and_version(&model.id).0;
                 entry.successor = current
                     .iter()
-                    .find(|(f, _)| *f == family)
+                    .find(|(f, _)| *f == line)
                     .map(|(_, id)| id.clone());
             }
             entry
@@ -413,10 +413,7 @@ mod tests {
 
     use super::*;
 
-    const PAGES: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/anthropic/2026-10-01"
-    );
+    const PAGES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/anthropic");
 
     /// Written to the shape Anthropic documents for `GET /v1/models`, not recorded, since
     /// tests never call the API.
@@ -452,7 +449,7 @@ mod tests {
                 "claude-opus-5-5",
                 "claude-sonnet-5-5",
                 "claude-haiku-4-5-20251001",
-                // Not in the lineup, but the newest of its family.
+                // Not in the lineup, but the newest of its line.
                 "claude-mythos-5-1",
             ]
         );
@@ -460,7 +457,7 @@ mod tests {
         assert!(
             entries
                 .iter()
-                .all(|e| e.discovered && e.id.worker == "claude-code")
+                .all(|e| e.discovered && e.id.agent == "claude-code")
         );
 
         let haiku = entry(&entries, "claude-haiku-4-5-20251001");
@@ -500,7 +497,7 @@ mod tests {
             &Settings::default(),
             parse_model_pages("", &page("model-deprecations.md")),
         );
-        // With no lineup, each family's newest is current.
+        // With no lineup, each line's newest is current.
         let current: Vec<String> = status
             .iter()
             .filter(|e| e.successor.is_none())
@@ -683,7 +680,7 @@ mod tests {
         registry
             .list()
             .iter()
-            .filter(|e| e.id.worker == "claude-code" && e.successor.is_some())
+            .filter(|e| e.id.agent == "claude-code" && e.successor.is_some())
             .count()
     }
 
@@ -761,21 +758,21 @@ mod tests {
     }
 
     #[test]
-    fn families_and_versions_read_from_both_id_styles() {
+    fn lines_and_versions_read_from_both_id_styles() {
         assert_eq!(
-            family_and_version("claude-opus-4-5-20251101"),
+            line_and_version("claude-opus-4-5-20251101"),
             ("opus".to_owned(), vec![4, 5])
         );
         assert_eq!(
-            family_and_version("claude-3-7-sonnet-20250219"),
+            line_and_version("claude-3-7-sonnet-20250219"),
             ("sonnet".to_owned(), vec![3, 7])
         );
         assert_eq!(
-            family_and_version("claude-mythos-preview"),
+            line_and_version("claude-mythos-preview"),
             ("mythos".to_owned(), vec![])
         );
         assert_eq!(
-            family_and_version("claude-2.1"),
+            line_and_version("claude-2.1"),
             ("claude".to_owned(), vec![2, 1])
         );
     }

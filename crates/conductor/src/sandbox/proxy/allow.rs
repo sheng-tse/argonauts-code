@@ -1,4 +1,4 @@
-//! Which hosts a session's tunnels may reach: its harness's own hosts, plus
+//! Which hosts a session's tunnels may reach: its CLI's own hosts, plus
 //! `sandbox.proxy_allow`, plus the local model servers your settings name.
 
 use std::fmt;
@@ -6,12 +6,12 @@ use std::fmt;
 /// The port a rule means when it names none.
 const HTTPS: u16 = 443;
 
-/// What each harness needs to run: its model API, the endpoint that refreshes its login, and the
-/// vendor's own telemetry and feature flags. Found in each CLI's binary and checked against its
+/// What each CLI needs to run: its model API, the endpoint that refreshes its login, and the
+/// agent's own telemetry and feature flags. Found in each CLI's binary and checked against its
 /// docs. Third-party intakes such as Datadog and Sentry are left out: they take anyone's key, so
 /// they would carry a session's files out, and the CLIs run without them.
-pub fn harness_hosts(vendor: &str) -> &'static [&'static str] {
-    match vendor {
+pub fn cli_hosts(agent_id: &str) -> &'static [&'static str] {
+    match agent_id {
         "claude-code" => CLAUDE_CODE,
         "codex" => CODEX,
         "antigravity-cli" => ANTIGRAVITY_CLI,
@@ -150,9 +150,9 @@ pub struct Allowlist {
 }
 
 impl Allowlist {
-    /// `vendor`'s own hosts plus `extra`, which is `sandbox.proxy_allow`.
-    pub fn for_harness(vendor: &str, extra: &[String]) -> Result<Self, String> {
-        let own = harness_hosts(vendor).iter().copied();
+    /// `agent`'s own hosts plus `extra`, which is `sandbox.proxy_allow`.
+    pub fn for_cli(agent_id: &str, extra: &[String]) -> Result<Self, String> {
+        let own = cli_hosts(agent_id).iter().copied();
         Self::parse(own.chain(extra.iter().map(String::as_str)))
     }
 
@@ -242,27 +242,23 @@ mod tests {
 
     #[test]
     fn every_built_in_host_parses() {
-        for vendor in ["claude-code", "codex", "antigravity-cli", "opencode"] {
-            let list = Allowlist::for_harness(vendor, &[]).unwrap();
-            assert_eq!(list.len(), harness_hosts(vendor).len(), "{vendor}");
-            for host in harness_hosts(vendor) {
-                assert!(list.allows(host, 443), "{vendor} {host}");
+        for agent_id in ["claude-code", "codex", "antigravity-cli", "opencode"] {
+            let list = Allowlist::for_cli(agent_id, &[]).unwrap();
+            assert_eq!(list.len(), cli_hosts(agent_id).len(), "{agent_id}");
+            for host in cli_hosts(agent_id) {
+                assert!(list.allows(host, 443), "{agent_id} {host}");
             }
         }
-        assert!(
-            Allowlist::for_harness("someone-else", &[])
-                .unwrap()
-                .is_empty()
-        );
+        assert!(Allowlist::for_cli("someone-else", &[]).unwrap().is_empty());
     }
 
     #[test]
-    fn harnesses_get_only_their_own_hosts() {
-        let claude = Allowlist::for_harness("claude-code", &[]).unwrap();
+    fn clis_get_only_their_own_hosts() {
+        let claude = Allowlist::for_cli("claude-code", &[]).unwrap();
         assert!(claude.allows("api.anthropic.com", 443));
         assert!(!claude.allows("api.openai.com", 443));
         assert!(!claude.allows("cloudcode-pa.googleapis.com", 443));
-        let codex = Allowlist::for_harness("codex", &[]).unwrap();
+        let codex = Allowlist::for_cli("codex", &[]).unwrap();
         assert!(codex.allows("chatgpt.com", 443));
         assert!(!codex.allows("api.anthropic.com", 443));
     }
@@ -273,7 +269,7 @@ mod tests {
             "*.corp.example:8443".to_owned(),
             "Mirror.Example.".to_owned(),
         ];
-        let list = Allowlist::for_harness("claude-code", &extra).unwrap();
+        let list = Allowlist::for_cli("claude-code", &extra).unwrap();
         // Names compare without case or a trailing dot; the port must match too.
         assert!(list.allows("API.anthropic.com.", 443));
         assert!(!list.allows("api.anthropic.com", 80));
@@ -307,7 +303,7 @@ mod tests {
             let err = Rule::parse(entry).unwrap_err();
             assert!(err.contains("sandbox.proxy_allow"), "{entry}: {err}");
         }
-        let err = Allowlist::for_harness("codex", &["bad/".to_owned()]).unwrap_err();
+        let err = Allowlist::for_cli("codex", &["bad/".to_owned()]).unwrap_err();
         assert!(err.contains("\"bad/\""), "{err}");
     }
 

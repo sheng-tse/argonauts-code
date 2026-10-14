@@ -22,7 +22,7 @@ pub fn sanitize(text: &str) -> Cow<'_, str> {
     if !text.chars().any(needs_work) {
         return Cow::Borrowed(text);
     }
-    // Core's sanitizer is the one every Argonauts screen shares; the rest of this loop only
+    // Core's sanitizer is the one every Argonauts Code screen shares; the rest of this loop only
     // fixes layout, such as tabs and joined emoji. Line by line, so an unterminated OSC takes
     // only the rest of its own line with it.
     let safe = text
@@ -161,11 +161,11 @@ mod tests {
 
     #[test]
     fn joined_emoji_come_apart_so_every_terminal_counts_them_alike() {
-        // A family joined by zero-width joiners, and a thumbs up with a skin tone.
-        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
-        assert_eq!(sanitize(family), "\u{1F468}\u{1F469}\u{1F467}");
+        // People joined by zero-width joiners, and a thumbs up with a skin tone.
+        let joined = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        assert_eq!(sanitize(joined), "\u{1F468}\u{1F469}\u{1F467}");
         assert_eq!(sanitize("ok \u{1F44D}\u{1F3FD}!"), "ok \u{1F44D}!");
-        assert_eq!(crate::text::str_width(&sanitize(family)), 6);
+        assert_eq!(crate::text::str_width(&sanitize(joined)), 6);
         // A joiner that shapes letters, as in Devanagari, stays.
         let conjunct = "\u{0915}\u{094D}\u{200D}\u{0937}";
         assert_eq!(sanitize(conjunct), conjunct);

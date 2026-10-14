@@ -1,0 +1,13 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Add recurring tasks
+ orchestrator workflow · add --every to the todo CLI, six parts, each reviewed                    9/12 agents · 7m32s 
+ › review: 2 reviewers at work; review:every-tests waits for a free slot
+
+ ╭ Phases ──────────┬ Review · 6 agents ────────────────────────────────────────────────────────────────────────────╮
+ │   ✔ Build    6/6 │  ✔ review:every-parse  GPT 5.6 Luna · 19.4k tok · approved                              1m16s │
+ │ ❯ 2 Review   3/6 │  ✔ review:every-store  Opus 5.5 · 17.6k tok · approved                                  1m07s │
+ │   3 Sign-off     │  ⏺ review:every-list   GPT 5.6 Luna · 18.2k tok                                         1m56s │
+ │   4 Merge        │  ⏺ review:every-done   GPT 5.6 Luna · 21.4k tok                                         1m52s │
+ │                  │  ◌ review:every-tests  Opus 5.5 · queued                                                      │
+ ╰──────────────────┴──────────────────────────────────────────────────────────────────────────────── ↑ 2–6 of 6 ↓ ─╯
+ ↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save

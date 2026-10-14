@@ -1,4 +1,4 @@
-//! Reading the fake vendors' log: invocations and ACP frames.
+//! Reading the fake agents' log: invocations and ACP frames.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -37,7 +37,7 @@ impl Limits {
     /// version, help, and model list, are left out.
     pub fn calls(&self, program: &str) -> anyhow::Result<Vec<Invocation>> {
         Ok(self
-            .vendors
+            .clis
             .invocations()?
             .into_iter()
             .filter(|call| call.argv0 == program && !is_self_check(&call.args))
@@ -84,7 +84,7 @@ impl Limits {
 
     pub fn frames(&self) -> anyhow::Result<Vec<Frame>> {
         Ok(self
-            .vendors
+            .clis
             .log()?
             .into_iter()
             .enumerate()
@@ -122,7 +122,7 @@ impl Limits {
     /// Each `argonauts_report` call an ACP agent made, with the tool's reply.
     pub fn report_calls(&self) -> anyhow::Result<Vec<(Value, Value)>> {
         Ok(self
-            .vendors
+            .clis
             .log()?
             .into_iter()
             .filter_map(|line| match line {
@@ -135,7 +135,7 @@ impl Limits {
     /// Permission picks the fake agent didn't expect.
     pub fn wrong_picks(&self) -> anyhow::Result<Vec<String>> {
         Ok(self
-            .vendors
+            .clis
             .log()?
             .into_iter()
             .filter_map(|line| match line {

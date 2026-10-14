@@ -1,5 +1,5 @@
 //! The workflow runner: the validator's rules, nesting, composed workflows, and changes that go
-//! through the `change_request` checkpoint.
+//! through the `change_request` approval.
 
 mod support;
 
@@ -10,15 +10,15 @@ use time::OffsetDateTime;
 
 use argonauts_core::RunId;
 use argonauts_core::engine::EngineExit;
-use argonauts_core::events::checkpoint::{AnswerAction, CheckpointEvent, CheckpointKind};
+use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind};
 use argonauts_core::events::plan::PlanEvent;
-use argonauts_core::events::run::{ParkReason, RunLifecycle, RunMode, RunOutcome};
+use argonauts_core::events::run::{RunLifecycle, RunMode, RunOutcome, WaitReason};
 use argonauts_core::events::session::SessionEvent;
 use argonauts_core::events::workflow::{
     StepEnd, StepFinished, StepStarted, WorkflowEvent, WorkflowStarted,
 };
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{WorkerRef, WorkflowId};
+use argonauts_core::names::{ModelRef, WorkflowId};
 use argonauts_core::settings::Settings;
 use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow, WorkflowRef};
 use argonauts_crew::state::RunState;
@@ -46,14 +46,14 @@ fn find(name: &str) -> Result<Workflow, String> {
     argonauts_crew::workflow::builtin::load(name)
 }
 
-/// Each worker's family is the vendor in its name, such as `codex` for `codex/gpt-x`.
-fn families(allowed: &[WorkerRef]) -> BTreeMap<WorkerRef, String> {
+/// Each worker's provider is the agent in its name, such as `codex` for `codex/gpt-x`.
+fn providers(allowed: &[ModelRef]) -> BTreeMap<ModelRef, String> {
     allowed
         .iter()
         .map(|worker| {
             let text = worker.to_string();
-            let vendor = text.split('/').next().unwrap_or_default().to_owned();
-            (worker.clone(), vendor)
+            let agent_id = text.split('/').next().unwrap_or_default().to_owned();
+            (worker.clone(), agent_id)
         })
         .collect()
 }
@@ -62,17 +62,17 @@ fn rules(
     workflow: &Workflow,
     settings: &Settings,
     depth: u32,
-    budget: Option<f64>,
+    limit: Option<f64>,
 ) -> BTreeSet<String> {
     let allowed = allowed_workers(settings);
-    let families = families(&allowed);
+    let providers = providers(&allowed);
     let context = Context {
         settings,
         allowed: &allowed,
-        families: &families,
+        providers: &providers,
         lookup: &find,
         depth,
-        budget_left_usd: budget,
+        limit_left_usd: limit,
         as_you_asked: &[],
     };
     match validate(workflow, &context) {
@@ -96,12 +96,12 @@ fn workflow_validator_rejects_each_rule_break() {
         (
             Rule::LoopWithoutMax,
             phase(
-                "      - kind: loop_until\n        until: goal_approved\n        steps:\n          - kind: gate\n",
+                "      - kind: loop_until\n        until: understood\n        steps:\n          - kind: checks\n",
             ),
         ),
         (
             Rule::UnknownCondition,
-            phase("      - kind: gate\n        when: the_lead_feels_like_it\n"),
+            phase("      - kind: checks\n        when: the_main_agent_feels_like_it\n"),
         ),
         (
             Rule::UnknownInput,
@@ -109,7 +109,7 @@ fn workflow_validator_rejects_each_rule_break() {
         ),
         (
             Rule::FieldNotForKind,
-            phase("      - kind: gate\n        role: reviewer\n"),
+            phase("      - kind: checks\n        role: reviewer\n"),
         ),
         (
             Rule::MissingParam,
@@ -118,23 +118,23 @@ fn workflow_validator_rejects_each_rule_break() {
             ),
         ),
         (
-            Rule::WorkerNotAllowed,
+            Rule::ModelNotAllowed,
             phase(
-                "      - kind: review\n        role: reviewer\n        workers: [stranger/model-x]\n",
+                "      - kind: review\n        role: reviewer\n        models: [stranger/model-x]\n",
             ),
         ),
         (
-            Rule::MissingCheckpoint,
+            Rule::MissingApproval,
             phase("      - kind: build\n        role: worker\n        input: plan\n"),
         ),
         (
-            Rule::BuildNeedsGateAndReview,
+            Rule::BuildNeedsCheckAndReview,
             phase("      - kind: fan_out\n        role: worker\n"),
         ),
         (
-            Rule::ReviewSameFamily,
+            Rule::ReviewSameProvider,
             phase(
-                "      - kind: review\n        role: reviewer\n        different_family_from: nobody\n",
+                "      - kind: review\n        role: reviewer\n        different_provider_from: nobody\n",
             ),
         ),
     ];
@@ -148,39 +148,39 @@ fn workflow_validator_rejects_each_rule_break() {
 
     // A reviewer never reviews its own work.
     let mut crew = settings.clone();
-    crew.crew = vec![WorkerRef::new("codex", None)].into();
+    crew.crew = vec![ModelRef::new("codex", None)].into();
     let own = phase(
-        "      - kind: draft\n        name: answer\n        role: drafter\n        workers: [codex]\n      - kind: review\n        role: reviewer\n        input: answer\n        workers: [codex]\n",
+        "      - kind: draft\n        name: answer\n        role: draft\n        models: [codex]\n      - kind: review\n        role: reviewer\n        input: answer\n        models: [codex]\n",
     );
-    assert!(rules(&parse(&own), &crew, 0, None).contains("ReviewSameFamily"));
+    assert!(rules(&parse(&own), &crew, 0, None).contains("ReviewSameProvider"));
 
-    // Over budget: two card builds at $5 each with $3 left.
-    let mut budget = settings.clone();
-    budget.limits.budget.per_task_usd = Some(5.0);
+    // Over limit: two task builds at $5 each with $3 left.
+    let mut limit = settings.clone();
+    limit.limits.spend.per_task_usd = Some(5.0);
     let builds =
-        argonauts_crew::workflow::builtin::load("solo").unwrap_or_else(|err| panic!("{err}"));
-    assert!(rules(&builds, &budget, 0, Some(3.0)).contains("OverBudget"));
-    assert!(rules(&builds, &budget, 0, Some(30.0)).is_empty());
+        argonauts_crew::workflow::builtin::load("captain").unwrap_or_else(|err| panic!("{err}"));
+    assert!(rules(&builds, &limit, 0, Some(3.0)).contains("OverLimit"));
+    assert!(rules(&builds, &limit, 0, Some(30.0)).is_empty());
 
     // Every error comes back at once.
     let many = phase(
-        "      - kind: gate\n        role: reviewer\n        when: never\n      - kind: loop_until\n        steps: []\n",
+        "      - kind: checks\n        role: reviewer\n        when: never\n      - kind: loop_until\n        steps: []\n",
     );
     assert!(rules(&parse(&many), &settings, 0, None).len() >= 4);
 }
 
 const NESTS: &str = "name: outer\nphases:\n  - name: Review\n    standard: check\n    steps:\n      - kind: workflow\n        workflow: review-panel\n";
 
-const REVIEW_PANEL: &str = "name: review-panel\nphases:\n  - name: Review\n    standard: check\n    steps:\n      - kind: fan_out\n        role: reviewer\n  - name: Adjudicate\n    standard: decide\n    steps:\n      - kind: judge\n        role: adjudicator\n        when: reviewers_disagree\n";
+const REVIEW_PANEL: &str = "name: review-panel\nphases:\n  - name: Review\n    standard: check\n    steps:\n      - kind: fan_out\n        role: reviewer\n  - name: Settle\n    standard: decide\n    steps:\n      - kind: judge\n        role: judge\n        when: reviewers_disagree\n";
 
-const INNER_LOOK: &str = "name: inner-look\ndescription: A look one level down\nphases:\n  - name: Look\n    standard: check\n    steps:\n      - kind: gate\n";
+const INNER_LOOK: &str = "name: inner-look\ndescription: A look one level down\nphases:\n  - name: Look\n    standard: check\n    steps:\n      - kind: checks\n";
 
 /// One level of nesting on its own, so a chain through it reaches depth 2.
 const MIDDLE: &str = "name: middle\nphases:\n  - name: Look\n    standard: check\n    steps:\n      - kind: workflow\n        workflow: inner-look\n";
 
 const LOOPS: &str = "name: loops\nphases:\n  - name: Again\n    standard: check\n    steps:\n      - kind: workflow\n        workflow: loops\n";
 
-const BROKEN_INSIDE: &str = "name: broken-inside\nphases:\n  - name: Look\n    standard: check\n    steps:\n      - kind: gate\n        when: the_lead_feels_like_it\n";
+const BROKEN_INSIDE: &str = "name: broken-inside\nphases:\n  - name: Look\n    standard: check\n    steps:\n      - kind: checks\n        when: the_main_agent_feels_like_it\n";
 
 fn nests(name: &str) -> Workflow {
     parse(&format!(
@@ -207,7 +207,7 @@ fn nesting_stops_at_depth_two() {
     deep.workflows.max_depth = 5;
     assert!(rules(&workflow, &deep, 2, None).contains("TooDeep"));
     let plain = parse(
-        "name: leaf\nphases:\n  - name: Look\n    standard: check\n    steps:\n      - kind: gate\n",
+        "name: leaf\nphases:\n  - name: Look\n    standard: check\n    steps:\n      - kind: checks\n",
     );
     assert!(rules(&plain, &settings, 3, None).contains("TooDeep"));
 
@@ -237,24 +237,24 @@ fn nesting_stops_at_depth_two() {
         BTreeSet::from(["UnknownCondition".to_owned()])
     );
 
-    // A nested workflow's builds count toward the budget floor.
-    let mut budget = settings.clone();
-    budget.limits.budget.per_task_usd = Some(5.0);
+    // A nested workflow's builds count toward the limit floor.
+    let mut limit = settings.clone();
+    limit.limits.spend.per_task_usd = Some(5.0);
     let builds_twice = parse(
-        "name: twice\nphases:\n  - name: Build\n    standard: do\n    steps:\n      - kind: workflow\n        workflow: solo\n      - kind: workflow\n        workflow: solo\n",
+        "name: twice\nphases:\n  - name: Build\n    standard: do\n    steps:\n      - kind: workflow\n        workflow: captain\n      - kind: workflow\n        workflow: captain\n",
     );
-    assert!(rules(&builds_twice, &budget, 0, Some(8.0)).contains("OverBudget"));
-    assert!(rules(&builds_twice, &budget, 0, Some(12.0)).is_empty());
+    assert!(rules(&builds_twice, &limit, 0, Some(8.0)).contains("OverLimit"));
+    assert!(rules(&builds_twice, &limit, 0, Some(12.0)).is_empty());
 }
 
 #[test]
-fn validator_rules_for_checkpoints_loops_and_families() {
+fn validator_rules_for_approvals_loops_and_providers() {
     let settings = Settings::default();
 
-    // A crew build needs goal and plan checkpoints that always open.
+    // A crew build needs Understand and plan approvals that always open.
     let build =
         "      - kind: build\n        role: worker\n        input: plan\n      - kind: merge\n";
-    let unconditional = "      - kind: checkpoint\n        checkpoint: goal\n      - kind: checkpoint\n        checkpoint: plan\n";
+    let unconditional = "      - kind: approval\n        approval: understand\n      - kind: approval\n        approval: plan\n";
     assert!(
         rules(
             &parse(&phase(&format!("{unconditional}{build}"))),
@@ -264,7 +264,7 @@ fn validator_rules_for_checkpoints_loops_and_families() {
         )
         .is_empty()
     );
-    let skippable = "      - kind: checkpoint\n        checkpoint: goal\n      - kind: checkpoint\n        checkpoint: plan\n        when: drafts_agree\n";
+    let skippable = "      - kind: approval\n        approval: understand\n      - kind: approval\n        approval: plan\n        when: drafts_agree\n";
     assert!(
         rules(
             &parse(&phase(&format!("{skippable}{build}"))),
@@ -272,19 +272,19 @@ fn validator_rules_for_checkpoints_loops_and_families() {
             0,
             None
         )
-        .contains("MissingCheckpoint")
+        .contains("MissingApproval")
     );
-    let restated = "      - kind: checkpoint\n        checkpoint: goal\n        when: restate_first\n      - kind: checkpoint\n        checkpoint: plan\n";
+    let readings = "      - kind: approval\n        approval: understand\n        when: understand_first\n      - kind: approval\n        approval: plan\n";
     assert!(
         rules(
-            &parse(&phase(&format!("{restated}{build}"))),
+            &parse(&phase(&format!("{readings}{build}"))),
             &settings,
             0,
             None
         )
-        .contains("MissingCheckpoint")
+        .contains("MissingApproval")
     );
-    let per_item = "      - kind: for_each\n        input: plan\n        steps:\n          - kind: checkpoint\n            checkpoint: goal\n      - kind: checkpoint\n        checkpoint: plan\n";
+    let per_item = "      - kind: for_each\n        input: plan\n        steps:\n          - kind: approval\n            approval: understand\n      - kind: approval\n        approval: plan\n";
     assert!(
         rules(
             &parse(&phase(&format!("{per_item}{build}"))),
@@ -292,28 +292,28 @@ fn validator_rules_for_checkpoints_loops_and_families() {
             0,
             None
         )
-        .contains("MissingCheckpoint")
+        .contains("MissingApproval")
     );
-    // Solo keeps its goal checkpoint behind `restate_first`, and no other may use it.
-    for solo in ["solo", "maker-checker", "best-of-n"] {
+    // Captain keeps its Understand approval behind `understand_first`, and no other may use it.
+    for captain in ["captain", "maker-checker", "best-of-n"] {
         let workflow =
-            argonauts_crew::workflow::builtin::load(solo).unwrap_or_else(|err| panic!("{err}"));
-        assert!(rules(&workflow, &settings, 0, None).is_empty(), "{solo}");
+            argonauts_crew::workflow::builtin::load(captain).unwrap_or_else(|err| panic!("{err}"));
+        assert!(rules(&workflow, &settings, 0, None).is_empty(), "{captain}");
     }
-    let plan_restated =
-        phase("      - kind: checkpoint\n        checkpoint: plan\n        when: restate_first\n");
-    assert!(rules(&parse(&plan_restated), &settings, 0, None).contains("MissingCheckpoint"));
+    let plan_understood =
+        phase("      - kind: approval\n        approval: plan\n        when: understand_first\n");
+    assert!(rules(&parse(&plan_understood), &settings, 0, None).contains("MissingApproval"));
 
     // A loop's `max` has a ceiling.
     let endless = phase(
-        "      - kind: loop_until\n        until: goal_approved\n        max: 1000\n        steps:\n          - kind: gate\n",
+        "      - kind: loop_until\n        until: understood\n        max: 1000\n        steps:\n          - kind: checks\n",
     );
     assert!(rules(&parse(&endless), &settings, 0, None).contains("LoopWithoutMax"));
 
-    // Judges and critics pick their own workers, so they don't take `different_family_from`.
-    for kind in ["judge", "refute"] {
+    // Judges and critics pick their own workers, so they don't take `different_provider_from`.
+    for kind in ["judge", "critique"] {
         let text = phase(&format!(
-            "      - kind: {kind}\n        role: judge\n        different_family_from: author\n"
+            "      - kind: {kind}\n        role: judge\n        different_provider_from: author\n"
         ));
         assert!(
             rules(&parse(&text), &settings, 0, None).contains("FieldNotForKind"),
@@ -321,31 +321,31 @@ fn validator_rules_for_checkpoints_loops_and_families() {
         );
     }
 
-    // `different_family_from` compares model families, not workers.
+    // `different_provider_from` compares model providers, not workers.
     let mut crew = settings.clone();
     crew.crew = vec![
-        WorkerRef::new("claude-code", Some("opus".to_owned())),
-        WorkerRef::new("claude-code", Some("sonnet".to_owned())),
-        WorkerRef::new("codex", None),
+        ModelRef::new("claude-code", Some("opus".to_owned())),
+        ModelRef::new("claude-code", Some("sonnet".to_owned())),
+        ModelRef::new("codex", None),
     ]
     .into();
     let reviewed_by = |reviewer: &str| {
         phase(&format!(
-            "      - kind: draft\n        name: answer\n        role: drafter\n        workers: [claude-code/opus]\n      - kind: review\n        role: reviewer\n        input: answer\n        different_family_from: answer\n        workers: [{reviewer}]\n"
+            "      - kind: draft\n        name: answer\n        role: draft\n        models: [claude-code/opus]\n      - kind: review\n        role: reviewer\n        input: answer\n        different_provider_from: answer\n        models: [{reviewer}]\n"
         ))
     };
     assert!(
         rules(&parse(&reviewed_by("claude-code/sonnet")), &crew, 0, None)
-            .contains("ReviewSameFamily")
+            .contains("ReviewSameProvider")
     );
     assert!(rules(&parse(&reviewed_by("codex")), &crew, 0, None).is_empty());
-    // With no reviewer named, some reviewer must come from another family.
-    let mut one_family = crew.clone();
-    one_family.crew = one_family.crew.members().into_iter().take(2).collect();
+    // With no reviewer named, some reviewer must come from another provider.
+    let mut one_provider = crew.clone();
+    one_provider.crew = one_provider.crew.members().into_iter().take(2).collect();
     let unnamed = phase(
-        "      - kind: draft\n        name: answer\n        role: drafter\n        workers: [claude-code/opus]\n      - kind: review\n        role: reviewer\n        input: answer\n        different_family_from: author\n",
+        "      - kind: draft\n        name: answer\n        role: draft\n        models: [claude-code/opus]\n      - kind: review\n        role: reviewer\n        input: answer\n        different_provider_from: author\n",
     );
-    assert!(rules(&parse(&unnamed), &one_family, 0, None).contains("ReviewSameFamily"));
+    assert!(rules(&parse(&unnamed), &one_provider, 0, None).contains("ReviewSameProvider"));
     assert!(rules(&parse(&unnamed), &crew, 0, None).is_empty());
 }
 
@@ -354,9 +354,9 @@ fn event(seq: u64, kind: WorkflowEvent) -> RunEvent {
         seq,
         ts: OffsetDateTime::UNIX_EPOCH,
         run_id: RunId::at(OffsetDateTime::UNIX_EPOCH, 1),
-        card_id: None,
+        task_id: None,
         session: None,
-        source: "conductor".to_owned(),
+        source: "argonauts-code".to_owned(),
         kind: RunEventKind::Workflow(kind),
     }
 }
@@ -404,7 +404,7 @@ fn nested_workflow_counts_and_reports() {
     let inner_id = WorkflowId::numbered(2);
     let outer = parse(NESTS);
     let inner = parse(
-        "name: review-panel\nphases:\n  - name: Review\n    standard: check\n    steps:\n      - kind: fan_out\n        role: reviewer\n  - name: Adjudicate\n    standard: decide\n    steps:\n      - kind: judge\n        role: adjudicator\n        when: reviewers_disagree\n",
+        "name: review-panel\nphases:\n  - name: Review\n    standard: check\n    steps:\n      - kind: fan_out\n        role: reviewer\n  - name: Settle\n    standard: decide\n    steps:\n      - kind: judge\n        role: judge\n        when: reviewers_disagree\n",
     );
     let parent = at(&outer_id, 0, &[0]);
     let mut events = vec![
@@ -506,7 +506,7 @@ fn nested_workflow_counts_and_reports() {
     );
 }
 
-/// Only kinds the runner owns, so it runs without agents: a gate, a loop whose condition
+/// Only kinds the runner owns, so it runs without agents: a check, a loop whose condition
 /// already holds, and a `for_each` over an empty plan.
 const COMPOSED: &str = r#"
 name: composed-checks
@@ -515,21 +515,21 @@ phases:
   - name: Look
     standard: check
     steps:
-      - kind: gate
-        name: first-gate
+      - kind: checks
+        name: first-check
       - kind: loop_until
         name: critique
         until: critique_done
         max: 2
         steps:
-          - kind: gate
+          - kind: checks
   - name: Per task
     standard: do
     steps:
       - kind: for_each
         input: plan
         steps:
-          - kind: gate
+          - kind: checks
 "#;
 
 fn workflow_events(events: &[RunEvent]) -> Vec<&WorkflowEvent> {
@@ -546,7 +546,7 @@ fn workflow_events(events: &[RunEvent]) -> Vec<&WorkflowEvent> {
 async fn composed_workflow_runs() -> anyhow::Result<()> {
     let mut crew = support::Crew::new()?;
     crew.worker("claude-code/opus", "anthropic");
-    crew.settings.phases = WorkflowRef::new("composed-checks");
+    crew.settings.workflow = "composed-checks".to_owned();
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.critique.rounds = 0;
     crew.repo
@@ -576,7 +576,7 @@ async fn composed_workflow_runs() -> anyhow::Result<()> {
     assert_eq!(
         finished,
         vec![
-            (StepKind::Gate, StandardPhase::Check, StepEnd::Skipped),
+            (StepKind::Checks, StandardPhase::Check, StepEnd::Skipped),
             (StepKind::LoopUntil, StandardPhase::Check, StepEnd::Done),
             (StepKind::ForEach, StandardPhase::Do, StepEnd::Done),
         ]
@@ -584,26 +584,26 @@ async fn composed_workflow_runs() -> anyhow::Result<()> {
     Ok(())
 }
 
-const TWO_PHASES: &str = "name: two-looks\ndescription: Two looks\nphases:\n  - name: First look\n    standard: check\n    steps:\n      - kind: gate\n  - name: Second look\n    standard: check\n    steps:\n      - kind: gate\n";
+const TWO_PHASES: &str = "name: two-looks\ndescription: Two looks\nphases:\n  - name: First look\n    standard: check\n    steps:\n      - kind: checks\n  - name: Second look\n    standard: check\n    steps:\n      - kind: checks\n";
 
-/// At the end of the first phase the lead proposes a third phase. It opens the
-/// `change_request` checkpoint and waits for you; once you accept, `Workflow::Changed` names
-/// that checkpoint and the new phase runs.
+/// At the end of the first phase the main agent proposes a third phase. It opens the
+/// `change_request` approval and waits for you; once you accept, `Workflow::Changed` names
+/// that approval and the new phase runs.
 #[tokio::test]
 async fn workflow_change_mid_run_goes_through_change_request() -> anyhow::Result<()> {
     let mut crew = support::Crew::new()?;
-    let lead = crew.worker("claude-code/opus", "anthropic");
-    crew.settings.main_agent = WorkerRef::new("claude-code", Some("opus".to_owned()));
-    crew.settings.phases = WorkflowRef::new("two-looks");
+    let main_agent = crew.worker("claude-code/opus", "anthropic");
+    crew.settings.crew.main = ModelRef::new("claude-code", Some("opus".to_owned()));
+    crew.settings.workflow = "two-looks".to_owned();
     crew.settings.workflows.adapt_at_phase_ends = true;
     crew.repo
         .write(".argonauts/workflows/two-looks.yaml", TWO_PHASES)?;
     let changed = format!(
-        "{TWO_PHASES}  - name: Extra look\n    standard: check\n    steps:\n      - kind: gate\n"
+        "{TWO_PHASES}  - name: Extra look\n    standard: check\n    steps:\n      - kind: checks\n"
     );
     let unchanged = support::brief(None, json!([]), None, "it fits");
     support::script(
-        &lead,
+        &main_agent,
         vec![
             support::brief(None, json!([]), Some(&changed), "one more look"),
             unchanged.clone(),
@@ -611,13 +611,13 @@ async fn workflow_change_mid_run_goes_through_change_request() -> anyhow::Result
         ],
     );
     let outcome = crew.start(RunMode::Crew, "look twice").await?;
-    assert_eq!(outcome.exit, EngineExit::Parked(ParkReason::Checkpoint));
+    assert_eq!(outcome.exit, EngineExit::Waiting(WaitReason::Approval));
     let opened = outcome.events.iter().find_map(|event| match &event.kind {
-        RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) => Some(opened.clone()),
+        RunEventKind::Approval(ApprovalEvent::Opened(opened)) => Some(opened.clone()),
         _ => None,
     });
     let opened = opened.unwrap_or_else(|| panic!("no approval opened"));
-    assert_eq!(opened.kind, CheckpointKind::ChangeRequest);
+    assert_eq!(opened.kind, ApprovalKind::ChangeRequest);
     assert!(
         workflow_events(&outcome.events)
             .iter()
@@ -626,7 +626,7 @@ async fn workflow_change_mid_run_goes_through_change_request() -> anyhow::Result
 
     let (command, reply) = support::answer(
         &outcome.events,
-        CheckpointKind::ChangeRequest,
+        ApprovalKind::ChangeRequest,
         AnswerAction::Approve,
         None,
     )?;
@@ -640,7 +640,7 @@ async fn workflow_change_mid_run_goes_through_change_request() -> anyhow::Result
         _ => None,
     });
     let change = change.unwrap_or_else(|| panic!("no Workflow::Changed in {events:?}"));
-    assert_eq!(change.checkpoint, Some(opened.id));
+    assert_eq!(change.approval, Some(opened.id));
     assert_eq!(change.workflow.phases.len(), 3);
     assert!(events.iter().any(|event| matches!(
         event,
@@ -653,13 +653,13 @@ async fn workflow_change_mid_run_goes_through_change_request() -> anyhow::Result
 fn quiet_crew(workflow: &str) -> anyhow::Result<support::Crew> {
     let mut crew = support::Crew::new()?;
     crew.worker("claude-code/opus", "anthropic");
-    crew.settings.phases = WorkflowRef::new(workflow);
+    crew.settings.workflow = workflow.to_owned();
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.evolution.propose_every = 0;
     Ok(crew)
 }
 
-const OUTER_LOOKS: &str = "name: outer-looks\ndescription: A look, then a nested one\nphases:\n  - name: Look\n    standard: check\n    steps:\n      - kind: gate\n      - kind: workflow\n        workflow: inner-look\n";
+const OUTER_LOOKS: &str = "name: outer-looks\ndescription: A look, then a nested one\nphases:\n  - name: Look\n    standard: check\n    steps:\n      - kind: checks\n      - kind: workflow\n        workflow: inner-look\n";
 
 #[tokio::test]
 async fn nested_workflow_runs_through_the_runner() -> anyhow::Result<()> {
@@ -685,7 +685,7 @@ async fn nested_workflow_runs_through_the_runner() -> anyhow::Result<()> {
     assert!(events.iter().any(|event| matches!(
         event,
         WorkflowEvent::StepFinished(finished)
-            if finished.step.workflow == inner.id && finished.kind == StepKind::Gate
+            if finished.step.workflow == inner.id && finished.kind == StepKind::Checks
     )));
     let nested = events.iter().find_map(|event| match event {
         WorkflowEvent::StepFinished(finished) if finished.kind == StepKind::Workflow => {
@@ -777,11 +777,11 @@ async fn max_depth_below_the_ceiling_is_enforced() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn solo_report() -> serde_json::Value {
+fn captain_report() -> serde_json::Value {
     json!({
         "status": "done",
         "summary": "Fixed the typo",
-        // The scripted owner changes no file, so it names none.
+        // The scripted worker changes no file, so it names none.
         "files_changed": [],
         "tests_run": [],
         "concerns": [],
@@ -792,7 +792,7 @@ fn solo_report() -> serde_json::Value {
 }
 
 /// The log up to and including the `StepFinished` of the top-level step of `kind`: where a
-/// pause or crash during the retro leaves it.
+/// pause or crash during the run review leaves it.
 fn cut_after(events: &[RunEvent], kind: StepKind) -> Vec<RunEvent> {
     cut_after_at(events, kind, 1)
 }
@@ -817,7 +817,7 @@ fn sessions_started(events: &[RunEvent]) -> usize {
 async fn decide(
     crew: &support::Crew,
     events: &[RunEvent],
-    kind: CheckpointKind,
+    kind: ApprovalKind,
     action: AnswerAction,
 ) -> anyhow::Result<Vec<RunEvent>> {
     let (command, reply) = support::answer(events, kind, action, None)?;
@@ -826,18 +826,18 @@ async fn decide(
     Ok(next.events)
 }
 
-/// You abandon at the goal checkpoint, and the run pauses in its retro. Resumed, it ends as
-/// abandoned instead of going on to build what you abandoned.
+/// You abandon at the Understand approval, and the run pauses in its run review. Resumed, it ends
+/// as abandoned instead of going on to build what you abandoned.
 #[tokio::test]
-async fn abandoned_run_resumed_in_its_retro_stays_abandoned() -> anyhow::Result<()> {
-    let mut crew = quiet_crew("solo")?;
-    crew.settings.solo.restate_first = true;
-    let owner = crew
+async fn abandoned_run_resumed_in_its_run_review_stays_abandoned() -> anyhow::Result<()> {
+    let mut crew = quiet_crew("captain")?;
+    crew.settings.captain.understand_first = true;
+    let worker = crew
         .services
         .workers
         .fake("claude-code/opus")
         .unwrap_or_else(|| panic!("no worker"));
-    owner.push(argonauts_testkit::worker::FakeSession::structured(json!({
+    worker.push(argonauts_testkit::runner::FakeSession::structured(json!({
         "summary": "Fix the typo in the README.",
         "success_criteria": ["The README has no typo"],
         "in_scope": ["README.md"],
@@ -845,24 +845,24 @@ async fn abandoned_run_resumed_in_its_retro_stays_abandoned() -> anyhow::Result<
         "assumptions": [],
         "open_questions": []
     })));
-    owner.push(argonauts_testkit::worker::FakeSession::structured(
-        solo_report(),
+    worker.push(argonauts_testkit::runner::FakeSession::structured(
+        captain_report(),
     ));
-    let parked = crew.start(RunMode::Solo, "Fix the README typo").await?;
+    let waiting = crew.start(RunMode::Captain, "Fix the README typo").await?;
     assert!(
-        matches!(parked.exit, EngineExit::Parked(_)),
+        matches!(waiting.exit, EngineExit::Waiting(_)),
         "{:?}",
-        parked.exit
+        waiting.exit
     );
     let all = decide(
         &crew,
-        &parked.events,
-        CheckpointKind::Goal,
+        &waiting.events,
+        ApprovalKind::Understand,
         AnswerAction::Abandon,
     )
     .await?;
-    let history = cut_after(&all, StepKind::Checkpoint);
-    assert_eq!(sessions_started(&history), 1, "only the restatement ran");
+    let history = cut_after(&all, StepKind::Approval);
+    assert_eq!(sessions_started(&history), 1, "only the reading ran");
     let resumed = crew.resume(history.clone(), Vec::new()).await?;
     assert_eq!(resumed.exit, EngineExit::Finished(RunOutcome::Abandoned));
     let added = &resumed.events[history.len()..];
@@ -876,29 +876,29 @@ async fn abandoned_run_resumed_in_its_retro_stays_abandoned() -> anyhow::Result<
     Ok(())
 }
 
-/// The run lands, then pauses in its retro. Resumed, it ends as merged, not with the branch
+/// The run lands, then pauses in its run review. Resumed, it ends as merged, not with the branch
 /// left.
 #[tokio::test]
-async fn merged_run_resumed_in_its_retro_stays_merged() -> anyhow::Result<()> {
-    let crew = quiet_crew("solo")?;
-    let owner = crew
+async fn merged_run_resumed_in_its_run_review_stays_merged() -> anyhow::Result<()> {
+    let crew = quiet_crew("captain")?;
+    let worker = crew
         .services
         .workers
         .fake("claude-code/opus")
         .unwrap_or_else(|| panic!("no worker"));
-    owner.push(argonauts_testkit::worker::FakeSession::structured(
-        solo_report(),
+    worker.push(argonauts_testkit::runner::FakeSession::structured(
+        captain_report(),
     ));
-    let parked = crew.start(RunMode::Solo, "Fix the README typo").await?;
+    let waiting = crew.start(RunMode::Captain, "Fix the README typo").await?;
     assert!(
-        matches!(parked.exit, EngineExit::Parked(_)),
+        matches!(waiting.exit, EngineExit::Waiting(_)),
         "{:?}",
-        parked.exit
+        waiting.exit
     );
     let all = decide(
         &crew,
-        &parked.events,
-        CheckpointKind::Merge,
+        &waiting.events,
+        ApprovalKind::Merge,
         AnswerAction::Merge,
     )
     .await?;
@@ -909,13 +909,13 @@ async fn merged_run_resumed_in_its_retro_stays_merged() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// One drafter: `map` skips a lone draft, so the drafts agree and the fast path takes it to
-/// the plan checkpoint.
+/// One drafting agent: `map` skips a lone draft, so the drafts agree and the fast path takes it to
+/// the plan approval.
 #[tokio::test]
-async fn peer_crew_plans_with_one_drafter() -> anyhow::Result<()> {
+async fn council_plans_with_one_drafting_agent() -> anyhow::Result<()> {
     let mut crew = support::Crew::new()?;
-    crew.answering_worker("claude-code/opus", "claude");
-    crew.settings.phases = WorkflowRef::new("council");
+    crew.answering_worker("claude-code/opus", "anthropic");
+    crew.settings.workflow = "council".to_owned();
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.evolution.propose_every = 0;
     let outcomes = crew
@@ -950,39 +950,69 @@ async fn peer_crew_plans_with_one_drafter() -> anyhow::Result<()> {
         ]
     );
     let last = outcomes.last().unwrap_or_else(|| panic!("no outcome"));
-    assert_eq!(last.exit, EngineExit::Parked(ParkReason::Checkpoint));
+    assert_eq!(last.exit, EngineExit::Waiting(WaitReason::Approval));
     let opened = events.iter().rev().find_map(|event| match &event.kind {
-        RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) => Some(opened.kind),
+        RunEventKind::Approval(ApprovalEvent::Opened(opened)) => Some(opened.kind),
         _ => None,
     });
-    assert_eq!(opened, Some(CheckpointKind::Plan));
+    assert_eq!(opened, Some(ApprovalKind::Plan));
     Ok(())
 }
 
-/// You abandon at the goal checkpoint inside the goal loop, and the run crashes before the
-/// loop records its end. Resumed, the loop takes the checkpoint's ending from the log instead
-/// of starting another round.
+/// A workflow that only sets settings has no phases of its own, so its run starts from the
+/// default crew workflow's.
+#[tokio::test]
+async fn a_workflow_without_phases_starts_from_the_default_crew_workflow() -> anyhow::Result<()> {
+    let mut crew = support::Crew::new()?;
+    crew.answering_worker("claude-code/opus", "anthropic");
+    crew.settings.workflow = "ablate-no-critique".to_owned();
+    crew.settings.workflows.adapt_at_phase_ends = false;
+    crew.settings.evolution.propose_every = 0;
+    let outcomes = crew
+        .run_to_end(RunMode::Crew, "add a --verbose flag", 1)
+        .await?;
+    let events: Vec<RunEvent> = outcomes
+        .iter()
+        .flat_map(|outcome| outcome.events.clone())
+        .collect();
+    let started = workflow_events(&events)
+        .iter()
+        .find_map(|event| match event {
+            WorkflowEvent::Started(started) => Some(started.as_ref().clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no workflow started"));
+    assert_eq!(
+        started.from.as_ref().map(|from| from.as_str()),
+        Some("council")
+    );
+    Ok(())
+}
+
+/// You abandon at the Understand approval inside the Understand loop, and the run crashes before
+/// the loop records its end. Resumed, the loop takes the approval's ending from the log instead of
+/// starting another round.
 #[tokio::test]
 async fn abandoned_inside_a_loop_stays_abandoned() -> anyhow::Result<()> {
     let mut crew = support::Crew::new()?;
-    crew.answering_worker("claude-code/opus", "claude");
-    crew.settings.phases = WorkflowRef::new("council");
+    crew.answering_worker("claude-code/opus", "anthropic");
+    crew.settings.workflow = "council".to_owned();
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.evolution.propose_every = 0;
-    let parked = crew.start(RunMode::Crew, "add a --verbose flag").await?;
+    let waiting = crew.start(RunMode::Crew, "add a --verbose flag").await?;
     assert!(
-        matches!(parked.exit, EngineExit::Parked(_)),
+        matches!(waiting.exit, EngineExit::Waiting(_)),
         "{:?}",
-        parked.exit
+        waiting.exit
     );
     let all = decide(
         &crew,
-        &parked.events,
-        CheckpointKind::Goal,
+        &waiting.events,
+        ApprovalKind::Understand,
         AnswerAction::Abandon,
     )
     .await?;
-    let history = cut_after_at(&all, StepKind::Checkpoint, 2);
+    let history = cut_after_at(&all, StepKind::Approval, 2);
     let resumed = crew.resume(history.clone(), Vec::new()).await?;
     assert_eq!(resumed.exit, EngineExit::Finished(RunOutcome::Abandoned));
     let added = &resumed.events[history.len()..];
@@ -991,7 +1021,7 @@ async fn abandoned_inside_a_loop_stays_abandoned() -> anyhow::Result<()> {
         workflow_events(added)
             .iter()
             .all(|event| !matches!(event, WorkflowEvent::StepStarted(_))),
-        "the goal loop ran another round"
+        "the Understand loop ran another round"
     );
     Ok(())
 }

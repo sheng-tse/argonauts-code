@@ -1,6 +1,6 @@
 //! What counts as tightening a safety key, fixed in code and never judged by a model. A
 //! request may move a safety key only this way: toward asking you, a lower run limit (or a
-//! first one), no network, or solo in a checked copy.
+//! first one), no network, or Captain in a checked worktree.
 
 use toml::Value;
 
@@ -25,7 +25,9 @@ pub fn tightens(key: &str, new: &Value, current: Option<&Value>) -> bool {
             _ => false,
         },
         ["sandbox", "network"] => new.as_bool() == Some(false),
-        ["solo", "kind"] | ["solo_or_crew", "solo_kind"] => new.as_str() == Some("checked"),
+        ["captain", "kind"] | ["captain_or_crew", "captain_kind"] => {
+            new.as_str() == Some("checked")
+        }
         _ => false,
     }
 }
@@ -98,17 +100,25 @@ mod tests {
         assert!(tightens("sandbox.network", &Value::Boolean(false), None));
         assert!(!tightens("sandbox.network", &Value::Boolean(true), None));
         assert!(tightens(
-            "solo.kind",
+            "captain.kind",
             &text("checked"),
             Some(&text("direct"))
         ));
         assert!(!tightens(
-            "solo.kind",
+            "captain.kind",
             &text("direct"),
             Some(&text("checked"))
         ));
-        assert!(tightens("solo_or_crew.solo_kind", &text("checked"), None));
-        assert!(!tightens("solo_or_crew.solo_kind", &text("as_solo"), None));
+        assert!(tightens(
+            "captain_or_crew.captain_kind",
+            &text("checked"),
+            None
+        ));
+        assert!(!tightens(
+            "captain_or_crew.captain_kind",
+            &text("as_captain"),
+            None
+        ));
         for key in [
             "checks.run",
             "sandbox.mode",

@@ -1,0 +1,16 @@
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ■ Haiku 5.5 on Claude Code · as worker, reviewer, judge                          3.4M tokens · $0.19 · 16 sessions │
+│                                                                                                                    │
+│ work                                                        tokens                                                 │
+│ tasks         ▪▪▪▪▪▪▪▪▪▪ 0% first pass · 3 sent back once   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━     │
+│ reviews given ▪▪▪▪▪▪▪▪▪▪ 54% accepted · 6 sent back         ■ cache 2.8M   ■ new 0.5M   ■ output 0.1M              │
+│ time          2m 55s a task · 8s a review                   cache hit 82% · output 41 tokens/s                     │
+│ cost          $0.04 a task · $0.004 a review                                                                       │
+│ size          0.9M tokens a task · 41 tool calls a task     a day, this week                                       │
+│                                                             tokens ▁ ▁ ▁ ▁ ▂ ▃ █   tasks ▁ ▁ ▁ ▁ ▁ ▂ █             │
+│ why its tasks were sent back                                        S M T W T F S                                  │
+│ a test missing        ━━━━━━━━━━━━━━  2                                                                            │
+│ didn't do the task    ━━━━━━━━━━━━━━  1                     beside the other models                                │
+│                                                             as a reviewer: 8s each vs 19s for GPT 5.6 Luna         │
+│                                                             sends back 46% of what it reviews vs 33%               │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

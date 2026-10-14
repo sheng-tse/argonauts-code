@@ -1,19 +1,19 @@
 //! Protected and forbidden paths (`.argonauts/**` and `.agents/**` always,
-//! `limits.protected_paths`, and the card's `forbidden_paths`), and instruction files anywhere in
+//! `limits.protected_paths`, and the task's `forbidden_paths`), and instruction files anywhere in
 //! a diff, which block auto-merge.
 
 use std::path::Path;
 
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
-use argonauts_core::events::card::CardSpec;
+use argonauts_core::events::task::TaskSpec;
 use argonauts_core::policy::{HardLimit, Violation};
 use argonauts_core::settings::Settings;
 
 use super::diff::{FileChange, file_name};
 use super::violation;
 
-/// Protected whatever the settings say: Argonauts' own files, and the reviewed skills crew
+/// Protected whatever the settings say: Argonauts Code's own files, and the reviewed skills crew
 /// sessions load.
 pub const ALWAYS_PROTECTED: &[&str] = &[".argonauts/**", ".agents/**"];
 
@@ -158,7 +158,7 @@ impl PathRules {
     }
 
     /// Whether a path, or a path an owned glob like `.github/**` names, is covered. A broad glob
-    /// like `src/**` isn't, since the diff gate checks what the card actually changes.
+    /// like `src/**` isn't, since the diff check reads what the task actually changes.
     pub fn covers(&self, path_or_glob: &str) -> bool {
         self.matches(path_or_glob) || self.matches(&sample_path(path_or_glob))
     }
@@ -217,13 +217,13 @@ pub fn sample_path(glob: &str) -> String {
 }
 
 pub fn check(
-    card: &CardSpec,
+    task: &TaskSpec,
     changes: &[FileChange],
     settings: &Settings,
     tree: Option<&Path>,
 ) -> Vec<Violation> {
     let protected = PathRules::protected(settings);
-    let forbidden = PathRules::new(card.forbidden_paths.iter().map(String::as_str));
+    let forbidden = PathRules::new(task.forbidden_paths.iter().map(String::as_str));
     let touched = |rules: &PathRules| -> Vec<String> {
         let mut paths: Vec<String> = changes
             .iter()
@@ -265,7 +265,7 @@ pub fn check(
     if !forbidden_touched.is_empty() {
         violations.push(violation(
             HardLimit::ProtectedPath,
-            format!("changes paths {} may not touch", card.id),
+            format!("changes paths {} may not touch", task.id),
             forbidden_touched,
         ));
     }
@@ -276,7 +276,7 @@ pub fn check(
     violations
 }
 
-/// Blocks auto-merge, not the card: the merge waits for you with these named.
+/// Blocks auto-merge, not the task: the merge waits for you with these named.
 pub fn instruction_flag(paths: Vec<String>) -> Violation {
     violation(
         HardLimit::InstructionFile,

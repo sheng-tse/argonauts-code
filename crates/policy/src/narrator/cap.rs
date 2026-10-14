@@ -6,7 +6,7 @@ use argonauts_core::Spend;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SpendCap {
     Usd(f64),
-    /// Uncached input plus output tokens, the count token budgets use.
+    /// Uncached input plus output tokens, the count token limits use.
     Tokens(u64),
 }
 

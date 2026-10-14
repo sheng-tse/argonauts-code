@@ -141,7 +141,7 @@
     }
   ],
   "end": {
-    "vendor_session": "ses_01J9Z4OPENCODE",
+    "cli_session": "ses_01J9Z4OPENCODE",
     "stop": {
       "stop": "end_turn"
     }

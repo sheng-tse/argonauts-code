@@ -86,6 +86,15 @@ impl StatsCache {
     pub fn total(&self) -> u64 {
         self.models.values().flatten().sum()
     }
+
+    /// The tokens of the days from `first` on, or of every day, as its /stats adds them up.
+    pub fn since(&self, first: Option<Date>) -> u64 {
+        let Some(first) = first else {
+            return self.total();
+        };
+        let days = self.days.iter().filter(|day| day.date >= first);
+        days.flat_map(|day| day.tokens.values()).sum()
+    }
 }
 
 #[derive(Debug, PartialEq)]

@@ -1,7 +1,7 @@
 //! `!` commands. Each runs as you where the conversation works, with your shell and outside the
-//! sandbox, since you typed it: the repo folder, or the run's copy of an agent's session the
+//! sandbox, since you typed it: the repo folder, or the run's worktree of an agent's session the
 //! conversation carries on. Its output shows as it prints, and the command and its output wait
-//! for the lead's next turn; running one never starts a turn by itself. One runs at a time.
+//! for the main agent's next turn; running one never starts a turn by itself. One runs at a time.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -19,7 +19,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::{Ctx, Internal};
 
-/// How much of one command's output the lead gets, as Claude Code caps its own: the start and
+/// How much of one command's output the main agent gets, as Claude Code caps its own: the start and
 /// the end, with the middle cut.
 const KEPT_BYTES: usize = 30_000;
 
@@ -45,8 +45,8 @@ struct Running {
     /// Where it runs, when that isn't the repo folder.
     folder: Option<PathBuf>,
     output: Kept,
-    /// The shell leads its own session and process group, so a stop reaches everything it
-    /// started.
+    /// The shell is first in a session and process group of its own, so a stop reaches
+    /// everything it started.
     group: Option<Pid>,
     stopped: bool,
 }
@@ -58,7 +58,7 @@ pub(crate) enum ShellUpdate {
     Done { id: u32, exit_code: Option<i32> },
 }
 
-/// A finished command, kept for the lead's next turn.
+/// A finished command, kept for the main agent's next turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ShellRan {
     /// Commands run one at a time and are numbered as they start, so a higher id ended later.
@@ -202,7 +202,7 @@ pub(crate) fn hold(held: &mut Vec<ShellRan>, ran: ShellRan) {
     }
 }
 
-/// The commands you ran since the lead's last turn, oldest first, as one part of its prompt.
+/// The commands you ran since the main agent's last turn, oldest first, as one part of its prompt.
 pub(crate) fn context_part(ran: &[ShellRan]) -> Option<InputPart> {
     let text = context_text(ran)?;
     Some(super::turn::part(
@@ -212,7 +212,7 @@ pub(crate) fn context_part(ran: &[ShellRan]) -> Option<InputPart> {
     ))
 }
 
-/// The commands and their output in words, for a message to the lead or to a run, saying
+/// The commands and their output in words, for a message to the main agent or to a run, saying
 /// where they ran. Output is cleaned of terminal escapes, which mean nothing to a model and
 /// could reach a terminal that shows the prompt.
 pub(crate) fn context_text(ran: &[ShellRan]) -> Option<String> {

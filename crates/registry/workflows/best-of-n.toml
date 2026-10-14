@@ -1,7 +1,0 @@
-phases = "best-of-n"
-
-[solo_or_crew]
-force = "solo"
-
-[solo]
-attempts = 3

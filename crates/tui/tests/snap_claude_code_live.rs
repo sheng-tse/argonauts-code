@@ -5,10 +5,10 @@
 mod common;
 
 use argonauts_core::screen::{Drawn, DrawnButton, DrawnLook, DrawnRow, DrawnSpan};
-use argonauts_tui::bottom::HeadsUp;
+use argonauts_tui::bottom::Notice;
 use argonauts_tui::model::{
-    AddedPart, ApprovalMode, BottomState, CardOption, CardPrompt, CliUse, LinePart, ModeNotice,
-    Tone, WindowUse, WorkingLine,
+    AddedPart, ApprovalMode, BottomState, CliUse, LinePart, ModeNotice, QuestionOption,
+    QuestionPrompt, Tone, WindowUse, WorkingLine,
 };
 use argonauts_tui::stability;
 use argonauts_tui::theme::Role;
@@ -23,9 +23,9 @@ const NOW: f64 = 38.0;
 const RELEASE: &str =
     "Release 1.4.0 requires Dana's security sign-off, and Dana is away until Monday.";
 
-fn solo() -> BottomState {
+fn captain() -> BottomState {
     let mut bottom = BottomState::new();
-    bottom.composer.label = Some("solo".into());
+    bottom.composer.label = Some("captain".into());
     bottom.mode.approval = ApprovalMode::Auto;
     let mut working = WorkingLine::new("Rowing", t0());
     working.tokens_down = 2_900;
@@ -38,13 +38,13 @@ fn solo() -> BottomState {
 }
 
 /// A Claude Code mod's status text, as the sync puts it on the line: last, and first to go.
-fn push_mod_status(bottom: &mut BottomState, text: &str) {
+fn push_plugin_status(bottom: &mut BottomState, text: &str) {
     let part = AddedPart::words("pr-tools", text, Tone::Dim);
     bottom.line.right.push(LinePart::Added(part));
     bottom.line.drop_first.insert(0, "pr-tools".into());
 }
 
-fn heads_up(line: &str) -> HeadsUp {
+fn notice(line: &str) -> Notice {
     let span = |text: &str, look| DrawnSpan {
         text: text.to_owned(),
         look,
@@ -55,7 +55,7 @@ fn heads_up(line: &str) -> HeadsUp {
         handle,
     };
     // As 2.1.289 draws it: the star and the tag in `subtle`, then the line.
-    HeadsUp::new(Drawn {
+    Notice::new(Drawn {
         rows: vec![DrawnRow {
             spans: vec![
                 span("✦", DrawnLook::Dim),
@@ -86,20 +86,20 @@ fn snapshot_widths(name: &str, bottom: &BottomState) {
 
 #[test]
 fn you_should_know_above_the_input() {
-    let mut bottom = solo();
-    bottom.heads_up = heads_up(RELEASE);
-    snapshot_widths("heads_up", &bottom);
+    let mut bottom = captain();
+    bottom.notice = notice(RELEASE);
+    snapshot_widths("notice", &bottom);
     let theme = theme();
     let view = bottom.render(&ctx(&theme, 100, NOW));
     let all = text(&view.lines);
     assert!(
-        all.find("✦ Heads up").unwrap() < all.find("solo ─").unwrap(),
+        all.find("✦ Heads up").unwrap() < all.find("captain ─").unwrap(),
         "it sits right above the input:\n{all}"
     );
     assert!(all.contains("  1 Learn more   2 Knew this already   0 Dismiss"));
     assert_eq!(
         style_of(&view.lines, "✦").and_then(|s| s.fg),
-        fg(Role::Card)
+        fg(Role::Question)
     );
     assert_eq!(
         style_of(&view.lines, "Heads up").and_then(|s| s.fg),
@@ -108,11 +108,11 @@ fn you_should_know_above_the_input() {
 }
 
 #[test]
-fn a_long_heads_up_wraps_under_its_star() {
-    let mut bottom = solo();
+fn a_long_notice_wraps_under_its_star() {
+    let mut bottom = captain();
     let long = format!("{RELEASE} The changelog also still lists 1.3.9 as the latest.");
-    bottom.heads_up = heads_up(&long);
-    snapshot_widths("heads_up_wrapped", &bottom);
+    bottom.notice = notice(&long);
+    snapshot_widths("notice_wrapped", &bottom);
     let theme = theme();
     let all = text(&bottom.render(&ctx(&theme, 80, NOW)).lines);
     let star = all.lines().position(|row| row.starts_with("✦")).unwrap();
@@ -121,11 +121,11 @@ fn a_long_heads_up_wraps_under_its_star() {
 }
 
 #[test]
-fn the_heads_up_with_the_keys() {
-    let mut bottom = solo();
-    bottom.heads_up = heads_up(RELEASE);
-    assert!(bottom.heads_up.focus());
-    snapshot_widths("heads_up_focused", &bottom);
+fn the_notice_with_the_keys() {
+    let mut bottom = captain();
+    bottom.notice = notice(RELEASE);
+    assert!(bottom.notice.focus());
+    snapshot_widths("notice_focused", &bottom);
     let theme = theme();
     let view = bottom.render(&ctx(&theme, 100, NOW));
     let all = text(&view.lines);
@@ -135,18 +135,18 @@ fn the_heads_up_with_the_keys() {
 }
 
 #[test]
-fn a_card_with_the_keys_hides_the_heads_up() {
-    let mut bottom = solo();
-    bottom.heads_up = heads_up(RELEASE);
-    let mut card = CardPrompt::new(
+fn a_question_with_the_keys_hides_the_notice() {
+    let mut bottom = captain();
+    bottom.notice = notice(RELEASE);
+    let mut question = QuestionPrompt::new(
         3,
         "Allow Bash(./slow-test.sh)?",
         "Allow Bash?",
-        vec![CardOption::new("Yes"), CardOption::new("No")],
+        vec![QuestionOption::new("Yes"), QuestionOption::new("No")],
     );
-    card.focus();
-    bottom.card = Some(card);
-    snapshot_widths("heads_up_behind_a_card", &bottom);
+    question.focus();
+    bottom.question = Some(question);
+    snapshot_widths("notice_behind_a_question", &bottom);
     let theme = theme();
     let all = text(&bottom.render(&ctx(&theme, 100, NOW)).lines);
     assert!(!all.contains("Heads up"), "{all}");
@@ -154,7 +154,7 @@ fn a_card_with_the_keys_hides_the_heads_up() {
 
 #[test]
 fn a_message_waits_with_the_send_now_hint() {
-    let mut bottom = solo();
+    let mut bottom = captain();
     bottom.queued = vec!["Also check whether the changelog mentions the new --export flag.".into()];
     bottom.send_now = true;
     bottom.send_now_hint = Some("ctrl+enter to send now".into());
@@ -165,7 +165,7 @@ fn a_message_waits_with_the_send_now_hint() {
     let message = all.find("❯ Also check").unwrap();
     let hint = all.find("  ctrl+enter to send now").unwrap();
     assert!(
-        message < hint && hint < all.find("solo ─").unwrap(),
+        message < hint && hint < all.find("captain ─").unwrap(),
         "{all}"
     );
     assert_eq!(
@@ -175,26 +175,26 @@ fn a_message_waits_with_the_send_now_hint() {
 }
 
 #[test]
-fn what_a_mod_pushes_on_the_notice_and_status_lines() {
-    let mut bottom = solo();
+fn what_a_plugin_pushes_on_the_notice_and_status_lines() {
+    let mut bottom = captain();
     bottom.working = None;
-    push_mod_status(&mut bottom, "PR #482 · 2 reviews waiting");
+    push_plugin_status(&mut bottom, "PR #482 · 2 reviews waiting");
     bottom.mode.notice = Some(ModeNotice {
         text: "pr-tools: 檢查清單已載入".into(),
         tone: Tone::Dim,
         until: at(NOW + 4.0),
     });
-    snapshot_widths("mod_pushes", &bottom);
+    snapshot_widths("plugin_output_pushes", &bottom);
     let theme = theme();
     let all = text(&bottom.render(&ctx(&theme, 120, NOW)).lines);
     assert!(all.contains("pr-tools: 檢查清單已載入"), "{all}");
 }
 
 #[test]
-fn a_mods_status_line_sits_after_the_chips_and_gives_way_first() {
-    let mut bottom = solo();
-    push_mod_status(&mut bottom, "PR #482 · 2 reviews waiting");
-    snapshot_widths("mod_status", &bottom);
+fn a_plugins_status_line_sits_after_the_chips_and_gives_way_first() {
+    let mut bottom = captain();
+    push_plugin_status(&mut bottom, "PR #482 · 2 reviews waiting");
+    snapshot_widths("plugin_status", &bottom);
     let theme = theme();
     let wide = text(&bottom.render(&ctx(&theme, 120, NOW)).lines);
     let chip = wide.find("● Claude 5h").unwrap();

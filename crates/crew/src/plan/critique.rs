@@ -11,9 +11,9 @@ use serde_json::{Map, Value, json};
 use argonauts_core::RunId;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::plan::{MappedTopic, PlanEvent};
-use argonauts_core::names::{PlanLabel, RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, PlanLabel, RoleName};
+use argonauts_core::session_runner::Access;
 use argonauts_core::steps::plan::{Critique, CritiqueInput, LabeledPlan};
-use argonauts_core::worker::Access;
 use argonauts_core::workflow::StandardPhase;
 
 use crate::engine::host::{Ask, Host};
@@ -40,8 +40,8 @@ const ROTATE: &str = "rotate";
 pub fn designated(
     crew_json: &Path,
     run: &RunId,
-    critics: &[WorkerRef],
-) -> EngineResult<Option<WorkerRef>> {
+    critics: &[ModelRef],
+) -> EngineResult<Option<ModelRef>> {
     if critics.is_empty() {
         return Ok(None);
     }
@@ -54,7 +54,7 @@ pub fn designated(
     let last = rotation
         .and_then(|r| r.get("last"))
         .and_then(Value::as_str)
-        .and_then(|s| s.parse::<WorkerRef>().ok());
+        .and_then(|s| s.parse::<ModelRef>().ok());
     let same_run =
         rotation.and_then(|r| r.get("run")).and_then(Value::as_str) == Some(run.as_str());
     let at = last
@@ -114,7 +114,7 @@ pub fn leading(topics: &[MappedTopic], labels: &[PlanLabel]) -> Option<PlanLabel
         .map(|(label, _)| label)
 }
 
-/// `refute` in planning: one round of critique of the disputed topics.
+/// `critique` in planning: one round of critique of the disputed topics.
 pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     let rounds = host.settings().critique.rounds;
     if rounds == 0 {
@@ -132,7 +132,7 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         )
     });
     if latest.is_empty() && call.standard != StandardPhase::Plan {
-        return refute_claim(host, call).await;
+        return critique_claim(host, call).await;
     }
     if this_round > 0 {
         return Ok(StepDone::done(format!(
@@ -241,17 +241,17 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
 /// The designated critic, never the leading plan's author.
 fn pick_designated(
     host: &Host,
-    critics: &[WorkerRef],
-    leading_author: Option<&WorkerRef>,
-) -> EngineResult<Option<WorkerRef>> {
+    critics: &[ModelRef],
+    leading_author: Option<&ModelRef>,
+) -> EngineResult<Option<ModelRef>> {
     let setting = host.settings().critique.critic.trim();
     if setting != ROTATE
-        && let Ok(fixed) = setting.parse::<WorkerRef>()
+        && let Ok(fixed) = setting.parse::<ModelRef>()
         && Some(&fixed) != leading_author
     {
         return Ok(Some(fixed));
     }
-    let eligible: Vec<WorkerRef> = critics
+    let eligible: Vec<ModelRef> = critics
         .iter()
         .filter(|c| Some(*c) != leading_author)
         .cloned()
@@ -272,7 +272,7 @@ fn pick_designated(
 }
 
 /// Outside planning: one critic tries to disprove the step's input.
-async fn refute_claim(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
+async fn critique_claim(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     let Some(critic) = workers_for(call, host.settings(), RoleName::Critic, Some(1))
         .into_iter()
         .next()
@@ -321,7 +321,7 @@ mod tests {
 
     use super::*;
 
-    fn workers(names: &[&str]) -> Vec<WorkerRef> {
+    fn workers(names: &[&str]) -> Vec<ModelRef> {
         names.iter().map(|n| n.parse().unwrap()).collect()
     }
 

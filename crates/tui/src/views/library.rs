@@ -1,4 +1,4 @@
-//! The workflow library: every workflow Argonauts can run, from the built-ins, your files, and
+//! The workflow library: every workflow Argonauts Code can run, from the built-ins, your files, and
 //! the repo's. It shows one, copies one out to edit, diffs your file with the built-in, and
 //! opens your file's page.
 //! With no run to show, `/workflows` and Ctrl+T open it. The workflow view has no tab for it,
@@ -72,9 +72,9 @@ impl Library {
             ))];
         };
         let marks = Marks::for_theme(theme);
-        let lead = 2;
-        let columns = self.columns(width.saturating_sub(lead));
-        let mut heading = vec![Span::raw(" ".repeat(lead))];
+        let margin = 2;
+        let columns = self.columns(width.saturating_sub(margin));
+        let mut heading = vec![Span::raw(" ".repeat(margin))];
         for (i, column) in columns.iter().enumerate() {
             if i > 0 {
                 heading.push(Span::raw(" ".repeat(GAP)));
@@ -85,7 +85,7 @@ impl Library {
         for (i, row) in rows.iter().enumerate() {
             let selected = i == self.list.selected;
             let mut spans = vec![if selected {
-                Span::styled(format!("{} ", marks.selected), theme.style(Role::Card))
+                Span::styled(format!("{} ", marks.selected), theme.style(Role::Question))
             } else {
                 Span::raw("  ")
             }];
@@ -94,9 +94,9 @@ impl Library {
                     spans.push(Span::raw(" ".repeat(GAP)));
                 }
                 let style = match column.heading {
-                    "Workflow" if selected => theme.style(Role::Card),
+                    "Workflow" if selected => theme.style(Role::Question),
                     "Workflow" => theme.style(Role::Text),
-                    "Description" if row.problem.is_some() => theme.style(Role::Warning),
+                    "Description" if row.problem.is_some() => theme.style(Role::Warn),
                     _ => dim,
                 };
                 spans.push(Span::styled(column.cell(&column.cells[i]), style));
@@ -226,7 +226,7 @@ impl Library {
         })
     }
 
-    /// Only your file can differ from the built-in, so the others say why there's no diff at
+    /// Only your file can be different from the built-in, so the others say why there's no diff at
     /// once. Your file goes to the controller every time, since you may have edited it since
     /// the list came.
     fn diff(&mut self) -> ViewOutcome {
@@ -345,7 +345,7 @@ mod tests {
                 WorkflowOrigin::Repo => format!(".argonauts/workflows/{name}.toml"),
             },
             description: format!("The {name} workflow"),
-            text: format!("name = \"{name}\"\n\n[[step]]\nname = \"Do\"\nrole = \"workers\"\n"),
+            text: format!("name = \"{name}\"\n\n[[step]]\nname = \"Do\"\nrole = \"worker\"\n"),
             edited,
             in_use: name == "orchestrator",
             problem: None,
@@ -354,7 +354,7 @@ mod tests {
 
     fn view() -> LibraryView {
         LibraryView::new(vec![
-            file("solo", WorkflowOrigin::BuiltIn, None),
+            file("captain", WorkflowOrigin::BuiltIn, None),
             file("orchestrator", WorkflowOrigin::Yours, Some(true)),
             file("mine", WorkflowOrigin::Repo, None),
             file("council", WorkflowOrigin::Yours, Some(false)),
@@ -424,7 +424,7 @@ mod tests {
             ViewOutcome::Consumed
         ));
         let said = view.library.said.clone().unwrap();
-        assert!(said.contains("Solo is the built-in"), "{said}");
+        assert!(said.contains("Captain is the built-in"), "{said}");
         press(&mut view, KeyCode::Down);
         assert!(view.library.said.is_none());
         press(&mut view, KeyCode::Down);
@@ -463,7 +463,7 @@ mod tests {
             ViewOutcome::Consumed
         ));
         let said = view.library.said.clone().unwrap();
-        assert_eq!(said, "Solo is built in. c copies it to edit");
+        assert_eq!(said, "Captain is built in. c copies it to edit");
     }
 
     #[test]
@@ -503,7 +503,7 @@ mod tests {
     fn a_workflow_named_like_a_command_says_so_in_the_warning_colour() {
         let mut clash = file("simplify", WorkflowOrigin::Repo, None);
         clash.problem = Some("/simplify is already a command".to_owned());
-        let library = LibraryView::new(vec![file("solo", WorkflowOrigin::BuiltIn, None), clash]);
+        let library = LibraryView::new(vec![file("captain", WorkflowOrigin::BuiltIn, None), clash]);
         let theme = Theme::dark();
         let lines = library.library.lines(140, &theme);
         let said = |line: &Line<'_>| -> String {
@@ -519,7 +519,7 @@ mod tests {
             .iter()
             .find(|span| span.content.contains("already a command"))
             .unwrap();
-        assert_eq!(warned.style, theme.style(Role::Warning));
-        assert!(said(&lines[1]).contains("The solo workflow"));
+        assert_eq!(warned.style, theme.style(Role::Warn));
+        assert!(said(&lines[1]).contains("The captain workflow"));
     }
 }

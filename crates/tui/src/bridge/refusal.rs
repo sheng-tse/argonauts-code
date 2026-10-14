@@ -34,7 +34,7 @@ mod tests {
     fn a_permission_refusal_is_not_a_failure() {
         assert!(is_refusal(
             "Permission to use Bash has been denied because Claude Code is running in don't \
-             ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools"
+             ask mode. IMPORTANT: You *may* try to accomplish this action using other tools"
         ));
         assert!(is_refusal(
             "Error: Permission to use Bash with python3 -B -m unittest has been denied."

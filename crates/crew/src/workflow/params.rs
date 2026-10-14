@@ -1,9 +1,9 @@
-//! Fills `{{name}}` placeholders from a workflow's params and the lead's settings for them.
+//! Fills `{{name}}` placeholders from a workflow's params and the main agent's settings for them.
 
 use serde_json::Value;
 
-use argonauts_core::names::WorkerRef;
-use argonauts_core::workflow::{Count, Step, StepWorkers, Workflow, WorkflowParams};
+use argonauts_core::names::ModelRef;
+use argonauts_core::workflow::{Count, Step, StepModels, Workflow, WorkflowParams};
 
 /// The workflow with every placeholder replaced, its own defaults overridden by `params`.
 /// `Err` lists each placeholder that has no value, and each value of the wrong type.
@@ -30,7 +30,7 @@ pub fn fill(workflow: &Workflow, params: &WorkflowParams) -> Result<Workflow, Ve
 fn fill_step(step: &mut Step, values: &WorkflowParams, errors: &mut Vec<String>) {
     for text in [
         &mut step.name,
-        &mut step.different_family_from,
+        &mut step.different_provider_from,
         &mut step.when,
         &mut step.task,
         &mut step.input,
@@ -44,8 +44,8 @@ fn fill_step(step: &mut Step, values: &WorkflowParams, errors: &mut Vec<String>)
     if let Some(Count::Param(text)) = &step.count {
         step.count = count(text, values, errors).map(Count::Fixed);
     }
-    if let StepWorkers::Param(text) = &step.workers {
-        step.workers = StepWorkers::Named(workers(text, values, errors));
+    if let StepModels::Param(text) = &step.models {
+        step.models = StepModels::Named(models(text, values, errors));
     }
     // A nested workflow's own params may name this one's, such as `reviewers: "{{reviewers}}"`.
     for value in step.params.0.values_mut() {
@@ -108,7 +108,7 @@ fn count(text: &str, values: &WorkflowParams, errors: &mut Vec<String>) -> Optio
     };
     let number = match value {
         Value::Number(number) => number.as_u64(),
-        // A value the lead set as YAML text, such as "2".
+        // A value the main agent set as YAML text, such as "2".
         Value::String(text) => text.trim().parse().ok(),
         _ => None,
     };
@@ -121,10 +121,10 @@ fn count(text: &str, values: &WorkflowParams, errors: &mut Vec<String>) -> Optio
     }
 }
 
-fn workers(text: &str, values: &WorkflowParams, errors: &mut Vec<String>) -> Vec<WorkerRef> {
+fn models(text: &str, values: &WorkflowParams, errors: &mut Vec<String>) -> Vec<ModelRef> {
     let Some(name) = whole_placeholder(text) else {
         errors.push(format!(
-            "workers must be a list or one `{{{{name}}}}`, not `{text}`"
+            "models must be a list or one `{{{{name}}}}`, not `{text}`"
         ));
         return Vec::new();
     };
@@ -142,7 +142,7 @@ fn workers(text: &str, values: &WorkflowParams, errors: &mut Vec<String>) -> Vec
     };
     items
         .into_iter()
-        .filter_map(|item| match item.as_str().map(str::parse::<WorkerRef>) {
+        .filter_map(|item| match item.as_str().map(str::parse::<ModelRef>) {
             Some(Ok(worker)) => Some(worker),
             _ => {
                 errors.push(format!("`{name}` holds {item}, which isn't a worker"));
@@ -171,7 +171,7 @@ phases:
       - kind: fan_out
         role: reviewer
         count: "{{reviewers}}"
-        workers: "{{who}}"
+        models: "{{who}}"
         task: "Review the {{target}} for {{ focus }}"
 "#;
 
@@ -187,10 +187,10 @@ phases:
         let step = &filled.phases[0].steps[0];
         assert_eq!(step.count, Some(Count::Fixed(3)));
         assert_eq!(
-            step.workers,
-            StepWorkers::Named(vec![
-                WorkerRef::new("codex", Some("gpt-5".to_owned())),
-                WorkerRef::new("agy", None)
+            step.models,
+            StepModels::Named(vec![
+                ModelRef::new("codex", Some("gpt-5".to_owned())),
+                ModelRef::new("agy", None)
             ])
         );
         assert_eq!(step.task.as_deref(), Some("Review the diff for retries"));

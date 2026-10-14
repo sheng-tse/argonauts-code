@@ -33,7 +33,7 @@ impl ScriptAdapter {
         Self {
             script: script.to_owned(),
             program: "/bin/sh".to_owned(),
-            stop_plan: StopPlan::escalating(Duration::from_secs(1), Duration::from_secs(1)),
+            stop_plan: StopPlan::stepped(Duration::from_secs(1), Duration::from_secs(1)),
             stdin_wrap_up: false,
             // The scripts put dollar costs in their usage events.
             capabilities: Capabilities {
@@ -168,12 +168,12 @@ pub(crate) fn kind_name(kind: &RunEventKind) -> String {
         RunEventKind::Phase(_) => "phase",
         RunEventKind::SessionStarted(_) => "session_started",
         RunEventKind::SessionEnded(_) => "session_ended",
-        RunEventKind::GateResult(_) => "gate_result",
+        RunEventKind::CheckResult(_) => "check_result",
         RunEventKind::Commit(_) => "commit",
         RunEventKind::Report(_) => "report",
-        RunEventKind::Checkpoint(_) => "checkpoint",
+        RunEventKind::Approval(_) => "approval",
         RunEventKind::Decision(_) => "decision",
-        RunEventKind::Budget(_) => "budget",
+        RunEventKind::Spend(_) => "limit",
         RunEventKind::Note(_) => "note",
         RunEventKind::RunFinished(_) => "run_finished",
     };
@@ -255,9 +255,5 @@ impl TestRepo {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(path, contents).unwrap();
-    }
-
-    pub(crate) fn read(&self, rel: &str) -> Option<String> {
-        std::fs::read_to_string(self.root.join(rel)).ok()
     }
 }

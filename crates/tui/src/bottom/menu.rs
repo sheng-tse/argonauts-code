@@ -1,4 +1,4 @@
-//! The `/`, `@`, and `?` lists take the place of the mode line and everything under it, so
+//! The `/`, `@`, and `?` lists take the place of the bottom line and everything under it, so
 //! what you type stays where it was and the conversation never moves. Before you type a
 //! letter, the `/` list shows its commands indented under category names in the accent color,
 //! dim and bold; typing filters across all of them, best match first. The `@` list shows the
@@ -26,7 +26,7 @@ const MAX_COMMANDS: usize = 12;
 const MAX_MENTIONS: usize = 8;
 /// With agents to list too, files stop here so the agents stay a few rows away.
 const FILES_BESIDE_AGENTS: usize = 5;
-/// The heading over the run's agents, cards, and roles when files are listed above them.
+/// The heading over the run's agents, tasks, and roles when files are listed above them.
 const AGENTS_GROUP: &str = "Agents";
 /// Before a file's path, as Claude Code marks one.
 const FILE_MARK: &str = "+ ";
@@ -36,7 +36,7 @@ pub struct MenuItem {
     /// Without its `/` or `@`.
     pub name: String,
     pub description: String,
-    /// Shown at the right of an `@` entry, such as `agent` or `card`.
+    /// Shown at the right of an `@` entry, such as `agent` or `task`.
     pub kind: Option<String>,
     /// A command that can't run without an argument, so Enter completes it instead.
     pub needs_argument: bool,
@@ -131,7 +131,7 @@ impl Menus {
     /// Whether `text` starts with `@` and a file or folder in the repo, such as `@README.md
     /// what is this?`, so it's a message about that file. A name someone in the run answers
     /// to stays a mention.
-    pub fn leads_with_file(&self, text: &str) -> bool {
+    pub fn starts_with_file(&self, text: &str) -> bool {
         let text = text.trim_start();
         at_words(text).first().is_some_and(|word| {
             word.range.start == 0
@@ -423,7 +423,7 @@ fn header_style(ctx: &RenderCtx<'_>) -> Style {
 }
 
 /// One row: the name padded to its column, then the description, cut with `…` to fit. Like the
-/// mode line, a row leaves the last column empty.
+/// bottom line, a row leaves the last column empty.
 fn entry_row(m: &Match<'_>, kind: MenuKind, selected: bool, ctx: &RenderCtx<'_>) -> Line<'static> {
     let theme = ctx.theme;
     let width = usize::from(ctx.width).saturating_sub(1);
@@ -432,7 +432,7 @@ fn entry_row(m: &Match<'_>, kind: MenuKind, selected: bool, ctx: &RenderCtx<'_>)
         let reversed = Style::new().add_modifier(Modifier::REVERSED);
         (reversed, Style::new())
     } else if selected {
-        (theme.style(Role::Card), theme.style(Role::Card))
+        (theme.style(Role::Question), theme.style(Role::Question))
     } else {
         (theme.style(Role::Dim), theme.style(Role::Dim))
     };
@@ -594,7 +594,7 @@ mod tests {
     }
 
     #[test]
-    fn slash_lists_matching_commands_with_the_top_one_in_the_card_color() {
+    fn slash_lists_matching_commands_with_the_top_one_in_the_question_color() {
         let theme = theme();
         let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
         let menus = menus();
@@ -609,7 +609,7 @@ mod tests {
             ]
             .join("\n")
         );
-        assert_eq!(rows[0].spans[1].style, theme.style(Role::Card));
+        assert_eq!(rows[0].spans[1].style, theme.style(Role::Question));
         assert_eq!(rows[1].spans.last().unwrap().style, theme.style(Role::Dim));
         let rows = menus.rows("/re", &ctx, 10).unwrap();
         assert_eq!(
@@ -628,7 +628,7 @@ mod tests {
                 item("clear", "Session"),
                 item("resume", "Session"),
                 item("ask", "Work"),
-                item("solo", "Work"),
+                item("captain", "Work"),
                 item("status", "Runs"),
                 item("stop", "Runs"),
             ],
@@ -652,7 +652,7 @@ mod tests {
                 "  /resume                       x",
                 "Work",
                 "  /ask                          x",
-                "  /solo                         x",
+                "  /captain                      x",
                 "Runs",
                 "  /status                       x",
                 "  /stop                         x",
@@ -664,7 +664,7 @@ mod tests {
         assert_eq!(rows[0].spans[0].style, heading);
         assert_eq!(rows[3].spans[0].style, heading);
         // The pick is the first command, never a header.
-        assert_eq!(rows[1].spans[1].style, theme.style(Role::Card));
+        assert_eq!(rows[1].spans[1].style, theme.style(Role::Question));
         assert_eq!(rows[2].spans[1].style, theme.style(Role::Dim));
     }
 
@@ -723,7 +723,8 @@ mod tests {
         let theme = theme();
         let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
         let menus = grouped();
-        assert_eq!(names(&menus, "/s", &ctx), ["/solo", "/status", "/stop"]);
+        assert_eq!(names(&menus, "/s", &ctx), ["/status", "/stop"]);
+        assert_eq!(names(&menus, "/ca", &ctx), ["/captain"]);
         assert_eq!(names(&menus, "/re", &ctx), ["/resume"]);
     }
 
@@ -806,7 +807,7 @@ mod tests {
         let theme = theme();
         let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
         let menus = Menus {
-            commands: ["set-model", "model", "add-dir", "checkpoints", "resume"]
+            commands: ["set-model", "model", "add-dir", "approvals", "resume"]
                 .map(|name| MenuItem::new(name, "x"))
                 .to_vec(),
             mentions: ["claude-code/opus", "task-002", "codex"]
@@ -838,9 +839,9 @@ mod tests {
         let theme = theme();
         let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
         let mut menus = menus();
-        menus
-            .commands
-            .push(MenuItem::new("solo", "One agent does it").needing_argument());
+        menus.commands.push(
+            MenuItem::new("captain", "The CLI you talk to does it itself").needing_argument(),
+        );
         assert_eq!(
             menus.handle_key(key(KeyCode::Tab), "please /res"),
             MenuEvent::Complete("please /resume ".into())
@@ -851,8 +852,8 @@ mod tests {
         );
         assert_eq!(names(&menus, "please /wor", &ctx), ["/workflow"]);
         assert_eq!(
-            menus.handle_key(key(KeyCode::Enter), "/sol"),
-            MenuEvent::Complete("/solo ".into())
+            menus.handle_key(key(KeyCode::Enter), "/cap"),
+            MenuEvent::Complete("/captain ".into())
         );
         assert_eq!(
             menus.handle_key(key(KeyCode::Enter), "/res"),
@@ -949,7 +950,7 @@ mod tests {
         );
         assert!(lines[3].starts_with("  @codex"), "{text}");
         assert!(lines[4].starts_with("  @task-002"), "{text}");
-        assert_eq!(rows[0].spans[1].style, theme.style(Role::Card));
+        assert_eq!(rows[0].spans[1].style, theme.style(Role::Question));
         assert_eq!(rows[1].spans[1].style, theme.style(Role::Dim));
         assert_eq!(rows[2].spans[0].style, header_style(&ctx));
 
@@ -1021,7 +1022,7 @@ mod tests {
         let rows = menus.rows("@file", &ctx, 40).unwrap();
         assert_eq!(rows.len(), MAX_MENTIONS);
         assert_eq!(plain_text(&rows[7..]), "  + file-10.txt");
-        assert_eq!(rows[7].spans[1].style, theme.style(Role::Card));
+        assert_eq!(rows[7].spans[1].style, theme.style(Role::Question));
         menus.handle_key(key(KeyCode::Up), "@file");
         assert_eq!(
             menus.handle_key(key(KeyCode::Tab), "@file"),
@@ -1065,11 +1066,11 @@ mod tests {
     #[test]
     fn a_message_led_by_a_file_is_about_it_unless_the_run_has_that_name() {
         let menus = with_files(&["README.md", "codex/notes.md", "src/lib.rs"]);
-        assert!(menus.leads_with_file("@README.md what is this?"));
-        assert!(menus.leads_with_file("  @src tour it"));
-        assert!(!menus.leads_with_file("@codex look at this"));
-        assert!(!menus.leads_with_file("what is @README.md"));
-        assert!(!menus.leads_with_file("@nowhere.md hi"));
+        assert!(menus.starts_with_file("@README.md what is this?"));
+        assert!(menus.starts_with_file("  @src tour it"));
+        assert!(!menus.starts_with_file("@codex look at this"));
+        assert!(!menus.starts_with_file("what is @README.md"));
+        assert!(!menus.starts_with_file("@nowhere.md hi"));
     }
 
     #[test]

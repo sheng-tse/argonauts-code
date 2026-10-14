@@ -1,18 +1,18 @@
-//! The places the built-in cards show: above the input and the Overview's tabs. Each is an
+//! The places the built-in cards show: above the input and the usage panel's tabs. Each is an
 //! ordered list, and the lists are the only record of where a card shows.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::super::Span;
-use super::widgets::WidgetName;
+use super::mods::ModName;
 
 /// The band between the working line and the input.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct AboveInputSettings {
     /// The mods above the input, top to bottom
-    pub mods: Vec<WidgetName>,
+    pub mods: Vec<ModName>,
     /// Show the band. Ctrl+X Ctrl+A flips it for the session
     pub shown: bool,
     /// From this width, two half-width mods share a row; 0 never
@@ -64,7 +64,7 @@ pub enum HiddenLine {
     Count,
 }
 
-/// The Overview's tabs, /status, /usage, /context, and /limits.
+/// The usage panel's tabs, /status, /usage, /context, and /limits.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct ViewsSettings {
@@ -77,23 +77,22 @@ pub struct ViewsSettings {
     /// The Context tab
     pub context: ViewTab,
     /// The Limits tab
-    #[serde(rename = "limits")]
-    pub budget: ViewTab,
+    pub limits: ViewTab,
 }
 
 impl Default for ViewsSettings {
     fn default() -> Self {
-        use WidgetName::*;
+        use ModName::*;
         Self {
             side_by_side_at: 100,
-            status: ViewTab::with(&[Run, Budget, Quota, Waiting, Recent]),
+            status: ViewTab::with(&[Run, RunLimits, PlanUsage, Waiting, Recent]),
             usage: UsageTab {
-                mods: vec![Quota, Spend, Tokens, History, Runs],
+                mods: vec![PlanUsage, Spend, Tokens, History, Runs],
                 open: ViewOpen::View,
-                period: UsagePeriod::Day,
+                period: UsagePeriod::All,
             },
             context: ViewTab::with(&[Context, Sessions]),
-            budget: ViewTab::with(&[Budget, Tasks, Limits]),
+            limits: ViewTab::with(&[RunLimits, Tasks, Limits]),
         }
     }
 }
@@ -102,15 +101,15 @@ impl Default for ViewsSettings {
 #[serde(default)]
 pub struct ViewTab {
     /// The tab's mods, top to bottom
-    pub mods: Vec<WidgetName>,
-    /// How its command opens it: as a panel (view or dialog), or printed into the conversation
+    pub mods: Vec<ModName>,
+    /// How its command opens it: as a panel (view), or printed into the conversation (print)
     pub open: ViewOpen,
 }
 
 impl ViewTab {
-    fn with(widgets: &[WidgetName]) -> Self {
+    fn with(mods: &[ModName]) -> Self {
         Self {
-            mods: widgets.to_vec(),
+            mods: mods.to_vec(),
             open: ViewOpen::View,
         }
     }
@@ -120,8 +119,8 @@ impl ViewTab {
 #[serde(default)]
 pub struct UsageTab {
     /// The tab's mods, top to bottom
-    pub mods: Vec<WidgetName>,
-    /// How /usage opens it: as a panel (view or dialog), or printed into the conversation
+    pub mods: Vec<ModName>,
+    /// How /usage opens it: as a panel (view), or printed into the conversation (print)
     pub open: ViewOpen,
     /// The period it opens on: day, week, month, or all
     pub period: UsagePeriod,
@@ -134,8 +133,6 @@ pub enum ViewOpen {
     /// works while an answer runs.
     #[default]
     View,
-    /// The same panel. The word is kept for settings written when the two differed.
-    Dialog,
     /// Into the conversation, once, as the command's `print` does.
     Print,
 }
@@ -143,10 +140,10 @@ pub enum ViewOpen {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum UsagePeriod {
-    #[default]
     Day,
     Week,
     Month,
+    #[default]
     All,
 }
 
@@ -167,10 +164,8 @@ impl UsagePeriod {
 pub enum PanelBar {
     #[default]
     Agents,
-    #[serde(rename = "tasks")]
-    Cards,
-    #[serde(rename = "spend")]
-    Budget,
+    Tasks,
+    Spend,
     Time,
 }
 

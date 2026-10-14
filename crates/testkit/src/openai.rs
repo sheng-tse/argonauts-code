@@ -125,7 +125,7 @@ impl FakeOpenAi {
         format!("http://{}/v1", self.addr)
     }
 
-    /// `[endpoints.<id>]` pointed at this server, for the real endpoint worker.
+    /// `[endpoints.<id>]` pointed at this server, for the real endpoint runner.
     pub fn endpoint_settings(&self) -> EndpointSettings {
         EndpointSettings {
             base_url: Some(self.base_url()),
@@ -238,9 +238,9 @@ fn respond(
             .collect();
         return send_json(out, 200, &[], &json!({"object": "list", "data": data}));
     }
-    let chat = path.ends_with("/chat/completions");
+    let conversation = path.ends_with("/chat/completions");
     let responses = path.ends_with("/responses");
-    if !(chat || responses) {
+    if !(conversation || responses) {
         return send_error(out, 404, &format!("no route {path}"), None);
     }
     let mut reply = reply;
@@ -265,9 +265,11 @@ fn respond(
             output_tokens,
         } => {
             let usage = (input_tokens, output_tokens);
-            match (chat, stream) {
-                (true, false) => send_json(out, 200, &[], &chat_completion(model, &text, usage)),
-                (true, true) => send_sse(out, &chat_chunks(model, &text, usage)),
+            match (conversation, stream) {
+                (true, false) => {
+                    send_json(out, 200, &[], &conversation_completion(model, &text, usage))
+                }
+                (true, true) => send_sse(out, &conversation_chunks(model, &text, usage)),
                 (false, false) => send_json(out, 200, &[], &response_object(model, &text, usage)),
                 (false, true) => send_sse(out, &response_events(model, &text, usage)),
             }
@@ -365,7 +367,7 @@ fn pieces(text: &str) -> Vec<String> {
     pieces
 }
 
-fn chat_completion(model: &str, text: &str, (input, output): (u64, u64)) -> Value {
+fn conversation_completion(model: &str, text: &str, (input, output): (u64, u64)) -> Value {
     json!({
         "id": "chatcmpl-fake", "object": "chat.completion", "created": 0, "model": model,
         "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
@@ -375,7 +377,11 @@ fn chat_completion(model: &str, text: &str, (input, output): (u64, u64)) -> Valu
     })
 }
 
-fn chat_chunks(model: &str, text: &str, (input, output): (u64, u64)) -> Vec<(String, String)> {
+fn conversation_chunks(
+    model: &str,
+    text: &str,
+    (input, output): (u64, u64),
+) -> Vec<(String, String)> {
     let chunk = |delta: Value, finish: Value| {
         json!({"id": "chatcmpl-fake", "object": "chat.completion.chunk", "created": 0,
                "model": model,

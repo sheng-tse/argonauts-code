@@ -1,17 +1,17 @@
 //! The `draft` step: blind drafts in fresh read-only sessions, sealed as they arrive, and in a
-//! round after critique, each drafter revising its own plan in its own session. A plan you sent
-//! back at the plan checkpoint starts a new planning round of blind drafts, with your note. A
-//! drafter that's out may have several fallbacks draft in its place at once, and then a judge
-//! picks the seat's plan among theirs (`together`).
+//! round after critique, each drafting agent revising its own plan in its own session. A plan you
+//! sent back at the plan approval starts a new planning round of blind drafts, with your note. A
+//! drafting agent that's out may have several fallbacks draft in its place at once, and then a
+//! judge picks its one plan among theirs (`together`).
 
 use futures::future::join_all;
 
 use argonauts_core::RunId;
 use argonauts_core::events::session::{InputPart, InputPartKind};
-use argonauts_core::names::{PlanLabel, RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, PlanLabel, RoleName};
+use argonauts_core::session_runner::Access;
 use argonauts_core::sha256_hex;
 use argonauts_core::steps::plan::{DraftInput, Revise, ReviseInput};
-use argonauts_core::worker::Access;
 
 use crate::engine::host::{Ask, Host};
 use crate::error::{EngineError, EngineResult};
@@ -20,6 +20,7 @@ use crate::plan::{drafts, map, together};
 use crate::prompts::plan::{DRAFT, REVISE};
 use crate::state::plan::{self, SealedDraft};
 use crate::status::Viewer;
+use crate::task::at_start;
 use crate::workflow::{StepCall, StepDone};
 
 pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
@@ -61,9 +62,9 @@ pub fn guidance_part(note: Option<&str>, source: &str) -> Option<InputPart> {
 }
 
 /// Labels 1 to N in an order drawn from the run id, so a judge can't tell a plan's author from
-/// its label, and a re-entered step gives every drafter the same label again.
-pub fn labels(drafters: &[WorkerRef], run: &RunId) -> Vec<(WorkerRef, PlanLabel)> {
-    let mut order: Vec<(String, &WorkerRef)> = drafters
+/// its label, and a re-entered step gives every drafting agent the same label again.
+pub fn labels(drafting_agents: &[ModelRef], run: &RunId) -> Vec<(ModelRef, PlanLabel)> {
+    let mut order: Vec<(String, &ModelRef)> = drafting_agents
         .iter()
         .map(|worker| (sha256_hex(format!("{run}:{worker}").as_bytes()), worker))
         .collect();
@@ -80,18 +81,15 @@ pub fn labels(drafters: &[WorkerRef], run: &RunId) -> Vec<(WorkerRef, PlanLabel)
         .collect()
 }
 
-/// After a send back every drafter drafts again in a new round; otherwise only the drafters
+/// After a send back every drafting agent drafts again in a new round; otherwise only those
 /// without a draft in this planning round do.
 async fn blind(host: &Host, call: &StepCall, sent_back: bool) -> EngineResult<StepDone> {
     let settings = host.settings();
-    let drafters = workers_for(
-        call,
-        settings,
-        RoleName::Drafter,
-        settings.drafting.drafters,
-    );
-    if drafters.is_empty() {
-        return Err(EngineError::Refused("no drafter is available".to_owned()));
+    let drafting_agents = workers_for(call, settings, RoleName::Draft, settings.drafting.agents);
+    if drafting_agents.is_empty() {
+        return Err(EngineError::Refused(
+            "no drafting agent is available".to_owned(),
+        ));
     }
     let (sealed, round, note): (Vec<SealedDraft>, u8, Option<String>) = host.read(|state| {
         let sealed = if sent_back {
@@ -107,10 +105,13 @@ async fn blind(host: &Host, call: &StepCall, sent_back: bool) -> EngineResult<St
     });
     let (goal, decisions) =
         host.read(|state| (context::goal_brief(state), context::decision_lines(state)));
-    let notes = context::notes(host);
-    let crew = context::card_roles_lines(host)?;
-    // By label, since a stand-in seals a drafter's plan under its own name.
-    let missing: Vec<(WorkerRef, PlanLabel)> = labels(&drafters, host.run_id())
+    // The planner hears what already fails before it writes a rule that would forbid the fix.
+    at_start::ensure(host).await?;
+    let mut notes = context::notes(host);
+    notes.extend(host.read(at_start::note));
+    let crew = context::task_roles_lines(host)?;
+    // By label, since a fallback seals a drafting agent's plan under its own name.
+    let missing: Vec<(ModelRef, PlanLabel)> = labels(&drafting_agents, host.run_id())
         .into_iter()
         .filter(|(_, label)| !sealed.iter().any(|d| d.label == *label))
         .collect();
@@ -119,11 +120,11 @@ async fn blind(host: &Host, call: &StepCall, sent_back: bool) -> EngineResult<St
     if missing.is_empty() && mapped {
         return Ok(StepDone::skipped("No critique to revise from"));
     }
-    together::hold_seats(host, &call.at, &drafters);
+    together::hold_jobs(host, &call.at, &drafting_agents);
     let asks = missing.into_iter().map(|(worker, label)| {
         let viewer = Viewer::Session {
-            role: RoleName::Drafter,
-            card: None,
+            role: RoleName::Draft,
+            task: None,
             label: Some(label),
         };
         let input = DraftInput {
@@ -135,9 +136,9 @@ async fn blind(host: &Host, call: &StepCall, sent_back: bool) -> EngineResult<St
         };
         let mut ask = Ask::new(
             Some(call.at.clone()),
-            RoleName::Drafter,
+            RoleName::Draft,
             worker.clone(),
-            crate::card::prompt::replaced(host, &settings.prompts.drafting, DRAFT),
+            crate::task::prompt::replaced(host, &settings.prompts.drafting, DRAFT),
             input,
         );
         ask.access = Access::ReadOnly;
@@ -183,7 +184,7 @@ async fn blind(host: &Host, call: &StepCall, sent_back: bool) -> EngineResult<St
     let total = sealed.len() + new;
     if total == 0 {
         return Err(EngineError::Refused(
-            "no drafter produced a plan".to_owned(),
+            "no drafting agent produced a plan".to_owned(),
         ));
     }
     let mut summary = format!("{total} draft{} sealed", if total == 1 { "" } else { "s" });
@@ -196,8 +197,8 @@ async fn blind(host: &Host, call: &StepCall, sent_back: bool) -> EngineResult<St
     Ok(StepDone::done(summary))
 }
 
-/// Each plan of the critiqued round, revised by its drafter in its own session with the points
-/// addressed to its label. A failed revision keeps the original draft.
+/// Each plan of the critiqued round, revised by its drafting agent in its own session with the
+/// points addressed to its label. A failed revision keeps the original draft.
 async fn revise(host: &Host, call: &StepCall, critiqued: u8) -> EngineResult<StepDone> {
     let (targets, points, disputed) = host.read(|state| {
         let plan = &state.plan;
@@ -219,6 +220,7 @@ async fn revise(host: &Host, call: &StepCall, critiqued: u8) -> EngineResult<Ste
     if targets.is_empty() {
         return Ok(StepDone::done("Every critiqued plan is revised"));
     }
+    let already_failing = at_start::part(host).await?;
     let asks = targets.iter().map(|target| {
         let input = ReviseInput {
             label: target.label,
@@ -231,7 +233,7 @@ async fn revise(host: &Host, call: &StepCall, critiqued: u8) -> EngineResult<Ste
         };
         let mut ask = Ask::new(
             Some(call.at.clone()),
-            RoleName::Drafter,
+            RoleName::Draft,
             target.worker.clone(),
             REVISE,
             input,
@@ -239,12 +241,15 @@ async fn revise(host: &Host, call: &StepCall, critiqued: u8) -> EngineResult<Ste
         ask.access = Access::ReadOnly;
         ask.label = Some(target.label);
         ask.resume = target.session.clone();
+        let already_failing = already_failing.clone();
         async move {
-            // Without its own session to resume, the drafter gets its sealed plan back.
+            // Without its own session to resume, the drafting agent gets its sealed plan back,
+            // and what it heard when it drafted.
             if ask.resume.is_none() {
                 let text = drafts::read_text(target)?;
                 ask.parts
                     .push(part(InputPartKind::StepInput, "your plan", text));
+                ask.parts.extend(already_failing);
             }
             host.ask::<Revise>(ask).await
         }
@@ -286,17 +291,17 @@ mod tests {
 
     #[test]
     fn labels_are_a_stable_permutation_of_one_to_n() {
-        let drafters: Vec<WorkerRef> = ["claude-code", "codex", "antigravity-cli"]
+        let drafting_agents: Vec<ModelRef> = ["claude-code", "codex", "antigravity-cli"]
             .iter()
             .map(|w| w.parse().unwrap())
             .collect();
         let run = RunId::new("run-01").unwrap();
-        let first = labels(&drafters, &run);
-        assert_eq!(first, labels(&drafters, &run));
+        let first = labels(&drafting_agents, &run);
+        assert_eq!(first, labels(&drafting_agents, &run));
         let mut numbers: Vec<PlanLabel> = first.iter().map(|(_, l)| *l).collect();
         numbers.sort_unstable();
         assert_eq!(numbers, [1, 2, 3]);
-        let reversed: Vec<WorkerRef> = drafters.iter().rev().cloned().collect();
+        let reversed: Vec<ModelRef> = drafting_agents.iter().rev().cloned().collect();
         let mut again = labels(&reversed, &run);
         let mut first = first;
         again.sort();

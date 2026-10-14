@@ -1,6 +1,6 @@
 //! The structured report. ACP has no enforced output schema, so the report comes back through
 //! the `argonauts_report` tool, which writes `report.json`, or as a reply holding only the JSON
-//! object. The conductor validates it again either way, since the agent could write the file
+//! object. Argonauts Code validates it again either way, since the agent could write the file
 //! itself.
 
 use std::path::Path;
@@ -14,7 +14,7 @@ use crate::driver::Session;
 use crate::errors::failed;
 
 const REPORT_TOOL_PROMPT: &str = "Your turn ended without a report. Call the argonauts_report \
-tool now with your final report. It is the only way your report reaches Argonauts.";
+tool now with your final report. It is the only way your report reaches Argonauts Code.";
 
 pub(crate) enum ReportStep {
     Done,
@@ -25,7 +25,7 @@ pub(crate) enum ReportStep {
 impl Session {
     /// After the last turn: emits `Result`, or asks once more, or fails with "no valid report".
     pub(crate) async fn report(&mut self, asked: bool) -> Result<ReportStep, DriverStop> {
-        let text = self.mapper.last_message().map(str::to_owned);
+        let text = self.mapping.last_message().map(str::to_owned);
         let Some(schema) = self.start.json_schema.clone() else {
             self.emit(AgentEvent::Result {
                 text,

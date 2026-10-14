@@ -6,30 +6,32 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::agent_goal::AgentGoal;
-use crate::events::goal::{Assumption, Attempt, Criterion, CriterionState, GoalStatus};
+use crate::events::context::ContextCategory;
+use crate::events::goal::{Assumption, Criterion, CriterionState, GoalStatus, Try};
 use crate::events::session::{
-    EndReason, SubagentStatus, SubagentUpdate, VendorAgent, VendorAgentState, VendorWorkflow,
+    CliAgent, CliAgentState, CliWorkflowRun, EndReason, SubagentStatus, SubagentUpdate,
 };
-use crate::names::{SessionKey, WorkerRef, WorkflowId};
+use crate::names::{ModelRef, SessionKey, WorkflowId};
 use crate::settings::workflows::RunStyle;
 use crate::steps::StepName;
+use crate::steps::plan::Severity;
 use crate::workflow::{StandardPhase, StepRef};
-use crate::{CardId, DiffStat, RunId, Spend};
+use crate::{DiffStat, RunId, Spend, TaskId};
 
 /// A run's workflow, or a nested one, with every phase it declares and their rows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowView {
     pub run: RunId,
     pub id: WorkflowId,
-    /// The run's own name and description, from the lead's brief or intake, never a
+    /// The run's own name and description, from the main agent's brief or intake, never a
     /// template's.
     pub name: String,
     pub description: String,
-    /// `None` for a nested workflow, or a vendor's own.
+    /// `None` for a nested workflow, or an agent's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<RunStyle>,
     /// At most two lines under the header: the goal line in a goal run, then either what
-    /// needs you or the lead's latest note. A finished run's line says how it ended.
+    /// needs you or the main agent's latest note. A finished run's line says how it ended.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub status_lines: Vec<StatusLine>,
     /// Names from the run's workflow down to this one. Empty at the top.
@@ -53,19 +55,128 @@ pub struct WorkflowView {
     /// The CLI whose own workflow runs the steps, such as `claude-code`, when one session's
     /// CLI runs the whole run for the crew.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner: Option<String>,
+    pub worker: Option<String>,
+    /// Where the workflow stands, said after its totals once it isn't simply running.
+    #[serde(default, skip_serializing_if = "WorkflowState::is_running")]
+    pub state: WorkflowState,
+}
+
+/// Where a workflow stands. The header says every state but running, as Claude Code's does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowState {
+    #[default]
+    Running,
+    Paused,
+    Done,
+    Stopped,
+    Failed,
+}
+
+impl WorkflowState {
+    pub fn is_running(&self) -> bool {
+        *self == Self::Running
+    }
+
+    /// The word after the header's totals, and none while it runs.
+    pub fn word(self) -> Option<&'static str> {
+        match self {
+            Self::Running => None,
+            Self::Paused => Some("paused"),
+            Self::Done => Some("done"),
+            Self::Stopped => Some("stopped"),
+            Self::Failed => Some("failed"),
+        }
+    }
+}
+
+/// How words Argonauts Code adds to a row or a line read: dim, or in the color of good news,
+/// of something to look at, or of a failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tone {
+    #[default]
+    Plain,
+    Good,
+    Warn,
+    Bad,
+}
+
+impl Tone {
+    pub fn is_plain(&self) -> bool {
+        *self == Self::Plain
+    }
+}
+
+/// What Argonauts Code says after a row's counts, where Claude Code has its state words: a
+/// verdict such as `approved`, why a fallback runs, or what a step did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RowNote {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Tone::is_plain")]
+    pub tone: Tone,
+}
+
+impl RowNote {
+    pub fn new(text: impl Into<String>, tone: Tone) -> Self {
+        Self {
+            text: text.into(),
+            tone,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusLine {
     pub kind: StatusKind,
+    /// The words up to the first ` · ` are the headline, and the rest reads dim after it.
     pub text: String,
+    /// How a run that ended went: good news draws `✔`, a failure `✘`.
+    #[serde(default, skip_serializing_if = "Tone::is_plain")]
+    pub tone: Tone,
+    /// A wait the line ends with, which the screen counts down, as in `tried again in 4m48s`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left: Option<TimeLeft>,
+}
+
+/// A wait a status line counts down.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimeLeft {
+    /// The words before the time, such as `tried again in`.
+    pub words: String,
+    /// How long was left as the view was built.
+    pub ms: u64,
+}
+
+impl StatusLine {
+    pub fn new(kind: StatusKind, text: impl Into<String>) -> Self {
+        Self {
+            kind,
+            text: text.into(),
+            tone: Tone::Plain,
+            left: None,
+        }
+    }
+
+    pub fn toned(mut self, tone: Tone) -> Self {
+        self.tone = tone;
+        self
+    }
+
+    /// Ends the line with `words` and the `ms` left, counted down on screen.
+    pub fn counting(mut self, words: impl Into<String>, ms: u64) -> Self {
+        self.left = Some(TimeLeft {
+            words: words.into(),
+            ms,
+        });
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StatusKind {
-    /// `◎ Goal · 3 of 4 met · attempt 2 of up to 5 · not yet: …`
+    /// `◎ Goal · 3 of 4 met · try 2 of up to 5 · not yet: …`
     Goal,
     /// `◆ Needs you · …`
     NeedsYou,
@@ -84,14 +195,18 @@ pub struct PhaseRow {
     pub detail: String,
     pub standard: StandardPhase,
     pub status: RowStatus,
-    /// In a goal run, the attempt this phase is.
+    /// In a goal run, the try this phase is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempt: Option<u32>,
+    pub try_number: Option<u32>,
     /// Agents done of agents in the phase, once it has any, so a phase with none is never
     /// drawn `0/0`. Commands don't count, as in Claude Code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<PhaseCount>,
     pub rows: Vec<WorkflowRow>,
+    /// One dim line under the rows on what the phase waits for, such as `build:due-flag is on
+    /// round 2 with the findings · its review runs again after`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,19 +229,23 @@ pub enum WorkflowRow {
     Agent(AgentRow),
     /// A `◇` row that opens the nested workflow's own view.
     Workflow(NestedWorkflowRow),
-    /// A gate or the merge, such as `tests:slugify  pytest · 6 passed`, so what the crew is
-    /// doing includes its commands.
+    /// A step Argonauts Code runs itself, a check or the merge, such as `final check  npm test ·
+    /// 15 of 16 pass`: drawn like an agent, with the command or `git` where a model would be.
     Command(CommandRow),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CommandRow {
-    /// Such as `tests:slugify` or `merge:main`.
+    /// Such as `final check` or `merge onto main`.
     pub label: String,
-    /// What runs, such as `pytest`.
+    /// What runs, such as `npm test` or `git`.
     pub command: String,
-    /// Such as `6 passed`, once it's known.
+    /// Such as `15 of 16 pass, as at the start`, once it's known.
     pub result: Option<String>,
+    /// How the result reads: a conflict git found is something to look at, a broken test a
+    /// failure.
+    #[serde(default, skip_serializing_if = "Tone::is_plain")]
+    pub tone: Tone,
     pub status: RowStatus,
     pub elapsed_ms: u64,
 }
@@ -134,41 +253,66 @@ pub struct CommandRow {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentRow {
     pub session: SessionKey,
-    /// The lead's label, such as `fix:slugify`, unique in the run.
+    /// The main agent's label, such as `fix:slugify`, unique in the run.
     pub label: String,
-    /// The real vendor and model.
-    pub worker: WorkerRef,
+    /// The real agent and model.
+    pub worker: ModelRef,
     pub status: RowStatus,
     /// Input plus output tokens.
     pub tokens: u64,
     pub spent: Spend,
     pub elapsed_ms: u64,
-    /// Children the vendor reported, for `+3 subagents`.
+    /// Children the agent reported, for `+3 subagents`.
     pub subagents: u32,
     pub context: Option<ContextUse>,
-    /// Who it stands in for after a handoff, drawn `↷`.
-    pub standing_in_for: Option<WorkerRef>,
-    /// A step of a CLI's own workflow that a role answered through Argonauts:
-    /// `asked through Argonauts` while it runs, then the verdict, such as `accepted`, which
-    /// takes the tokens' place.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub answered: Option<String>,
+    /// Who it is the fallback for, drawn `↷`.
+    pub fallback_for: Option<ModelRef>,
+    /// A step of a CLI's own workflow that a role answered through Argonauts Code: the row is
+    /// that role's session, and its note says what it decided.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub answered: bool,
     /// The step's earlier tries, oldest first: each one that failed, the agent this one took
     /// over from, and each earlier round of a review. The row is the step, and these fold
     /// beneath it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tries: Vec<StepTry>,
+    /// After the tokens: `approved`, `sent it back · 2 findings`, `paused · work so far kept`.
+    /// On a fallback's row it is why the first model stopped, such as `overloaded`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<RowNote>,
+    /// Which agent of a workflow its CLI runs itself this is. `session` is then the session
+    /// running that workflow, which all its agents share.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner: Option<InnerAgent>,
+}
+
+/// One agent of a workflow its CLI runs itself, such as Claude Code's own. It has no session
+/// of ours, so the workflow and its number there are how it is asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct InnerAgent {
+    /// The workflow, by the id its view has.
+    pub workflow: WorkflowId,
+    /// From 1, as its CLI counts the workflow's agents.
+    pub index: u32,
+}
+
+impl AgentRow {
+    /// Whether `other` is this same agent. A session alone doesn't say, since the agents of
+    /// a workflow their CLI runs share one.
+    pub fn is(&self, other: &AgentRow) -> bool {
+        self.session == other.session && self.inner == other.inner
+    }
 }
 
 /// One earlier try at a step, folded under the step's row.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StepTry {
     pub session: SessionKey,
-    pub worker: WorkerRef,
+    pub worker: ModelRef,
     pub status: RowStatus,
     pub elapsed_ms: u64,
     /// Why its session ended. The view says it in the plain line the agent's own failed row
-    /// uses, such as `Codex refused the answer format Argonauts asked for`.
+    /// uses, such as `Codex refused the answer format Argonauts Code asked for`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<EndReason>,
     /// The round it was, from 1, when it is a review or a sign-off that finished and sent the
@@ -184,15 +328,15 @@ pub struct NestedWorkflowRow {
     pub status: RowStatus,
     pub agents_done: u32,
     pub agents_total: u32,
-    /// Each distinct worker once.
-    pub workers: Vec<WorkerRef>,
+    /// Each distinct model once.
+    pub workers: Vec<ModelRef>,
     pub elapsed_ms: u64,
     /// The agent whose own CLI started it, when one did. The row sits under that agent's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<SessionKey>,
-    /// Whose workflow it is when it isn't Argonauts', such as `Claude Code's own`.
+    /// Whose workflow it is when it isn't Argonauts Code's, such as `Claude Code's own`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner: Option<String>,
+    pub worker: Option<String>,
 }
 
 /// In tokens.
@@ -211,84 +355,63 @@ pub enum RowStatus {
     /// Started, and waiting its turn for a slot.
     Queued,
     Running,
+    /// Held where it was with its work so far kept, as when its CLI is down.
+    Paused,
     /// Waiting for your answer, `◆`.
     NeedsYou,
     Done,
     Failed,
-    /// Its condition didn't hold, or the lead skipped it, `–`.
+    /// Its condition didn't hold, or the main agent skipped it, `–`.
     Skipped,
 }
 
 /// Whether a session is one of a workflow's agents, a row in its view and a count in its panel
-/// row: a step placed it in the workflow, and it isn't the lead's own ask beside the workflow
-/// (its design at a phase end, or a goal attempt's plan), which shows as a `›` note instead.
+/// row: a step placed it in the workflow, and it isn't the main agent's own ask beside the workflow
+/// (its design at a phase end, or a goal try's plan), which shows as a `›` note instead.
 pub fn is_workflow_agent(step: Option<StepName>, workflow_step: Option<&StepRef>) -> bool {
-    workflow_step.is_some()
-        && !matches!(step, Some(StepName::DesignWorkflow | StepName::PlanAttempt))
+    workflow_step.is_some() && !matches!(step, Some(StepName::DesignWorkflow | StepName::PlanTry))
 }
 
-/// The id the views give a workflow an agent's own CLI runs, kept apart from Argonauts' own
+/// The id the views give a workflow an agent's own CLI runs, kept apart from Argonauts Code's own
 /// `wf-NNN` so a request for it can't name one of ours.
-/// The run the views name your conversation by, for a workflow its own CLI runs in a chat turn
-/// No run is ever named so: every run's id starts with `run-`.
+/// The run the views name your conversation by, for a workflow its own CLI runs in a conversation
+/// turn No run is ever named so: every run's id starts with `run-`.
 pub fn conversation_run() -> RunId {
-    RunId::new("chat").unwrap_or_else(|_| RunId::generate())
+    RunId::new("conversation").unwrap_or_else(|_| RunId::generate())
 }
 
-pub fn vendor_workflow_id(vendor_id: &str) -> WorkflowId {
-    let safe: String = vendor_id
+pub fn cli_workflow_run_id(agent_id: &str) -> WorkflowId {
+    let safe: String = agent_id
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
         .take(56)
         .collect();
-    WorkflowId::parse(&format!("vendor-{safe}")).unwrap_or_else(|| WorkflowId::numbered(0))
+    WorkflowId::parse(&format!("cli-{safe}")).unwrap_or_else(|| WorkflowId::numbered(0))
 }
 
 impl WorkflowView {
-    /// A workflow an agent's own CLI runs, drawn like one of Argonauts' own with whatever
-    /// phases and labels it reports. `host` is the session running it; its
-    /// agents open that session, since the vendor's own have none of ours. Once it ends, a
-    /// phase that never ran leaves the list, as ours do.
+    /// A workflow an agent's own CLI runs, drawn like one of Argonauts Code's own with whatever
+    /// phases and labels it reports. `host` is the session running it. Its agents have no
+    /// session of ours, so each row holds the host's and says which agent it is. Once it
+    /// ends, a phase that never ran leaves the list, as ours do.
     /// `now_ms`, in milliseconds since the epoch, times what's still running.
-    pub fn of_vendor(
+    pub fn of_agent(
         run: &RunId,
         host: &AgentRow,
-        workflow: &VendorWorkflow,
+        workflow: &CliWorkflowRun,
         now_ms: Option<u64>,
     ) -> Self {
         let ended = matches!(
             workflow.status,
             SubagentStatus::Done | SubagentStatus::Failed
         );
-        let row = |agent: &VendorAgent| AgentRow {
-            session: host.session.clone(),
-            label: agent.label.clone(),
-            worker: WorkerRef::new(
-                host.worker.worker.clone(),
-                agent.model.clone().or_else(|| host.worker.model.clone()),
-            ),
-            status: match agent.state {
-                VendorAgentState::Queued => RowStatus::Queued,
-                VendorAgentState::Running | VendorAgentState::Other => RowStatus::Running,
-                VendorAgentState::Done => RowStatus::Done,
-                VendorAgentState::Failed => RowStatus::Failed,
-            },
-            tokens: agent.tokens,
-            spent: Spend::default(),
-            elapsed_ms: workflow.agent_elapsed_ms(agent, now_ms),
-            subagents: 0,
-            context: None,
-            standing_in_for: None,
-            answered: None,
-            tries: Vec::new(),
-        };
         let phases: Vec<PhaseRow> = workflow
             .phases
             .iter()
             .filter_map(|phase| {
                 let rows: Vec<WorkflowRow> = workflow
                     .agents_in(phase.index)
-                    .map(|agent| WorkflowRow::Agent(row(agent)))
+                    .map(|agent| WorkflowRow::Agent(inner_row(host, workflow, agent, now_ms)))
                     .collect();
                 if ended && rows.is_empty() {
                     return None;
@@ -300,21 +423,22 @@ impl WorkflowView {
                     name: phase.title.clone(),
                     detail: phase.detail.clone(),
                     standard: StandardPhase::Do,
-                    status: vendor_phase_status(&rows),
-                    attempt: None,
+                    status: cli_phase_status(&rows),
+                    try_number: None,
                     count,
                     rows,
+                    note: None,
                 })
             })
             .collect();
         let done = workflow
             .agents
             .iter()
-            .filter(|agent| agent.state == VendorAgentState::Done)
+            .filter(|agent| agent.state == CliAgentState::Done)
             .count();
         Self {
             run: run.clone(),
-            id: vendor_workflow_id(&workflow.id),
+            id: cli_workflow_run_id(&workflow.id),
             name: workflow.name.clone(),
             description: workflow.description.clone(),
             style: None,
@@ -328,7 +452,12 @@ impl WorkflowView {
             notes: Vec::new(),
             required: Vec::new(),
             goals: Vec::new(),
-            owner: None,
+            worker: None,
+            state: match workflow.status {
+                SubagentStatus::Done => WorkflowState::Done,
+                SubagentStatus::Failed => WorkflowState::Failed,
+                _ => WorkflowState::Running,
+            },
         }
     }
 
@@ -350,7 +479,7 @@ impl WorkflowView {
     }
 
     /// Tokens across the workflow: what was metered, and for a workflow whose CLI meters
-    /// nothing through Argonauts, what its agents reported.
+    /// nothing through Argonauts Code, what its agents reported.
     pub fn tokens(&self) -> u64 {
         let metered = self.spent.total_tokens();
         if metered > 0 {
@@ -367,7 +496,67 @@ impl WorkflowView {
     }
 }
 
-fn vendor_phase_status(rows: &[WorkflowRow]) -> RowStatus {
+/// What an agent of a CLI's own workflow ended with when the workflow was over before it
+/// was, in Claude Code's words for it.
+const STOPPED_WITH_ITS_WORKFLOW: &str = "The workflow stopped before this agent finished.";
+
+/// The row of one agent of a workflow `host`'s CLI runs itself: its own label, model, state
+/// and counts as the CLI reports them, on the host's session.
+fn inner_row(
+    host: &AgentRow,
+    workflow: &CliWorkflowRun,
+    agent: &CliAgent,
+    now_ms: Option<u64>,
+) -> AgentRow {
+    // An agent that names no model runs on its session's.
+    let on = |model: &Option<String>| {
+        ModelRef::new(
+            host.worker.agent.clone(),
+            model.clone().or_else(|| host.worker.model.clone()),
+        )
+    };
+    let stopped = workflow.stopped_with_it(agent);
+    // The model at work is the one that took over, once one did.
+    let (at_work, first) = match &agent.fallback_model {
+        Some(_) => (&agent.fallback_model, Some(&agent.model)),
+        None => (&agent.model, None),
+    };
+    AgentRow {
+        session: host.session.clone(),
+        label: agent.label.clone(),
+        worker: on(at_work),
+        status: match agent.state {
+            // Stopped part-way, as a session of ours that was stopped reads.
+            _ if stopped => RowStatus::Skipped,
+            CliAgentState::Queued => RowStatus::Queued,
+            CliAgentState::Running | CliAgentState::Other => RowStatus::Running,
+            CliAgentState::Done => RowStatus::Done,
+            CliAgentState::Failed | CliAgentState::Blocked => RowStatus::Failed,
+            CliAgentState::Skipped => RowStatus::Skipped,
+        },
+        tokens: agent.tokens,
+        spent: Spend::default(),
+        elapsed_ms: workflow.agent_elapsed_ms(agent, now_ms),
+        subagents: 0,
+        context: None,
+        fallback_for: first.map(on),
+        answered: false,
+        tries: Vec::new(),
+        // Claude Code's own words for an agent it refused to start and for one its workflow
+        // stopped, where one that ran and failed reads `failed`.
+        note: match agent.state {
+            CliAgentState::Blocked => Some(RowNote::new("blocked", Tone::Plain)),
+            _ if stopped => Some(RowNote::new("stopped", Tone::Plain)),
+            _ => None,
+        },
+        inner: Some(InnerAgent {
+            workflow: cli_workflow_run_id(&workflow.id),
+            index: agent.index,
+        }),
+    }
+}
+
+fn cli_phase_status(rows: &[WorkflowRow]) -> RowStatus {
     let statuses: Vec<RowStatus> = rows
         .iter()
         .filter_map(|row| match row {
@@ -382,7 +571,8 @@ fn vendor_phase_status(rows: &[WorkflowRow]) -> RowStatus {
         .any(|status| matches!(status, RowStatus::Running | RowStatus::Queued))
     {
         RowStatus::Running
-    } else if statuses.contains(&RowStatus::Failed) {
+    } else if statuses.contains(&RowStatus::Failed) || statuses.contains(&RowStatus::Skipped) {
+        // As Claude Code marks a phase: every agent is over, and one of them didn't finish.
         RowStatus::Failed
     } else {
         RowStatus::Done
@@ -396,7 +586,7 @@ pub struct GoalView {
     pub objective: String,
     pub status: GoalStatus,
     pub criteria: Vec<CriterionRow>,
-    pub attempts: Vec<Attempt>,
+    pub tries: Vec<Try>,
     /// The most rounds, when you set one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_rounds: Option<u32>,
@@ -422,13 +612,13 @@ pub struct CriterionRow {
 pub struct AgentView {
     pub run: RunId,
     pub row: AgentRow,
-    /// Exactly what Argonauts sent, in full. The view shows the first lines until expanded.
+    /// Exactly what Argonauts Code sent, in full. The view shows the first lines until expanded.
     pub prompt: String,
     /// The latest tool calls, oldest first.
     pub activity: Vec<ActivityLine>,
     /// Every tool call so far, for `last 3 of 195`.
     pub tool_calls: u32,
-    /// Against the card's base. `None` for an agent with no worktree.
+    /// Against the task's base. `None` for an agent with no worktree.
     pub diff: Option<DiffStat>,
     /// Only when the agent runs its own workflow.
     pub subagents: Option<SubagentsSection>,
@@ -441,6 +631,106 @@ pub struct AgentView {
     /// each. The view draws it as a table above the outcome.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<serde_json::Value>,
+    /// What the agent view says after the model: the role, where it works, and the round it is on,
+    /// such as `worker`, `worktree`, `round 2 (sent back)`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub facts: Vec<String>,
+    /// The findings a review sent it back with, which it works on now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_fix: Option<Findings>,
+    /// A reviewer's own verdict and findings, which are its outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<ReviewGiven>,
+}
+
+impl AgentView {
+    /// One agent of a workflow `host`'s CLI runs itself, by its number there, from what the
+    /// CLI reports of it: the start of its prompt and of its answer, how many tools it
+    /// called and the last of them, the kind of agent it is, where it works, and which try
+    /// it is. One that failed or was blocked ends with why. `None` when the workflow has no
+    /// such agent.
+    pub fn of_inner(
+        run: &RunId,
+        host: &AgentRow,
+        workflow: &CliWorkflowRun,
+        index: u32,
+        now_ms: Option<u64>,
+    ) -> Option<Self> {
+        let agent = workflow.agents.iter().find(|agent| agent.index == index)?;
+        let later_try = (agent.try_number > 1).then(|| format!("try {}", agent.try_number));
+        let said = |fact: &Option<String>| {
+            fact.as_deref()
+                .map(str::trim)
+                .filter(|fact| !fact.is_empty())
+                .map(str::to_owned)
+        };
+        Some(Self {
+            run: run.clone(),
+            row: inner_row(host, workflow, agent, now_ms),
+            prompt: agent.prompt.clone().unwrap_or_default(),
+            // Whether the call answered isn't reported, so it has no result either way.
+            activity: agent
+                .last_tool
+                .iter()
+                .map(|tool| ActivityLine {
+                    tool: tool.name.clone(),
+                    summary: tool.summary.clone().unwrap_or_default(),
+                    ok: None,
+                })
+                .collect(),
+            tool_calls: agent.tool_calls,
+            diff: None,
+            subagents: None,
+            outcome: match agent.state {
+                _ if workflow.stopped_with_it(agent) => Some(STOPPED_WITH_ITS_WORKFLOW.to_owned()),
+                CliAgentState::Failed | CliAgentState::Blocked => {
+                    agent.error.clone().or_else(|| agent.result.clone())
+                }
+                // Nothing went wrong and nothing was answered: the view says it was skipped.
+                CliAgentState::Skipped => None,
+                _ => agent.result.clone(),
+            },
+            goal: None,
+            plan: None,
+            facts: (agent.state == CliAgentState::Blocked)
+                .then(|| "blocked".to_owned())
+                .into_iter()
+                .chain(said(&agent.agent_type))
+                .chain(said(&agent.isolation))
+                .chain(later_try)
+                .collect(),
+            to_fix: None,
+            review: None,
+        })
+    }
+}
+
+/// The findings of one review round.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Findings {
+    /// The reviewer's label, such as `review:due-flag`.
+    pub from: String,
+    /// From 1.
+    pub round: u32,
+    pub items: Vec<Finding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Finding {
+    pub severity: Severity,
+    /// The file and line it is about, such as `src/cli.js:42`. Empty when it names none.
+    pub place: String,
+    pub text: String,
+}
+
+/// What a reviewer decided.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewGiven {
+    /// Such as `approved` or `sent it back`.
+    pub verdict: String,
+    #[serde(default, skip_serializing_if = "Tone::is_plain")]
+    pub tone: Tone,
+    pub findings: Vec<Finding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -452,7 +742,7 @@ pub struct ActivityLine {
     pub ok: Option<bool>,
 }
 
-/// An agent's own internal workflow, whose structure the vendor doesn't expose.
+/// An agent's own internal workflow, whose structure the agent doesn't expose.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubagentsSection {
     /// `Subagents`, or `Threads` for Codex.
@@ -470,11 +760,11 @@ pub struct ContextView {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextRow {
-    /// `None` for chat with the lead.
+    /// `None` for conversation with the main agent.
     pub run: Option<RunId>,
     pub session: SessionKey,
     pub label: String,
-    pub worker: WorkerRef,
+    pub worker: ModelRef,
     /// In tokens.
     pub used: u64,
     pub window: Option<u64>,
@@ -484,6 +774,17 @@ pub struct ContextRow {
     pub spent: Spend,
     /// Fresh sessions it has rotated to so far.
     pub rotations: u32,
+    /// `used` is worked out from the session's totals, because its CLI never says how large
+    /// the last request was.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub estimated: bool,
+    /// Its CLI can say what fills it, as Claude Code can, whether or not it has yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub counts: bool,
+    /// What fills it, by its CLI's own categories. Empty until the CLI has said, and for a
+    /// CLI that says only how full.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<ContextCategory>,
 }
 
 /// One workflow in the Library tab of the workflow view.
@@ -497,7 +798,7 @@ pub struct WorkflowFile {
     pub description: String,
     /// The text as found, so showing it costs no round trip.
     pub text: String,
-    /// Whether your file differs from the built-in of the same name. `None` when there's no
+    /// Whether your file is different from the built-in of the same name. `None` when there's no
     /// file of yours or no built-in to compare with.
     #[serde(default)]
     pub edited: Option<bool>,
@@ -520,22 +821,22 @@ pub enum WorkflowOrigin {
     Repo,
 }
 
-/// One handoff checkpoint of a card, for the `/rewind` picker.
+/// One fallback checkpoint of a task, for the `/rewind` picker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckpointRow {
-    pub card: CardId,
-    /// The `n` of `handoff-<n>`.
+    pub task: TaskId,
+    /// The `n` of `fallback-<n>`.
     pub n: u32,
     #[serde(with = "time::serde::rfc3339")]
     pub at: OffsetDateTime,
     pub commit: String,
-    pub from: WorkerRef,
+    pub from: ModelRef,
     /// Several for a race.
-    pub to: Vec<WorkerRef>,
+    pub to: Vec<ModelRef>,
     pub reason: String,
-    /// The card's branch was last reverted to this one.
+    /// The task's branch was last rewound to this one.
     #[serde(default)]
-    pub reverted_here: bool,
+    pub rewound_here: bool,
 }
 
 /// The four Learning pickers: `/records`, `/learned`, `/skills`, and `/memory`.
@@ -543,7 +844,7 @@ pub struct CheckpointRow {
 #[serde(rename_all = "snake_case")]
 pub enum LearningArea {
     Records,
-    Recipes,
+    LearnedWorkflows,
     Skills,
     Memory,
 }
@@ -551,7 +852,7 @@ pub enum LearningArea {
 impl LearningArea {
     pub const ALL: [LearningArea; 4] = [
         LearningArea::Records,
-        LearningArea::Recipes,
+        LearningArea::LearnedWorkflows,
         LearningArea::Skills,
         LearningArea::Memory,
     ];
@@ -560,7 +861,7 @@ impl LearningArea {
     pub fn command(self) -> &'static str {
         match self {
             LearningArea::Records => "records",
-            LearningArea::Recipes => "learned",
+            LearningArea::LearnedWorkflows => "learned",
             LearningArea::Skills => "skills",
             LearningArea::Memory => "memory",
         }
@@ -569,7 +870,7 @@ impl LearningArea {
     pub fn title(self) -> &'static str {
         match self {
             LearningArea::Records => "Records",
-            LearningArea::Recipes => "Learned workflows",
+            LearningArea::LearnedWorkflows => "Learned workflows",
             LearningArea::Skills => "Skills",
             LearningArea::Memory => "Memory",
         }
@@ -580,7 +881,7 @@ impl LearningArea {
     pub fn description(self) -> &'static str {
         match self {
             LearningArea::Records => "Who is good at what, by kind of work",
-            LearningArea::Recipes => "Workflows learned from your runs",
+            LearningArea::LearnedWorkflows => "Workflows learned from your runs",
             LearningArea::Skills => "Exported and imported skills, and any drift",
             LearningArea::Memory => "Notes the crew keeps, and the conventions",
         }
@@ -590,12 +891,12 @@ impl LearningArea {
     pub fn settings(self) -> &'static [&'static str] {
         match self {
             LearningArea::Records => &["routing", "outcomes.share"],
-            LearningArea::Recipes => &[
+            LearningArea::LearnedWorkflows => &[
                 "evolution",
                 "approvals.workflow_promotion",
                 "limits.evolution_usd_per_month",
                 "prompts",
-                "solo_or_crew.use_learned",
+                "captain_or_crew.use_learned",
             ],
             LearningArea::Skills => &["skills"],
             LearningArea::Memory => &["memory"],
@@ -615,7 +916,7 @@ pub struct LearningView {
     /// The row it opens on, by id, when the command named one.
     #[serde(default)]
     pub focus: Option<String>,
-    /// One line under the header, such as how much of the month's evolution budget is left.
+    /// One line under the header, such as how much of the month's evolution limit is left.
     #[serde(default)]
     pub summary: String,
     /// The Settings tab, as `/config` rows show them.
@@ -637,7 +938,8 @@ pub struct LearningTab {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LearningRow {
-    /// Stable within its tab: a worker and task type, a recipe, a candidate, a skill, a note.
+    /// Stable within its tab: a model and task type, a learned workflow, a candidate, a skill, a
+    /// note.
     pub id: String,
     /// One per column.
     pub cells: Vec<String>,
@@ -646,7 +948,7 @@ pub struct LearningRow {
     pub detail: Vec<String>,
     #[serde(default)]
     pub actions: Vec<LearningAction>,
-    /// It waits for you, as the inbox counts it.
+    /// It waits for you, as `argonauts approvals` counts it.
     #[serde(default)]
     pub waiting: bool,
 }
@@ -667,12 +969,12 @@ pub struct LearningAction {
 pub enum LearningCommand {
     /// Rebuilds the track records from the outcome log.
     Rebuild,
-    /// Fixes a worker's first-pass rate on a task type at its current mean (`routing.pins`).
+    /// Fixes a model's first-pass rate on a task type at its current mean (`routing.pins`).
     Pin {
         worker: String,
         task_type: String,
     },
-    /// Drops a worker's outcomes before today (`routing.resets`).
+    /// Drops a model's outcomes before today (`routing.resets`).
     Reset {
         worker: String,
     },
@@ -683,18 +985,18 @@ pub enum LearningCommand {
         candidate: String,
     },
     Rollback {
-        recipe: String,
+        learned_workflow: String,
     },
     /// Turns a promoted candidate down after all: a reversal in the outcome log, and the
     /// version before runs again.
     Close {
         candidate: String,
     },
-    /// Proposes the recipe's skill export on a branch for you.
+    /// Proposes the learned workflow's skill export on a branch for you.
     Export {
-        recipe: String,
+        learned_workflow: String,
     },
-    /// Lets a checked task join the replay set, on the side the conductor's seed draws.
+    /// Lets a checked task join the replay set, on the side Argonauts Code's seed draws.
     AcceptEntry {
         id: String,
     },

@@ -1,0 +1,6 @@
+{
+  "what": "Anthropic's public model pages, saved as Markdown",
+  "pages": ["models-overview.md", "model-deprecations.md"],
+  "fetched": "2026-10-01",
+  "synthetic": false
+}

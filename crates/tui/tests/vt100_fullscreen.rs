@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use argonauts_core::app::UiCommand;
 use argonauts_tui::keymap::Keymap;
 use argonauts_tui::model::{
-    AgentReady, AssistantMessage, CardOption, CardPrompt, SessionHeader, ToolCall, ToolItem,
-    UserMessage, ViewModel, WorkingLine,
+    AgentReady, AssistantMessage, QuestionOption, QuestionPrompt, SessionHeader, ToolCall,
+    ToolItem, UserMessage, ViewModel, WorkingLine,
 };
 use argonauts_tui::theme::Role;
 use argonauts_tui::views::help::HelpView;
@@ -269,16 +269,16 @@ fn frames_stay_on_the_alternate_screen_and_the_main_one_is_never_written() {
     }
     assert!(f.shown().contains("Wire --json"), "{}", f.shown());
 
-    // A card, the transcript, and a view all draw on the same alternate screen.
-    f.ui.model_mut().bottom.card = Some(CardPrompt::new(
+    // A question, the transcript, and a view all draw on the same alternate screen.
+    f.ui.model_mut().bottom.question = Some(QuestionPrompt::new(
         1,
         "Merge task-002 into main?",
         "Merge task-002?",
-        vec![CardOption::new("Merge")],
+        vec![QuestionOption::new("Merge")],
     ));
     f.frame();
     assert!(f.shown().contains("Merge task-002"), "{}", f.shown());
-    f.ui.model_mut().bottom.card = None;
+    f.ui.model_mut().bottom.question = None;
     f.ui.handle_event(
         Event::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)),
         f.now,
@@ -650,12 +650,12 @@ fn docked_workflow() -> Box<argonauts_tui::views::workflow::WorkflowView> {
              "worker": "claude-code/claude-haiku-4-5", "status": "done", "tokens": 18100,
              "spent": {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0,
                        "cost_usd": 0.0, "cost_partial": false, "cost_estimated": false},
-             "elapsed_ms": 130000, "subagents": 0, "context": null, "standing_in_for": null},
+             "elapsed_ms": 130000, "subagents": 0, "context": null, "fallback_for": null},
             {"row": "agent", "session": "s-002", "label": "fix:median",
              "worker": "codex/gpt-5.6-luna", "status": "running", "tokens": 31200,
              "spent": {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0,
                        "cost_usd": 0.0, "cost_partial": false, "cost_estimated": false},
-             "elapsed_ms": 151000, "subagents": 0, "context": null, "standing_in_for": null}
+             "elapsed_ms": 151000, "subagents": 0, "context": null, "fallback_for": null}
         ]},
         {"name": "Review", "standard": "check", "status": "waiting", "rows": []}]
     }))

@@ -9,8 +9,8 @@ use std::time::Duration;
 use argonauts_scenarios::WAIT;
 use argonauts_testkit::journal;
 use policy_support::{
-    RUN_WAIT, files_named, invocations_of, launch_ready, merge_opened, solo_config, start_solo,
-    trusted_scenario, wait_for_events,
+    RUN_WAIT, captain_config, files_named, invocations_of, launch_ready, merge_opened,
+    start_captain, trusted_scenario, wait_for_events,
 };
 
 const NARRATOR_MARK: &str = "NARRATOR-MARK-4412";
@@ -20,15 +20,15 @@ fn policy_narrator_never_reaches_agents() -> anyhow::Result<()> {
     // Codex names no model it ran, so the narrator names one.
     let scenario = trusted_scenario(
         "narrator.toml",
-        &solo_config(
+        &captain_config(
             "[ui]\nnarrator = \"live\"\n\n\
              [narrator]\nmodel = \"codex/gpt-5.6-luna\"\ninterval = \"1s\"\nspend_cap = \"0.50 usd\"\n",
         ),
     )?;
     let mut pty = launch_ready(&scenario, &[])?;
-    start_solo(&mut pty)?;
+    start_captain(&mut pty)?;
     pty.wait_for(NARRATOR_MARK, WAIT)?;
-    // Let the owner's session start after at least one narration.
+    // Let the worker's session start after at least one narration.
     std::thread::sleep(Duration::from_secs(2));
     wait_for_events(&scenario, "the merge approval", RUN_WAIT, merge_opened)?;
 

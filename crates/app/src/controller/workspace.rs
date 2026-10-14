@@ -5,8 +5,8 @@
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context as _, bail};
-use argonauts_core::CardId;
 use argonauts_core::NoteLevel;
+use argonauts_core::TaskId;
 use argonauts_core::api::DiffView;
 use argonauts_core::app::{AppEvent, ViewData};
 use argonauts_core::log::DiffStat;
@@ -52,7 +52,7 @@ fn normalize(path: &Path) -> PathBuf {
 pub(crate) fn cd(
     ctx: &mut Ctx,
     path: Option<PathBuf>,
-    chat_settled: bool,
+    conversation_settled: bool,
 ) -> anyhow::Result<Vec<Effect>> {
     let Some(path) = path else {
         ctx.notice(
@@ -80,7 +80,7 @@ pub(crate) fn cd(
         );
         return Ok(Vec::new());
     }
-    if !chat_settled {
+    if !conversation_settled {
         ctx.notice(
             NoteLevel::Info,
             "A turn is still running. Esc stops it, then /cd opens the other repo.",
@@ -100,7 +100,7 @@ pub(crate) fn cd(
 }
 
 /// `/add-dir <path>`: one more folder the agents may write, asked where to save like any
-/// setting. Chat turns stay read-only.
+/// setting. Conversation turns stay read-only.
 pub(crate) fn add_dir(ctx: &mut Ctx, path: &Path) -> anyhow::Result<Vec<Effect>> {
     let dir = resolve_path(ctx, path);
     let shown = ctx.env.display(&dir);
@@ -122,7 +122,7 @@ pub(crate) fn add_dir(ctx: &mut Ctx, path: &Path) -> anyhow::Result<Vec<Effect>>
     let state = ctx.env.paths.home();
     if inside(state) || state.starts_with(&dir) {
         bail!(
-            "{shown} holds Argonauts' own files, which agents never write. Pick a folder outside {}.",
+            "{shown} holds Argonauts Code's own files, which agents never write. Pick a folder outside {}.",
             ctx.env.display(state)
         );
     }
@@ -154,7 +154,7 @@ fn toml_list(items: &[String]) -> String {
     format!("[{}]", quoted.join(", "))
 }
 
-/// `/diff`: everything that differs from the last commit, new files included, in the diff
+/// `/diff`: everything that is different from the last commit, new files included, in the diff
 /// view. Your index is left alone.
 pub(crate) fn diff(ctx: &mut Ctx) -> anyhow::Result<Vec<Effect>> {
     let root = &ctx.env.repo_root;
@@ -163,11 +163,11 @@ pub(crate) fn diff(ctx: &mut Ctx) -> anyhow::Result<Vec<Effect>> {
         ctx.notice(NoteLevel::Info, "No changes in the working tree.");
         return Ok(Vec::new());
     }
-    let card = CardId::new("working-tree").context("naming the working tree's diff")?;
+    let task = TaskId::new("working-tree").context("naming the working tree's diff")?;
     ctx.send(AppEvent::View {
         data: Box::new(ViewData::Diff {
             diff: DiffView {
-                card,
+                task,
                 stat: stat_of(&text),
                 text,
                 path: root.clone(),
@@ -316,7 +316,7 @@ fn diff_part(diff: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::controller::test_support::{HarnessOptions, TestCtx};
+    use crate::controller::test_support::{CliOptions, TestCtx};
     use argonauts_testkit::TempRepo;
 
     #[test]
@@ -361,8 +361,8 @@ mod tests {
     }
 
     #[test]
-    fn cd_opens_the_app_in_another_repo_once_the_chat_is_settled() {
-        let (mut parts, _) = TestCtx::new(HarnessOptions::default());
+    fn cd_opens_the_app_in_another_repo_once_the_conversation_is_settled() {
+        let (mut parts, _) = TestCtx::new(CliOptions::default());
         let ctx = &mut parts.ctx;
         assert!(cd(ctx, None, true).unwrap().is_empty());
         assert!(cd(ctx, Some(PathBuf::from(".")), true).unwrap().is_empty());

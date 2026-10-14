@@ -1,0 +1,44 @@
+---
+source: crates/tui/tests/snap_overlays.rs
+expression: "screen(&mut view, width, height, &state)"
+---
+argonauts › crew                                                                                                                                                        Claude 72% · Codex 41% · agy 90%
+  Needs you 2    Working 2    Ready 2    Done 2  [ All 8 ]
+
+~/code/export                                                                                                                                 │ Add the JSON writer
+◆ Add a --json flag to export · needs you                                                                                                     │ ◆ Needs you
+  ❯ ◆ build:json-writer                   asks: Keep a CSV fallback?                               GPT 5.6 on Codex                    2m ago │
+    ● build:json-flag                     Update(src/mw/limit.ts)                                  Opus on Claude Code                 5m ago │ Last message
+    ○ review:json-flag                    waiting on other work                                    Gemini 3.6 Pro on Antigravity CLI   1m ago │ asks: Keep a CSV fallback?
+    ✓ build:csv-writer                    Merged task-001.                                         GPT 5.6 on Codex                    3m ago │
+Sessions                                                                                                                                      │ Repo     ~/code/export
+    ◎ How does the export pick a format?  Claude Code · enter continues                                                               40m ago │ Run      run-01 · Add a --json flag to export
+    ◎ Explain the input handling          Codex · enter continues                                                                      1d ago │ Task     task-002
+                                                                                                                                              │ Model    GPT 5.6 on Codex (codex/gpt-5.6)
+~/code/api                                                                                                                                    │ Tokens   0 in · 12.4k out
+◆ Fix the login redirect · plan approval, waiting for you · $0.46                                                                             │ Context  41k of 200k (21%)
+✓ tidy-readme · merged 2d ago                                                                                                                 │ Branch   argonauts/run-01/task-002
+                                                                                                                                              │
+                                                                                                                                              │ Prompt
+                                                                                                                                              │ Add a JSON writer beside the CSV one. Keep the CSV
+                                                                                                                                              │ output byte for byte.
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+↑↓ move · → open · Tab filter · x stop · ? keys · esc back

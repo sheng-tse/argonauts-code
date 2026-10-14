@@ -2,8 +2,8 @@
 //! approval mode, and the run commands and views. Anything that decides or raises autonomy goes
 //! through `Approvals`, and without it the app says why it can't.
 
-mod cards;
 mod control;
+mod tasks;
 mod views;
 
 #[cfg(test)]
@@ -11,23 +11,23 @@ mod tests;
 
 use std::sync::Arc;
 
-use argonauts_core::api::{ApiError, Approvals, CheckpointAnswer, DiffScope};
+use argonauts_core::api::{ApiError, ApprovalAnswer, Approvals, DiffScope};
 use argonauts_core::app::{AppEvent, NOT_CHANGED, ViewData};
-use argonauts_core::events::checkpoint::AnswerAction;
-use argonauts_core::events::goal::{GoalAction, LET_THE_LEAD_ANSWER};
-use argonauts_core::names::{CheckpointId, ChoiceId};
+use argonauts_core::events::approval::AnswerAction;
+use argonauts_core::events::goal::{GoalAction, LET_THE_MAIN_AGENT_ANSWER};
+use argonauts_core::names::{ApprovalId, ChoiceId};
 use argonauts_core::settings::approvals::ApprovalMode;
-use argonauts_core::{CardId, NoteLevel, RunId};
+use argonauts_core::{NoteLevel, RunId, TaskId};
 
 use super::attach::Stage;
 use super::runs::{RunChoice, RunsState};
 use super::{Ctx, Effect};
 
-pub(crate) use cards::{checkpoints, reassign, remember_pick, revert, slash_reassign};
 pub(crate) use control::{
-    cancel_pause, continue_run, guidance, mention, pause, resume, steer, stop, stop_agent,
-    take_back,
+    cancel_pause, continue_run, follow_up, guidance, mention, pause, restart_agent, resume, steer,
+    stop, stop_agent, take_back,
 };
+pub(crate) use tasks::{checkpoints, reassign, remember_pick, rewind, slash_reassign};
 pub(crate) use views::{
     all_repos, ask_narrator, context, context_report, save_workflow, status, summary, view,
     workflow_view,
@@ -51,7 +51,7 @@ pub(crate) fn plain_refusal(err: &ApiError) -> Option<String> {
             Some("That run isn't in this folder any more, so nothing is left to act on.".to_owned())
         }
         ApiError::NotNow(why) => Some(sentence(why)),
-        ApiError::Refused(_) | ApiError::Supervisor(_) => None,
+        ApiError::Refused(_) | ApiError::RunHost(_) => None,
     }
 }
 
@@ -71,7 +71,7 @@ pub(crate) fn refused(ctx: &Ctx, err: ApiError, doing: impl FnOnce() -> String) 
 pub(crate) fn failure(err: &ApiError, doing: &str) -> String {
     let why = match err {
         ApiError::Refused(why) => why.trim().to_owned(),
-        ApiError::Supervisor(why) => format!("its run didn't answer ({})", why.trim()),
+        ApiError::RunHost(why) => format!("its run didn't answer ({})", why.trim()),
         ApiError::Merged(_) => "that run already merged".to_owned(),
         ApiError::NoRun(_) => "that run isn't in this folder any more".to_owned(),
         ApiError::NotNow(why) => why.trim().to_owned(),
@@ -97,17 +97,17 @@ fn sentence(text: &str) -> String {
     out
 }
 
-/// `UiCommand::Answer` for a run's checkpoint.
+/// `UiCommand::Answer` for a run's approval.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct CheckpointReply {
+pub(crate) struct ApprovalReply {
     pub run: RunId,
-    pub id: CheckpointId,
+    pub id: ApprovalId,
     pub action: AnswerAction,
     pub text: Option<String>,
-    /// From the card the TUI drew, passed on unchanged.
+    /// From the question the TUI drew, passed on unchanged.
     pub evidence_sha256: Option<String>,
-    pub cards: Vec<CardId>,
-    /// Save a handoff pick as a replacement rule; the scope question follows.
+    pub tasks: Vec<TaskId>,
+    /// Save a fallback pick as a fallback rule; the scope question follows.
     pub remember: bool,
 }
 
@@ -131,8 +131,8 @@ fn on_screen(ctx: &Ctx, runs: &RunsState) -> Option<RunId> {
     run
 }
 
-pub(crate) async fn answer(ctx: &mut Ctx, runs: &mut RunsState, reply: CheckpointReply) -> Handled {
-    // The card shows its own diff; the engine never sees this action.
+pub(crate) async fn answer(ctx: &mut Ctx, runs: &mut RunsState, reply: ApprovalReply) -> Handled {
+    // The question shows its own diff; the engine never sees this action.
     if reply.action == AnswerAction::ShowDiff {
         return Ok(Vec::new());
     }
@@ -154,25 +154,25 @@ pub(crate) async fn answer(ctx: &mut Ctx, runs: &mut RunsState, reply: Checkpoin
         AnswerAction::Candidate { worker } => Some(worker.clone()),
         _ => None,
     };
-    let lead_answers = matches!(
+    let main_agent_answers = matches!(
         &reply.action,
-        AnswerAction::Choose { value } if value == LET_THE_LEAD_ANSWER
+        AnswerAction::Choose { value } if value == LET_THE_MAIN_AGENT_ANSWER
     );
-    let answer = CheckpointAnswer {
+    let answer = ApprovalAnswer {
         id: reply.id.clone(),
         action: reply.action,
         text: reply.text,
         evidence_sha256,
-        cards: reply.cards,
+        tasks: reply.tasks,
     };
     if let Err(err) = approvals.answer(&reply.run, answer).await {
         return refused(ctx, err, || "Couldn't send your answer".to_owned());
     }
-    if lead_answers {
-        return super::settings::let_the_lead_answer(ctx);
+    if main_agent_answers {
+        return super::settings::let_the_main_agent_answer(ctx);
     }
     if reply.remember {
-        return cards::remember(ctx, runs, &reply.run, &reply.id, pick);
+        return tasks::remember(ctx, runs, &reply.run, &reply.id, pick);
     }
     Ok(Vec::new())
 }
@@ -180,17 +180,17 @@ pub(crate) async fn answer(ctx: &mut Ctx, runs: &mut RunsState, reply: Checkpoin
 /// Esc on a run's question or approval means "carry on without me": the engine
 /// takes an option in your place, as `approvals.when_declined` says, so the run never waits on
 /// it. One it can't take anything for stays open, and a line says why.
-pub(crate) async fn carry_on(ctx: &mut Ctx, run: RunId, id: CheckpointId) -> Handled {
+pub(crate) async fn carry_on(ctx: &mut Ctx, run: RunId, id: ApprovalId) -> Handled {
     let Some(approvals) = approvals(ctx) else {
         return Ok(Vec::new());
     };
-    let left = CheckpointAnswer {
+    let left = ApprovalAnswer {
         id: id.clone(),
         action: AnswerAction::CarryOn,
         text: None,
         // Leaving it isn't an answer to what was shown, so it's bound to no evidence.
         evidence_sha256: String::new(),
-        cards: Vec::new(),
+        tasks: Vec::new(),
     };
     if let Err(err) = approvals.answer(&run, left).await {
         return refused(ctx, err, || format!("{id} still waits for you"));
@@ -206,19 +206,19 @@ pub(crate) async fn answer_choice(
     action: AnswerAction,
     text: Option<String>,
 ) -> Handled {
-    // Neither card takes a note.
+    // Neither question takes a note.
     let _ = text;
     let Some(choice) = runs.choices.remove(&id) else {
         return Ok(Vec::new());
     };
-    if let (RunChoice::Revert { run, card, .. }, AnswerAction::ShowDiff) = (&choice, &action) {
+    if let (RunChoice::Rewind { run, task, .. }, AnswerAction::ShowDiff) = (&choice, &action) {
         let diff = ctx
             .services
             .conductor
-            .diff(run, card, DiffScope::Card)
+            .diff(run, task, DiffScope::Task)
             .await;
-        let card = card.clone();
-        // The card stays open, so you can still revert after reading the diff.
+        let task = task.clone();
+        // The question stays open, so you can still rewind after reading the diff.
         runs.choices.insert(id, choice);
         return match diff {
             Ok(diff) => {
@@ -227,14 +227,14 @@ pub(crate) async fn answer_choice(
                 });
                 Ok(Vec::new())
             }
-            Err(err) => refused(ctx, err, || format!("Couldn't show the diff of {card}")),
+            Err(err) => refused(ctx, err, || format!("Couldn't show the diff of {task}")),
         };
     }
     let outcome = match (choice, action) {
         (
             RunChoice::OverrideRule {
                 run,
-                card,
+                task,
                 to,
                 rule,
             },
@@ -245,34 +245,34 @@ pub(crate) async fn answer_choice(
                 return Ok(Vec::new());
             };
             let overridden = approvals
-                .reassign_overriding(&run, &card, to.clone(), rule.clone())
+                .reassign_overriding(&run, &task, to.clone(), rule.clone())
                 .await;
             if let Err(err) = overridden {
                 close(ctx, id, NOT_CHANGED);
-                return refused(ctx, err, || format!("Couldn't reassign {card}"));
+                return refused(ctx, err, || format!("Couldn't reassign {task}"));
             }
             let name = ctx.names.worker(&to);
-            format!("Reassigned {card} to {name}, overriding {rule} for this task.")
+            format!("Reassigned {task} to {name}, overriding {rule} for this task.")
         }
         (
-            RunChoice::Revert {
+            RunChoice::Rewind {
                 run,
-                card,
+                task,
                 checkpoint,
             },
             AnswerAction::Approve,
         ) => {
-            let reverted = ctx.services.conductor.revert(&run, &card, checkpoint).await;
-            if let Err(err) = reverted {
-                close(ctx, id, "Not reverted.");
-                return refused(ctx, err, || format!("Couldn't revert {card}"));
+            let rewound = ctx.services.conductor.rewind(&run, &task, checkpoint).await;
+            if let Err(err) = rewound {
+                close(ctx, id, "Not rewound.");
+                return refused(ctx, err, || format!("Couldn't rewind {task}"));
             }
             format!(
-                "Reverted {card} to fallback-{checkpoint}. The work after it is on \
-                 argonauts/{run}/{card}-replaced-{checkpoint}."
+                "Rewound {task} to fallback-{checkpoint}. The work after it is on \
+                 argonauts/{run}/{task}-replaced-{checkpoint}."
             )
         }
-        (RunChoice::Revert { .. }, _) => "Not reverted.".to_owned(),
+        (RunChoice::Rewind { .. }, _) => "Not rewound.".to_owned(),
         (RunChoice::OverrideRule { .. }, _) => NOT_CHANGED.to_owned(),
     };
     close(ctx, id, outcome);
@@ -282,7 +282,7 @@ pub(crate) async fn answer_choice(
 pub(crate) fn set_aside(ctx: &mut Ctx, runs: &mut RunsState, id: ChoiceId) -> Handled {
     let outcome = match runs.choices.remove(&id) {
         Some(RunChoice::OverrideRule { .. }) => NOT_CHANGED,
-        Some(RunChoice::Revert { .. }) => "Not reverted.",
+        Some(RunChoice::Rewind { .. }) => "Not rewound.",
         None => return Ok(Vec::new()),
     };
     close(ctx, id, outcome);
@@ -300,24 +300,24 @@ pub(crate) async fn take_over(
     ctx: &mut Ctx,
     runs: &mut RunsState,
     run: RunId,
-    card: CardId,
+    task: TaskId,
 ) -> Handled {
     let _ = runs;
     let Some(approvals) = approvals(ctx) else {
         return Ok(Vec::new());
     };
-    // The engine answers once it has paused the card, which can take as long as the agent's
+    // The engine answers once it has paused the task, which can take as long as the agent's
     // current tool call, so the screen goes on meanwhile.
-    let place = ctx.settings().ui.takeover;
+    let place = ctx.settings().ui.take_over;
     let out = ctx.out.clone();
     tokio::spawn(async move {
-        match approvals.take_over(&run, &card).await {
+        match approvals.take_over(&run, &task).await {
             Ok(ticket) => out.send(AppEvent::TakeOver { ticket, place, run }),
             Err(err) => out.send(match plain_refusal(&err) {
                 Some(text) => AppEvent::Hint { text },
                 None => AppEvent::Notice {
                     level: NoteLevel::Error,
-                    text: format!("Couldn't take over {card}: {err}"),
+                    text: format!("Couldn't take over {task}: {err}"),
                 },
             }),
         }
@@ -329,15 +329,15 @@ pub(crate) async fn take_over_ended(
     ctx: &mut Ctx,
     runs: &mut RunsState,
     run: RunId,
-    card: CardId,
+    task: TaskId,
     exit_code: Option<i32>,
 ) -> Handled {
     let _ = runs;
     let Some(approvals) = approvals(ctx) else {
         return Ok(Vec::new());
     };
-    if let Err(err) = approvals.take_over_ended(&run, &card).await {
-        return refused(ctx, err, || format!("Couldn't hand {card} back"));
+    if let Err(err) = approvals.take_over_ended(&run, &task).await {
+        return refused(ctx, err, || format!("Couldn't hand {task} back"));
     }
     let how = match exit_code {
         Some(0) | None => String::new(),
@@ -346,7 +346,7 @@ pub(crate) async fn take_over_ended(
     ctx.notice(
         NoteLevel::Info,
         format!(
-            "{how}Your changes to {card} are committed, and its return question decides who goes on."
+            "{how}Your changes to {task} are committed, and its return question decides who goes on."
         ),
     );
     Ok(Vec::new())
@@ -437,7 +437,7 @@ pub(crate) async fn goal(
 pub(crate) async fn spot_check(
     ctx: &mut Ctx,
     run: RunId,
-    id: CheckpointId,
+    id: ApprovalId,
     correct: bool,
 ) -> Handled {
     if approvals(ctx).is_none() {

@@ -18,30 +18,30 @@ use argonauts_core::events::RunEvent;
 use argonauts_core::events::run::RunPhase;
 use argonauts_core::events::session::InputPartKind;
 use argonauts_core::future::BoxFuture;
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::policy::{
     Narrator, NarratorError, NarratorLine, NarratorLineKind, NarratorStatus,
 };
+use argonauts_core::session_runner::{RunnerDirectory, RunnerEvent};
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
+use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::ui::NarratorMode;
 use argonauts_core::steps::narrate::{Narrate, NarrateInput, NarrateMode};
 use argonauts_core::steps::{
     StepError, StepName, StepObserver, StepRequest, StepRunner, decode, output_schema,
 };
-use argonauts_core::worker::{WorkerDirectory, WorkerEvent};
 use argonauts_core::{RunId, Spend};
 use time::OffsetDateTime;
 use tokio::sync::{Notify, broadcast};
 
-use crate::approver::end_kind;
+use crate::judge::end_kind;
 use crate::session::{
     self, NoToolsSession, TimedOut, claim_session, clean_text, no_tools_spec, part, run_step,
 };
 use tally::CallTally;
 
 /// The prompt template the digest is rendered into.
-pub const PROMPT: &str = include_str!("../prompts/narrate.md");
+pub const PROMPT: &str = argonauts_core::template!("prompts/run/narrator.md");
 
 /// Digest lines kept for a summary. Older ones are counted, not kept.
 const DIGEST_KEEP: usize = 500;
@@ -60,7 +60,7 @@ const BACKOFF_TICKS_MAX: u32 = 15;
 
 struct State {
     mode: NarratorMode,
-    model: WorkerRef,
+    model: ModelRef,
     digest: VecDeque<String>,
     /// Digest lines ever observed, kept or not.
     observed: u64,
@@ -132,7 +132,7 @@ pub struct LiveNarrator {
     settings: Arc<Settings>,
     run: RunId,
     run_dir: PathBuf,
-    workers: Arc<dyn WorkerDirectory>,
+    workers: Arc<dyn RunnerDirectory>,
     steps: Arc<dyn StepRunner>,
     /// Events stamped before this are history being replayed, not news.
     started: OffsetDateTime,
@@ -154,7 +154,7 @@ impl LiveNarrator {
         settings: Arc<Settings>,
         run: RunId,
         run_dir: PathBuf,
-        workers: Arc<dyn WorkerDirectory>,
+        workers: Arc<dyn RunnerDirectory>,
         steps: Arc<dyn StepRunner>,
     ) -> Arc<Self> {
         Self::launch(settings, run, run_dir, workers, steps, session::DEADLINE)
@@ -164,7 +164,7 @@ impl LiveNarrator {
         settings: Arc<Settings>,
         run: RunId,
         run_dir: PathBuf,
-        workers: Arc<dyn WorkerDirectory>,
+        workers: Arc<dyn RunnerDirectory>,
         steps: Arc<dyn StepRunner>,
         deadline: Duration,
     ) -> Arc<Self> {
@@ -172,7 +172,7 @@ impl LiveNarrator {
             .narrator
             .model
             .clone()
-            .unwrap_or_else(|| settings.main_agent.clone());
+            .unwrap_or_else(|| settings.crew.main.clone());
         let (earlier, journal_unreadable) = match journal::earlier(&run_dir) {
             Ok(earlier) => (earlier, None),
             Err(err) => (journal::Earlier::default(), Some(err.to_string())),
@@ -284,7 +284,7 @@ impl LiveNarrator {
             }
         };
 
-        let (model, input, upto, budget) = {
+        let (model, input, upto, limit) = {
             let mut state = self.state();
             if state.mode == NarratorMode::Off {
                 return Err(NarratorError::Off);
@@ -313,13 +313,13 @@ impl LiveNarrator {
                 question: question.map(|question| clean_text(&question)),
             };
             // The cap was read above, so this is what's left of it.
-            let budget = cap::parse(&self.settings.narrator.spend_cap)
+            let limit = cap::parse(&self.settings.narrator.spend_cap)
                 .ok()
-                .map(|limit| budget_left(limit, &state.spent));
-            (state.model.clone(), input, state.observed, budget)
+                .map(|limit| limit_left(limit, &state.spent));
+            (state.model.clone(), input, state.observed, limit)
         };
 
-        let (outcome, spend) = self.call(&model, &input, budget).await;
+        let (outcome, spend) = self.call(&model, &input, limit).await;
         // A failure is journaled and shown, so it becomes one clean, short line.
         let outcome = outcome.map_err(|why| cut(&one_line(&clean_text(&why)), FAILURE_MAX));
         let interval = mode == NarrateMode::Update;
@@ -372,7 +372,7 @@ impl LiveNarrator {
 
     /// A failure that spent something is journaled with its spend, so a later narrator of this
     /// run counts it. An interval failure is said once on the live line, until something works.
-    fn failed(&self, model: &WorkerRef, why: &str, spend: Spend, fresh: bool) {
+    fn failed(&self, model: &ModelRef, why: &str, spend: Spend, fresh: bool) {
         if !fresh && tally::is_nothing(&spend) {
             return;
         }
@@ -388,9 +388,9 @@ impl LiveNarrator {
     /// One fresh `Narrate` session, and what it spent even when it failed.
     async fn call(
         &self,
-        model: &WorkerRef,
+        model: &ModelRef,
         input: &NarrateInput,
-        budget: Option<BudgetAmount>,
+        limit: Option<LimitAmount>,
     ) -> (Result<String, String>, Spend) {
         let worker = match self.workers.get(model) {
             Ok(worker) => worker,
@@ -431,7 +431,7 @@ impl LiveNarrator {
             prompt,
             schema: output_schema::<Narrate>(),
             settings: &self.settings,
-            budget,
+            limit,
         });
         let mut spec = match spec {
             Ok(spec) => spec,
@@ -442,7 +442,7 @@ impl LiveNarrator {
                 );
             }
         };
-        spec.worker = model.clone();
+        spec.model = model.clone();
 
         // A schema mismatch carries no spend, so the stream's usage is what counts it.
         let streamed = Arc::new(Mutex::new(CallTally::new(tally::price_of(
@@ -451,7 +451,7 @@ impl LiveNarrator {
         ))));
         let observer: StepObserver = {
             let streamed = streamed.clone();
-            Box::new(move |event: &WorkerEvent| {
+            Box::new(move |event: &RunnerEvent| {
                 streamed
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -475,7 +475,7 @@ impl LiveNarrator {
         };
         let outcome = match finished {
             Ok(outcome) => outcome,
-            // Named by its kind only: the vendor's message and the session's last words stay in
+            // Named by its kind only: the agent's message and the session's last words stay in
             // the raw log.
             Err(StepError::Session(end)) => {
                 let why = format!("the session ended early: {}", end_kind(&end.reason));
@@ -555,7 +555,7 @@ impl LiveNarrator {
         Some(self.notice(state.model.clone(), text))
     }
 
-    fn notice(&self, model: WorkerRef, text: String) -> NarratorLine {
+    fn notice(&self, model: ModelRef, text: String) -> NarratorLine {
         NarratorLine {
             ts: OffsetDateTime::now_utc(),
             run: Some(self.run.clone()),
@@ -648,7 +648,7 @@ impl Narrator for LiveNarrator {
         self.state().mode = mode;
     }
 
-    fn set_model(&self, model: WorkerRef) {
+    fn set_model(&self, model: ModelRef) {
         self.state().model = model;
     }
 
@@ -676,15 +676,15 @@ impl Narrator for LiveNarrator {
     }
 }
 
-/// What's left of the cap, as the session's budget.
-fn budget_left(limit: cap::SpendCap, spent: &Spend) -> BudgetAmount {
+/// What's left of the cap, as the session's limit.
+fn limit_left(limit: cap::SpendCap, spent: &Spend) -> LimitAmount {
     match limit {
-        cap::SpendCap::Usd(limit) => BudgetAmount {
-            unit: BudgetUnit::Usd,
+        cap::SpendCap::Usd(limit) => LimitAmount {
+            unit: LimitUnit::Usd,
             amount: (limit - spent.cost_usd).max(0.0),
         },
-        cap::SpendCap::Tokens(limit) => BudgetAmount {
-            unit: BudgetUnit::Tokens,
+        cap::SpendCap::Tokens(limit) => LimitAmount {
+            unit: LimitUnit::Tokens,
             amount: limit.saturating_sub(spent.billable_tokens()) as f64,
         },
     }
@@ -707,14 +707,14 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    use argonauts_core::events::card::CardState;
     use argonauts_core::events::run::PhaseChange;
     use argonauts_core::events::session::EndReason;
-    use argonauts_core::events::{CardEvent, RunEventKind};
+    use argonauts_core::events::task::TaskState;
+    use argonauts_core::events::{RunEventKind, TaskEvent};
+    use argonauts_core::session_runner::{Access, SessionSpec};
     use argonauts_core::steps::SchemaStepRunner;
-    use argonauts_core::worker::{Access, SessionSpec};
-    use argonauts_core::{AgentEvent, CardId, ErrorCategory, PhaseStatus};
-    use argonauts_testkit::{FakeDirectory, FakeSession, FakeWorker};
+    use argonauts_core::{AgentEvent, ErrorCategory, PhaseStatus, TaskId};
+    use argonauts_testkit::{FakeDirectory, FakeRunner, FakeSession};
     use serde_json::json;
     use tokio::time::timeout;
 
@@ -730,8 +730,8 @@ mod tests {
         settings
     }
 
-    fn narrating(worker: &str, text: &'static str, usd: f64) -> FakeWorker {
-        FakeWorker::harness(worker, "claude").respond_with(move |_| {
+    fn narrating(worker: &str, text: &'static str, usd: f64) -> FakeRunner {
+        FakeRunner::cli(worker, "anthropic").respond_with(move |_| {
             FakeSession::structured(json!({ "lines": [text] })).with_spend(Spend {
                 input_tokens: 1_000,
                 output_tokens: 50,
@@ -774,15 +774,15 @@ mod tests {
             seq: 0,
             ts: OffsetDateTime::now_utc(),
             run_id: RunId::new("run-01").unwrap(),
-            card_id: Some(CardId::numbered(1)),
+            task_id: Some(TaskId::numbered(1)),
             session: None,
-            source: "conductor".to_owned(),
+            source: "argonauts-code".to_owned(),
             kind,
         }
     }
 
-    fn card_to(to: CardState) -> RunEvent {
-        event(RunEventKind::Card(CardEvent::State {
+    fn task_to(to: TaskState) -> RunEvent {
+        event(RunEventKind::Task(TaskEvent::State {
             from: None,
             to,
             reason: String::new(),
@@ -808,7 +808,7 @@ mod tests {
             .workers
             .add(narrating("claude-code", "Task 1 is running.", 0.001));
         let narrator = setup.start(settings(NarratorMode::Off, "0.50 usd"));
-        narrator.observe(&card_to(CardState::Running));
+        narrator.observe(&task_to(TaskState::Running));
 
         // Off never calls a model.
         assert_eq!(narrator.summary().await, Err(NarratorError::Off));
@@ -837,11 +837,11 @@ mod tests {
         narrator.update().await;
         narrator.update().await;
         assert_eq!(claude.specs().len(), 3);
-        narrator.observe(&card_to(CardState::Gating));
+        narrator.observe(&task_to(TaskState::Checking));
         narrator.update().await;
         let specs = claude.specs();
         assert_eq!(specs.len(), 4);
-        assert!(digest_part(&specs[3]).contains("task-001: gating"));
+        assert!(digest_part(&specs[3]).contains("task-001: checking"));
         assert!(!digest_part(&specs[3]).contains("task-001: running"));
         assert!(
             digest_part(&specs[3]).contains("Task 1 is running."),
@@ -857,15 +857,15 @@ mod tests {
             assert_eq!(spec.role, RoleName::Narrator);
             assert_eq!(spec.run, None);
             assert!(spec.resume.is_none());
-            assert_eq!(spec.worker, "claude-code/haiku".parse().unwrap());
+            assert_eq!(spec.model, "claude-code/haiku".parse().unwrap());
         }
 
         // A new model applies from the next call.
         let glm = setup
             .workers
-            .add(narrating("openrouter/glm", "Gating now.", 0.0));
+            .add(narrating("openrouter/glm", "Checking now.", 0.0));
         narrator.set_model("openrouter/glm".parse().unwrap());
-        narrator.observe(&card_to(CardState::InReview));
+        narrator.observe(&task_to(TaskState::InReview));
         narrator.update().await;
         assert_eq!(glm.specs().len(), 1);
         assert_eq!(narrator.status().model, "openrouter/glm".parse().unwrap());
@@ -883,7 +883,7 @@ mod tests {
             Arc::downgrade(&narrator),
             Some(Duration::from_millis(20)),
         ));
-        narrator.observe(&card_to(CardState::Running));
+        narrator.observe(&task_to(TaskState::Running));
         let line = timeout(WAIT, lines.recv()).await.unwrap().unwrap();
         assert_eq!(line.kind, NarratorLineKind::Update);
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -923,7 +923,7 @@ mod tests {
             .add(narrating("claude-code", "Task 1 is running.", 0.02));
         let narrator = setup.start(settings(NarratorMode::OnDemand, "0.01 usd"));
         let mut lines = narrator.lines();
-        narrator.observe(&card_to(CardState::Running));
+        narrator.observe(&task_to(TaskState::Running));
 
         let summary = narrator.summary().await.unwrap();
         assert_eq!(summary.spend.cost_usd, 0.02);
@@ -948,7 +948,7 @@ mod tests {
         let setup = Setup::new();
         let claude = setup.workers.add(narrating("claude-code", "unused", 0.0));
         let narrator = setup.start(settings(NarratorMode::OnDemand, "lots"));
-        narrator.observe(&card_to(CardState::Running));
+        narrator.observe(&task_to(TaskState::Running));
         assert!(narrator.status().capped);
         assert_eq!(narrator.summary().await, Err(NarratorError::CapReached));
         assert_eq!(narrator.summary().await, Err(NarratorError::CapReached));
@@ -967,7 +967,7 @@ mod tests {
         let events = setup.run_dir().join("events.jsonl");
         fs::write(&events, "{\"seq\":0}\n").unwrap();
         let narrator = setup.start(settings(NarratorMode::Live, "0.50 usd"));
-        narrator.observe(&card_to(CardState::Running));
+        narrator.observe(&task_to(TaskState::Running));
         narrator.summary().await.unwrap();
         narrator.ask("status?".into()).await.unwrap();
         narrator.update().await;
@@ -1004,14 +1004,14 @@ mod tests {
     async fn a_failing_model_is_one_notice_on_the_live_line() {
         let setup = Setup::new();
         setup.workers.add(
-            FakeWorker::harness("claude-code", "claude")
+            FakeRunner::cli("claude-code", "anthropic")
                 .respond_with(|_| FakeSession::structured(json!({"words": 3}))),
         );
         let narrator = setup.start(settings(NarratorMode::Live, "0.50 usd"));
         let mut lines = narrator.lines();
-        narrator.observe(&card_to(CardState::Running));
+        narrator.observe(&task_to(TaskState::Running));
         narrator.update().await;
-        narrator.observe(&card_to(CardState::Gating));
+        narrator.observe(&task_to(TaskState::Checking));
         narrator.update().await;
         let notice = lines.recv().await.unwrap();
         assert_eq!(notice.kind, NarratorLineKind::Notice);
@@ -1024,7 +1024,7 @@ mod tests {
 
     /// Off-schema, with the usage a real stream reports before its result.
     fn off_schema(usd: f64) -> FakeSession {
-        FakeSession::structured(json!({"words": 3})).with_event(WorkerEvent::Agent(
+        FakeSession::structured(json!({"words": 3})).with_event(RunnerEvent::Agent(
             AgentEvent::Usage {
                 input_tokens: 1_000,
                 output_tokens: 50,
@@ -1040,11 +1040,11 @@ mod tests {
         let setup = Setup::new();
         let claude = setup
             .workers
-            .add(FakeWorker::harness("claude-code", "claude").respond_with(|_| off_schema(0.02)));
+            .add(FakeRunner::cli("claude-code", "anthropic").respond_with(|_| off_schema(0.02)));
         let narrator = setup.start(settings(NarratorMode::Live, "0.01 usd"));
         let mut lines = narrator.lines();
         for _ in 0..5 {
-            narrator.observe(&card_to(CardState::Running));
+            narrator.observe(&task_to(TaskState::Running));
             narrator.update().await;
         }
         // One call: the session and its one schema retry.
@@ -1066,7 +1066,7 @@ mod tests {
         // A narrator built for the same run later, such as on attach, starts from that spend.
         drop(narrator);
         let again = setup.start(settings(NarratorMode::OnDemand, "0.01 usd"));
-        again.observe(&card_to(CardState::Running));
+        again.observe(&task_to(TaskState::Running));
         assert!(again.status().capped);
         assert_eq!(again.status().spent.cost_usd, 0.04);
         assert_eq!(again.summary().await, Err(NarratorError::CapReached));
@@ -1082,7 +1082,7 @@ mod tests {
         let claude = setup
             .workers
             .add(
-                FakeWorker::harness("claude-code", "claude").respond_with(move |spec| {
+                FakeRunner::cli("claude-code", "anthropic").respond_with(move |spec| {
                     use std::sync::atomic::Ordering::SeqCst;
                     let calls = if spec.resume.is_none() {
                         counted.fetch_add(1, SeqCst) + 1
@@ -1092,7 +1092,7 @@ mod tests {
                     if calls <= 3 {
                         off_schema(0.001)
                     } else {
-                        FakeSession::structured(json!({"lines": ["Task 1 is gating."]}))
+                        FakeSession::structured(json!({"lines": ["Task 1 is checking."]}))
                     }
                 }),
             );
@@ -1108,7 +1108,7 @@ mod tests {
         let tick = |expected_calls: usize| {
             let narrator = narrator.clone();
             async move {
-                narrator.observe(&card_to(CardState::Gating));
+                narrator.observe(&task_to(TaskState::Checking));
                 narrator.update().await;
                 assert_eq!(calls(), expected_calls);
             }
@@ -1148,7 +1148,7 @@ mod tests {
             event.ts = OffsetDateTime::UNIX_EPOCH;
             event
         };
-        narrator.observe(&old(card_to(CardState::Running)));
+        narrator.observe(&old(task_to(TaskState::Running)));
         for finished in [RunPhase::Planning, RunPhase::Dividing, RunPhase::Build] {
             narrator.observe(&old(phase(finished, PhaseStatus::Finished)));
         }
@@ -1159,11 +1159,11 @@ mod tests {
         // History still informs a summary, and live events are news again.
         narrator.summary().await.unwrap();
         assert!(digest_part(&claude.specs()[0]).contains("task-001: running"));
-        narrator.observe(&card_to(CardState::Gating));
+        narrator.observe(&task_to(TaskState::Checking));
         narrator.update().await;
         let specs = claude.specs();
         assert_eq!(specs.len(), 2);
-        assert!(digest_part(&specs[1]).contains("task-001: gating"));
+        assert!(digest_part(&specs[1]).contains("task-001: checking"));
         assert!(!digest_part(&specs[1]).contains("task-001: running"));
     }
 
@@ -1172,7 +1172,7 @@ mod tests {
         let setup = Setup::new();
         let claude =
             setup.workers.add(
-                FakeWorker::harness("claude-code", "claude").respond_with(|_| {
+                FakeRunner::cli("claude-code", "anthropic").respond_with(|_| {
                     FakeSession::structured(json!({ "lines": ["Task 1 is running."] }))
                         .with_spend(Spend {
                             cost_usd: 0.02,
@@ -1182,7 +1182,7 @@ mod tests {
                 }),
             );
         let narrator = setup.start(settings(NarratorMode::OnDemand, "0.01 usd"));
-        narrator.observe(&card_to(CardState::Running));
+        narrator.observe(&task_to(TaskState::Running));
         let (summary, answer) = tokio::join!(narrator.summary(), narrator.ask("why?".into()));
         assert!(summary.is_ok() != answer.is_ok(), "{summary:?} {answer:?}");
         assert!([&summary, &answer].contains(&&Err(NarratorError::CapReached)));
@@ -1192,7 +1192,7 @@ mod tests {
     #[tokio::test]
     async fn a_dollar_cap_stops_when_the_model_has_no_price() {
         let unpriced = || {
-            FakeWorker::endpoint("openrouter/some-model", "glm").respond_with(|_| {
+            FakeRunner::endpoint("openrouter/some-model", "zhipu").respond_with(|_| {
                 FakeSession::structured(json!({ "lines": ["Task 1 is running."] })).with_spend(
                     Spend {
                         input_tokens: 1_000,
@@ -1213,7 +1213,7 @@ mod tests {
         let model = setup.workers.add(unpriced());
         let narrator = setup.start(with_cap("0.50 usd"));
         let mut lines = narrator.lines();
-        narrator.observe(&card_to(CardState::Running));
+        narrator.observe(&task_to(TaskState::Running));
         narrator.summary().await.unwrap();
         assert!(narrator.status().capped);
         assert_eq!(narrator.summary().await, Err(NarratorError::CapReached));
@@ -1226,7 +1226,7 @@ mod tests {
         let setup = Setup::new();
         let model = setup.workers.add(unpriced());
         let narrator = setup.start(with_cap("200k tokens"));
-        narrator.observe(&card_to(CardState::Running));
+        narrator.observe(&task_to(TaskState::Running));
         narrator.summary().await.unwrap();
         narrator.summary().await.unwrap();
         assert!(!narrator.status().capped);
@@ -1261,13 +1261,13 @@ mod tests {
             .workers
             .add(narrating("claude-code", "Task 1 is running.", 0.2));
         let narrator = setup.start(settings(NarratorMode::OnDemand, "0.50 usd"));
-        narrator.observe(&card_to(CardState::Running));
+        narrator.observe(&task_to(TaskState::Running));
         narrator.summary().await.unwrap();
         narrator.summary().await.unwrap();
         let left: Vec<f64> = claude
             .specs()
             .iter()
-            .map(|spec| spec.limits.budget.unwrap().amount)
+            .map(|spec| spec.limits.limit.unwrap().amount)
             .collect();
         assert!(
             (left[0] - 0.5).abs() < 1e-9 && (left[1] - 0.3).abs() < 1e-9,
@@ -1278,7 +1278,7 @@ mod tests {
         assert_eq!(spec.limits.max_minutes, Some(session::MAX_MINUTES));
         assert_eq!(spec.limits.inactivity_min, Some(session::INACTIVITY_MIN));
 
-        let tokens = budget_left(
+        let tokens = limit_left(
             cap::SpendCap::Tokens(5_000),
             &Spend {
                 input_tokens: 1_000,
@@ -1286,7 +1286,7 @@ mod tests {
                 ..Spend::default()
             },
         );
-        assert_eq!(tokens.unit, BudgetUnit::Tokens);
+        assert_eq!(tokens.unit, LimitUnit::Tokens);
         assert_eq!(tokens.amount, 3_950.0);
     }
 
@@ -1298,7 +1298,7 @@ mod tests {
             ..Spend::default()
         });
         setup.workers.add(
-            FakeWorker::harness("claude-code", "claude").respond_with(move |_| stalled.clone()),
+            FakeRunner::cli("claude-code", "anthropic").respond_with(move |_| stalled.clone()),
         );
         let narrator = LiveNarrator::launch(
             Arc::new(settings(NarratorMode::Live, "0.50 usd")),
@@ -1309,7 +1309,7 @@ mod tests {
             Duration::from_millis(20),
         );
         let mut lines = narrator.lines();
-        narrator.observe(&card_to(CardState::Running));
+        narrator.observe(&task_to(TaskState::Running));
         timeout(WAIT, narrator.update()).await.unwrap();
         let notice = lines.recv().await.unwrap();
         assert_eq!(notice.kind, NarratorLineKind::Notice);
@@ -1332,10 +1332,10 @@ mod tests {
         let setup = Setup::new();
         setup
             .workers
-            .add(FakeWorker::harness("claude-code", "claude").respond_with({
+            .add(FakeRunner::cli("claude-code", "anthropic").respond_with({
                 let token = token.clone();
                 move |_| {
-                    let mut ended = FakeSession::ended(EndReason::VendorError {
+                    let mut ended = FakeSession::ended(EndReason::CliError {
                         category: ErrorCategory::Server,
                         message: format!("upstream said: bad key {token}"),
                     });
@@ -1345,7 +1345,7 @@ mod tests {
             }));
         let narrator = setup.start(settings(NarratorMode::Live, "0.50 usd"));
         let mut lines = narrator.lines();
-        narrator.observe(&card_to(CardState::Running));
+        narrator.observe(&task_to(TaskState::Running));
         narrator.update().await;
 
         let notice = lines.recv().await.unwrap();
@@ -1375,10 +1375,10 @@ mod tests {
 
         let setup = Setup::new();
         setup.workers.add(
-            FakeWorker::harness("claude-code", "claude").then(FakeSession::structured(structured)),
+            FakeRunner::cli("claude-code", "anthropic").then(FakeSession::structured(structured)),
         );
         let narrator = setup.start(settings(NarratorMode::OnDemand, "0.50 usd"));
-        narrator.observe(&card_to(CardState::InReview));
+        narrator.observe(&task_to(TaskState::InReview));
         let summary = narrator.summary().await.unwrap();
         assert_eq!(summary.text, decoded.lines.join("\n"));
     }

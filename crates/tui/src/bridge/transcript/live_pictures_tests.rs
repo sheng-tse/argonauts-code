@@ -1,4 +1,4 @@
-//! The live rows drawn from the pictures' own example: the money fix in `/work/solo`, at the
+//! The live rows drawn from the pictures' own example: the money fix in `/work/captain`, at the
 //! pictures' width of 118 columns.
 
 use std::time::{Duration, Instant};
@@ -14,7 +14,7 @@ use crate::render::{Clock, RenderCtx};
 use crate::state::Welcome;
 
 const WIDTH: u16 = 118;
-const FOLDER: &str = "/work/solo";
+const FOLDER: &str = "/work/captain";
 const PROMPT: &str = "Fix the money rounding so the three failing tests in tests/test_money.py pass. Don't change the tests.";
 
 /// Your message starts with `❯`, as the screen's reference and Claude Code draw it; the
@@ -32,7 +32,7 @@ fn in_folder(screen: &mut Screen) {
     screen.state.welcome = Some(Welcome {
         version: "0.0.1".into(),
         repo: FOLDER.into(),
-        workflow: "solo".into(),
+        workflow: "captain".into(),
         main_agent: None,
         agents: Vec::new(),
         runs_going: 0,
@@ -133,7 +133,7 @@ fn live_moment_the_edit_s_row_is_there_while_it_runs() {
                 row: 7,
                 cols: (33, 60),
                 why: "the working line ends with what the turn does; esc to interrupt is on the \
-                      mode line, as in Claude Code 2.1.295",
+                      bottom line, as in Claude Code 2.1.295",
             },
         ],
     );

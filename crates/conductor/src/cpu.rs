@@ -1,4 +1,4 @@
-//! One CPU sampler per supervisor process. It walks every watched process tree every 30 seconds,
+//! One CPU sampler per run host process. It walks every watched process tree every 30 seconds,
 //! so the inactivity watchdogs of a crew of many agents share one walk.
 
 use std::collections::{HashMap, HashSet};
@@ -219,7 +219,7 @@ mod tests {
     use crate::testutil::sh_spec;
 
     /// Kills a spawned test process with everything it started, even when an assertion fails
-    /// first: a child in a group of its own outlives a kill of the leader's group.
+    /// first: a child in a group of its own outlives a kill of the head's group.
     struct Tree {
         process: AgentProcess,
         record: argonauts_core::agents::AgentGroup,
@@ -293,7 +293,7 @@ mod tests {
         );
         assert!(
             !crate::liveness::is_same_process(busy.record.pid, busy.record.start_time),
-            "the busy leader survived the test"
+            "the busy head survived the test"
         );
     }
 

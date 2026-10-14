@@ -3,8 +3,8 @@
 
 use std::time::Instant;
 
-use argonauts_core::app::{AppEvent, ChatEvent};
-use argonauts_core::names::{TurnId, WorkerRef};
+use argonauts_core::app::{AppEvent, ConversationEvent};
+use argonauts_core::names::{ModelRef, TurnId};
 use argonauts_core::settings::ui::UiSettings;
 use time::macros::datetime;
 
@@ -17,7 +17,7 @@ use crate::state::AppState;
 use crate::text::plain_text;
 use crate::theme::{Glyphs, Theme};
 
-fn send(transcript: &mut Transcript, model: &mut ViewModel, event: ChatEvent) {
+fn send(transcript: &mut Transcript, model: &mut ViewModel, event: ConversationEvent) {
     let state = AppState::default();
     let settings = UiSettings::default();
     let mut out = Effects::default();
@@ -28,7 +28,7 @@ fn send(transcript: &mut Transcript, model: &mut ViewModel, event: ChatEvent) {
         now: Instant::now(),
         out: &mut out,
     };
-    transcript.on_event(&AppEvent::Chat { event }, &mut cx);
+    transcript.on_event(&AppEvent::Conversation { event }, &mut cx);
 }
 
 fn printed(model: &mut ViewModel) -> String {
@@ -53,10 +53,10 @@ fn a_message_that_waited_or_joined_has_a_row_for_each_of_its_pictures() {
     send(
         &mut transcript,
         &mut model,
-        ChatEvent::TurnStarted {
+        ConversationEvent::TurnStarted {
             turn: turn.clone(),
             text: "the header [Image #1]".into(),
-            worker: WorkerRef::new("claude-code", Some("haiku".into())),
+            worker: ModelRef::new("claude-code", Some("haiku".into())),
             read_only: false,
             commit: "8b41d07".into(),
             uncommitted: vec![],
@@ -67,7 +67,7 @@ fn a_message_that_waited_or_joined_has_a_row_for_each_of_its_pictures() {
     send(
         &mut transcript,
         &mut model,
-        ChatEvent::Joined {
+        ConversationEvent::Joined {
             turn,
             text: "the footer [Image #2], not [Image #9]".into(),
         },

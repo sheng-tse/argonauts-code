@@ -1,16 +1,16 @@
 //! Status, diff, and raw views built from a run's files alone, for when no engine is running:
-//! a parked host answers with these, and so does a client that finds no supervisor.
+//! a waiting host answers with these, and so does a client that finds no run host.
 
 use std::path::{Path, PathBuf};
 
 use argonauts_core::api::{ApiError, DiffScope, DiffView, RawView, StatusSummary};
-use argonauts_core::events::card::CardEvent;
 use argonauts_core::events::session::SessionEvent;
+use argonauts_core::events::task::TaskEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::journal;
 use argonauts_core::layout::{run_files, session_dir, session_files};
 use argonauts_core::names::SessionKey;
-use argonauts_core::{CardId, DiffStat, RunId};
+use argonauts_core::{DiffStat, RunId, TaskId};
 use argonauts_crew::status::{self, Viewer};
 
 /// How much of a session's raw output a view holds, as `RawView` says.
@@ -27,25 +27,25 @@ pub(crate) fn status(run_dir: &Path, run: &RunId) -> Result<StatusSummary, ApiEr
     Ok(status::summary(&events, &Viewer::User))
 }
 
-/// The card's last diff. `shown` writes a path for an error message.
+/// The task's last diff. `shown` writes a path for an error message.
 pub(crate) fn diff(
     run_dir: &Path,
-    card: &CardId,
+    task: &TaskId,
     scope: DiffScope,
     shown: impl Fn(&Path) -> String,
 ) -> Result<DiffView, ApiError> {
     if scope == DiffScope::LastTurn {
         return Err(ApiError::NotNow(
-            "the last turn's diff needs the run's supervisor; /resume it first".to_owned(),
+            "the last turn's diff needs the run's run host; /resume it first".to_owned(),
         ));
     }
-    let (stat, path) = last_card_diff(&events_of(run_dir)?, card)
-        .ok_or_else(|| ApiError::NotNow(format!("{card} has no diff yet")))?;
+    let (stat, path) = last_task_diff(&events_of(run_dir)?, task)
+        .ok_or_else(|| ApiError::NotNow(format!("{task} has no diff yet")))?;
     let path = run_dir.join(path);
     let text = std::fs::read_to_string(&path)
-        .map_err(|err| ApiError::Supervisor(format!("reading {}: {err}", shown(&path))))?;
+        .map_err(|err| ApiError::RunHost(format!("reading {}: {err}", shown(&path))))?;
     Ok(DiffView {
-        card: card.clone(),
+        task: task.clone(),
         stat,
         text,
         path,
@@ -67,12 +67,12 @@ pub(crate) fn raw(run_dir: &Path, run: &RunId, session: &SessionKey) -> Result<R
     };
     let all: Vec<&str> = text.lines().collect();
     let keep = all.len().saturating_sub(RAW_LINES);
-    let vendor_transcript = events_of(run_dir)?
+    let cli_transcript = events_of(run_dir)?
         .iter()
         .rev()
         .filter(|event| event.session.as_ref() == Some(session))
         .find_map(|event| match &event.kind {
-            RunEventKind::Session(SessionEvent::VendorSession { transcript, .. }) => {
+            RunEventKind::Session(SessionEvent::CliSession { transcript, .. }) => {
                 transcript.clone()
             }
             _ => None,
@@ -82,7 +82,7 @@ pub(crate) fn raw(run_dir: &Path, run: &RunId, session: &SessionKey) -> Result<R
         lines: all[keep..].iter().map(|line| (*line).to_owned()).collect(),
         truncated: keep > 0,
         path,
-        vendor_transcript,
+        cli_transcript,
     })
 }
 
@@ -96,17 +96,17 @@ fn events_of(run_dir: &Path) -> Result<Vec<RunEvent>, ApiError> {
         .map_err(unreadable)
 }
 
-fn last_card_diff(events: &[RunEvent], card: &CardId) -> Option<(DiffStat, PathBuf)> {
+fn last_task_diff(events: &[RunEvent], task: &TaskId) -> Option<(DiffStat, PathBuf)> {
     events
         .iter()
         .rev()
-        .filter(|event| event.card_id.as_ref() == Some(card))
+        .filter(|event| event.task_id.as_ref() == Some(task))
         .find_map(|event| match &event.kind {
-            RunEventKind::Card(CardEvent::Diff { stat, path }) => Some((*stat, path.clone())),
+            RunEventKind::Task(TaskEvent::Diff { stat, path }) => Some((*stat, path.clone())),
             _ => None,
         })
 }
 
 fn unreadable(err: impl std::fmt::Display) -> ApiError {
-    ApiError::Supervisor(format!("{err:#}"))
+    ApiError::RunHost(format!("{err:#}"))
 }

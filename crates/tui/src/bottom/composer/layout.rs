@@ -229,9 +229,9 @@ mod tests {
         let rows = rows(text, 20);
         assert_eq!(cursor_position(text, &rows, text.len(), 20), (0, 6));
         assert_eq!(shown(text, 5), ["a\t", "b"]);
-        let family = "\u{1F468}\u{200D}\u{1F469}";
-        let rows = super::rows(family, 20);
-        assert_eq!(cursor_position(family, &rows, family.len(), 20), (0, 4));
+        let joined = "\u{1F468}\u{200D}\u{1F469}";
+        let rows = super::rows(joined, 20);
+        assert_eq!(cursor_position(joined, &rows, joined.len(), 20), (0, 4));
     }
 
     #[test]

@@ -8,17 +8,17 @@ use argonauts_core::events::session::{
     EndReason, InputPartKind, LaunchRecord, PromptVia, SessionInput, SessionStarted,
 };
 use argonauts_core::layout::session_files::RAW_STDOUT;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
+use argonauts_core::session_runner::{
+    Access, RunnerError, RunnerKind, SessionControl, SessionHandle, SessionSpec,
+};
 use argonauts_core::settings::Span;
 use argonauts_core::settings::agents::{EndpointApi, StructuredMode};
-use argonauts_core::worker::{
-    Access, SessionControl, SessionHandle, SessionSpec, WorkerError, WorkerKind,
-};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
-use crate::EndpointWorker;
+use crate::EndpointRunner;
 use crate::errors::{self, Secrets};
 use crate::raw_log::RawLog;
 use crate::request::{self, Credentials, Effort, MissingCredential, Options};
@@ -31,17 +31,17 @@ const EVENT_BUFFER: usize = 256;
 /// Refuses any access but `NoTools`. Records `Session(Input)` with `PromptVia::Request` and a
 /// launch record naming the endpoint and model, never the key.
 pub(crate) async fn start(
-    worker: &EndpointWorker,
+    worker: &EndpointRunner,
     spec: SessionSpec,
-) -> Result<SessionHandle, WorkerError> {
+) -> Result<SessionHandle, RunnerError> {
     if spec.access != Access::NoTools {
-        return Err(WorkerError::Refused(format!(
+        return Err(RunnerError::Refused(format!(
             "the {} endpoint has no tools, so it takes only no-tools sessions, not {:?}",
             worker.id, spec.access
         )));
     }
     if spec.resume.is_some() {
-        return Err(WorkerError::Refused(format!(
+        return Err(RunnerError::Refused(format!(
             "the {} endpoint keeps no session to resume",
             worker.id
         )));
@@ -49,7 +49,7 @@ pub(crate) async fn start(
     let settings = &worker.settings;
     let clock = Instant::now();
     let model = spec
-        .worker
+        .model
         .model
         .clone()
         .or_else(|| worker.worker.model.clone());
@@ -67,7 +67,7 @@ pub(crate) async fn start(
     tokio::fs::create_dir_all(&spec.session_dir)
         .await
         .map_err(|err| {
-            WorkerError::Io(format!(
+            RunnerError::Io(format!(
                 "couldn't make the session folder {}: {err}",
                 spec.session_dir.display()
             ))
@@ -78,14 +78,14 @@ pub(crate) async fn start(
         .unwrap_or_default();
     let raw = RawLog::open(&spec.session_dir.join(RAW_STDOUT), secrets.clone())
         .await
-        .map_err(WorkerError::Io)?;
+        .map_err(RunnerError::Io)?;
     let secrets = Secrets::new(secrets);
 
     let started = SessionStarted {
-        worker: spec.worker.clone(),
-        vendor: worker.vendor_id(),
-        family: worker.family.clone(),
-        kind: WorkerKind::Endpoint,
+        worker: spec.model.clone(),
+        agent_id: worker.agent_id(),
+        provider: worker.provider.clone(),
+        kind: RunnerKind::Endpoint,
         role: spec.role,
         step: spec.step,
         access: spec.access,
@@ -112,7 +112,7 @@ pub(crate) async fn start(
     let plan = (|| {
         let url = url.map_err(|message| EndReason::StartFailed { message })?;
         let model = model.clone().ok_or_else(|| EndReason::StartFailed {
-            message: format!("{} names no model", spec.worker),
+            message: format!("{} names no model", spec.model),
         })?;
         let headers = headers(credentials?)?;
         let client = worker
@@ -145,9 +145,9 @@ pub(crate) async fn start(
     let (events_tx, events) = mpsc::channel(EVENT_BUFFER);
     let session = Session {
         key: spec.key.clone(),
-        vendor: worker.vendor_id(),
-        pricing: WorkerRef::new(worker.worker.worker.clone(), model),
-        quota: worker.quota.clone(),
+        agent_id: worker.agent_id(),
+        pricing: ModelRef::new(worker.worker.agent.clone(), model),
+        plan_usage: worker.plan_usage.clone(),
         health: worker.health.clone(),
         registry: worker.registry.clone(),
         events: events_tx,
@@ -171,7 +171,7 @@ pub(crate) async fn start(
 /// Names the endpoint, the address, the model, and the variables the key and headers come
 /// from. Never a value, so the address goes without its user, password, and query.
 fn launch_record(
-    worker: &EndpointWorker,
+    worker: &EndpointRunner,
     spec: &SessionSpec,
     url: Option<&str>,
     model: Option<&str>,
@@ -212,9 +212,9 @@ fn launch_record(
 }
 
 /// The asked level checked against the efforts the registry lists for this endpoint's model.
-fn effort(worker: &EndpointWorker, model: Option<&str>, asked: Option<&str>) -> Effort {
-    let entry = worker.registry.get(&WorkerRef::new(
-        worker.worker.worker.clone(),
+fn effort(worker: &EndpointRunner, model: Option<&str>, asked: Option<&str>) -> Effort {
+    let entry = worker.registry.get(&ModelRef::new(
+        worker.worker.agent.clone(),
         model.map(str::to_owned),
     ));
     let listed = entry.map(|entry| entry.efforts).unwrap_or_default();
@@ -260,7 +260,7 @@ fn headers(credentials: Credentials) -> Result<HeaderMap, EndReason> {
 }
 
 /// The endpoint's timeout, which each request counts from when it's sent, and the moment the
-/// session's minutes, counted from `clock`, run out. A budget too far off for the clock to hold
+/// session's minutes, counted from `clock`, run out. A limit too far off for the clock to hold
 /// is no limit.
 fn limits(clock: Instant, timeout: &Span, max_minutes: Option<f64>) -> Result<Limits, EndReason> {
     let timeout = timeout.parse().map_err(|message| EndReason::StartFailed {
@@ -271,10 +271,10 @@ fn limits(clock: Instant, timeout: &Span, max_minutes: Option<f64>) -> Result<Li
             message: format!("the session's max_minutes must be 0 or more, not {minutes}"),
         });
     }
-    let budget = max_minutes
+    let limit = max_minutes
         .and_then(|minutes| Duration::try_from_secs_f64(minutes * 60.0).ok())
-        .and_then(|budget| clock.checked_add(budget));
-    Ok(Limits { timeout, budget })
+        .and_then(|limit| clock.checked_add(limit));
+    Ok(Limits { timeout, limit })
 }
 
 #[cfg(test)]
@@ -282,39 +282,39 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
-    use argonauts_core::events::VendorEvent;
+    use argonauts_core::events::AgentStatusEvent;
     use argonauts_core::events::session::{InputPart, SessionEnd, SessionEvent};
-    use argonauts_core::limits::{HealthBoard, HealthSignal, QuotaBoard, VendorHealth};
-    use argonauts_core::names::VendorId;
+    use argonauts_core::limits::{AgentHealth, HealthBoard, HealthSignal, PlanUsageBoard};
+    use argonauts_core::names::AgentId;
     use argonauts_core::registry::ModelEntry;
+    use argonauts_core::session_runner::{RunnerEvent, SessionRunner};
     use argonauts_core::settings::agents::EndpointSettings;
-    use argonauts_core::worker::{Worker, WorkerEvent};
-    use argonauts_core::{AgentEvent, BudgetDimension};
-    use argonauts_testkit::services::{MemoryHealthBoard, MemoryQuotaBoard, StaticRegistry};
-    use argonauts_testkit::worker::{drain, session_spec};
+    use argonauts_core::{AgentEvent, LimitDimension};
+    use argonauts_testkit::runner::{drain, session_spec};
+    use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard, StaticRegistry};
     use argonauts_testkit::{FakeOpenAi, FakeReply};
     use serde_json::json;
     use tokio::sync::broadcast;
 
     use super::*;
 
-    fn worker_with(entries: &[(&str, &[&str])]) -> EndpointWorker {
+    fn worker_with(entries: &[(&str, &[&str])]) -> EndpointRunner {
         let registry = Arc::new(StaticRegistry::default());
         for (model, efforts) in entries {
             let entry: ModelEntry = serde_json::from_value(json!({
-                "id": format!("openrouter/{model}"), "family": "llama", "kind": "endpoint",
+                "id": format!("openrouter/{model}"), "provider": "meta", "kind": "endpoint",
                 "access": "api-key", "cost": {"unit": "usd"}, "efforts": efforts,
             }))
             .unwrap();
             registry.add(entry);
         }
-        EndpointWorker::new(
+        EndpointRunner::new(
             "openrouter",
             &EndpointSettings::default(),
-            WorkerRef::new("openrouter", Some("reasoner".to_owned())),
+            ModelRef::new("openrouter", Some("reasoner".to_owned())),
             "llama".to_owned(),
             registry,
-            Arc::new(MemoryQuotaBoard::default()),
+            Arc::new(MemoryPlanUsageBoard::default()),
             Arc::new(MemoryHealthBoard::default()),
         )
     }
@@ -334,14 +334,14 @@ mod tests {
     }
 
     #[test]
-    fn the_timeout_is_per_request_and_the_budget_from_the_start() {
+    fn the_timeout_is_per_request_and_the_limit_from_the_start() {
         let now = Instant::now();
         let span = Span::new;
         let found = limits(now, &span("5m"), Some(1.0)).unwrap();
         assert_eq!(found.timeout, Some(Duration::from_secs(300)));
-        assert_eq!(found.budget, Some(now + Duration::from_secs(60)));
+        assert_eq!(found.limit, Some(now + Duration::from_secs(60)));
         let found = limits(now, &span("none"), None).unwrap();
-        assert_eq!((found.timeout, found.budget), (None, None));
+        assert_eq!((found.timeout, found.limit), (None, None));
         for minutes in [f64::NAN, f64::INFINITY, -1.0] {
             let refused = limits(now, &span("5m"), Some(minutes));
             assert!(
@@ -352,7 +352,7 @@ mod tests {
         let broken = limits(now, &span("soon"), None);
         assert!(matches!(broken, Err(EndReason::StartFailed { .. })));
         let forever = limits(now, &span("none"), Some(1e17)).unwrap();
-        assert!(forever.budget.is_none_or(|at| at > now));
+        assert!(forever.limit.is_none_or(|at| at > now));
     }
 
     /// Keeps every health signal, so a test can check that none blamed the endpoint.
@@ -378,43 +378,43 @@ mod tests {
             self.board.observe(signal);
         }
 
-        fn state(&self, vendor: &VendorId) -> VendorHealth {
-            self.board.state(vendor)
+        fn state(&self, agent_id: &AgentId) -> AgentHealth {
+            self.board.state(agent_id)
         }
 
-        fn all(&self) -> Vec<VendorHealth> {
+        fn all(&self) -> Vec<AgentHealth> {
             self.board.all()
         }
 
-        fn subscribe(&self) -> broadcast::Receiver<VendorEvent> {
+        fn subscribe(&self) -> broadcast::Receiver<AgentStatusEvent> {
             self.board.subscribe()
         }
 
-        fn test_result(&self, vendor: &VendorId, ok: bool) {
-            self.board.test_result(vendor, ok);
+        fn test_result(&self, agent_id: &AgentId, ok: bool) {
+            self.board.test_result(agent_id, ok);
         }
     }
 
     /// An endpoint that sends one request at a time.
-    fn one_at_a_time(server: &FakeOpenAi, timeout: &str, health: Arc<Signals>) -> EndpointWorker {
+    fn one_at_a_time(server: &FakeOpenAi, timeout: &str, health: Arc<Signals>) -> EndpointRunner {
         let settings = EndpointSettings {
             base_url: Some(server.base_url()),
             max_concurrency: 1,
             timeout: Span::new(timeout),
             ..EndpointSettings::default()
         };
-        EndpointWorker::new(
+        EndpointRunner::new(
             "fake",
             &settings,
-            WorkerRef::new("fake", Some("fake-model".to_owned())),
+            ModelRef::new("fake", Some("fake-model".to_owned())),
             "llama".to_owned(),
             Arc::new(StaticRegistry::default()),
-            Arc::new(MemoryQuotaBoard::default()),
+            Arc::new(MemoryPlanUsageBoard::default()),
             health,
         )
     }
 
-    async fn session(worker: &EndpointWorker, dir: &Path, max_minutes: Option<f64>) -> SessionEnd {
+    async fn session(worker: &EndpointRunner, dir: &Path, max_minutes: Option<f64>) -> SessionEnd {
         let mut spec = session_spec("fake/fake-model", Access::NoTools, dir);
         spec.prompt = vec![InputPart {
             kind: InputPartKind::StepInput,
@@ -458,7 +458,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_budget_spent_in_the_queue_is_a_budget_end_that_blames_no_one() {
+    async fn a_limit_spent_in_the_queue_is_a_limit_end_that_blames_no_one() {
         let server = FakeOpenAi::start().unwrap();
         server.push(slow("first", 3000));
         let health = Arc::new(Signals::default());
@@ -475,8 +475,8 @@ mod tests {
         assert_eq!(first.reason, EndReason::Completed);
         assert_eq!(
             second.reason,
-            EndReason::BudgetHit {
-                dimension: BudgetDimension::Minutes
+            EndReason::LimitHit {
+                dimension: LimitDimension::Minutes
             }
         );
         assert_eq!(sent, 1, "the queued session never sent its request");
@@ -505,10 +505,10 @@ mod tests {
         assert!(health.errors().is_empty(), "{:?}", health.errors());
     }
 
-    fn shown_text(events: &[WorkerEvent]) -> String {
+    fn shown_text(events: &[RunnerEvent]) -> String {
         let texts = events.iter().filter_map(|event| match event {
-            WorkerEvent::Agent(AgentEvent::Error { message, .. }) => Some(message.clone()),
-            WorkerEvent::Session(SessionEvent::Input(input)) => {
+            RunnerEvent::Agent(AgentEvent::Error { message, .. }) => Some(message.clone()),
+            RunnerEvent::Session(SessionEvent::Input(input)) => {
                 Some(serde_json::to_string(&input.launch).unwrap())
             }
             _ => None,
@@ -518,7 +518,7 @@ mod tests {
 
     /// A proxy that repeats the key in its errors, reached with a password in the address.
     #[tokio::test]
-    async fn an_echoed_key_stays_out_of_reasons_events_and_quota() {
+    async fn an_echoed_key_stays_out_of_reasons_events_and_plan_usage() {
         const KEY: &str = "plain-test-key-0042";
         const PASSWORD: &str = "url-password-77";
         for status in [401, 402] {
@@ -535,14 +535,14 @@ mod tests {
                 api_key_env: Some("ARGONAUTS_TEST_ENDPOINT_KEY".into()),
                 ..EndpointSettings::default()
             };
-            let quota = Arc::new(MemoryQuotaBoard::default());
-            let worker = EndpointWorker::new(
+            let plan_usage = Arc::new(MemoryPlanUsageBoard::default());
+            let worker = EndpointRunner::new(
                 "fake",
                 &settings,
-                WorkerRef::new("fake", Some("fake-model".to_owned())),
+                ModelRef::new("fake", Some("fake-model".to_owned())),
                 "llama".to_owned(),
                 Arc::new(StaticRegistry::default()),
-                quota.clone(),
+                plan_usage.clone(),
                 Arc::new(MemoryHealthBoard::default()),
             );
             let dir = tempfile::tempdir().unwrap();
@@ -568,9 +568,9 @@ mod tests {
                 assert!(!seen.contains(secret), "{seen}");
             }
             if status == 402 {
-                let reading = quota
-                    .get(&VendorId("fake".into()))
-                    .expect("a quota reading");
+                let reading = plan_usage
+                    .get(&AgentId("fake".into()))
+                    .expect("a plan usage reading");
                 let detail = serde_json::to_string(&reading.detail).unwrap();
                 assert!(!detail.contains(KEY), "{detail}");
             }

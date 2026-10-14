@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 
 use argonauts_core::asking::{Ask, AskTarget};
 use argonauts_core::driver::{DriverStart, PermissionScope};
-use argonauts_core::worker::Access;
+use argonauts_core::session_runner::Access;
 use regex::Regex;
 use serde_json::{Value, json};
 
@@ -66,7 +66,7 @@ pub(crate) enum Answer {
         rejection: Option<String>,
     },
     /// The agent offered no `reject_once` option to refuse with, so the request gets an error
-    /// instead. Picking an `always` option would outlive the card.
+    /// instead. Picking an `always` option would outlive the question.
     Refuse(String),
 }
 
@@ -264,7 +264,7 @@ impl Policy {
 }
 
 /// Picks the answer. Never an `allow_always` or `reject_always` option, since agents persist
-/// those beyond the card.
+/// those beyond the question.
 pub(crate) fn answer(options: &Value, verdict: Verdict) -> Answer {
     let option = |kind: &str| {
         options
@@ -317,7 +317,7 @@ pub(crate) fn is_bypass_mode(mode: &str) -> bool {
 
 /// The folder outside the project a call asks to reach, as OpenCode's `external_directory`
 /// names it (kind `other`, `rawInput.parentDir`, 1.18.34). The policy can't classify the kind,
-/// so it's only ever yours to allow, on a card.
+/// so it's only ever yours to allow, on a question.
 pub(crate) fn outside_folder(call: &Value) -> Option<PathBuf> {
     call.get("rawInput")?
         .get("parentDir")?
@@ -325,7 +325,7 @@ pub(crate) fn outside_folder(call: &Value) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Asks you about one call, named the way the app's cards name Claude Code's tools: an edit as
+/// Asks you about one call, named the way the app's questions name Claude Code's tools: an edit as
 /// `Edit` with its diff, a command as `Bash`, anything else by its title. No answer is a no.
 pub(crate) async fn ask_you(target: &AskTarget, call: &Value) -> Verdict {
     let raw = call.get("rawInput").cloned().unwrap_or(Value::Null);
@@ -339,7 +339,7 @@ pub(crate) async fn ask_you(target: &AskTarget, call: &Value) -> Verdict {
         .cloned()
         .unwrap_or(Value::Null);
     // OpenCode asks to reach a folder outside the project as kind `other`, naming it in
-    // `parentDir` (1.18.34). It gets a card of its own, never covered by an earlier yes.
+    // `parentDir` (1.18.34). It gets a question of its own, never covered by an earlier yes.
     let (tool_name, input) = if let Some(folder) = raw.get("parentDir") {
         ("ExternalDirectory".to_owned(), json!({ "path": folder }))
     } else if matches!(kind, "edit" | "delete" | "move") || has_diff(call) {
@@ -487,7 +487,7 @@ mod tests {
         let build = Policy::new(&start(Access::Build, false), Some("default".into()));
         let read_only = Policy::new(&start(Access::ReadOnly, false), Some("plan".into()));
         let no_tools = Policy::new(&start(Access::NoTools, true), None);
-        let online = Policy::new(&start(Access::Spike, true), None);
+        let online = Policy::new(&start(Access::Experiment, true), None);
         let allow = |policy: &Policy, call: Value| {
             assert_eq!(policy.judge(&call), Verdict::Allow, "{call}")
         };

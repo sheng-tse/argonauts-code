@@ -1,7 +1,7 @@
 //! What a file of steps would run, without running it: each step, its role, who would take it
 //! and how, and about how many agents that makes.
 
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::crew::CrewRole;
 
 use crate::file::{Count, ForEach, Step, WorkflowFile};
@@ -21,8 +21,8 @@ pub struct Row {
     pub number: Option<u32>,
     pub step: String,
     pub role: CrewRole,
-    /// In order of preference. The first that's available takes each seat.
-    pub who: Vec<WorkerRef>,
+    /// In order of preference. The first that's available is asked first.
+    pub who: Vec<ModelRef>,
     pub how: String,
 }
 
@@ -51,8 +51,8 @@ impl Estimate {
     }
 }
 
-/// `seats` says who may fill a role, in order.
-pub fn dry_run(file: &WorkflowFile, seats: &dyn Fn(CrewRole) -> Vec<WorkerRef>) -> DryRun {
+/// `models` says which models each role has, in order.
+pub fn dry_run(file: &WorkflowFile, models: &dyn Fn(CrewRole) -> Vec<ModelRef>) -> DryRun {
     let mut number = 0;
     let rows = file
         .steps
@@ -66,27 +66,27 @@ pub fn dry_run(file: &WorkflowFile, seats: &dyn Fn(CrewRole) -> Vec<WorkerRef>) 
                 number: (!step.required).then_some(number),
                 step: step.name.clone(),
                 role: step.role,
-                who: who(step, &seats(step.role)),
+                who: who(step, &models(step.role)),
                 how: how(file, index),
             }
         })
         .collect();
     DryRun {
         rows,
-        estimate: estimate(file, seats),
+        estimate: estimate(file, models),
     }
 }
 
-fn who(step: &Step, seats: &[WorkerRef]) -> Vec<WorkerRef> {
+fn who(step: &Step, models: &[ModelRef]) -> Vec<ModelRef> {
     if let Some(model) = &step.model {
         return vec![model.clone()];
     }
     let taken = match step.count {
-        Some(Count::All) => seats.len(),
+        Some(Count::All) => models.len(),
         Some(Count::Fixed(count)) => count as usize,
         None => 1,
     };
-    seats.iter().take(taken.max(1)).cloned().collect()
+    models.iter().take(taken.max(1)).cloned().collect()
 }
 
 /// One line on how a step runs, such as `2 per task · sends back to Revise`.
@@ -134,8 +134,8 @@ fn agents(step: &Step, per_task: bool) -> String {
         (None | Some(Count::Fixed(1)), false) => "1 agent".to_owned(),
         (Some(Count::Fixed(count)), true) => format!("{count} per task"),
         (Some(Count::Fixed(count)), false) => format!("{count} agents"),
-        (Some(Count::All), true) => format!("all the {} per task", step.role),
-        (Some(Count::All), false) => format!("all the {}", step.role),
+        (Some(Count::All), true) => format!("all the {} per task", step.role.plural()),
+        (Some(Count::All), false) => format!("all the {}", step.role.plural()),
     }
 }
 
@@ -154,12 +154,12 @@ fn again(file: &WorkflowFile, next: &str) -> String {
     format!("then {next} again{accepts}")
 }
 
-fn estimate(file: &WorkflowFile, seats: &dyn Fn(CrewRole) -> Vec<WorkerRef>) -> Estimate {
+fn estimate(file: &WorkflowFile, models: &dyn Fn(CrewRole) -> Vec<ModelRef>) -> Estimate {
     let per_task = |index: usize| file.per_task(index);
     let once = |index: usize| {
         let step = &file.steps[index];
         let agents = match step.count {
-            Some(Count::All) => u32::try_from(seats(step.role).len()).unwrap_or(1).max(1),
+            Some(Count::All) => u32::try_from(models(step.role).len()).unwrap_or(1).max(1),
             Some(Count::Fixed(count)) => count,
             None => 1,
         };
@@ -197,16 +197,16 @@ fn estimate(file: &WorkflowFile, seats: &dyn Fn(CrewRole) -> Vec<WorkerRef>) -> 
 mod tests {
     use super::*;
 
-    fn seats(role: CrewRole) -> Vec<WorkerRef> {
+    fn models(role: CrewRole) -> Vec<ModelRef> {
         let names: &[&str] = match role {
             CrewRole::Main | CrewRole::Orchestrator => &["claude-code/opus-5-5"],
-            CrewRole::Workers => &["codex/gpt-5.6", "claude-code/sonnet-5-5"],
-            CrewRole::Reviewers => &["antigravity-cli/gemini-3.6-pro", "codex/gpt-5.6"],
+            CrewRole::Worker => &["codex/gpt-5.6", "claude-code/sonnet-5-5"],
+            CrewRole::Reviewer => &["antigravity-cli/gemini-3.6-pro", "codex/gpt-5.6"],
             CrewRole::Judge => &["antigravity-cli/gemini-3.6-flash"],
         };
         names
             .iter()
-            .map(|name| name.parse().expect("a worker"))
+            .map(|name| name.parse().expect("a model"))
             .collect()
     }
 
@@ -215,7 +215,7 @@ mod tests {
         let file = WorkflowFile::parse(include_str!("../tests/fixtures/spec-first.toml"))
             .expect("reads")
             .expect("has steps");
-        let dry = dry_run(&file, &seats);
+        let dry = dry_run(&file, &models);
         let shown: Vec<(Option<u32>, &str, String, &str)> = dry
             .rows
             .iter()
@@ -272,10 +272,10 @@ mod tests {
 
     #[test]
     fn a_council_counts_every_worker() {
-        let file = WorkflowFile::parse(include_str!("../workflows/council.toml"))
+        let file = WorkflowFile::parse(crate::built_in("council").expect("built in"))
             .expect("reads")
             .expect("has steps");
-        let dry = dry_run(&file, &seats);
+        let dry = dry_run(&file, &models);
         assert_eq!(
             dry.rows[0].how,
             "all the workers · without seeing the others"

@@ -143,7 +143,7 @@
     }
   ],
   "end": {
-    "vendor_session": "20260930_101500_ab12cd",
+    "cli_session": "20260930_101500_ab12cd",
     "stop": {
       "stop": "end_turn"
     }

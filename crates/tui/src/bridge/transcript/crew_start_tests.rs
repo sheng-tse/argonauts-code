@@ -1,19 +1,19 @@
-//! A workflow asked for in solo, as the chat shows it: your message, the main session's line
-//! saying what started and with whom, and the workflow's row with the reviewers you asked for.
+//! A workflow asked for in Captain, as the conversation shows it: your message, the main session's
+//! line saying what started and with whom, and the workflow's row with the reviewers you asked for.
 //! Compared cell for cell, colours included, with `tests/golden/crew_after`.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use argonauts_core::app::{AppEvent, ChatEvent, TurnReply};
+use argonauts_core::app::{AppEvent, ConversationEvent, TurnReply};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::run::{
     CheckedInstruction, InstructionOutcome, RunLifecycle, RunMode, RunNamed, RunStarted,
 };
 use argonauts_core::events::workflow::{DeclaredPhase, WorkflowDeclared, WorkflowEvent};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{TurnId, WorkerRef, WorkflowId};
+use argonauts_core::names::{ModelRef, TurnId, WorkflowId};
 use argonauts_core::settings::ui::UiSettings;
 use argonauts_core::settings::workflows::RunStyle;
 use argonauts_core::steps::intake::InstructionKind;
@@ -55,7 +55,7 @@ impl Screen {
     fn new() -> Self {
         let mut state = AppState::default();
         state.names = DisplayNames {
-            harnesses: BTreeMap::from([
+            clis: BTreeMap::from([
                 ("claude-code".to_owned(), "Claude Code".to_owned()),
                 ("codex".to_owned(), "Codex".to_owned()),
             ]),
@@ -103,9 +103,9 @@ fn run_event(kind: RunEventKind) -> AppEvent {
             seq: 0,
             ts: datetime!(2026-10-09 10:42 UTC),
             run_id: run_id(),
-            card_id: None,
+            task_id: None,
             session: None,
-            source: "conductor".into(),
+            source: "argonauts-code".into(),
             kind,
         }),
     }
@@ -120,8 +120,8 @@ fn started() -> RunStarted {
         forced: false,
         workflow: "orchestrator".into(),
         estimate: None,
-        triage: None,
-        chat_turn: Some(TurnId::numbered(1)),
+        captain_or_crew: None,
+        conversation_turn: Some(TurnId::numbered(1)),
         continues: None,
         repo_root: PathBuf::from("/repo"),
         base_branch: Some("main".into()),
@@ -129,11 +129,11 @@ fn started() -> RunStarted {
         uncommitted: vec![],
         uncommitted_included: false,
         settings_sha256: String::new(),
-        settings: serde_json::json!({"roles": {"reviewer": {"workers": ["codex"]}}}),
+        settings: serde_json::json!({"roles": {"reviewer": {"models": ["codex"]}}}),
         overrides: vec![],
-        harness_versions: Default::default(),
+        cli_versions: Default::default(),
         version: "0.0.1".into(),
-        front_end: None,
+        outside_agent: None,
         instructions: vec![
             CheckedInstruction {
                 says: "Use a workflow for this".into(),
@@ -159,11 +159,11 @@ fn started() -> RunStarted {
 fn screen() -> Screen {
     let mut screen = Screen::new();
     let turn = TurnId::numbered(1);
-    screen.send(AppEvent::Chat {
-        event: ChatEvent::TurnStarted {
+    screen.send(AppEvent::Conversation {
+        event: ConversationEvent::TurnStarted {
             turn: turn.clone(),
             text: TYPED.into(),
-            worker: WorkerRef::new("claude-code", Some("haiku".into())),
+            worker: ModelRef::new("claude-code", Some("haiku".into())),
             read_only: false,
             commit: String::new(),
             uncommitted: Vec::new(),
@@ -171,8 +171,8 @@ fn screen() -> Screen {
             continues: false,
         },
     });
-    screen.send(AppEvent::Chat {
-        event: ChatEvent::TurnFinished {
+    screen.send(AppEvent::Conversation {
+        event: ConversationEvent::TurnFinished {
             turn,
             reply: TurnReply::Answer {
                 markdown: SAID.into(),
@@ -207,7 +207,7 @@ fn screen() -> Screen {
     ))));
     let phase = |index: u32, title: &str| DeclaredPhase {
         index,
-        title: title.into(),
+        name: title.into(),
         detail: String::new(),
         standard: StandardPhase::Do,
     };
@@ -250,7 +250,7 @@ fn drawn(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 }
 
 #[test]
-fn a_workflow_asked_for_in_solo_reads_as_the_picture_draws_it() {
+fn a_workflow_asked_for_in_captain_reads_as_the_picture_draws_it() {
     let theme = theme();
     let lines = drawn(screen().printed(&theme));
     let printed: Vec<String> = lines
@@ -327,14 +327,14 @@ fn picture_looks() -> Vec<Vec<(char, Look)>> {
 }
 
 /// The picture's colour names, each with the theme role that draws it. Its accent is the
-/// periwinkle the theme draws cards and working marks in.
+/// periwinkle the theme draws questions and working marks in.
 const ROLES: [(&str, Role); 6] = [
-    ("acc", Role::Card),
+    ("acc", Role::Question),
     ("dim", Role::Dim),
     ("faint", Role::Faint),
     ("grn", Role::Success),
-    ("red", Role::Error),
-    ("amb", Role::Warning),
+    ("red", Role::Danger),
+    ("amb", Role::Warn),
 ];
 
 fn look_of(style: &str) -> Look {

@@ -14,7 +14,7 @@ pub fn compaction(setting: Compaction) -> LaunchTweak {
 
 /// `off` selects a custom agent without the subagent tools, which `build_command` writes to
 /// the session's scratch directory. agy documents no count or concurrency cap, so a limit is
-/// kept by the conductor counting `subagent_info` children and interrupting past it.
+/// kept by Argonauts Code counting `subagent_info` children and interrupting past it.
 pub fn native_fanout(setting: NativeFanout) -> LaunchTweak {
     let effect = match setting {
         NativeFanout::Limit { max } if max > 0 => TweakEffect::EnforcedByConductor,
@@ -63,7 +63,7 @@ mod tests {
     }
 
     #[test]
-    fn a_limit_is_counted_by_the_conductor() {
+    fn a_limit_is_counted_by_argonauts_code() {
         let tweak = native_fanout(NativeFanout::Limit { max: 3 });
         assert_eq!(tweak.effect, TweakEffect::EnforcedByConductor);
         assert!(tweak.args.is_empty() && tweak.env_set.is_empty());

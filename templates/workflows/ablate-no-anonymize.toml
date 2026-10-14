@@ -1,0 +1,5 @@
+name  = "ablate-no-anonymize"
+about = "Judges see authors"
+
+[judging]
+anonymize = false

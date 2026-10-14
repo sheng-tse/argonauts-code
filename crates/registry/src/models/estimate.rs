@@ -1,17 +1,17 @@
-//! What a session would cost: dollars from prices, a share of your plan's quota, or free.
+//! What a session would cost: dollars from prices, a share of your plan's usage, or free.
 
 use argonauts_core::TokenPrice;
 use argonauts_core::builtin_price;
 use argonauts_core::limits::CostEstimate;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::registry::{CostUnit, ModelAccess, ModelEntry};
 
 /// `Usd` from the entry's prices or the built-in price table, `Free` for a local model. A
-/// subscription spends quota, but its share needs the median of similar past cards, which
+/// subscription spends plan usage, but its share needs the median of similar past tasks, which
 /// the registry doesn't have, so it stays `Unknown` and the entry's `access` says why.
 pub(crate) fn estimate(
     entry: Option<&ModelEntry>,
-    worker: &WorkerRef,
+    worker: &ModelRef,
     input_tokens: u64,
     output_tokens: u64,
 ) -> CostEstimate {
@@ -23,14 +23,14 @@ pub(crate) fn estimate(
     }
     match entry.cost.unit {
         CostUnit::None => CostEstimate::Free,
-        CostUnit::Quota => CostEstimate::Unknown,
+        CostUnit::PlanUsage => CostEstimate::Unknown,
         CostUnit::Usd => price(entry, worker).map_or(CostEstimate::Unknown, |price| {
             CostEstimate::Usd(price.cost(input_tokens, output_tokens, 0))
         }),
     }
 }
 
-fn price(entry: &ModelEntry, worker: &WorkerRef) -> Option<TokenPrice> {
+fn price(entry: &ModelEntry, worker: &ModelRef) -> Option<TokenPrice> {
     if let (Some(input), Some(output)) = (entry.cost.input_per_mtok, entry.cost.output_per_mtok) {
         return Some(TokenPrice {
             input_per_mtok: input,
@@ -53,7 +53,7 @@ mod tests {
     use crate::models::builtin::cost;
 
     fn entry(id: &str, access: ModelAccess, cost: CostModel) -> ModelEntry {
-        let mut entry = crate::models::builtin::harness_entry(
+        let mut entry = crate::models::builtin::cli_entry(
             &argonauts_core::settings::Settings::default(),
             "codex",
             None,
@@ -66,8 +66,8 @@ mod tests {
     }
 
     #[test]
-    fn dollars_quota_and_free() {
-        let worker: WorkerRef = "openrouter/z-ai/glm-5".parse().unwrap();
+    fn dollars_plan_usage_and_free() {
+        let worker: ModelRef = "openrouter/z-ai/glm-5".parse().unwrap();
         let priced = entry(
             "openrouter/z-ai/glm-5",
             ModelAccess::ApiKey,
@@ -83,7 +83,7 @@ mod tests {
             CostEstimate::Usd(3.0)
         );
 
-        let haiku: WorkerRef = "claude-code/haiku".parse().unwrap();
+        let haiku: ModelRef = "claude-code/haiku".parse().unwrap();
         let api_key = entry(
             "claude-code/haiku",
             ModelAccess::ApiKey,
@@ -104,7 +104,11 @@ mod tests {
             CostEstimate::Unknown
         );
 
-        let plan = entry("codex", ModelAccess::Subscription, cost(CostUnit::Quota));
+        let plan = entry(
+            "codex",
+            ModelAccess::Subscription,
+            cost(CostUnit::PlanUsage),
+        );
         assert_eq!(
             estimate(Some(&plan), &plan.id, 10, 10),
             CostEstimate::Unknown

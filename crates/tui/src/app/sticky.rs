@@ -1,7 +1,7 @@
 //! Scrolled up past one of your prompts, the conversation keeps the prompt being answered in
 //! sight: one dim row at the top, `❯ ` and its first paragraph cut with `…`, over a faint rule.
 //! Clicking it or Ctrl+↑ jumps to where that prompt starts, and it goes back at the bottom.
-//! Claude Code shows it in its full-screen view, which is the screen Argonauts always draws.
+//! Claude Code shows it in its full-screen view, which is the screen Argonauts Code always draws.
 
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
@@ -43,8 +43,8 @@ pub(super) fn prompt_row(words: &str, ctx: &RenderCtx<'_>) -> Line<'static> {
     let theme = ctx.theme;
     let width = usize::from(ctx.width);
     let glyph = theme.glyphs.prompt;
-    let lead = str_width(glyph) + 1;
-    let room = width.saturating_sub(lead + 1);
+    let margin = str_width(glyph) + 1;
+    let room = width.saturating_sub(margin + 1);
     let dim = theme.style(Role::Dim);
     Line::from(vec![
         marks::decorative(glyph, dim),
@@ -60,12 +60,12 @@ fn cut(text: &str, room: usize, ellipsis: &str) -> String {
     if str_width(text) <= room {
         return text.to_owned();
     }
-    let budget = room.saturating_sub(str_width(ellipsis));
+    let limit = room.saturating_sub(str_width(ellipsis));
     let mut kept = String::new();
     let mut used = 0;
     for grapheme in text.graphemes(true) {
         let w = str_width(grapheme);
-        if used + w > budget {
+        if used + w > limit {
             break;
         }
         used += w;

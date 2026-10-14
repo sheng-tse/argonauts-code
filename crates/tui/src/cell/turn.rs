@@ -116,6 +116,35 @@ impl HistoryCell for Recap {
     }
 }
 
+/// What an agent thought on the way to an answer, as Claude Code draws it: `∴` and the words,
+/// dim and italic. Only the Ctrl+O history shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Thought {
+    pub text: String,
+}
+
+impl Thought {
+    const MARK: &'static str = "∴";
+
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into() }
+    }
+}
+
+impl HistoryCell for Thought {
+    fn lines(&self, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
+        let dim = ctx.theme.style(Role::Dim);
+        let italic = dim.add_modifier(Modifier::ITALIC);
+        let words = self.text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let spans = [Span::styled(sanitize_line(&words).into_owned(), italic)];
+        let first = [Span::styled(Self::MARK, dim), Span::raw(" ")];
+        let rest = [Span::raw(" ".repeat(str_width(Self::MARK) + 1))];
+        let mut lines = wrap_spans(&spans, usize::from(ctx.width), &first, &rest);
+        fit_lines(&mut lines, usize::from(ctx.width));
+        lines
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Instant;

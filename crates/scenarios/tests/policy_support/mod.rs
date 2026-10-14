@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
 use argonauts_core::app::{AppChoice, AppEvent, ChoiceKind};
-use argonauts_core::events::checkpoint::{
-    CheckpointDecided, CheckpointEvent, CheckpointKind, CheckpointOpened,
+use argonauts_core::events::approval::{
+    ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened,
 };
 use argonauts_core::events::run::{RunLifecycle, RunStarted};
 use argonauts_core::events::{RunEvent, RunEventKind};
@@ -30,32 +30,32 @@ use tokio::process::{Child, Command};
 
 /// The idle prompt's hint line.
 pub const IDLE: &str = "for shortcuts";
-/// What every policy scenario asks for. The fake owners match on `hello.txt`.
+/// What every policy scenario asks for. The fake workers match on `hello.txt`.
 pub const TASK: &str = "Create hello.txt containing hi";
-/// A solo card from start to its merge checkpoint, with fakes.
+/// A Captain task from start to its merge approval, with fakes.
 pub const RUN_WAIT: Duration = Duration::from_secs(90);
 /// Merges decided by your rules alone, loose enough for a one-line change with no tests, and
-/// everything else the rules ask before auto merges: a gate that checks the card's file, so
-/// the gates and the final check pass on real results, and a review by another company than
-/// the owner's, here the fake Codex. Codex names no model it ran, so the reviewer names one.
+/// everything else the rules ask before auto merges: a check that reads the task's file, so
+/// the checks and the final check pass on real results, and a review by another provider than
+/// the worker's, here the fake Codex. Codex names no model it ran, so the reviewer names one.
 pub const AUTO_MERGE_RULES: &str = concat!(
     "[approvals.merge]\nmode = \"auto\"\ndecide_with = \"rules\"\n\n",
     "[approvals.rules.merge]\nmin_test_coverage_of_changed_lines = 0.0\nmax_changed_lines = 400\n\n",
     "[checks]\nrun = [{ name = \"hello\", command = [\"test\", \"-f\", \"hello.txt\"] }]\n\n",
-    "[solo]\nreview = true\n\n[roles.reviewer]\nworkers = [\"codex/gpt-5.6-luna\"]\n",
+    "[captain]\nreview = true\n\n[roles.reviewer]\nmodels = [\"codex/gpt-5.6-luna\"]\n",
 );
-/// Merges wait for you, for the scenarios about a merge checkpoint that does. Merging is
+/// Merges wait for you, for the scenarios about a merge approval that does. Merging is
 /// automatic by default.
 pub const SUPERVISED_MERGE: &str = "[approvals.merge]\nmode = \"supervised\"\n";
-/// The gate alone, for merges the approver decides once the hard limits pass.
-pub const HELLO_GATE: &str =
+/// The check alone, for merges the judge decides once the hard limits pass.
+pub const HELLO_CHECK: &str =
     "[checks]\nrun = [{ name = \"hello\", command = [\"test\", \"-f\", \"hello.txt\"] }]\n";
 
 pub fn scenario(name: &str) -> anyhow::Result<Scenario> {
     Scenario::new(&format!("policy/{name}"))
 }
 
-/// A scenario in a repo you set up with `argonauts init` and trusted, then `config` as
+/// A scenario in a repo you set up with `argonauts setup` and trusted, then `config` as
 /// `~/.argonauts/config.toml`. The config goes in after init, since init writes that file
 /// with its own answers. It's the global layer, so safety keys there need no trust.
 pub fn trusted_scenario(name: &str, config: &str) -> anyhow::Result<Scenario> {
@@ -70,22 +70,22 @@ pub fn write_global_config(scenario: &Scenario, text: &str) -> anyhow::Result<()
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
-    // These scenarios follow solo runs, so `/solo` runs in a checked copy unless the settings
-    // say how solo runs.
-    let text = if text.contains("[solo]") {
+    // These scenarios follow Captain runs, so `/captain` runs in a checked worktree unless the
+    // settings say how Captain runs.
+    let text = if text.contains("[captain]") {
         text.to_owned()
     } else {
-        format!("{text}\n[solo]\nkind = \"checked\"\n")
+        format!("{text}\n[captain]\nkind = \"checked\"\n")
     };
     fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
 }
 
-/// Runs `argonauts init` with each step's recommended answer, except that it makes
+/// Runs `argonauts setup` with each step's recommended answer, except that it makes
 /// `.argonauts/` now and trusts the repo's settings files if it asks: a repo set up so
 /// `argonauts mcp serve` takes it.
 pub fn trust_repo(scenario: &Scenario) -> anyhow::Result<()> {
     const PICKS: [&str; 2] = ["Now", "Trust them"];
-    let mut pty = scenario.launch(&["init"])?;
+    let mut pty = scenario.launch(&["setup"])?;
     let deadline = Instant::now() + WAIT;
     let mut answered: Vec<ChoiceId> = Vec::new();
     loop {
@@ -109,7 +109,7 @@ pub fn trust_repo(scenario: &Scenario) -> anyhow::Result<()> {
         }
         if Instant::now() >= deadline {
             bail!(
-                "argonauts init never finished setting up the repo; the screen was:\n{}",
+                "argonauts setup never finished setting up the repo; the screen was:\n{}",
                 pty.screen().text()
             );
         }
@@ -136,7 +136,7 @@ fn open_setup_steps(scenario: &Scenario) -> anyhow::Result<Vec<AppChoice>> {
     Ok(open)
 }
 
-/// Each repo's `trusted.json` under the test's Argonauts home.
+/// Each repo's `trusted.json` under the test's Argonauts Code home.
 pub fn trusted_files(scenario: &Scenario) -> Vec<PathBuf> {
     let state = scenario.repo.home().join("state");
     fs::read_dir(state)
@@ -156,8 +156,8 @@ pub fn launch_ready(scenario: &Scenario, args: &[&str]) -> anyhow::Result<Pty> {
     Ok(pty)
 }
 
-pub fn start_solo(pty: &mut Pty) -> anyhow::Result<()> {
-    pty.send(&format!("/solo {TASK}\r"))
+pub fn start_captain(pty: &mut Pty) -> anyhow::Result<()> {
+    pty.send(&format!("/captain {TASK}\r"))
 }
 
 /// Polls the newest run's journal until `done` holds.
@@ -197,11 +197,11 @@ pub fn run_started(events: &[RunEvent]) -> Option<&RunStarted> {
     })
 }
 
-pub fn opened_of_kind(events: &[RunEvent], kind: CheckpointKind) -> Vec<&CheckpointOpened> {
+pub fn opened_of_kind(events: &[RunEvent], kind: ApprovalKind) -> Vec<&ApprovalOpened> {
     events
         .iter()
         .filter_map(|event| match &event.kind {
-            RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) if opened.kind == kind => {
+            RunEventKind::Approval(ApprovalEvent::Opened(opened)) if opened.kind == kind => {
                 Some(opened.as_ref())
             }
             _ => None,
@@ -210,21 +210,21 @@ pub fn opened_of_kind(events: &[RunEvent], kind: CheckpointKind) -> Vec<&Checkpo
 }
 
 pub fn merge_opened(events: &[RunEvent]) -> bool {
-    !opened_of_kind(events, CheckpointKind::Merge).is_empty()
+    !opened_of_kind(events, ApprovalKind::Merge).is_empty()
 }
 
-pub fn decisions(events: &[RunEvent]) -> Vec<&CheckpointDecided> {
+pub fn decisions(events: &[RunEvent]) -> Vec<&ApprovalDecided> {
     events
         .iter()
         .filter_map(|event| match &event.kind {
-            RunEventKind::Checkpoint(CheckpointEvent::Decided(decided)) => Some(decided),
+            RunEventKind::Approval(ApprovalEvent::Decided(decided)) => Some(decided),
             _ => None,
         })
         .collect()
 }
 
-pub fn merge_decided(events: &[RunEvent]) -> Option<&CheckpointDecided> {
-    let merges: Vec<_> = opened_of_kind(events, CheckpointKind::Merge)
+pub fn merge_decided(events: &[RunEvent]) -> Option<&ApprovalDecided> {
+    let merges: Vec<_> = opened_of_kind(events, ApprovalKind::Merge)
         .into_iter()
         .map(|opened| &opened.id)
         .collect();
@@ -242,8 +242,8 @@ pub fn run_finished(events: &[RunEvent]) -> bool {
     })
 }
 
-/// The fake vendor's sessions of `program`: its calls, less the version, help, login, model
-/// list, and quota probes the app makes.
+/// The fake agent's sessions of `program`: its calls, less the version, help, login, model
+/// list, and plan usage probes the app makes.
 pub fn invocations_of(scenario: &Scenario, program: &str) -> anyhow::Result<Vec<Invocation>> {
     let probe = |args: &[String]| {
         args.iter()
@@ -253,7 +253,7 @@ pub fn invocations_of(scenario: &Scenario, program: &str) -> anyhow::Result<Vec<
                 .is_some_and(|arg| ["login", "auth", "app-server"].contains(&arg.as_str()))
     };
     Ok(scenario
-        .vendors
+        .clis
         .invocations()?
         .into_iter()
         .filter(|call| call.argv0 == program && !probe(&call.args))
@@ -291,16 +291,16 @@ pub fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
         .context("starting a tokio runtime")
 }
 
-/// How a simulated front end opens its MCP session.
+/// How a simulated outside agent opens its MCP session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FrontEnd {
+pub enum OutsideAgent {
     /// OpenClaw's MCP library: a 2025-11-25 handshake.
     OpenClaw,
     /// Hermes: 2026-07-28, no handshake, its version and name on every request.
     Hermes,
 }
 
-impl FrontEnd {
+impl OutsideAgent {
     pub fn name(self) -> &'static str {
         match self {
             Self::OpenClaw => "openclaw",
@@ -317,7 +317,7 @@ pub struct McpServer {
 }
 
 impl McpServer {
-    pub async fn start(scenario: &Scenario, front_end: FrontEnd) -> anyhow::Result<Self> {
+    pub async fn start(scenario: &Scenario, outside_agent: OutsideAgent) -> anyhow::Result<Self> {
         let binary = argonauts_bin().context("finding the argonauts binary")?;
         let stderr_path = scenario.repo.scratch().join("mcp-serve.stderr.txt");
         let stderr = File::create(&stderr_path)
@@ -339,16 +339,16 @@ impl McpServer {
         let stdin = child.stdin.take().context("the server's stdin")?;
         let config = ClientConfig::new(
             ClientCapabilities::default(),
-            Implementation::new(front_end.name(), "1.0"),
+            Implementation::new(outside_agent.name(), "1.0"),
         );
-        let connected = match front_end {
-            FrontEnd::OpenClaw => {
+        let connected = match outside_agent {
+            OutsideAgent::OpenClaw => {
                 config
                     .with_protocol_version(ProtocolVersion::V_2025_11_25)
                     .serve((stdout, stdin))
                     .await
             }
-            FrontEnd::Hermes => {
+            OutsideAgent::Hermes => {
                 config
                     .serve_with_lifecycle(
                         (stdout, stdin),
@@ -448,18 +448,18 @@ pub fn structured(result: &CallToolResult) -> Value {
     result.structured_content.clone().unwrap_or(Value::Null)
 }
 
-/// Whether the polled events include a merge checkpoint that waits for you.
+/// Whether the polled events include a merge approval that waits for you.
 pub fn merge_waits(events: &[Value]) -> bool {
     events.iter().any(|event| {
-        event["type"] == json!("checkpoint")
+        event["type"] == json!("approval")
             && event["event"] == json!("opened")
-            && event["checkpoint_kind"] == json!("merge")
+            && event["approval_kind"] == json!("merge")
             && event["needs_you"] == json!(true)
     })
 }
 
-/// The one global config every policy scenario starts from: a solo crew of the fake Claude
+/// The one global config every policy scenario starts from: a Captain crew of the fake Claude
 /// Code, with `extra` appended.
-pub fn solo_config(extra: &str) -> String {
-    format!("workflow = \"solo\"\nmain_agent = \"claude-code\"\n\n{extra}")
+pub fn captain_config(extra: &str) -> String {
+    format!("workflow = \"captain\"\ncrew.main = \"claude-code\"\n\n{extra}")
 }

@@ -1,9 +1,9 @@
-//! The consultant, and the lead answering an agent in your place in full auto.
+//! The consultant, and the main agent answering an agent in your place in autopilot.
 
-pub const CONSULTANT: &str = include_str!("board/consultant.md");
-pub const FOR_YOU: &str = include_str!("board/for_you.md");
+pub const CONSULTANT: &str = argonauts_core::template!("prompts/run/consultant.md");
+pub const FOR_YOU: &str = argonauts_core::template!("prompts/run/answer-for-you.md");
 /// What every agent hears up front while a run decides without you.
-pub const DECIDE_FIRST: &str = include_str!("board/decide_first.md");
+pub const DECIDE_FIRST: &str = argonauts_core::template!("prompts/run/decide-first.md");
 
 /// The word on questions for one session: the template, then where its answer keeps what it
 /// assumed and what it couldn't decide, when its answer has those fields. A session is never

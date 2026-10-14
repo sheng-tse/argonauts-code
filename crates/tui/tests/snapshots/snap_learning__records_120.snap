@@ -6,7 +6,7 @@ Records                                                                         
 Who is good at what, by kind of work                                             2 agents · routing bandit, explores 20%
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│   Agent             Kind of work  First pass  Approved  Cost   Time   Predictions  Cards                             │
+│   Agent             Kind of work  First pass  Approved  Cost   Time   Predictions  Tasks                             │
 │ ❯ codex/gpt-5.6     backend       82%         76%       0.90×  1.10×  +0.12        14                                │
 │   claude-code/opus  backend       71%         80%       1.20×  0.95×  -0.03        9                                 │
 │                                                                                                                      │

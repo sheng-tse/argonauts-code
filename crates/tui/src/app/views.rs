@@ -1,5 +1,5 @@
-//! The app's full-screen views sit on a stack above the chat. The top one gets every key and
-//! every controller answer first; what it asks for comes back as [`UiAction`]s for the bridge.
+//! The app's full-screen views sit on a stack above the conversation. The top one gets every key
+//! and every controller answer first; what it asks for comes back as [`UiAction`]s for the bridge.
 
 use std::io::Write;
 use std::time::Instant;
@@ -20,12 +20,13 @@ impl<W: Write> Ui<W> {
         now: Instant,
         state: &AppState,
     ) -> Vec<UiAction> {
-        self.settle_card_keys(now);
+        self.settle_question_keys(now);
         if let Some(actions) = self.selection_key(&event) {
             return actions;
         }
+        let view_has_keys = !self.views.is_empty() && !self.question_over_view();
         match event {
-            Event::Key(key) if !self.views.is_empty() => {
+            Event::Key(key) if view_has_keys => {
                 if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                     self.view_key(key, now, state)
                 } else {
@@ -33,9 +34,9 @@ impl<W: Write> Ui<W> {
                 }
             }
             // The hidden prompt never gets a paste meant for the view on top.
-            Event::Paste(text) if !self.views.is_empty() => self.view_paste(&text, now, state),
+            Event::Paste(text) if view_has_keys => self.view_paste(&text, now, state),
             Event::Mouse(mouse) => self.mouse_event(mouse, now, state),
-            event => self.handle_chat_event(event, now),
+            event => self.handle_conversation_event(event, now),
         }
     }
 
@@ -123,14 +124,14 @@ impl<W: Write> Ui<W> {
                 self.views.push(view);
             }
             ViewOutcome::Send(command) => actions.push(UiAction::Command(command)),
-            ViewOutcome::SendToChat(command) => {
+            ViewOutcome::SendToConversation(command) => {
                 self.views.clear();
                 actions.push(UiAction::Command(command));
             }
             ViewOutcome::Request(request) => actions.push(UiAction::Request(request)),
-            ViewOutcome::AnswerCard(target) => actions.push(UiAction::AnswerCard(target)),
-            ViewOutcome::ConfirmTakeOver { run, card } => {
-                actions.push(UiAction::ConfirmTakeOver { run, card });
+            ViewOutcome::AnswerQuestion(target) => actions.push(UiAction::AnswerQuestion(target)),
+            ViewOutcome::ConfirmTakeOver { run, task } => {
+                actions.push(UiAction::ConfirmTakeOver { run, task });
             }
             ViewOutcome::Notice(text) => actions.push(UiAction::Notice(text)),
             ViewOutcome::Copy(text) => actions.push(UiAction::Copy(text)),

@@ -1,26 +1,26 @@
 //! An endpoint reviewer writes acceptance tests as `AcceptanceTests` output. Files outside the
-//! test card's `owned_paths` are rejected; the rest are written into the test card's worktree,
-//! committed, and gated. A test that doesn't compile or passes against the stubs gets one more
-//! request carrying the gate output.
+//! test task's `owned_paths` are rejected; the rest are written into the test task's worktree,
+//! committed, and checked. A test that doesn't compile or passes against the stubs gets one more
+//! request carrying the check output.
 
 use std::path::{Component, Path};
 
 use globset::Glob;
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::card::{CardKind, ReviewEvent};
 use argonauts_core::events::session::InputPartKind;
+use argonauts_core::events::task::{ReviewEvent, TaskKind};
 use argonauts_core::names::RoleName;
-use argonauts_core::steps::card::{AcceptanceTests, AcceptanceTestsInput, TestFile};
-use argonauts_core::worker::Access;
+use argonauts_core::session_runner::Access;
+use argonauts_core::steps::task::{AcceptanceTests, AcceptanceTestsInput, TestFile};
 use argonauts_core::{Note, NoteLevel};
 
-use crate::card::{gates, worktree};
 use crate::engine::host::{Ask, Host};
 use crate::error::{EngineError, EngineResult};
 use crate::plan::part;
 use crate::prompts::review::ACCEPTANCE_TESTS;
+use crate::task::{checks, worktree};
 
 /// Splits files into the ones inside `owned_paths` and the rejected ones. A path that is
 /// absolute, climbs out with `..`, or reaches into `.git` is always rejected.
@@ -54,27 +54,30 @@ fn matches(path: &str, pattern: &str) -> bool {
     }
 }
 
-/// Asks the test card's endpoint reviewer for its tests, writes the owned ones into the test
-/// card's worktree, commits, and gates them. Returns the files written. When the gates fail,
+/// Asks the test task's endpoint reviewer for its tests, writes the owned ones into the test
+/// task's worktree, commits, and checks them. Returns the files written. When the checks fail,
 /// the reviewer gets one more request with their output; failing again is an error, and the
-/// card escalates.
-pub async fn write_tests(host: &Host, test_card: &CardId) -> EngineResult<Vec<String>> {
+/// task needs you.
+pub async fn write_tests(host: &Host, test_task: &TaskId) -> EngineResult<Vec<String>> {
     let (spec, reviewer, target) = host
         .read(|state| {
-            let record = state.cards.get(test_card)?;
-            let CardKind::AcceptanceTests { for_card } = &record.spec.kind else {
+            let record = state.tasks.get(test_task)?;
+            let TaskKind::AcceptanceTests { for_task } = &record.spec.kind else {
                 return None;
             };
-            let reviewer = record.owner.clone().or_else(|| record.spec.owner.clone())?;
-            let target = state.cards.get(for_card).map(|r| r.spec.clone())?;
+            let reviewer = record
+                .worker
+                .clone()
+                .or_else(|| record.spec.worker.clone())?;
+            let target = state.tasks.get(for_task).map(|r| r.spec.clone())?;
             Some((record.spec.clone(), reviewer, target))
         })
         .ok_or_else(|| {
             EngineError::Refused(format!(
-                "{test_card} is not an acceptance-test task with a reviewer"
+                "{test_task} is not an acceptance-test task with a reviewer"
             ))
         })?;
-    let tree = worktree::ensure(host, test_card).await?;
+    let tree = worktree::ensure(host, test_task).await?;
     let interfaces = spec
         .read_only_paths
         .iter()
@@ -84,13 +87,13 @@ pub async fn write_tests(host: &Host, test_card: &CardId) -> EngineResult<Vec<St
         })
         .collect();
     let input = AcceptanceTestsInput {
-        card: format!("{}\n\n{}", target.title, target.task),
+        task: format!("{}\n\n{}", target.title, target.task),
         criteria: target.criteria.clone(),
         interfaces,
         test_dir: spec.owned_paths.first().cloned().unwrap_or_default(),
     };
-    let mut gate_output: Option<String> = None;
-    for attempt in 0..2u32 {
+    let mut check_output: Option<String> = None;
+    for try_number in 0..2u32 {
         let mut ask = Ask::new(
             None,
             RoleName::Reviewer,
@@ -98,13 +101,13 @@ pub async fn write_tests(host: &Host, test_card: &CardId) -> EngineResult<Vec<St
             ACCEPTANCE_TESTS,
             input.clone(),
         );
-        ask.card = Some(test_card.clone());
+        ask.task = Some(test_task.clone());
         ask.access = Access::NoTools;
         ask.blind = true;
-        ask.slot = attempt;
-        if let Some(output) = &gate_output {
+        ask.slot = try_number;
+        if let Some(output) = &check_output {
             ask.parts.push(part(
-                InputPartKind::GateOutput,
+                InputPartKind::CheckOutput,
                 "check output",
                 output.clone(),
             ));
@@ -114,7 +117,7 @@ pub async fn write_tests(host: &Host, test_card: &CardId) -> EngineResult<Vec<St
         if !rejected.is_empty() {
             let paths: Vec<&str> = rejected.iter().map(|f| f.path.as_str()).collect();
             host.record(
-                Some(test_card),
+                Some(test_task),
                 Some(&answered.session),
                 RunEventKind::Note(Note {
                     level: NoteLevel::Warn,
@@ -140,23 +143,23 @@ pub async fn write_tests(host: &Host, test_card: &CardId) -> EngineResult<Vec<St
             }
             std::fs::write(&path, &file.content)?;
         }
-        worktree::commit_after_end(host, test_card, &answered.session).await?;
+        worktree::commit_after_end(host, test_task, &answered.session).await?;
         let written: Vec<String> = kept.iter().map(|f| f.path.clone()).collect();
-        match gates::run(host, test_card).await? {
-            gates::GateVerdict::Passed => {
+        match checks::run(host, test_task).await? {
+            checks::CheckVerdict::Passed => {
                 host.record(
-                    Some(test_card),
+                    Some(test_task),
                     Some(&answered.session),
                     RunEventKind::Review(ReviewEvent::TestsWritten {
                         reviewer: reviewer.clone(),
-                        for_card: target.id.clone(),
+                        for_task: target.id.clone(),
                         files: written.clone(),
                     }),
                 )?;
                 return Ok(written);
             }
-            gates::GateVerdict::Failed { output } => gate_output = Some(output),
-            gates::GateVerdict::Stopped { reason } => return Err(EngineError::Refused(reason)),
+            checks::CheckVerdict::Failed { output } => check_output = Some(output),
+            checks::CheckVerdict::Stopped { reason } => return Err(EngineError::Refused(reason)),
         }
     }
     Err(EngineError::Refused(format!(

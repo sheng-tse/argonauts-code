@@ -1,5 +1,5 @@
 //! Aligned columns for the rows that list agents: the workflow view, the agent view's list, the
-//! crew view, and the agent panel. Every cell is padded to its column's widest, numbers sit
+//! agent panel, and the agent panel. Every cell is padded to its column's widest, numbers sit
 //! right-aligned, and the time ends at the row's edge, as in Claude Code's workflow rows. No
 //! `·` joins the columns, so none floats after the padding.
 
@@ -115,16 +115,16 @@ pub fn aligned(cell: &[Span<'static>], column: Column) -> Cell {
     }
 }
 
-/// One row: `lead`, then each shown column's cell, `GAP` apart, then `edge` ending at `width`.
+/// One row: `opening`, then each shown column's cell, `GAP` apart, then `edge` ending at `width`.
 /// A row too narrow for the edge after its columns leaves it out.
 pub fn line(
-    lead: Cell,
+    opening: Cell,
     columns: &[Column],
     cells: &[Cell],
     edge: Option<Cell>,
     width: usize,
 ) -> Line<'static> {
-    let mut spans = lead;
+    let mut spans = opening;
     let mut first = true;
     for (column, cell) in columns.iter().zip(cells) {
         if column.width == 0 {

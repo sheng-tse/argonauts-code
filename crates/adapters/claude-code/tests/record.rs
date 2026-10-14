@@ -20,12 +20,15 @@ use std::{env, fs, thread};
 use argonauts_adapter_claude_code::{ClaudeCodeAdapter, STATUS_SERVER};
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
 use argonauts_core::{
-    Adapter, BudgetLimit, Card, CommandSpec, SessionRequest, SessionRole, render_solo_prompt,
+    Adapter, CommandSpec, MeterLimit, SessionRequest, SessionRole, Task, render_captain_prompt,
     report_json_schema, sha256_hex,
 };
 use serde_json::json;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+
+#[path = "../../recorded_shape.rs"]
+mod recorded_shape;
 
 const TIMEOUT: Duration = Duration::from_secs(300);
 /// A steered session whose last expected turn never comes is closed after this much quiet.
@@ -37,7 +40,7 @@ struct Recording {
     role: SessionRole,
     prompt: String,
     report_schema: bool,
-    max_budget_usd: Option<f64>,
+    spend_cap_usd: Option<f64>,
     session: SessionShape,
 }
 
@@ -67,7 +70,7 @@ enum StatusServer {
 }
 
 #[test]
-#[ignore = "live call that spends Claude quota"]
+#[ignore = "live call that spends Claude plan usage"]
 fn record_read_only() {
     record(Recording {
         test: "record_read_only",
@@ -75,29 +78,29 @@ fn record_read_only() {
         role: SessionRole::ReadOnly,
         prompt: "Reply with exactly the word: ok".into(),
         report_schema: false,
-        max_budget_usd: None,
+        spend_cap_usd: None,
         session: SessionShape::default(),
     });
 }
 
 #[test]
-#[ignore = "live call that spends Claude quota"]
+#[ignore = "live call that spends Claude plan usage"]
 fn record_write() {
-    let task = "Create a file named hello.txt containing the word hi. Then reply with: done";
-    let card = Card::solo(task, BudgetLimit::Usd(0.5));
+    let request = "Create a file named hello.txt containing the word hi. Then reply with: done";
+    let task = Task::captain(request, MeterLimit::Usd(0.5));
     record(Recording {
         test: "record_write",
         name: "write",
         role: SessionRole::Build,
-        prompt: render_solo_prompt(&card, &report_json_schema()),
+        prompt: render_captain_prompt(&task, &report_json_schema()),
         report_schema: true,
-        max_budget_usd: Some(0.5),
+        spend_cap_usd: Some(0.5),
         session: SessionShape::default(),
     });
 }
 
 #[test]
-#[ignore = "live call that spends Claude quota"]
+#[ignore = "live call that spends Claude plan usage"]
 fn record_shell() {
     record(Recording {
         test: "record_shell",
@@ -105,7 +108,7 @@ fn record_shell() {
         role: SessionRole::Build,
         prompt: "Run `ls` and reply with the number of files".into(),
         report_schema: false,
-        max_budget_usd: None,
+        spend_cap_usd: None,
         session: SessionShape::default(),
     });
 }
@@ -113,7 +116,7 @@ fn record_shell() {
 /// Stream-json input with a second message sent mid-turn, a chosen session id, the status
 /// tool, and one subagent.
 #[test]
-#[ignore = "live call that spends Claude quota"]
+#[ignore = "live call that spends Claude plan usage"]
 fn record_stream_input() {
     record(Recording {
         test: "record_stream_input",
@@ -125,7 +128,7 @@ fn record_stream_input() {
                  and the word: done."
             .into(),
         report_schema: false,
-        max_budget_usd: Some(0.5),
+        spend_cap_usd: Some(0.5),
         session: SessionShape {
             keep_input_open: true,
             follow_up: Some("After that, reply with only the word: second"),
@@ -141,7 +144,7 @@ fn record_stream_input() {
 
 /// Resumes `stream-input` with every flag again.
 #[test]
-#[ignore = "live call that spends Claude quota"]
+#[ignore = "live call that spends Claude plan usage"]
 fn record_resume() {
     record(Recording {
         test: "record_resume",
@@ -151,7 +154,7 @@ fn record_resume() {
                  that word."
             .into(),
         report_schema: false,
-        max_budget_usd: Some(0.5),
+        spend_cap_usd: Some(0.5),
         session: SessionShape {
             keep_input_open: true,
             results: 1,
@@ -166,7 +169,7 @@ fn record_resume() {
 
 /// An MCP config entry Claude Code rejects, which it reports only in `init`.
 #[test]
-#[ignore = "live call that spends Claude quota"]
+#[ignore = "live call that spends Claude plan usage"]
 fn record_status_tool_error() {
     record(Recording {
         test: "record_status_tool_error",
@@ -174,7 +177,7 @@ fn record_status_tool_error() {
         role: SessionRole::ReadOnly,
         prompt: "Reply with exactly the word: ok".into(),
         report_schema: false,
-        max_budget_usd: None,
+        spend_cap_usd: None,
         session: SessionShape {
             status_server: StatusServer::Broken,
             ..SessionShape::default()
@@ -192,7 +195,7 @@ fn record(recording: Recording) {
     let (repo, resume_session) = match shape.resume_from {
         Some(earlier) => (
             latest_repo(&live_root, earlier),
-            Some(recorded_session_id(&version, earlier)),
+            Some(recorded_session_id(earlier)),
         ),
         None => (throwaway_repo(&live_root, recording.name), None),
     };
@@ -208,7 +211,7 @@ fn record(recording: Recording) {
         effort: effort.map(str::to_owned),
         role: recording.role,
         json_schema: recording.report_schema.then(report_json_schema),
-        max_budget_usd: recording.max_budget_usd,
+        spend_cap_usd: recording.spend_cap_usd,
         goal_hash: (recording.role == SessionRole::Build)
             .then(|| sha256_hex(recording.prompt.as_bytes())),
         keep_input_open: shape.keep_input_open,
@@ -236,14 +239,17 @@ fn record(recording: Recording) {
     };
 
     let scrub = Scrubber::new(&live_root);
-    let dir = fixture_dir().join(&version);
+    let dir = fixture_dir();
     fs::create_dir_all(&dir).expect("fixture dir");
     let base = dir.join(recording.name);
-    fs::write(with_ext(&base, "stdout.jsonl"), scrub.stdout(&stdout)).expect("write stdout");
+    let stdout = scrub.stdout(&stdout);
+    recorded_shape::report(&with_ext(&base, "stdout.jsonl"), &stdout);
+    fs::write(with_ext(&base, "stdout.jsonl"), stdout).expect("write stdout");
     fs::write(with_ext(&base, "stderr.txt"), scrub.apply(&stderr)).expect("write stderr");
     let meta = json!({
         "adapter": adapter.id(),
         "cli_version": version,
+        "also_matches": [],
         "date": OffsetDateTime::now_utc().format(&Rfc3339).expect("date"),
         "program": spec.program,
         "args": spec.args.iter().map(|a| scrub.apply(a)).collect::<Vec<_>>(),
@@ -319,7 +325,7 @@ fn run(spec: &CommandSpec) -> Run {
     }
 }
 
-/// Keeps stdin open the way the harness worker does: the first message, then `follow_up`
+/// Keeps stdin open the way the CLI runner does: the first message, then `follow_up`
 /// once the first tool call arrives, then stdin closes after `results` results.
 fn run_steered(spec: &CommandSpec, follow_up: Option<String>, results: usize) -> Run {
     let started = Instant::now();
@@ -415,7 +421,7 @@ fn wait_with_timeout(child: &mut std::process::Child, started: Instant) -> ExitS
     }
 }
 
-/// The conductor writes these before the spawn, readable only by you.
+/// Argonauts Code writes these before the spawn, readable only by you.
 fn write_spec_files(spec: &CommandSpec) {
     for file in &spec.files {
         if let Some(parent) = file.path.parent() {
@@ -488,10 +494,8 @@ fn latest_repo(live_root: &Path, name: &str) -> PathBuf {
     repos.pop().unwrap_or_else(|| panic!("record {name} first"))
 }
 
-fn recorded_session_id(version: &str, name: &str) -> String {
-    let path = fixture_dir()
-        .join(version)
-        .join(format!("{name}.meta.json"));
+fn recorded_session_id(name: &str) -> String {
+    let path = fixture_dir().join(format!("{name}.meta.json"));
     let meta: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&path).expect("earlier meta")).expect("meta");
     meta["session_id"]
@@ -519,7 +523,7 @@ fn new_uuid() -> String {
     )
 }
 
-/// Makes no live calls, but is gated like the recorders.
+/// Makes no live calls, but is ignored like the recorders.
 #[test]
 #[ignore = "rewrites fixture files"]
 fn scrub_existing_fixtures() {
@@ -527,17 +531,15 @@ fn scrub_existing_fixtures() {
         return;
     };
     let scrub = Scrubber::new(&live_root);
-    for version in fs::read_dir(fixture_dir()).expect("fixture dir") {
-        for file in fs::read_dir(version.expect("entry").path()).expect("version dir") {
-            let path = file.expect("entry").path();
-            let text = fs::read_to_string(&path).expect("read fixture");
-            let scrubbed = if path.to_string_lossy().ends_with(".stdout.jsonl") {
-                scrub.stdout(&text)
-            } else {
-                scrub.apply(&text)
-            };
-            fs::write(&path, scrubbed).expect("write fixture");
-        }
+    for file in fs::read_dir(fixture_dir()).expect("fixture dir") {
+        let path = file.expect("entry").path();
+        let text = fs::read_to_string(&path).expect("read fixture");
+        let scrubbed = if path.to_string_lossy().ends_with(".stdout.jsonl") {
+            scrub.stdout(&text)
+        } else {
+            scrub.apply(&text)
+        };
+        fs::write(&path, scrubbed).expect("write fixture");
     }
 }
 
@@ -553,7 +555,7 @@ fn live_root(test: &str) -> Option<PathBuf> {
     let repo_root = repo_root();
     assert!(
         !root.starts_with(&repo_root),
-        "live calls must run outside the Argonauts repository"
+        "live calls must run outside the Argonauts Code repository"
     );
     Some(root)
 }
@@ -595,7 +597,7 @@ fn throwaway_repo(live_root: &Path, name: &str) -> PathBuf {
             ])
             .args([
                 "-c",
-                "user.name=Argonauts",
+                "user.name=Argonauts Code",
                 "-c",
                 "user.email=argonauts@example.invalid",
             ])

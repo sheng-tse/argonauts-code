@@ -28,4 +28,4 @@ Tokens per Day
   In: 0.2b · Out: 0.05b                         In: 0.1b · Out: 0.02b
   Cache: 14.4b read · 0.8b write                Cache: 7.7b read · 0.5b write
 
-  ↑ ↓ 1-4 of 7 models · ↑ tabs · r to cycle dates · ctrl+s to copy · esc closes
+  r to cycle dates · ↑ ↓ 1-4 of 7 models · ↑ tabs · ctrl+s to copy · esc closes

@@ -1,4 +1,4 @@
-//! The lead's brief: the run's name, description, phases, labels, and done-when list, written
+//! The main agent's brief: the run's name, description, phases, labels, and done-when list, written
 //! from the closest example or composed from the step kinds. Code validates the answer before
 //! anything runs, and sends the errors back when it fails. At a phase end the same step adapts
 //! the running workflow, given what it is and what its finished phases produced.
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use super::design_shorthand::{names_a_test, starts_with_program};
-use super::pursue::AttemptPlan;
+use super::pursue::TryPlan;
 use super::{Step, StepName};
 use crate::events::goal::Criterion;
 
@@ -24,8 +24,8 @@ impl Step for DesignWorkflow {
     }
 }
 
-/// The same lead session, resumed with what code refused in the brief it just wrote, answers
-/// with the whole brief again. It's the lead's design as much as the first answer was, so it
+/// The same main agent session, resumed with what code refused in the brief it just wrote, answers
+/// with the whole brief again. It's the main agent's design as much as the first answer was, so it
 /// goes by the same step.
 pub struct FixDesign;
 
@@ -67,12 +67,12 @@ pub struct DesignInput {
     /// disagreed on the retry header".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub progress: Vec<String>,
-    /// `goal` when the run is a goal, so the brief plans its first attempt. A workflow leaves
+    /// `goal` when the run is a goal, so the brief plans its first try. A workflow leaves
     /// it out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<crate::settings::workflows::RunStyle>,
-    /// What the request asked of how to run it, each a must: "Codex coordinates", or words for
-    /// the lead such as "no drafting phase".
+    /// What the request asked of how to run it, each a must: "Codex orchestrates", or words for
+    /// the main agent such as "no drafting phase".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub as_you_asked: Vec<String>,
 }
@@ -90,7 +90,7 @@ pub struct WorkflowExample {
 
 /// The run's brief, as Claude Code's orchestrator writes its script's `meta` and `agent()`
 /// options. Everything the views say about the run comes from here: its name and description,
-/// each phase's title and detail, every agent's label, and the done-when list. Code validates it
+/// each phase's name and detail, every agent's label, and the done-when list. Code validates it
 /// like any workflow and sends the errors back.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct DesignOutput {
@@ -101,33 +101,33 @@ pub struct DesignOutput {
     pub description: String,
     /// The example it started from, by name. `None` when composed from the step kinds.
     pub based_on: Option<String>,
-    /// One line on why it differs from that example, for the start card.
+    /// One line on why it is different from that example, for the start question.
     pub why: String,
     /// Values for the example's `{{name}}` placeholders, when `workflow` is `None` and the
     /// example runs as written.
     #[serde(default)]
     pub params: Vec<ParamSetting>,
     /// The whole workflow file in YAML: the example filled in and changed, or composed. Each
-    /// phase has a `title` and a `detail`, and each step a `label`. `None` runs `based_on`.
+    /// phase has a `name` and a `detail`, and each step a `label`. `None` runs `based_on`.
     pub workflow: Option<String>,
     /// One to eight criteria, each one sentence a check can prove, and how.
     #[serde(default)]
     pub done_when: Vec<Criterion>,
-    /// When the workflow builds from the goal rather than a drafted plan, the one card it
+    /// When the workflow builds from the goal rather than a drafted plan, the one task it
     /// builds, whose item names its labels. Empty when a phase drafts the plan.
     #[serde(default)]
-    pub plan: Vec<BriefCard>,
-    /// With `understand.when = "lead"`: at most three open questions, each with a recommended
+    pub plan: Vec<BriefTask>,
+    /// With `understand.when = "main"`: at most three open questions, each with a recommended
     /// answer.
     #[serde(default)]
     pub questions: Vec<BriefQuestion>,
-    /// In a goal run, the first attempt, planned with the goal so the start card can estimate
+    /// In a goal run, the first try, planned with the goal so the start question can estimate
     /// it.
-    pub first_attempt: Option<AttemptPlan>,
+    pub first_try: Option<TryPlan>,
 }
 
 impl DesignOutput {
-    /// `based_on` as one of `examples` names it, when the lead wrote another spelling of only
+    /// `based_on` as one of `examples` names it, when the main agent wrote another spelling of only
     /// that name, such as `Council` for `council` or `quick-fix` for your `quick_fix.yaml`.
     /// A name that is an example stays exactly as written.
     pub fn read_based_on(&mut self, examples: &[String]) {
@@ -147,7 +147,7 @@ impl DesignOutput {
     }
 
     /// Whether `based_on` names `example`, as written or spelled another way, for a brief read
-    /// back from the log as the lead wrote it.
+    /// back from the log as the main agent wrote it.
     pub fn based_on_names(&self, example: &str) -> bool {
         self.based_on.as_deref().is_some_and(|written| {
             written == example
@@ -157,16 +157,16 @@ impl DesignOutput {
     }
 }
 
-/// One card of a brief's plan.
+/// One task of a brief's plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct BriefCard {
+pub struct BriefTask {
     /// The one-token name its labels use, such as `slugify` in `fix:slugify`.
     pub item: String,
-    /// What the card's owner does, in one or two sentences.
+    /// What the task's worker does, in one or two sentences.
     pub task: String,
 }
 
-/// An open question the lead found itself, when it decides whether Understand runs.
+/// An open question the main agent found itself, when it decides whether Understand runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BriefQuestion {
     /// One or two words for its chip, such as `Accented letters`.

@@ -15,12 +15,12 @@
 //! goal and a file's are recorded as every goal is, so the goal panels show them.
 //!
 //! A runner that never asks changes nothing about what the run owes: a round of the run's goal
-//! that nothing checked gets its check before Merge (`pursue::begin_attempt`), and from there
+//! that nothing checked gets its check before Merge (`pursue::begin_try`), and from there
 //! the orchestrator plans the next round.
 
 use std::path::Path;
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::goal::{GoalChecked, GoalEvent, GoalRun, GoalStatus, GoalVerdict};
 use argonauts_core::events::run::{Party, RunMode};
@@ -30,7 +30,7 @@ use argonauts_core::names::RoleName;
 
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
-use crate::integrate::final_check::run_base;
+use crate::merge::final_check::run_base;
 use crate::workflow::{StepAt, runner};
 
 use super::check::{self, Place};
@@ -50,11 +50,11 @@ pub struct Asked<'a> {
     /// The step whose `until` it is.
     pub step: Option<&'a str>,
     /// The task whose work a try just changed, when the step works on one.
-    pub task: Option<&'a CardId>,
+    pub task: Option<&'a TaskId>,
     /// `cli` or `argonauts`, when the step says who keeps it going.
     pub kept_by: Option<&'a str>,
     /// The try of the step this follows, from 1.
-    pub attempt: Option<u32>,
+    pub try_number: Option<u32>,
     /// The round of the whole workflow this follows, from 1. Only the `goal` at the top of the
     /// file has one.
     pub round: Option<u32>,
@@ -101,11 +101,11 @@ impl Held {
 /// The condition the run was started with, for a workflow file that states no `goal` of its
 /// own: `/goal <condition>` or the request's own words, else, under
 /// `goal.default = "from-request"`, the request itself. `None` when the run has no goal, and
-/// for a solo run, whose goal is its one task's.
+/// for a Captain run, whose goal is its one task's.
 pub fn for_run(host: &Host) -> Option<String> {
     let settings = host.settings();
     host.read(|state| {
-        if runner::run_mode(state) == Some(RunMode::Solo) {
+        if runner::run_mode(state) == Some(RunMode::Captain) {
             return None;
         }
         if let Some(goal) = &state.goal.pursuit {
@@ -133,7 +133,7 @@ pub fn around(host: &Host, at: &StepAt, asked: &Asked<'_>) -> EngineResult<()> {
 }
 
 /// Before a writer's first turn at `asked.task`: the task is worked as the step's `until`,
-/// kept by its CLI's own goal or by Argonauts as `kept_by` says. The same session then tries,
+/// kept by its CLI's own goal or by Argonauts Code as `kept_by` says. The same session then tries,
 /// is checked and tries again inside that turn. A task that already has a goal keeps it.
 pub fn work_as(host: &Host, asked: &Asked<'_>) -> EngineResult<()> {
     let Some(task) = asked.task else {
@@ -172,7 +172,7 @@ pub async fn held(
 
 /// A task's goal. Its writer's turn usually settled it already; a try nothing checked yet is
 /// checked here by the same code.
-async fn of_task(host: &Host, at: &StepAt, task: &CardId) -> EngineResult<Held> {
+async fn of_task(host: &Host, at: &StepAt, task: &TaskId) -> EngineResult<Held> {
     let status = host.read(|state| state.goal.goal_of(Some(task)).map(|goal| goal.status));
     match status {
         Some(GoalStatus::Met) => Ok(Held::holds()),
@@ -190,7 +190,7 @@ async fn of_run(host: &Host, at: &StepAt, round: u32, workdir: &Path) -> EngineR
     let Some(goal) = host.read(|state| state.goal.pursuit.clone()) else {
         return Ok(stopped(host, None));
     };
-    let newest = goal.attempts.last().map_or(1, |attempt| attempt.n);
+    let newest = goal.tries.last().map_or(1, |a_try| a_try.n);
     let recorded = |round: u32| {
         host.read(|state| {
             state
@@ -198,7 +198,7 @@ async fn of_run(host: &Host, at: &StepAt, round: u32, workdir: &Path) -> EngineR
                 .checks
                 .iter()
                 .rev()
-                .find(|checked| checked.attempt == round && checked.task.is_none())
+                .find(|checked| checked.try_number == round && checked.task.is_none())
                 .cloned()
         })
     };
@@ -227,7 +227,7 @@ async fn of_run(host: &Host, at: &StepAt, round: u32, workdir: &Path) -> EngineR
         }
     };
     if checked.overall == GoalVerdict::Met {
-        pursue::status_changed(host, GoalStatus::Met, Party::Conductor, None)?;
+        pursue::status_changed(host, GoalStatus::Met, Party::ArgonautsCode, None)?;
         return Ok(Held::holds());
     }
     // You may have paused or cleared it while the round ran: the round was checked, and no
@@ -253,7 +253,12 @@ async fn of_run(host: &Host, at: &StepAt, round: u32, workdir: &Path) -> EngineR
     let change = match next {
         Next::Met => return Ok(Held::holds()),
         Next::Stop { why } => {
-            pursue::status_changed(host, GoalStatus::Stuck, Party::Conductor, Some(why.clone()))?;
+            pursue::status_changed(
+                host,
+                GoalStatus::Stuck,
+                Party::ArgonautsCode,
+                Some(why.clone()),
+            )?;
             pursue::note(host, format!("The goal is stuck: {why}"))?;
             return Ok(Held::stopped(why));
         }
@@ -276,7 +281,7 @@ async fn of_run(host: &Host, at: &StepAt, round: u32, workdir: &Path) -> EngineR
         }
     };
     let round = newest + 1;
-    pursue::attempt_started(host, round, format!("Round {round}"), at.step.phase)?;
+    pursue::try_started(host, round, format!("Round {round}"), at.step.phase)?;
     Ok(Held::not_yet(keep::send_back(
         &goal.criteria,
         &checked,
@@ -303,11 +308,11 @@ async fn unrecorded(
     workdir: &Path,
 ) -> EngineResult<Held> {
     let spec = spec(host, asked, GoalFrom::Step)?;
-    let attempt = asked.attempt.unwrap_or(1).max(1);
+    let try_number = asked.try_number.unwrap_or(1).max(1);
     let place = Place {
         base: run_base(host),
         at: Some(at.clone()),
-        ..Place::new(workdir, attempt)
+        ..Place::new(workdir, try_number)
     };
     let checked = check::unrecorded(host, &spec, &place).await?;
     let limits = Limits {
@@ -315,7 +320,7 @@ async fn unrecorded(
         max_rounds: spec.max_rounds,
     };
     let next = match asked.step {
-        Some(_) => with_no_record(&checked, attempt, limits),
+        Some(_) => with_no_record(&checked, try_number, limits),
         // A script that asks by itself counts its own tries, so it is only told what it asked.
         None if checked.overall == GoalVerdict::Met => Next::Met,
         None => Next::Again,
@@ -330,10 +335,10 @@ async fn unrecorded(
     })
 }
 
-/// What follows try `attempt` of a condition nothing records. It gets the tries a recorded goal
+/// What follows try `try_number` of a condition nothing records. It gets the tries a recorded goal
 /// gets that fails the same way every time: `stuck_after` of them, then one more after a
 /// change of approach.
-fn with_no_record(checked: &GoalChecked, attempt: u32, limits: Limits) -> Next {
+fn with_no_record(checked: &GoalChecked, try_number: u32, limits: Limits) -> Next {
     match checked.overall {
         GoalVerdict::Met => return Next::Met,
         GoalVerdict::Impossible => {
@@ -345,21 +350,21 @@ fn with_no_record(checked: &GoalChecked, attempt: u32, limits: Limits) -> Next {
     }
     let tries = |n: u32| if n == 1 { "try" } else { "tries" };
     if let Some(max) = limits.max_rounds
-        && attempt >= max.max(1)
+        && try_number >= max.max(1)
     {
         return Next::Stop {
             why: format!("it didn't hold after the {max} {} you allow", tries(max)),
         };
     }
     let same = limits.stuck_after.max(1);
-    if attempt > same {
+    if try_number > same {
         Next::Stop {
             why: format!(
-                "it didn't hold in {attempt} {}, after a change of approach",
-                tries(attempt)
+                "it didn't hold in {try_number} {}, after a change of approach",
+                tries(try_number)
             ),
         }
-    } else if attempt == same {
+    } else if try_number == same {
         Next::ChangeApproach {
             why: format!("{same} {} without it holding", tries(same)),
         }
@@ -369,7 +374,7 @@ fn with_no_record(checked: &GoalChecked, attempt: u32, limits: Limits) -> Next {
 }
 
 /// Why a goal that doesn't hold gets no further try.
-fn stopped(host: &Host, task: Option<&CardId>) -> Held {
+fn stopped(host: &Host, task: Option<&TaskId>) -> Held {
     let (status, why) = host.read(|state| {
         let status = state.goal.goal_of(task).map(|goal| goal.status);
         let why = match task {
@@ -433,7 +438,7 @@ fn commands_in_file(host: &Host, condition: &str) -> Vec<String> {
 }
 
 /// Who a step asks to keep its `until`. A step that doesn't say follows `[roles.worker] goal`,
-/// and is kept by Argonauts where that doesn't say either: writing `until` asked for a goal.
+/// and is kept by Argonauts Code where that doesn't say either: writing `until` asked for a goal.
 fn keeper(host: &Host, kept_by: Option<&str>) -> EngineResult<RoleGoal> {
     match kept_by.map(str::trim) {
         Some("cli") => Ok(RoleGoal::Cli),
@@ -457,7 +462,7 @@ mod tests {
 
     fn checked(overall: GoalVerdict) -> GoalChecked {
         GoalChecked {
-            attempt: 1,
+            try_number: 1,
             verdicts: Vec::new(),
             overall,
             reason: "the API it needs is gone".to_owned(),
@@ -475,7 +480,7 @@ mod tests {
             max_rounds: None,
         };
         let not_yet = checked(GoalVerdict::NotYet);
-        let after = |attempt| with_no_record(&not_yet, attempt, limits);
+        let after = |try_number| with_no_record(&not_yet, try_number, limits);
         assert_eq!(after(1), Next::Again);
         assert_eq!(after(2), Next::Again);
         assert_eq!(

@@ -1,5 +1,5 @@
 //! The sample run in a Python repo with no `.gitignore`: the agent's tests left bytecode in its
-//! worktree, the conductor committed it, and the fast-forward into your checkout failed on your
+//! worktree, Argonauts Code committed it, and the fast-forward into your checkout failed on your
 //! own untracked bytecode at the same paths, after the transcript had said "Merged". Now a file
 //! of yours in the way makes the run wait to merge and ask you, never fail. And the run's
 //! commits take only the new files its agent meant to create, the ones its edit tools wrote
@@ -7,18 +7,18 @@
 
 mod policy_support;
 
-use argonauts_core::events::card::IntegrationEvent;
-use argonauts_core::events::checkpoint::{CheckpointEvent, CheckpointKind};
+use argonauts_core::events::approval::{ApprovalEvent, ApprovalKind};
 use argonauts_core::events::run::{RunLifecycle, RunOutcome};
+use argonauts_core::events::task::MergeEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_scenarios::{WAIT, past_the_card_guard};
+use argonauts_scenarios::{WAIT, past_the_question_guard};
 use argonauts_testkit::Key;
 use policy_support::{
-    AUTO_MERGE_RULES, RUN_WAIT, launch_ready, run_finished, solo_config, start_solo,
+    AUTO_MERGE_RULES, RUN_WAIT, captain_config, launch_ready, run_finished, start_captain,
     trusted_scenario, wait_for_events,
 };
 
-const SCENARIO: &str = "owner-runs-python-tests.toml";
+const SCENARIO: &str = "worker-runs-python-tests.toml";
 const YOUR_BYTECODE: &str = "your own bytecode";
 const YOURS: &str = "__pycache__/textkit.cpython-312.pyc";
 /// Every new file is committed, whoever made it, as before the claims rule.
@@ -43,29 +43,27 @@ fn notes(events: &[RunEvent]) -> Vec<&str> {
 
 fn waiting_to_merge(events: &[RunEvent]) -> Option<&Vec<String>> {
     events.iter().find_map(|event| match &event.kind {
-        RunEventKind::Integration(IntegrationEvent::WaitingToMerge { in_the_way, .. }) => {
-            Some(in_the_way)
-        }
+        RunEventKind::Merge(MergeEvent::WaitingToMerge { in_the_way, .. }) => Some(in_the_way),
         _ => None,
     })
 }
 
 #[test]
 fn what_the_tests_left_stays_out_and_the_merge_lands_beside_yours() -> anyhow::Result<()> {
-    let scenario = trusted_scenario(SCENARIO, &solo_config(AUTO_MERGE_RULES))?;
+    let scenario = trusted_scenario(SCENARIO, &captain_config(AUTO_MERGE_RULES))?;
     scenario.repo.write(YOURS, YOUR_BYTECODE)?;
     let mut pty = launch_ready(&scenario, &[])?;
-    start_solo(&mut pty)?;
+    start_captain(&mut pty)?;
 
     let events = wait_for_events(&scenario, "the run to finish", RUN_WAIT, run_finished)?;
     assert_eq!(outcome(&events), Some(RunOutcome::Merged));
-    let landed = scenario
+    let merged = scenario
         .repo
         .git(&["ls-tree", "-r", "--name-only", "main"])?;
-    assert!(landed.lines().any(|path| path == "textkit.py"), "{landed}");
+    assert!(merged.lines().any(|path| path == "textkit.py"), "{merged}");
     assert!(
-        !landed.contains("__pycache__") && !landed.contains(".pytest_cache"),
-        "build output merged:\n{landed}"
+        !merged.contains("__pycache__") && !merged.contains(".pytest_cache"),
+        "build output merged:\n{merged}"
     );
     assert_eq!(
         std::fs::read_to_string(scenario.repo.root().join(YOURS))?,
@@ -95,12 +93,12 @@ fn what_the_tests_left_stays_out_and_the_merge_lands_beside_yours() -> anyhow::R
 /// approval's choices instead of failing, its work kept on its branch.
 #[test]
 fn with_every_new_file_committed_your_bytecode_in_the_way_waits_to_merge() -> anyhow::Result<()> {
-    let config = solo_config(&format!("{AUTO_MERGE_RULES}{KEEP_EVERY_NEW_FILE}"));
+    let config = captain_config(&format!("{AUTO_MERGE_RULES}{KEEP_EVERY_NEW_FILE}"));
     let scenario = trusted_scenario(SCENARIO, &config)?;
     scenario.repo.write(YOURS, YOUR_BYTECODE)?;
     let main = scenario.repo.head()?;
     let mut pty = launch_ready(&scenario, &[])?;
-    start_solo(&mut pty)?;
+    start_captain(&mut pty)?;
 
     let events = wait_for_events(&scenario, "the merge to wait", RUN_WAIT, |events| {
         waiting_to_merge(events).is_some()
@@ -126,7 +124,7 @@ fn with_every_new_file_committed_your_bytecode_in_the_way_waits_to_merge() -> an
     ])?;
     let run_branch = branches
         .lines()
-        .find(|branch| branch.ends_with("/integration"))
+        .find(|branch| branch.ends_with("/merged"))
         .ok_or_else(|| anyhow::anyhow!("no run branch in {branches:?}"))?;
     let kept = scenario
         .repo
@@ -141,23 +139,23 @@ fn with_every_new_file_committed_your_bytecode_in_the_way_waits_to_merge() -> an
 /// approval took the day's last auto-merge. Now it lands at once, on one approval.
 #[test]
 fn an_edit_of_yours_the_run_leaves_alone_rides_along() -> anyhow::Result<()> {
-    let scenario = trusted_scenario(SCENARIO, &solo_config(AUTO_MERGE_RULES))?;
+    let scenario = trusted_scenario(SCENARIO, &captain_config(AUTO_MERGE_RULES))?;
     let notes_of_yours = "# Test repo\n\nMy notes, not committed yet.\n";
     scenario.repo.write("README.md", notes_of_yours)?;
     let mut pty = launch_ready(&scenario, &[])?;
-    start_solo(&mut pty)?;
+    start_captain(&mut pty)?;
 
     let events = wait_for_events(&scenario, "the run to finish", RUN_WAIT, run_finished)?;
     assert_eq!(outcome(&events), Some(RunOutcome::Merged));
-    let merge_cards = events
+    let merge_questions = events
         .iter()
         .filter(|event| {
             matches!(&event.kind,
-                RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
-                    if opened.kind == CheckpointKind::Merge)
+                RunEventKind::Approval(ApprovalEvent::Opened(opened))
+                    if opened.kind == ApprovalKind::Merge)
         })
         .count();
-    assert_eq!(merge_cards, 1, "asked once");
+    assert_eq!(merge_questions, 1, "asked once");
     assert_eq!(
         std::fs::read_to_string(scenario.repo.root().join("README.md"))?,
         notes_of_yours
@@ -168,10 +166,10 @@ fn an_edit_of_yours_the_run_leaves_alone_rides_along() -> anyhow::Result<()> {
 
 #[test]
 fn a_file_of_yours_in_the_way_waits_to_merge_and_moves_aside() -> anyhow::Result<()> {
-    let scenario = trusted_scenario(SCENARIO, &solo_config(AUTO_MERGE_RULES))?;
+    let scenario = trusted_scenario(SCENARIO, &captain_config(AUTO_MERGE_RULES))?;
     scenario.repo.write("textkit.py", "# my own draft\n")?;
     let mut pty = launch_ready(&scenario, &[])?;
-    start_solo(&mut pty)?;
+    start_captain(&mut pty)?;
 
     let events = wait_for_events(&scenario, "the merge to wait", RUN_WAIT, |events| {
         waiting_to_merge(events).is_some()
@@ -192,9 +190,9 @@ fn a_file_of_yours_in_the_way_waits_to_merge_and_moves_aside() -> anyhow::Result
     assert!(!screen.contains("The run failed"), "{screen}");
     scenario.shot(&pty, "policy_merge_waits_on_your_files")?;
 
-    // The card opens waiting, or already focused on its first option.
+    // The question opens waiting, or already focused on its first option.
     pty.wait_for(r"❯ \d+\. ", WAIT)?;
-    past_the_card_guard();
+    past_the_question_guard();
     pty.press(Key::Up)?;
     pty.press(Key::Char('1'))?;
     let events = wait_for_events(&scenario, "the run to finish", RUN_WAIT, run_finished)?;

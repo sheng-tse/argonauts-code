@@ -4,33 +4,31 @@
 
 use crate::events::session::{InputPart, InputPartKind};
 use crate::names::RoleName;
+use crate::settings::crew::CrewRole;
 
-/// The five roles of a crew. Every finer role reads the frame and the file of one of them
-/// unless it has its own ([`CrewRole::read_by`]).
-pub use crate::settings::crew::CrewRole;
-
-/// What a prompt asks of a crew role.
+/// What a prompt asks of a crew role. Every finer role reads the frame and the file of one of
+/// the five unless it has its own ([`CrewRole::read_by`]).
 impl CrewRole {
     /// The crew role whose frame and file `role` reads, by the kind of work it does: everyone
     /// who shapes the plan reads the orchestrator's, everyone who judges someone else's work
     /// the reviewers', and whoever signs off the judge's.
     ///
-    /// This isn't whose model fills the seat. A drafter in a council runs on a worker's model
+    /// This isn't whose model it runs on. A drafting agent in a council runs on a worker's model
     /// and still plans read-only, so it reads the orchestrator's frame, never the one that
     /// tells a worker to build in its worktree.
     pub fn read_by(role: RoleName) -> Self {
         match role {
             RoleName::Main | RoleName::Consultant | RoleName::Narrator => Self::Main,
             RoleName::Orchestrator
-            | RoleName::PhaseLead
-            | RoleName::Restater
-            | RoleName::Differ
-            | RoleName::Drafter
-            | RoleName::Mapper
-            | RoleName::Retro => Self::Orchestrator,
-            RoleName::Worker | RoleName::Spike => Self::Workers,
-            RoleName::Reviewer | RoleName::Critic | RoleName::Adjudicator => Self::Reviewers,
-            RoleName::Judge | RoleName::Approver => Self::Judge,
+            | RoleName::TieBreaker
+            | RoleName::Reader
+            | RoleName::Comparer
+            | RoleName::Draft
+            | RoleName::Map
+            | RoleName::RunReview => Self::Orchestrator,
+            RoleName::Worker | RoleName::Experiment => Self::Worker,
+            RoleName::Reviewer | RoleName::Critic => Self::Reviewer,
+            RoleName::Judge => Self::Judge,
         }
     }
 
@@ -39,15 +37,10 @@ impl CrewRole {
         match self {
             Self::Main => "the main agent",
             Self::Orchestrator => "the orchestrator",
-            Self::Workers => "the workers",
-            Self::Reviewers => "the reviewers",
+            Self::Worker => "the workers",
+            Self::Reviewer => "the reviewers",
             Self::Judge => "the judge",
         }
-    }
-
-    /// The reverse of [`Self::as_str`].
-    pub fn parse(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|role| role.as_str() == name)
     }
 
     /// The crew role whose agents read a file named `name`, such as `roles/<name>.md`: one of
@@ -67,8 +60,7 @@ pub enum Readers {
 }
 
 impl Readers {
-    /// A crew role's own name comes first: `judge` is the judge with the approver, and
-    /// `reviewer` is the one finer role beside `reviewers`.
+    /// A crew role's own name comes first: `reviewer` is the reviewer with the critic.
     pub fn of_file(name: &str) -> Option<Self> {
         CrewRole::parse(name)
             .map(Self::Crew)
@@ -79,6 +71,15 @@ impl Readers {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Crew(role) => role.as_str(),
+            Self::Finer(role) => role.as_str(),
+        }
+    }
+
+    /// The readers as a screen heads their row: a crew role's people, such as `reviewers`, or
+    /// a finer role's own name.
+    pub fn heading(self) -> &'static str {
+        match self {
+            Self::Crew(role) => role.plural(),
             Self::Finer(role) => role.as_str(),
         }
     }
@@ -114,7 +115,7 @@ pub fn finer_roles() -> impl Iterator<Item = RoleName> {
         .filter(|role| CrewRole::parse(role.as_str()).is_none())
 }
 
-/// What the screen says when a part is Argonauts' own text.
+/// What the screen says when a part is Argonauts Code's own text.
 pub const BUILT_IN: &str = "built in";
 
 /// The frame: the role, what it may touch, and the shape of its answer. `file` is your own
@@ -146,7 +147,7 @@ pub fn from_writer(text: impl Into<String>, model: String) -> InputPart {
     )
 }
 
-/// Argonauts' own instructions for the step. `file` is your own template when you changed it.
+/// Argonauts Code's own instructions for the step. `file` is your own template when you changed it.
 pub fn built_in(text: impl Into<String>, file: Option<String>) -> InputPart {
     part(InputPartKind::Instructions, OWN_INSTRUCTIONS, text, file)
 }
@@ -154,7 +155,7 @@ pub fn built_in(text: impl Into<String>, file: Option<String>) -> InputPart {
 const OWN_INSTRUCTIONS: &str = "Instructions";
 
 /// Whether someone wrote these instructions for this agent and this request: the
-/// orchestrator, a model you named, or a workflow's step. Argonauts' own template for a step
+/// orchestrator, a model you named, or a workflow's step. Argonauts Code's own template for a step
 /// is the same for every request, so it isn't.
 pub fn written_for_the_agent(part: &InputPart) -> bool {
     part.kind == InputPartKind::Instructions && part.label != OWN_INSTRUCTIONS
@@ -185,9 +186,9 @@ pub fn role_named(words: &str) -> Option<CrewRole> {
         .to_owned();
     match name.as_str() {
         "main" => Some(CrewRole::Main),
-        "orchestrator" | "planner" | "lead" => Some(CrewRole::Orchestrator),
-        "worker" | "workers" | "builder" | "builders" => Some(CrewRole::Workers),
-        "reviewer" | "reviewers" | "critic" | "critics" => Some(CrewRole::Reviewers),
+        "orchestrator" | "planner" => Some(CrewRole::Orchestrator),
+        "worker" | "workers" | "builder" | "builders" => Some(CrewRole::Worker),
+        "reviewer" | "reviewers" | "critic" | "critics" => Some(CrewRole::Reviewer),
         "judge" | "judges" => Some(CrewRole::Judge),
         _ => None,
     }
@@ -199,7 +200,7 @@ pub fn for_role_line(role: CrewRole, words: &str) -> String {
     format!("For {}: {}", role.the_agents(), words.trim())
 }
 
-/// Your file for the role, by the path the screen shows, such as `roles/reviewers.md`.
+/// Your file for the role, by the path the screen shows, such as `roles/reviewer.md`.
 pub fn role_file(text: impl Into<String>, file: String) -> InputPart {
     part(InputPartKind::RoleFile, "Your file", text, Some(file))
 }
@@ -215,7 +216,7 @@ pub fn from_request(text: impl Into<String>) -> InputPart {
 }
 
 /// The line the Input tab puts above a part, such as `Frame · built in` or
-/// `Your file · roles/reviewers.md`. `None` for a part that isn't one of these four.
+/// `Your file · roles/reviewer.md`. `None` for a part that isn't one of these four.
 pub fn heading(part: &InputPart) -> Option<String> {
     let from = part.source.as_deref();
     match part.kind {
@@ -262,7 +263,7 @@ mod tests {
                 Some(CrewRole::read_by(role))
             );
         }
-        assert_eq!(CrewRole::of_file("reviewers"), Some(CrewRole::Reviewers));
+        assert_eq!(CrewRole::of_file("reviewers"), None);
         assert_eq!(CrewRole::of_file("reviwers"), None);
     }
 
@@ -273,7 +274,7 @@ mod tests {
             from_orchestrator("Review the due-date change.", Some("Opus 5.5".to_owned())),
             role_file(
                 "A missing test is a required change.",
-                "roles/reviewers.md".to_owned(),
+                "roles/reviewer.md".to_owned(),
             ),
             from_request("focus on date parsing"),
         ]
@@ -285,7 +286,7 @@ mod tests {
             [
                 "Frame · built in",
                 "From the orchestrator · Opus 5.5",
-                "Your file · roles/reviewers.md",
+                "Your file · roles/reviewer.md",
                 "From your request",
             ]
         );
@@ -293,13 +294,10 @@ mod tests {
 
     #[test]
     fn a_changed_template_is_headed_by_its_file() {
-        let changed = frame(
-            "You review.",
-            Some("prompts/frames/reviewers.md".to_owned()),
-        );
+        let changed = frame("You review.", Some("prompts/frames/reviewer.md".to_owned()));
         assert_eq!(
             heading(&changed).as_deref(),
-            Some("Frame · prompts/frames/reviewers.md")
+            Some("Frame · prompts/frames/reviewer.md")
         );
         let own = built_in("Review the change.", None);
         assert_eq!(heading(&own).as_deref(), Some("Instructions · built in"));
@@ -321,9 +319,9 @@ mod tests {
     #[test]
     fn a_request_names_a_role_in_plain_words() {
         for (words, role) in [
-            ("the reviewers", CrewRole::Reviewers),
-            ("Reviewer", CrewRole::Reviewers),
-            ("workers", CrewRole::Workers),
+            ("the reviewers", CrewRole::Reviewer),
+            ("Reviewer", CrewRole::Reviewer),
+            ("workers", CrewRole::Worker),
             ("the judge", CrewRole::Judge),
             ("the main agent", CrewRole::Main),
             ("orchestrator", CrewRole::Orchestrator),
@@ -332,23 +330,26 @@ mod tests {
         }
         assert_eq!(role_named("everyone"), None);
         assert_eq!(
-            for_role_line(CrewRole::Reviewers, " focus on date parsing "),
+            for_role_line(CrewRole::Reviewer, " focus on date parsing "),
             "For the reviewers: focus on date parsing"
         );
     }
 
     #[test]
     fn every_role_reads_the_frame_of_one_of_the_five() {
-        assert_eq!(CrewRole::read_by(RoleName::Critic), CrewRole::Reviewers);
-        assert_eq!(CrewRole::read_by(RoleName::Spike), CrewRole::Workers);
-        assert_eq!(CrewRole::read_by(RoleName::Drafter), CrewRole::Orchestrator);
-        assert_eq!(CrewRole::read_by(RoleName::Approver), CrewRole::Judge);
+        assert_eq!(CrewRole::read_by(RoleName::Critic), CrewRole::Reviewer);
+        assert_eq!(CrewRole::read_by(RoleName::Experiment), CrewRole::Worker);
+        assert_eq!(CrewRole::read_by(RoleName::Draft), CrewRole::Orchestrator);
+        assert_eq!(
+            CrewRole::read_by(RoleName::RunReview),
+            CrewRole::Orchestrator
+        );
         for role in CrewRole::ALL {
             assert_eq!(CrewRole::parse(role.as_str()), Some(role));
         }
     }
 
-    /// A name is a crew role's first, so `judge` speaks to the judge and the approver, and a
+    /// A name is a crew role's first, so `reviewer` speaks to the reviewer and the critic, and a
     /// finer role is spoken to alone by the name the settings use for it.
     #[test]
     fn a_file_speaks_to_a_crew_role_or_to_one_finer_role() {
@@ -358,14 +359,16 @@ mod tests {
         );
         let critic = Readers::of_file("critic").unwrap();
         assert_eq!(critic, Readers::Finer(RoleName::Critic));
-        assert_eq!(critic.crew(), CrewRole::Reviewers);
+        assert_eq!(critic.crew(), CrewRole::Reviewer);
         assert_eq!(critic.the_agents(), "the critic role");
-        assert_eq!(Readers::from(CrewRole::Workers).the_agents(), "the workers");
+        assert_eq!(Readers::from(CrewRole::Worker).the_agents(), "the workers");
         assert_eq!(Readers::of_file("reviwers"), None);
 
         let finer: Vec<&str> = finer_roles().map(|role| role.as_str()).collect();
-        assert_eq!(finer.len(), 14);
-        assert!(finer.contains(&"reviewer") && finer.contains(&"phase-lead"));
-        assert!(!finer.contains(&"judge") && !finer.contains(&"main"));
+        assert_eq!(finer.len(), 10);
+        assert!(finer.contains(&"critic") && finer.contains(&"tie-breaker"));
+        for crew in ["main", "orchestrator", "worker", "reviewer", "judge"] {
+            assert!(!finer.contains(&crew), "{crew}");
+        }
     }
 }

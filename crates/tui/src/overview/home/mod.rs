@@ -1,14 +1,14 @@
 //! The Overview tab: every CLI's work on this computer, laid out as Claude Code's /stats lays
 //! out its own. Two sub-tabs, Overview and Models, and a period line that `r` cycles. Overview
-//! has the year of days, label and value pairs, the tokens by CLI and kind, a fun fact, what's
-//! worth knowing and where the numbers came from; Models has the top models' tokens a day and
-//! each model with its CLI, value and sessions. No boxes. The first time it opens it asks once
-//! whether to import what Claude Code and Codex recorded; the import runs in the app, and the
-//! tab says how far it got.
+//! has the year of days, its numbers in three groups, the tokens drawn by kind and by CLI, a
+//! fun fact, what's worth knowing and where the numbers came from; Models has the top models'
+//! tokens a day and each model with its CLI, value and sessions. No boxes. The first time it
+//! opens it asks once whether to import what Claude Code and Codex recorded; the import runs
+//! in the app, and the tab says how far it got.
 
 mod chart;
 mod facts;
-mod look;
+pub(super) mod look;
 mod models;
 mod numbers;
 mod year;
@@ -16,18 +16,20 @@ mod year;
 use argonauts_core::api::UsagePeriod;
 use argonauts_core::app::ViewRequest;
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::overview::{CliSource, ImportStatus, OverviewData, OverviewPeriod};
+use argonauts_core::overview::{
+    CliSource, ImportStatus, ModelTokens, OverviewData, OverviewPeriod,
+};
 use crossterm::event::KeyCode;
 use ratatui::text::Span;
 
-use self::look::{cli_word, since_word};
+use self::look::{cli_word, model_colors, since_word};
 use self::models::{Models, last_page, page_word};
 use self::numbers::{Numbers, periods};
 use self::year::Year;
 use super::subtabs::{self, Level};
+use crate::kit::{Drawn, Frame, Kit};
 use crate::text::truncate_spans;
 use crate::theme::Role;
-use crate::widgets::{Drawn, Frame, Kit};
 
 /// The Overview tab's own tabs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -105,6 +107,22 @@ impl HomeTab {
         }
     }
 
+    /// Every model's tokens in all, as the numbers at hand carry them for any period.
+    pub fn all_time_models(&self) -> Option<&[ModelTokens]> {
+        self.data
+            .as_ref()
+            .map(|data| data.all_time_models.as_slice())
+    }
+
+    /// The tokens of everything on this computer over every day so far, when the numbers at
+    /// hand are for every day. Stats sets the crew's own tokens beside it.
+    pub fn every_day_tokens(&self) -> Option<u64> {
+        self.data
+            .as_ref()
+            .filter(|data| data.period == OverviewPeriod::All)
+            .map(|data| data.total.total())
+    }
+
     /// The import's question shows, and takes the keys it answers with.
     pub fn asking(&self) -> bool {
         matches!(
@@ -135,10 +153,10 @@ impl HomeTab {
         HomeKey::Moved
     }
 
-    /// ` Overview    Models `, the one shown filled while its row has the keys.
+    /// ` Overview    Models `, the one shown filled while Tab moves them.
     pub fn about(&self, kit: &Kit<'_>, _names: &DisplayNames, width: usize) -> Vec<Span<'static>> {
         let titles = SubTab::ALL.map(SubTab::title);
-        let row = subtabs::row(kit, &titles, self.sub_index(), self.level == Level::SubTabs);
+        let row = subtabs::row(kit, &titles, self.sub_index(), self.level.moves_sub_tabs());
         truncate_spans(&row, width)
     }
 
@@ -152,12 +170,14 @@ impl HomeTab {
             blocks.push(self.question(kit, width));
         }
         let empty = data.total.total() == 0 && data.import != ImportStatus::Unasked;
+        let shades = &model_colors(data, names);
         match self.sub {
             SubTab::Overview => {
                 let year = Year {
                     data,
                     names,
                     colors: data.year_colors,
+                    shades,
                 };
                 blocks.push(year.draw(kit, width));
                 blocks.push(year.legend(kit, width));
@@ -166,14 +186,18 @@ impl HomeTab {
                 if empty {
                     blocks.push(note(kit, self.nothing_yet(data)));
                 } else {
-                    blocks.push(numbers.pairs(kit, width));
+                    blocks.push(numbers.block(kit, width));
                 }
                 blocks.push(numbers.words(kit, width, self.source(data, names)));
                 (blocks, 0)
             }
             SubTab::Models => {
                 blocks.push(periods(kit, self.period));
-                let models = Models { data, names };
+                let models = Models {
+                    data,
+                    names,
+                    shades,
+                };
                 if empty || data.models.is_empty() {
                     blocks.push(note(kit, self.nothing_yet(data)));
                     let last = blocks.len() - 1;
@@ -201,7 +225,10 @@ impl HomeTab {
     /// `Stats from the last 365 days · imported: Claude Code since Oct 2025, Codex since Feb`,
     /// or how far the import is, or what it found.
     fn source(&self, data: &OverviewData, names: &DisplayNames) -> String {
-        let mut parts = vec![format!("Stats from the last {} days", data.span_days)];
+        let mut parts = vec![match data.span_days {
+            1 => "Stats from the last day".to_owned(),
+            days => format!("Stats from the last {days} days"),
+        }];
         let since = |source: &CliSource| {
             let cli = cli_word(names, &source.agent);
             match source.since {
@@ -236,7 +263,7 @@ impl HomeTab {
                     parts.push(format!("imported: {}", listed(&imported)));
                 }
                 if !through.is_empty() {
-                    parts.push(format!("through Argonauts: {}", listed(&through)));
+                    parts.push(format!("through Argonauts Code: {}", listed(&through)));
                 }
             }
         }
@@ -252,7 +279,7 @@ impl HomeTab {
         let inner = frame.inner();
         let mut body = Drawn::new();
         body.push(vec![
-            kit.span(kit.glyphs.widget, Role::Card),
+            kit.span(kit.glyphs.the_mod, Role::Question),
             Span::raw(" "),
             kit.strong("your history"),
         ]);
@@ -265,7 +292,7 @@ impl HomeTab {
         for (at, choice) in ["Yes, import it", "Not now"].iter().enumerate() {
             let words = format!("{}. {choice}", at + 1);
             body.push(if at == self.answer {
-                vec![Span::styled(format!("❯ {words}"), kit.bold(Role::Card))]
+                vec![Span::styled(format!("❯ {words}"), kit.bold(Role::Question))]
             } else {
                 vec![Span::raw(format!("  {words}"))]
             });
@@ -278,7 +305,8 @@ impl HomeTab {
         if self.asking() {
             return vec!["↑↓ choose", "enter answer", "1 2 answer"];
         }
-        let mut keys = Vec::new();
+        // The period's key comes first, as on every tab that has periods.
+        let mut keys = vec![super::periods::CYCLE_HINT];
         if self.level == Level::Tabs {
             keys.extend(["tab · ←→ tabs", "↓ Overview or Models"]);
         } else {
@@ -290,7 +318,7 @@ impl HomeTab {
                 keys.push("tab Overview or Models");
             }
         }
-        keys.extend(["r to cycle dates", "ctrl+s to copy"]);
+        keys.push("ctrl+s to copy");
         if matches!(
             self.data.as_ref().map(|data| &data.import),
             Some(ImportStatus::Declined | ImportStatus::Failed { .. })
@@ -311,10 +339,8 @@ impl HomeTab {
         if self.asking() {
             return self.question_key(code);
         }
-        match code {
-            KeyCode::Char('r') => return Some(self.step_period(1)),
-            KeyCode::Char('i') => return Some(HomeKey::Ask(self.request(Some(true)))),
-            _ => {}
+        if code == KeyCode::Char('i') {
+            return Some(HomeKey::Ask(self.request(Some(true))));
         }
         if self.level != Level::Cards || self.sub != SubTab::Models {
             return None;
@@ -366,14 +392,10 @@ impl HomeTab {
         Some(HomeKey::Ask(self.request(Some(answer))))
     }
 
-    /// The next period, wrapping, asked for at once.
+    /// The period `by` along from this one, wrapping, asked for at once. The panel reads the
+    /// period's keys for every tab that has periods and steps this tab's through here.
     pub fn step_period(&mut self, by: isize) -> HomeKey {
-        let at = OverviewPeriod::ALL
-            .iter()
-            .position(|period| *period == self.period)
-            .unwrap_or(0);
-        let next = (at as isize + by).rem_euclid(OverviewPeriod::ALL.len() as isize);
-        self.period = OverviewPeriod::ALL[next as usize];
+        self.period = super::periods::cycled(&OverviewPeriod::ALL, self.period, by);
         self.picked = 0;
         HomeKey::Ask(self.request(None))
     }
@@ -383,8 +405,7 @@ impl HomeTab {
         self.page = page_word(models, self.picked).unwrap_or_default();
     }
 
-    /// Ctrl+S: what the sub-tab shows, as plain lines, without the folders, which stay on
-    /// this computer.
+    /// Ctrl+S: what the sub-tab shows, as plain lines, with each bar as its shares in words.
     pub fn summary_text(&self, names: &DisplayNames) -> Option<String> {
         let data = self.data.as_ref()?;
         let theme = crate::theme::Theme::dark().with_level(crate::theme::ColorLevel::None);
@@ -399,11 +420,20 @@ impl HomeTab {
         match self.sub {
             SubTab::Overview => {
                 let numbers = Numbers { data, names };
-                blocks.push(numbers.pairs(&kit, width));
+                blocks.push(numbers.groups(&kit, width));
+                let mut shares = Drawn::new();
+                for line in numbers.shares() {
+                    shares.push(vec![Span::raw(line)]);
+                }
+                blocks.push(shares);
                 blocks.push(numbers.words(&kit, width, self.source(data, names)));
             }
             SubTab::Models => {
-                let models = Models { data, names };
+                let models = Models {
+                    data,
+                    names,
+                    shades: &model_colors(data, names),
+                };
                 blocks.extend(models.favourite(&kit, width));
                 for first in (0..data.models.len()).step_by(models::PAGE) {
                     blocks.push(models.columns(&kit, width, first));
@@ -418,9 +448,7 @@ impl HomeTab {
                     .iter()
                     .map(|span| span.content.as_ref())
                     .collect();
-                if !text.starts_with("Top folder:") {
-                    lines.push(text.trim_end().to_owned());
-                }
+                lines.push(text.trim_end().to_owned());
             }
         }
         Some(lines.join("\n"))

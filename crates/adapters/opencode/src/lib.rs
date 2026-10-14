@@ -4,6 +4,7 @@
 mod command;
 mod parser;
 mod provider;
+mod providers;
 mod user_config;
 
 use argonauts_core::keywords::Keyword;
@@ -17,6 +18,11 @@ pub use provider::{LocalUrls, local_provider_config};
 /// Words OpenCode treats specially in a prompt: none known. It wasn't installed to check its
 /// program text, and nothing in this adapter's notes or fixtures names one.
 pub const KEYWORDS: &[Keyword] = &[];
+
+/// The versions the recordings in `fixtures/` were made with or also match, oldest first,
+/// read from the `.meta.json` beside each recording when the crate is built. Files written
+/// by hand stand for no version.
+pub const TESTED_VERSIONS: &[&str] = include!(concat!(env!("OUT_DIR"), "/tested_versions.rs"));
 
 #[derive(Debug, Clone, Default)]
 pub struct OpenCodeAdapter {
@@ -64,13 +70,12 @@ impl Adapter for OpenCodeAdapter {
         extract_version(output)
     }
 
-    /// The versions with recorded fixtures. 1.18.33's were written by hand.
     fn keywords(&self) -> &'static [Keyword] {
         KEYWORDS
     }
 
     fn tested_versions(&self) -> &'static [&'static str] {
-        &["1.18.34"]
+        TESTED_VERSIONS
     }
 
     /// The live-test rules name no OpenCode model, so this stays a placeholder.
@@ -85,7 +90,7 @@ impl Adapter for OpenCodeAdapter {
     /// Usage comes with each finished step, with its cost, but no event names the model.
     /// OpenCode can't enforce read-only by flag: its default permissions mostly allow, and
     /// `--auto` approves anything not denied. A read-only session must run in a read-only
-    /// worktree that Argonauts owns.
+    /// worktree that Argonauts Code owns.
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             live_usage: true,
@@ -96,6 +101,36 @@ impl Adapter for OpenCodeAdapter {
             input_joins_running_turn: false,
             ..Capabilities::default()
         }
+    }
+
+    /// `opencode upgrade` is OpenCode's own updater.
+    fn update_args(&self) -> Option<&'static [&'static str]> {
+        Some(&["upgrade"])
+    }
+
+    /// Its own installer keeps it under `~/.opencode/bin` and names no address for the newest
+    /// version, so that is only asked of Homebrew or npm.
+    fn install_sources(&self) -> argonauts_core::adapter::InstallSources {
+        argonauts_core::adapter::InstallSources {
+            homebrew: Some("opencode"),
+            npm: Some("opencode-ai"),
+            own: Some(argonauts_core::adapter::OwnInstaller {
+                path_part: "/.opencode/bin/",
+                newest_url: None,
+            }),
+        }
+    }
+
+    fn updater_off_env(&self) -> &'static [(&'static str, &'static str)] {
+        &[(command::AUTO_UPDATE_ENV, "1")]
+    }
+
+    fn provider_checks(&self) -> &'static [&'static [&'static str]] {
+        providers::CHECKS
+    }
+
+    fn providers(&self, outputs: &[String]) -> Option<argonauts_core::adapter::CliProviders> {
+        providers::providers(outputs)
     }
 
     /// The npm command from OpenCode's README at v1.18.33, unverified since OpenCode isn't

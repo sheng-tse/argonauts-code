@@ -1,12 +1,12 @@
 //! `!` commands: the pieces on their own, then through the real controller loop.
 
-use argonauts_core::app::{AppEvent, AppMode, ChatEvent, ShellEvent, UiCommand};
+use argonauts_core::app::{AppEvent, AppMode, ConversationEvent, ShellEvent, UiCommand};
 use argonauts_core::events::session::InputPartKind;
 use argonauts_testkit::FakeSession;
 use serde_json::json;
 
 use super::*;
-use crate::controller::test_support::Harness;
+use crate::controller::test_support::TestDriver;
 
 fn ran(command: &str, output: &str, exit_code: Option<i32>, stopped: bool) -> ShellRan {
     ShellRan {
@@ -57,13 +57,13 @@ fn long_output_keeps_its_start_and_end() {
     assert_eq!(short.text(), "hi\n");
 }
 
-/// What the agent hears of the commands names the folder they ran in, which is a run's copy
+/// What the agent hears of the commands names the folder they ran in, which is a run's worktree
 /// for a conversation that carries on one of its agents' sessions.
 #[test]
 fn the_commands_say_where_they_ran() {
-    let copy = std::path::PathBuf::from("/work/argonauts/worktrees/shop/run-01/task-001");
+    let worktree = std::path::PathBuf::from("/work/argonauts/worktrees/shop/run-01/task-001");
     let elsewhere = ShellRan {
-        folder: Some(copy.clone()),
+        folder: Some(worktree.clone()),
         ..ran(
             "pwd",
             "/work/argonauts/worktrees/shop/run-01/task-001\n",
@@ -103,7 +103,7 @@ fn commands_waiting_for_a_message_keep_the_newest_few() {
     let kept: Vec<&str> = held.iter().map(|ran| ran.command.as_str()).collect();
     assert_eq!(kept, ["cmd 3", "cmd 4", "cmd 5"]);
 
-    // One command bigger than the whole budget still goes.
+    // One command bigger than the whole limit still goes.
     let mut one = Vec::new();
     hold(
         &mut one,
@@ -113,7 +113,7 @@ fn commands_waiting_for_a_message_keep_the_newest_few() {
 }
 
 #[test]
-fn the_lead_reads_each_command_with_its_output_and_how_it_ended() {
+fn the_main_agent_reads_each_command_with_its_output_and_how_it_ended() {
     assert_eq!(context_part(&[]), None);
     let part = context_part(&[
         ran("echo hi", "hi\n", Some(0), false),
@@ -134,6 +134,10 @@ fn answer(text: &str) -> FakeSession {
     FakeSession::structured(json!({"kind": "answer", "answer_markdown": text, "estimate": null}))
 }
 
+/// How long a started shell may take to say something. Starting your shell and stopping it
+/// are slow while every other test runs beside this one.
+const SHELL_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
 fn shell(command: &str) -> UiCommand {
     UiCommand::Shell {
         command: command.to_owned(),
@@ -150,8 +154,8 @@ fn finished(event: &AppEvent) -> bool {
 }
 
 /// Everything the `!` commands printed so far, in order.
-fn printed(harness: &Harness) -> String {
-    harness
+fn printed(driver: &TestDriver) -> String {
+    driver
         .seen()
         .iter()
         .filter_map(|event| match event {
@@ -163,26 +167,26 @@ fn printed(harness: &Harness) -> String {
         .collect()
 }
 
-fn prompt_text(harness: &Harness, index: usize) -> String {
-    harness.agent.specs()[index]
+fn prompt_text(driver: &TestDriver, index: usize) -> String {
+    driver.agent.specs()[index]
         .prompt
         .iter()
         .map(|part| part.text.as_str())
         .collect()
 }
 
-async fn turn_done(harness: &mut Harness) {
-    harness
+async fn turn_done(driver: &mut TestDriver) {
+    driver
         .until(|event| {
             matches!(
                 event,
-                AppEvent::Chat {
-                    event: ChatEvent::TurnFinished { .. }
+                AppEvent::Conversation {
+                    event: ConversationEvent::TurnFinished { .. }
                 }
             )
         })
         .await;
-    harness
+    driver
         .until(|event| {
             matches!(
                 event,
@@ -196,11 +200,11 @@ async fn turn_done(harness: &mut Harness) {
 
 #[tokio::test]
 async fn a_command_runs_in_the_repo_and_waits_for_your_next_message() {
-    let mut harness = Harness::start().await;
-    harness
+    let mut driver = TestDriver::start().await;
+    driver
         .send(shell("echo hi; echo oops >&2; touch made-here"))
         .await;
-    let started = harness
+    let started = driver
         .until(|event| matches!(event, AppEvent::Shell { .. }))
         .await;
     assert_eq!(
@@ -212,7 +216,7 @@ async fn a_command_runs_in_the_repo_and_waits_for_your_next_message() {
             }
         }
     );
-    let end = harness.until(finished).await;
+    let end = driver.until(finished).await;
     assert_eq!(
         end,
         AppEvent::Shell {
@@ -223,22 +227,22 @@ async fn a_command_runs_in_the_repo_and_waits_for_your_next_message() {
             }
         }
     );
-    let output = printed(&harness);
+    let output = printed(&driver);
     assert!(
         output.contains("hi\n") && output.contains("oops\n"),
         "{output:?}"
     );
-    assert!(harness.repo.root().join("made-here").exists());
+    assert!(driver.repo.root().join("made-here").exists());
     assert!(
-        harness.agent.specs().is_empty(),
+        driver.agent.specs().is_empty(),
         "a command never starts a turn by itself"
     );
 
-    harness.agent.push(answer("It printed hi."));
-    harness.agent.push(answer("Nothing new."));
-    harness.submit("what did that print?").await;
-    turn_done(&mut harness).await;
-    let spec = &harness.agent.specs()[0];
+    driver.agent.push(answer("It printed hi."));
+    driver.agent.push(answer("Nothing new."));
+    driver.submit("what did that print?").await;
+    turn_done(&mut driver).await;
+    let spec = &driver.agent.specs()[0];
     let part = spec
         .prompt
         .iter()
@@ -251,46 +255,46 @@ async fn a_command_runs_in_the_repo_and_waits_for_your_next_message() {
         "{}",
         part.text
     );
-    let prompt = prompt_text(&harness, 0);
+    let prompt = prompt_text(&driver, 0);
     assert!(prompt.ends_with("what did that print?\n"), "{prompt}");
     assert!(
         prompt.find("$ echo hi") < prompt.find("what did that print?"),
         "the commands come before your message"
     );
-    let echoed = harness.seen().iter().any(|event| {
+    let echoed = driver.seen().iter().any(|event| {
         matches!(
             event,
-            AppEvent::Chat { event: ChatEvent::TurnStarted { text, .. } }
+            AppEvent::Conversation { event: ConversationEvent::TurnStarted { text, .. } }
                 if text == "what did that print?"
         )
     });
     assert!(echoed, "your message shows as you typed it");
 
-    harness.submit("and now?").await;
-    turn_done(&mut harness).await;
+    driver.submit("and now?").await;
+    turn_done(&mut driver).await;
     assert!(
-        !prompt_text(&harness, 1).contains("$ echo hi"),
+        !prompt_text(&driver, 1).contains("$ echo hi"),
         "the main agent hears of a command once"
     );
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn ctrl_c_stops_a_command_and_one_runs_at_a_time() {
-    let mut harness = Harness::start().await;
-    harness.send(shell("sleep 30")).await;
-    harness
-        .until(|event| matches!(event, AppEvent::Shell { .. }))
+    let mut driver = TestDriver::start().await;
+    driver.send(shell("sleep 30")).await;
+    driver
+        .until_within(SHELL_WAIT, |event| matches!(event, AppEvent::Shell { .. }))
         .await;
-    harness.send(shell("echo second")).await;
-    harness
+    driver.send(shell("echo second")).await;
+    driver
         .until(
             |event| matches!(event, AppEvent::Notice { text, .. } if text == super::STILL_RUNNING),
         )
         .await;
     let started = std::time::Instant::now();
-    harness.send(UiCommand::StopShell).await;
-    let end = harness.until(finished).await;
+    driver.send(UiCommand::StopShell).await;
+    let end = driver.until_within(SHELL_WAIT, finished).await;
     assert!(
         matches!(
             end,
@@ -304,11 +308,14 @@ async fn ctrl_c_stops_a_command_and_one_runs_at_a_time() {
         ),
         "{end:?}"
     );
-    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert!(
+        started.elapsed() < SHELL_WAIT,
+        "the stop ended it, well before its 30 seconds were up"
+    );
 
     // A failing command says how it ended, and the next one gets its own number.
-    harness.send(shell("exit 3")).await;
-    let end = harness.until(finished).await;
+    driver.send(shell("exit 3")).await;
+    let end = driver.until_within(SHELL_WAIT, finished).await;
     assert_eq!(
         end,
         AppEvent::Shell {
@@ -319,39 +326,39 @@ async fn ctrl_c_stops_a_command_and_one_runs_at_a_time() {
             }
         }
     );
-    harness.agent.push(answer("Noted."));
-    harness.submit("why did those end?").await;
-    turn_done(&mut harness).await;
-    let prompt = prompt_text(&harness, 0);
+    driver.agent.push(answer("Noted."));
+    driver.submit("why did those end?").await;
+    turn_done(&mut driver).await;
+    let prompt = prompt_text(&driver, 0);
     assert!(
         prompt.contains("$ sleep 30\n(stopped with Ctrl+C)\n"),
         "{prompt}"
     );
     assert!(prompt.contains("$ exit 3\n(exit code 3)\n"), "{prompt}");
-    harness.exit().await;
+    driver.exit().await;
 }
 
 #[tokio::test]
 async fn a_fallback_hears_of_the_commands_too() {
     use argonauts_core::events::session::EndReason;
-    use argonauts_testkit::FakeWorker;
+    use argonauts_testkit::FakeRunner;
 
-    let mut harness = Harness::start_with(crate::controller::test_support::HarnessOptions {
+    let mut driver = TestDriver::start_with(crate::controller::test_support::CliOptions {
         flags: vec![r#"fallback.main.order=["codex"]"#.to_owned()],
         ..Default::default()
     })
     .await;
-    let codex = harness
+    let codex = driver
         .directory
-        .add(FakeWorker::harness("codex", "openai").then(answer("From codex.")));
-    harness
+        .add(FakeRunner::cli("codex", "openai").then(answer("From codex.")));
+    driver
         .agent
         .push(FakeSession::ended(EndReason::RateLimited));
-    harness.send(shell("echo hi")).await;
-    harness.until(finished).await;
-    harness.submit("what did that print?").await;
-    turn_done(&mut harness).await;
-    let first = prompt_text(&harness, 0);
+    driver.send(shell("echo hi")).await;
+    driver.until(finished).await;
+    driver.submit("what did that print?").await;
+    turn_done(&mut driver).await;
+    let first = prompt_text(&driver, 0);
     let retry: String = codex.specs()[0]
         .prompt
         .iter()
@@ -359,7 +366,7 @@ async fn a_fallback_hears_of_the_commands_too() {
         .collect();
     assert!(first.contains("$ echo hi\nhi\n"), "{first}");
     assert!(retry.contains("$ echo hi\nhi\n"), "{retry}");
-    harness.exit().await;
+    driver.exit().await;
 }
 
 /// Polls state the events don't show, such as what the fake conductor received.
@@ -375,9 +382,9 @@ async fn eventually(what: impl Fn() -> bool) {
     }
 }
 
-fn guidance_sent(harness: &Harness) -> Vec<String> {
+fn guidance_sent(driver: &TestDriver) -> Vec<String> {
     use crate::controller::test_support::Call;
-    harness
+    driver
         .conductor
         .calls()
         .into_iter()
@@ -394,17 +401,18 @@ fn guidance_sent(harness: &Harness) -> Vec<String> {
 async fn in_a_run_the_commands_go_with_your_guidance_cleaned_of_escapes() {
     use argonauts_core::input::SlashCommand;
 
-    let mut harness = Harness::start_with(crate::controller::chat::checked_solo()).await;
-    harness.send(shell("echo before")).await;
-    harness.until(finished).await;
-    harness
+    let mut driver =
+        TestDriver::start_with(crate::controller::conversation::checked_captain()).await;
+    driver.send(shell("echo before")).await;
+    driver.until(finished).await;
+    driver
         .send(UiCommand::Slash {
-            command: SlashCommand::Solo {
+            command: SlashCommand::Captain {
                 task: "fix the flaky test".to_owned(),
             },
         })
         .await;
-    harness
+    driver
         .until(|event| {
             matches!(
                 event,
@@ -414,83 +422,83 @@ async fn in_a_run_the_commands_go_with_your_guidance_cleaned_of_escapes() {
             )
         })
         .await;
-    harness.submit("keep going").await;
-    eventually(|| guidance_sent(&harness).len() == 1).await;
-    assert_eq!(guidance_sent(&harness), ["keep going"]);
+    driver.submit("keep going").await;
+    eventually(|| guidance_sent(&driver).len() == 1).await;
+    assert_eq!(guidance_sent(&driver), ["keep going"]);
 
-    harness
+    driver
         .send(shell(
             "printf 'FAILED test_x\\033]0;owned\\007\\033[31m!\\033[0m\\n'",
         ))
         .await;
-    harness.until(finished).await;
-    harness.submit("the test fails, see above").await;
-    eventually(|| guidance_sent(&harness).len() == 2).await;
-    let sent = guidance_sent(&harness).remove(1);
+    driver.until(finished).await;
+    driver.submit("the test fails, see above").await;
+    eventually(|| guidance_sent(&driver).len() == 2).await;
+    let sent = guidance_sent(&driver).remove(1);
     assert!(sent.starts_with("the test fails, see above\n\n"), "{sent}");
     assert!(sent.contains("FAILED test_x!\n"), "{sent:?}");
     assert!(!sent.contains(['\u{1b}', '\u{7}']), "{sent:?}");
     assert!(!sent.contains("echo before"), "{sent}");
 
-    harness.submit("thanks").await;
-    eventually(|| guidance_sent(&harness).len() == 3).await;
-    assert_eq!(guidance_sent(&harness)[2], "thanks", "heard of once");
-    harness.exit().await;
+    driver.submit("thanks").await;
+    eventually(|| guidance_sent(&driver).len() == 3).await;
+    assert_eq!(guidance_sent(&driver)[2], "thanks", "heard of once");
+    driver.exit().await;
 }
 
-/// A message you typed while the lead answered went out after a command you ran later, which
+/// A message you typed while the main agent answered went out after a command you ran later, which
 /// it isn't about: the command waits for your next message.
 #[tokio::test]
 async fn a_message_typed_before_a_command_ended_goes_without_it() {
-    let mut harness = Harness::start().await;
-    harness
+    let mut driver = TestDriver::start().await;
+    driver
         .agent
         .push(answer("One.").with_delay(std::time::Duration::from_millis(1500)));
-    harness.agent.push(answer("Two."));
-    harness.agent.push(answer("Three."));
-    harness.submit("first").await;
-    harness
+    driver.agent.push(answer("Two."));
+    driver.agent.push(answer("Three."));
+    driver.submit("first").await;
+    driver
         .until(|event| {
             matches!(
                 event,
-                AppEvent::Chat {
-                    event: ChatEvent::TurnStarted { .. }
+                AppEvent::Conversation {
+                    event: ConversationEvent::TurnStarted { .. }
                 }
             )
         })
         .await;
-    harness.submit("second").await;
-    harness.send(shell("echo later")).await;
-    turns_finished(&mut harness, 2).await;
+    driver.submit("second").await;
+    driver.send(shell("echo later")).await;
+    turns_finished(&mut driver, 2).await;
     assert!(
-        !prompt_text(&harness, 1).contains("$ echo later"),
+        !prompt_text(&driver, 1).contains("$ echo later"),
         "{}",
-        prompt_text(&harness, 1)
+        prompt_text(&driver, 1)
     );
 
-    harness.submit("third").await;
-    turns_finished(&mut harness, 3).await;
-    assert!(prompt_text(&harness, 2).contains("$ echo later\nlater\n"));
-    harness.exit().await;
+    driver.submit("third").await;
+    turns_finished(&mut driver, 3).await;
+    assert!(prompt_text(&driver, 2).contains("$ echo later\nlater\n"));
+    driver.exit().await;
 }
 
-async fn turns_finished(harness: &mut Harness, count: usize) {
-    let finished = |harness: &Harness| {
-        harness
+async fn turns_finished(driver: &mut TestDriver, count: usize) {
+    let finished = |driver: &TestDriver| {
+        driver
             .seen()
             .iter()
             .filter(|event| {
                 matches!(
                     event,
-                    AppEvent::Chat {
-                        event: ChatEvent::TurnFinished { .. }
+                    AppEvent::Conversation {
+                        event: ConversationEvent::TurnFinished { .. }
                     }
                 )
             })
             .count()
     };
-    while finished(harness) < count {
-        harness.next().await;
+    while finished(driver) < count {
+        driver.next().await;
     }
 }
 
@@ -498,17 +506,17 @@ async fn turns_finished(harness: &mut Harness, count: usize) {
 async fn a_new_conversation_leaves_the_commands_behind() {
     use argonauts_core::input::SlashCommand;
 
-    let mut harness = Harness::start().await;
-    harness.send(shell("echo old")).await;
-    harness.until(finished).await;
-    harness
+    let mut driver = TestDriver::start().await;
+    driver.send(shell("echo old")).await;
+    driver.until(finished).await;
+    driver
         .send(UiCommand::Slash {
             command: SlashCommand::Clear,
         })
         .await;
-    harness.agent.push(answer("Fresh."));
-    harness.submit("hello").await;
-    turn_done(&mut harness).await;
-    assert!(!prompt_text(&harness, 0).contains("echo old"));
-    harness.exit().await;
+    driver.agent.push(answer("Fresh."));
+    driver.submit("hello").await;
+    turn_done(&mut driver).await;
+    assert!(!prompt_text(&driver, 0).contains("echo old"));
+    driver.exit().await;
 }

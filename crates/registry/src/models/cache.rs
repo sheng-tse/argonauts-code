@@ -29,7 +29,7 @@ pub struct ModelCache {
         skip_serializing_if = "Option::is_none"
     )]
     pub claude_listed: Option<OffsetDateTime>,
-    /// The model catalog last fetched from Argonauts' repository, which happens once a day.
+    /// The model catalog last fetched from Argonauts Code's repository, which happens once a day.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<FetchedCatalog>,
 }
@@ -66,7 +66,7 @@ mod tests {
     use argonauts_core::settings::Settings;
 
     use super::*;
-    use crate::models::builtin::harness_entry;
+    use crate::models::builtin::cli_entry;
 
     #[test]
     fn a_cache_reads_back_and_a_bad_one_reads_as_none() {
@@ -75,11 +75,7 @@ mod tests {
         assert_eq!(ModelCache::read(&path), None);
         let cache = ModelCache {
             refreshed: time::macros::datetime!(2026-10-01 09:30 UTC),
-            models: vec![harness_entry(
-                &Settings::default(),
-                "codex",
-                Some("gpt-6-luna"),
-            )],
+            models: vec![cli_entry(&Settings::default(), "codex", Some("gpt-6-luna"))],
             skipped: vec!["`agy models` failed".to_owned()],
             claude_listed: Some(time::macros::datetime!(2026-10-01 09:00 UTC)),
             catalog: Some(FetchedCatalog {

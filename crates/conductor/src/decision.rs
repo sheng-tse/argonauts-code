@@ -1,17 +1,17 @@
-//! How the merge decision reaches the conductor. A [`MergeDecider`] answers each merge card.
+//! How the merge decision reaches Argonauts Code. A [`MergeDecider`] answers each merge question.
 
 use std::future::Future;
 use std::path::PathBuf;
 
-use argonauts_core::{CardId, MergeCard, MergeDecision, RunId};
+use argonauts_core::{MergeDecision, MergeTask, RunId, TaskId};
 use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergeRequest {
     pub run_id: RunId,
-    pub card_id: CardId,
+    pub task_id: TaskId,
     pub title: String,
-    pub card: MergeCard,
+    pub task: MergeTask,
     /// Against the base commit, cut short when very large. The full diff is at `diff_path`.
     pub diff: String,
     pub diff_truncated: bool,
@@ -43,7 +43,7 @@ pub struct PendingDecision {
 
 impl PendingDecision {
     pub fn answer(self, decision: MergeDecision) {
-        // The conductor may have stopped waiting, for example after a stop request.
+        // Argonauts Code may have stopped waiting, for example after a stop request.
         let _ = self.reply.send(decision);
     }
 }
@@ -78,15 +78,15 @@ mod tests {
     fn request() -> MergeRequest {
         MergeRequest {
             run_id: RunId::new("run-1").unwrap(),
-            card_id: CardId::numbered(1),
+            task_id: TaskId::numbered(1),
             title: "Add hello".into(),
-            card: MergeCard {
+            task: MergeTask {
                 branch: "argonauts/run-1/task-001".into(),
                 target_branch: Some("main".into()),
                 stat: DiffStat::default(),
-                gates: vec![],
+                checks: vec![],
                 report: None,
-                budget: None,
+                spend: None,
                 stopped_by: None,
             },
             diff: String::new(),
@@ -112,9 +112,9 @@ mod tests {
     async fn channel_decider_round_trips() {
         let (mut decider, mut pending) = decision_channel();
         let ui = tokio::spawn(async move {
-            let card = pending.recv().await.unwrap();
-            assert_eq!(card.request.title, "Add hello");
-            card.answer(MergeDecision::Approve);
+            let task = pending.recv().await.unwrap();
+            assert_eq!(task.request.title, "Add hello");
+            task.answer(MergeDecision::Approve);
         });
         assert_eq!(
             decider.decide(request()).await.unwrap(),
@@ -131,7 +131,7 @@ mod tests {
 
         let (mut decider, mut pending) = decision_channel();
         tokio::spawn(async move {
-            // Drop the card without answering.
+            // Drop the question without answering.
             let _ = pending.recv().await;
         });
         let err = decider.decide(request()).await.unwrap_err();

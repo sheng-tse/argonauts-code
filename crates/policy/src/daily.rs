@@ -1,6 +1,6 @@
 //! Daily caps across every repo, in `~/.argonauts/daily.json`: auto-merges, spend, and runs
-//! started by front ends. Each check and its record happen under one file lock, so two
-//! supervisors can't both take the last auto-merge.
+//! started by outside agents. Each check and its record happen under one file lock, so two
+//! run hosts can't both take the last auto-merge.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
@@ -41,7 +41,7 @@ struct Day {
     /// Each run's spend when yesterday ended, so a run that spans midnight counts only today's
     /// part.
     spend_before_today: BTreeMap<String, f64>,
-    front_end_runs: u32,
+    outside_agent_runs: u32,
 }
 
 impl Day {
@@ -98,7 +98,7 @@ impl DailyLedger {
         &self.path
     }
 
-    /// Takes one of today's auto-merges for `key` (repo, run, and checkpoint), unless `cap` are
+    /// Takes one of today's auto-merges for `key` (repo, run, and approval), unless `cap` are
     /// taken. Taking the same key twice counts once. Returns today's count.
     pub fn take_auto_merge(
         &self,
@@ -157,22 +157,22 @@ impl DailyLedger {
         })
     }
 
-    /// Takes one of today's runs for front ends, unless `cap` are taken. Returns today's count.
-    pub fn take_front_end_run(&self, cap: u32, now: OffsetDateTime) -> Result<u32, DailyError> {
+    /// Takes one of today's runs for outside agents, unless `cap` are taken. Returns today's count.
+    pub fn take_outside_agent_run(&self, cap: u32, now: OffsetDateTime) -> Result<u32, DailyError> {
         self.update(now, |day| {
-            if day.front_end_runs >= cap {
+            if day.outside_agent_runs >= cap {
                 return Err(DailyError::Capped(format!(
-                    "today's runs from front ends are used up ({cap} a day)"
+                    "today's runs from outside agents are used up ({cap} a day)"
                 )));
             }
-            day.front_end_runs += 1;
-            Ok(day.front_end_runs)
+            day.outside_agent_runs += 1;
+            Ok(day.outside_agent_runs)
         })
     }
 
-    /// Gives back a front-end run taken at `taken` whose start failed. A run taken on an
+    /// Gives back an outside-agent run taken at `taken` whose start failed. A run taken on an
     /// earlier day went with that day, so today's count keeps it.
-    pub fn release_front_end_run(
+    pub fn release_outside_agent_run(
         &self,
         taken: OffsetDateTime,
         now: OffsetDateTime,
@@ -180,7 +180,7 @@ impl DailyLedger {
         let taken_day = taken.to_offset(UtcOffset::UTC).date().to_string();
         self.update(now, |day| {
             if day.day == taken_day {
-                day.front_end_runs = day.front_end_runs.saturating_sub(1);
+                day.outside_agent_runs = day.outside_agent_runs.saturating_sub(1);
             }
             Ok(())
         })
@@ -254,10 +254,10 @@ mod tests {
             let home = tempfile::tempdir().expect("temp dir");
             let ledger = DailyLedger::open(home.path());
             ledger
-                .take_auto_merge("repo/run-1/cp-001", Some(3), NOW)
+                .take_auto_merge("repo/run-1/approval-001", Some(3), NOW)
                 .expect("first");
             ledger
-                .take_auto_merge("repo/run-2/cp-001", Some(3), NOW)
+                .take_auto_merge("repo/run-2/approval-001", Some(3), NOW)
                 .expect("second");
 
             let start = Barrier::new(2);
@@ -268,10 +268,14 @@ mod tests {
                         let start = &start;
                         let home = home.path();
                         scope.spawn(move || {
-                            // Each thread opens the file itself, like another supervisor.
+                            // Each thread opens the file itself, like another run host.
                             let ledger = DailyLedger::open(home);
                             start.wait();
-                            ledger.take_auto_merge(&format!("repo/run-{name}/cp-003"), Some(3), NOW)
+                            ledger.take_auto_merge(
+                                &format!("repo/run-{name}/approval-003"),
+                                Some(3),
+                                NOW,
+                            )
                         })
                     })
                     .collect();
@@ -293,18 +297,27 @@ mod tests {
     fn auto_merges_count_each_key_once_and_can_be_released() {
         let home = tempfile::tempdir().expect("temp dir");
         let ledger = DailyLedger::open(home.path());
-        assert_eq!(ledger.take_auto_merge("r/a/cp-001", Some(1), NOW), Ok(1));
-        assert_eq!(ledger.take_auto_merge("r/a/cp-001", Some(1), NOW), Ok(1));
+        assert_eq!(
+            ledger.take_auto_merge("r/a/approval-001", Some(1), NOW),
+            Ok(1)
+        );
+        assert_eq!(
+            ledger.take_auto_merge("r/a/approval-001", Some(1), NOW),
+            Ok(1)
+        );
         assert!(matches!(
-            ledger.take_auto_merge("r/b/cp-001", Some(1), NOW),
+            ledger.take_auto_merge("r/b/approval-001", Some(1), NOW),
             Err(DailyError::Capped(_))
         ));
         ledger
-            .release_auto_merge("r/a/cp-001", NOW)
+            .release_auto_merge("r/a/approval-001", NOW)
             .expect("release");
-        assert_eq!(ledger.take_auto_merge("r/b/cp-001", Some(1), NOW), Ok(1));
         assert_eq!(
-            ledger.take_auto_merge("r/c/cp-001", Some(1), NOW + Duration::days(1)),
+            ledger.take_auto_merge("r/b/approval-001", Some(1), NOW),
+            Ok(1)
+        );
+        assert_eq!(
+            ledger.take_auto_merge("r/c/approval-001", Some(1), NOW + Duration::days(1)),
             Ok(1)
         );
     }
@@ -314,55 +327,55 @@ mod tests {
         let home = tempfile::tempdir().expect("temp dir");
         let ledger = DailyLedger::open(home.path());
         for n in 1..=20 {
-            let key = format!("r/run-{n}/cp-001");
+            let key = format!("r/run-{n}/approval-001");
             assert_eq!(ledger.take_auto_merge(&key, None, NOW), Ok(n));
         }
     }
 
     #[test]
-    fn front_end_runs_capped_per_day() {
+    fn outside_agent_runs_capped_per_day() {
         let home = tempfile::tempdir().expect("temp dir");
         let ledger = DailyLedger::open(home.path());
-        assert_eq!(ledger.take_front_end_run(2, NOW), Ok(1));
-        assert_eq!(ledger.take_front_end_run(2, NOW), Ok(2));
+        assert_eq!(ledger.take_outside_agent_run(2, NOW), Ok(1));
+        assert_eq!(ledger.take_outside_agent_run(2, NOW), Ok(2));
         assert!(matches!(
-            ledger.take_front_end_run(2, NOW),
+            ledger.take_outside_agent_run(2, NOW),
             Err(DailyError::Capped(_))
         ));
 
         // A clock stepping back doesn't reset today's count.
         assert!(
             ledger
-                .take_front_end_run(2, NOW - Duration::days(1))
+                .take_outside_agent_run(2, NOW - Duration::days(1))
                 .is_err()
         );
 
         let tomorrow = datetime!(2026-09-30 00:00:01 UTC);
-        assert_eq!(ledger.take_front_end_run(2, tomorrow), Ok(1));
-        assert_eq!(ledger.take_front_end_run(0, tomorrow).ok(), None);
+        assert_eq!(ledger.take_outside_agent_run(2, tomorrow), Ok(1));
+        assert_eq!(ledger.take_outside_agent_run(0, tomorrow).ok(), None);
     }
 
     #[test]
-    fn front_end_runs_given_back_only_to_the_day_they_were_taken() {
+    fn outside_agent_runs_given_back_only_to_the_day_they_were_taken() {
         let home = tempfile::tempdir().expect("temp dir");
         let ledger = DailyLedger::open(home.path());
-        assert_eq!(ledger.take_front_end_run(1, NOW), Ok(1));
-        ledger.release_front_end_run(NOW, NOW).expect("release");
-        assert_eq!(ledger.take_front_end_run(1, NOW), Ok(1));
+        assert_eq!(ledger.take_outside_agent_run(1, NOW), Ok(1));
+        ledger.release_outside_agent_run(NOW, NOW).expect("release");
+        assert_eq!(ledger.take_outside_agent_run(1, NOW), Ok(1));
 
         // Giving back more than was taken leaves the count at zero.
-        ledger.release_front_end_run(NOW, NOW).expect("release");
-        ledger.release_front_end_run(NOW, NOW).expect("release");
-        assert_eq!(ledger.take_front_end_run(1, NOW), Ok(1));
+        ledger.release_outside_agent_run(NOW, NOW).expect("release");
+        ledger.release_outside_agent_run(NOW, NOW).expect("release");
+        assert_eq!(ledger.take_outside_agent_run(1, NOW), Ok(1));
 
         // A run taken before midnight and given back after it doesn't free one of today's.
         let tomorrow = datetime!(2026-09-30 00:00:01 UTC);
-        assert_eq!(ledger.take_front_end_run(1, tomorrow), Ok(1));
+        assert_eq!(ledger.take_outside_agent_run(1, tomorrow), Ok(1));
         ledger
-            .release_front_end_run(NOW, tomorrow)
+            .release_outside_agent_run(NOW, tomorrow)
             .expect("release");
         assert!(matches!(
-            ledger.take_front_end_run(1, tomorrow),
+            ledger.take_outside_agent_run(1, tomorrow),
             Err(DailyError::Capped(_))
         ));
     }
@@ -405,20 +418,20 @@ mod tests {
         let ledger = DailyLedger::open(home.path());
         std::fs::write(ledger.path(), "{ torn").expect("write");
         assert!(matches!(
-            ledger.take_auto_merge("r/a/cp-001", Some(3), NOW),
+            ledger.take_auto_merge("r/a/approval-001", Some(3), NOW),
             Err(DailyError::Io { .. })
         ));
         let refused = ledger
-            .take_front_end_run(3, NOW)
+            .take_outside_agent_run(3, NOW)
             .expect_err("a torn ledger");
         let message = refused.to_string();
         assert!(message.contains(user_files::DAILY), "{message}");
         assert!(message.contains("Removing it resets"), "{message}");
 
         std::fs::remove_file(ledger.path()).expect("remove");
-        assert_eq!(ledger.take_front_end_run(3, NOW), Ok(1));
+        assert_eq!(ledger.take_outside_agent_run(3, NOW), Ok(1));
         let missing = DailyLedger::open(&home.path().join("gone"));
-        assert!(missing.take_front_end_run(3, NOW).is_err());
+        assert!(missing.take_outside_agent_run(3, NOW).is_err());
     }
 
     #[test]
@@ -426,15 +439,15 @@ mod tests {
         let home = tempfile::tempdir().expect("temp dir");
         let ledger =
             DailyLedger::open(home.path()).with_lock_wait(std::time::Duration::from_millis(50));
-        assert_eq!(ledger.take_front_end_run(3, NOW), Ok(1));
+        assert_eq!(ledger.take_outside_agent_run(3, NOW), Ok(1));
         let holder = std::fs::File::open(ledger.path()).expect("open");
         holder.lock().expect("hold");
-        let Err(DailyError::Io { message, .. }) = ledger.take_front_end_run(3, NOW) else {
+        let Err(DailyError::Io { message, .. }) = ledger.take_outside_agent_run(3, NOW) else {
             panic!("a held ledger should refuse");
         };
         assert!(message.contains("locked"), "{message}");
 
         holder.unlock().expect("unlock");
-        assert_eq!(ledger.take_front_end_run(3, NOW), Ok(2));
+        assert_eq!(ledger.take_outside_agent_run(3, NOW), Ok(2));
     }
 }

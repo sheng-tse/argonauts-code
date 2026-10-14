@@ -2,19 +2,25 @@
 
 use std::collections::BTreeMap;
 
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::approvals::{ApprovalMode, ApprovalSettings};
 use argonauts_registry::safety_keys_in;
 
 use super::roles;
 
-/// The checkpoints the approvals step sets, in the file's order.
-pub(crate) const APPROVAL_POINTS: &[&str] =
-    &["goal", "plan", "merge", "stuck", "limit", "change_request"];
+/// The approvals the approvals step sets, in the file's order.
+pub(crate) const APPROVAL_POINTS: &[&str] = &[
+    "understand",
+    "plan",
+    "merge",
+    "stuck",
+    "limit",
+    "change_request",
+];
 
-pub(crate) const PEER_CREW: &str = "council";
-pub(crate) const COORDINATED_CREW: &str = "orchestrator";
-pub(crate) const SOLO: &str = "solo";
+pub(crate) const COUNCIL: &str = "council";
+pub(crate) const ORCHESTRATOR: &str = "orchestrator";
+pub(crate) const CAPTAIN: &str = "captain";
 
 /// A local model server's model, picked to review.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,15 +34,15 @@ pub(crate) struct ReviewerPick {
 /// The answers so far. A step left out writes nothing of its own.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Answers {
-    /// Every ready harness. Empty writes no `crew`.
-    pub crew: Vec<WorkerRef>,
+    /// Every ready CLI. Empty writes no `crew`.
+    pub crew: Vec<ModelRef>,
     pub reviewers: Vec<ReviewerPick>,
-    pub main_agent: Option<WorkerRef>,
+    pub main_agent: Option<ModelRef>,
     pub workflow: String,
     /// Only for `orchestrator`.
-    pub coordinator: Option<WorkerRef>,
+    pub orchestrator: Option<ModelRef>,
     /// Who fills each other role you set in "Who does what", by its `/model` key.
-    pub roles: BTreeMap<String, WorkerRef>,
+    pub roles: BTreeMap<String, ModelRef>,
     /// `None` keeps the modes your file has.
     pub approvals: Option<ApprovalMode>,
     /// `None` leaves `telemetry.enabled` as your file has it.
@@ -51,8 +57,8 @@ impl Default for Answers {
             crew: Vec::new(),
             reviewers: Vec::new(),
             main_agent: None,
-            workflow: PEER_CREW.to_owned(),
-            coordinator: None,
+            workflow: COUNCIL.to_owned(),
+            orchestrator: None,
             roles: BTreeMap::new(),
             approvals: Some(ApprovalMode::Auto),
             telemetry: None,
@@ -66,19 +72,23 @@ impl Default for Answers {
 /// terminal no safety key is among them.
 pub(crate) fn keys(answers: &Answers, interactive: bool) -> Vec<(String, String)> {
     let mut keys = Vec::new();
-    if !answers.crew.is_empty() {
-        keys.push(("crew".to_owned(), workers(&answers.crew)));
-    }
     if let Some(agent) = &answers.main_agent {
-        keys.push(("main_agent".to_owned(), string(&agent.to_string())));
+        keys.push(("crew.main".to_owned(), string(&agent.to_string())));
+    }
+    // Each list is written out, since the main agent sits in the same table.
+    if !answers.crew.is_empty() {
+        let everyone = models(&answers.crew);
+        for list in ["worker", "reviewer", "judge"] {
+            keys.push((format!("crew.{list}"), everyone.clone()));
+        }
     }
     keys.push(("workflow".to_owned(), string(&answers.workflow)));
-    if answers.workflow == COORDINATED_CREW
-        && let Some(coordinator) = &answers.coordinator
+    if answers.workflow == ORCHESTRATOR
+        && let Some(orchestrator) = &answers.orchestrator
     {
         keys.push((
-            "roles.orchestrator.workers".to_owned(),
-            workers(std::slice::from_ref(coordinator)),
+            "roles.orchestrator.models".to_owned(),
+            models(std::slice::from_ref(orchestrator)),
         ));
     }
     for (key, worker) in &answers.roles {
@@ -96,15 +106,15 @@ pub(crate) fn keys(answers: &Answers, interactive: bool) -> Vec<(String, String)
         }
         // A reviewer you chose later, in "Who does what", is the one written.
         if !answers.roles.contains_key(roles::REVIEWER_KEY) {
-            let reviewers: Vec<WorkerRef> = answers
+            let reviewers: Vec<ModelRef> = answers
                 .reviewers
                 .iter()
-                .map(|pick| WorkerRef::new(pick.endpoint.clone(), Some(pick.model.clone())))
+                .map(|pick| ModelRef::new(pick.endpoint.clone(), Some(pick.model.clone())))
                 .collect();
-            keys.push((roles::REVIEWER_KEY.to_owned(), workers(&reviewers)));
+            keys.push((roles::REVIEWER_KEY.to_owned(), models(&reviewers)));
         }
     }
-    // Full auto is the one switch, over auto, so turning it off later leaves auto.
+    // Autopilot is the one switch, over auto, so turning it off later leaves auto.
     if let Some(mode) = answers.approvals {
         let autopilot = mode == ApprovalMode::Autopilot;
         let each = if autopilot { ApprovalMode::Auto } else { mode };
@@ -134,7 +144,7 @@ pub(crate) fn approval_mode_name(mode: ApprovalMode) -> &'static str {
     }
 }
 
-/// The mode a checkpoint has when your file leaves it out.
+/// The mode an approval has when your file leaves it out.
 pub(crate) fn built_in_mode(point: &str) -> Option<ApprovalMode> {
     let defaults = toml::Value::try_from(ApprovalSettings::default()).ok()?;
     let mode = defaults.get(point)?.get("mode")?.as_str()?;
@@ -156,10 +166,10 @@ fn string(text: &str) -> String {
     toml::Value::String(text.to_owned()).to_string()
 }
 
-fn workers(workers: &[WorkerRef]) -> String {
-    let items = workers
+fn models(models: &[ModelRef]) -> String {
+    let items = models
         .iter()
-        .map(|worker| toml::Value::String(worker.to_string()))
+        .map(|model| toml::Value::String(model.to_string()))
         .collect();
     toml::Value::Array(items).to_string()
 }
@@ -168,8 +178,8 @@ fn workers(workers: &[WorkerRef]) -> String {
 mod tests {
     use super::*;
 
-    fn worker(id: &str) -> WorkerRef {
-        WorkerRef::new(id, None)
+    fn worker(id: &str) -> ModelRef {
+        ModelRef::new(id, None)
     }
 
     fn answers() -> Answers {
@@ -180,20 +190,24 @@ mod tests {
         }
     }
 
+    const CREW_KEYS: &[&str] = &["crew.main", "crew.worker", "crew.reviewer", "crew.judge"];
+
     fn names(keys: &[(String, String)]) -> Vec<&str> {
         keys.iter().map(|(key, _)| key.as_str()).collect()
     }
 
     #[test]
-    fn the_recommendations_write_crew_agent_preset_and_approvals() {
+    fn the_recommendations_write_crew_agent_workflow_and_approvals() {
         let keys = keys(&answers(), true);
         assert_eq!(
             names(&keys),
             vec![
-                "crew",
-                "main_agent",
+                "crew.main",
+                "crew.worker",
+                "crew.reviewer",
+                "crew.judge",
                 "workflow",
-                "approvals.goal.mode",
+                "approvals.understand.mode",
                 "approvals.plan.mode",
                 "approvals.merge.mode",
                 "approvals.stuck.mode",
@@ -202,11 +216,11 @@ mod tests {
                 "approvals.autopilot",
             ]
         );
-        assert_eq!(keys[0].1, r#"["claude-code", "codex"]"#);
-        assert_eq!(keys[1].1, r#""claude-code""#);
-        assert_eq!(keys[2].1, r#""council""#);
-        assert_eq!(keys[3].1, r#""auto""#);
-        assert_eq!(keys[9].1, "false");
+        assert_eq!(keys[0].1, r#""claude-code""#);
+        assert_eq!(keys[1].1, r#"["claude-code", "codex"]"#);
+        assert_eq!(keys[4].1, r#""council""#);
+        assert_eq!(keys[5].1, r#""auto""#);
+        assert_eq!(keys[11].1, "false");
     }
 
     /// Usage counts are written only when the question was answered, and only by a person at a
@@ -228,7 +242,7 @@ mod tests {
         assert_eq!(telemetry(&answers, true).as_deref(), Some("false"));
     }
 
-    /// Full auto turns the one switch on over auto, so turning it off later leaves auto.
+    /// Autopilot turns the one switch on over auto, so turning it off later leaves auto.
     #[test]
     fn autopilot_writes_the_switch_over_auto() {
         let mut answers = answers();
@@ -258,14 +272,14 @@ mod tests {
             model: "llama3.2".to_owned(),
         });
         let keys = keys(&answers, false);
-        assert_eq!(names(&keys), vec!["crew", "main_agent", "workflow"]);
+        assert_eq!(names(&keys), [CREW_KEYS, &["workflow"]].concat());
     }
 
     #[test]
-    fn a_reviewer_and_a_coordinator_write_their_roles() {
+    fn a_reviewer_and_a_orchestrator_write_their_roles() {
         let mut answers = answers();
-        answers.workflow = COORDINATED_CREW.to_owned();
-        answers.coordinator = Some(worker("codex"));
+        answers.workflow = ORCHESTRATOR.to_owned();
+        answers.orchestrator = Some(worker("codex"));
         answers.reviewers.push(ReviewerPick {
             endpoint: "ollama".to_owned(),
             base_url: "http://localhost:11434/v1".to_owned(),
@@ -277,14 +291,14 @@ mod tests {
                 .find(|(key, _)| key == name)
                 .map(|(_, value)| value.as_str())
         };
-        assert_eq!(find("roles.orchestrator.workers"), Some(r#"["codex"]"#));
+        assert_eq!(find("roles.orchestrator.models"), Some(r#"["codex"]"#));
         assert_eq!(
             find("endpoints.ollama.base_url"),
             Some(r#""http://localhost:11434/v1""#)
         );
         assert_eq!(find("endpoints.ollama.local"), Some("true"));
         assert_eq!(
-            find("roles.reviewer.workers"),
+            find("roles.reviewer.models"),
             Some(r#"["ollama/llama3.2"]"#)
         );
     }
@@ -293,16 +307,16 @@ mod tests {
     fn kept_approvals_and_a_model_are_written_as_they_were() {
         let mut answers = answers();
         answers.approvals = None;
-        answers.main_agent = Some(WorkerRef::new("claude-code", Some("opus".to_owned())));
+        answers.main_agent = Some(ModelRef::new("claude-code", Some("opus".to_owned())));
         let keys = keys(&answers, true);
-        assert_eq!(names(&keys), vec!["crew", "main_agent", "workflow"]);
-        assert_eq!(keys[1].1, r#""claude-code/opus""#);
+        assert_eq!(names(&keys), [CREW_KEYS, &["workflow"]].concat());
+        assert_eq!(keys[0].1, r#""claude-code/opus""#);
     }
 
     #[test]
     fn nothing_ready_writes_no_crew_and_no_agent() {
         let answers = Answers {
-            workflow: SOLO.to_owned(),
+            workflow: CAPTAIN.to_owned(),
             ..Answers::default()
         };
         let keys = keys(&answers, false);
@@ -323,11 +337,12 @@ mod tests {
     }
 
     #[test]
-    fn every_checkpoint_the_setup_sets_is_auto_unless_your_file_says_otherwise() {
+    fn every_approval_the_setup_sets_is_auto_unless_your_file_says_otherwise() {
         for point in APPROVAL_POINTS {
             assert_eq!(built_in_mode(point), Some(ApprovalMode::Auto), "{point}");
         }
-        // The setup doesn't ask about recipe promotion, and its built-in mode is auto too.
+        // The setup doesn't ask about learned workflow promotion, and its built-in mode is auto
+        // too.
         assert_eq!(
             built_in_mode("workflow_promotion"),
             Some(ApprovalMode::Auto)

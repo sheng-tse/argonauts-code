@@ -13,9 +13,9 @@ Who decides each approval, and how auto matched you
 │                                                                                                  │
 │ Who checks                                              the cheapest model from another provider │
 │   The judge                   cheapest, other provider  built-in             Who settles what y… │
-│   Second approver             none, one approver        built-in             A second approver,… │
+│   Second judge                none, one judge           built-in             A second judge, fr… │
 │                                                                                                  │
-│ Plan · auto · rules and approver both agree                        0 matches in a row · 0 misses │
+│ Plan · auto · rules and judge both agree                           0 matches in a row · 0 misses │
 │   How it's decided            auto                      everywhere (global)  The plan approval:… │
 │   Who decides in auto         both agree                built-in             The plan approval:… │
 │   When auto doesn't approve   ask you                   built-in             The plan approval:… │

@@ -1,0 +1,112 @@
+# Orchestrator: one agent plans and delegates. The literature's "orchestrator-workers".
+name  = "orchestrator"
+about = "The orchestrator plans and delegates; workers build, reviewers check"
+adapt = true     # true: the orchestrator writes the steps for each request, as Claude Code would,
+                 #       and keeps who plans, who builds, who reviews and who signs off as below.
+                 # false: the steps below run exactly as written.
+
+[[step]]
+name = "Plan"
+role = "orchestrator"
+does = "Split the request into tasks and say what done means for each."
+
+[[step]]
+name     = "Build"
+role     = "worker"
+for_each = "task"           # one worker per task, side by side, each in its own worktree
+
+[[step]]
+name         = "Review"
+role         = "reviewer"
+for_each     = "task"
+send_back_to = "Build"      # until the reviewer accepts
+
+[[step]]
+name = "Sign off"
+role = "judge"
+does = "Check the result against what done means."
+
+[drafting]
+by = "orchestrator"
+
+[judging]
+method = "orchestrator"
+
+[routing]
+algorithm = "orchestrator"
+
+[review]
+assign = "orchestrator"
+per_task = 2
+blind = true
+
+# Its phases, which run in place of the steps above when workflows.adapt_with = "phases".
+[[phases]]
+name     = "Understand"
+detail   = "models from several providers read the request, and others compare the readings"
+standard = "understand"
+
+  [[phases.steps]]
+  kind  = "loop_until"
+  name  = "understanding"
+  until = "understood"
+  max   = 2
+
+    [[phases.steps.steps]]
+    kind  = "read"
+    name  = "readings"
+    role  = "reader"
+    label = "read:{provider}"
+
+    [[phases.steps.steps]]
+    kind  = "compare"
+    name  = "differences"
+    role  = "comparer"
+    input = "readings"
+    label = "compare:{n}"
+
+    [[phases.steps.steps]]
+    kind     = "approval"
+    approval = "understand"
+
+[[phases]]
+name     = "Plan"
+detail   = "one orchestrator plans the tasks, and you or your rules approve them"
+standard = "plan"
+
+  [[phases.steps]]
+  kind  = "loop_until"
+  name  = "planning"
+  until = "plan_decided"
+  max   = 3
+
+    [[phases.steps.steps]]
+    kind  = "draft"
+    name  = "orchestrated"
+    role  = "orchestrator"
+    input = "goal"
+    label = "plan:orchestrator"
+
+    [[phases.steps.steps]]
+    kind     = "approval"
+    approval = "plan"
+
+[[phases]]
+name     = "Build"
+detail   = "one worker per task in its own worktree, its checks, then blind reviews from another provider"
+standard = "do"
+
+  [[phases.steps]]
+  kind  = "build"
+  role  = "worker"
+  input = "plan"
+  label = "build:{item}"
+
+[[phases]]
+name     = "Merge"
+detail   = "the final check, then the merge into your branch"
+standard = "decide"
+
+  [[phases.steps]]
+  kind  = "merge"
+  label = "merge:{branch}"

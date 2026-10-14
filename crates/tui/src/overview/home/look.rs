@@ -7,10 +7,11 @@ use argonauts_core::overview::OverviewData;
 use ratatui::style::Style;
 use time::{Date, Month};
 
+use crate::format::thousands;
+use crate::kit::Kit;
 use crate::overview::cards::cli_role;
-use crate::overview::stats::draw;
+use crate::overview::shades::{ModelColors, shade};
 use crate::theme::{Role, Theme};
-use crate::widgets::Kit;
 
 /// `812`, `12.3k`, `4.5M`, `118.4b`, `3b`: one decimal, dropped when it's nought.
 pub fn big(count: u64) -> String {
@@ -78,19 +79,6 @@ pub fn dollars(usd: f64) -> String {
         return format!("~${usd:.2}");
     }
     format!("~${}", thousands(usd.round() as u64))
-}
-
-/// `1,086`.
-pub fn thousands(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (at, digit) in digits.chars().enumerate() {
-        if at > 0 && (digits.len() - at).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    out
 }
 
 /// The share of `part` in `whole` as whole percents, `<1%` for a sliver.
@@ -167,19 +155,28 @@ pub fn since_word(day: Date, today: Date) -> String {
     }
 }
 
-/// A folder by its last part.
-pub fn folder_name(path: &str) -> String {
-    std::path::Path::new(path)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_owned())
-}
-
 /// How a CLI is named on the Overview: Antigravity CLI is `agy`, as its command is.
 pub fn cli_word(names: &DisplayNames, agent: &str) -> String {
     match agent {
         "antigravity-cli" => "agy".to_owned(),
-        _ => names.harness(agent),
+        _ => names.cli(agent),
+    }
+}
+
+/// A CLI where room is short, as in a legend: `Claude`, `Codex`, `agy`.
+pub fn cli_short(names: &DisplayNames, agent: &str) -> String {
+    match agent {
+        "claude-code" => "Claude".to_owned(),
+        _ => cli_word(names, agent),
+    }
+}
+
+/// An hour of the day on a 12-hour clock: `9pm`, `12am`.
+pub fn hour_word(hour: usize) -> String {
+    let half = if hour % 24 < 12 { "am" } else { "pm" };
+    match hour % 12 {
+        0 => format!("12{half}"),
+        hour => format!("{hour}{half}"),
     }
 }
 
@@ -211,19 +208,25 @@ pub fn cli_style(kit: &Kit<'_>, agent: &str) -> Style {
     }
 }
 
-/// The colour a model draws in: its CLI's for the CLI's first model, then lighter shades of
-/// it in the order the period ranks them.
-pub fn model_style(kit: &Kit<'_>, data: &OverviewData, agent: &str, model: Option<&str>) -> Style {
-    let nth = data
-        .models
-        .iter()
-        .filter(|row| row.agent == agent)
-        .position(|row| row.model.as_deref() == model)
-        .unwrap_or(0);
-    if nth == 0 {
-        return cli_style(kit, agent);
+/// The colour a model draws in: its CLI's own for the model that has run the most on it,
+/// then the CLI's other shades, whatever the period.
+pub fn model_style(
+    kit: &Kit<'_>,
+    shades: &ModelColors<'_>,
+    agent: &str,
+    model: Option<&str>,
+) -> Style {
+    match shades.place(agent, model) {
+        0 => cli_style(kit, agent),
+        nth => shade(kit, cli_colour(agent), nth),
     }
-    draw::shade(kit, cli_colour(agent), nth)
+}
+
+/// Which shade each of the Overview's models takes.
+pub fn model_colors<'a>(data: &OverviewData, names: &'a DisplayNames) -> ModelColors<'a> {
+    let shown = data.models.iter();
+    ModelColors::new(&data.all_time_models, names)
+        .with(shown.map(|model| (model.agent.as_str(), model.model.as_deref())))
 }
 
 #[cfg(test)]
@@ -241,7 +244,6 @@ mod tests {
         assert_eq!(dollars(60.0), "~$60");
         assert_eq!(dollars(9_640.4), "~$9,640");
         assert_eq!(dollars(4.2), "~$4.20");
-        assert_eq!(thousands(1_086), "1,086");
         assert_eq!(share(1, 1_000), "<1%");
         assert_eq!(share(62, 100), "62%");
         assert_eq!(share_tenths(46, 100), "46.0%");

@@ -11,11 +11,11 @@ use argonauts_core::events::run::Party;
 use argonauts_core::settings::Settings;
 use argonauts_core::text::sentence_case;
 use argonauts_core::views::LearningCommand;
-use argonauts_crew::retro::{action_note, notes};
+use argonauts_crew::run_review::{action_note, notes};
 use argonauts_learning::Store;
 use argonauts_learning::evolution::{Action, Evolution};
 use argonauts_learning::git::{self, Entry};
-use argonauts_learning::recipes;
+use argonauts_learning::learned_workflows;
 use argonauts_learning::records::Book;
 use argonauts_learning::replay::{self, ReplaySet};
 use argonauts_learning::skills;
@@ -45,27 +45,27 @@ pub(crate) fn act(
             ))
         }
         LearningCommand::Pin { worker, task_type } => {
-            let harness = harness_of(worker);
+            let cli = cli_of(worker);
             let book = Book::rebuild(&store, &settings.routing, OffsetDateTime::now_utc())?;
             let worker_ref = worker.parse()?;
             let rate = book.record(&worker_ref, task_type).pass.mean();
-            let key = format!("routing.pins.{harness}.{task_type}");
+            let key = format!("routing.pins.{cli}.{task_type}");
             save(env, &key, &format!("{rate:.3}"))?;
             Ok(format!(
-                "Pinned {harness}'s first-pass rate on {task_type} at {:.0}% in your local settings.",
+                "Pinned {cli}'s first-pass rate on {task_type} at {:.0}% in your local settings.",
                 rate * 100.0
             ))
         }
         LearningCommand::Reset { worker } => {
-            let harness = harness_of(worker);
+            let cli = cli_of(worker);
             let today = OffsetDateTime::now_utc().date().to_string();
             save(
                 env,
-                &format!("routing.resets.{harness}"),
+                &format!("routing.resets.{cli}"),
                 &format!("\"{today}\""),
             )?;
             Ok(format!(
-                "{harness}'s outcomes before {today} no longer count, in your local settings."
+                "{cli}'s outcomes before {today} no longer count, in your local settings."
             ))
         }
         LearningCommand::Promote { candidate } | LearningCommand::Reject { candidate } => {
@@ -80,12 +80,13 @@ pub(crate) fn act(
                 candidate,
             ))
         }
-        LearningCommand::Rollback { recipe } => {
-            let actions = Evolution::open(&store)?.rollback(recipe, "rolled back by you")?;
-            Ok(told(&actions, "Rolled back", recipe))
+        LearningCommand::Rollback { learned_workflow } => {
+            let actions =
+                Evolution::open(&store)?.rollback(learned_workflow, "rolled back by you")?;
+            Ok(told(&actions, "Rolled back", learned_workflow))
         }
         LearningCommand::Close { candidate } => close(&store, candidate),
-        LearningCommand::Export { recipe } => export(&store, settings, recipe),
+        LearningCommand::Export { learned_workflow } => export(&store, settings, learned_workflow),
         LearningCommand::AcceptEntry { id } | LearningCommand::RejectEntry { id } => {
             if !asker.at_terminal {
                 anyhow::bail!("what joins the replay set needs you at a terminal");
@@ -95,7 +96,7 @@ pub(crate) fn act(
                 set.reject(id)?;
                 return Ok(format!("Turned {id} down for the replay set."));
             }
-            // The conductor draws the side, never you or an agent, and the split records it.
+            // Argonauts Code draws the side, never you or an agent, and the split records it.
             let entry = set.accept(id, replay::draw_seed())?;
             let side = if entry.holdout { "holdout" } else { "tuning" };
             Ok(format!("{id} joined the replay set's {side} tasks."))
@@ -114,7 +115,7 @@ pub(crate) fn act(
     }
 }
 
-/// Turns a promoted candidate down: a reversal against the run whose retro proposed it, then
+/// Turns a promoted candidate down: a reversal against the run whose run review proposed it, then
 /// the version before runs again. Only the version that runs now can be closed, so a rollback
 /// never undoes a newer one.
 fn close(store: &Store, id: &str) -> anyhow::Result<String> {
@@ -130,31 +131,31 @@ fn close(store: &Store, id: &str) -> anyhow::Result<String> {
     ) {
         anyhow::bail!("{id} isn't promoted, so there's nothing to close");
     }
-    let recipe = &candidate.parent.name;
-    if evolution.running_version(recipe)? != Some(candidate.version) {
+    let learned_workflow = &candidate.parent.name;
+    if evolution.running_version(learned_workflow)? != Some(candidate.version) {
         anyhow::bail!(
-            "{recipe} v{} isn't the version that runs now, so closing it would roll back another",
+            "{learned_workflow} v{} isn't the version that runs now, so closing it would roll back another",
             candidate.version
         );
     }
     if let Some(run) = &candidate.from_run {
         let reversal = Reversal {
             run: run.clone(),
-            card: None,
+            task: None,
             what: format!(
-                "you closed the promotion of {recipe} v{}",
+                "you closed the promotion of {learned_workflow} v{}",
                 candidate.version
             ),
             at: OffsetDateTime::now_utc(),
         };
         outcomes::append(store, run, &[LogLine::Reversal(reversal)])?;
     }
-    let actions = evolution.rollback(recipe, "closed by you")?;
+    let actions = evolution.rollback(learned_workflow, "closed by you")?;
     Ok(told(&actions, "Closed", id))
 }
 
-/// Track records key pins and resets by harness, a plain settings name.
-fn harness_of(worker: &str) -> &str {
+/// Track records key pins and resets by CLI, a plain settings name.
+fn cli_of(worker: &str) -> &str {
     worker.split('/').next().unwrap_or(worker)
 }
 
@@ -175,18 +176,22 @@ fn told(actions: &[Action], done: &str, what: &str) -> String {
         .join(" ")
 }
 
-pub(crate) fn export(store: &Store, settings: &Settings, recipe: &str) -> anyhow::Result<String> {
-    let sets = recipes::load_all(store)?;
+pub(crate) fn export(
+    store: &Store,
+    settings: &Settings,
+    learned_workflow: &str,
+) -> anyhow::Result<String> {
+    let sets = learned_workflows::load_all(store)?;
     let loaded = sets
         .iter()
-        .find(|set| set.name == recipe)
+        .find(|set| set.name == learned_workflow)
         .and_then(|set| set.current())
-        .ok_or_else(|| anyhow::anyhow!("no learned workflow is named {recipe}"))?;
+        .ok_or_else(|| anyhow::anyhow!("no learned workflow is named {learned_workflow}"))?;
     let proposal = skills::propose_export(store, loaded, settings.skills.claude_link)?;
     Ok(format!(
-        "Proposed the {recipe} skill on {}. It waits for you; {} opens it as a pull request. \
-         For Hermes: hermes skills trust {}. OpenClaw sees it only when this repo is its agent's \
-         workspace.",
+        "Proposed the {learned_workflow} skill on {}. It waits for you; {} opens it as a pull \
+         request. For Hermes: hermes skills trust {}. OpenClaw sees it only when this repo is its \
+         agent's workspace.",
         proposal.branch,
         proposal.pr_command.join(" "),
         store.repo_root.display()
@@ -241,8 +246,8 @@ fn accept_note(store: &Store, id: &str) -> anyhow::Result<String> {
     let text = text?;
     let branch = format!("argonauts/notes/{id}");
     let message = format!(
-        "Note from {}: {}\n\nFlagged by the scan and accepted by you.\n\nArgonauts-Conductor: {}",
-        flagged.source.card,
+        "Note from {}: {}\n\nFlagged by the scan and accepted by you.\n\nArgonauts-Code: {}",
+        flagged.source.task,
         flagged.note.topic.trim(),
         flagged.source.run
     );
@@ -340,7 +345,7 @@ fn open_pull_request(repo: &Path, branch: &str) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use argonauts_core::RunId;
-    use argonauts_core::steps::card::MemoryProposal;
+    use argonauts_core::steps::task::MemoryProposal;
     use argonauts_learning::memory::Source;
 
     use super::*;
@@ -357,7 +362,7 @@ mod tests {
             },
             source: Source {
                 run: RunId::new("run-04").unwrap(),
-                card: argonauts_core::CardId::numbered(2),
+                task: argonauts_core::TaskId::numbered(2),
                 worker: "codex".parse().unwrap(),
                 date: OffsetDateTime::UNIX_EPOCH,
                 evidence: Vec::new(),

@@ -7,13 +7,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use argonauts_core::events::session::{EndReason, InputPart, InputPartKind, SessionEnd};
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::registry::ModelEntry;
+use argonauts_core::session_runner::{Access, SessionRunner, SessionSpec};
 use argonauts_core::settings::agents::{EndpointApi, EndpointSettings, StructuredMode};
-use argonauts_core::worker::{Access, SessionSpec, Worker};
-use argonauts_endpoints::EndpointWorker;
-use argonauts_testkit::services::{MemoryHealthBoard, MemoryQuotaBoard, StaticRegistry};
-use argonauts_testkit::worker::{drain, session_spec};
+use argonauts_endpoints::EndpointRunner;
+use argonauts_testkit::runner::{drain, session_spec};
+use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard, StaticRegistry};
 use serde_json::{Value, json};
 
 const OLLAMA: &str = "http://localhost:11434";
@@ -54,7 +54,7 @@ async fn ollama_ready() -> Result<String, String> {
     Ok(version["version"].as_str().unwrap_or("unknown").to_owned())
 }
 
-fn worker() -> EndpointWorker {
+fn worker() -> EndpointRunner {
     let settings = EndpointSettings {
         base_url: Some("http://localhost:11434/v1".to_owned()),
         api: EndpointApi::ChatCompletions,
@@ -64,18 +64,18 @@ fn worker() -> EndpointWorker {
     };
     let registry = Arc::new(StaticRegistry::default());
     let entry: ModelEntry = serde_json::from_value(json!({
-        "id": "ollama/llama3.2", "family": "llama", "kind": "endpoint", "access": "local",
+        "id": "ollama/llama3.2", "provider": "meta", "kind": "endpoint", "access": "local",
         "cost": {"unit": "none"},
     }))
     .unwrap();
     registry.add(entry);
-    EndpointWorker::new(
+    EndpointRunner::new(
         "ollama",
         &settings,
-        WorkerRef::new("ollama", Some("llama3.2".to_owned())),
+        ModelRef::new("ollama", Some("llama3.2".to_owned())),
         "llama".to_owned(),
         registry,
-        Arc::new(MemoryQuotaBoard::default()),
+        Arc::new(MemoryPlanUsageBoard::default()),
         Arc::new(MemoryHealthBoard::default()),
     )
 }
@@ -93,7 +93,7 @@ fn spec(dir: &Path, prompt: &str, schema: Option<Value>) -> SessionSpec {
     spec
 }
 
-async fn call(worker: &EndpointWorker, spec: SessionSpec) -> SessionEnd {
+async fn call(worker: &EndpointRunner, spec: SessionSpec) -> SessionEnd {
     let handle = worker.start(spec).await.unwrap();
     let (_, end) = tokio::time::timeout(Duration::from_secs(300), drain(handle))
         .await
@@ -102,7 +102,7 @@ async fn call(worker: &EndpointWorker, spec: SessionSpec) -> SessionEnd {
 }
 
 fn fixtures() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ollama-llama3.2")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ollama")
 }
 
 #[tokio::test]

@@ -1,26 +1,30 @@
 //! `/git`: how this folder keeps history, changed on the spot. A folder with no git picks
-//! between off, a hidden history under Argonauts' home, and becoming a repository, which
+//! between off, a hidden history under Argonauts Code's home, and becoming a repository, which
 //! shows what its first commit would hold and asks before anything is written. A repository
 //! picks what a merged run leaves on your branch. Nothing here touches your folder or your
 //! `.git` before you've seen what it will do and said yes.
 
 use std::collections::HashMap;
+use std::path::Path;
 
-use argonauts_core::NoteLevel;
+use anyhow::Context as _;
+use argonauts_core::api::{RunState, RunSummary};
 use argonauts_core::app::{AppEvent, ChoiceKind};
-use argonauts_core::events::checkpoint::{AnswerAction, AnswerOption};
+use argonauts_core::events::approval::{AnswerAction, AnswerOption};
 use argonauts_core::names::ChoiceId;
 use argonauts_core::paths::exclude_from_git;
 use argonauts_core::settings::delivery::{DeliveryCommits, DeliveryWrite};
 use argonauts_core::settings::{SettingScope, Settings};
-use argonauts_core::unborn;
+use argonauts_core::{NoteLevel, RunId, unborn};
+use argonauts_crew::git::Git;
+use argonauts_crew::merge::copies;
 
 use super::{Ctx, Effect};
 use crate::choices::{self, NOT_CHANGED, choose, option};
 use crate::env::FolderGit;
 use crate::git;
 use crate::hidden_git::{self, Survey};
-use crate::live_registry::live_supervisors;
+use crate::live_registry::live_run_hosts;
 
 type Handled = anyhow::Result<Vec<Effect>>;
 
@@ -63,7 +67,7 @@ const DELIVERIES: [(&str, &str, &str, DeliveryCommits, DeliveryWrite); 4] = [
     ),
 ];
 
-/// The most files the first commit's card names before it says how many more.
+/// The most files the first commit's question names before it says how many more.
 const NAMED: usize = 6;
 
 /// How a run lands in a repository with no commits, whichever of the choices is in use.
@@ -85,7 +89,7 @@ pub(crate) struct GitState {
 enum Pending {
     /// Off, hidden, or a repository, in a folder with no git.
     Folder,
-    /// Whether to go ahead, once the card has shown what the first commit would hold.
+    /// Whether to go ahead, once the question has shown what the first commit would hold.
     MakeRepository(Survey),
     /// What a merged run leaves on your branch, in a repository.
     Delivery,
@@ -95,7 +99,7 @@ pub(crate) fn owns_choice(state: &GitState, id: &ChoiceId) -> bool {
     state.pending.contains_key(id)
 }
 
-/// `/git`: the card for what this folder is.
+/// `/git`: the question for what this folder is.
 pub(crate) fn command(ctx: &mut Ctx, state: &mut GitState) -> Handled {
     let mut body = Vec::new();
     let (pending, options) = match ctx.env.git() {
@@ -151,14 +155,14 @@ fn folder_options(ctx: &Ctx, now: &FolderGit) -> Vec<AnswerOption> {
             'o',
             "Off",
             OFF,
-            "solo and chat write your files directly",
+            "Captain and the conversation write your files directly",
             *now == FolderGit::Off,
         ),
         way(
             'h',
             "Hidden",
             HIDDEN,
-            &format!("Argonauts keeps its own history under {home}. Your folder gets no .git"),
+            &format!("Argonauts Code keeps its own history under {home}. Your folder gets no .git"),
             matches!(now, FolderGit::Hidden(_)),
         ),
         way(
@@ -240,7 +244,7 @@ fn close(ctx: &Ctx, id: ChoiceId, outcome: impl Into<String>) {
     });
 }
 
-/// What an answer came to: the line the card closes with, and what follows.
+/// What an answer came to: the line the question closes with, and what follows.
 struct Answered {
     outcome: String,
     effects: Vec<Effect>,
@@ -273,13 +277,13 @@ fn folder(ctx: &mut Ctx, state: &mut GitState, value: &str) -> anyhow::Result<An
         HIDDEN => {
             if let Some(what) = hidden_git::refused(&env.repo_root, env.user_home.as_deref()) {
                 anyhow::bail!(
-                    "This is {what}, which is too much to keep a history of. Start Argonauts \
+                    "This is {what}, which is too much to keep a history of. Start Argonauts Code \
                      in the project's own folder."
                 );
             }
             hidden_git::turn_on(&env.state_dir)?;
             Ok(Answered::said(format!(
-                "Argonauts keeps this folder's history under {home} from now on. /rewind \
+                "Argonauts Code keeps this folder's history under {home} from now on. /rewind \
                  works, and your folder gets no .git."
             )))
         }
@@ -321,9 +325,132 @@ fn folder(ctx: &mut Ctx, state: &mut GitState, value: &str) -> anyhow::Result<An
     }
 }
 
+/// `/git clean`: removes the copies and branches that ended runs left behind, and in a folder
+/// without git packs the hidden history, which is where the room goes. It's never run for
+/// you. A run that waits, or that you stopped and may resume, keeps what it has. A run left on
+/// its branch or sent up as a pull request keeps that branch, and so does a failed one, whose
+/// work is nowhere else.
+pub(crate) async fn clean(ctx: &mut Ctx) -> Handled {
+    let now = ctx.env.git();
+    if now == FolderGit::Off {
+        anyhow::bail!(
+            "This folder keeps no history, so there is nothing to clean. /git turns one on."
+        );
+    }
+    no_run_open(ctx, "clean")?;
+    let runs = ctx
+        .services
+        .conductor
+        .list()
+        .await
+        .context("listing this folder's runs")?;
+    let root = ctx.env.repo_root.clone();
+    let mut git = Git::new();
+    if let FolderGit::Hidden(hidden) = &now {
+        git = git.with_hidden(root.clone(), hidden.clone());
+    }
+    let before = hidden_git::size(&ctx.env.state_dir);
+    let worktrees = ctx
+        .env
+        .paths
+        .home()
+        .join("worktrees")
+        .join(ctx.env.repo_id.as_str());
+    let mut cleaned = 0;
+    for run in left_behind(&worktrees, &runs) {
+        let copies = worktrees.join(run.id.as_str());
+        let removed = copies::remove_copies(&git, &root, &copies, &copies.join("merge")).await;
+        let branches = if run.keeps_branches {
+            0
+        } else {
+            copies::remove_branches(&git, &root, &run.id).await
+        };
+        if removed.count() + branches > 0 {
+            cleaned += 1;
+        }
+    }
+    let sizes = match &now {
+        FolderGit::Hidden(hidden) => {
+            git.pack(hidden)
+                .await
+                .context("packing the hidden history")?;
+            Some(before.zip(hidden_git::size(&ctx.env.state_dir)))
+        }
+        _ => None,
+    };
+    let (title, line) = cleaned_report(cleaned, sizes);
+    ctx.send(AppEvent::Report {
+        title,
+        lines: vec![line],
+    });
+    Ok(vec![Effect::Status])
+}
+
+/// A run with something `/git clean` may remove.
+struct LeftBehind {
+    id: RunId,
+    /// It was left on its branch or sent up as a pull request, so the branch is its result,
+    /// or it failed, and its work is only on its branches.
+    keeps_branches: bool,
+}
+
+/// The runs whose copies and branches can go: the ended ones, and the ones whose folder of
+/// copies outlived their record, such as an archived run's.
+fn left_behind(worktrees: &Path, runs: &[RunSummary]) -> Vec<LeftBehind> {
+    let mut found: Vec<LeftBehind> = runs
+        .iter()
+        .filter(|run| !run.live && over_for_good(run.state))
+        .map(|run| LeftBehind {
+            id: run.run.clone(),
+            keeps_branches: matches!(
+                run.state,
+                RunState::BranchLeft | RunState::PullRequest | RunState::Failed
+            ),
+        })
+        .collect();
+    let listed = |name: &str| runs.iter().any(|run| run.run.as_str() == name);
+    let orphans = std::fs::read_dir(worktrees)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| !listed(name))
+        .filter_map(|name| RunId::new(&name).ok());
+    found.extend(orphans.map(|id| LeftBehind {
+        id,
+        keeps_branches: false,
+    }));
+    found
+}
+
+/// Whether nothing of a run in this state runs again. A stopped run opens again with
+/// `/resume`, and so does one whose run host died.
+fn over_for_good(state: RunState) -> bool {
+    matches!(
+        state,
+        RunState::Merged
+            | RunState::PullRequest
+            | RunState::BranchLeft
+            | RunState::Abandoned
+            | RunState::Failed
+            | RunState::NeverStarted
+            | RunState::FromAnotherBuild
+    )
+}
+
+/// `18 MB`, in whole megabytes, and at least 1 for anything there at all.
+pub(crate) fn megabytes(bytes: u64) -> String {
+    const MB: u64 = 1024 * 1024;
+    match bytes {
+        0 => "0 MB".to_owned(),
+        bytes if bytes >= 1024 * MB => format!("{:.1} GB", bytes as f64 / (1024 * MB) as f64),
+        bytes => format!("{} MB", ((bytes + MB / 2) / MB).max(1)),
+    }
+}
+
 /// A run in this folder works on the history as it is, so the history can't change under it.
 fn no_run_open(ctx: &Ctx, change: &str) -> anyhow::Result<()> {
-    let open = live_supervisors(&ctx.env.paths)
+    let open = live_run_hosts(&ctx.env.paths)
         .iter()
         .any(|live| live.repo_root == ctx.env.repo_root);
     if open {
@@ -335,7 +462,7 @@ fn no_run_open(ctx: &Ctx, change: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// What the first commit would hold, for the card that asks: how much, the first few files,
+/// What the first commit would hold, for the question that asks: how much, the first few files,
 /// and what stays out with why.
 fn first_commit_lines(survey: &Survey) -> Vec<String> {
     let count = survey.take.len();
@@ -444,37 +571,85 @@ fn toml_text(value: impl serde::Serialize) -> String {
         .unwrap_or_default()
 }
 
+/// What `/git clean` reports: its heading and the line under it. `hidden` is `Some` for a
+/// folder without git, with the bytes its history took before and after where both were read.
+fn cleaned_report(cleaned: usize, hidden: Option<Option<(u64, u64)>>) -> (String, String) {
+    let kept = "a paused run keeps its copies for /resume";
+    let runs = match cleaned {
+        0 => "no ended run had left anything behind".to_owned(),
+        1 => "removed what 1 ended run left behind".to_owned(),
+        runs => format!("removed what {runs} ended runs left behind"),
+    };
+    match hidden {
+        Some(sizes) => {
+            let sizes = sizes.map_or_else(String::new, |(before, after)| {
+                format!(" · {} → {}", megabytes(before), megabytes(after))
+            });
+            (
+                format!("Cleaned this folder's hidden history{sizes}"),
+                format!("{runs} and packed the rest · {kept}"),
+            )
+        }
+        None => (
+            "Cleaned what ended runs left in this repository".to_owned(),
+            format!("{runs} · your own branches and commits are untouched · {kept}"),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use argonauts_core::app::{AnswerTarget, AppChoice, UiCommand};
     use argonauts_core::input::SlashCommand;
 
     use super::*;
-    use crate::controller::test_support::{Harness, HarnessOptions};
+    use crate::controller::test_support::{CliOptions, TestDriver};
+
+    /// The report `/git clean` prints, with the numbers of its picture, reads as
+    /// the picture's two rows do.
+    #[test]
+    fn the_clean_report_reads_as_its_picture() {
+        const MB: u64 = 1024 * 1024;
+        let picture = include_str!("../../../tui/tests/golden/no_git_fixes.txt");
+        let rows: Vec<&str> = picture
+            .lines()
+            .skip_while(|row| !row.starts_with("● Cleaned this folder's hidden history"))
+            .take(2)
+            .collect();
+        let (title, line) = cleaned_report(3, Some(Some((18 * MB, 7 * MB))));
+        assert_eq!(rows, [format!("● {title}"), format!("  ⎿  {line}")]);
+
+        let (title, line) = cleaned_report(1, None);
+        assert_eq!(title, "Cleaned what ended runs left in this repository");
+        assert!(
+            line.starts_with("removed what 1 ended run left behind · your own"),
+            "{line}"
+        );
+    }
 
     /// The app in a folder with a few files and no git.
-    async fn without_git() -> Harness {
-        Harness::start_with(HarnessOptions {
+    async fn without_git() -> TestDriver {
+        TestDriver::start_with(CliOptions {
             prepare: Some(Box::new(|repo| {
                 std::fs::remove_dir_all(repo.root().join(".git")).unwrap();
                 repo.write("todo.txt", "buy milk\n").unwrap();
             })),
-            ..HarnessOptions::default()
+            ..CliOptions::default()
         })
         .await
     }
 
-    async fn ask_git(harness: &mut Harness) -> AppChoice {
-        harness
+    async fn ask_git(driver: &mut TestDriver) -> AppChoice {
+        driver
             .send(UiCommand::Slash {
                 command: SlashCommand::Git,
             })
             .await;
-        question(harness).await
+        question(driver).await
     }
 
-    async fn question(harness: &mut Harness) -> AppChoice {
-        match harness
+    async fn question(driver: &mut TestDriver) -> AppChoice {
+        match driver
             .until(|event| matches!(event, AppEvent::Choice { choice } if choice.kind == ChoiceKind::Git))
             .await
         {
@@ -483,7 +658,7 @@ mod tests {
         }
     }
 
-    async fn pick(harness: &mut Harness, choice: &AppChoice, label: &str) -> String {
+    async fn pick(driver: &mut TestDriver, choice: &AppChoice, label: &str) -> String {
         let action = choice
             .options
             .iter()
@@ -491,7 +666,7 @@ mod tests {
             .unwrap_or_else(|| panic!("no option {label} in {:?}", choice.options))
             .action
             .clone();
-        harness
+        driver
             .send(UiCommand::Answer {
                 to: AnswerTarget::Choice {
                     id: choice.id.clone(),
@@ -499,11 +674,11 @@ mod tests {
                 action,
                 text: None,
                 evidence_sha256: None,
-                cards: Vec::new(),
+                tasks: Vec::new(),
                 remember: false,
             })
             .await;
-        let closed = harness
+        let closed = driver
             .until(|event| matches!(event, AppEvent::ChoiceClosed { id, .. } if *id == choice.id))
             .await;
         match closed {
@@ -527,14 +702,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_folder_without_git_picks_off_hidden_or_a_repository() {
-        let mut harness = without_git().await;
-        let root = harness.env.repo_root.clone();
-        let card = ask_git(&mut harness).await;
-        assert!(card.title.starts_with("Git for "), "{}", card.title);
-        let options = shown(&card);
+        let mut driver = without_git().await;
+        let root = driver.env.repo_root.clone();
+        let asked = ask_git(&mut driver).await;
+        assert!(asked.title.starts_with("Git for "), "{}", asked.title);
+        let options = shown(&asked);
         assert_eq!(
             options[0],
-            ("Off", "solo and chat write your files directly · now")
+            (
+                "Off",
+                "Captain and the conversation write your files directly · now"
+            )
         );
         assert_eq!(options[1].0, "Hidden");
         assert!(
@@ -548,26 +726,26 @@ mod tests {
                 "runs git init here and commits what's there as the first commit"
             )
         );
-        assert!(card.options.iter().all(|option| !option.recommended));
+        assert!(asked.options.iter().all(|option| !option.recommended));
 
-        let outcome = pick(&mut harness, &card, "Hidden").await;
+        let outcome = pick(&mut driver, &asked, "Hidden").await;
         assert!(outcome.contains("/rewind works"), "{outcome}");
-        assert!(matches!(harness.env.git(), FolderGit::Hidden(_)));
+        assert!(matches!(driver.env.git(), FolderGit::Hidden(_)));
         assert!(git::has_git(&root), "git calls reach the hidden history");
         assert!(!root.join(".git").exists());
 
-        let card = ask_git(&mut harness).await;
-        assert!(shown(&card)[1].1.ends_with("· now"), "{:?}", shown(&card));
-        let outcome = pick(&mut harness, &card, "Off").await;
+        let asked = ask_git(&mut driver).await;
+        assert!(shown(&asked)[1].1.ends_with("· now"), "{:?}", shown(&asked));
+        let outcome = pick(&mut driver, &asked, "Off").await;
         assert!(
             outcome.starts_with("Git is off for this folder."),
             "{outcome}"
         );
-        assert_eq!(harness.env.git(), FolderGit::Off);
+        assert_eq!(driver.env.git(), FolderGit::Off);
         assert!(!git::has_git(&root));
         // The history is kept, so turning it on again loses nothing.
         assert!(
-            hidden_git::dir(&harness.env.state_dir)
+            hidden_git::dir(&driver.env.state_dir)
                 .join("HEAD")
                 .is_file()
         );
@@ -575,23 +753,23 @@ mod tests {
 
     #[tokio::test]
     async fn making_a_repository_shows_the_first_commit_and_waits_for_yes() {
-        let mut harness = without_git().await;
-        let root = harness.env.repo_root.clone();
-        std::fs::create_dir_all(root.join("vendor/lib/.git")).unwrap();
-        let card = ask_git(&mut harness).await;
-        harness
+        let mut driver = without_git().await;
+        let root = driver.env.repo_root.clone();
+        std::fs::create_dir_all(root.join("agent/lib/.git")).unwrap();
+        let asked = ask_git(&mut driver).await;
+        driver
             .send(UiCommand::Answer {
                 to: AnswerTarget::Choice {
-                    id: card.id.clone(),
+                    id: asked.id.clone(),
                 },
-                action: card.options[2].action.clone(),
+                action: asked.options[2].action.clone(),
                 text: None,
                 evidence_sha256: None,
-                cards: Vec::new(),
+                tasks: Vec::new(),
                 remember: false,
             })
             .await;
-        let confirm = question(&mut harness).await;
+        let confirm = question(&mut driver).await;
         assert!(confirm.title.starts_with("Make "), "{}", confirm.title);
         assert!(
             confirm.title.ends_with(" a git repository?"),
@@ -606,33 +784,33 @@ mod tests {
         assert!(!root.join(".git").exists(), "nothing ran before the answer");
 
         // Esc: nothing changes.
-        harness
+        driver
             .send(UiCommand::SetAside {
                 to: AnswerTarget::Choice {
                     id: confirm.id.clone(),
                 },
             })
             .await;
-        harness
+        driver
             .until(|event| matches!(event, AppEvent::ChoiceClosed { id, .. } if *id == confirm.id))
             .await;
         assert!(!root.join(".git").exists());
 
-        let card = ask_git(&mut harness).await;
-        let action = card.options[2].action.clone();
-        harness
+        let asked = ask_git(&mut driver).await;
+        let action = asked.options[2].action.clone();
+        driver
             .send(UiCommand::Answer {
-                to: AnswerTarget::Choice { id: card.id },
+                to: AnswerTarget::Choice { id: asked.id },
                 action,
                 text: None,
                 evidence_sha256: None,
-                cards: Vec::new(),
+                tasks: Vec::new(),
                 remember: false,
             })
             .await;
-        let confirm = question(&mut harness).await;
+        let confirm = question(&mut driver).await;
         let outcome = pick(
-            &mut harness,
+            &mut driver,
             &confirm,
             "Only git init, and leave the commits to me",
         )
@@ -646,12 +824,12 @@ mod tests {
             ),
             "{outcome}"
         );
-        assert_eq!(harness.env.git(), FolderGit::Repository);
+        assert_eq!(driver.env.git(), FolderGit::Repository);
         assert!(git::head(&root).is_err(), "no commit was made");
 
         // In a repository the same command offers what a merged run leaves on your branch,
         // and says what holds until there's a commit to merge onto.
-        let delivery = ask_git(&mut harness).await;
+        let delivery = ask_git(&mut driver).await;
         assert!(
             matches!(delivery.body.as_slice(), [line] if line.starts_with("This repository has no commits yet.")),
             "{:?}",
@@ -676,7 +854,7 @@ mod tests {
             &[&identity[..], &["commit", "--quiet", "-m", "first"]].concat(),
         )
         .unwrap();
-        let delivery = ask_git(&mut harness).await;
+        let delivery = ask_git(&mut driver).await;
         assert!(delivery.body.is_empty(), "{:?}", delivery.body);
     }
 
@@ -694,7 +872,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_commit_is_made_under_your_name_with_what_the_card_showed() {
+    fn the_first_commit_is_made_under_your_name_with_what_the_question_showed() {
         let folder = tempfile::tempdir().unwrap();
         let state = tempfile::tempdir().unwrap();
         let root = folder.path();
@@ -728,6 +906,63 @@ mod tests {
             "{committed:?} {staged}"
         );
         assert!(root.join("big.bin").is_file());
+    }
+
+    #[test]
+    fn the_history_is_sized_in_whole_megabytes() {
+        const MB: u64 = 1024 * 1024;
+        assert_eq!(megabytes(0), "0 MB");
+        assert_eq!(megabytes(4096), "1 MB");
+        assert_eq!(megabytes(18 * MB + 100), "18 MB");
+        assert_eq!(megabytes(7 * MB - 1), "7 MB");
+        assert_eq!(megabytes(3 * 1024 * MB / 2), "1.5 GB");
+    }
+
+    #[test]
+    fn only_runs_that_are_over_for_good_leave_something_to_clean() {
+        let worktrees = tempfile::tempdir().unwrap();
+        // An archived run's copies outlived its record.
+        std::fs::create_dir_all(worktrees.path().join("run-01")).unwrap();
+        let run = |id: &str, state: RunState, live: bool| RunSummary {
+            run: RunId::new(id).unwrap(),
+            title: id.to_owned(),
+            name: None,
+            mode: argonauts_core::events::run::RunMode::Crew,
+            workflow: String::new(),
+            state,
+            stopped_at: String::new(),
+            updated: time::OffsetDateTime::UNIX_EPOCH,
+            spent: argonauts_core::Spend::default(),
+            sessions_to_resume: 0,
+            waiting: Vec::new(),
+            live,
+            remind: false,
+        };
+        let runs = [
+            run("run-02", RunState::Merged, false),
+            run("run-03", RunState::BranchLeft, false),
+            run("run-04", RunState::Waiting, false),
+            run("run-05", RunState::Stopped, false),
+            run("run-06", RunState::Crashed, false),
+            run("run-07", RunState::Failed, true),
+            run("run-08", RunState::Failed, false),
+        ];
+        let found = left_behind(worktrees.path(), &runs);
+        let ids: Vec<(&str, bool)> = found
+            .iter()
+            .map(|run| (run.id.as_str(), run.keeps_branches))
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                ("run-02", false),
+                ("run-03", true),
+                ("run-08", true),
+                ("run-01", false)
+            ],
+            "a run that waits, was stopped or still goes keeps what it has, and a failed \
+             one keeps the branches its work is on"
+        );
     }
 
     #[test]

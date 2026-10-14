@@ -1,5 +1,5 @@
-//! Workflows as YAML text: built-in files, your own files, the lead's composed workflows, and
-//! the running workflow shown to the lead at a phase end.
+//! Workflows as YAML text: your own files of phases, the main agent's composed workflows, the
+//! examples it reads, and the running workflow shown to it at a phase end.
 
 use argonauts_core::workflow::{Step, Workflow};
 
@@ -8,7 +8,7 @@ pub fn parse(text: &str) -> Result<Workflow, String> {
     serde_saphyr::from_str(text).map_err(|err| err.to_string())
 }
 
-/// One phase's steps, such as a goal attempt the lead planned.
+/// One phase's steps, such as a goal try the main agent planned.
 pub fn parse_steps(text: &str) -> Result<Vec<Step>, String> {
     serde_saphyr::from_str(text).map_err(|err| err.to_string())
 }
@@ -54,7 +54,7 @@ mod tests {
 
     const REVIEW_PANEL: &str = r#"
 name: review-panel
-description: Two reviewers from other providers; an adjudicator only if they disagree
+description: Two reviewers from other providers; a judge only if they disagree
 params: { target: diff, reviewers: 2 }
 phases:
   - name: Review
@@ -64,12 +64,12 @@ phases:
         role: reviewer
         count: "{{reviewers}}"
         blind: true
-        different_family_from: author
-  - name: Adjudicate
+        different_provider_from: author
+  - name: Settle
     standard: decide
     steps:
       - kind: judge
-        role: adjudicator
+        role: judge
         when: reviewers_disagree
 "#;
 

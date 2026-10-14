@@ -1,22 +1,22 @@
 //! The terms of one of the evolution loop's replays, which the app writes into the run's folder
-//! before the run starts: the paths no card checks out or names to an agent, and the answers
-//! the run its task came from recorded before the phase the recipe change touches. Asks in
-//! those phases take the recorded answers, so only the rest of the run spends again, while the
-//! conductor still does every step's own work in the replay's repository.
+//! before the run starts: the paths no task checks out or names to an agent, and the answers the
+//! run its task came from recorded before the phase the learned workflow change touches. Asks in
+//! those phases take the recorded answers, so only the rest of the run spends again, while
+//! Argonauts Code still does every step's own work in the replay's repository.
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use argonauts_core::events::card::CardEvent;
 use argonauts_core::events::plan::DivideEvent;
 use argonauts_core::events::session::EndReason;
+use argonauts_core::events::task::TaskEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::RoleName;
 use argonauts_core::steps::StepName;
 use argonauts_core::workflow::{Phase, StandardPhase, Workflow};
-use argonauts_core::{CardId, RunId, canonical_json, sha256_hex, write_private_file};
+use argonauts_core::{RunId, TaskId, canonical_json, sha256_hex, write_private_file};
 
 use crate::error::{EngineError, EngineResult};
 use crate::state::RunState;
@@ -26,7 +26,7 @@ pub const FILE: &str = "replay.json";
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ReplayTerms {
-    /// Added to every card's `hidden_paths`: the hidden tests at their repo paths, and the
+    /// Added to every task's `hidden_paths`: the hidden tests at their repo paths, and the
     /// replay folder that holds them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hidden_paths: Vec<String>,
@@ -55,7 +55,7 @@ pub struct Answer {
     pub round: u32,
     pub role: RoleName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub card: Option<CardId>,
+    pub task: Option<TaskId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<StepName>,
     pub structured: Value,
@@ -84,7 +84,7 @@ pub fn read(run_dir: &Path) -> EngineResult<Option<ReplayTerms>> {
 }
 
 impl ReplayTerms {
-    /// `kind` with the hidden paths added to every card it creates or plans.
+    /// `kind` with the hidden paths added to every task it creates or plans.
     pub fn hide(&self, kind: RunEventKind) -> RunEventKind {
         if self.hidden_paths.is_empty() {
             return kind;
@@ -97,13 +97,13 @@ impl ReplayTerms {
             }
         };
         match kind {
-            RunEventKind::Card(CardEvent::Created(mut spec)) => {
+            RunEventKind::Task(TaskEvent::Created(mut spec)) => {
                 add(&mut spec.hidden_paths);
-                RunEventKind::Card(CardEvent::Created(spec))
+                RunEventKind::Task(TaskEvent::Created(spec))
             }
             RunEventKind::Divide(DivideEvent::Graph(mut graph)) => {
-                for card in &mut graph.cards {
-                    add(&mut card.hidden_paths);
+                for task in &mut graph.tasks {
+                    add(&mut task.hidden_paths);
                 }
                 RunEventKind::Divide(DivideEvent::Graph(graph))
             }
@@ -184,7 +184,7 @@ pub fn recorded(events: &[RunEvent], from: StandardPhase) -> Option<Recorded> {
                 path: step.path.clone(),
                 round,
                 role: session.started.role,
-                card: session.card.clone(),
+                task: session.task.clone(),
                 step: session.started.step,
                 structured,
                 result_text: end.result_text.clone(),
@@ -201,30 +201,30 @@ pub fn recorded(events: &[RunEvent], from: StandardPhase) -> Option<Recorded> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::card::CardSpec;
     use argonauts_core::events::plan::TaskGraph;
+    use argonauts_core::events::task::TaskSpec;
 
     use super::*;
 
-    fn card(id: &str, hidden: &[&str]) -> CardSpec {
-        let mut spec = crate::testutil::card_spec(id, &[], None);
+    fn task(id: &str, hidden: &[&str]) -> TaskSpec {
+        let mut spec = crate::testutil::task_spec(id, &[], None);
         spec.hidden_paths = hidden.iter().map(|path| (*path).to_owned()).collect();
         spec
     }
 
-    /// Every card a replay creates or plans keeps its hidden tests and the replay folder out
+    /// Every task a replay creates or plans keeps its hidden tests and the replay folder out
     /// of reach, beside whatever the plan hid already, and nothing else changes.
     #[test]
-    fn replay_cards_keep_the_hidden_paths() {
+    fn replay_tasks_keep_the_hidden_paths() {
         let terms = ReplayTerms {
             hidden_paths: vec!["tests/readme.sh".to_owned(), "/state/replay".to_owned()],
             reuse: None,
         };
-        let created = terms.hide(RunEventKind::Card(CardEvent::Created(Box::new(card(
+        let created = terms.hide(RunEventKind::Task(TaskEvent::Created(Box::new(task(
             "task-001",
             &["tests/hidden/**"],
         )))));
-        let RunEventKind::Card(CardEvent::Created(spec)) = created else {
+        let RunEventKind::Task(TaskEvent::Created(spec)) = created else {
             panic!("{created:?}");
         };
         assert_eq!(
@@ -233,9 +233,9 @@ mod tests {
         );
 
         let graph = TaskGraph {
-            cards: vec![
-                card("task-001", &[]),
-                card("task-002", &["tests/readme.sh"]),
+            tasks: vec![
+                task("task-001", &[]),
+                task("task-002", &["tests/readme.sh"]),
             ],
             critical_path: Vec::new(),
         };
@@ -243,7 +243,7 @@ mod tests {
         let RunEventKind::Divide(DivideEvent::Graph(graph)) = planned else {
             panic!("{planned:?}");
         };
-        for spec in &graph.cards {
+        for spec in &graph.tasks {
             assert_eq!(spec.hidden_paths, ["tests/readme.sh", "/state/replay"]);
         }
 
@@ -253,30 +253,30 @@ mod tests {
         });
         assert_eq!(terms.hide(note.clone()), note);
         let none = ReplayTerms::default();
-        let created = RunEventKind::Card(CardEvent::Created(Box::new(card("task-003", &[]))));
+        let created = RunEventKind::Task(TaskEvent::Created(Box::new(task("task-003", &[]))));
         assert_eq!(none.hide(created.clone()), created);
     }
 
     /// Recorded answers fit only a workflow that starts with the same phases before `from`.
     #[test]
     fn answers_fit_only_the_same_phases_before() {
-        let peer = crate::workflow::builtin::load("council").unwrap();
+        let council = crate::workflow::builtin::load("council").unwrap();
         let recorded = Recorded {
             run: RunId::new("run-001").unwrap(),
             from: StandardPhase::Do,
-            phases: digest(phases_before(&peer, StandardPhase::Do)),
+            phases: digest(phases_before(&council, StandardPhase::Do)),
             answers: Vec::new(),
         };
-        assert_eq!(phases_before(&peer, StandardPhase::Do).len(), 2);
-        assert!(phases_before(&peer, StandardPhase::Understand).is_empty());
-        assert!(recorded.fits(&peer));
-        assert!(!recorded.fits(&crate::workflow::builtin::load("solo").unwrap()));
-        let mut later = peer.clone();
+        assert_eq!(phases_before(&council, StandardPhase::Do).len(), 2);
+        assert!(phases_before(&council, StandardPhase::Understand).is_empty());
+        assert!(recorded.fits(&council));
+        assert!(!recorded.fits(&crate::workflow::builtin::load("captain").unwrap()));
+        let mut later = council.clone();
         if let Some(last) = later.phases.last_mut() {
             last.name = "Land".to_owned();
         }
         assert!(recorded.fits(&later), "a later phase is the replay's own");
-        let mut earlier = peer.clone();
+        let mut earlier = council.clone();
         earlier.phases[0].name = "Aim".to_owned();
         assert!(!recorded.fits(&earlier));
     }

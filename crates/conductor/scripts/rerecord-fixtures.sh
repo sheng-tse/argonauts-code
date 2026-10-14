@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# Re-records the vendor output the adapter tests replay, for claude-code, codex, and
-# antigravity-cli, on each vendor's cheapest model. Every call is live and spends quota, three
-# per vendor. Each adapter's ignored `record` tests build the commands, so the fixtures show what
-# the adapters pass today. They land in crates/adapters/<id>/fixtures/<version>/, and the agents
-# work in throwaway git repos under <scratch>/live/.
+# Re-records the CLI output the adapter tests replay, for claude-code, codex, and
+# antigravity-cli, on each agent's cheapest model. Every call is live and spends plan usage, three
+# per agent. Each adapter's ignored `record` tests build the commands, so the fixtures show what
+# the adapters pass today. Each lands in crates/adapters/<id>/fixtures/ under its scenario's
+# name, in place of the one before it, with the version in the .meta.json beside it. As each is
+# written, the recorder says whether its shape (the kinds of line and their fields) is the
+# stored one's or what changed, so only a scenario whose shape changed needs keeping. The
+# agents work in throwaway git repos under <scratch>/live/.
 #
-# Shims put first on PATH refuse, before it reaches the vendor, any call that isn't one of
+# Shims put first on PATH refuse, before it reaches the agent, any call that isn't one of
 #   claude --model haiku --effort low
-#   codex exec -m gpt-5.6-luna -c model_reasoning_effort="low"
-#   agy --model gemini-3.6-flash-low --effort low
+#   codex exec -m gpt-6-luna -c model_reasoning_effort="low"
+#   agy --model gemini-3.8-flash-low --effort low
 # with the long spellings of those flags allowed too.
 
 set -euo pipefail
@@ -18,8 +21,8 @@ usage() {
 Usage: rerecord-fixtures.sh --live --scratch <dir> [claude-code] [codex] [antigravity-cli]
 
 Re-records the adapters' fixtures with live calls on the cheapest models: three calls per
-vendor. With no adapter named, it records all three. <dir> must be outside this repository;
-the throwaway repos go in <dir>/live/. The S variable can stand in for --scratch.
+agent. With no adapter named, it records all three. <dir> must be outside this repository;
+the throwaway repos go in <dir>/live/. The S variable can take the place of --scratch.
 USAGE
 }
 
@@ -57,7 +60,7 @@ done
 
 if ! $live; then
     usage >&2
-    die "every call is live and spends quota, so pass --live to go ahead"
+    die "every call is live and spends plan usage, so pass --live to go ahead"
 fi
 [ -n "$scratch" ] || die "name a scratch directory with --scratch"
 [ -d "$scratch" ] || die "$scratch is not a directory"
@@ -141,8 +144,8 @@ BODY
 }
 
 write_shim claude "" "--model" haiku "--effort" low
-write_shim codex exec "-m --model" gpt-5.6-luna "-c --config" 'model_reasoning_effort="low"'
-write_shim agy "" "--model" gemini-3.6-flash-low "--effort" low
+write_shim codex exec "-m --model" gpt-6-luna "-c --config" 'model_reasoning_effort="low"'
+write_shim agy "" "--model" gemini-3.8-flash-low "--effort" low
 
 export PATH="$shims:$PATH"
 # The Codex recorder falls back to this model when it's set; only the cheapest one may run.
@@ -169,11 +172,13 @@ for id in "${adapters[@]}"; do
                 cargo test -p "$crate" --test record -- --ignored --exact "$test" --nocapture
         )
     done
-    newest=$(ls -td "$repo/crates/adapters/$id/fixtures"/*/ 2>/dev/null | head -n 1)
-    echo "rerecord-fixtures: $id fixtures are in ${newest:-crates/adapters/$id/fixtures/}"
+    echo "rerecord-fixtures: $id fixtures are in crates/adapters/$id/fixtures/"
 done
 
 cat <<DONE
 rerecord-fixtures: done. The throwaway repos are in $run_dir.
-If a CLI version is new, add it to that adapter's tested_versions, then run the replay tests.
+Each recording's .meta.json names its version, and the adapter's tested versions follow them.
+Keep only the recordings reported above as "the shape changed". Put the others back with
+git checkout and add the new version to "also_matches" in their .meta.json. A scenario that
+resumes another goes with it: keep both or put both back. Then run the replay tests.
 DONE

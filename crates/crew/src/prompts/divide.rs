@@ -1,6 +1,6 @@
-//! Dividing the work, predictions, the retro, and the closing answer.
+//! Dividing the work, predictions, the run review, and the closing answer.
 
-pub const PLAN_TO_CARDS: &str = include_str!("divide/plan_to_cards.md");
-pub const PREDICT: &str = include_str!("divide/predict.md");
-pub const RETRO: &str = include_str!("divide/retro.md");
-pub const CLOSE_RUN: &str = include_str!("divide/close_run.md");
+pub const PLAN_TO_TASKS: &str = argonauts_core::template!("prompts/divide/plan-to-tasks.md");
+pub const PREDICT: &str = argonauts_core::template!("prompts/task/predict.md");
+pub const RUN_REVIEW: &str = argonauts_core::template!("prompts/run/review.md");
+pub const CLOSE_RUN: &str = argonauts_core::template!("prompts/run/closing-answer.md");

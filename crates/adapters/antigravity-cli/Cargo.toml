@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-adapter-antigravity-cli"
-description = "Antigravity CLI (agy) adapter for Argonauts."
+description = "Antigravity CLI (agy) adapter for Argonauts Code."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,6 +14,9 @@ regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 time.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

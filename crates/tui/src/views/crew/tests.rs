@@ -1,6 +1,6 @@
-use argonauts_core::crew_panel::{CrewDetails, CrewRun};
-use argonauts_core::limits::{QuotaReading, QuotaStatus};
-use argonauts_core::names::ChatId;
+use argonauts_core::agent_panel::{CrewDetails, CrewRun};
+use argonauts_core::limits::{PlanUsageReading, PlanUsageStatus};
+use argonauts_core::names::ConversationId;
 use serde_json::json;
 use time::OffsetDateTime;
 
@@ -18,7 +18,7 @@ fn now() -> OffsetDateTime {
 fn row(title: &str, state: CrewState, latest: &str) -> CrewRow {
     CrewRow {
         target: CrewTarget::Conversation {
-            chat: ChatId::numbered(1),
+            conversation: ConversationId::numbered(1),
         },
         state,
         title: title.into(),
@@ -33,7 +33,7 @@ fn row(title: &str, state: CrewState, latest: &str) -> CrewRow {
     }
 }
 
-fn press(view: &mut CrewView, key: KeyEvent, state: &AppState) -> ViewOutcome {
+fn press(view: &mut AgentPanelView, key: KeyEvent, state: &AppState) -> ViewOutcome {
     let theme = Theme::dark();
     let ctx = ViewCtx {
         theme: &theme,
@@ -50,7 +50,7 @@ fn char_key(c: char) -> KeyEvent {
 #[test]
 fn ctrl_letters_are_left_to_the_global_keys() {
     let state = AppState::default();
-    let mut view = CrewView::new(&state);
+    let mut view = AgentPanelView::new(&state);
     for c in ['x', ' ', '?', 'j'] {
         let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
         assert!(
@@ -64,18 +64,18 @@ fn ctrl_letters_are_left_to_the_global_keys() {
 #[test]
 fn opened_with_left_it_closes_with_right_and_opens_with_enter() {
     let state = crate::mentions::fixture::working_state();
-    let mut view = CrewView::opened_left(&state);
+    let mut view = AgentPanelView::opened_left(&state);
     assert!(!matches!(
         press(&mut view, KeyEvent::from(KeyCode::Enter), &state),
         ViewOutcome::Ignored | ViewOutcome::Close
     ));
-    let mut view = CrewView::opened_left(&state);
+    let mut view = AgentPanelView::opened_left(&state);
     assert!(matches!(
         press(&mut view, KeyEvent::from(KeyCode::Right), &state),
         ViewOutcome::Close
     ));
     // Opened any other way, → opens the row.
-    let mut view = CrewView::new(&state);
+    let mut view = AgentPanelView::new(&state);
     assert!(!matches!(
         press(&mut view, KeyEvent::from(KeyCode::Right), &state),
         ViewOutcome::Ignored | ViewOutcome::Close
@@ -86,7 +86,7 @@ fn opened_with_left_it_closes_with_right_and_opens_with_enter() {
 fn letter_keys_move_open_and_go_back() {
     let mut state = crate::mentions::fixture::working_state();
     state.ui = list::keys_state(true).ui;
-    let mut view = CrewView::new(&state);
+    let mut view = AgentPanelView::new(&state);
     let count = ordered(&view.panel(&state), view.tab).len();
     assert!(count >= 2);
     press(&mut view, char_key('j'), &state);
@@ -106,7 +106,7 @@ fn letter_keys_move_open_and_go_back() {
 
     // Without vim keys j and k still move, the other letters do nothing, and ← goes back.
     state.ui = list::keys_state(false).ui;
-    let mut view = CrewView::new(&state);
+    let mut view = AgentPanelView::new(&state);
     press(&mut view, char_key('j'), &state);
     assert_eq!(view.list.selected, 1);
     press(&mut view, char_key('k'), &state);
@@ -127,7 +127,7 @@ fn the_controller_row_for_a_run_on_screen_gives_way_to_its_agents() {
     state.welcome = Some(crate::state::Welcome {
         version: "0.1.0".into(),
         repo: "~/app".into(),
-        workflow: "solo".into(),
+        workflow: "captain".into(),
         main_agent: None,
         agents: Vec::new(),
         runs_going: 1,
@@ -142,14 +142,14 @@ fn the_controller_row_for_a_run_on_screen_gives_way_to_its_agents() {
         ..row("A run", CrewState::Working, "running")
     };
     let other = RunId::new("run-09").unwrap();
-    state.crew_panel = Some(CrewPanel {
+    state.agent_panel = Some(AgentPanelRows {
         repo: "/home/me/app".into(),
         rows: vec![
             run_row(&held, "/home/me/app"),
             run_row(&other, "/home/me/app"),
             CrewRow {
                 repo: "/home/me/app".into(),
-                ..row("Chat", CrewState::Ready, "hi")
+                ..row("Conversation", CrewState::Ready, "hi")
             },
         ],
     });
@@ -166,7 +166,7 @@ fn the_controller_row_for_a_run_on_screen_gives_way_to_its_agents() {
     // The controller's name for this repo becomes the screen's, so they share a group.
     assert_eq!(panel.repo, "~/app");
     assert!(panel.rows.iter().all(|row| row.repo == "~/app"));
-    assert!(panel.rows.iter().any(|row| row.title == "Chat"));
+    assert!(panel.rows.iter().any(|row| row.title == "Conversation"));
 }
 
 fn agent_row(label: &str, state: CrewState, latest: &str) -> CrewRow {
@@ -224,7 +224,7 @@ fn text_of(lines: &[draw::BodyLine]) -> Vec<String> {
 fn the_list_reads_like_the_picture() {
     let mut run = CrewRun::new(RunId::new("run-01").unwrap(), "Add due dates to the tasks");
     run.name = Some("add-due-dates".into());
-    run.stands = Some(argonauts_core::crew_panel::RunStands {
+    run.stands = Some(argonauts_core::agent_panel::RunStands {
         state: CrewState::Done,
         word: "merged".into(),
         since: at(13),
@@ -240,7 +240,7 @@ fn the_list_reads_like_the_picture() {
         tries,
         ..agent_row(label, CrewState::Done, latest)
     };
-    let panel = CrewPanel {
+    let panel = AgentPanelRows {
         repo: "~/app".into(),
         rows: vec![
             agent("plan:orchestrator", "accepted on its 6th try", 20, 6),
@@ -303,11 +303,11 @@ fn the_list_reads_like_the_picture() {
     assert_eq!(fg_of(0, "merged"), fg(Role::Dim));
     assert_eq!(fg_of(1, "✓"), fg(Role::Success));
     for part in ["❯", "✓", "build:add-due", "Implemented"] {
-        assert_eq!(fg_of(3, part), fg(Role::Card), "{part}");
+        assert_eq!(fg_of(3, part), fg(Role::Question), "{part}");
     }
     assert_eq!(fg_of(4, "×6"), fg(Role::Dim));
     assert_eq!(fg_of(5, "Sessions"), fg(Role::Dim));
-    assert_eq!(fg_of(6, "◎"), fg(Role::Card));
+    assert_eq!(fg_of(6, "◎"), fg(Role::Question));
 }
 
 /// A run with none of its agents listed, such as another repo's, is one row: its heading.
@@ -315,7 +315,7 @@ fn the_list_reads_like_the_picture() {
 fn a_run_listed_whole_is_its_own_heading_and_another_repo_is_named() {
     let whole = |id: &str, repo: &str, word: &str, state: CrewState| {
         let mut run = CrewRun::new(RunId::new(id).unwrap(), "Tidy the README");
-        run.stands = Some(argonauts_core::crew_panel::RunStands {
+        run.stands = Some(argonauts_core::agent_panel::RunStands {
             state,
             word: word.into(),
             since: at(120),
@@ -330,7 +330,7 @@ fn a_run_listed_whole_is_its_own_heading_and_another_repo_is_named() {
             ..row("Tidy the README", state, word)
         }
     };
-    let panel = CrewPanel {
+    let panel = AgentPanelRows {
         repo: "~/app".into(),
         rows: vec![
             whole("run-02", "~/app", "merged", CrewState::Done),
@@ -392,45 +392,45 @@ fn long_paths_in_the_details_are_cut_in_the_middle() {
     );
 }
 
-fn reading(status: QuotaStatus, used: Option<f64>) -> QuotaReading {
-    serde_json::from_value(json!({"vendor": "codex", "status": status, "used": used,
+fn reading(status: PlanUsageStatus, used: Option<f64>) -> PlanUsageReading {
+    serde_json::from_value(json!({"agent_id": "codex", "status": status, "used": used,
         "resets_at": null, "window": "five_hour", "source": "rate_limit_event",
         "observed_at": "2026-09-30T11:59:00Z", "detail": null}))
     .unwrap()
 }
 
 #[test]
-fn quotas_read_as_one_short_part_each() {
-    let part = |status, used| draw::quota_part("Codex", &reading(status, used));
+fn plan_usages_read_as_one_short_part_each() {
+    let part = |status, used| draw::plan_usage_part("Codex", &reading(status, used));
     assert_eq!(
-        part(QuotaStatus::Allowed, Some(0.12)),
+        part(PlanUsageStatus::Allowed, Some(0.12)),
         ("Codex 12%".to_owned(), Role::Dim)
     );
     assert_eq!(
-        part(QuotaStatus::Allowed, Some(0.93)),
-        ("Codex 93%".to_owned(), Role::Warning)
+        part(PlanUsageStatus::Allowed, Some(0.93)),
+        ("Codex 93%".to_owned(), Role::Warn)
     );
     assert_eq!(
-        part(QuotaStatus::Rejected, Some(1.0)),
-        ("Codex out".to_owned(), Role::Error)
+        part(PlanUsageStatus::Rejected, Some(1.0)),
+        ("Codex out".to_owned(), Role::Danger)
     );
-    let finishing = QuotaReading {
+    let finishing = PlanUsageReading {
         wrap_up: true,
-        ..reading(QuotaStatus::Rejected, Some(1.0))
+        ..reading(PlanUsageStatus::Rejected, Some(1.0))
     };
     assert_eq!(
-        draw::quota_part("Claude", &finishing),
-        ("Claude wrapping up".to_owned(), Role::Warning)
+        draw::plan_usage_part("Claude", &finishing),
+        ("Claude wrapping up".to_owned(), Role::Warn)
     );
     assert_eq!(
-        part(QuotaStatus::Unknown, None),
+        part(PlanUsageStatus::Unknown, None),
         ("Codex ?".to_owned(), Role::Dim)
     );
 
     let mut state = AppState::default();
-    state.quotas.insert(
+    state.plan_windows.insert(
         "codex".into(),
-        vec![reading(QuotaStatus::Allowed, Some(0.4))],
+        vec![reading(PlanUsageStatus::Allowed, Some(0.4))],
     );
     let line = draw::title_line(&state, 80, &Theme::dark());
     let text: String = line
@@ -440,7 +440,7 @@ fn quotas_read_as_one_short_part_each() {
         .collect();
     assert!(text.starts_with("argonauts › crew") && text.ends_with("Codex 40%"));
     assert_eq!(crate::text::str_width(&text), 80);
-    // With no room the quotas give way and the name stays.
+    // With no room the plan usage gives way and the name stays.
     let line = draw::title_line(&state, 20, &Theme::dark());
     assert_eq!(line.spans.len(), 1);
 }
@@ -472,7 +472,7 @@ fn every_state_has_its_own_glyph() {
 #[test]
 fn c_carries_a_finished_agent_on_and_leaves_a_working_one_to_take_over() {
     let state = AppState::default();
-    let panel = CrewPanel {
+    let panel = AgentPanelRows {
         repo: "~/app".into(),
         rows: Vec::new(),
     };
@@ -485,7 +485,7 @@ fn c_carries_a_finished_agent_on_and_leaves_a_working_one_to_take_over() {
     };
     // This screen hasn't loaded run-01, so the app says whether its run ended.
     match carry_on(&state, &panel, &agent(CrewState::Done)) {
-        ViewOutcome::SendToChat(UiCommand::Slash {
+        ViewOutcome::SendToConversation(UiCommand::Slash {
             command:
                 SlashCommand::Resume {
                     target: Some(ResumeTarget::Agent(agent)),
@@ -571,7 +571,7 @@ fn enter_opens_any_agents_transcript_finished_or_running() {
         agents.iter().any(|(_, running)| !running),
         "one has finished"
     );
-    let view = CrewView::new(&state);
+    let view = AgentPanelView::new(&state);
     for (row, running) in &agents {
         assert!(
             matches!(view.open(&state, &panel, row), ViewOutcome::Open(_)),
@@ -602,7 +602,7 @@ fn enter_opens_any_agents_transcript_finished_or_running() {
 #[test]
 fn an_agent_or_run_the_screen_doesnt_hold_opens_from_its_log() {
     let state = AppState::default();
-    let view = CrewView::new(&state);
+    let view = AgentPanelView::new(&state);
     let panel = rows::panel(&state, now());
     let run = RunId::new("run-20261004-043029-d8bb").unwrap();
     let agent = CrewRow {
@@ -618,7 +618,7 @@ fn an_agent_or_run_the_screen_doesnt_hold_opens_from_its_log() {
         ViewOutcome::Request(ViewRequest::Agent { run: asked, session })
             if asked == run && session == SessionKey::numbered(1)
     ));
-    // A stopped or parked run can go on, so Enter resumes it. One that finished, was
+    // A stopped or waiting run can go on, so Enter resumes it. One that finished, was
     // abandoned (which reads as done), or failed can't, so Enter opens its workflow.
     for (done, opens_workflow) in [
         (CrewState::Done, true),

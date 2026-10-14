@@ -6,15 +6,15 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use argonauts_core::vendor_commands::files::{CommandFile, command_files, folders, skill_files};
-use argonauts_core::vendor_commands::{
-    BuiltinCommand, BuiltinKind, CommandKind, CommandScope, CommandSource, VendorCommand,
+use argonauts_core::cli_commands::files::{CommandFile, command_files, folders, skill_files};
+use argonauts_core::cli_commands::{
+    BuiltinCommand, BuiltinKind, CliCommand, CommandKind, CommandScope, CommandSource,
 };
-use argonauts_core::vendor_sessions::VendorScan;
+use argonauts_core::cli_sessions::CliScan;
 use serde_json::Value;
 
 use crate::isolation::SYNCED_SKILLS;
-use BuiltinKind::{Argonauts, ScreenOnly, Vendor};
+use BuiltinKind::{Argonauts, Cli, ScreenOnly};
 
 /// Where Claude Code keeps what your claude.ai account syncs, under `skills` and `plugins`.
 const SYNCED: &str = "synced";
@@ -66,7 +66,7 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     // Background work, agents, automation.
     command("agents", &[], "", "Manage subagents", Argonauts("agents")),
     command("list-agents", &["peers"], "", "Other Claude Code sessions on this machine", ScreenOnly),
-    command("subtask", &[], "<task>", "Hand a task to a subagent", Vendor),
+    command("subtask", &[], "<task>", "Hand a task to a subagent", Cli),
     command("tasks", &["bashes"], "", "Background tasks and shells", ScreenOnly),
     command("background", &["bg"], "", "Send this session to the background", ScreenOnly),
     command("stop", &[], "", "Stop background work", Argonauts("stop")),
@@ -74,7 +74,7 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     command("loop", &["proactive"], "[interval] [prompt]", "Run a prompt on an interval", ScreenOnly),
     command("loops", &[], "", "List, create, and delete loops", ScreenOnly),
     command("daemon", &[], "", "Background services and routines", ScreenOnly),
-    command("schedule", &["routines"], "", "Agents that run on a schedule", Vendor),
+    command("schedule", &["routines"], "", "Agents that run on a schedule", Cli),
     command("autofix-pr", &[], "", "Fix a pull request's failing checks in the cloud", ScreenOnly),
     command("teleport", &["tp"], "", "Bring a web session here", ScreenOnly),
     command("ultraplan", &[], "<prompt>", "A cloud session drafts a plan you can edit and approve", ScreenOnly),
@@ -86,7 +86,7 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     command("code-review", &["review"], "[level] [--fix] [--comment] [target]", "Review the changes", Argonauts("review")),
     command("ultrareview", &[], "", "A deep review in the cloud", ScreenOnly),
     command("security-review", &[], "", "Review the changes for security problems", Argonauts("security-review")),
-    command("simplify", &[], "", "Clean up the changed code", Vendor),
+    command("simplify", &[], "", "Clean up the changed code", Cli),
     command("diff", &[], "", "The uncommitted changes", Argonauts("diff")),
     command("install-github-app", &[], "", "Set up the GitHub app", ScreenOnly),
     // Config and setup.
@@ -96,7 +96,7 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     command("hooks", &[], "", "Hooks", ScreenOnly),
     command("memory", &[], "", "Edit the memory files", Argonauts("memory")),
     command("pause-memory", &["memory-pause", "toggle-memory"], "", "Pause memory for this session", ScreenOnly),
-    command("init", &[], "", "Write a CLAUDE.md for this repo", Vendor),
+    command("init", &[], "", "Write a CLAUDE.md for this repo", Cli),
     command("mcp", &[], "", "MCP servers", ScreenOnly),
     command("plugin", &[], "", "Plugins", ScreenOnly),
     command("reload-plugins", &[], "", "Load changed plugins", ScreenOnly),
@@ -122,14 +122,14 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     command("setup-bedrock", &[], "", "Set up Amazon Bedrock", ScreenOnly),
     command("setup-vertex", &[], "", "Set up Google Vertex AI", ScreenOnly),
     command("install", &[], "", "Install the native build", ScreenOnly),
-    // Its `/update` alias is Argonauts' own `/update` here, which runs `claude update`.
+    // Its `/update` alias is Argonauts Code's own `/update` here, which runs `claude update`.
     command("restart", &[], "", "Restart Claude Code and keep this session", ScreenOnly),
     command("brief", &[], "", "Brief-only mode", ScreenOnly),
     command("wellbeing", &[], "", "Break reminders and quiet hours", ScreenOnly),
     // Account and usage.
     command("login", &[], "", "Log in", Argonauts("login")),
     command("logout", &[], "", "Log out", Argonauts("logout")),
-    // Its `/stats` alias is Argonauts' own `/stats` here, the Overview's Stats tab.
+    // Its `/stats` alias is Argonauts Code's own `/stats` here, the usage panel's Stats tab.
     command("usage", &["cost"], "", "Plan usage and spend", Argonauts("usage")),
     command("usage-credits", &["extra-usage"], "", "Usage credits", ScreenOnly),
     command("claim-credit", &[], "", "Claim the one-time credit for cloud sessions, by October 7", ScreenOnly),
@@ -141,45 +141,45 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     command("powerup", &[], "", "Feature tour", ScreenOnly),
     command("release-notes", &[], "", "What's new", Argonauts("release-notes")),
     command("doctor", &[], "", "Check the install", Argonauts("doctor")),
-    // Claude Code's own doctor, under its other name, so Argonauts' /doctor stays. `/doctor`
-    // with an argument comes here too, since Argonauts' takes none.
-    command("checkup", &["doctor"], "[prompt-audit [<path>]]", "Claude Code's own checkup, or an audit of its instructions", Vendor),
+    // Claude Code's own doctor, under its other name, so Argonauts Code's /doctor stays. `/doctor`
+    // with an argument comes here too, since Argonauts Code's takes none.
+    command("checkup", &["doctor"], "[prompt-audit [<path>]]", "Claude Code's own checkup, or an audit of its instructions", Cli),
     command("bug", &["share"], "", "Report a bug in Claude Code", ScreenOnly),
     command("feedback", &[], "", "Send feedback", Argonauts("feedback")),
-    command("insights", &[], "", "A report on how you use Claude Code", Vendor),
-    command("team-onboarding", &[], "", "A guide for teammates new to this repo", Vendor),
+    command("insights", &[], "", "A report on how you use Claude Code", Cli),
+    command("team-onboarding", &[], "", "A guide for teammates new to this repo", Cli),
     command("artifacts", &[], "", "The pages this conversation published", Argonauts("artifacts")),
     command("install-slack-app", &[], "", "Set up the Slack app", ScreenOnly),
     command("mobile", &["ios", "android"], "", "Get the mobile app", ScreenOnly),
     command("stickers", &[], "", "Order stickers", ScreenOnly),
     command("radio", &[], "", "Music while you work", ScreenOnly),
     // Built-in skills.
-    command("run", &[], "", "Start the app and see a change working", Vendor),
-    command("verify", &[], "", "Check that a change works", Vendor),
-    command("run-skill-generator", &[], "", "Make a skill that runs this project", Vendor),
-    command("debug", &[], "", "Find out why something fails", Vendor),
-    command("batch", &[], "<instruction>", "One change across many files, in parallel", Vendor),
-    command("deep-research", &[], "<question>", "Research a question in depth", Vendor),
-    command("fewer-permission-prompts", &[], "", "Allow the read-only commands you keep approving", Vendor),
-    command("update-config", &[], "", "Change Claude Code's settings", Vendor),
-    command("keybindings-help", &[], "", "Change the key bindings", Vendor),
-    command("plugin-authoring", &[], "", "Write a plugin", Vendor),
-    command("workflow-authoring", &[], "", "Write a workflow", Vendor),
-    command("claude-api", &[], "[build-eval|hillclimb|prompt-audit|cost-optimize|migrate|upgrade|managed-agents-onboard|preserved-thinking-migration]", "Build with the Claude API", Vendor),
-    command("claude-in-chrome", &[], "[task]", "Work in your Chrome browser", Vendor),
-    command("dataviz", &[], "", "Charts and dashboards", Vendor),
-    command("design", &[], "", "A visual design", Vendor),
-    command("design-sync", &[], "", "Sync a design system", Vendor),
-    command("design-login", &[], "", "Log in to the design tools", Vendor),
-    command("slides", &[], "", "A slide deck", Vendor),
-    command("artifact-design", &[], "", "Design an artifact", Vendor),
-    command("artifact-diagramming", &[], "", "Diagrams in an artifact", Vendor),
-    command("artifact-capabilities", &[], "", "What an artifact page can do", Vendor),
+    command("run", &[], "", "Start the app and see a change working", Cli),
+    command("verify", &[], "", "Check that a change works", Cli),
+    command("run-skill-generator", &[], "", "Make a skill that runs this project", Cli),
+    command("debug", &[], "", "Find out why something fails", Cli),
+    command("batch", &[], "<instruction>", "One change across many files, in parallel", Cli),
+    command("deep-research", &[], "<question>", "Research a question in depth", Cli),
+    command("fewer-permission-prompts", &[], "", "Allow the read-only commands you keep approving", Cli),
+    command("update-config", &[], "", "Change Claude Code's settings", Cli),
+    command("keybindings-help", &[], "", "Change the key bindings", Cli),
+    command("plugin-authoring", &[], "", "Write a plugin", Cli),
+    command("workflow-authoring", &[], "", "Write a workflow", Cli),
+    command("claude-api", &[], "[build-eval|hillclimb|prompt-audit|cost-optimize|migrate|upgrade|managed-agents-onboard|preserved-thinking-migration]", "Build with the Claude API", Cli),
+    command("claude-in-chrome", &[], "[task]", "Work in your Chrome browser", Cli),
+    command("dataviz", &[], "", "Charts and dashboards", Cli),
+    command("design", &[], "", "A visual design", Cli),
+    command("design-sync", &[], "", "Sync a design system", Cli),
+    command("design-login", &[], "", "Log in to the design tools", Cli),
+    command("slides", &[], "", "A slide deck", Cli),
+    command("artifact-design", &[], "", "Design an artifact", Cli),
+    command("artifact-diagramming", &[], "", "Diagrams in an artifact", Cli),
+    command("artifact-capabilities", &[], "", "What an artifact page can do", Cli),
 ];
 
 /// The project's commands and skills, then yours, your synced skills, your installed plugins',
 /// and your synced plugins'. The first command of a name wins, so the project's come first.
-pub fn discover(scan: &VendorScan) -> Vec<VendorCommand> {
+pub fn discover(scan: &CliScan) -> Vec<CliCommand> {
     let project = scan.folder.join(".claude");
     let user = scan.home.join(".claude");
     let sync = SyncSwitches::read(scan);
@@ -210,7 +210,7 @@ struct SyncSwitches {
 }
 
 impl SyncSwitches {
-    fn read(scan: &VendorScan) -> Self {
+    fn read(scan: &CliScan) -> Self {
         let files = [
             scan.home.join(".claude").join("settings.json"),
             scan.folder.join(".claude").join("settings.local.json"),
@@ -263,7 +263,7 @@ fn plugin_name(root: &Path) -> String {
         })
 }
 
-fn custom(dir: &Path, scope: CommandScope) -> Vec<VendorCommand> {
+fn custom(dir: &Path, scope: CommandScope) -> Vec<CliCommand> {
     command_files(dir, true)
         .into_iter()
         .map(|file| {
@@ -271,12 +271,12 @@ fn custom(dir: &Path, scope: CommandScope) -> Vec<VendorCommand> {
                 scope,
                 path: file.path.clone(),
             };
-            vendor(file.name.clone(), &file, source)
+            agent_id(file.name.clone(), &file, source)
         })
         .collect()
 }
 
-fn skills(dir: &Path, scope: CommandScope, namespace: Option<&str>) -> Vec<VendorCommand> {
+fn skills(dir: &Path, scope: CommandScope, namespace: Option<&str>) -> Vec<CliCommand> {
     skill_files(dir)
         .into_iter()
         .filter(CommandFile::user_invocable)
@@ -285,14 +285,14 @@ fn skills(dir: &Path, scope: CommandScope, namespace: Option<&str>) -> Vec<Vendo
                 scope,
                 path: file.path.clone(),
             };
-            vendor(namespaced(namespace, &file.name), &file, source)
+            agent_id(namespaced(namespace, &file.name), &file, source)
         })
         .collect()
 }
 
 /// Every plugin in `installed_plugins.json` that applies to this folder, unless a settings
 /// file turns it off. A plugin's commands and skills go by `<plugin>:<name>`.
-fn plugins(scan: &VendorScan) -> Vec<VendorCommand> {
+fn plugins(scan: &CliScan) -> Vec<CliCommand> {
     let installed = scan
         .home
         .join(".claude")
@@ -320,7 +320,7 @@ fn plugins(scan: &VendorScan) -> Vec<VendorCommand> {
 }
 
 /// A plugin's commands and skills, as `<plugin>:<name>`.
-fn plugin_commands(root: &Path, plugin: &str) -> Vec<VendorCommand> {
+fn plugin_commands(root: &Path, plugin: &str) -> Vec<CliCommand> {
     let source = || CommandSource::Plugin {
         plugin: plugin.to_owned(),
     };
@@ -331,7 +331,7 @@ fn plugin_commands(root: &Path, plugin: &str) -> Vec<VendorCommand> {
     commands
         .into_iter()
         .chain(skills)
-        .map(|file| vendor(namespaced(Some(plugin), &file.name), &file, source()))
+        .map(|file| agent_id(namespaced(Some(plugin), &file.name), &file, source()))
         .collect()
 }
 
@@ -355,7 +355,7 @@ fn install_path(installs: &Value, folder: &Path) -> Option<PathBuf> {
 
 /// `enabledPlugins` from your settings, then the project's, then its local file, a later one
 /// winning. Only that key is read.
-fn plugin_switches(scan: &VendorScan) -> HashMap<String, bool> {
+fn plugin_switches(scan: &CliScan) -> HashMap<String, bool> {
     let files = [
         scan.home.join(".claude").join("settings.json"),
         scan.folder.join(".claude").join("settings.json"),
@@ -389,13 +389,13 @@ fn namespaced(namespace: Option<&str>, name: &str) -> String {
     }
 }
 
-fn vendor(name: String, file: &CommandFile, source: CommandSource) -> VendorCommand {
-    VendorCommand {
+fn agent_id(name: String, file: &CommandFile, source: CommandSource) -> CliCommand {
+    CliCommand {
         name,
         aliases: Vec::new(),
         args: file.args(),
         help: file.help(),
-        kind: CommandKind::Vendor,
+        kind: CommandKind::Cli,
         source,
     }
 }
@@ -404,9 +404,9 @@ fn vendor(name: String, file: &CommandFile, source: CommandSource) -> VendorComm
 mod tests {
     use std::collections::HashSet;
 
+    use argonauts_core::cli_commands::CliCommandSet;
     use argonauts_core::input::{SLASH_COMMANDS, parse_input_with, slash_spec};
-    use argonauts_core::names::VendorId;
-    use argonauts_core::vendor_commands::VendorCommandSet;
+    use argonauts_core::names::AgentId;
 
     use super::*;
 
@@ -420,18 +420,19 @@ mod tests {
         let mut seen = HashSet::new();
         for builtin in BUILTIN_COMMANDS {
             for name in std::iter::once(builtin.name).chain(builtin.aliases.iter().copied()) {
-                // A command running inside the CLI may answer to an Argonauts command's name for
-                // the arguments Argonauts' own doesn't take, as /checkup does for /doctor.
-                if builtin.kind == Vendor && name != builtin.name && slash_spec(name).is_some() {
+                // A command running inside the CLI may answer to an Argonauts Code command's name
+                // for the arguments Argonauts Code's own doesn't take, as /checkup does for
+                // /doctor.
+                if builtin.kind == Cli && name != builtin.name && slash_spec(name).is_some() {
                     continue;
                 }
                 assert!(seen.insert(name), "/{name} twice");
-                // Argonauts' own name comes first, so a CLI command of that name must be the
+                // Argonauts Code's own name comes first, so a CLI command of that name must be the
                 // same job.
                 if slash_spec(name).is_some() {
                     assert!(
                         matches!(builtin.kind, Argonauts(ours) if ours == name),
-                        "/{name} is an Argonauts command"
+                        "/{name} is an Argonauts Code command"
                     );
                 }
             }
@@ -445,7 +446,7 @@ mod tests {
             assert!(!builtin.help.is_empty(), "/{}", builtin.name);
         }
         assert!(BUILTIN_COMMANDS.len() > 100);
-        // Every Argonauts command the CLI also has is listed under its own name.
+        // Every Argonauts Code command the CLI also has is listed under its own name.
         for spec in SLASH_COMMANDS {
             if let Some(builtin) = BUILTIN_COMMANDS.iter().find(|b| b.name == spec.name) {
                 assert_eq!(builtin.kind, Argonauts(spec.name));
@@ -455,8 +456,8 @@ mod tests {
 
     #[test]
     fn the_three_kinds_parse_as_the_spec_says() {
-        let set = VendorCommandSet::new(
-            VendorId("claude-code".into()),
+        let set = CliCommandSet::new(
+            AgentId("claude-code".into()),
             "Claude Code",
             BUILTIN_COMMANDS,
             Vec::new(),
@@ -475,15 +476,15 @@ mod tests {
         assert_eq!(slash("/continue"), "resume");
         assert_eq!(slash("/settings"), "config");
         assert_eq!(slash("/code-review src"), "review");
-        assert_eq!(slash("/simplify"), "vendor");
-        assert_eq!(slash("/init"), "vendor");
-        assert_eq!(slash("/batch rename foo"), "vendor");
-        // Claude Code's own doctor goes by its other name, and takes what Argonauts' doesn't.
+        assert_eq!(slash("/simplify"), "cli");
+        assert_eq!(slash("/init"), "cli");
+        assert_eq!(slash("/batch rename foo"), "cli");
+        // Claude Code's own doctor goes by its other name, and takes what Argonauts Code's doesn't.
         assert_eq!(slash("/doctor"), "doctor");
-        assert_eq!(slash("/checkup"), "vendor");
+        assert_eq!(slash("/checkup"), "cli");
         let audit = |text: &str| match parse(text) {
             Ok(argonauts_core::input::ParsedInput::Slash {
-                command: argonauts_core::input::SlashCommand::Vendor { name, args },
+                command: argonauts_core::input::SlashCommand::Cli { name, args },
             }) => format!("/{name} {args}"),
             other => panic!("{text}: {other:?}"),
         };
@@ -601,7 +602,7 @@ mod tests {
             r#"{"enabledPlugins": {"off-plugin@official": false}}"#,
         );
 
-        let scan = VendorScan::new(&folder, &home);
+        let scan = CliScan::new(&folder, &home);
         let found = discover(&scan);
         let names: Vec<&str> = found.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
@@ -642,11 +643,11 @@ mod tests {
                 plugin: "commit-commands".into()
             }
         );
-        assert!(found.iter().all(|c| c.kind == CommandKind::Vendor));
+        assert!(found.iter().all(|c| c.kind == CommandKind::Cli));
 
         // The project's ship wins over yours once the set is built.
-        let set = VendorCommandSet::new(
-            VendorId("claude-code".into()),
+        let set = CliCommandSet::new(
+            AgentId("claude-code".into()),
             "Claude Code",
             BUILTIN_COMMANDS,
             found,
@@ -659,7 +660,7 @@ mod tests {
     #[test]
     fn nothing_on_disk_finds_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let scan = VendorScan::new(dir.path().join("repo"), dir.path().join("home"));
+        let scan = CliScan::new(dir.path().join("repo"), dir.path().join("home"));
         assert!(discover(&scan).is_empty());
         write(
             &dir.path()
@@ -689,8 +690,8 @@ mod tests {
             &synced.join("commands/mock.md"),
             "---\ndescription: Draw a mockup\n---\n",
         );
-        let scan = VendorScan::new(&folder, &home);
-        let names = |scan: &VendorScan| -> Vec<String> {
+        let scan = CliScan::new(&folder, &home);
+        let names = |scan: &CliScan| -> Vec<String> {
             discover(scan).into_iter().map(|c| c.name).collect()
         };
         assert_eq!(

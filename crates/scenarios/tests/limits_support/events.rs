@@ -1,15 +1,15 @@
 //! Finding events in a run's journal.
 
-use argonauts_core::CardId;
-use argonauts_core::events::card::{AttemptCause, CardState};
-use argonauts_core::events::checkpoint::{CheckpointKind, CheckpointOpened};
-use argonauts_core::events::run::{ParkReason, RunResumed};
+use argonauts_core::TaskId;
+use argonauts_core::events::agent_status::FallbackPlan;
+use argonauts_core::events::approval::{ApprovalKind, ApprovalOpened};
+use argonauts_core::events::run::{RunResumed, WaitReason};
 use argonauts_core::events::session::{EndReason, SessionEnd, SessionStarted};
-use argonauts_core::events::vendor::HandoffPlan;
+use argonauts_core::events::task::{TaskState, TryCause};
 use argonauts_core::events::{
-    CardEvent, CheckpointEvent, HandoffEvent, RunEvent, RunEventKind, RunLifecycle, SessionEvent,
+    ApprovalEvent, FallbackEvent, RunEvent, RunEventKind, RunLifecycle, SessionEvent, TaskEvent,
 };
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 
 /// Everything `pick` finds, in journal order.
 pub fn find<'a, T>(events: &'a [RunEvent], pick: impl Fn(&'a RunEventKind) -> Option<T>) -> Vec<T> {
@@ -32,20 +32,20 @@ pub fn before(first: Option<u64>, then: Option<u64>) -> bool {
     matches!((first, then), (Some(first), Some(then)) if first < then)
 }
 
-/// The first card of the run.
-pub fn first_card(events: &[RunEvent]) -> Option<CardId> {
+/// The first task of the run.
+pub fn first_task(events: &[RunEvent]) -> Option<TaskId> {
     find(events, |kind| match kind {
-        RunEventKind::Card(CardEvent::Created(spec)) => Some(spec.id.clone()),
+        RunEventKind::Task(TaskEvent::Created(spec)) => Some(spec.id.clone()),
         _ => None,
     })
     .into_iter()
     .next()
 }
 
-/// The latest checkpoint of `kind` that opened.
-pub fn opened(events: &[RunEvent], kind: CheckpointKind) -> Option<&CheckpointOpened> {
+/// The latest approval of `kind` that opened.
+pub fn opened(events: &[RunEvent], kind: ApprovalKind) -> Option<&ApprovalOpened> {
     find(events, |event| match event {
-        RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) if opened.kind == kind => {
+        RunEventKind::Approval(ApprovalEvent::Opened(opened)) if opened.kind == kind => {
             Some(opened.as_ref())
         }
         _ => None,
@@ -53,54 +53,54 @@ pub fn opened(events: &[RunEvent], kind: CheckpointKind) -> Option<&CheckpointOp
     .pop()
 }
 
-/// The `seq` of the first checkpoint of `kind` that opened.
-pub fn opened_at(events: &[RunEvent], kind: CheckpointKind) -> Option<u64> {
+/// The `seq` of the first approval of `kind` that opened.
+pub fn opened_at(events: &[RunEvent], kind: ApprovalKind) -> Option<u64> {
     seq_of(
         events,
-        |event| matches!(event, RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) if opened.kind == kind),
+        |event| matches!(event, RunEventKind::Approval(ApprovalEvent::Opened(opened)) if opened.kind == kind),
     )
 }
 
-pub fn has_opened(kind: CheckpointKind) -> impl Fn(&[RunEvent]) -> bool {
+pub fn has_opened(kind: ApprovalKind) -> impl Fn(&[RunEvent]) -> bool {
     move |events| opened(events, kind).is_some()
 }
 
-pub fn handoff_plans(events: &[RunEvent]) -> Vec<&HandoffPlan> {
+pub fn fallback_plans(events: &[RunEvent]) -> Vec<&FallbackPlan> {
     find(events, |kind| match kind {
-        RunEventKind::Handoff(HandoffEvent::Needed(plan)) => Some(plan),
+        RunEventKind::Fallback(FallbackEvent::Needed(plan)) => Some(plan),
         _ => None,
     })
 }
 
-/// Who each handoff went to, in order.
-pub fn handed_off(events: &[RunEvent]) -> Vec<&HandoffEvent> {
+/// Who each fallback went to, in order.
+pub fn fell_back(events: &[RunEvent]) -> Vec<&FallbackEvent> {
     find(events, |kind| match kind {
-        RunEventKind::Handoff(event @ HandoffEvent::HandedOff { .. }) => Some(event),
+        RunEventKind::Fallback(event @ FallbackEvent::FellBack { .. }) => Some(event),
         _ => None,
     })
 }
 
-pub fn handed_off_to(worker: &'static str) -> impl Fn(&[RunEvent]) -> bool {
+pub fn fell_back_to(worker: &'static str) -> impl Fn(&[RunEvent]) -> bool {
     move |events| {
-        handed_off(events)
+        fell_back(events)
             .iter()
-            .any(|event| matches!(event, HandoffEvent::HandedOff { to, .. } if to.worker == worker))
+            .any(|event| matches!(event, FallbackEvent::FellBack { to, .. } if to.agent == worker))
     }
 }
 
-/// Every owner attempt with its worker and cause.
-pub fn attempts(events: &[RunEvent]) -> Vec<(&WorkerRef, AttemptCause)> {
+/// Every worker try with its worker and cause.
+pub fn tries(events: &[RunEvent]) -> Vec<(&ModelRef, TryCause)> {
     find(events, |kind| match kind {
-        RunEventKind::Card(CardEvent::Attempt { worker, cause, .. }) => Some((worker, *cause)),
+        RunEventKind::Task(TaskEvent::Try { worker, cause, .. }) => Some((worker, *cause)),
         _ => None,
     })
 }
 
-pub fn has_attempt(worker: &'static str, cause: AttemptCause) -> impl Fn(&[RunEvent]) -> bool {
+pub fn has_try(worker: &'static str, cause: TryCause) -> impl Fn(&[RunEvent]) -> bool {
     move |events| {
-        attempts(events)
+        tries(events)
             .iter()
-            .any(|(who, why)| who.worker == worker && *why == cause)
+            .any(|(who, why)| who.agent == worker && *why == cause)
     }
 }
 
@@ -127,9 +127,7 @@ pub fn ends_of<'a>(events: &'a [RunEvent], worker: &str) -> Vec<&'a SessionEnd> 
     let keys: Vec<_> = events
         .iter()
         .filter(|event| match &event.kind {
-            RunEventKind::Session(SessionEvent::Started(started)) => {
-                started.worker.worker == worker
-            }
+            RunEventKind::Session(SessionEvent::Started(started)) => started.worker.agent == worker,
             _ => false,
         })
         .filter_map(|event| event.session.clone())
@@ -156,26 +154,26 @@ pub fn completed_by(worker: &'static str) -> impl Fn(&[RunEvent]) -> bool {
     }
 }
 
-pub fn card_states(events: &[RunEvent]) -> Vec<CardState> {
+pub fn task_states(events: &[RunEvent]) -> Vec<TaskState> {
     find(events, |kind| match kind {
-        RunEventKind::Card(CardEvent::State { to, .. }) => Some(*to),
+        RunEventKind::Task(TaskEvent::State { to, .. }) => Some(*to),
         _ => None,
     })
 }
 
 pub fn committed(kind: &RunEventKind) -> bool {
-    matches!(kind, RunEventKind::Card(CardEvent::Committed(info)) if info.sha.is_some())
+    matches!(kind, RunEventKind::Task(TaskEvent::Committed(info)) if info.sha.is_some())
 }
 
-pub fn parks(events: &[RunEvent]) -> Vec<&ParkReason> {
+pub fn waits(events: &[RunEvent]) -> Vec<&WaitReason> {
     find(events, |kind| match kind {
-        RunEventKind::Run(RunLifecycle::Parked { reason, .. }) => Some(reason),
+        RunEventKind::Run(RunLifecycle::Waiting { reason, .. }) => Some(reason),
         _ => None,
     })
 }
 
-pub fn is_parked(events: &[RunEvent]) -> bool {
-    !parks(events).is_empty()
+pub fn is_waiting(events: &[RunEvent]) -> bool {
+    !waits(events).is_empty()
 }
 
 pub fn resumes(events: &[RunEvent]) -> Vec<&RunResumed> {
@@ -185,10 +183,10 @@ pub fn resumes(events: &[RunEvent]) -> Vec<&RunResumed> {
     })
 }
 
-/// The card's branch, as its worktree event names it.
-pub fn card_branch(events: &[RunEvent]) -> Option<String> {
+/// The task's branch, as its worktree event names it.
+pub fn task_branch(events: &[RunEvent]) -> Option<String> {
     find(events, |kind| match kind {
-        RunEventKind::Card(CardEvent::Worktree { branch, .. }) => Some(branch.clone()),
+        RunEventKind::Task(TaskEvent::Worktree { branch, .. }) => Some(branch.clone()),
         _ => None,
     })
     .into_iter()

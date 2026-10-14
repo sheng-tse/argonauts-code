@@ -6,15 +6,16 @@ pub mod approvals;
 pub mod asking;
 pub mod awake;
 pub mod bottom_line;
-pub mod budget;
 pub mod context;
 pub mod crew;
 pub mod delivery;
 pub mod endpoints;
 pub mod evolution;
+pub mod fallback;
 pub mod goal;
-pub mod handoff;
+pub mod layer;
 pub mod learning;
+pub mod limit;
 pub mod limits_template;
 pub mod main_session;
 pub mod mods;
@@ -37,76 +38,71 @@ use std::time::Duration;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::names::{RoleName, WorkerRef};
-use crate::workflow::WorkflowRef;
+use crate::names::{ModelRef, RoleName};
 
 use agents::{AgentSettings, EndpointSettings, McpSettings, RegistrySettings};
 use approvals::{ApprovalSettings, HardLimitSettings, SandboxSettings};
 use awake::AwakeSettings;
-use budget::WatchdogSettings;
 use crew::CrewSettings;
 use evolution::EvolutionSettings;
+use fallback::FallbackSettings;
 use goal::GoalSettings;
-use handoff::FallbackSettings;
 use learning::{MemorySettings, OutcomeSettings, SkillSettings};
+use limit::WatchdogSettings;
 use prompts::PromptSettings;
 use protocol::{
-    CritiqueSettings, DivideSettings, DraftingSettings, GateSettings, IntakeSettings,
-    JudgingSettings, MappingSettings, MergeSettings, ReviewSettings, RoutingSettings, SoloSettings,
-    SpikeSettings, TriageSettings, UnderstandSettings, VisibilitySettings,
+    CaptainOrCrewSettings, CaptainSettings, CheckSettings, CritiqueSettings, DivideSettings,
+    DraftingSettings, ExperimentSettings, IntakeSettings, JudgingSettings, MappingSettings,
+    MergeSettings, ReviewSettings, RoutingSettings, UnderstandSettings, VisibilitySettings,
 };
 use roles::RoleSettings;
 use sessions::{
-    Compaction, ConcurrencySettings, HealthSettings, NativeFanout, RunsSettings, SessionSettings,
-    SupervisorSettings,
+    Compaction, ConcurrencySettings, HealthSettings, NativeFanout, RunHostSettings, RunsSettings,
+    SessionSettings,
 };
 use ui::{NarratorSettings, NotificationSettings, UiSettings};
-use workflows::{LeadDesign, WorkflowSettings, WorkflowSize};
+use workflows::{OrchestratorDesign, WorkflowSettings, WorkflowSize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct Settings {
-    /// How the crew is organised: `council` (default), `orchestrator`, `solo`,
+    /// How the crew is organised: `council` (default), `orchestrator`, `captain`,
     /// `maker-checker`, `best-of-n`, `draft-and-vote`, an `ablate-*` one, or one of your own.
+    /// One file holds a workflow: its steps, the settings it carries and the phases a run
+    /// starts from. With `workflows.orchestrator_designs` the orchestrator sizes those phases
+    /// for the task, and with `"any"` it may pick another workflow or compose one.
     pub workflow: String,
-    /// The file of phases and steps a run starts from, which each workflow sets. With
-    /// `workflows.lead_designs` the lead sizes it for the task, and with `"any"` it may pick
-    /// another or compose one.
-    pub phases: WorkflowRef,
-    /// Ultracode: every real request goes through a workflow, small ones included. Solo on
+    /// Ultracode: every real request goes through a workflow, small ones included. Captain on
     /// Claude Code turns on Claude Code's own. Questions are still just answered.
     pub ultracode: bool,
     /// How big a workflow the orchestrator plans when the request doesn't say. A guideline, as
     /// in Claude Code.
     pub workflow_size: WorkflowSize,
-    /// Used for chat, the triage estimate, solo work, and as the last fallback.
-    pub main_agent: WorkerRef,
-    /// Who fills the five roles. A fine role without `roles.<role>.workers` follows one of them.
+    /// Who fills the five roles. A fine role without `roles.<role>.models` follows one of them.
     pub crew: CrewSettings,
     pub agents: BTreeMap<String, AgentSettings>,
     pub endpoints: BTreeMap<String, EndpointSettings>,
     /// Per role. A role with no entry uses the defaults and the router.
     pub roles: BTreeMap<RoleName, RoleSettings>,
     /// Fallbacks: the defaults for every role, and `[fallback.<role>]` for each of the crew's
-    /// five. [`HandoffSettings`] says which keys the resolver copies into role tables, and
+    /// five. [`FallbackTable`] says which keys the resolver copies into role tables, and
     /// [`FallbackSettings::applied_to`] walks the rest.
     pub fallback: FallbackSettings,
     pub intake: IntakeSettings,
-    /// How a request is sent to solo or to the crew.
-    #[serde(rename = "solo_or_crew")]
-    pub triage: TriageSettings,
-    pub solo: SoloSettings,
+    /// How a request is sent to Captain or to the crew.
+    pub captain_or_crew: CaptainOrCrewSettings,
+    pub captain: CaptainSettings,
     pub understand: UnderstandSettings,
     /// Goals: whether a request gets one by default, what checks it, and when it's stuck.
     pub goal: GoalSettings,
     pub drafting: DraftingSettings,
     pub mapping: MappingSettings,
     pub critique: CritiqueSettings,
-    pub experiments: SpikeSettings,
+    pub experiments: ExperimentSettings,
     pub judging: JudgingSettings,
     pub divide: DivideSettings,
     pub review: ReviewSettings,
-    pub checks: GateSettings,
+    pub checks: CheckSettings,
     pub routing: RoutingSettings,
     pub approvals: ApprovalSettings,
     pub limits: HardLimitSettings,
@@ -136,7 +132,7 @@ pub struct Settings {
     /// What mod files may do.
     pub mods: mods::ModsSettings,
     pub narrator: NarratorSettings,
-    pub supervisor: SupervisorSettings,
+    pub run_host: RunHostSettings,
     pub runs: RunsSettings,
     pub notifications: NotificationSettings,
     pub mcp: McpSettings,
@@ -150,35 +146,32 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        let worker = |s: &str| WorkerRef::new(s, None);
         let agents = ["claude-code", "codex", "antigravity-cli", "opencode"]
             .into_iter()
             .map(|id| (id.to_owned(), AgentSettings::default()))
             .collect();
         Self {
             workflow: "council".to_owned(),
-            phases: WorkflowRef::new("council"),
             ultracode: false,
             workflow_size: WorkflowSize::default(),
-            main_agent: worker("claude-code"),
             crew: CrewSettings::default(),
             agents,
             endpoints: BTreeMap::new(),
             roles: BTreeMap::new(),
             fallback: FallbackSettings::built_in(),
             intake: IntakeSettings::default(),
-            triage: TriageSettings::default(),
-            solo: SoloSettings::default(),
+            captain_or_crew: CaptainOrCrewSettings::default(),
+            captain: CaptainSettings::default(),
             understand: UnderstandSettings::default(),
             goal: GoalSettings::default(),
             drafting: DraftingSettings::default(),
             mapping: MappingSettings::default(),
             critique: CritiqueSettings::default(),
-            experiments: SpikeSettings::default(),
+            experiments: ExperimentSettings::default(),
             judging: JudgingSettings::default(),
             divide: DivideSettings::default(),
             review: ReviewSettings::default(),
-            checks: GateSettings::default(),
+            checks: CheckSettings::default(),
             routing: RoutingSettings::default(),
             approvals: ApprovalSettings::default(),
             limits: HardLimitSettings::default(),
@@ -204,7 +197,7 @@ impl Default for Settings {
             ui: UiSettings::default(),
             mods: mods::ModsSettings::default(),
             narrator: NarratorSettings::default(),
-            supervisor: SupervisorSettings::default(),
+            run_host: RunHostSettings::default(),
             runs: RunsSettings::default(),
             notifications: NotificationSettings::default(),
             mcp: McpSettings::default(),
@@ -223,8 +216,8 @@ impl Settings {
     pub const ULTRACODE: &'static str = "ultracode";
 
     /// Who may fill one of the five roles, in order of preference.
-    pub fn seats(&self, role: crew::CrewRole) -> Vec<WorkerRef> {
-        self.crew.seats(role, &self.main_agent)
+    pub fn models_for(&self, role: crew::CrewRole) -> Vec<ModelRef> {
+        self.crew.models_for(role)
     }
 
     /// The sandbox for `role`'s agents, its own `[roles.<role>.sandbox]` over `[sandbox]`.
@@ -233,20 +226,20 @@ impl Settings {
         self.sandbox.applied(own)
     }
 
-    /// How far the lead may change a crew run's workflow. All hands always has it size one.
-    pub fn lead_designs(&self) -> LeadDesign {
-        let design = self.workflows.lead_designs.design();
+    /// How far the main agent may change a crew run's workflow. Ultracode always has it size one.
+    pub fn orchestrator_designs(&self) -> OrchestratorDesign {
+        let design = self.workflows.orchestrator_designs.design();
         if self.ultracode {
-            design.max(LeadDesign::Size)
+            design.max(OrchestratorDesign::Size)
         } else {
             design
         }
     }
 }
 
-/// Keys only you may set: never a preset, recipe, or self-evolution. A `--set` of one of these
-/// needs an interactive terminal and is refused inside an agent session, and one in a
-/// project's `.argonauts/config.toml` applies only once you trust that file. A trailing `.*`
+/// Keys only you may set: never a workflow, a learned workflow, or the evolution loop. A `--set`
+/// of one of these needs an interactive terminal and is refused inside an agent session, and one in
+/// a project's `.argonauts/config.toml` applies only once you trust that file. A trailing `.*`
 /// covers every key below it, and `*` in the middle matches one map key.
 pub const SAFETY_KEYS: &[&str] = &[
     "limits.protected_paths",
@@ -265,9 +258,9 @@ pub const SAFETY_KEYS: &[&str] = &[
     "limits.run_plan_usage",
     "limits.run_minutes",
     "limits.plan_usage",
-    "solo.kind",
-    "solo.asks",
-    "solo_or_crew.solo_kind",
+    "captain.kind",
+    "captain.asks",
+    "captain_or_crew.captain_kind",
     "agents.*.auth",
     "agents.*.binary",
     "agents.*.extra_args",
@@ -282,14 +275,14 @@ pub const SAFETY_KEYS: &[&str] = &[
     "merge.*",
     "checks.*",
     "mods.*",
-    "notifications.chat.*",
-    "solo.kind",
-    "solo_or_crew.solo_kind",
+    "notifications.conversation.*",
+    "captain.kind",
+    "captain_or_crew.captain_kind",
 ];
 
 /// Keys only your global config may set. A project file that sets one is refused, trusted or
-/// not, since it would name a program for Argonauts to run.
-pub const GLOBAL_ONLY_KEYS: &[&str] = &["notifications.chat.*", "telemetry.*"];
+/// not, since it would name a program for Argonauts Code to run.
+pub const GLOBAL_ONLY_KEYS: &[&str] = &["notifications.conversation.*", "telemetry.*"];
 
 /// Lowest first; a later layer wins key by key. `session` is the app's own overrides, which
 /// come after the `--set` flags. `request` holds what a request said about how to run it, for
@@ -305,8 +298,8 @@ pub const LAYERS: &[&str] = &[
     "request",
 ];
 
-/// The layers that are settings files, lowest first. A preset picked in one sits just below it:
-/// what that file and later layers set wins over the preset.
+/// The layers that are settings files, lowest first. A workflow picked in one sits just below it:
+/// what that file and later layers set wins over the workflow.
 pub const FILE_LAYERS: [&str; 3] = ["global", "project", "project-local"];
 
 /// Where a setting you change inside the app is saved.
@@ -347,12 +340,12 @@ impl SettingScope {
 
     /// Where a change to a value now from `layer` is saved, so it takes effect and never hides
     /// under a layer that wins: the file it came from, and everywhere for a default. A value
-    /// from the preset goes to the file that picked the preset, `preset_from`. One from a flag,
-    /// a request, or a preset no file picked can only be outdone by this session.
-    pub fn for_change(layer: &str, preset_from: Option<&str>) -> Self {
+    /// from the workflow goes to the file that picked the workflow, `workflow_from`. One from a
+    /// flag, a request, or a workflow no file picked can only be outdone by this session.
+    pub fn for_change(layer: &str, workflow_from: Option<&str>) -> Self {
         match layer {
             "built-in" => Self::Global,
-            "workflow" => preset_from
+            "workflow" => workflow_from
                 .and_then(Self::from_layer)
                 .unwrap_or(Self::Session),
             "flag" | "request" => Self::Session,
@@ -380,11 +373,11 @@ impl SettingScope {
         }
     }
 
-    /// Like [`hidden_by`](Self::hidden_by) for a value in effect. One from the preset counts
-    /// from `preset_from`, the settings file that picked the preset when one did, since what
-    /// you set there or in a later layer wins over the preset.
-    pub fn hidden_by_value(self, layer: &str, preset_from: Option<&str>) -> bool {
-        match preset_from {
+    /// Like [`hidden_by`](Self::hidden_by) for a value in effect. One from the workflow counts
+    /// from `workflow_from`, the settings file that picked the workflow when one did, since what
+    /// you set there or in a later layer wins over the workflow.
+    pub fn hidden_by_value(self, layer: &str, workflow_from: Option<&str>) -> bool {
+        match workflow_from {
             Some(from) if layer == "workflow" => self.hidden_by(from),
             _ => self.hidden_by(layer),
         }
@@ -493,16 +486,16 @@ mod tests {
     }
 
     #[test]
-    fn a_preset_picked_in_a_file_hides_only_the_files_before_it() {
+    fn a_workflow_picked_in_a_file_hides_only_the_files_before_it() {
         use SettingScope::*;
         assert!(Global.hidden_by_value("workflow", Some("project")));
         assert!(!Project.hidden_by_value("workflow", Some("project")));
         assert!(!ProjectLocal.hidden_by_value("workflow", Some("project")));
         assert!(!Global.hidden_by_value("workflow", Some("global")));
-        // Picked by default or by a flag, the preset sits above every file.
+        // Picked by default or by a flag, the workflow sits above every file.
         assert!(ProjectLocal.hidden_by_value("workflow", None));
         assert!(!Session.hidden_by_value("workflow", None));
-        // Other layers ignore where the preset was picked.
+        // Other layers ignore where the workflow was picked.
         assert!(Global.hidden_by_value("project", Some("global")));
     }
 }

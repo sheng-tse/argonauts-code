@@ -1,0 +1,573 @@
+# The fake agent CLIs for the app scenarios. Requests are told apart by their text, the
+# crew's steps by a property name of their output schema, and read-only sessions from
+# building ones by Claude Code's permission mode. First match wins, so specific rules come
+# first. Session rules name an argument only a session has (`exec`, `--output-format`),
+# so `--version` falls through to the version table. The texts match
+# `app_support::requests`.
+
+[version]
+claude = "2.1.284 (Claude Code)"
+codex = "codex-cli 0.158.0"
+agy = "1.2.13"
+
+# A resumed worker whose prompt carries the guidance sent while the run was waiting.
+[[rule]]
+argv0 = "claude"
+args_contain = ["acceptEdits", "--resume"]
+prompt_contains = 'use the name loadSettings'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-worker-slow","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-worker-slow","message":{"id":"msg-sess-worker-slow","content":[{"type":"text","text":"Renamed it to loadSettings."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-worker-slow","result":"Renamed it to loadSettings.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"status":"done","summary":"Renamed the loader to loadSettings.","files_changed":["loader-notes.md"],"tests_run":[],"concerns":[],"questions":[],"change_requests":[],"memory_proposals":[]}}'
+[[rule.step]]
+exit = 0
+
+# Any other resumed worker finishes.
+[[rule]]
+argv0 = "claude"
+args_contain = ["acceptEdits", "--resume"]
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-worker-slow","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-worker-slow","message":{"id":"msg-sess-worker-slow","content":[{"type":"text","text":"Finished the rename."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-worker-slow","result":"Finished the rename.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"status":"done","summary":"Finished the rename.","files_changed":["loader-notes.md"],"tests_run":[],"concerns":[],"questions":[],"change_requests":[],"memory_proposals":[]}}'
+[[rule.step]]
+exit = 0
+
+# A worker that works until it is stopped.
+[[rule]]
+argv0 = "claude"
+args_contain = ["acceptEdits"]
+prompt_contains = 'rename the config loader everywhere'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-worker-slow","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+write = { path = "loader-notes.md", content = "loader renamed in progress\n" }
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-worker-slow","message":{"id":"msg-sess-worker-slow","content":[{"type":"text","text":"Renaming the config loader."}],"usage":{"input_tokens":1200,"output_tokens":300}}}'
+[[rule.step]]
+hang = true
+
+# A worker that sits in a build until it is stopped, so a pause waits for its tool call.
+[[rule]]
+argv0 = "claude"
+args_contain = ["acceptEdits"]
+prompt_contains = 'rename the config loader while the build runs'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-worker-building","cwd":".","tools":["Read","Grep","Glob","Bash"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-worker-building","message":{"id":"msg-building","content":[{"type":"tool_use","id":"toolu_build_1","name":"Bash","input":{"command":"cargo build"}}]}}'
+[[rule.step]]
+hang = true
+
+# A worker that takes a few seconds, then reports.
+[[rule]]
+argv0 = "claude"
+args_contain = ["acceptEdits"]
+prompt_contains = 'rename the settings reader in a few seconds'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-worker-timed","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-worker-timed","message":{"id":"msg-sess-worker-timed","content":[{"type":"text","text":"Renaming the settings reader."}]}}'
+[[rule.step]]
+write = { path = "reader-notes.md", content = "settings reader renamed\n" }
+[[rule.step]]
+sleep_ms = 3000
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-worker-timed","result":"Renamed the settings reader.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"status":"done","summary":"Renamed the settings reader.","files_changed":["reader-notes.md"],"tests_run":[],"concerns":[],"questions":[],"change_requests":[],"memory_proposals":[]}}'
+[[rule.step]]
+exit = 0
+
+# The small fix: the worker corrects README.md.
+[[rule]]
+argv0 = "claude"
+args_contain = ["acceptEdits"]
+prompt_contains = 'install command in README.md'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-worker-readme","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+write = { path = "README.md", content = "# Test repo\n\nnpm install @acme/api\n" }
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-worker-readme","message":{"id":"msg-sess-worker-readme","content":[{"type":"text","text":"Updated README.md."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-worker-readme","result":"Updated README.md.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"status":"done","summary":"the install command now uses the scoped name","files_changed":["README.md"],"tests_run":[],"concerns":[],"questions":[],"change_requests":[],"memory_proposals":[]}}'
+[[rule.step]]
+exit = 0
+
+# A worker that moves the export job, then hits its usage limit, so the task falls back.
+[[rule]]
+argv0 = "claude"
+args_contain = ["acceptEdits"]
+prompt_contains = 'move the export job onto the worker queue'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-worker-limited","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+write = { path = "export-job.md", content = "the export job runs on the worker queue\n" }
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-worker-limited","message":{"id":"msg-sess-worker-limited","content":[{"type":"text","text":"Moved the export job. The callers are next."}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","error":"rate_limit","parent_tool_use_id":null,"session_id":"sess-worker-limited","message":{"id":"msg-limit-worker-limited","content":[{"type":"text","text":"You\u0027ve hit your session limit · resets 3pm"}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":true,"session_id":"sess-worker-limited","result":"You\u0027ve hit your session limit · resets 3pm","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20}}'
+[[rule.step]]
+exit = 1
+
+# A worker of the orchestrator's script: it adds the rate limiter.
+[[rule]]
+argv0 = "claude"
+args_contain = ["acceptEdits"]
+prompt_contains = 'Add a token bucket per API key'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-worker-limiter","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+write = { path = "rate-limit.md", content = "a token bucket per API key, after the auth middleware\n" }
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-worker-limiter","message":{"id":"msg-sess-worker-limiter","content":[{"type":"text","text":"Added the limiter."}],"usage":{"input_tokens":900,"output_tokens":250}}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-worker-limiter","result":"Added the limiter.","total_cost_usd":0.001,"usage":{"input_tokens":900,"output_tokens":250},"structured_output":{"status":"done","summary":"A token bucket per API key, after the auth middleware.","files_changed":["rate-limit.md"],"tests_run":[],"concerns":[],"questions":[],"change_requests":[],"memory_proposals":[]}}'
+[[rule.step]]
+exit = 0
+
+# Any other worker reports done at once.
+[[rule]]
+argv0 = "claude"
+args_contain = ["acceptEdits"]
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-worker-any","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-worker-any","message":{"id":"msg-sess-worker-any","content":[{"type":"text","text":"Done."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-worker-any","result":"Done.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"status":"done","summary":"Done.","files_changed":[],"tests_run":[],"concerns":[],"questions":[],"change_requests":[],"memory_proposals":[]}}'
+[[rule.step]]
+exit = 0
+
+# The run review, which proposes no change. Its prompt quotes the request, so it comes before the
+# conversation rules.
+[[rule]]
+argv0 = "claude"
+prompt_contains = "the evolvable list"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-run-review","cwd":".","tools":[],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-run-review","result":"done","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"change":null}}'
+[[rule.step]]
+exit = 0
+
+# The orchestrator writes the steps for the rate limiter as a script, with council's roles: one
+# worker builds it, and a worker who didn't build it reviews it. Its prompt quotes the request,
+# so it comes before the conversation rules.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = 'Write the workflow for one request as a script'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-orchestrator-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-orchestrator-claude","message":{"id":"msg-sess-orchestrator-claude","content":[{"type":"text","text":"One worker builds it, and one who did not build it reviews it."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-orchestrator-claude","result":"One worker builds it, and one who did not build it reviews it.","total_cost_usd":0.001,"usage":{"input_tokens":120,"output_tokens":200},"structured_output":{"script":"export const meta = {\n  name: \"rate-limit-per-key\",\n  description: \"Per-key rate limiting for the public API\",\n  phases: [\n    { title: \"Build\", detail: \"one worker adds the limiter\" },\n    { title: \"Review\", detail: \"a worker who did not build it\" },\n  ],\n}\nawait agent(\"Add a token bucket per API key after the auth middleware. The request: \" + args.request, {\n  role: \"worker\", label: \"build:rate-limit\", phase: \"Build\", task: \"rate-limit\",\n})\nconst verdict = await agent(\"Review the rate limiter against the request: \" + args.request, {\n  role: \"worker\", notTheAuthor: true, access: \"read\",\n  label: \"review:rate-limit\", phase: \"Review\", task: \"rate-limit\",\n  schema: {\n    type: \"object\",\n    properties: { accept: { type: \"boolean\" }, findings: { type: \"array\", items: { type: \"string\" } } },\n    required: [\"accept\", \"findings\"],\n  },\n})\nreturn { accepted: Boolean(verdict && verdict.accept) }\n"}}'
+[[rule.step]]
+exit = 0
+
+# The first step of a workflow of your own, which runs as written: it lists one task.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = 'Split the request into tasks, as the workflow file says'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-planner-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-planner-claude","message":{"id":"msg-sess-planner-claude","content":[{"type":"text","text":"One task: the limiter itself."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-planner-claude","result":"One task: the limiter itself.","total_cost_usd":0.001,"usage":{"input_tokens":100,"output_tokens":60},"structured_output":{"summary":"One task: the limiter itself.","tasks":[{"title":"Add a token bucket per API key","done_when":["a key over its limit gets 429 with Retry-After"]}]}}'
+[[rule.step]]
+exit = 0
+
+# A drafting agent, still drafting.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = '"test_strategy"'
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-draft-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-draft-claude","message":{"id":"msg-sess-draft-claude","content":[{"type":"text","text":"Counters in Redis with a token bucket, so every instance shares one count per key."}]}}'
+[[rule.step]]
+hang = true
+
+# The comparer: one detail, one scope question.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = '"differences"'
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-compare-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-compare-claude","message":{"id":"msg-sess-compare-claude","content":[{"type":"text","text":"Two differences."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-compare-claude","result":"Two differences.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"agreements":["429 + Retry-After","limits survive restarts","under 5 ms p50 overhead"],"differences":[{"topic":"Retry-After units","readings":[{"label":"A","reading":"seconds"},{"label":"B","reading":"seconds"},{"label":"C","reading":"milliseconds"}],"tag":"detail","question":null},{"topic":"limit per user or per API key","readings":[{"label":"A","reading":"per API key"},{"label":"B","reading":"per API key"},{"label":"C","reading":"per user"}],"tag":"scope","question":{"text":"Limit per user, or per API key?","options":["Per API key","Per user"],"recommended":0,"basis":"2 of 3 readings read it this way"}}]}}'
+[[rule.step]]
+exit = 0
+
+# A reading that takes it per API key.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = '"success_criteria"'
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-read-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-read-claude","message":{"id":"msg-sess-read-claude","content":[{"type":"text","text":"Limit requests per API key and answer 429 with Retry-After once over the limit."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-read-claude","result":"Limit requests per API key and answer 429 with Retry-After once over the limit.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"summary":"Limit requests per API key and answer 429 with Retry-After once over the limit.","success_criteria":["429 with Retry-After once over the limit","limits survive restarts","under 5 ms p50 overhead"],"in_scope":["the public API"],"out_of_scope":["the admin API"],"assumptions":["Retry-After in seconds"],"open_questions":[]}}'
+[[rule.step]]
+exit = 0
+
+# The main agent's workflow design: the review panel with two reviewers. It matches a field of the
+# design's input, which only the prompt on stdin holds, so the log keeps that prompt.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = 'allow_composed'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-design-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-design-claude","message":{"id":"msg-sess-design-claude","content":[{"type":"text","text":"A review: two reviewers from other providers"}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-design-claude","result":"A review: two reviewers from other providers","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"name":"review-the-diff","description":"Review the diff with two reviewers from other providers","based_on":"review-panel","why":"A review: two reviewers from other providers","params":[{"name":"target","value":"diff"},{"name":"reviewers","value":"2"}],"workflow":null,"done_when":[{"id":"G1","text":"Two reviewers from other providers read the diff","short":"Two reviews","check":"review"}],"plan":[],"questions":[],"first_try":null}}'
+[[rule.step]]
+exit = 0
+
+# A turn that never finishes.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = 'take your time with this one'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-conversation-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-conversation-claude","message":{"id":"msg-sess-conversation-claude","content":[{"type":"text","text":"Let me look through the repo first."}]}}'
+[[rule.step]]
+hang = true
+
+# An answer for /ask.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = 'should we split the storage module'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-conversation-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-conversation-claude","message":{"id":"msg-sess-conversation-claude","content":[{"type":"text","text":"Split it once the cache lands; until then one module is simpler."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-conversation-claude","result":"Split it once the cache lands; until then one module is simpler.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"answer_markdown":"Split it once the cache lands; until then one module is simpler."}}'
+[[rule.step]]
+exit = 0
+
+# A question that could be a change; the rules would pick crew.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = 'how should we add rate limiting'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-conversation-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-conversation-claude","message":{"id":"msg-read","content":[{"type":"tool_use","id":"toolu_read_1","name":"Read","input":{"file_path":"README.md"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-conversation-claude","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_read_1","content":"# Test repo"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-conversation-claude","message":{"id":"msg-sess-conversation-claude","content":[{"type":"text","text":"Put a middleware right after auth, so each request counts against its API key. Keep the counters in Redis. Expect about 9 files, including tests."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-conversation-claude","result":"Put a middleware right after auth, so each request counts against its API key. Keep the counters in Redis. Expect about 9 files, including tests.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"unclear","answer_markdown":"Put a middleware right after auth, so each request counts against its API key. Keep the counters in Redis. Expect about 9 files, including tests.","estimate":{"task_type":"api-feature","summary":"Per-key rate limiting for the public API","files_likely":["src/middleware/rate_limit.ts","src/server.ts","test/rate_limit.test.ts"],"file_count":9,"risk_labels":["security"],"tests_exist":true,"unknowns":[]}}}'
+[[rule.step]]
+exit = 0
+
+# A one-file docs change: Captain.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = 'install command in README.md'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-conversation-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-conversation-claude","message":{"id":"msg-sess-conversation-claude","content":[{"type":"text","text":"Fix the install command in README.md."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-conversation-claude","result":"Fix the install command in README.md.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"change","answer_markdown":"Fix the install command in README.md.","estimate":{"task_type":"docs","summary":"Fix the README install command","files_likely":["README.md"],"file_count":1,"risk_labels":[],"tests_exist":true,"unknowns":[]}}}'
+[[rule.step]]
+exit = 0
+
+# A security-labeled feature: crew.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = 'per-key rate limiting'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-conversation-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-conversation-claude","message":{"id":"msg-sess-conversation-claude","content":[{"type":"text","text":"A token bucket per API key after the auth middleware."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-conversation-claude","result":"A token bucket per API key after the auth middleware.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"change","answer_markdown":"A token bucket per API key after the auth middleware.","estimate":{"task_type":"api-feature","summary":"Per-key rate limiting for the public API","files_likely":["src/middleware/rate_limit.ts","src/server.ts","test/rate_limit.test.ts"],"file_count":9,"risk_labels":["security"],"tests_exist":true,"unknowns":[]}}}'
+[[rule.step]]
+exit = 0
+
+# Two files with no tests yet, so the small-change rule passes and the migration label
+# picks crew.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = 'move sessions to the new storage backend'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-conversation-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-conversation-claude","message":{"id":"msg-sess-conversation-claude","content":[{"type":"text","text":"Move the session store behind the new backend."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-conversation-claude","result":"Move the session store behind the new backend.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"change","answer_markdown":"Move the session store behind the new backend.","estimate":{"task_type":"refactor","summary":"Move sessions to the new storage backend","files_likely":["src/sessions.ts","src/storage.ts"],"file_count":2,"risk_labels":["migration"],"tests_exist":false,"unknowns":[]}}}'
+[[rule.step]]
+exit = 0
+
+# Unclear; the rules would pick Captain.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = 'tidy the changelog'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-conversation-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-conversation-claude","message":{"id":"msg-sess-conversation-claude","content":[{"type":"text","text":"The changelog repeats the 1.2 entries."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-conversation-claude","result":"The changelog repeats the 1.2 entries.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"unclear","answer_markdown":"The changelog repeats the 1.2 entries.","estimate":{"task_type":"docs","summary":"Tidy the changelog","files_likely":["CHANGELOG.md"],"file_count":1,"risk_labels":[],"tests_exist":true,"unknowns":[]}}}'
+[[rule.step]]
+exit = 0
+
+# A Captain change whose worker hangs.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = 'rename the config loader everywhere'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-conversation-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-conversation-claude","message":{"id":"msg-sess-conversation-claude","content":[{"type":"text","text":"Rename it and update the callers."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-conversation-claude","result":"Rename it and update the callers.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"change","answer_markdown":"Rename it and update the callers.","estimate":{"task_type":"refactor","summary":"Rename the config loader","files_likely":["src/config.rs","src/main.rs"],"file_count":2,"risk_labels":[],"tests_exist":true,"unknowns":[]}}}'
+[[rule.step]]
+exit = 0
+
+# A Captain change whose worker takes a few seconds.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = 'rename the settings reader in a few seconds'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-conversation-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-conversation-claude","message":{"id":"msg-sess-conversation-claude","content":[{"type":"text","text":"Rename it and update the callers."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-conversation-claude","result":"Rename it and update the callers.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"change","answer_markdown":"Rename it and update the callers.","estimate":{"task_type":"refactor","summary":"Rename the settings reader","files_likely":["src/settings.rs"],"file_count":1,"risk_labels":[],"tests_exist":true,"unknowns":[]}}}'
+[[rule.step]]
+exit = 0
+
+# Anything else is answered.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-conversation-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-conversation-claude","message":{"id":"msg-sess-conversation-claude","content":[{"type":"text","text":"Hi. Ask me anything about this repo, or describe a change you want made. Small changes go to one agent, bigger ones to the crew."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-conversation-claude","result":"Hi. Ask me anything about this repo, or describe a change you want made. Small changes go to one agent, bigger ones to the crew.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"answer","answer_markdown":"Hi. Ask me anything about this repo, or describe a change you want made. Small changes go to one agent, bigger ones to the crew.","estimate":null}}'
+[[rule.step]]
+exit = 0
+
+# Logged in.
+[[rule]]
+argv0 = "codex"
+args_contain = ["login", "status"]
+[[rule.step]]
+emit = '"Logged in using ChatGPT"'
+[[rule.step]]
+exit = 0
+
+# The export job falls back to Codex, which updates its callers.
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+prompt_contains = 'move the export job onto the worker queue'
+stdin_prompt = "all"
+[[rule.step]]
+emit = '{"type":"thread.started","thread_id":"thread-worker-limited-codex"}'
+[[rule.step]]
+emit = '{"type":"turn.started"}'
+[[rule.step]]
+write = { path = "export-callers.md", content = "the callers enqueue the export job\n" }
+[[rule.step]]
+emit = '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"status\":\"done\",\"summary\":\"Updated the export job callers.\",\"files_changed\":[\"export-callers.md\"],\"tests_run\":[],\"concerns\":[],\"questions\":[],\"change_requests\":[],\"memory_proposals\":[]}"}}'
+[[rule.step]]
+emit = '{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":0}}'
+[[rule.step]]
+exit = 0
+
+# A drafting agent, still drafting. Codex shows its text only when the message is complete.
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+prompt_contains = '"test_strategy"'
+stdin_prompt = "all"
+[[rule.step]]
+emit = '{"type":"thread.started","thread_id":"thread-draft-codex"}'
+[[rule.step]]
+emit = '{"type":"turn.started"}'
+[[rule.step]]
+hang = true
+
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+prompt_contains = '"differences"'
+stdin_prompt = "all"
+[[rule.step]]
+emit = '{"type":"thread.started","thread_id":"thread-compare-codex"}'
+[[rule.step]]
+emit = '{"type":"turn.started"}'
+[[rule.step]]
+emit = '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"agreements\":[\"429 + Retry-After\",\"limits survive restarts\",\"under 5 ms p50 overhead\"],\"differences\":[{\"topic\":\"Retry-After units\",\"readings\":[{\"label\":\"A\",\"reading\":\"seconds\"},{\"label\":\"B\",\"reading\":\"seconds\"},{\"label\":\"C\",\"reading\":\"milliseconds\"}],\"tag\":\"detail\",\"question\":null},{\"topic\":\"limit per user or per API key\",\"readings\":[{\"label\":\"A\",\"reading\":\"per API key\"},{\"label\":\"B\",\"reading\":\"per API key\"},{\"label\":\"C\",\"reading\":\"per user\"}],\"tag\":\"scope\",\"question\":{\"text\":\"Limit per user, or per API key?\",\"options\":[\"Per API key\",\"Per user\"],\"recommended\":0,\"basis\":\"2 of 3 readings read it this way\"}}]}"}}'
+[[rule.step]]
+emit = '{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":0}}'
+[[rule.step]]
+exit = 0
+
+# A reading that takes it per API key.
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+prompt_contains = '"success_criteria"'
+stdin_prompt = "all"
+[[rule.step]]
+emit = '{"type":"thread.started","thread_id":"thread-read-codex"}'
+[[rule.step]]
+emit = '{"type":"turn.started"}'
+[[rule.step]]
+emit = '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"summary\":\"Limit requests per API key and answer 429 with Retry-After once over the limit.\",\"success_criteria\":[\"429 with Retry-After once over the limit\",\"limits survive restarts\",\"under 5 ms p50 overhead\"],\"in_scope\":[\"the public API\"],\"out_of_scope\":[\"the admin API\"],\"assumptions\":[\"Retry-After in seconds\"],\"open_questions\":[]}"}}'
+[[rule.step]]
+emit = '{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":0}}'
+[[rule.step]]
+exit = 0
+
+# A reviewer of the orchestrator's script: it accepts the rate limiter.
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+prompt_contains = 'Review the rate limiter against the request'
+stdin_prompt = "all"
+[[rule.step]]
+emit = '{"type":"thread.started","thread_id":"thread-reviewer-codex"}'
+[[rule.step]]
+emit = '{"type":"turn.started"}'
+[[rule.step]]
+emit = '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"accept\":true,\"findings\":[]}"}}'
+[[rule.step]]
+emit = '{"type":"turn.completed","usage":{"input_tokens":300,"cached_input_tokens":0,"output_tokens":40,"reasoning_output_tokens":0}}'
+[[rule.step]]
+exit = 0
+
+# The conversation, with Codex as the main agent. Inside Argonauts Code's sandbox Codex's own is
+# off, so the conversation is told apart by its prompt.
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+prompt_contains = 'agent of Argonauts Code. Read files'
+stdin_prompt = "all"
+[[rule.step]]
+emit = '{"type":"thread.started","thread_id":"thread-conversation-codex"}'
+[[rule.step]]
+emit = '{"type":"turn.started"}'
+[[rule.step]]
+emit = '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"kind\":\"answer\",\"answer_markdown\":\"Hi from Codex.\",\"estimate\":null}"}}'
+[[rule.step]]
+emit = '{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":0}}'
+[[rule.step]]
+exit = 0
+
+# Any other Codex session reports done.
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+[[rule.step]]
+emit = '{"type":"thread.started","thread_id":"thread-worker-codex"}'
+[[rule.step]]
+emit = '{"type":"turn.started"}'
+[[rule.step]]
+emit = '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"status\":\"done\",\"summary\":\"Done.\",\"files_changed\":[],\"tests_run\":[],\"concerns\":[],\"questions\":[],\"change_requests\":[],\"memory_proposals\":[]}"}}'
+[[rule.step]]
+emit = '{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":0}}'
+[[rule.step]]
+exit = 0
+
+# A drafting agent, still drafting.
+[[rule]]
+argv0 = "agy"
+args_contain = ["--output-format"]
+prompt_contains = '"test_strategy"'
+[[rule.step]]
+emit = '{"event":"init","conversation_id":"conv-draft-agy","init":{"model":"gemini-3.6-flash-low","cwd":".","tools":[]}}'
+[[rule.step]]
+emit = '{"event":"step_update","step_update":{"conversation_id":"conv-draft-agy","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"Fixed window in Redis, keyed by API key, after the auth middleware"}}'
+[[rule.step]]
+hang = true
+
+[[rule]]
+argv0 = "agy"
+args_contain = ["--output-format"]
+prompt_contains = '"differences"'
+[[rule.step]]
+emit = '{"event":"init","conversation_id":"conv-compare-agy","init":{"model":"gemini-3.6-flash-low","cwd":".","tools":[]}}'
+[[rule.step]]
+emit = '{"event":"result","result":{"conversation_id":"conv-compare-agy","status":"SUCCESS","response":"{\"agreements\":[\"429 + Retry-After\",\"limits survive restarts\",\"under 5 ms p50 overhead\"],\"differences\":[{\"topic\":\"Retry-After units\",\"readings\":[{\"label\":\"A\",\"reading\":\"seconds\"},{\"label\":\"B\",\"reading\":\"seconds\"},{\"label\":\"C\",\"reading\":\"milliseconds\"}],\"tag\":\"detail\",\"question\":null},{\"topic\":\"limit per user or per API key\",\"readings\":[{\"label\":\"A\",\"reading\":\"per API key\"},{\"label\":\"B\",\"reading\":\"per API key\"},{\"label\":\"C\",\"reading\":\"per user\"}],\"tag\":\"scope\",\"question\":{\"text\":\"Limit per user, or per API key?\",\"options\":[\"Per API key\",\"Per user\"],\"recommended\":0,\"basis\":\"2 of 3 readings read it this way\"}}]}","duration_seconds":1.0,"num_turns":1,"usage":{"input_tokens":12,"output_tokens":20,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":32}}}'
+[[rule.step]]
+exit = 0
+
+# The reading that reads it per user.
+[[rule]]
+argv0 = "agy"
+args_contain = ["--output-format"]
+prompt_contains = '"success_criteria"'
+[[rule.step]]
+emit = '{"event":"init","conversation_id":"conv-read-agy","init":{"model":"gemini-3.6-flash-low","cwd":".","tools":[]}}'
+[[rule.step]]
+emit = '{"event":"result","result":{"conversation_id":"conv-read-agy","status":"SUCCESS","response":"{\"summary\":\"Limit requests per user and answer 429 with Retry-After once over the limit.\",\"success_criteria\":[\"429 with Retry-After once over the limit\",\"limits survive restarts\",\"under 5 ms p50 overhead\"],\"in_scope\":[\"the public API\"],\"out_of_scope\":[\"the admin API\"],\"assumptions\":[\"Retry-After in milliseconds\"],\"open_questions\":[]}","duration_seconds":1.0,"num_turns":1,"usage":{"input_tokens":12,"output_tokens":20,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":32}}}'
+[[rule.step]]
+exit = 0
+
+# The conversation, with agy as the main agent, and any other agy session.
+[[rule]]
+argv0 = "agy"
+args_contain = ["--output-format"]
+[[rule.step]]
+emit = '{"event":"init","conversation_id":"conv-conversation-agy","init":{"model":"gemini-3.6-flash-low","cwd":".","tools":[]}}'
+[[rule.step]]
+emit = '{"event":"result","result":{"conversation_id":"conv-conversation-agy","status":"SUCCESS","response":"{\"kind\":\"answer\",\"answer_markdown\":\"Hi from agy.\",\"estimate\":null}","duration_seconds":1.0,"num_turns":1,"usage":{"input_tokens":12,"output_tokens":20,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":32}}}'
+[[rule.step]]
+exit = 0

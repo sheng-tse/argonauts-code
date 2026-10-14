@@ -1,0 +1,56 @@
+{
+  "adapter": "antigravity-cli",
+  "args": [
+    "-p",
+    "Create a file named hello.txt containing the word hi. Then reply with: done",
+    "--output-format",
+    "stream-json",
+    "--sandbox",
+    "--mode",
+    "accept-edits",
+    "--disable-slash-commands",
+    "--model",
+    "gemini-3.6-flash-low",
+    "--effort",
+    "low",
+    "--json-schema",
+    "{\"additionalProperties\":false,\"properties\":{\"concerns\":{\"description\":\"Risks, open questions, or follow-ups. Empty if none.\",\"items\":{\"type\":\"string\"},\"type\":\"array\"},\"files_changed\":{\"description\":\"Paths you changed, relative to the working directory.\",\"items\":{\"type\":\"string\"},\"type\":\"array\"},\"status\":{\"description\":\"done if the task is complete, blocked if you can't continue, failed if you tried and couldn't, needs_decision if the user must choose something.\",\"enum\":[\"done\",\"blocked\",\"failed\",\"needs_decision\"],\"type\":\"string\"},\"summary\":{\"description\":\"What you did, in a few sentences.\",\"type\":\"string\"},\"tests_run\":{\"description\":\"Test commands you ran and whether they passed.\",\"items\":{\"type\":\"string\"},\"type\":\"array\"}},\"required\":[\"status\",\"summary\",\"files_changed\",\"tests_run\",\"concerns\"],\"type\":\"object\"}",
+    "--log-file",
+    "<live>/build_hello_schema.agy.log"
+  ],
+  "cli_version": "1.2.13",
+  "also_matches": [],
+  "variant_of": "build_hello_schema",
+  "shows": "The model writes text between its steps before the report.",
+  "date": "2026-09-29T08:32:50.271911Z",
+  "duration_ms": 38675,
+  "env_removed": [
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "XAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GH_TOKEN",
+    "GITHUB_TOKEN"
+  ],
+  "env_set": [
+    [
+      "AGY_CLI_DISABLE_AUTO_UPDATE",
+      "true"
+    ]
+  ],
+  "exit_code": 0,
+  "files_after": [
+    "README.md",
+    "hello.txt",
+    "notes.txt"
+  ],
+  "name": "build_hello_schema_narrated",
+  "program": "agy",
+  "prompt": "Create a file named hello.txt containing the word hi. Then reply with: done",
+  "role": "build",
+  "sanitized": "absolute paths replaced with <workdir> and <live>, the home directory with ~, and email addresses with <email>",
+  "note": "The first model request failed with a 503 and agy retried it after 4 s (from agy's log). The result still says status ERROR, but the turn finished, structured_output is present, and agy exited 0."
+}

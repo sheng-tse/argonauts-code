@@ -50,7 +50,7 @@ pub(in crate::bottom) enum Give {
     FineToDot,
     MainBar,
     ModeToSign,
-    /// `-- INSERT --` to `-- I --`, `← 2 agents` to `← 2`, `← 1 needs you` to `← 1!`.
+    /// `← 2 agents` to `← 2`, `← 1 needs you` to `← 1!`.
     ShortPieces,
     ResetTime,
     Names,

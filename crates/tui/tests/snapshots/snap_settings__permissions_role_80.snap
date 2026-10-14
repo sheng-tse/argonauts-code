@@ -6,7 +6,7 @@ expression: "picker_lines(picker, width)"
   Permissions for reviewer
   What this role sets wins for its agents; the rest follows every agent's
 
-  ❯ 1. Whose rules guard the agents        same as every agent: Argonauts' (OS …
+  ❯ 1. Whose rules guard the agents        same as every agent: Argonauts Code'…
     2. Internet for agents' commands       same as every agent: on
     3. Agents see each other's worktrees   same as every agent: no
     4. Agents make their own commits       same as every agent: yes

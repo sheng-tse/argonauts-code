@@ -1,5 +1,5 @@
 //! Vim keys for the composer. INSERT types as usual, NORMAL takes letters as commands, and
-//! VISUAL selects. The mode is public so the mode line can always say which one is on: a
+//! VISUAL selects. The mode is public so the bottom line can always say which one is on: a
 //! NORMAL mode you can't see sends keys somewhere you didn't mean.
 
 use std::ops::Range;

@@ -1,7 +1,7 @@
 //! The git the learning crate runs: through the git CLI as argument vectors, with hooks,
 //! fsmonitor, and signing off so nothing in a repository runs code as a side effect.
 //!
-//! Proposals (a promoted recipe, an exported or imported skill, a conventions change) are
+//! Proposals (a promoted learned workflow, an exported or imported skill, a conventions change) are
 //! commits on their own branch, built with plumbing and a private index. Your checkout, its
 //! index, and your current branch are never touched.
 
@@ -35,11 +35,11 @@ const REPOSITORY_ENV: &[&str] = &[
     "GIT_EXTERNAL_DIFF",
 ];
 
-/// Identity for conductor commits when you have none configured.
+/// Identity for Argonauts Code's commits when you have none configured.
 const FALLBACK_IDENTITY: [(&str, &str); 4] = [
-    ("GIT_AUTHOR_NAME", "Argonauts"),
+    ("GIT_AUTHOR_NAME", "Argonauts Code"),
     ("GIT_AUTHOR_EMAIL", "argonauts@localhost"),
-    ("GIT_COMMITTER_NAME", "Argonauts"),
+    ("GIT_COMMITTER_NAME", "Argonauts Code"),
     ("GIT_COMMITTER_EMAIL", "argonauts@localhost"),
 ];
 

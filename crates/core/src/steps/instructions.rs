@@ -16,11 +16,11 @@ impl Step for WriteInstructions {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct WriteInstructionsInput {
-    /// The crew role the agent fills: main, orchestrator, workers, reviewers or judge.
+    /// The crew role the agent fills: main, orchestrator, worker, reviewer or judge.
     pub role: String,
     /// The frame the agent reads before your instructions, so you needn't repeat it.
     pub frame: String,
-    /// What the agent would be told without you: the orchestrator's words, or Argonauts' own
+    /// What the agent would be told without you: the orchestrator's words, or Argonauts Code's own
     /// instructions for the step.
     pub draft: String,
 }

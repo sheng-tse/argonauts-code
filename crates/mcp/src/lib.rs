@@ -1,6 +1,6 @@
-//! The Argonauts MCP servers, over stdio. `argonauts mcp serve` lets you or a front end start
-//! and watch runs; it holds only a `ConductorApi`, so it can ask for a decision but never grant
-//! one. `argonauts mcp session` gives each agent session its read-only status tool and, for a
+//! The Argonauts Code MCP servers, over stdio. `argonauts mcp serve` lets you or an outside agent
+//! start and watch runs; it holds only a `ConductorApi`, so it can ask for a decision but never
+//! grant one. `argonauts mcp session` gives each agent session its read-only status tool and, for a
 //! step with an output schema, its report tool.
 
 use std::fmt;
@@ -23,30 +23,30 @@ pub(crate) fn tool_list(tools: Vec<rmcp::model::Tool>) -> rmcp::model::ListTools
 }
 
 /// Lets you start and watch runs from inside another agent. `ConductorApi` can't answer a
-/// checkpoint, so this server can ask for a decision but never grant one. It always refuses to
-/// start, since the default options count the repo as untrusted. Front ends and the CLI pass
+/// approval, so this server can ask for a decision but never grant one. It always refuses to
+/// start, since the default options count the repo as untrusted. Outside agents and the CLI pass
 /// the repo's real settings and trust through [`serve_user_with`].
 pub async fn serve_user(api: Arc<dyn ConductorApi>) -> anyhow::Result<()> {
-    serve_user_with(api, FrontEndOptions::default()).await
+    serve_user_with(api, OutsideAgentOptions::default()).await
 }
 
-/// What a front end such as Hermes or OpenClaw may do through [`serve_user_with`].
+/// What an outside agent such as Hermes or OpenClaw may do through [`serve_user_with`].
 #[derive(Clone, Default)]
-pub struct FrontEndOptions {
+pub struct OutsideAgentOptions {
     /// `mcp.*` as resolved for the repo at start. The server never raises any of it.
     pub mcp: McpSettings,
-    /// The repo was set up with `argonauts init` and you trusted its settings. The server
+    /// The repo was set up with `argonauts setup` and you trusted its settings. The server
     /// refuses to start otherwise.
     pub repo_trusted: bool,
-    /// Rereads both while the server runs, since a front end may keep it for days. Each tool
+    /// Rereads both while the server runs, since an outside agent may keep it for days. Each tool
     /// call and tool list uses the stricter of the start values and the current ones, and
     /// refuses everything once the repo isn't trusted. Without it the start values hold.
-    pub reload: Option<FrontEndReloader>,
+    pub reload: Option<OutsideAgentReloader>,
 }
 
-impl fmt::Debug for FrontEndOptions {
+impl fmt::Debug for OutsideAgentOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FrontEndOptions")
+        f.debug_struct("OutsideAgentOptions")
             .field("mcp", &self.mcp)
             .field("repo_trusted", &self.repo_trusted)
             .field("reload", &self.reload.is_some())
@@ -57,20 +57,20 @@ impl fmt::Debug for FrontEndOptions {
 /// Reads `mcp.*` and the repo's trust as they are now. `None` means the read failed, and the
 /// start values hold, so a reloader that can read the settings but not the trust should say
 /// the repo is untrusted.
-pub type FrontEndReloader = Arc<dyn Fn() -> Option<FrontEndSettings> + Send + Sync>;
+pub type OutsideAgentReloader = Arc<dyn Fn() -> Option<OutsideAgentSettings> + Send + Sync>;
 
-/// `mcp.*` and the repo's trust, as a [`FrontEndReloader`] reads them.
+/// `mcp.*` and the repo's trust, as an [`OutsideAgentReloader`] reads them.
 #[derive(Debug, Clone, PartialEq)]
-pub struct FrontEndSettings {
+pub struct OutsideAgentSettings {
     pub mcp: McpSettings,
     pub repo_trusted: bool,
 }
 
-/// [`serve_user`] for front ends: both MCP protocol generations, guidance and pause, long
+/// [`serve_user`] for outside agents: both MCP protocol generations, guidance and pause, long
 /// polling, and each run started with the client's name, `mcp.run_limit`, and the daily cap.
 pub async fn serve_user_with(
     api: Arc<dyn ConductorApi>,
-    options: FrontEndOptions,
+    options: OutsideAgentOptions,
 ) -> anyhow::Result<()> {
     let (stdin, stdout) = rmcp::transport::io::stdio();
     user::serve_on(api, options, stdin, stdout).await
@@ -117,7 +117,7 @@ pub struct AskTool {
     /// The main session's tools this session is offered, by name (see
     /// [`session::main_tools`]). A name nothing registers offers nothing.
     pub tools: Vec<String>,
-    /// Crew roles it may ask, each with a tool: `argonauts_ask_reviewers`, `argonauts_ask_judge`.
+    /// Crew roles it may ask, each with a tool: `argonauts_ask_reviewer`, `argonauts_ask_judge`.
     pub roles: Vec<argonauts_core::settings::crew::CrewRole>,
 }
 

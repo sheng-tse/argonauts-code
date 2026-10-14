@@ -1,5 +1,5 @@
 //! YAML to `Workflow`. The core types refuse unknown keys, so a misspelled rule fails to load
-//! instead of vanishing. serde-saphyr reads the untagged `Count` and `StepWorkers` and the
+//! instead of vanishing. serde-saphyr reads the untagged `Count` and `StepModels` and the
 //! JSON values of `params` straight from YAML, so there's no intermediate value.
 
 use argonauts_core::hash::{canonical_json, sha256_hex};

@@ -1,0 +1,16 @@
+ ╭ Review · 2 agents ───┬ review:due-flag ──────────────────────────────────────────────────────────────────────────╮
+ │   ✔ review:due-tests │ ✔ Done · GPT 5.6 Luna on Codex · reviewer · read-only                                     │
+ │ ❯ ✔ review:due-flag  │ 21.7k tok · 9 tool calls · 46s                                                            │
+ │                      │                                                                                           │
+ │                      │ Prompt · 6 lines · ⏎ expand                                                               │
+ │                      │   Review build:due-flag's change: the --due flag on todo add and todo list.               │
+ │                      │   … 5 more lines                                                                          │
+ │                      │ Activity · last 3 of 9 tool calls · ⏎ expand                                              │
+ │                      │   ⏺ Read(src/cli.js)                                                                      │
+ │                      │   ⏺ Bash(npm test -- --grep due)                                                          │
+ │                      │   ⏺ Read(test/cli.test.js)                                                                │
+ │                      │ Outcome · sent it back · 2 findings                                                       │
+ │                      │   high  src/cli.js:42  --due with no date isn't rejected                                  │
+ │                      │   low   src/cli.js:12  --help doesn't mention --due                                       │
+ ╰──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓ agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back · s save

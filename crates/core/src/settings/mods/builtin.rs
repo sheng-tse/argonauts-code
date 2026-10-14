@@ -5,9 +5,9 @@
 //! their files hold their own settings. They're listed with the rest, each with its own page.
 
 use super::{ModFile, check};
-use crate::settings::ui::WidgetName;
+use crate::settings::ui::ModName;
 
-/// A mod that ships with Argonauts.
+/// A mod that ships with Argonauts Code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Builtin {
     pub name: &'static str,
@@ -29,28 +29,28 @@ pub enum BuiltinKind {
 
 /// The README `/setup` writes into `mods/`: every field, each body with a picture, the JSON a
 /// command prints, and how to check a mod. `{version}` stands where the version goes.
-pub const README: &str = include_str!("files/mods.readme.md");
+pub const README: &str = crate::template!("mods/README.md");
 
 pub const BOTTOM_LINE: &str = "bottom-line";
 pub const STATS: &str = "stats";
 
 pub const BUILTIN: &[Builtin] = &[
-    card("context", include_str!("files/context.toml")),
-    card("plan-usage", include_str!("files/plan-usage.toml")),
-    card("spend", include_str!("files/spend.toml")),
-    card("tokens", include_str!("files/tokens.toml")),
-    card("runs", include_str!("files/runs.toml")),
-    card("waiting", include_str!("files/waiting.toml")),
+    card("context", crate::template!("mods/context.toml")),
+    card("plan-usage", crate::template!("mods/plan-usage.toml")),
+    card("spend", crate::template!("mods/spend.toml")),
+    card("tokens", crate::template!("mods/tokens.toml")),
+    card("runs", crate::template!("mods/runs.toml")),
+    card("waiting", crate::template!("mods/waiting.toml")),
     Builtin {
         name: STATS,
-        text: include_str!("files/stats.toml"),
+        text: crate::template!("mods/stats.toml"),
         kind: BuiltinKind::Own {
             about: "what the crew did, per CLI and model and all together",
         },
     },
     Builtin {
         name: BOTTOM_LINE,
-        text: include_str!("files/bottom-line.toml"),
+        text: crate::template!("mods/bottom-line.toml"),
         kind: BuiltinKind::Own {
             about: "the line under the input: its parts, their order and their side",
         },
@@ -62,18 +62,18 @@ pub const BUILTIN: &[Builtin] = &[
 /// JSON. The built-in cards draw from settings of their own, so `/setup` writes only the
 /// others ([`is_written_by_setup`]).
 pub const STARTERS: &[(&str, &str)] = &[
-    ("context", include_str!("files/context.toml")),
-    ("plan-usage", include_str!("files/plan-usage.toml")),
-    (STATS, include_str!("files/stats.toml")),
-    (BOTTOM_LINE, include_str!("files/bottom-line.toml")),
-    ("branch", include_str!("files/branch.toml")),
-    ("checks", include_str!("files/checks.toml")),
+    ("context", crate::template!("mods/context.toml")),
+    ("plan-usage", crate::template!("mods/plan-usage.toml")),
+    (STATS, crate::template!("mods/stats.toml")),
+    (BOTTOM_LINE, crate::template!("mods/bottom-line.toml")),
+    ("branch", crate::template!("mods/branch.toml")),
+    ("checks", crate::template!("mods/checks.toml")),
 ];
 
 /// A program a starter's command names beside its file: the mod's name, the program's file
 /// name, and its text. It prints nothing until you put your numbers in.
 pub const STARTER_PROGRAMS: &[(&str, &str, &str)] =
-    &[("checks", "checks.sh", include_str!("files/checks.sh"))];
+    &[("checks", "checks.sh", crate::template!("mods/checks.sh"))];
 
 const fn card(name: &'static str, text: &'static str) -> Builtin {
     Builtin {
@@ -92,9 +92,9 @@ pub fn is_builtin(name: &str) -> bool {
 }
 
 /// The card of the closed list that a built-in mod's name stands for. The band above the
-/// input and the Overview's tabs draw those cards themselves, where the place lists in your
+/// input and the usage panel's tabs draw those cards themselves, where the place lists in your
 /// settings say.
-pub fn closed_card(name: &str) -> Option<WidgetName> {
+pub fn closed_card(name: &str) -> Option<ModName> {
     let is_card = matches!(
         builtin(name),
         Some(Builtin {
@@ -102,7 +102,7 @@ pub fn closed_card(name: &str) -> Option<WidgetName> {
             ..
         })
     );
-    WidgetName::from_name(name).filter(|_| is_card)
+    ModName::from_name(name).filter(|_| is_card)
 }
 
 /// Whether `/setup` writes the starter `name`: a built-in card's file would change nothing on
@@ -112,8 +112,8 @@ pub fn is_written_by_setup(name: &str) -> bool {
 }
 
 /// The built-in mod a card of the closed list is, by the mod's name: `plan-usage` for the card
-/// the lists call `quota`.
-pub fn mod_of_card(card: WidgetName) -> Option<&'static str> {
+/// the lists call `plan_usage`.
+pub fn mod_of_card(card: ModName) -> Option<&'static str> {
     BUILTIN
         .iter()
         .map(|builtin| builtin.name)

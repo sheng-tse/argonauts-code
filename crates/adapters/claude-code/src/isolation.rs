@@ -1,4 +1,4 @@
-//! What an isolated session keeps out: your plugins and their mods, your hooks, and the skills
+//! What an isolated session keeps out: your plugins, your hooks, and the skills
 //! and plugins synced from your claude.ai account. `--setting-sources user` still loads all of
 //! them, so the session's settings turn each one off, and its `init` line is checked.
 
@@ -37,7 +37,7 @@ const BUILTIN_MARKETPLACE: &str = "builtin";
 pub const SYNCED_SKILLS: &str = "anthropic-skills";
 
 /// Where the session's Claude Code keeps your settings: `CLAUDE_CONFIG_DIR` when the session
-/// or Argonauts has one, else `~/.claude`.
+/// or Argonauts Code has one, else `~/.claude`.
 pub fn config_dir(req: &SessionRequest) -> Option<PathBuf> {
     req.env_set
         .iter()

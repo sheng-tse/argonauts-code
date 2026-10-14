@@ -1,6 +1,6 @@
 //! Every key is rebindable under `ui.keymap`, by action name. Layers are checked in order:
-//! overlay, card, popup, composer, then global. A key no bound action takes goes to the
-//! focused part's own keys, such as a card's option letters or the composer's editing keys.
+//! overlay, question, popup, composer, then global. A key no bound action takes goes to the
+//! focused part's own keys, such as a question's option letters or the composer's editing keys.
 //! A binding may be two keys in a row, written with a space, such as `ctrl+x ctrl+s`: after
 //! the first, the next key within [`CHORD_WAIT`] completes it.
 
@@ -9,7 +9,7 @@ use std::fmt;
 
 use std::time::Duration;
 
-use argonauts_core::settings::ui::WidgetName;
+use argonauts_core::settings::ui::ModName;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// How long the first key of a two-key binding waits for the second, as Claude Code waits after
@@ -19,7 +19,7 @@ pub const CHORD_WAIT: Duration = Duration::from_millis(1500);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Layer {
     Overlay,
-    Card,
+    Question,
     Popup,
     Composer,
     Global,
@@ -28,7 +28,7 @@ pub enum Layer {
 impl Layer {
     pub const ORDER: [Layer; 5] = [
         Layer::Overlay,
-        Layer::Card,
+        Layer::Question,
         Layer::Popup,
         Layer::Composer,
         Layer::Global,
@@ -47,13 +47,13 @@ pub enum Action {
     Transcript,
     WorkflowView,
     Editor,
-    CrewView,
+    AgentPanelView,
     AgentPanel,
     HistorySearch,
     Shortcuts,
     TakeBack,
-    /// Gives a waiting card the keys, on an empty prompt.
-    FocusCard,
+    /// Gives a waiting question the keys, on an empty prompt.
+    FocusQuestion,
     /// What you sent Claude Code while it works goes to the model now.
     SendNow,
     /// Ignores the word `ultracode` in the prompt being typed, or brings it back.
@@ -63,16 +63,16 @@ pub enum Action {
     StopAgents,
     /// Opens the most recent artifact in the browser, as Claude Code's `app:openArtifact`.
     OpenArtifact,
-    /// Gives the band above the input the keys: its widgets, then the heads-up.
+    /// Gives the band above the input the keys: its mods, then the notice.
     AboveInputFocus,
     /// Hides or shows the band above the input, for this session.
     AboveInputToggle,
-    /// Shows or hides one widget above the input.
-    Widget(WidgetName),
+    /// Shows or hides one mod above the input.
+    Mod(ModName),
 }
 
 impl Action {
-    /// Every action, the widgets' last.
+    /// Every action, the mods' last.
     pub fn all() -> impl Iterator<Item = Action> {
         [
             Action::Submit,
@@ -84,12 +84,12 @@ impl Action {
             Action::Transcript,
             Action::WorkflowView,
             Action::Editor,
-            Action::CrewView,
+            Action::AgentPanelView,
             Action::AgentPanel,
             Action::HistorySearch,
             Action::Shortcuts,
             Action::TakeBack,
-            Action::FocusCard,
+            Action::FocusQuestion,
             Action::SendNow,
             Action::WorkflowKeywordToggle,
             Action::StopAgents,
@@ -98,7 +98,7 @@ impl Action {
             Action::AboveInputToggle,
         ]
         .into_iter()
-        .chain(WidgetName::ALL.map(Action::Widget))
+        .chain(ModName::ALL.map(Action::Mod))
     }
 
     /// The key under `ui.keymap`.
@@ -113,30 +113,24 @@ impl Action {
             Action::Transcript => "transcript",
             Action::WorkflowView => "workflow_view",
             Action::Editor => "editor",
-            Action::CrewView => "crew_view",
+            Action::AgentPanelView => "agent_panel_view",
             Action::AgentPanel => "agent_panel",
             Action::HistorySearch => "history_search",
             Action::Shortcuts => "shortcuts",
             Action::TakeBack => "take_back",
-            Action::FocusCard => "focus_question",
+            Action::FocusQuestion => "focus_question",
             Action::SendNow => "send_now",
             Action::WorkflowKeywordToggle => "workflow_keyword_toggle",
             Action::StopAgents => "stop_agents",
             Action::OpenArtifact => "open_artifact",
             Action::AboveInputFocus => "above_input_focus",
             Action::AboveInputToggle => "above_input_toggle",
-            Action::Widget(widget) => widget_action(widget),
+            Action::Mod(the_mod) => mod_action(the_mod),
         }
     }
 
     pub fn from_name(name: &str) -> Option<Self> {
         let name = name.trim().replace('-', "_");
-        // The band above the input was the heads-up's alone before widgets joined it.
-        let name = match name.as_str() {
-            "heads_up_focus" => "above_input_focus",
-            "heads_up_toggle" => "above_input_toggle",
-            other => other,
-        };
         Self::all().find(|action| action.name() == name)
     }
 
@@ -152,20 +146,20 @@ impl Action {
             Action::Transcript => "detailed transcript",
             Action::WorkflowView => "workflow view",
             Action::Editor => "edit the prompt in $EDITOR",
-            Action::CrewView => "crew view, on an empty prompt",
+            Action::AgentPanelView => "agent panel, on an empty prompt",
             Action::AgentPanel => "agent panel, on an empty prompt",
             Action::HistorySearch => "search prompt history",
             Action::Shortcuts => "shortcuts, on an empty prompt",
             Action::TakeBack => "take queued messages back",
-            Action::FocusCard => "answer a waiting question",
+            Action::FocusQuestion => "answer a waiting question",
             Action::SendNow => "send waiting messages to Claude Code now",
             Action::WorkflowKeywordToggle => "ignore the word ultracode in this prompt, or undo",
             Action::StopAgents => "stop every background agent, twice to confirm",
             Action::OpenArtifact => "open the most recent artifact in the browser",
-            Action::AboveInputFocus => "move to the mods and heads-up above the input",
+            Action::AboveInputFocus => "move to the mods and the notice above the input",
             Action::AboveInputToggle => "hide or show everything above the input",
-            Action::Widget(widget) => {
-                let words = widget.name().replace('-', " ");
+            Action::Mod(the_mod) => {
+                let words = the_mod.name().replace('-', " ");
                 return format!("show or hide {words} above the input");
             }
         };
@@ -185,11 +179,11 @@ impl Action {
             Action::Transcript => Some("for the transcript"),
             Action::WorkflowView => Some("for workflows"),
             Action::Editor => Some("to edit in $EDITOR"),
-            Action::CrewView => Some("for the crew"),
+            Action::AgentPanelView => Some("for the crew"),
             Action::AgentPanel => Some("for agents"),
             Action::HistorySearch => Some("for history"),
             Action::TakeBack => Some("to edit queued"),
-            Action::FocusCard => Some("to answer"),
+            Action::FocusQuestion => Some("to answer"),
             // Shown where they work, under your queued messages, in the agent list, and above
             // the input.
             Action::SendNow
@@ -198,7 +192,7 @@ impl Action {
             | Action::OpenArtifact
             | Action::AboveInputFocus
             | Action::AboveInputToggle
-            | Action::Widget(_) => None,
+            | Action::Mod(_) => None,
         }
     }
 
@@ -223,46 +217,46 @@ impl Action {
             Action::Transcript => &["ctrl+o"],
             Action::WorkflowView => &["ctrl+t"],
             Action::Editor => &["ctrl+g", "ctrl+x ctrl+e"],
-            Action::CrewView => &["left"],
+            Action::AgentPanelView => &["left"],
             Action::AgentPanel => &["down"],
             Action::HistorySearch => &["ctrl+r"],
             Action::Shortcuts => &["?"],
             Action::TakeBack => &["up"],
-            Action::FocusCard => &["tab", "up"],
+            Action::FocusQuestion => &["tab", "up"],
             Action::SendNow => &["ctrl+enter", "ctrl+x ctrl+s"],
             Action::WorkflowKeywordToggle => &["alt+w"],
             Action::StopAgents => &["ctrl+x ctrl+k"],
             Action::OpenArtifact => &["ctrl+]"],
             Action::AboveInputFocus => &["ctrl+x tab"],
             Action::AboveInputToggle => &["ctrl+x ctrl+a"],
-            Action::Widget(WidgetName::Context) => &["ctrl+x c"],
-            Action::Widget(WidgetName::Quota) => &["ctrl+x q"],
-            Action::Widget(WidgetName::Budget) => &["ctrl+x b"],
-            Action::Widget(_) => &[],
+            Action::Mod(ModName::Context) => &["ctrl+x c"],
+            Action::Mod(ModName::PlanUsage) => &["ctrl+x q"],
+            Action::Mod(ModName::RunLimits) => &["ctrl+x b"],
+            Action::Mod(_) => &[],
         }
     }
 }
 
 /// `mod_<name>`, the action's name under `ui.keymap`.
-fn widget_action(widget: WidgetName) -> &'static str {
-    match widget {
-        WidgetName::Context => "mod_context",
-        WidgetName::Sessions => "mod_sessions",
-        WidgetName::Quota => "mod_plan_usage",
-        WidgetName::Budget => "mod_run_limits",
-        WidgetName::Tasks => "mod_tasks",
-        WidgetName::Limits => "mod_limits",
-        WidgetName::Spend => "mod_spend",
-        WidgetName::Tokens => "mod_tokens",
-        WidgetName::History => "mod_history",
-        WidgetName::Runs => "mod_runs",
-        WidgetName::Stats => "mod_stats",
-        WidgetName::Run => "mod_run",
-        WidgetName::Waiting => "mod_waiting",
-        WidgetName::Recent => "mod_recent",
-        WidgetName::Agent => "mod_agent",
-        WidgetName::Narrator => "mod_narrator",
-        WidgetName::Receipt => "mod_receipt",
+fn mod_action(the_mod: ModName) -> &'static str {
+    match the_mod {
+        ModName::Context => "mod_context",
+        ModName::Sessions => "mod_sessions",
+        ModName::PlanUsage => "mod_plan_usage",
+        ModName::RunLimits => "mod_run_limits",
+        ModName::Tasks => "mod_tasks",
+        ModName::Limits => "mod_limits",
+        ModName::Spend => "mod_spend",
+        ModName::Tokens => "mod_tokens",
+        ModName::History => "mod_history",
+        ModName::Runs => "mod_runs",
+        ModName::Stats => "mod_stats",
+        ModName::Run => "mod_run",
+        ModName::Waiting => "mod_waiting",
+        ModName::Recent => "mod_recent",
+        ModName::Agent => "mod_agent",
+        ModName::Narrator => "mod_narrator",
+        ModName::Receipt => "mod_receipt",
     }
 }
 
@@ -686,12 +680,12 @@ mod tests {
         let ctrl_left = key(KeyCode::Left, KeyModifiers::CONTROL);
         assert_eq!(
             keymap.action_for(Layer::Global, &left),
-            Some(Action::CrewView)
+            Some(Action::AgentPanelView)
         );
         assert_eq!(keymap.action_for(Layer::Global, &ctrl_left), None);
 
         let overrides = BTreeMap::from([
-            ("crew_view".to_owned(), "ctrl+left".to_owned()),
+            ("agent_panel_view".to_owned(), "ctrl+left".to_owned()),
             // Steals ↓ from the agent panel.
             ("take-back".to_owned(), "Down".to_owned()),
             ("clear_or_exit".to_owned(), "ctrl+c, ctrl+q".to_owned()),
@@ -700,14 +694,17 @@ mod tests {
         assert_eq!(keymap.action_for(Layer::Global, &left), None);
         assert_eq!(
             keymap.action_for(Layer::Global, &ctrl_left),
-            Some(Action::CrewView)
+            Some(Action::AgentPanelView)
         );
         let down = key(KeyCode::Down, KeyModifiers::NONE);
         assert_eq!(keymap.actions_for(Layer::Global, &down), [Action::TakeBack]);
         assert!(keymap.keys(Action::AgentPanel).is_empty());
-        // ↑ still gives a card the keys.
+        // ↑ still gives a question the keys.
         let up = key(KeyCode::Up, KeyModifiers::NONE);
-        assert_eq!(keymap.actions_for(Layer::Global, &up), [Action::FocusCard]);
+        assert_eq!(
+            keymap.actions_for(Layer::Global, &up),
+            [Action::FocusQuestion]
+        );
         let ctrl_q = key(KeyCode::Char('q'), KeyModifiers::CONTROL);
         assert!(keymap.is(Action::ClearOrExit, &ctrl_q));
         // Layers keep their own keys: the composer's Enter isn't a global key.
@@ -820,38 +817,34 @@ mod tests {
     }
 
     #[test]
-    fn the_band_keeps_the_heads_up_names_and_each_widget_has_its_own() {
+    fn the_band_has_its_own_names_and_each_mod_has_its_own() {
         assert_eq!(
-            Action::from_name("heads_up_toggle"),
-            Some(Action::AboveInputToggle)
-        );
-        assert_eq!(
-            Action::from_name("heads-up-focus"),
+            Action::from_name("above-input-focus"),
             Some(Action::AboveInputFocus)
         );
         assert_eq!(Action::AboveInputToggle.name(), "above_input_toggle");
-        for widget in WidgetName::ALL {
-            let name = format!("mod_{widget}");
-            assert_eq!(Action::from_name(&name), Some(Action::Widget(widget)));
+        for the_mod in ModName::ALL {
+            let name = format!("mod_{the_mod}");
+            assert_eq!(Action::from_name(&name), Some(Action::Mod(the_mod)));
         }
 
         let ctrl = |c| key(KeyCode::Char(c), KeyModifiers::CONTROL);
         let plain = |c| key(KeyCode::Char(c), KeyModifiers::NONE);
         let keymap = Keymap::default();
-        for (c, widget) in [
-            ('c', WidgetName::Context),
-            ('q', WidgetName::Quota),
-            ('b', WidgetName::Budget),
+        for (c, the_mod) in [
+            ('c', ModName::Context),
+            ('q', ModName::PlanUsage),
+            ('b', ModName::RunLimits),
         ] {
             assert_eq!(
                 keymap.chord_actions(Layer::Global, "ctrl+x", &plain(c)),
-                [Action::Widget(widget)]
+                [Action::Mod(the_mod)]
             );
         }
 
-        // An old name in your settings still rebinds, and any widget can take a key.
+        // The band's name rebinds it, and any mod can take a key.
         let overrides = BTreeMap::from([
-            ("heads_up_toggle".to_owned(), "ctrl+x h".to_owned()),
+            ("above_input_toggle".to_owned(), "ctrl+x h".to_owned()),
             ("mod_sessions".to_owned(), "ctrl+x s".to_owned()),
         ]);
         let keymap = Keymap::from_settings(&overrides).unwrap();
@@ -863,7 +856,7 @@ mod tests {
         );
         assert_eq!(
             keymap.chord_actions(Layer::Global, "ctrl+x", &plain('s')),
-            [Action::Widget(WidgetName::Sessions)]
+            [Action::Mod(ModName::Sessions)]
         );
     }
 
@@ -872,13 +865,13 @@ mod tests {
         let keymap = Keymap::default();
         for action in Action::all() {
             assert_eq!(Action::from_name(action.name()), Some(action));
-            // Only a few widgets come bound.
+            // Only a few mods come bound, and the rest have a name and no key.
             let unbound = matches!(
                 action,
-                Action::Widget(widget)
+                Action::Mod(the_mod)
                     if !matches!(
-                        widget,
-                        WidgetName::Context | WidgetName::Quota | WidgetName::Budget
+                        the_mod,
+                        ModName::Context | ModName::PlanUsage | ModName::RunLimits
                     )
             );
             assert_eq!(keymap.keys(action).is_empty(), unbound, "{action}");

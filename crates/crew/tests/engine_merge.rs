@@ -1,6 +1,6 @@
-//! The merge step: main merged in when it moved, the final check, the merge checkpoint, landing
-//! by your answer, and the merge rule for cards with quality debt. Each test runs the step on a
-//! real temp repo through the engine's `Host` and answers its checkpoint as you would.
+//! The merge step: main merged in when it moved, the final check, the merge approval, landing
+//! by your answer, and the merge rule for tasks with quality debt. Each test runs the step on a
+//! real temp repo through the engine's `Host` and answers its approval as you would.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,106 +12,108 @@ use serde_json::json;
 use time::macros::datetime;
 use tokio::sync::mpsc;
 
-use argonauts_core::api::CheckpointAnswer;
+use argonauts_core::api::ApprovalAnswer;
 use argonauts_core::engine::{EngineCommand, RepoContext};
-use argonauts_core::events::card::{
-    CardBudget, CardEvent, CardKind, CardSpec, CardState, IntegrationEvent,
-};
-use argonauts_core::events::checkpoint::{
-    AnswerAction, CheckpointDecided, CheckpointEvent, CheckpointKind, CheckpointOpened,
-    CheckpointPacket, FreeText, PlanPacket,
+use argonauts_core::events::agent_status::AgentStatusEvent;
+use argonauts_core::events::approval::{
+    AnswerAction, ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
+    FreeText, PlanPacket,
 };
 use argonauts_core::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
-use argonauts_core::events::plan::{BudgetPlan, TaskGraph};
+use argonauts_core::events::plan::{LimitPlan, TaskGraph};
 use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunOutcome, RunStarted};
-use argonauts_core::events::shared::RetroEvent;
-use argonauts_core::events::vendor::VendorEvent;
+use argonauts_core::events::session::EndReason;
+use argonauts_core::events::shared::RunReviewEvent;
+use argonauts_core::events::task::{
+    CheckKind, CheckOutcome, MergeEvent, TaskEvent, TaskKind, TaskLimit, TaskSpec, TaskState,
+};
 use argonauts_core::events::workflow::{StepStarted, WorkflowEvent, WorkflowStarted};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::handoff::QualityDebt;
-use argonauts_core::limits::{HealthState, VendorHealth};
-use argonauts_core::names::{CheckpointId, RoleName, WorkerRef, WorkflowId};
+use argonauts_core::fallback::QualityDebt;
+use argonauts_core::limits::{AgentHealth, HealthState};
+use argonauts_core::names::{ApprovalId, ModelRef, RoleName, WorkflowId};
 use argonauts_core::policy::{HardLimit, PolicyOutcome, Verdict};
-use argonauts_core::settings::Settings;
+use argonauts_core::session_runner::Access;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
-use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
 use argonauts_core::settings::delivery::{DeliveryCommits, DeliveryWrite, UnbornLanding};
-use argonauts_core::settings::handoff::{MergeRule, UnknownTier};
-use argonauts_core::settings::protocol::GateCommand;
+use argonauts_core::settings::fallback::{MergeRule, Retry, UnknownTier};
+use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
+use argonauts_core::settings::protocol::CheckCommand;
+use argonauts_core::settings::{Settings, Span};
 use argonauts_core::steps::StepName;
-use argonauts_core::steps::card::{CardReport, MemoryProposal, ReportStatus};
-use argonauts_core::worker::Access;
+use argonauts_core::steps::task::{MemoryProposal, ReportStatus, TaskReport};
 use argonauts_core::workflow::{StandardPhase, Step, StepKind, StepRef, Workflow};
-use argonauts_core::{CardId, RepoId, RunId, unborn};
-use argonauts_crew::checkpoints;
+use argonauts_core::{RepoId, RunId, TaskId, unborn};
+use argonauts_crew::approvals;
 use argonauts_crew::engine::host::Host;
 use argonauts_crew::engine::shared::Shared;
 use argonauts_crew::error::EngineError;
-use argonauts_crew::integrate::in_the_way::{MERGE_LATER, MOVE_ASIDE, TRY_AGAIN};
-use argonauts_crew::integrate::{branch, final_check, merge};
-use argonauts_crew::retro;
+use argonauts_crew::merge::in_the_way::{MERGE_LATER, MOVE_ASIDE, TRY_AGAIN};
+use argonauts_crew::merge::step::merge_step;
+use argonauts_crew::merge::{branch, final_check};
+use argonauts_crew::run_review;
 use argonauts_crew::state::RunState;
 use argonauts_crew::workflow::{Flow, StepAt, StepCall, StepDone};
 use argonauts_testkit::repo::TempRepo;
+use argonauts_testkit::runner::{FakeRunner, FakeSession};
 use argonauts_testkit::services::{FakeServices, MemorySink, TEST_RUN, engine_context_in};
-use argonauts_testkit::worker::{FakeSession, FakeWorker};
 
 const OPUS: &str = "claude-code/opus";
 const CODEX: &str = "codex/gpt-5.6";
 const GEMINI: &str = "agy/gemini-3";
-/// The card's ring reviewer, of another family than its planned owner.
+/// The task's ring reviewer, of another provider than its planned worker.
 const AGY: &str = "agy/gemini-3.6";
-/// The merge agent. Each test that wants its answers adds it, so the other agents' answers
+/// The merger. Each test that wants its answers adds it, so the other agents' answers
 /// go to the sessions they were written for.
 const MERGER: &str = "opencode/merger";
 
-fn worker(name: &str) -> WorkerRef {
-    name.parse().expect("a valid worker")
+fn worker(name: &str) -> ModelRef {
+    name.parse().expect("a valid model")
 }
 
-/// A crew run whose one card is integrated: the integration branch holds its work, and main is
+/// A crew run whose one task is merged: the run branch holds its work, and main is
 /// checked out in the repository.
 struct Bench {
     services: FakeServices,
     repo: TempRepo,
     host: Host,
     sink: Arc<MemorySink>,
-    integration: PathBuf,
+    run_tree: PathBuf,
     _commands: mpsc::Sender<EngineCommand>,
 }
 
 impl Bench {
     async fn new(debt: Option<QualityDebt>) -> anyhow::Result<Self> {
-        Self::with(vec![spec(&CardId::numbered(1))], debt, suite_settings()).await
+        Self::with(vec![spec(&TaskId::numbered(1))], debt, suite_settings()).await
     }
 
-    /// `cards` all integrated, in order, the first one with `debt`.
+    /// `tasks` all merged, in order, the first one with `debt`.
     async fn with(
-        cards: Vec<CardSpec>,
+        tasks: Vec<TaskSpec>,
         debt: Option<QualityDebt>,
         settings: Settings,
     ) -> anyhow::Result<Self> {
-        Self::with_work(cards, debt, settings, &[]).await
+        Self::with_work(tasks, debt, settings, &[]).await
     }
 
-    /// As [`Bench::with`], with `files` beside the first card's work. The engine's own git
+    /// As [`Bench::with`], with `files` beside the first task's work. The engine's own git
     /// commits them, so the leave-out settings decide what goes in.
     async fn with_work(
-        cards: Vec<CardSpec>,
+        tasks: Vec<TaskSpec>,
         debt: Option<QualityDebt>,
         settings: Settings,
         files: &[(&str, &str)],
     ) -> anyhow::Result<Self> {
         let repo = TempRepo::new()?;
         let base = repo.head()?;
-        Self::in_repo(repo, &base, cards, debt, settings, files).await
+        Self::in_repo(repo, &base, tasks, debt, settings, files).await
     }
 
     /// As [`Bench::with_work`], for a run that started from `base` in `repo`.
     async fn in_repo(
         repo: TempRepo,
         base: &str,
-        cards: Vec<CardSpec>,
+        tasks: Vec<TaskSpec>,
         debt: Option<QualityDebt>,
         settings: Settings,
         files: &[(&str, &str)],
@@ -127,82 +129,82 @@ impl Bench {
         };
         let mut history = vec![
             (None, started(&repo, base)),
-            (None, goal_approved()?),
-            (None, plan_opened(&cards)),
+            (None, understood()?),
+            (None, plan_opened(&tasks)),
             (None, plan_approved()),
             (None, workflow_started()?),
             (None, merge_step_started()),
         ];
-        for card in &cards {
-            let id = Some(card.id.clone());
+        for task in &tasks {
+            let id = Some(task.id.clone());
             history.push((
                 id.clone(),
-                RunEventKind::Card(CardEvent::Created(Box::new(card.clone()))),
+                RunEventKind::Task(TaskEvent::Created(Box::new(task.clone()))),
             ));
             history.push((
                 id,
-                RunEventKind::Card(CardEvent::State {
+                RunEventKind::Task(TaskEvent::State {
                     from: None,
-                    to: CardState::Integrated,
+                    to: TaskState::Merged,
                     reason: "merged and tested".to_owned(),
                 }),
             ));
         }
-        if let (Some(debt), Some(card)) = (debt, cards.first()) {
-            let card = card.id.clone();
+        if let (Some(debt), Some(task)) = (debt, tasks.first()) {
+            let task = task.id.clone();
             history.push((
-                Some(card.clone()),
-                RunEventKind::Card(CardEvent::Reassigned {
+                Some(task.clone()),
+                RunEventKind::Task(TaskEvent::Reassigned {
                     from: Some(worker(OPUS)),
                     to: debt.by.clone(),
                     by: Party::Rules,
                     rule_override: None,
                 }),
             ));
-            history.push((Some(card), RunEventKind::Card(CardEvent::QualityDebt(debt))));
+            history.push((Some(task), RunEventKind::Task(TaskEvent::QualityDebt(debt))));
         }
         let history: Vec<RunEvent> = history
             .into_iter()
             .zip(0..)
-            .map(|((card, kind), seq)| event(seq, card, kind))
+            .map(|((task, kind), seq)| event(seq, task, kind))
             .collect();
         let (context, sink, commands) =
             engine_context_in(&services, settings, layout, history.clone());
         let shared = Shared::new(&context, RunState::fold(&history))?;
         let host = Host::new(Arc::new(shared));
 
-        // Each card's work, merged into the integration branch as the conductor does.
-        let integration = branch::ensure_integration(&host).await?;
-        for (i, card) in cards.iter().enumerate() {
+        // Each task's work, merged into the run branch as Argonauts Code does.
+        let run_tree = branch::ensure_run_branch(&host).await?;
+        for (i, task) in tasks.iter().enumerate() {
             let (file, text) = if i == 0 {
                 ("store.rs".to_owned(), "fn store() {}\n".to_owned())
             } else {
-                (format!("{}.rs", card.id), format!("// {}\n", card.id))
+                (format!("{}.rs", task.id), format!("// {}\n", task.id))
             };
-            let message = format!("Merge {}", card.id);
+            let message = format!("Merge {}", task.id);
             if i == 0 && !files.is_empty() {
-                std::fs::write(integration.join(&file), &text)?;
+                std::fs::write(run_tree.join(&file), &text)?;
                 for (path, text) in files {
-                    let path = integration.join(path);
+                    let path = run_tree.join(path);
                     if let Some(folder) = path.parent() {
                         std::fs::create_dir_all(folder)?;
                     }
                     std::fs::write(path, text)?;
                 }
                 host.git()
-                    .commit_work(&integration, &message)
+                    .commit_work(&run_tree, &message)
                     .await?
                     .sha
                     .context("nothing to commit")?;
             } else {
-                commit_in(&repo, &integration, &file, &text, &message)?;
+                commit_in(&repo, &run_tree, &file, &text, &message)?;
             }
             host.record(
                 None,
                 None,
-                RunEventKind::Integration(IntegrationEvent::Merged {
-                    card: card.id.clone(),
-                    sha: git_in(&repo, &integration, &["rev-parse", "HEAD"])?,
+                RunEventKind::Merge(MergeEvent::Merged {
+                    task: task.id.clone(),
+                    sha: git_in(&repo, &run_tree, &["rev-parse", "HEAD"])?,
                 }),
             )?;
         }
@@ -211,21 +213,21 @@ impl Bench {
             repo,
             host,
             sink,
-            integration,
+            run_tree,
             _commands: commands,
         })
     }
 
-    fn integration_head(&self) -> anyhow::Result<String> {
-        git_in(&self.repo, &self.integration, &["rev-parse", "HEAD"])
+    fn run_head(&self) -> anyhow::Result<String> {
+        git_in(&self.repo, &self.run_tree, &["rev-parse", "HEAD"])
     }
 
     /// `rev` holds the run as it lands by default: the run's files, in one commit of its own
     /// with one parent, and none of the run's own commits or merges.
-    fn landed_on(&self, rev: &str) -> anyhow::Result<()> {
+    fn merged_into(&self, rev: &str) -> anyhow::Result<()> {
         let root = self.repo.root();
         let tree = |rev: &str| git_in(&self.repo, root, &["rev-parse", &format!("{rev}^{{tree}}")]);
-        let head = self.integration_head()?;
+        let head = self.run_head()?;
         anyhow::ensure!(
             tree(rev)? == tree(&head)?,
             "{rev} doesn't hold the run's files"
@@ -250,26 +252,26 @@ impl Bench {
         self.repo.commit_all(file)
     }
 
-    fn integration_events(&self) -> Vec<IntegrationEvent> {
+    fn merge_events(&self) -> Vec<MergeEvent> {
         self.sink
             .events()
             .into_iter()
             .filter_map(|event| match event.kind {
-                RunEventKind::Integration(event) => Some(event),
+                RunEventKind::Merge(event) => Some(event),
                 _ => None,
             })
             .collect()
     }
 
-    /// Waits for a merge checkpoint other than the ones in `seen`.
-    async fn next_merge_card(&self, seen: &[CheckpointId]) -> anyhow::Result<CheckpointOpened> {
+    /// Waits for a merge approval other than the ones in `seen`.
+    async fn next_merge_approval(&self, seen: &[ApprovalId]) -> anyhow::Result<ApprovalOpened> {
         for _ in 0..400 {
             let found = self.host.read(|state| {
                 state
-                    .checkpoints
+                    .approvals
                     .open()
                     .find(|record| {
-                        record.opened.kind == CheckpointKind::Merge
+                        record.opened.kind == ApprovalKind::Merge
                             && !seen.contains(&record.opened.id)
                     })
                     .map(|record| record.opened.clone())
@@ -282,13 +284,13 @@ impl Bench {
         bail!("no merge approval opened")
     }
 
-    /// Waits for an open "original is back" card.
-    async fn return_card(&self) -> anyhow::Result<CheckpointOpened> {
+    /// Waits for an open "original is back" question.
+    async fn return_approval(&self) -> anyhow::Result<ApprovalOpened> {
         for _ in 0..400 {
             let found = self.host.read(|state| {
                 state
-                    .checkpoints
-                    .open_for(CheckpointKind::OriginalReturned, Some(&CardId::numbered(1)))
+                    .approvals
+                    .open_for(ApprovalKind::OriginalReturned, Some(&TaskId::numbered(1)))
                     .map(|record| record.opened.clone())
             });
             if let Some(opened) = found {
@@ -299,10 +301,10 @@ impl Bench {
         bail!("no \"original is back\" question opened")
     }
 
-    /// The run saw `name`'s vendor go down, and the board has it healthy again.
+    /// The run saw `name`'s agent go down, and the board has it healthy again.
     fn out_and_back(&self, name: &str) -> anyhow::Result<()> {
-        let health = VendorHealth {
-            vendor: worker(name).vendor(),
+        let health = AgentHealth {
+            agent_id: worker(name).agent_id(),
             state: HealthState::Down,
             since: datetime!(2026-09-30 10:00 UTC),
             reason: Some("usage limit".to_owned()),
@@ -312,48 +314,48 @@ impl Bench {
         self.host.record(
             None,
             None,
-            RunEventKind::Vendor(VendorEvent::Health(health)),
+            RunEventKind::AgentStatus(AgentStatusEvent::Health(health)),
         )?;
         Ok(())
     }
 
-    fn answer(&self, opened: &CheckpointOpened, action: AnswerAction) -> anyhow::Result<()> {
+    fn answer(&self, opened: &ApprovalOpened, action: AnswerAction) -> anyhow::Result<()> {
         self.answer_with(opened, action, None, Vec::new())
     }
 
     fn answer_with(
         &self,
-        opened: &CheckpointOpened,
+        opened: &ApprovalOpened,
         action: AnswerAction,
         text: Option<&str>,
-        cards: Vec<CardId>,
+        tasks: Vec<TaskId>,
     ) -> anyhow::Result<()> {
-        checkpoints::answer(
+        approvals::answer(
             &self.host,
-            CheckpointAnswer {
+            ApprovalAnswer {
                 id: opened.id.clone(),
                 action,
                 text: text.map(str::to_owned),
                 evidence_sha256: opened.evidence_sha256.clone(),
-                cards,
+                tasks,
             },
         )
         .map_err(anyhow::Error::msg)
     }
 
-    /// Cards moved out of `Integrated`, in order.
-    fn sent_back(&self) -> Vec<CardId> {
+    /// Tasks moved out of `Merged`, in order.
+    fn sent_back(&self) -> Vec<TaskId> {
         self.sink
             .events()
             .into_iter()
-            .filter_map(|event| match (event.card_id, event.kind) {
+            .filter_map(|event| match (event.task_id, event.kind) {
                 (
-                    Some(card),
-                    RunEventKind::Card(CardEvent::State {
-                        from: Some(CardState::Integrated),
+                    Some(task),
+                    RunEventKind::Task(TaskEvent::State {
+                        from: Some(TaskState::Merged),
                         ..
                     }),
-                ) => Some(card),
+                ) => Some(task),
                 _ => None,
             })
             .collect()
@@ -368,9 +370,9 @@ impl Bench {
     }
 
     fn final_checks(&self) -> usize {
-        self.integration_events()
+        self.merge_events()
             .iter()
-            .filter(|event| matches!(event, IntegrationEvent::FinalCheck { .. }))
+            .filter(|event| matches!(event, MergeEvent::FinalCheck { .. }))
             .count()
     }
 
@@ -380,7 +382,7 @@ impl Bench {
         answering: impl std::future::Future<Output = anyhow::Result<()>>,
     ) -> anyhow::Result<StepDone> {
         let call = step_call()?;
-        let step = merge::merge_step(&self.host, &call);
+        let step = merge_step(&self.host, &call);
         let (done, answered) = tokio::join!(
             async { tokio::time::timeout(Duration::from_secs(20), step).await },
             answering
@@ -396,7 +398,7 @@ impl Bench {
 
 fn suite_settings() -> Settings {
     let mut settings = Settings::default();
-    settings.checks.full_suite = vec![GateCommand {
+    settings.checks.full_suite = vec![CheckCommand {
         name: "suite".to_owned(),
         command: vec!["true".to_owned()],
     }];
@@ -404,9 +406,9 @@ fn suite_settings() -> Settings {
     settings
 }
 
-/// An owner that writes `file` in its worktree and reports done.
-fn fixing_owner(name: &str, family: &str, file: &'static str) -> FakeWorker {
-    FakeWorker::harness(name, family).respond_with(move |spec| {
+/// A worker that writes `file` in its worktree and reports done.
+fn fixing_worker(name: &str, provider: &str, file: &'static str) -> FakeRunner {
+    FakeRunner::cli(name, provider).respond_with(move |spec| {
         let _ = std::fs::write(spec.workdir.join(file), "fixed\n");
         FakeSession::structured(json!({
             "status": "done", "summary": "made the change", "files_changed": [file],
@@ -417,9 +419,9 @@ fn fixing_owner(name: &str, family: &str, file: &'static str) -> FakeWorker {
 }
 
 /// A reviewer that gives `verdicts` in turn, then approves.
-fn reviewer(name: &str, family: &str, verdicts: &'static [&'static str]) -> FakeWorker {
+fn reviewer(name: &str, provider: &str, verdicts: &'static [&'static str]) -> FakeRunner {
     let given = AtomicUsize::new(0);
-    FakeWorker::harness(name, family).respond_with(move |_| {
+    FakeRunner::cli(name, provider).respond_with(move |_| {
         let turn = given.fetch_add(1, Ordering::SeqCst);
         let verdict = verdicts.get(turn).copied().unwrap_or("approve");
         FakeSession::structured(json!({
@@ -431,14 +433,14 @@ fn reviewer(name: &str, family: &str, verdicts: &'static [&'static str]) -> Fake
     })
 }
 
-fn event(seq: u64, card: Option<CardId>, kind: RunEventKind) -> RunEvent {
+fn event(seq: u64, task: Option<TaskId>, kind: RunEventKind) -> RunEvent {
     RunEvent {
         seq,
         ts: datetime!(2026-09-30 10:00 UTC),
         run_id: RunId::new(TEST_RUN).expect("the test run id"),
-        card_id: card,
+        task_id: task,
         session: None,
-        source: "conductor".to_owned(),
+        source: "argonauts-code".to_owned(),
         kind,
     }
 }
@@ -451,8 +453,8 @@ fn started(repo: &TempRepo, base: &str) -> RunEventKind {
         forced: true,
         workflow: "default".to_owned(),
         estimate: None,
-        triage: None,
-        chat_turn: None,
+        captain_or_crew: None,
+        conversation_turn: None,
         continues: None,
         repo_root: repo.root().to_path_buf(),
         base_branch: Some("main".to_owned()),
@@ -462,16 +464,16 @@ fn started(repo: &TempRepo, base: &str) -> RunEventKind {
         settings_sha256: String::new(),
         settings: serde_json::Value::Null,
         overrides: Vec::new(),
-        harness_versions: Default::default(),
+        cli_versions: Default::default(),
         version: "0.0.1".to_owned(),
-        front_end: None,
+        outside_agent: None,
         instructions: Vec::new(),
         required_steps: Vec::new(),
     })))
 }
 
-/// Owner sessions of cards sent back need the approved goal.
-fn goal_approved() -> anyhow::Result<RunEventKind> {
+/// Worker sessions of tasks sent back need the approved goal.
+fn understood() -> anyhow::Result<RunEventKind> {
     let file = GoalFile {
         run: RunId::new(TEST_RUN)?,
         version: 1,
@@ -481,7 +483,7 @@ fn goal_approved() -> anyhow::Result<RunEventKind> {
         out_of_scope: Vec::new(),
         assumptions: Vec::new(),
         answers: Vec::new(),
-        source: GoalSource::Restatements,
+        source: GoalSource::Readings,
         path: PathBuf::from(".argonauts/goal/run-01.md"),
         sha256: "0".repeat(64),
     };
@@ -491,26 +493,26 @@ fn goal_approved() -> anyhow::Result<RunEventKind> {
     }))
 }
 
-fn plan_opened(cards: &[CardSpec]) -> RunEventKind {
-    let plan = CheckpointOpened {
-        id: CheckpointId::numbered(1),
-        kind: CheckpointKind::Plan,
+fn plan_opened(tasks: &[TaskSpec]) -> RunEventKind {
+    let plan = ApprovalOpened {
+        id: ApprovalId::numbered(1),
+        kind: ApprovalKind::Plan,
         title: "Approve this plan?".to_owned(),
-        card: None,
-        packet: CheckpointPacket::Plan(Box::new(PlanPacket {
+        task: None,
+        packet: ApprovalPacket::Plan(Box::new(PlanPacket {
             summary: "The plan".to_owned(),
             judging: None,
             near_tie: false,
             decisions: Vec::new(),
             graph: TaskGraph {
-                cards: cards.to_vec(),
+                tasks: tasks.to_vec(),
                 critical_path: Vec::new(),
             },
             acceptance_tests: Vec::new(),
-            budget: BudgetPlan {
+            limit: LimitPlan {
                 lines: Vec::new(),
-                total: BudgetAmount {
-                    unit: BudgetUnit::Usd,
+                total: LimitAmount {
+                    unit: LimitUnit::Usd,
                     amount: 10.0,
                 },
                 estimate_low: 0.0,
@@ -527,18 +529,18 @@ fn plan_opened(cards: &[CardSpec]) -> RunEventKind {
         free_text: FreeText::None,
         needs_you: true,
     };
-    RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(plan)))
+    RunEventKind::Approval(ApprovalEvent::Opened(Box::new(plan)))
 }
 
 fn plan_approved() -> RunEventKind {
-    RunEventKind::Checkpoint(CheckpointEvent::Decided(CheckpointDecided {
-        id: CheckpointId::numbered(1),
+    RunEventKind::Approval(ApprovalEvent::Decided(ApprovalDecided {
+        id: ApprovalId::numbered(1),
         action: AnswerAction::Approve,
         text: None,
         by: Party::User,
         evidence_sha256: "0".repeat(64),
-        shadow: None,
-        cards: Vec::new(),
+        auto_preview: None,
+        tasks: Vec::new(),
     }))
 }
 
@@ -589,21 +591,21 @@ fn step_call() -> anyhow::Result<StepCall> {
     })
 }
 
-fn spec(card: &CardId) -> CardSpec {
-    CardSpec {
-        id: card.clone(),
+fn spec(task: &TaskId) -> TaskSpec {
+    TaskSpec {
+        id: task.clone(),
         title: "Redis store".to_owned(),
         task: "Build the Redis store".to_owned(),
-        kind: CardKind::Build,
+        kind: TaskKind::Build,
         owned_paths: Vec::new(),
         read_only_paths: Vec::new(),
         forbidden_paths: Vec::new(),
         hidden_paths: Vec::new(),
         depends_on: Vec::new(),
         criteria: Vec::new(),
-        owner: Some(worker(OPUS)),
+        worker: Some(worker(OPUS)),
         reviewers: vec![worker(AGY)],
-        budget: CardBudget::default(),
+        limit: TaskLimit::default(),
         predictions: None,
         item: None,
     }
@@ -638,7 +640,7 @@ fn commit_in(
     git_in(repo, dir, &["rev-parse", "HEAD"])
 }
 
-fn keys(opened: &CheckpointOpened) -> Vec<char> {
+fn keys(opened: &ApprovalOpened) -> Vec<char> {
     opened.options.iter().map(|option| option.key).collect()
 }
 
@@ -649,8 +651,8 @@ async fn main_moved_merged_in_and_rechecked() -> anyhow::Result<()> {
 
     let done = bench
         .run(async {
-            let opened = bench.next_merge_card(&[]).await?;
-            // The card asks its question by name; the run's id stays in the detail views.
+            let opened = bench.next_merge_approval(&[]).await?;
+            // The question names the branch it merges into; the run's id stays in the detail views.
             assert_eq!(opened.title, "Merge this run into main?");
             // Main moves again while the merge waits for you.
             bench.move_main("while-waiting.txt")?;
@@ -659,11 +661,11 @@ async fn main_moved_merged_in_and_rechecked() -> anyhow::Result<()> {
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
 
-    let events = bench.integration_events();
+    let events = bench.merge_events();
     let moved: Vec<&String> = events
         .iter()
         .filter_map(|event| match event {
-            IntegrationEvent::MainMoved { to, .. } => Some(to),
+            MergeEvent::MainMoved { to, .. } => Some(to),
             _ => None,
         })
         .collect();
@@ -671,37 +673,37 @@ async fn main_moved_merged_in_and_rechecked() -> anyhow::Result<()> {
     assert_eq!(moved[0], &moved_before);
     let merged_in = events
         .iter()
-        .filter(|event| matches!(event, IntegrationEvent::MainMergedIn { .. }))
+        .filter(|event| matches!(event, MergeEvent::MainMergedIn { .. }))
         .count();
     assert_eq!(merged_in, 2);
     let checks: Vec<bool> = events
         .iter()
         .filter_map(|event| match event {
-            IntegrationEvent::FinalCheck { passed } => Some(*passed),
+            MergeEvent::FinalCheck { passed } => Some(*passed),
             _ => None,
         })
         .collect();
     assert_eq!(checks, [true, true], "the suite ran again on the new main");
 
     // The run's own diff didn't change, so the approval carried over and main fast-forwarded.
-    bench.landed_on("HEAD")?;
+    bench.merged_into("HEAD")?;
     for file in ["store.rs", "before.txt", "while-waiting.txt"] {
         assert!(bench.repo.root().join(file).exists(), "{file}");
     }
-    let requests = bench.services.gates.requests();
+    let requests = bench.services.checks.requests();
     assert_eq!(requests.len(), 2);
     assert!(
         requests
             .iter()
-            .all(|request| request.workdir == bench.integration)
+            .all(|request| request.workdir == bench.run_tree)
     );
     Ok(())
 }
 
-/// A merge agent that resolves the conflict in `store.rs` with `resolution`, or reports
+/// A merger that resolves the conflict in `store.rs` with `resolution`, or reports
 /// `status` without touching it, and writes the message the change lands with.
-fn merging(status: &'static str, resolution: Option<&'static str>) -> FakeWorker {
-    FakeWorker::harness(MERGER, "opencode").respond_with(move |spec| {
+fn merging(status: &'static str, resolution: Option<&'static str>) -> FakeRunner {
+    FakeRunner::cli(MERGER, "opencode").respond_with(move |spec| {
         if spec.step != Some(StepName::ResolveConflict) {
             return FakeSession::structured(json!({
                 "subject": "Add a store",
@@ -719,10 +721,10 @@ fn merging(status: &'static str, resolution: Option<&'static str>) -> FakeWorker
     })
 }
 
-/// Your branch moved and changed the file the run wrote too: the merge agent resolves the
+/// Your branch moved and changed the file the run wrote too: the merger resolves the
 /// conflict on the run's branch, the suite runs on its merge, and the run lands with both.
 #[tokio::test]
-async fn a_main_that_conflicts_goes_to_the_merge_agent() -> anyhow::Result<()> {
+async fn a_main_that_conflicts_goes_to_the_merger() -> anyhow::Result<()> {
     let bench = Bench::new(None).await?;
     bench.repo.write("store.rs", "fn main_store() {}\n")?;
     bench.repo.commit_all("a store on main")?;
@@ -731,7 +733,7 @@ async fn a_main_that_conflicts_goes_to_the_merge_agent() -> anyhow::Result<()> {
 
     let done = bench
         .run(async {
-            let opened = bench.next_merge_card(&[]).await?;
+            let opened = bench.next_merge_approval(&[]).await?;
             bench.answer(&opened, AnswerAction::Merge)
         })
         .await?;
@@ -743,44 +745,46 @@ async fn a_main_that_conflicts_goes_to_the_merge_agent() -> anyhow::Result<()> {
         .filter(|spec| spec.step == Some(StepName::ResolveConflict))
         .collect();
     assert_eq!(specs.len(), 1, "one resolution");
-    assert_eq!(specs[0].card, None);
+    assert_eq!(specs[0].task, None);
     assert_eq!(specs[0].access, Access::Build);
-    assert_eq!(specs[0].workdir, bench.integration);
+    assert_eq!(specs[0].workdir, bench.run_tree);
     assert_eq!(
         std::fs::read_to_string(bench.repo.root().join("store.rs"))?,
         both
     );
-    let events = bench.integration_events();
+    let events = bench.merge_events();
     assert!(
         events
             .iter()
-            .any(|event| matches!(event, IntegrationEvent::MainMergedIn { .. })),
+            .any(|event| matches!(event, MergeEvent::MainMergedIn { .. })),
         "{events:?}"
     );
     assert!(
         events
             .iter()
-            .any(|event| matches!(event, IntegrationEvent::FinalCheck { passed: true })),
-        "the suite ran on the merge agent's merge"
+            .any(|event| matches!(event, MergeEvent::FinalCheck { passed: true })),
+        "the suite ran on the merger's merge"
     );
     Ok(())
 }
 
-/// The merge agent writes the message the change lands with while the approval waits, and
+/// The merger writes the message the change lands with while the approval waits, and
 /// the run's trailer follows it.
 #[tokio::test]
-async fn the_merge_agent_writes_the_landed_message() -> anyhow::Result<()> {
+async fn the_merger_writes_the_merged_message() -> anyhow::Result<()> {
     let bench = Bench::new(None).await?;
     let merger = bench.services.workers.add(merging("done", None));
 
     let done = bench
         .run(async {
-            let opened = bench.next_merge_card(&[]).await?;
+            let opened = bench.next_merge_approval(&[]).await?;
+            // An answer doesn't wait for the message, so this one comes once it's written.
+            bench.commit_message_session(true).await?;
             bench.answer(&opened, AnswerAction::Merge)
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    bench.landed_on("HEAD")?;
+    bench.merged_into("HEAD")?;
     let message = bench.repo.git(&["log", "-1", "--format=%B", "HEAD"])?;
     assert_eq!(
         message.trim_end(),
@@ -788,55 +792,46 @@ async fn the_merge_agent_writes_the_landed_message() -> anyhow::Result<()> {
     );
     let specs = merger.specs();
     assert_eq!(specs.len(), 1, "one message, written once");
-    assert_eq!(specs[0].access, Access::ReadOnly);
-    assert_eq!(specs[0].card, None);
-    assert_eq!(specs[0].workdir, bench.integration);
+    // It is given the change, so it has no tools to fail with and no git to run.
+    assert_eq!(specs[0].access, Access::NoTools);
+    let given: Vec<&str> = specs[0].prompt.iter().map(|p| p.text.as_str()).collect();
+    let given = given.join("\n");
+    assert!(given.contains("+fn store() {}"), "{given}");
+    assert!(given.contains("- store.rs (+1 -0)"), "{given}");
+    assert!(!given.contains("git diff"), "{given}");
+    assert_eq!(specs[0].task, None);
+    assert_eq!(specs[0].workdir, bench.run_tree);
     // It's the Merge step's agent, so the run's view shows it there, on its own model.
     let started = bench
         .host
         .read(|state| state.sessions.get(&specs[0].key).cloned())
-        .context("the merge agent's session")?
+        .context("the merger's session")?
         .started;
     assert_eq!(started.workflow_step, Some(step_ref()));
     assert_eq!(started.worker, worker(MERGER));
-    assert_eq!(started.label.as_deref(), Some("merge:main"));
+    assert_eq!(started.label.as_deref(), Some("commit message"));
     Ok(())
 }
 
-/// The suite passed, then your branch moved and its new commits broke it: the merge agent
+/// The suite passed, then your branch moved and its new commits broke it: the merger
 /// fixes what the merge broke on the run's branch, and the suite runs again. The run's own
 /// change grew with the fix, so you approve again before it lands.
 #[tokio::test]
-async fn the_merge_agent_fixes_what_a_moved_main_broke() -> anyhow::Result<()> {
+async fn the_merger_fixes_what_a_moved_main_broke() -> anyhow::Result<()> {
     let bench = Bench::new(None).await?;
-    let merger =
-        bench.services.workers.add(
-            FakeWorker::harness(MERGER, "opencode").respond_with(|spec| {
-                if spec.access != Access::Build {
-                    return FakeSession::structured(
-                        json!({ "subject": "Add a store", "body": "" }),
-                    );
-                }
-                let _ = std::fs::write(spec.workdir.join("fixed.txt"), "fixed\n");
-                FakeSession::structured(json!({
-                    "status": "done", "summary": "fixed the store for the new main",
-                    "files_changed": ["fixed.txt"], "tests_run": [], "concerns": [],
-                    "questions": [], "change_requests": [], "memory_proposals": []
-                }))
-            }),
-        );
+    let merger = bench.services.workers.add(fixing_merger());
 
     let done = bench
         .run(async {
-            let first = bench.next_merge_card(&[]).await?;
+            let first = bench.next_merge_approval(&[]).await?;
             bench.move_main("while-waiting.txt")?;
             bench
                 .services
-                .gates
+                .checks
                 .fail_next("the store breaks with the new main");
             bench.answer(&first, AnswerAction::Merge)?;
             let again = bench
-                .next_merge_card(std::slice::from_ref(&first.id))
+                .next_merge_approval(std::slice::from_ref(&first.id))
                 .await?;
             bench.answer(&again, AnswerAction::Merge)
         })
@@ -849,20 +844,20 @@ async fn the_merge_agent_fixes_what_a_moved_main_broke() -> anyhow::Result<()> {
         .filter(|spec| spec.access == Access::Build)
         .collect();
     assert_eq!(fixes.len(), 1, "one fix");
-    assert_eq!(fixes[0].workdir, bench.integration);
+    assert_eq!(fixes[0].workdir, bench.run_tree);
     for file in ["store.rs", "while-waiting.txt", "fixed.txt"] {
         assert!(bench.repo.root().join(file).exists(), "{file}");
     }
     assert_eq!(
-        bench.services.gates.requests().len(),
+        bench.services.checks.requests().len(),
         3,
         "the suite, then after main came in, then after the fix"
     );
     let checks: Vec<bool> = bench
-        .integration_events()
+        .merge_events()
         .iter()
         .filter_map(|event| match event {
-            IntegrationEvent::FinalCheck { passed } => Some(*passed),
+            MergeEvent::FinalCheck { passed } => Some(*passed),
             _ => None,
         })
         .collect();
@@ -870,18 +865,126 @@ async fn the_merge_agent_fixes_what_a_moved_main_broke() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A merge agent that can't answer leaves the message plain code writes.
+/// A merger that fixes what a moved main broke by adding `fixed.txt`, and writes the message
+/// the change lands with.
+fn fixing_merger() -> FakeRunner {
+    FakeRunner::cli(MERGER, "opencode").respond_with(|spec| {
+        if spec.access != Access::Build {
+            return FakeSession::structured(json!({ "subject": "Add a store", "body": "" }));
+        }
+        let _ = std::fs::write(spec.workdir.join("fixed.txt"), "fixed\n");
+        done_report("fixed the store for the new main", &["fixed.txt"])
+    })
+}
+
+/// The summaries of the final check's commands, in the order they ran.
+fn final_check_summaries(bench: &Bench) -> Vec<(bool, String)> {
+    bench
+        .sink
+        .events()
+        .into_iter()
+        .filter(|event| {
+            let scope = event.task_id.as_ref().map(TaskId::as_str);
+            scope == Some(final_check::CHECK_SCOPE)
+        })
+        .filter_map(|event| match event.kind {
+            RunEventKind::Check(outcome) => Some((outcome.passed, outcome.summary)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Main moved while the run worked, before any final check, and its commits break a check the
+/// run's own work passes. The check is run on that work alone to tell whose doing it is, its
+/// failure says main broke it, and the merger fixes it as it does once a check has passed.
 #[tokio::test]
-async fn without_the_merge_agents_message_code_writes_it() -> anyhow::Result<()> {
+async fn a_check_that_main_broke_before_the_first_final_check_is_fixed_too() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    let merger = bench.services.workers.add(fixing_merger());
+    bench.move_main("before.txt")?;
+    let checks = &bench.services.checks;
+    // One test failed before the run, and still does on the run's own work. With main in, two do.
+    checks.push_at_start(suite_failed("15 passed, 1 failed"));
+    checks.push(suite_failed("15 passed, 2 failed"));
+    checks.push(suite_failed("15 passed, 1 failed"));
+
+    let done = bench
+        .run(async {
+            let opened = bench.next_merge_approval(&[]).await?;
+            bench.answer(&opened, AnswerAction::Merge)
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+
+    let fixes = merger
+        .specs()
+        .into_iter()
+        .filter(|spec| spec.access == Access::Build)
+        .count();
+    assert_eq!(fixes, 1, "the merger fixed what main broke");
+    let requests = bench.services.checks.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "with main in, on the run's own work, then after the fix"
+    );
+    assert_ne!(
+        requests[1].workdir, bench.run_tree,
+        "the run's own work is checked in a worktree of its own"
+    );
+    let summaries = final_check_summaries(&bench);
+    assert_eq!(
+        summaries.first(),
+        Some(&(false, "1 test broke after main came in".to_owned())),
+        "{summaries:?}"
+    );
+    assert!(summaries.last().is_some_and(|(passed, _)| *passed));
+    for file in ["store.rs", "before.txt", "fixed.txt"] {
+        assert!(bench.repo.root().join(file).exists(), "{file}");
+    }
+    Ok(())
+}
+
+/// A check that fails on the run's own work too isn't main's doing, so nobody is called in to
+/// fix it and the failure reads as it ran.
+#[tokio::test]
+async fn a_check_the_run_itself_broke_is_not_blamed_on_a_moved_main() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    let merger = bench.services.workers.add(fixing_merger());
+    bench.move_main("before.txt")?;
+    bench
+        .services
+        .checks
+        .push(suite_failed("15 passed, 2 failed"));
+    bench
+        .services
+        .checks
+        .push(suite_failed("15 passed, 2 failed"));
+
+    let check = final_check::run(&bench.host).await?;
+    assert!(!check.passed);
+    assert_eq!(check.checks[0].summary, "15 passed, 2 failed");
+    let fixes = merger
+        .specs()
+        .into_iter()
+        .filter(|spec| spec.access == Access::Build)
+        .count();
+    assert_eq!(fixes, 0);
+    Ok(())
+}
+
+/// A merger that can't answer leaves the message plain code writes.
+#[tokio::test]
+async fn without_the_mergers_message_code_writes_it() -> anyhow::Result<()> {
     let bench = Bench::new(None).await?;
     bench.services.workers.add(
-        FakeWorker::harness(MERGER, "opencode")
+        FakeRunner::cli(MERGER, "opencode")
             .respond_with(|_| FakeSession::structured(json!({ "subject": " " }))),
     );
 
     let done = bench
         .run(async {
-            let opened = bench.next_merge_card(&[]).await?;
+            let opened = bench.next_merge_approval(&[]).await?;
             bench.answer(&opened, AnswerAction::Merge)
         })
         .await?;
@@ -897,21 +1000,228 @@ async fn without_the_merge_agents_message_code_writes_it() -> anyhow::Result<()>
     Ok(())
 }
 
-/// When the merge agent says the two sides can't both hold, the merge is undone and the
-/// approval says why, in the merge agent's words.
+/// Your answer doesn't wait for the message: a merger still writing when you approve is
+/// stopped, and the change lands with the message plain code writes.
 #[tokio::test]
-async fn a_main_the_merge_agent_cannot_reconcile_is_left_to_you() -> anyhow::Result<()> {
+async fn an_answer_given_first_does_not_wait_for_the_message() -> anyhow::Result<()> {
     let bench = Bench::new(None).await?;
-    let before = bench.integration_head()?;
+    let merger = bench.services.workers.add(
+        FakeRunner::cli(MERGER, "opencode").respond_with(|_| FakeSession::until_stopped(vec![])),
+    );
+
+    let done = bench
+        .run(async {
+            let opened = bench.next_merge_approval(&[]).await?;
+            bench.commit_message_session(false).await?;
+            bench.answer(&opened, AnswerAction::Merge)
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    bench.merged_into("HEAD")?;
+    let message = bench.repo.git(&["log", "-1", "--format=%B", "HEAD"])?;
+    assert!(
+        message
+            .trim_end()
+            .ends_with(&format!("Argonauts-Run: {TEST_RUN}")),
+        "{message}"
+    );
+    let specs = merger.specs();
+    assert_eq!(specs.len(), 1);
+    let end = bench
+        .host
+        .read(|state| state.sessions.get(&specs[0].key).cloned())
+        .context("the merger's session")?
+        .end
+        .context("the session was left running")?;
+    assert_eq!(end.reason, EndReason::Stopped);
+    Ok(())
+}
+
+impl Bench {
+    /// Waits until the merger's commit message session has started, or `ended` too.
+    async fn commit_message_session(&self, ended: bool) -> anyhow::Result<()> {
+        for _ in 0..400 {
+            let found = self.host.read(|state| {
+                state.sessions.by_key.values().any(|session| {
+                    session.started.label.as_deref() == Some("commit message")
+                        && (!ended || session.end.is_some())
+                })
+            });
+            if found {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        bail!("the merger never wrote a commit message")
+    }
+}
+
+/// Settings where an agent that fails is asked again at once, the merger is one model, and the
+/// main agent, which breaks ties, is another.
+fn fallback_settings() -> Settings {
+    let mut settings = suite_settings();
+    settings.fallback.retry = Some(Retry::without_wait());
+    settings.run_host.wait_grace = Span::new("0s");
+    settings.crew.main = worker(OPUS);
+    settings
+}
+
+fn crashed() -> FakeSession {
+    FakeSession::ended(EndReason::Crashed {
+        message: "segfault".to_owned(),
+    })
+}
+
+/// A report that says the job is done.
+fn done_report(summary: &str, files: &[&str]) -> FakeSession {
+    FakeSession::structured(json!({
+        "status": "done", "summary": summary, "files_changed": files, "tests_run": [],
+        "concerns": [], "questions": [], "change_requests": [], "memory_proposals": []
+    }))
+}
+
+/// Your branch moved and conflicts, and the merger's agent fails: the conflict passes to the
+/// tie-breaker, and when that fails too, to a fallback, as a conflict between tasks does.
+#[tokio::test]
+async fn a_moved_main_conflict_passes_on_when_the_merger_fails() -> anyhow::Result<()> {
+    let bench = Bench::with(vec![spec(&TaskId::numbered(1))], None, fallback_settings()).await?;
+    bench.repo.write("store.rs", "fn main_store() {}\n")?;
+    bench.repo.commit_all("a store on main")?;
+    let both = "fn store() {}\nfn main_store() {}\n";
+    let failing = |name: &str, provider: &str| {
+        FakeRunner::cli(name, provider).respond_with(|spec| {
+            if spec.step == Some(StepName::ResolveConflict) {
+                return crashed();
+            }
+            FakeSession::structured(json!({ "subject": "Add a store", "body": "" }))
+        })
+    };
+    let merger = bench.services.workers.add(failing(MERGER, "opencode"));
+    let tie_breaker = bench.services.workers.add(failing(OPUS, "anthropic"));
+    let fallback = bench
+        .services
+        .workers
+        .add(FakeRunner::cli(CODEX, "openai").respond_with(move |spec| {
+            let _ = std::fs::write(spec.workdir.join("store.rs"), both);
+            done_report("merged main", &["store.rs"])
+        }));
+
+    let done = bench
+        .run(async {
+            let opened = bench.next_merge_approval(&[]).await?;
+            bench.answer(&opened, AnswerAction::Merge)
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    assert_eq!(
+        std::fs::read_to_string(bench.repo.root().join("store.rs"))?,
+        both
+    );
+    let resolving = |fake: &FakeRunner| {
+        fake.specs()
+            .into_iter()
+            .filter(|spec| spec.step == Some(StepName::ResolveConflict))
+            .collect::<Vec<_>>()
+    };
+    assert!(!resolving(&merger).is_empty(), "the merger went first");
+    assert!(!resolving(&tie_breaker).is_empty(), "then the tie-breaker");
+    let settled = resolving(&fallback);
+    assert_eq!(settled.len(), 1, "then a fallback, which settled it");
+    assert_eq!(settled[0].workdir, bench.run_tree);
+    assert_eq!(settled[0].access, Access::Build);
+    let label = bench
+        .host
+        .read(|state| state.sessions.get(&settled[0].key).cloned())
+        .context("the fallback's session")?
+        .started
+        .label;
+    assert_eq!(
+        label.as_deref().map(|l| l.starts_with("settle conflict")),
+        Some(true)
+    );
+    Ok(())
+}
+
+/// Checks that passed break once your moved branch is merged in, and the merger's agent fails:
+/// the fix passes to the tie-breaker instead of leaving the checks broken.
+#[tokio::test]
+async fn a_check_broken_by_a_moved_main_passes_on_when_the_merger_fails() -> anyhow::Result<()> {
+    let bench = Bench::with(vec![spec(&TaskId::numbered(1))], None, fallback_settings()).await?;
+    let merger = bench
+        .services
+        .workers
+        .add(FakeRunner::cli(MERGER, "opencode").respond_with(|spec| {
+            if spec.access == Access::Build {
+                // Something half done, which the next taker must not inherit.
+                let _ = std::fs::write(spec.workdir.join("store.rs"), "broken\n");
+                return crashed();
+            }
+            FakeSession::structured(json!({ "subject": "Add a store", "body": "" }))
+        }));
+    let tie_breaker = bench
+        .services
+        .workers
+        .add(FakeRunner::cli(OPUS, "anthropic").respond_with(|spec| {
+            let untouched = std::fs::read_to_string(spec.workdir.join("store.rs"))
+                .is_ok_and(|text| text == "fn store() {}\n");
+            assert!(untouched, "the failed fix was left in the tree");
+            let _ = std::fs::write(spec.workdir.join("fixed.txt"), "fixed\n");
+            done_report("fixed the store for the new main", &["fixed.txt"])
+        }));
+
+    let done = bench
+        .run(async {
+            let first = bench.next_merge_approval(&[]).await?;
+            bench.move_main("while-waiting.txt")?;
+            bench
+                .services
+                .checks
+                .fail_next("the store breaks with the new main");
+            bench.answer(&first, AnswerAction::Merge)?;
+            let again = bench
+                .next_merge_approval(std::slice::from_ref(&first.id))
+                .await?;
+            bench.answer(&again, AnswerAction::Merge)
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    let fixes = |fake: &FakeRunner| {
+        fake.specs()
+            .into_iter()
+            .filter(|spec| spec.access == Access::Build)
+            .collect::<Vec<_>>()
+    };
+    assert!(!fixes(&merger).is_empty(), "the merger went first");
+    let fixed = fixes(&tie_breaker);
+    assert_eq!(fixed.len(), 1, "then the tie-breaker, which fixed it");
+    let label = bench
+        .host
+        .read(|state| state.sessions.get(&fixed[0].key).cloned())
+        .context("the fix's session")?
+        .started
+        .label;
+    assert_eq!(label.as_deref(), Some("fix after main-2"));
+    for file in ["store.rs", "while-waiting.txt", "fixed.txt"] {
+        assert!(bench.repo.root().join(file).exists(), "{file}");
+    }
+    Ok(())
+}
+
+/// When the merger says the two sides can't both hold, the merge is undone and the
+/// approval says why, in the merger's words.
+#[tokio::test]
+async fn a_main_the_merger_cannot_reconcile_is_left_to_you() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    let before = bench.run_head()?;
     bench.repo.write("store.rs", "fn main_store() {}\n")?;
     bench.repo.commit_all("a store on main")?;
     bench.services.workers.add(merging("needs_decision", None));
 
     let call = step_call()?;
-    let step = merge::merge_step(&bench.host, &call);
+    let step = merge_step(&bench.host, &call);
     let watching = async {
-        let opened = bench.next_merge_card(&[]).await?;
-        let evidence = checkpoints::evidence_of(&bench.host, &opened)?;
+        let opened = bench.next_merge_approval(&[]).await?;
+        let evidence = approvals::evidence_of(&bench.host, &opened)?;
         ensure!(
             evidence.agent_outputs.iter().any(|line| line.contains(
                 "main moved and conflicts with the run's work in store.rs, and the two can't \
@@ -926,10 +1236,10 @@ async fn a_main_the_merge_agent_cannot_reconcile_is_left_to_you() -> anyhow::Res
         watched = watching => watched?,
         ended = step => bail!("the merge step ended first: {ended:?}"),
     }
-    assert_eq!(bench.integration_head()?, before, "the merge was undone");
+    assert_eq!(bench.run_head()?, before, "the merge was undone");
     let merging = git_in(
         &bench.repo,
-        &bench.integration,
+        &bench.run_tree,
         &["rev-parse", "--quiet", "--verify", "MERGE_HEAD"],
     );
     assert!(merging.is_err(), "no merge is left open");
@@ -942,15 +1252,12 @@ async fn merge_fast_forward_or_pr() -> anyhow::Result<()> {
     let bench = Bench::new(None).await?;
     let done = bench
         .run(async {
-            let opened = bench.next_merge_card(&[]).await?;
+            let opened = bench.next_merge_approval(&[]).await?;
             assert_eq!(keys(&opened), ['y', 'p', 'b', 'k', 'x', 'd']);
-            let CheckpointPacket::Merge(packet) = &opened.packet else {
+            let ApprovalPacket::Merge(packet) = &opened.packet else {
                 bail!("not a merge packet");
             };
-            assert_eq!(
-                packet.branch,
-                branch::integration_branch(bench.host.run_id())
-            );
+            assert_eq!(packet.branch, branch::run_branch(bench.host.run_id()));
             assert_eq!(packet.rows.len(), 1);
             assert!(packet.suite_passed_on_latest_main);
             assert!(packet.diff_path.exists());
@@ -958,16 +1265,12 @@ async fn merge_fast_forward_or_pr() -> anyhow::Result<()> {
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    bench.landed_on("HEAD")?;
-    assert!(
-        bench
-            .integration_events()
-            .contains(&IntegrationEvent::Landed {
-                target: "main".to_owned(),
-                sha: bench.repo.head()?,
-                fast_forward: true,
-            })
-    );
+    bench.merged_into("HEAD")?;
+    assert!(bench.merge_events().contains(&MergeEvent::RunMerged {
+        target: "main".to_owned(),
+        sha: bench.repo.head()?,
+        fast_forward: true,
+    }));
 
     // Main not checked out: only its branch moves.
     let bench = Bench::new(None).await?;
@@ -976,42 +1279,37 @@ async fn merge_fast_forward_or_pr() -> anyhow::Result<()> {
         .git(&["checkout", "--quiet", "-b", "elsewhere"])?;
     let done = bench
         .run(async {
-            let opened = bench.next_merge_card(&[]).await?;
+            let opened = bench.next_merge_approval(&[]).await?;
             bench.answer(&opened, AnswerAction::Merge)
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    bench.landed_on("main")?;
+    bench.merged_into("main")?;
     assert_eq!(bench.repo.git(&["branch", "--show-current"])?, "elsewhere");
 
-    // A pull request: the command is recorded, and with no remote it isn't run.
+    // A pull request with nowhere to open it: the run doesn't end as one. The question comes
+    // back saying why, and the run's work stays on its branch.
     let bench = Bench::new(None).await?;
     let main_before = bench.repo.head()?;
     let done = bench
         .run(async {
-            let opened = bench.next_merge_card(&[]).await?;
-            bench.answer(&opened, AnswerAction::PullRequest)
+            let opened = bench.next_merge_approval(&[]).await?;
+            bench.answer(&opened, AnswerAction::PullRequest)?;
+            let again = bench
+                .next_merge_approval(std::slice::from_ref(&opened.id))
+                .await?;
+            bench.answer(&again, AnswerAction::KeepBranch)
         })
         .await?;
-    assert_eq!(done.flow, Flow::Finish(RunOutcome::PullRequest));
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::BranchLeft));
     assert_eq!(bench.repo.head()?, main_before);
-    let pull_request = bench
-        .integration_events()
-        .into_iter()
-        .find_map(|event| match event {
-            IntegrationEvent::PullRequest {
-                branch,
-                url,
-                command,
-            } => Some((branch, url, command)),
-            _ => None,
-        });
-    let (pr_branch, url, command) = pull_request.context("a pull request event")?;
-    assert_eq!(pr_branch, branch::integration_branch(bench.host.run_id()));
-    assert_eq!(url, None);
-    let command = command.context("the recorded command")?;
-    assert_eq!(&command[..3], ["gh", "pr", "create"]);
-    assert!(command.contains(&"Redis store".to_owned()));
+    assert!(
+        !bench
+            .merge_events()
+            .iter()
+            .any(|event| matches!(event, MergeEvent::PullRequest { .. })),
+        "nothing was opened, so no pull request is recorded"
+    );
     Ok(())
 }
 
@@ -1021,20 +1319,20 @@ async fn merge_refused_when_head_moved_after_approval() -> anyhow::Result<()> {
     let first_id = std::sync::Mutex::new(None);
     let done = bench
         .run(async {
-            let first = bench.next_merge_card(&[]).await?;
+            let first = bench.next_merge_approval(&[]).await?;
             *first_id.lock().expect("lock") = Some(first.id.clone());
-            // Something moves the integration branch after the card was shown.
+            // Something moves the run branch after the question was shown.
             commit_in(
                 &bench.repo,
-                &bench.integration,
+                &bench.run_tree,
                 "late.rs",
                 "late\n",
                 "late change",
             )?;
             bench.answer(&first, AnswerAction::Merge)?;
-            // Landing is refused and the checkpoint opens again with the new head.
+            // Landing is refused and the approval opens again with the new head.
             let second = bench
-                .next_merge_card(std::slice::from_ref(&first.id))
+                .next_merge_approval(std::slice::from_ref(&first.id))
                 .await?;
             ensure!(second.evidence_sha256 != first.evidence_sha256);
             bench.answer(&second, AnswerAction::Merge)
@@ -1048,7 +1346,7 @@ async fn merge_refused_when_head_moved_after_approval() -> anyhow::Result<()> {
         .events()
         .into_iter()
         .any(|event| match event.kind {
-            RunEventKind::Checkpoint(CheckpointEvent::Checked(check)) => {
+            RunEventKind::Approval(ApprovalEvent::Checked(check)) => {
                 check.id == first_id
                     && check
                         .violations
@@ -1058,8 +1356,8 @@ async fn merge_refused_when_head_moved_after_approval() -> anyhow::Result<()> {
             _ => false,
         });
     assert!(refused, "no HeadMoved refusal recorded");
-    // What landed is what you approved the second time, late change included.
-    bench.landed_on("HEAD")?;
+    // What merged is what you approved the second time, late change included.
+    bench.merged_into("HEAD")?;
     assert!(bench.repo.root().join("late.rs").exists());
     Ok(())
 }
@@ -1072,13 +1370,13 @@ async fn merge_rule_original_out_and_back() -> anyhow::Result<()> {
         needs: worker(OPUS),
     };
     let bench = Bench::new(Some(debt.clone())).await?;
-    let claude = worker(OPUS).vendor();
+    let claude = worker(OPUS).agent_id();
     bench
         .services
         .health
         .set(&claude, HealthState::Down, Some("usage limit"));
     bench.services.workers.add(
-        FakeWorker::harness(OPUS, "claude").then(FakeSession::structured(json!({
+        FakeRunner::cli(OPUS, "anthropic").then(FakeSession::structured(json!({
             "verdict": "approve",
             "summary": "Checked Codex's work.",
             "comments": [],
@@ -1088,14 +1386,14 @@ async fn merge_rule_original_out_and_back() -> anyhow::Result<()> {
 
     let done = bench
         .run(async {
-            // The original is out: the card lists the debt and offers to wait for it.
-            let first = bench.next_merge_card(&[]).await?;
-            let CheckpointPacket::Merge(packet) = &first.packet else {
+            // The original is out: the question lists the debt and offers to wait for it.
+            let first = bench.next_merge_approval(&[]).await?;
+            let ApprovalPacket::Merge(packet) = &first.packet else {
                 bail!("not a merge packet");
             };
             assert_eq!(packet.rows[0].debt, vec![debt.clone()]);
-            let evidence = checkpoints::evidence_of(&bench.host, &first)?;
-            // The card goes by its label, as the merge table names it.
+            let evidence = approvals::evidence_of(&bench.host, &first)?;
+            // The task goes by its label, as the merge table names it.
             ensure!(
                 evidence.facts.unreviewed_debt == Some(vec!["build:redis-store".to_owned()]),
                 "{:?}",
@@ -1123,13 +1421,13 @@ async fn merge_rule_original_out_and_back() -> anyhow::Result<()> {
                 .health
                 .set(&claude, HealthState::Healthy, None);
             let second = bench
-                .next_merge_card(std::slice::from_ref(&first.id))
+                .next_merge_approval(std::slice::from_ref(&first.id))
                 .await?;
-            let CheckpointPacket::Merge(packet) = &second.packet else {
+            let ApprovalPacket::Merge(packet) = &second.packet else {
                 bail!("not a merge packet");
             };
             ensure!(packet.rows[0].debt.is_empty());
-            let evidence = checkpoints::evidence_of(&bench.host, &second)?;
+            let evidence = approvals::evidence_of(&bench.host, &second)?;
             ensure!(evidence.facts.unreviewed_debt == Some(Vec::new()));
             ensure!(!keys(&second).contains(&'w'));
             bench.answer(&second, AnswerAction::Merge)
@@ -1139,7 +1437,7 @@ async fn merge_rule_original_out_and_back() -> anyhow::Result<()> {
     let cleared = bench.sink.events().into_iter().any(|event| {
         matches!(
             event.kind,
-            RunEventKind::Card(CardEvent::DebtCleared { ref by }) if *by == worker(OPUS)
+            RunEventKind::Task(TaskEvent::DebtCleared { ref by }) if *by == worker(OPUS)
         )
     });
     assert!(cleared);
@@ -1154,32 +1452,32 @@ fn codex_debt() -> QualityDebt {
     }
 }
 
-/// The original back while its card waits at the merge card: with `on_return = "ask"` its card
-/// opens in place of the merge card, and its review clears the debt.
+/// The original back while its task waits at the merge question: with `on_return = "ask"` its
+/// question opens in place of the merge question, and its review clears the debt.
 #[tokio::test]
-async fn the_original_back_at_the_merge_card_asks_first() -> anyhow::Result<()> {
+async fn the_original_back_at_the_merge_question_asks_first() -> anyhow::Result<()> {
     let bench = Bench::new(Some(codex_debt())).await?;
     bench.out_and_back(OPUS)?;
-    bench.services.workers.add(reviewer(OPUS, "claude", &[]));
+    bench.services.workers.add(reviewer(OPUS, "anthropic", &[]));
 
     let done = bench
         .run(async {
-            let back = bench.return_card().await?;
+            let back = bench.return_approval().await?;
             ensure!(
                 keys(&back) == ['r', 'o', 'u', 'y', 't', 'd'],
                 "{:?}",
                 keys(&back)
             );
-            let merge_cards = bench.host.read(|state| {
+            let merge_tasks = bench.host.read(|state| {
                 state
-                    .checkpoints
-                    .open_for(CheckpointKind::Merge, None)
+                    .approvals
+                    .open_for(ApprovalKind::Merge, None)
                     .is_some()
             });
-            ensure!(!merge_cards, "the merge approval opened beside it");
+            ensure!(!merge_tasks, "the merge approval opened beside it");
             bench.answer(&back, AnswerAction::UpgradeReview)?;
-            let merge = bench.next_merge_card(&[]).await?;
-            let CheckpointPacket::Merge(packet) = &merge.packet else {
+            let merge = bench.next_merge_approval(&[]).await?;
+            let ApprovalPacket::Merge(packet) = &merge.packet else {
                 bail!("not a merge packet");
             };
             ensure!(packet.rows[0].debt.is_empty(), "{:?}", packet.rows[0].debt);
@@ -1189,25 +1487,25 @@ async fn the_original_back_at_the_merge_card_asks_first() -> anyhow::Result<()> 
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
     assert!(bench.sink.events().iter().any(|event| matches!(
         &event.kind,
-        RunEventKind::Card(CardEvent::DebtCleared { by }) if *by == worker(OPUS)
+        RunEventKind::Task(TaskEvent::DebtCleared { by }) if *by == worker(OPUS)
     )));
     Ok(())
 }
 
-/// Keeping the replacement's work from the "original is back" card skips the original's
-/// review, and the merge card lists the debt for you.
+/// Keeping the fallback's work from the "original is back" question skips the original's
+/// review, and the merge question lists the debt for you.
 #[tokio::test]
-async fn keeping_the_replacement_at_the_merge_card_leaves_the_debt() -> anyhow::Result<()> {
+async fn keeping_the_fallback_at_the_merge_question_leaves_the_debt() -> anyhow::Result<()> {
     let bench = Bench::new(Some(codex_debt())).await?;
     bench.out_and_back(OPUS)?;
-    let original = bench.services.workers.add(reviewer(OPUS, "claude", &[]));
+    let original = bench.services.workers.add(reviewer(OPUS, "anthropic", &[]));
 
     let done = bench
         .run(async {
-            let back = bench.return_card().await?;
-            bench.answer(&back, AnswerAction::KeepReplacement)?;
-            let merge = bench.next_merge_card(&[]).await?;
-            let CheckpointPacket::Merge(packet) = &merge.packet else {
+            let back = bench.return_approval().await?;
+            bench.answer(&back, AnswerAction::KeepFallback)?;
+            let merge = bench.next_merge_approval(&[]).await?;
+            let ApprovalPacket::Merge(packet) = &merge.packet else {
                 bail!("not a merge packet");
             };
             ensure!(packet.rows[0].debt == vec![codex_debt()], "{packet:?}");
@@ -1220,16 +1518,16 @@ async fn keeping_the_replacement_at_the_merge_card_leaves_the_debt() -> anyhow::
     Ok(())
 }
 
-/// Giving the card back from the merge card: the original works on it from the run's branch,
-/// it's integrated again, and its own review then clears the debt.
+/// Giving the task back from the merge approval: the original works on it from the run's branch,
+/// it's merged again, and its own review then clears the debt.
 #[tokio::test]
-async fn the_original_takes_its_card_back_from_the_merge_card() -> anyhow::Result<()> {
+async fn the_original_takes_its_task_back_from_the_merge_approval() -> anyhow::Result<()> {
     let bench = Bench::new(Some(codex_debt())).await?;
     bench.out_and_back(OPUS)?;
     let original = bench
         .services
         .workers
-        .add(FakeWorker::harness(OPUS, "claude").respond_with(|spec| {
+        .add(FakeRunner::cli(OPUS, "anthropic").respond_with(|spec| {
             if spec.role == RoleName::Reviewer {
                 return FakeSession::structured(json!({
                     "verdict": "approve", "summary": "checked it", "comments": [],
@@ -1243,14 +1541,14 @@ async fn the_original_takes_its_card_back_from_the_merge_card() -> anyhow::Resul
                 "memory_proposals": []
             }))
         }));
-    bench.services.workers.add(reviewer(AGY, "gemini", &[]));
+    bench.services.workers.add(reviewer(AGY, "google", &[]));
 
     let done = bench
         .run(async {
-            let back = bench.return_card().await?;
-            bench.answer(&back, AnswerAction::HandBack)?;
-            let merge = bench.next_merge_card(&[]).await?;
-            let CheckpointPacket::Merge(packet) = &merge.packet else {
+            let back = bench.return_approval().await?;
+            bench.answer(&back, AnswerAction::GiveBack)?;
+            let merge = bench.next_merge_approval(&[]).await?;
+            let ApprovalPacket::Merge(packet) = &merge.packet else {
                 bail!("not a merge packet");
             };
             ensure!(packet.rows[0].debt.is_empty(), "{:?}", packet.rows[0].debt);
@@ -1258,11 +1556,11 @@ async fn the_original_takes_its_card_back_from_the_merge_card() -> anyhow::Resul
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::BranchLeft));
-    assert_eq!(bench.sent_back(), [CardId::numbered(1)]);
-    let owner = bench
+    assert_eq!(bench.sent_back(), [TaskId::numbered(1)]);
+    let now_with = bench
         .host
-        .read(|state| state.cards.get(&CardId::numbered(1))?.owner.clone());
-    assert_eq!(owner, Some(worker(OPUS)));
+        .read(|state| state.tasks.get(&TaskId::numbered(1))?.worker.clone());
+    assert_eq!(now_with, Some(worker(OPUS)));
     let worked = original
         .specs()
         .into_iter()
@@ -1274,32 +1572,28 @@ async fn the_original_takes_its_card_back_from_the_merge_card() -> anyhow::Resul
             .iter()
             .any(|part| part.text.contains("is back and continues the task"))
     );
-    assert!(bench.integration.join("back.rs").exists());
+    assert!(bench.run_tree.join("back.rs").exists());
     Ok(())
 }
 
-/// A merge card withdrawn while it waits, as `/rewind` does once the run's branch moves, opens
+/// A merge question withdrawn while it waits, as `/rewind` does once the run's branch moves, opens
 /// again on what's true now.
 #[tokio::test]
-async fn a_withdrawn_merge_card_opens_again() -> anyhow::Result<()> {
+async fn a_withdrawn_merge_question_opens_again() -> anyhow::Result<()> {
     let bench = Bench::new(None).await?;
     let done = bench
         .run(async {
-            let first = bench.next_merge_card(&[]).await?;
-            checkpoints::withdraw(
-                &bench.host,
-                &first.id,
-                "you reverted task-001 to fallback-1",
-            )?;
+            let first = bench.next_merge_approval(&[]).await?;
+            approvals::withdraw(&bench.host, &first.id, "you rewound task-001 to fallback-1")?;
             let second = bench
-                .next_merge_card(std::slice::from_ref(&first.id))
+                .next_merge_approval(std::slice::from_ref(&first.id))
                 .await?;
-            let evidence = checkpoints::evidence_of(&bench.host, &second)?;
+            let evidence = approvals::evidence_of(&bench.host, &second)?;
             ensure!(
                 evidence
                     .agent_outputs
                     .iter()
-                    .any(|line| line.contains("you reverted task-001")),
+                    .any(|line| line.contains("you rewound task-001")),
                 "{:?}",
                 evidence.agent_outputs
             );
@@ -1317,10 +1611,10 @@ fn choose(label: &str) -> AnswerAction {
 }
 
 impl Bench {
-    /// The card asking about your files in the way, other than the ones in `seen`.
-    async fn in_the_way_card(&self, seen: &[CheckpointId]) -> anyhow::Result<CheckpointOpened> {
-        let opened = self.next_merge_card(seen).await?;
-        let CheckpointPacket::Merge(packet) = &opened.packet else {
+    /// The question asking about your files in the way, other than the ones in `seen`.
+    async fn in_the_way_approval(&self, seen: &[ApprovalId]) -> anyhow::Result<ApprovalOpened> {
+        let opened = self.next_merge_approval(seen).await?;
+        let ApprovalPacket::Merge(packet) = &opened.packet else {
             bail!("not a merge packet");
         };
         ensure!(
@@ -1331,10 +1625,10 @@ impl Bench {
         Ok(opened)
     }
 
-    fn landed(&self) -> bool {
-        self.integration_events()
+    fn run_merged(&self) -> bool {
+        self.merge_events()
             .iter()
-            .any(|event| matches!(event, IntegrationEvent::Landed { .. }))
+            .any(|event| matches!(event, MergeEvent::RunMerged { .. }))
     }
 
     fn notes(&self) -> Vec<String> {
@@ -1357,12 +1651,12 @@ async fn a_waiting_merge_lands_by_itself_once_your_file_is_out_of_the_way() -> a
     bench.repo.write("store.rs", "// my own draft\n")?;
     let done = bench
         .run(async {
-            let first = bench.next_merge_card(&[]).await?;
+            let first = bench.next_merge_approval(&[]).await?;
             bench.answer(&first, AnswerAction::Merge)?;
             let asked = bench
-                .in_the_way_card(std::slice::from_ref(&first.id))
+                .in_the_way_approval(std::slice::from_ref(&first.id))
                 .await?;
-            ensure!(!bench.landed(), "merged over your file");
+            ensure!(!bench.run_merged(), "merged over your file");
             std::fs::rename(
                 bench.repo.root().join("store.rs"),
                 bench.repo.scratch().join("my-draft.rs"),
@@ -1373,7 +1667,7 @@ async fn a_waiting_merge_lands_by_itself_once_your_file_is_out_of_the_way() -> a
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    bench.landed_on("HEAD")?;
+    bench.merged_into("HEAD")?;
     assert_eq!(
         std::fs::read_to_string(bench.repo.root().join("store.rs"))?,
         "fn store() {}\n"
@@ -1387,7 +1681,7 @@ async fn a_waiting_merge_lands_by_itself_once_your_file_is_out_of_the_way() -> a
 #[tokio::test]
 async fn files_that_already_hold_the_runs_work_are_taken_as_they_are() -> anyhow::Result<()> {
     let bench = Bench::with_work(
-        vec![spec(&CardId::numbered(1))],
+        vec![spec(&TaskId::numbered(1))],
         None,
         suite_settings(),
         &[("README.md", "# From the run\n")],
@@ -1397,11 +1691,11 @@ async fn files_that_already_hold_the_runs_work_are_taken_as_they_are() -> anyhow
     bench.repo.write("README.md", "# From the run\n")?;
     let done = bench.run(merged(&bench)).await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    bench.landed_on("HEAD")?;
+    bench.merged_into("HEAD")?;
     let waited = bench
-        .integration_events()
+        .merge_events()
         .iter()
-        .any(|event| matches!(event, IntegrationEvent::WaitingToMerge { .. }));
+        .any(|event| matches!(event, MergeEvent::WaitingToMerge { .. }));
     assert!(!waited, "waited on files that hold the run's work");
     assert_eq!(bench.repo.git(&["status", "--porcelain"])?, "");
     assert!(!bench.host.repo().run_dir.join("landing-aside").exists());
@@ -1424,7 +1718,7 @@ async fn writing_files_takes_yours_that_already_match() -> anyhow::Result<()> {
     let mut settings = suite_settings();
     settings.delivery.write = DeliveryWrite::Files;
     let bench = Bench::with_work(
-        vec![spec(&CardId::numbered(1))],
+        vec![spec(&TaskId::numbered(1))],
         None,
         settings,
         &[("README.md", "# From the run\n")],
@@ -1474,7 +1768,7 @@ async fn a_file_left_set_aside_goes_back_before_the_run_lands() -> anyhow::Resul
 
 /// Answers the merge approval with Merge.
 async fn merged(bench: &Bench) -> anyhow::Result<()> {
-    let opened = bench.next_merge_card(&[]).await?;
+    let opened = bench.next_merge_approval(&[]).await?;
     bench.answer(&opened, AnswerAction::Merge)
 }
 
@@ -1484,18 +1778,18 @@ async fn merged(bench: &Bench) -> anyhow::Result<()> {
 async fn delivery_can_keep_the_runs_history_or_a_commit_per_task() -> anyhow::Result<()> {
     let mut as_run = suite_settings();
     as_run.delivery.commits = DeliveryCommits::AsRun;
-    let bench = Bench::with(vec![spec(&CardId::numbered(1))], None, as_run).await?;
+    let bench = Bench::with(vec![spec(&TaskId::numbered(1))], None, as_run).await?;
     let done = bench.run(merged(&bench)).await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    assert_eq!(bench.repo.head()?, bench.integration_head()?);
+    assert_eq!(bench.repo.head()?, bench.run_head()?);
 
     let mut per_task = suite_settings();
     per_task.delivery.commits = DeliveryCommits::PerTask;
-    let bench = Bench::with(vec![spec(&CardId::numbered(1))], None, per_task).await?;
+    let bench = Bench::with(vec![spec(&TaskId::numbered(1))], None, per_task).await?;
     let base = bench.repo.head()?;
     let steps = git_in(
         &bench.repo,
-        &bench.integration,
+        &bench.run_tree,
         &[
             "rev-list",
             "--first-parent",
@@ -1506,25 +1800,21 @@ async fn delivery_can_keep_the_runs_history_or_a_commit_per_task() -> anyhow::Re
     let done = bench.run(merged(&bench)).await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
     let root = bench.repo.root();
-    let landed = git_in(
+    let merged = git_in(
         &bench.repo,
         root,
         &["rev-list", "--count", &format!("{base}..main")],
     )?;
-    assert_eq!(landed, steps, "one commit for each step of the run");
+    assert_eq!(merged, steps, "one commit for each step of the run");
     let merges = git_in(
         &bench.repo,
         root,
         &["rev-list", "--merges", &format!("{base}..main")],
     )?;
-    assert!(merges.is_empty(), "a merge commit landed: {merges}");
+    assert!(merges.is_empty(), "a merge commit reached main: {merges}");
     assert_eq!(
         git_in(&bench.repo, root, &["rev-parse", "main^{tree}"])?,
-        git_in(
-            &bench.repo,
-            &bench.integration,
-            &["rev-parse", "HEAD^{tree}"]
-        )?
+        git_in(&bench.repo, &bench.run_tree, &["rev-parse", "HEAD^{tree}"])?
     );
     Ok(())
 }
@@ -1536,14 +1826,14 @@ async fn delivery_can_keep_the_runs_history_or_a_commit_per_task() -> anyhow::Re
 async fn delivery_can_write_your_files_and_leave_the_commit_to_you() -> anyhow::Result<()> {
     let mut settings = suite_settings();
     settings.delivery.write = DeliveryWrite::Files;
-    let bench = Bench::with(vec![spec(&CardId::numbered(1))], None, settings).await?;
+    let bench = Bench::with(vec![spec(&TaskId::numbered(1))], None, settings).await?;
     let base = bench.repo.head()?;
     // Yours: a staged edit to a file the run leaves alone.
     bench.repo.write("README.md", "# Mine\n")?;
     bench.repo.git(&["add", "README.md"])?;
     let done = bench
         .run(async {
-            let opened = bench.next_merge_card(&[]).await?;
+            let opened = bench.next_merge_approval(&[]).await?;
             bench.answer(&opened, AnswerAction::Merge)
         })
         .await?;
@@ -1582,11 +1872,11 @@ async fn your_commit_of_the_runs_files_reads_as_merged() -> anyhow::Result<()> {
     let mut settings = suite_settings();
     settings.delivery.write = DeliveryWrite::Files;
     settings.evolution.propose_every = 0;
-    let bench = Bench::with(vec![spec(&CardId::numbered(1))], None, settings).await?;
+    let bench = Bench::with(vec![spec(&TaskId::numbered(1))], None, settings).await?;
     let done = bench
         .run(async {
-            let opened = bench.next_merge_card(&[]).await?;
-            let head = bench.integration_head()?;
+            let opened = bench.next_merge_approval(&[]).await?;
+            let head = bench.run_head()?;
             for file in bench
                 .repo
                 .git(&["ls-tree", "-r", "--name-only", &head])?
@@ -1602,19 +1892,16 @@ async fn your_commit_of_the_runs_files_reads_as_merged() -> anyhow::Result<()> {
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
     let mine = bench.repo.head()?;
-    let fast_forward = bench
-        .integration_events()
-        .iter()
-        .find_map(|event| match event {
-            IntegrationEvent::Landed { fast_forward, .. } => Some(*fast_forward),
-            _ => None,
-        });
+    let fast_forward = bench.merge_events().iter().find_map(|event| match event {
+        MergeEvent::RunMerged { fast_forward, .. } => Some(*fast_forward),
+        _ => None,
+    });
     assert_eq!(
         fast_forward,
         Some(false),
         "your branch was taken as the run's"
     );
-    retro::run(&bench.host).await?;
+    run_review::run(&bench.host).await?;
     assert_eq!(bench.repo.head()?, mine, "nothing followed your commit");
     Ok(())
 }
@@ -1637,7 +1924,7 @@ async fn before_your_first_commit_with(settings: Settings) -> anyhow::Result<Ben
     Bench::in_repo(
         repo,
         &snapshot,
-        vec![spec(&CardId::numbered(1))],
+        vec![spec(&TaskId::numbered(1))],
         None,
         settings,
         &[("README.md", "# From the run\n")],
@@ -1654,7 +1941,7 @@ async fn a_run_started_before_your_first_commit_lands_as_files() -> anyhow::Resu
     let staged = bench.repo.git(&["diff", "--cached", "--name-only"])?;
     let done = bench
         .run(async {
-            let opened = bench.next_merge_card(&[]).await?;
+            let opened = bench.next_merge_approval(&[]).await?;
             // No branch moves, so the question names what the run's work goes into.
             ensure!(
                 opened.title == "Merge this run into your files?",
@@ -1665,18 +1952,18 @@ async fn a_run_started_before_your_first_commit_lands_as_files() -> anyhow::Resu
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    let landed_on = bench
-        .integration_events()
+    let merged_into = bench
+        .merge_events()
         .into_iter()
         .find_map(|event| match event {
-            IntegrationEvent::Landed {
+            MergeEvent::RunMerged {
                 target,
                 fast_forward,
                 ..
             } => Some((target, fast_forward)),
             _ => None,
         });
-    assert_eq!(landed_on, Some(("your files".to_owned(), false)));
+    assert_eq!(merged_into, Some(("your files".to_owned(), false)));
 
     let root = bench.repo.root();
     assert_eq!(
@@ -1710,9 +1997,9 @@ async fn a_run_started_before_your_first_commit_lands_as_files() -> anyhow::Resu
         bench.notes()
     );
     let moved = bench
-        .integration_events()
+        .merge_events()
         .iter()
-        .any(|event| matches!(event, IntegrationEvent::MainMoved { .. }));
+        .any(|event| matches!(event, MergeEvent::MainMoved { .. }));
     assert!(!moved, "nothing of your branch to bring in");
     for scratch in ["landing.index", "in-the-way.index"] {
         assert!(
@@ -1731,15 +2018,15 @@ async fn an_edit_since_the_snapshot_makes_the_files_wait() -> anyhow::Result<()>
     bench.repo.write("README.md", "# Mine now\n")?;
     let done = bench
         .run(async {
-            let first = bench.next_merge_card(&[]).await?;
+            let first = bench.next_merge_approval(&[]).await?;
             bench.answer(&first, AnswerAction::Merge)?;
             let asked = bench
-                .in_the_way_card(std::slice::from_ref(&first.id))
+                .in_the_way_approval(std::slice::from_ref(&first.id))
                 .await?;
-            ensure!(!bench.landed(), "wrote over your edit");
+            ensure!(!bench.run_merged(), "wrote over your edit");
             let waiting = bench
                 .host
-                .read(|state| state.integration.waiting_to_merge.clone());
+                .read(|state| state.merge.waiting_to_merge.clone());
             ensure!(waiting == ["README.md"], "{waiting:?}");
             ensure!(
                 std::fs::read_to_string(bench.repo.root().join("README.md"))? == "# Mine now\n",
@@ -1763,16 +2050,16 @@ async fn an_edit_since_the_snapshot_makes_the_files_wait() -> anyhow::Result<()>
 }
 
 /// A landing as files that was cut short after the writing, before the run recorded it: your
-/// files hold the run's work already. Taken up again, that reads as landed, and never as
+/// files hold the run's work already. Taken up again, that reads as merged, and never as
 /// edits of yours in the run's way.
 #[tokio::test]
 async fn files_written_before_a_crash_are_not_in_their_own_way() -> anyhow::Result<()> {
     let before_a_commit = started_before_your_first_commit().await?;
     let mut settings = suite_settings();
     settings.delivery.write = DeliveryWrite::Files;
-    let asked = Bench::with(vec![spec(&CardId::numbered(1))], None, settings).await?;
+    let asked = Bench::with(vec![spec(&TaskId::numbered(1))], None, settings).await?;
     for bench in [before_a_commit, asked] {
-        let head = bench.integration_head()?;
+        let head = bench.run_head()?;
         for file in bench
             .repo
             .git(&["ls-tree", "-r", "--name-only", &head])?
@@ -1783,16 +2070,16 @@ async fn files_written_before_a_crash_are_not_in_their_own_way() -> anyhow::Resu
         }
         let done = bench
             .run(async {
-                let first = bench.next_merge_card(&[]).await?;
+                let first = bench.next_merge_approval(&[]).await?;
                 bench.answer(&first, AnswerAction::Merge)
             })
             .await?;
         assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-        ensure!(bench.landed(), "the landing wasn't recorded");
+        ensure!(bench.run_merged(), "the landing wasn't recorded");
         let waited = bench
-            .integration_events()
+            .merge_events()
             .iter()
-            .any(|event| matches!(event, IntegrationEvent::WaitingToMerge { .. }));
+            .any(|event| matches!(event, MergeEvent::WaitingToMerge { .. }));
         ensure!(!waited, "the run's own files were taken for yours");
     }
     Ok(())
@@ -1807,9 +2094,9 @@ async fn files_written_partway_are_not_in_the_way_of_the_rest() -> anyhow::Resul
     let done = bench.run(merged(&bench)).await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
     let waited = bench
-        .integration_events()
+        .merge_events()
         .iter()
-        .any(|event| matches!(event, IntegrationEvent::WaitingToMerge { .. }));
+        .any(|event| matches!(event, MergeEvent::WaitingToMerge { .. }));
     assert!(!waited, "the run's own file was taken for yours");
     assert_eq!(
         std::fs::read_to_string(bench.repo.root().join("store.rs"))?,
@@ -1849,12 +2136,12 @@ async fn asked_for_your_first_commit() -> anyhow::Result<Bench> {
 }
 
 impl Bench {
-    /// What landed, where, and whether a branch of yours moved to it.
+    /// What merged, where, and whether a branch of yours moved to it.
     fn landing(&self) -> Option<(String, String, bool)> {
-        self.integration_events()
+        self.merge_events()
             .into_iter()
             .find_map(|event| match event {
-                IntegrationEvent::Landed {
+                MergeEvent::RunMerged {
                     target,
                     sha,
                     fast_forward,
@@ -1872,7 +2159,7 @@ impl Bench {
         ensure!(with_parents == first, "it has a parent: {with_parents}");
         let tree = |rev: &str| self.repo.git(&["rev-parse", &format!("{rev}^{{tree}}")]);
         ensure!(
-            tree(&first)? == tree(&self.integration_head()?)?,
+            tree(&first)? == tree(&self.run_head()?)?,
             "it doesn't hold the run's files"
         );
         let message = self.repo.git(&["log", "-1", "--format=%B", &first])?;
@@ -1895,13 +2182,13 @@ async fn a_run_can_make_your_branchs_first_commit() -> anyhow::Result<()> {
     bench.repo.git(&["add", "notes.txt"])?;
     let done = bench
         .run(async {
-            let opened = bench.next_merge_card(&[]).await?;
+            let opened = bench.next_merge_approval(&[]).await?;
             ensure!(
                 opened.title == "Merge this run into main?",
                 "{}",
                 opened.title
             );
-            let evidence = checkpoints::evidence_of(&bench.host, &opened)?;
+            let evidence = approvals::evidence_of(&bench.host, &opened)?;
             ensure!(
                 evidence.agent_outputs.iter().any(|line| line
                     .starts_with("main has no commits yet, so merging makes its first one")),
@@ -1948,7 +2235,7 @@ async fn a_run_can_make_your_branchs_first_commit() -> anyhow::Result<()> {
     }
 
     // The run review finds its notes in that commit already, and adds nothing to your branch.
-    retro::run(&bench.host).await?;
+    run_review::run(&bench.host).await?;
     assert_eq!(bench.repo.head()?, first);
     Ok(())
 }
@@ -1961,10 +2248,10 @@ async fn your_edit_in_the_way_holds_the_first_commit_back() -> anyhow::Result<()
     bench.repo.write("README.md", "# Mine now\n")?;
     let done = bench
         .run(async {
-            let first = bench.next_merge_card(&[]).await?;
+            let first = bench.next_merge_approval(&[]).await?;
             bench.answer(&first, AnswerAction::Merge)?;
             let asked = bench
-                .in_the_way_card(std::slice::from_ref(&first.id))
+                .in_the_way_approval(std::slice::from_ref(&first.id))
                 .await?;
             ensure!(bench.repo.head().is_err(), "committed over your edit");
             ensure!(
@@ -1990,7 +2277,7 @@ async fn your_own_first_commit_wins_over_the_runs() -> anyhow::Result<()> {
     let yours = bench.repo.commit_all("my first commit")?;
     let done = bench
         .run(async {
-            let opened = bench.next_merge_card(&[]).await?;
+            let opened = bench.next_merge_approval(&[]).await?;
             ensure!(
                 opened.title == "Merge this run into your files?",
                 "{}",
@@ -2001,7 +2288,7 @@ async fn your_own_first_commit_wins_over_the_runs() -> anyhow::Result<()> {
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
     assert_eq!(bench.repo.head()?, yours, "your branch moved");
-    let landing = bench.landing().context("nothing landed")?;
+    let landing = bench.landing().context("nothing merged")?;
     assert_eq!((landing.0.as_str(), landing.2), ("your files", false));
     assert_eq!(bench.repo.git(&["diff", "--name-only"])?, "README.md");
     assert!(
@@ -2022,7 +2309,7 @@ async fn your_own_first_commit_wins_over_the_runs() -> anyhow::Result<()> {
 async fn a_first_commit_cut_short_is_taken_up_where_it_stopped() -> anyhow::Result<()> {
     for branch_started in [false, true] {
         let bench = asked_for_your_first_commit().await?;
-        let head = bench.integration_head()?;
+        let head = bench.run_head()?;
         write_out(&bench, &head)?;
         let made = if branch_started {
             let tree = bench
@@ -2046,9 +2333,9 @@ async fn a_first_commit_cut_short_is_taken_up_where_it_stopped() -> anyhow::Resu
         assert_eq!(bench.landing(), Some(("main".to_owned(), first, true)));
         assert_eq!(bench.repo.git(&["status", "--porcelain"])?, "");
         let waited = bench
-            .integration_events()
+            .merge_events()
             .iter()
-            .any(|event| matches!(event, IntegrationEvent::WaitingToMerge { .. }));
+            .any(|event| matches!(event, MergeEvent::WaitingToMerge { .. }));
         ensure!(!waited, "the run's own files were taken for yours");
     }
     Ok(())
@@ -2079,10 +2366,10 @@ async fn files_in_the_way_wait_to_merge_and_move_aside() -> anyhow::Result<()> {
         .write("__pycache__/store.cpython-312.pyc", "not in the way")?;
     let done = bench
         .run(async {
-            let first = bench.next_merge_card(&[]).await?;
+            let first = bench.next_merge_approval(&[]).await?;
             bench.answer(&first, AnswerAction::Merge)?;
             let asked = bench
-                .in_the_way_card(std::slice::from_ref(&first.id))
+                .in_the_way_approval(std::slice::from_ref(&first.id))
                 .await?;
             assert_eq!(asked.title, "Waiting to merge into main");
             assert_eq!(keys(&asked), ['m', 't', 'l', 'p', 'k']);
@@ -2093,12 +2380,12 @@ async fn files_in_the_way_wait_to_merge_and_move_aside() -> anyhow::Result<()> {
                 FreeText::None,
                 "you choose, you don't type"
             );
-            let CheckpointPacket::Merge(packet) = &asked.packet else {
+            let ApprovalPacket::Merge(packet) = &asked.packet else {
                 bail!("not a merge packet");
             };
             assert_eq!(packet.in_the_way, ["store.rs"]);
             assert_eq!(packet.rows.len(), 1, "the merge's evidence, shown again");
-            let evidence = checkpoints::evidence_of(&bench.host, &asked)?;
+            let evidence = approvals::evidence_of(&bench.host, &asked)?;
             assert_eq!(
                 evidence.agent_outputs,
                 [
@@ -2107,22 +2394,18 @@ async fn files_in_the_way_wait_to_merge_and_move_aside() -> anyhow::Result<()> {
                 ]
             );
             ensure!(
-                !bench.landed(),
+                !bench.run_merged(),
                 "nothing merged while the files were in the way"
             );
-            ensure!(
-                bench
-                    .integration_events()
-                    .contains(&IntegrationEvent::WaitingToMerge {
-                        target: "main".to_owned(),
-                        in_the_way: vec!["store.rs".to_owned()],
-                    })
-            );
+            ensure!(bench.merge_events().contains(&MergeEvent::WaitingToMerge {
+                target: "main".to_owned(),
+                in_the_way: vec!["store.rs".to_owned()],
+            }));
             bench.answer(&asked, choose(MOVE_ASIDE))
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    bench.landed_on("HEAD")?;
+    bench.merged_into("HEAD")?;
     assert_eq!(
         std::fs::read_to_string(bench.repo.root().join("store.rs"))?,
         "fn store() {}\n"
@@ -2148,7 +2431,7 @@ async fn files_in_the_way_wait_to_merge_and_move_aside() -> anyhow::Result<()> {
 
 /// The sample case with the built-in list off, as it is by default: the tests left bytecode
 /// beside the work, the run's commit took it, and your checkout has the same file untracked.
-/// Git won't overwrite yours, so the run waits to merge on a card with choices instead of
+/// Git won't overwrite yours, so the run waits to merge on a question with choices instead of
 /// failing, and its work stays on its branch.
 #[tokio::test]
 async fn bytecode_the_run_committed_and_you_have_waits_to_merge() -> anyhow::Result<()> {
@@ -2159,16 +2442,16 @@ async fn bytecode_the_run_committed_and_you_have_waits_to_merge() -> anyhow::Res
         "the built-in list is opt-in"
     );
     let bench = Bench::with_work(
-        vec![spec(&CardId::numbered(1))],
+        vec![spec(&TaskId::numbered(1))],
         None,
         settings,
         &[(BYTECODE, "bytecode the tests left")],
     )
     .await?;
-    let work = bench.integration_head()?;
+    let work = bench.run_head()?;
     let committed = git_in(
         &bench.repo,
-        &bench.integration,
+        &bench.run_tree,
         &["show", "--name-only", "--format=", "HEAD"],
     )?;
     assert_eq!(
@@ -2179,12 +2462,12 @@ async fn bytecode_the_run_committed_and_you_have_waits_to_merge() -> anyhow::Res
     let main = bench.repo.head()?;
 
     let call = step_call()?;
-    let step = merge::merge_step(&bench.host, &call);
+    let step = merge_step(&bench.host, &call);
     let answering = async {
-        let first = bench.next_merge_card(&[]).await?;
+        let first = bench.next_merge_approval(&[]).await?;
         bench.answer(&first, AnswerAction::Merge)?;
         let asked = bench
-            .in_the_way_card(std::slice::from_ref(&first.id))
+            .in_the_way_approval(std::slice::from_ref(&first.id))
             .await?;
         assert_eq!(asked.title, "Waiting to merge into main");
         let labels: Vec<&str> = asked
@@ -2203,19 +2486,15 @@ async fn bytecode_the_run_committed_and_you_have_waits_to_merge() -> anyhow::Res
             ]
         );
         assert!(asked.needs_you);
-        let CheckpointPacket::Merge(packet) = &asked.packet else {
+        let ApprovalPacket::Merge(packet) = &asked.packet else {
             bail!("not a merge packet");
         };
         assert_eq!(packet.in_the_way, [BYTECODE]);
-        ensure!(!bench.landed(), "nothing merged over your file");
-        ensure!(
-            bench
-                .integration_events()
-                .contains(&IntegrationEvent::WaitingToMerge {
-                    target: "main".to_owned(),
-                    in_the_way: vec![BYTECODE.to_owned()],
-                })
-        );
+        ensure!(!bench.run_merged(), "nothing merged over your file");
+        ensure!(bench.merge_events().contains(&MergeEvent::WaitingToMerge {
+            target: "main".to_owned(),
+            in_the_way: vec![BYTECODE.to_owned()],
+        }));
         bench.answer(&asked, choose(MERGE_LATER))
     };
     let (done, answered) = tokio::join!(
@@ -2237,16 +2516,16 @@ async fn bytecode_the_run_committed_and_you_have_waits_to_merge() -> anyhow::Res
     assert_eq!(
         bench
             .host
-            .read(|state| state.integration.waiting_to_merge.clone()),
+            .read(|state| state.merge.waiting_to_merge.clone()),
         [BYTECODE]
     );
     // The work stays on the run's branch, and your checkout and your file are as they were.
-    let run_branch = branch::integration_branch(bench.host.run_id());
+    let run_branch = branch::run_branch(bench.host.run_id());
     assert_eq!(
         git_in(&bench.repo, bench.repo.root(), &["rev-parse", &run_branch])?,
         work
     );
-    assert_eq!(bench.integration_head()?, work);
+    assert_eq!(bench.run_head()?, work);
     assert_eq!(bench.repo.head()?, main);
     assert_eq!(
         std::fs::read_to_string(bench.repo.root().join(BYTECODE))?,
@@ -2261,21 +2540,21 @@ async fn try_again_asks_while_files_are_still_in_the_way() -> anyhow::Result<()>
     bench.repo.write("store.rs", "// mine\n")?;
     let done = bench
         .run(async {
-            let first = bench.next_merge_card(&[]).await?;
+            let first = bench.next_merge_approval(&[]).await?;
             bench.answer(&first, AnswerAction::Merge)?;
             let asked = bench
-                .in_the_way_card(std::slice::from_ref(&first.id))
+                .in_the_way_approval(std::slice::from_ref(&first.id))
                 .await?;
             bench.answer(&asked, choose(TRY_AGAIN))?;
             let again = bench
-                .in_the_way_card(&[first.id.clone(), asked.id.clone()])
+                .in_the_way_approval(&[first.id.clone(), asked.id.clone()])
                 .await?;
             std::fs::remove_file(bench.repo.root().join("store.rs"))?;
             bench.answer(&again, choose(TRY_AGAIN))
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    bench.landed_on("HEAD")?;
+    bench.merged_into("HEAD")?;
     Ok(())
 }
 
@@ -2288,10 +2567,10 @@ async fn a_waiting_merge_can_keep_the_branch_instead() -> anyhow::Result<()> {
     bench.repo.write("store.rs", "// mine\n")?;
     let done = bench
         .run(async {
-            let first = bench.next_merge_card(&[]).await?;
+            let first = bench.next_merge_approval(&[]).await?;
             bench.answer(&first, AnswerAction::Merge)?;
             let asked = bench
-                .in_the_way_card(std::slice::from_ref(&first.id))
+                .in_the_way_approval(std::slice::from_ref(&first.id))
                 .await?;
             let offered: Vec<&AnswerAction> =
                 asked.options.iter().map(|option| &option.action).collect();
@@ -2304,7 +2583,7 @@ async fn a_waiting_merge_can_keep_the_branch_instead() -> anyhow::Result<()> {
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::BranchLeft));
-    assert!(!bench.landed());
+    assert!(!bench.run_merged());
     assert_eq!(bench.repo.head()?, base, "your branch didn't move");
     assert_eq!(
         std::fs::read_to_string(bench.repo.root().join("store.rs"))?,
@@ -2321,13 +2600,13 @@ async fn git_trouble_while_landing_waits_instead_of_failing() -> anyhow::Result<
     let index = bench.repo.root().join(".git/index");
     let done = bench
         .run(async {
-            let first = bench.next_merge_card(&[]).await?;
+            let first = bench.next_merge_approval(&[]).await?;
             std::fs::write(&index, "not an index")?;
             bench.answer(&first, AnswerAction::Merge)?;
             let asked = bench
-                .next_merge_card(std::slice::from_ref(&first.id))
+                .next_merge_approval(std::slice::from_ref(&first.id))
                 .await?;
-            let CheckpointPacket::Merge(packet) = &asked.packet else {
+            let ApprovalPacket::Merge(packet) = &asked.packet else {
                 bail!("not a merge packet");
             };
             ensure!(
@@ -2338,19 +2617,55 @@ async fn git_trouble_while_landing_waits_instead_of_failing() -> anyhow::Result<
                 "{:?}",
                 packet.refused
             );
-            ensure!(!bench.landed(), "landed with a broken index");
+            ensure!(!bench.run_merged(), "the run merged with a broken index");
             std::fs::remove_file(&index)?;
             bench.repo.git(&["reset", "--quiet"])?;
             bench.answer(&asked, choose(TRY_AGAIN))
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    bench.landed_on("HEAD")?;
+    bench.merged_into("HEAD")?;
+    Ok(())
+}
+
+/// A merge your rules approved, drawn for a spot check, joins your queue once it is in, and
+/// not when they approved it: until then there is no merge of theirs to check.
+#[tokio::test]
+async fn an_auto_merge_drawn_for_a_spot_check_joins_your_queue_once_it_is_in() -> anyhow::Result<()>
+{
+    let bench = Bench::new(None).await?;
+    bench.services.policy.decide_next(PolicyOutcome::Decided {
+        verdict: Verdict::Approve,
+        by: DecideWith::Rules,
+        judge: None,
+        reasons: vec!["within your rules".to_owned()],
+        spot_check: true,
+    });
+    let done = bench.run(async { Ok(()) }).await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    let events = bench.sink.events();
+    let at = |wanted: &dyn Fn(&RunEventKind) -> bool| {
+        events.iter().position(|event| wanted(&event.kind))
+    };
+    let approved = at(&|kind| matches!(kind, RunEventKind::Approval(ApprovalEvent::Decided(_))));
+    let merged = at(&|kind| matches!(kind, RunEventKind::Merge(MergeEvent::Merged { .. })));
+    let queued = at(&|kind| {
+        matches!(
+            kind,
+            RunEventKind::Approval(ApprovalEvent::SpotCheckQueued { .. })
+        )
+    });
+    assert!(
+        approved.is_some() && approved < merged,
+        "{approved:?} {merged:?}"
+    );
+    assert!(merged < queued, "{merged:?} {queued:?}");
     Ok(())
 }
 
 /// A landing your rules approved and that was refused merged nothing, so the auto-merge
-/// they took goes back; the card you answer yourself takes none.
+/// they took goes back, and the spot check drawn for it never joins your queue; the question
+/// you answer yourself takes none.
 #[tokio::test]
 async fn a_refused_auto_landing_gives_back_its_auto_merge() -> anyhow::Result<()> {
     let bench = Bench::new(None).await?;
@@ -2358,55 +2673,62 @@ async fn a_refused_auto_landing_gives_back_its_auto_merge() -> anyhow::Result<()
         PolicyOutcome::Decided {
             verdict: Verdict::Approve,
             by: DecideWith::Rules,
-            approver: None,
+            judge: None,
             reasons: vec!["within your rules".to_owned()],
-            spot_check: false,
+            spot_check: true,
         },
         Duration::from_millis(300),
     );
     let done = bench
         .run(async {
-            let first = bench.next_merge_card(&[]).await?;
+            let first = bench.next_merge_approval(&[]).await?;
             // The branch moves before your rules' approval lands.
             commit_in(
                 &bench.repo,
-                &bench.integration,
+                &bench.run_tree,
                 "late.rs",
                 "late\n",
                 "late change",
             )?;
             let second = bench
-                .next_merge_card(std::slice::from_ref(&first.id))
+                .next_merge_approval(std::slice::from_ref(&first.id))
                 .await?;
             bench.answer(&second, AnswerAction::Merge)
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    let refused: Vec<CheckpointId> = bench
+    let refused: Vec<ApprovalId> = bench
         .services
         .policy
         .refused_landings()
         .into_iter()
-        .map(|point| point.checkpoint)
+        .map(|point| point.approval)
         .collect();
     assert_eq!(refused.len(), 1, "{refused:?}");
+    let queued = bench.sink.events().into_iter().any(|event| {
+        matches!(
+            event.kind,
+            RunEventKind::Approval(ApprovalEvent::SpotCheckQueued { .. })
+        )
+    });
+    assert!(!queued, "a merge that never happened has nothing to check");
     Ok(())
 }
 
-/// The review's first probe: you switch branches while the card waits, then choose Try
+/// The review's first probe: you switch branches while the question waits, then choose Try
 /// again. Landing reads the checkout again, so main lands and your branch is left alone,
 /// instead of a "Merged" that moved the branch you were on.
 #[tokio::test]
-async fn a_branch_switched_while_the_card_waits_leaves_it_alone() -> anyhow::Result<()> {
+async fn a_branch_switched_while_the_question_waits_leaves_it_alone() -> anyhow::Result<()> {
     let bench = Bench::new(None).await?;
     let base = bench.repo.head()?;
     bench.repo.write("store.rs", "// mine\n")?;
     let done = bench
         .run(async {
-            let first = bench.next_merge_card(&[]).await?;
+            let first = bench.next_merge_approval(&[]).await?;
             bench.answer(&first, AnswerAction::Merge)?;
             let asked = bench
-                .in_the_way_card(std::slice::from_ref(&first.id))
+                .in_the_way_approval(std::slice::from_ref(&first.id))
                 .await?;
             std::fs::remove_file(bench.repo.root().join("store.rs"))?;
             git_in(
@@ -2418,24 +2740,24 @@ async fn a_branch_switched_while_the_card_waits_leaves_it_alone() -> anyhow::Res
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    bench.landed_on("main")?;
+    bench.merged_into("main")?;
     assert_eq!(bench.repo.head()?, base, "your branch didn't move");
-    assert!(bench.integration_events().iter().any(|event| matches!(
+    assert!(bench.merge_events().iter().any(|event| matches!(
         event,
-        IntegrationEvent::Landed { target, .. } if target == "main"
+        MergeEvent::RunMerged { target, .. } if target == "main"
     )));
     Ok(())
 }
 
-/// The review's second probe: while the card waits you clear the file in the way and edit
+/// The review's second probe: while the question waits you clear the file in the way and edit
 /// one the run changes. Try again asks about the edit, in plain words, instead of failing the
 /// run with git's "Aborting", and lands once it's committed or undone.
 #[tokio::test]
-async fn an_edit_made_while_the_card_waits_asks_instead_of_failing() -> anyhow::Result<()> {
+async fn an_edit_made_while_the_question_waits_asks_instead_of_failing() -> anyhow::Result<()> {
     let bench = Bench::new(None).await?;
     commit_in(
         &bench.repo,
-        &bench.integration,
+        &bench.run_tree,
         "README.md",
         "# Test repo\n\nRun `store` to save.\n",
         "Document the store",
@@ -2443,19 +2765,19 @@ async fn an_edit_made_while_the_card_waits_asks_instead_of_failing() -> anyhow::
     bench.repo.write("store.rs", "// mine\n")?;
     let done = bench
         .run(async {
-            let first = bench.next_merge_card(&[]).await?;
+            let first = bench.next_merge_approval(&[]).await?;
             bench.answer(&first, AnswerAction::Merge)?;
             let asked = bench
-                .in_the_way_card(std::slice::from_ref(&first.id))
+                .in_the_way_approval(std::slice::from_ref(&first.id))
                 .await?;
             std::fs::remove_file(bench.repo.root().join("store.rs"))?;
             bench.repo.write("README.md", "# Test repo, my notes\n")?;
             bench.answer(&asked, choose(TRY_AGAIN))?;
 
             let edited = bench
-                .next_merge_card(&[first.id.clone(), asked.id.clone()])
+                .next_merge_approval(&[first.id.clone(), asked.id.clone()])
                 .await?;
-            let CheckpointPacket::Merge(packet) = &edited.packet else {
+            let ApprovalPacket::Merge(packet) = &edited.packet else {
                 bail!("not a merge packet");
             };
             assert_eq!(edited.title, "Waiting to merge into main");
@@ -2463,7 +2785,7 @@ async fn an_edit_made_while_the_card_waits_asks_instead_of_failing() -> anyhow::
             assert!(packet.in_the_way.is_empty());
             assert_eq!(keys(&edited), ['t', 'l', 'p', 'k'], "nothing to move aside");
             assert_eq!(edited.mode, ApprovalMode::Supervised);
-            ensure!(!bench.landed());
+            ensure!(!bench.run_merged());
             git_in(
                 &bench.repo,
                 bench.repo.root(),
@@ -2473,37 +2795,37 @@ async fn an_edit_made_while_the_card_waits_asks_instead_of_failing() -> anyhow::
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    bench.landed_on("HEAD")?;
+    bench.merged_into("HEAD")?;
     Ok(())
 }
 
 /// An uncommitted edit to a file the run leaves alone rides along with the fast-forward, so
-/// it neither stops the merge nor sends the card back to your rules again and again.
+/// it neither stops the merge nor sends the question back to your rules again and again.
 #[tokio::test]
 async fn an_edit_to_a_file_the_run_leaves_alone_rides_along() -> anyhow::Result<()> {
     let bench = Bench::new(None).await?;
     bench.repo.write("README.md", "# Test repo, my notes\n")?;
     let done = bench
         .run(async {
-            let first = bench.next_merge_card(&[]).await?;
+            let first = bench.next_merge_approval(&[]).await?;
             bench.answer(&first, AnswerAction::Merge)
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    bench.landed_on("HEAD")?;
+    bench.merged_into("HEAD")?;
     assert_eq!(
         std::fs::read_to_string(bench.repo.root().join("README.md"))?,
         "# Test repo, my notes\n"
     );
-    let merge_cards = bench.host.read(|state| {
+    let merge_tasks = bench.host.read(|state| {
         state
-            .checkpoints
+            .approvals
             .by_id
             .values()
-            .filter(|record| record.opened.kind == CheckpointKind::Merge)
+            .filter(|record| record.opened.kind == ApprovalKind::Merge)
             .count()
     });
-    assert_eq!(merge_cards, 1, "asked once");
+    assert_eq!(merge_tasks, 1, "asked once");
     Ok(())
 }
 
@@ -2514,12 +2836,12 @@ async fn merge_later_pauses_and_resuming_merges() -> anyhow::Result<()> {
     let bench = Bench::new(None).await?;
     bench.repo.write("store.rs", "// mine\n")?;
     let call = step_call()?;
-    let step = merge::merge_step(&bench.host, &call);
+    let step = merge_step(&bench.host, &call);
     let answering = async {
-        let first = bench.next_merge_card(&[]).await?;
+        let first = bench.next_merge_approval(&[]).await?;
         bench.answer(&first, AnswerAction::Merge)?;
         let asked = bench
-            .in_the_way_card(std::slice::from_ref(&first.id))
+            .in_the_way_approval(std::slice::from_ref(&first.id))
             .await?;
         bench.answer(&asked, choose(MERGE_LATER))
     };
@@ -2533,11 +2855,11 @@ async fn merge_later_pauses_and_resuming_merges() -> anyhow::Result<()> {
         other => bail!("expected the run to pause, got {other:?}"),
     }
     assert!(bench.host.read(|state| state.run.paused));
-    assert!(!bench.landed());
+    assert!(!bench.run_merged());
     assert_eq!(
         bench
             .host
-            .read(|state| state.integration.waiting_to_merge.clone()),
+            .read(|state| state.merge.waiting_to_merge.clone()),
         ["store.rs"]
     );
     assert!(
@@ -2553,12 +2875,12 @@ async fn merge_later_pauses_and_resuming_merges() -> anyhow::Result<()> {
     assert!(
         bench
             .host
-            .read(|state| state.integration.waiting_to_merge.is_empty())
+            .read(|state| state.merge.waiting_to_merge.is_empty())
     );
     Ok(())
 }
 
-/// Under `merge_rule = "none"` a replacement's debt is shown, but nothing counts as
+/// Under `merge_rule = "none"` a fallback's debt is shown, but nothing counts as
 /// unreviewed, so it never holds up the merge.
 #[tokio::test]
 async fn debt_under_merge_rule_none_is_not_unreviewed() -> anyhow::Result<()> {
@@ -2570,26 +2892,26 @@ async fn debt_under_merge_rule_none_is_not_unreviewed() -> anyhow::Result<()> {
     let mut settings = suite_settings();
     settings.fallback.merge_rule = Some(MergeRule::None);
     let bench = Bench::with(
-        vec![spec(&CardId::numbered(1))],
+        vec![spec(&TaskId::numbered(1))],
         Some(debt.clone()),
         settings,
     )
     .await?;
     let done = bench
         .run(async {
-            let card = bench.next_merge_card(&[]).await?;
-            let CheckpointPacket::Merge(packet) = &card.packet else {
+            let question = bench.next_merge_approval(&[]).await?;
+            let ApprovalPacket::Merge(packet) = &question.packet else {
                 bail!("not a merge packet");
             };
             ensure!(packet.rows[0].debt == vec![debt.clone()]);
-            let evidence = checkpoints::evidence_of(&bench.host, &card)?;
+            let evidence = approvals::evidence_of(&bench.host, &question)?;
             ensure!(
                 evidence.facts.unreviewed_debt == Some(Vec::new()),
                 "{:?}",
                 evidence.facts.unreviewed_debt
             );
             ensure!(evidence.facts.irreversible_actions == Some(Vec::new()));
-            bench.answer(&card, AnswerAction::Merge)
+            bench.answer(&question, AnswerAction::Merge)
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
@@ -2600,15 +2922,15 @@ async fn debt_under_merge_rule_none_is_not_unreviewed() -> anyhow::Result<()> {
 /// run ends saying what stopped each task.
 #[tokio::test]
 async fn with_no_task_passed_the_merge_never_opens() -> anyhow::Result<()> {
-    let card = CardId::numbered(1);
-    let bench = Bench::with(vec![spec(&card)], None, suite_settings()).await?;
+    let task = TaskId::numbered(1);
+    let bench = Bench::with(vec![spec(&task)], None, suite_settings()).await?;
     let before = bench.repo.head()?;
     bench.host.record(
-        Some(&card),
+        Some(&task),
         None,
-        RunEventKind::Card(CardEvent::State {
-            from: Some(CardState::Integrated),
-            to: CardState::Blocked,
+        RunEventKind::Task(TaskEvent::State {
+            from: Some(TaskState::Merged),
+            to: TaskState::Blocked,
             reason: "waiting on your answer about the key prefix".to_owned(),
         }),
     )?;
@@ -2618,32 +2940,32 @@ async fn with_no_task_passed_the_merge_never_opens() -> anyhow::Result<()> {
     let why = done.summary.unwrap_or_default();
     assert_eq!(
         why,
-        "Nothing was merged, since no task passed: task-001 is blocked on a question \
+        "Nothing was merged, since no task passed: \"Redis store\" is blocked on a question \
          (waiting on your answer about the key prefix)."
     );
     let events = bench.sink.events();
     assert!(!events.iter().any(|event| matches!(
         &event.kind,
-        RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
-            if opened.kind == CheckpointKind::Merge
+        RunEventKind::Approval(ApprovalEvent::Opened(opened))
+            if opened.kind == ApprovalKind::Merge
     )));
     assert!(events.iter().any(|event| matches!(
         &event.kind,
         RunEventKind::Note(note) if note.text == why
     )));
-    assert_eq!(bench.repo.head()?, before, "nothing landed");
+    assert_eq!(bench.repo.head()?, before, "nothing merged");
     Ok(())
 }
 
-/// An owner's note is kept under Argonauts' home before the merge checkpoint opens. It is
-/// never part of what lands, and the retro after the landing commits nothing.
+/// A worker's note is kept under Argonauts Code's home before the merge approval opens. It is
+/// never part of what lands, and the run review after the landing commits nothing.
 #[tokio::test]
-async fn retro_notes_stay_out_of_the_merge() -> anyhow::Result<()> {
+async fn run_review_notes_stay_out_of_the_merge() -> anyhow::Result<()> {
     let mut settings = suite_settings();
     settings.evolution.propose_every = 0;
-    let bench = Bench::with(vec![spec(&CardId::numbered(1))], None, settings).await?;
-    let card = CardId::numbered(1);
-    let report = CardReport {
+    let bench = Bench::with(vec![spec(&TaskId::numbered(1))], None, settings).await?;
+    let task = TaskId::numbered(1);
+    let report = TaskReport {
         status: ReportStatus::Done,
         summary: "Built the store.".to_owned(),
         files_changed: vec!["store.rs".to_owned()],
@@ -2658,16 +2980,16 @@ async fn retro_notes_stay_out_of_the_merge() -> anyhow::Result<()> {
         answer: String::new(),
     };
     bench.host.record(
-        Some(&card),
+        Some(&task),
         None,
-        RunEventKind::Card(CardEvent::Reported(Box::new(report))),
+        RunEventKind::Task(TaskEvent::Reported(Box::new(report))),
     )?;
     let note = ".argonauts/notes/store.md";
 
     let done = bench
         .run(async {
-            let opened = bench.next_merge_card(&[]).await?;
-            let evidence = checkpoints::evidence_of(&bench.host, &opened)?;
+            let opened = bench.next_merge_approval(&[]).await?;
+            let evidence = approvals::evidence_of(&bench.host, &opened)?;
             ensure!(
                 evidence.facts.conductor_paths.is_empty(),
                 "{:?}",
@@ -2678,19 +3000,19 @@ async fn retro_notes_stay_out_of_the_merge() -> anyhow::Result<()> {
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    let landed = bench.repo.head()?;
-    let tracked = bench.repo.git(&["ls-tree", "-r", "--name-only", &landed])?;
+    let merged = bench.repo.head()?;
+    let tracked = bench.repo.git(&["ls-tree", "-r", "--name-only", &merged])?;
     assert!(!tracked.contains(".argonauts/"), "{tracked}");
     let kept = argonauts_crew::divide::repo_state_dir(&bench.host).join("notes/store.md");
     assert!(std::fs::read_to_string(kept)?.contains("keeps keys for an hour"));
 
-    retro::run(&bench.host).await?;
+    run_review::run(&bench.host).await?;
     let events = bench.sink.events();
     assert!(!events.iter().any(|event| matches!(
         event.kind,
-        RunEventKind::Retro(RetroEvent::Committed { .. })
+        RunEventKind::RunReview(RunReviewEvent::Committed { .. })
     )));
-    assert_eq!(bench.repo.head()?, landed, "nothing merged after the merge");
+    assert_eq!(bench.repo.head()?, merged, "nothing merged after the merge");
     Ok(())
 }
 
@@ -2701,32 +3023,104 @@ async fn the_final_check_skips_a_main_that_did_not_move() -> anyhow::Result<()> 
     assert!(check.passed && check.suite_ran());
     assert!(
         !bench
-            .integration_events()
+            .merge_events()
             .iter()
-            .any(|event| matches!(event, IntegrationEvent::MainMoved { .. }))
+            .any(|event| matches!(event, MergeEvent::MainMoved { .. }))
     );
     Ok(())
 }
 
+/// The suite's result as its command leaves it: failing, with the counts it printed.
+fn suite_failed(summary: &str) -> CheckOutcome {
+    CheckOutcome {
+        name: "suite".to_owned(),
+        kind: CheckKind::Command,
+        passed: false,
+        command: Some(vec!["true".to_owned()]),
+        exit_code: Some(1),
+        duration_ms: 1,
+        summary: summary.to_owned(),
+        output_tail: String::new(),
+        violations: Vec::new(),
+        sandboxed: true,
+        skipped: false,
+    }
+}
+
+/// A suite that fails once the run's work is in is run on the starting code too. Failing there
+/// the same way, the run didn't break it: the final check passes and says so. Before, a test
+/// that already failed kept every run's work out.
+#[tokio::test]
+async fn the_final_check_passes_what_already_failed_at_the_start() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    let checks = &bench.services.checks;
+    checks.push(suite_failed("15 passed, 1 failed"));
+    checks.push_at_start(suite_failed("15 passed, 1 failed"));
+    let check = final_check::run(&bench.host).await?;
+    assert_eq!(
+        check.checks[0].summary,
+        "15 passed, 1 failed, as at the start"
+    );
+    assert!(check.passed, "{:?}", check.checks);
+    assert!(
+        bench
+            .merge_events()
+            .iter()
+            .any(|event| matches!(event, MergeEvent::FinalCheck { passed: true }))
+    );
+    // The starting code ran the suite's own command, in a copy of its own.
+    let asked = checks.start_requests();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].name, "suite");
+    assert_ne!(asked[0].workdir, bench.run_tree);
+    Ok(())
+}
+
+/// A suite that fails worse than it did on the starting code fails the final check, and its
+/// result says how the start compares.
+#[tokio::test]
+async fn the_final_check_fails_what_the_run_broke() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    let checks = &bench.services.checks;
+    checks.push(suite_failed("14 passed, 2 failed"));
+    checks.push_at_start(suite_failed("15 passed, 1 failed"));
+    let check = final_check::run(&bench.host).await?;
+    assert!(!check.passed);
+    assert_eq!(
+        check.checks[0].summary,
+        "14 passed, 2 failed (at the start: 15 passed, 1 failed)"
+    );
+    // One that passed on the starting code is the run's to answer for, as it was.
+    let bench = Bench::new(None).await?;
+    bench
+        .services
+        .checks
+        .push(suite_failed("15 passed, 1 failed"));
+    let check = final_check::run(&bench.host).await?;
+    assert!(!check.passed);
+    assert_eq!(check.checks[0].summary, "15 passed, 1 failed");
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn request_changes_sends_back_only_the_named_cards() -> anyhow::Result<()> {
-    let (one, two) = (CardId::numbered(1), CardId::numbered(2));
-    let cards = [&one, &two]
-        .map(|card| CardSpec {
+async fn request_changes_sends_back_only_the_named_tasks() -> anyhow::Result<()> {
+    let (one, two) = (TaskId::numbered(1), TaskId::numbered(2));
+    let tasks = [&one, &two]
+        .map(|task| TaskSpec {
             reviewers: vec![worker(CODEX)],
-            ..spec(card)
+            ..spec(task)
         })
         .to_vec();
-    let bench = Bench::with(cards, None, suite_settings()).await?;
-    let owner = bench
+    let bench = Bench::with(tasks, None, suite_settings()).await?;
+    let worker = bench
         .services
         .workers
-        .add(fixing_owner(OPUS, "claude", "renamed.rs"));
+        .add(fixing_worker(OPUS, "anthropic", "renamed.rs"));
     bench.services.workers.add(reviewer(CODEX, "codex", &[]));
 
     let done = bench
         .run(async {
-            let first = bench.next_merge_card(&[]).await?;
+            let first = bench.next_merge_approval(&[]).await?;
             bench.answer_with(
                 &first,
                 AnswerAction::RequestChanges,
@@ -2734,18 +3128,18 @@ async fn request_changes_sends_back_only_the_named_cards() -> anyhow::Result<()>
                 vec![two.clone()],
             )?;
             let second = bench
-                .next_merge_card(std::slice::from_ref(&first.id))
+                .next_merge_approval(std::slice::from_ref(&first.id))
                 .await?;
             bench.answer(&second, AnswerAction::KeepBranch)
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::BranchLeft));
 
-    // Only the named card went back, and its owner got your note.
+    // Only the named task went back, and its worker got your note.
     assert_eq!(bench.sent_back(), std::slice::from_ref(&two));
-    let specs = owner.specs();
+    let specs = worker.specs();
     assert_eq!(specs.len(), 1);
-    assert_eq!(specs[0].card.as_ref(), Some(&two));
+    assert_eq!(specs[0].task.as_ref(), Some(&two));
     assert!(
         specs[0]
             .prompt
@@ -2754,22 +3148,22 @@ async fn request_changes_sends_back_only_the_named_cards() -> anyhow::Result<()>
     );
     // It merged again, and the final check ran on the new head.
     let merges = bench
-        .integration_events()
+        .merge_events()
         .into_iter()
-        .filter(|event| matches!(event, IntegrationEvent::Merged { card, .. } if *card == two))
+        .filter(|event| matches!(event, MergeEvent::Merged { task, .. } if *task == two))
         .count();
     assert_eq!(merges, 2);
-    assert!(bench.integration.join("renamed.rs").exists());
+    assert!(bench.run_tree.join("renamed.rs").exists());
     assert_eq!(bench.final_checks(), 2);
     let state = bench
         .host
-        .read(|state| [&one, &two].map(|card| state.cards.get(card).map(|record| record.state)));
-    assert_eq!(state, [Some(CardState::Integrated); 2]);
+        .read(|state| [&one, &two].map(|task| state.tasks.get(task).map(|record| record.state)));
+    assert_eq!(state, [Some(TaskState::Merged); 2]);
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_upgrade_review_that_asks_for_changes_sends_the_card_back() -> anyhow::Result<()> {
+async fn an_upgrade_review_that_asks_for_changes_sends_the_task_back() -> anyhow::Result<()> {
     let debt = QualityDebt {
         since: 1,
         by: worker(CODEX),
@@ -2779,34 +3173,34 @@ async fn an_upgrade_review_that_asks_for_changes_sends_the_card_back() -> anyhow
     settings.crew = vec![worker(OPUS), worker(CODEX), worker(GEMINI)].into();
     settings.roles.clear();
     settings.fallback.unknown_tier = Some(UnknownTier::Equal);
-    let card = CardSpec {
+    let task = TaskSpec {
         reviewers: vec![worker(GEMINI)],
-        ..spec(&CardId::numbered(1))
+        ..spec(&TaskId::numbered(1))
     };
-    let bench = Bench::with(vec![card], Some(debt), settings).await?;
+    let bench = Bench::with(vec![task], Some(debt), settings).await?;
     bench.services.health.set(
-        &worker(OPUS).vendor(),
+        &worker(OPUS).agent_id(),
         HealthState::Down,
         Some("usage limit"),
     );
-    let owner = bench
+    let worker = bench
         .services
         .workers
-        .add(fixing_owner(CODEX, "codex", "reviewed.rs"));
+        .add(fixing_worker(CODEX, "codex", "reviewed.rs"));
     bench
         .services
         .workers
-        .add(reviewer(GEMINI, "gemini", &["request_changes"]));
+        .add(reviewer(GEMINI, "google", &["request_changes"]));
 
     let done = bench
         .run(async {
-            let first = bench.next_merge_card(&[]).await?;
+            let first = bench.next_merge_approval(&[]).await?;
             ensure!(keys(&first).contains(&'a'), "{:?}", keys(&first));
             bench.answer(&first, AnswerAction::UpgradeReview)?;
             let second = bench
-                .next_merge_card(std::slice::from_ref(&first.id))
+                .next_merge_approval(std::slice::from_ref(&first.id))
                 .await?;
-            let CheckpointPacket::Merge(packet) = &second.packet else {
+            let ApprovalPacket::Merge(packet) = &second.packet else {
                 bail!("not a merge packet");
             };
             ensure!(packet.rows[0].debt.is_empty(), "{:?}", packet.rows[0].debt);
@@ -2814,8 +3208,8 @@ async fn an_upgrade_review_that_asks_for_changes_sends_the_card_back() -> anyhow
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::BranchLeft));
-    assert_eq!(bench.sent_back(), [CardId::numbered(1)]);
-    let specs = owner.specs();
+    assert_eq!(bench.sent_back(), [TaskId::numbered(1)]);
+    let specs = worker.specs();
     assert_eq!(specs.len(), 1);
     assert!(
         specs[0]
@@ -2823,40 +3217,37 @@ async fn an_upgrade_review_that_asks_for_changes_sends_the_card_back() -> anyhow
             .iter()
             .any(|part| part.text.contains("the upgrade review asked for changes"))
     );
-    assert!(bench.integration.join("reviewed.rs").exists());
+    assert!(bench.run_tree.join("reviewed.rs").exists());
     Ok(())
 }
 
 #[tokio::test]
 async fn a_woken_run_acts_on_your_answer_without_checking_again() -> anyhow::Result<()> {
     let bench = Bench::new(None).await?;
-    // The run parks at the checkpoint, and you answer while it's parked.
+    // The run waits at the approval, and you answer while it's waiting.
     let call = step_call()?;
-    let parked = tokio::time::timeout(
-        Duration::from_secs(2),
-        merge::merge_step(&bench.host, &call),
-    )
-    .await;
-    ensure!(parked.is_err(), "the step ended without your answer");
-    let opened = bench.next_merge_card(&[]).await?;
+    let waiting =
+        tokio::time::timeout(Duration::from_secs(2), merge_step(&bench.host, &call)).await;
+    ensure!(waiting.is_err(), "the step ended without your answer");
+    let opened = bench.next_merge_approval(&[]).await?;
     bench.answer(&opened, AnswerAction::KeepBranch)?;
     let phases = bench.phase_events();
 
     // A suite that would fail now changes nothing: the answer stands on the same heads.
-    bench.services.gates.fail_next("flaky");
+    bench.services.checks.fail_next("flaky");
     let done = bench.run(async { Ok(()) }).await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::BranchLeft));
     assert_eq!(bench.final_checks(), 1);
-    assert_eq!(bench.services.gates.requests().len(), 1);
-    let merge_cards = bench.host.read(|state| {
+    assert_eq!(bench.services.checks.requests().len(), 1);
+    let merge_tasks = bench.host.read(|state| {
         state
-            .checkpoints
+            .approvals
             .by_id
             .values()
-            .filter(|record| record.opened.kind == CheckpointKind::Merge)
+            .filter(|record| record.opened.kind == ApprovalKind::Merge)
             .count()
     });
-    assert_eq!(merge_cards, 1);
+    assert_eq!(merge_tasks, 1);
     // Only the merge phase's end is new.
     assert_eq!(bench.phase_events(), phases + 1);
     Ok(())

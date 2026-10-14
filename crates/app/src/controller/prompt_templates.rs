@@ -6,8 +6,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, bail};
-use argonauts_core::CardId;
 use argonauts_core::NoteLevel;
+use argonauts_core::TaskId;
 use argonauts_core::api::DiffView;
 use argonauts_core::app::{AppEvent, ViewData};
 use argonauts_core::input::{PromptsAction, SlashCommand};
@@ -53,7 +53,7 @@ pub(crate) fn command(ctx: &Ctx, action: PromptsAction) -> anyhow::Result<Vec<Ef
     Ok(Vec::new())
 }
 
-/// What a command did, for the chat and for the footer of the list when it is open.
+/// What a command did, for the conversation and for the footer of the list when it is open.
 struct Said {
     level: NoteLevel,
     text: String,
@@ -92,7 +92,7 @@ fn readers(name: &str) -> anyhow::Result<Readers> {
 
 fn no_such_role(name: &str) -> String {
     format!(
-        "{name:?} isn't a role. The crew's are main, orchestrator, workers, reviewers and \
+        "{name:?} isn't a role. The crew's are main, orchestrator, worker, reviewer and \
          judge, and a finer role such as critic goes by its own name"
     )
 }
@@ -219,7 +219,7 @@ fn copy(ctx: &Ctx, template: &Template, global: bool) -> anyhow::Result<Said> {
 /// `~/.argonauts/prompts/`, there to read and to edit. The repository gets none, since files
 /// nobody asked for would show up in its `git status`: `/prompts copy` puts one there.
 /// A copy nobody edits changes nothing, so running the setup again is safe. A failure is a
-/// notice, and the chat opens anyway.
+/// notice, and the conversation opens anyway.
 pub(crate) fn write_for_setup(ctx: &Ctx) {
     let home = ctx.env.paths.home();
     if let Err(err) = catalog::write_templates(home) {
@@ -304,7 +304,7 @@ fn diff(ctx: &Ctx, dirs: &PromptDirs, template: &Template) -> anyhow::Result<Opt
         ))));
     }
     let title = name.replace('/', "-");
-    let card = CardId::new(&title).with_context(|| format!("{title:?} can't title a diff"))?;
+    let task = TaskId::new(&title).with_context(|| format!("{title:?} can't title a diff"))?;
     let diff = file_diff(
         template.text,
         &yours.text,
@@ -314,7 +314,7 @@ fn diff(ctx: &Ctx, dirs: &PromptDirs, template: &Template) -> anyhow::Result<Opt
     ctx.send(AppEvent::View {
         data: Box::new(ViewData::Diff {
             diff: DiffView {
-                card,
+                task,
                 stat: diff.stat,
                 text: diff.text,
                 path: yours.path,
@@ -368,18 +368,18 @@ fn reset_role(dirs: &PromptDirs, role: &str) -> anyhow::Result<Said> {
 mod tests {
     use argonauts_core::app::UiCommand;
 
-    use super::super::test_support::Harness;
+    use super::super::test_support::TestDriver;
     use super::*;
 
     /// What the command said or opened. The list it refreshes afterwards is for a list
     /// already open, so it is passed over here.
-    async fn prompts(harness: &mut Harness, action: PromptsAction) -> AppEvent {
-        harness
+    async fn prompts(driver: &mut TestDriver, action: PromptsAction) -> AppEvent {
+        driver
             .send(UiCommand::Slash {
                 command: SlashCommand::Prompts { action },
             })
             .await;
-        harness
+        driver
             .until(|event| match event {
                 AppEvent::Notice { .. } => true,
                 AppEvent::View { data } => !matches!(
@@ -414,13 +414,13 @@ mod tests {
 
     #[tokio::test]
     async fn the_list_shows_roles_writers_and_what_each_key_acts_on() {
-        let mut harness = Harness::start().await;
-        let list = list(prompts(&mut harness, PromptsAction::List).await);
+        let mut driver = TestDriver::start().await;
+        let list = list(prompts(&mut driver, PromptsAction::List).await);
         assert!(!list.refresh);
         let table = list.table();
         assert!(table.contains("written by"), "{table}");
         assert!(table.contains("the orchestrator"), "{table}");
-        assert!(table.contains("frames/reviewers"), "{table}");
+        assert!(table.contains("frames/reviewer"), "{table}");
         assert_eq!(list.writers[0].shown, "the orchestrator");
         assert_eq!(list.writers[1].value, "built-in");
         assert!(list.notes.is_empty(), "{:?}", list.notes);
@@ -430,8 +430,8 @@ mod tests {
     /// for its footer.
     #[tokio::test]
     async fn the_open_list_hears_what_a_key_did() {
-        let mut harness = Harness::start().await;
-        harness
+        let mut driver = TestDriver::start().await;
+        driver
             .send(UiCommand::Slash {
                 command: SlashCommand::Prompts {
                     action: PromptsAction::Copy {
@@ -441,7 +441,7 @@ mod tests {
                 },
             })
             .await;
-        let refreshed = harness
+        let refreshed = driver
             .until(|event| matches!(event, AppEvent::View { .. }))
             .await;
         let list = list(refreshed);
@@ -463,60 +463,60 @@ mod tests {
     /// `/prompts role reviewers` writes a starter that changes nothing until you write in it.
     #[tokio::test]
     async fn a_starter_role_file_is_written_once() {
-        let mut harness = Harness::start().await;
+        let mut driver = TestDriver::start().await;
         let role = |global| PromptsAction::Role {
-            role: named("reviewers"),
+            role: named("reviewer"),
             global,
         };
-        let file = harness.env.repo_root.join(".argonauts/roles/reviewers.md");
-        let wrote = prompts(&mut harness, role(false)).await;
+        let file = driver.env.repo_root.join(".argonauts/roles/reviewer.md");
+        let wrote = prompts(&mut driver, role(false)).await;
         assert!(
-            text(&wrote).starts_with("Wrote .argonauts/roles/reviewers.md. Write your"),
+            text(&wrote).starts_with("Wrote .argonauts/roles/reviewer.md. Write your"),
             "{}",
             text(&wrote)
         );
         let starter = std::fs::read_to_string(&file).unwrap();
         assert!(starter.starts_with("---\n# Your own instructions for the reviewers."));
-        let listed = list(prompts(&mut harness, PromptsAction::List).await);
+        let listed = list(prompts(&mut driver, PromptsAction::List).await);
         let row = |list: &PromptList| {
             let found = list
                 .rows
                 .iter()
-                .find(|row| row.role == "reviewers" && row.name.is_none());
+                .find(|row| row.role == "reviewer" && row.name.is_none());
             found.unwrap().clone()
         };
         assert_eq!(row(&listed).yours, "", "an empty starter is no role file");
 
         std::fs::write(&file, format!("{starter}Check error handling.\n")).unwrap();
-        let again = prompts(&mut harness, role(false)).await;
+        let again = prompts(&mut driver, role(false)).await;
         assert!(
             text(&again).contains("is there already"),
             "{}",
             text(&again)
         );
-        let listed = list(prompts(&mut harness, PromptsAction::List).await);
-        assert_eq!(row(&listed).yours, "roles/reviewers.md");
+        let listed = list(prompts(&mut driver, PromptsAction::List).await);
+        assert_eq!(row(&listed).yours, "roles/reviewer.md");
 
         // Deleting it takes your words back, and a second time there is nothing to delete.
         let reset = || PromptsAction::ResetRole {
-            role: named("reviewers"),
+            role: named("reviewer"),
         };
-        let deleted = prompts(&mut harness, reset()).await;
+        let deleted = prompts(&mut driver, reset()).await;
         assert_eq!(
             text(&deleted),
-            "Deleted roles/reviewers.md. No file of yours speaks to the reviewers now."
+            "Deleted roles/reviewer.md. No file of yours speaks to the reviewers now."
         );
         assert!(!file.exists());
-        let listed = list(prompts(&mut harness, PromptsAction::List).await);
+        let listed = list(prompts(&mut driver, PromptsAction::List).await);
         assert_eq!(row(&listed).yours, "");
-        let nothing = prompts(&mut harness, reset()).await;
+        let nothing = prompts(&mut driver, reset()).await;
         assert_eq!(text(&nothing), "No file of yours speaks to the reviewers.");
 
         let unknown = PromptsAction::Role {
             role: named("captain"),
             global: false,
         };
-        let refused = prompts(&mut harness, unknown).await;
+        let refused = prompts(&mut driver, unknown).await;
         assert!(
             text(&refused).starts_with("\"captain\" isn't a role. The crew's are main,"),
             "{}",
@@ -528,32 +528,32 @@ mod tests {
     /// file stands in for its crew role's.
     #[tokio::test]
     async fn a_finer_role_gets_a_file_and_a_frame_of_its_own() {
-        let mut harness = Harness::start().await;
-        let dir = harness.env.repo_root.join(".argonauts");
+        let mut driver = TestDriver::start().await;
+        let dir = driver.env.repo_root.join(".argonauts");
         std::fs::create_dir_all(dir.join("roles")).unwrap();
-        std::fs::write(dir.join("roles/reviewers.md"), "Check error handling.\n").unwrap();
+        std::fs::write(dir.join("roles/reviewer.md"), "Check error handling.\n").unwrap();
         let critic = |list: &PromptList| -> Vec<String> {
             let rows = list.rows.iter().filter(|row| row.role == "critic");
             rows.map(|row| format!("{} · {}", row.part, row.yours))
                 .collect()
         };
-        let listed = list(prompts(&mut harness, PromptsAction::List).await);
+        let listed = list(prompts(&mut driver, PromptsAction::List).await);
         assert!(critic(&listed).is_empty(), "{:?}", critic(&listed));
 
         let role = PromptsAction::Role {
             role: named("critic"),
             global: false,
         };
-        let wrote = prompts(&mut harness, role).await;
+        let wrote = prompts(&mut driver, role).await;
         assert_eq!(
             text(&wrote),
             "Wrote .argonauts/roles/critic.md. Write your instructions for the critic role in \
-             it. Agents that start after that read them, in place of roles/reviewers.md."
+             it. Agents that start after that read them, in place of roles/reviewer.md."
         );
         let file = dir.join("roles/critic.md");
         let starter = std::fs::read_to_string(&file).unwrap();
         assert!(
-            starter.contains("the critic role reads it in place of roles/reviewers.md"),
+            starter.contains("the critic role reads it in place of roles/reviewer.md"),
             "{starter}"
         );
         std::fs::write(&file, format!("{starter}Argue the opposite case.\n")).unwrap();
@@ -561,13 +561,13 @@ mod tests {
             name: named("frames/critic"),
             global: false,
         };
-        let copied = prompts(&mut harness, copy).await;
+        let copied = prompts(&mut driver, copy).await;
         assert!(
             text(&copied).starts_with("Wrote .argonauts/prompts/frames/critic.md."),
             "{}",
             text(&copied)
         );
-        let listed = list(prompts(&mut harness, PromptsAction::List).await);
+        let listed = list(prompts(&mut driver, PromptsAction::List).await);
         assert_eq!(
             critic(&listed),
             [
@@ -580,12 +580,12 @@ mod tests {
         let reset = || PromptsAction::ResetRole {
             role: named("critic"),
         };
-        let deleted = prompts(&mut harness, reset()).await;
+        let deleted = prompts(&mut driver, reset()).await;
         assert_eq!(
             text(&deleted),
-            "Deleted roles/critic.md. roles/reviewers.md is in use now."
+            "Deleted roles/critic.md. roles/reviewer.md is in use now."
         );
-        let nothing = prompts(&mut harness, reset()).await;
+        let nothing = prompts(&mut driver, reset()).await;
         assert_eq!(
             text(&nothing),
             "No file of yours speaks to the critic role alone."
@@ -593,26 +593,26 @@ mod tests {
         let frame = PromptsAction::Reset {
             name: named("frames/critic"),
         };
-        let deleted = prompts(&mut harness, frame).await;
+        let deleted = prompts(&mut driver, frame).await;
         assert_eq!(
             text(&deleted),
             "Deleted prompts/frames/critic.md. The built-in is in use again."
         );
-        let listed = list(prompts(&mut harness, PromptsAction::List).await);
+        let listed = list(prompts(&mut driver, PromptsAction::List).await);
         assert!(critic(&listed).is_empty(), "{:?}", critic(&listed));
     }
 
     #[tokio::test]
     async fn copy_edit_show_and_reset_go_round() {
-        let mut harness = Harness::start().await;
-        let name = "frames/reviewers";
-        let file = harness
+        let mut driver = TestDriver::start().await;
+        let name = "frames/reviewer";
+        let file = driver
             .env
             .repo_root
-            .join(".argonauts/prompts/frames/reviewers.md");
+            .join(".argonauts/prompts/frames/reviewer.md");
 
         let copied = prompts(
-            &mut harness,
+            &mut driver,
             PromptsAction::Copy {
                 name: named(name),
                 global: false,
@@ -628,19 +628,19 @@ mod tests {
             name: named(name),
             global: false,
         };
-        let again = prompts(&mut harness, copy).await;
+        let again = prompts(&mut driver, copy).await;
         assert!(
             text(&again).contains("as the built-in has it"),
             "{}",
             text(&again)
         );
-        let listed = list(prompts(&mut harness, PromptsAction::List).await);
+        let listed = list(prompts(&mut driver, PromptsAction::List).await);
         assert!(
             listed.table().contains("copied, as built in"),
             "{}",
             listed.table()
         );
-        let diffed = prompts(&mut harness, PromptsAction::Diff { name: named(name) }).await;
+        let diffed = prompts(&mut driver, PromptsAction::Diff { name: named(name) }).await;
         assert!(
             text(&diffed).contains("is a copy nobody edited"),
             "{}",
@@ -649,15 +649,15 @@ mod tests {
 
         // Your edit is what's in use, and a second copy never overwrites it.
         std::fs::write(&file, "You review. {{author}} wrote this.\n").unwrap();
-        let shown = prompts(&mut harness, PromptsAction::Show { name: named(name) }).await;
+        let shown = prompts(&mut driver, PromptsAction::Show { name: named(name) }).await;
         assert!(
             text(&shown).contains("{{author}} wrote this."),
             "{}",
             text(&shown)
         );
-        assert!(text(&shown).contains("from prompts/frames/reviewers.md"));
+        assert!(text(&shown).contains("from prompts/frames/reviewer.md"));
         let again = prompts(
-            &mut harness,
+            &mut driver,
             PromptsAction::Copy {
                 name: named(name),
                 global: false,
@@ -665,20 +665,20 @@ mod tests {
         )
         .await;
         assert!(text(&again).contains("was kept"), "{}", text(&again));
-        let listed = list(prompts(&mut harness, PromptsAction::List).await);
+        let listed = list(prompts(&mut driver, PromptsAction::List).await);
         assert!(listed.table().contains("✎ changed"), "{}", listed.table());
-        let diffed = prompts(&mut harness, PromptsAction::Diff { name: named(name) }).await;
+        let diffed = prompts(&mut driver, PromptsAction::Diff { name: named(name) }).await;
         assert!(matches!(diffed, AppEvent::View { .. }), "{diffed:?}");
 
         // Deleting it goes back.
-        let reset = prompts(&mut harness, PromptsAction::Reset { name: named(name) }).await;
+        let reset = prompts(&mut driver, PromptsAction::Reset { name: named(name) }).await;
         assert!(
             text(&reset).contains("The built-in is in use again"),
             "{}",
             text(&reset)
         );
         assert!(!file.exists());
-        let shown = prompts(&mut harness, PromptsAction::Show { name: named(name) }).await;
+        let shown = prompts(&mut driver, PromptsAction::Show { name: named(name) }).await;
         assert!(text(&shown).contains("built in"), "{}", text(&shown));
     }
 
@@ -686,7 +686,7 @@ mod tests {
     /// `/prompts` says so under its table, and so does Doctor.
     #[tokio::test]
     async fn a_reviewers_file_that_names_a_cli_is_warned_about() {
-        use super::super::test_support::HarnessOptions;
+        use super::super::test_support::CliOptions;
 
         // Nothing real runs for Doctor: every CLI points nowhere.
         let ids = [
@@ -700,45 +700,45 @@ mod tests {
             .iter()
             .map(|id| format!(r#"agents.{id}.binary="/nowhere/{id}""#))
             .collect();
-        let mut harness = Harness::start_with(HarnessOptions {
+        let mut driver = TestDriver::start_with(CliOptions {
             flags,
-            ..HarnessOptions::default()
+            ..CliOptions::default()
         })
         .await;
-        let file = harness.env.repo_root.join(".argonauts/roles/reviewers.md");
+        let file = driver.env.repo_root.join(".argonauts/roles/reviewer.md");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, "Go easy on Codex's code.\n").unwrap();
-        let warning = "roles/reviewers.md names Codex, which tells the reviewers who made the \
+        let warning = "roles/reviewer.md names Codex, which tells the reviewers who made the \
                        work. They aren't told otherwise.";
 
-        let listed = list(prompts(&mut harness, PromptsAction::List).await);
+        let listed = list(prompts(&mut driver, PromptsAction::List).await);
         assert_eq!(listed.notes, [warning]);
 
-        harness
+        driver
             .send(UiCommand::Slash {
                 command: SlashCommand::Doctor,
             })
             .await;
-        let report = harness
+        let report = driver
             .until(|event| matches!(event, AppEvent::Report { .. }))
             .await;
         let AppEvent::Report { lines, .. } = report else {
             unreachable!()
         };
         assert_eq!(lines.last().map(String::as_str), Some(warning), "{lines:?}");
-        harness.exit().await;
+        driver.exit().await;
     }
 
     #[tokio::test]
     async fn copy_all_writes_the_templates_and_the_readme() {
-        let mut harness = Harness::start().await;
-        let done = prompts(&mut harness, PromptsAction::CopyAll { global: false }).await;
+        let mut driver = TestDriver::start().await;
+        let done = prompts(&mut driver, PromptsAction::CopyAll { global: false }).await;
         assert!(
             text(&done).contains("templates into .argonauts/prompts, beside their README"),
             "{}",
             text(&done)
         );
-        let dir = harness.env.repo_root.join(".argonauts/prompts");
+        let dir = driver.env.repo_root.join(".argonauts/prompts");
         assert!(dir.join("README.md").is_file());
         assert!(dir.join("review/review.md").is_file());
     }
@@ -746,8 +746,8 @@ mod tests {
     /// `/prompts writer judge built-in` asks where to keep it, like any setting.
     #[tokio::test]
     async fn picking_a_writer_asks_where_to_keep_it() {
-        let mut harness = Harness::start().await;
-        harness
+        let mut driver = TestDriver::start().await;
+        driver
             .send(UiCommand::Slash {
                 command: SlashCommand::Prompts {
                     action: PromptsAction::Writer {
@@ -757,7 +757,7 @@ mod tests {
                 },
             })
             .await;
-        let asked = harness
+        let asked = driver
             .until(|event| matches!(event, AppEvent::Choice { .. } | AppEvent::Notice { .. }))
             .await;
         let AppEvent::Choice { choice } = asked else {

@@ -9,7 +9,7 @@ use argonauts_core::AgentEvent;
 use argonauts_core::adapter::{Adapter, StreamParser};
 use argonauts_core::events::session::{SubagentStatus, SubagentUpdate};
 
-const RECORDING: &str = include_str!("data/subagents-2.1.292.stdout.jsonl");
+const RECORDING: &str = include_str!("data/subagents.stdout.jsonl");
 
 const COUNT_SLOWLY: &str = "toolu_01RPtHvakNkAc1hxf21C6arN";
 const SLEEP_LONG: &str = "toolu_01VuwvYaPkhY8qTDuZvnaJcZ";
@@ -166,10 +166,10 @@ fn a_turn_stops_alone_only_once_the_session_took_initialize() {
 
 /// The turn a stop ends says so in its result: `error_during_execution` with an aborted
 /// terminal reason (2.1.292's program text; no turn was mid-flight when the recording's
-/// interrupt landed). It reads as an interruption and then the turn's result, which is what
+/// interrupt merged). It reads as an interruption and then the turn's result, which is what
 /// the screen's `Interrupted` line and the session's end as stopped go by.
 ///
-/// The last case is the result 2.1.287 sent when a run of Argonauts' own stopped a session
+/// The last case is the result 2.1.287 sent when a run of Argonauts Code's own stopped a session
 /// in the middle of a tool call, with its ids and numbers cut: no `result` text, and an
 /// `errors` list that is diagnostics rather than a failure to report.
 #[test]

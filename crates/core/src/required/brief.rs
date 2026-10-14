@@ -38,7 +38,7 @@ pub fn for_claude_code(required: &Required) -> Option<String> {
     let mut parts = Vec::new();
     if !required.steps.is_empty() {
         let mut text = String::from(
-            "Your workflow must have a phase for each of these steps, titled with this name, \
+            "Your workflow must have a phase for each of these steps, by this name, \
              where it says:\n",
         );
         for step in &required.steps {

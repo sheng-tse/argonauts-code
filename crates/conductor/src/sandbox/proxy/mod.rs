@@ -1,5 +1,5 @@
-//! The localhost proxy that is a sandboxed session's only way out. macOS won't start a harness's
-//! own sandbox inside ours, so the harness runs with its own turned off, and our profile lets the
+//! The localhost proxy that is a sandboxed session's only way out. macOS won't start a CLI's
+//! own sandbox inside ours, so the CLI runs with its own turned off, and our profile lets the
 //! session connect to one loopback port: this proxy. The proxy opens CONNECT tunnels to the hosts
 //! on the session's list and refuses everything else. Your local model servers are the one
 //! exception: they speak plain HTTP, often on this machine's loopback, so requests to exactly
@@ -11,11 +11,11 @@
 //! One proxy serves the whole process on one random port, on its own runtime thread so it
 //! outlives whichever runtime asked for it. Each list of hosts gets a random key, which its
 //! sessions send as the proxy URL's password. The key picks the list, and a process without one,
-//! such as a gate with loopback open for its test servers, gets no tunnel at all.
+//! such as a check with loopback open for its test servers, gets no tunnel at all.
 
 mod allow;
 
-pub use allow::{Allowlist, Rule, harness_hosts};
+pub use allow::{Allowlist, Rule, cli_hosts};
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
@@ -546,7 +546,7 @@ fn host_and_port(target: &str, default: Option<u16>) -> Result<(String, u16), Ba
 }
 
 async fn connect(resolver: &Resolver, host: &str, port: u16) -> io::Result<TcpStream> {
-    let attempt = async {
+    let connecting = async {
         let addrs = resolver(host.to_owned(), port).await?;
         let mut last = io::Error::new(io::ErrorKind::NotFound, "no usable address");
         for addr in addrs {
@@ -557,7 +557,7 @@ async fn connect(resolver: &Resolver, host: &str, port: u16) -> io::Result<TcpSt
         }
         Err(last)
     };
-    timeout(CONNECT_TIMEOUT, attempt)
+    timeout(CONNECT_TIMEOUT, connecting)
         .await
         .unwrap_or_else(|_| Err(io::ErrorKind::TimedOut.into()))
 }

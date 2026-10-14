@@ -1,4 +1,4 @@
-//! Steps you require in every workflow, and a task list you fixed. Another part of Argonauts
+//! Steps you require in every workflow, and a task list you fixed. Another part of Argonauts Code
 //! reads them from `workflows/always.toml` and from a request's words; this is what the runner
 //! does with them.
 
@@ -73,7 +73,7 @@ impl Required {
                 !meta
                     .phases
                     .iter()
-                    .any(|phase| same(&phase.title, &required.name))
+                    .any(|phase| same(&phase.name, &required.name))
             })
             .map(|required| required.name.clone())
             .collect()
@@ -133,7 +133,7 @@ mod tests {
         Required {
             steps: vec![RequiredStep {
                 name: "Benchmark".to_owned(),
-                role: CrewRole::Workers,
+                role: CrewRole::Worker,
                 does: Some("Run the benchmark and report the numbers.".to_owned()),
                 when: when.map(str::to_owned),
             }],
@@ -185,13 +185,13 @@ mod tests {
             description: "y".to_owned(),
             when_to_use: None,
             phases: vec![MetaPhase {
-                title: "Build".to_owned(),
+                name: "Build".to_owned(),
                 detail: String::new(),
                 model: None,
             }],
         };
         assert_eq!(benchmark(None).missing_from(&meta), ["Benchmark"]);
-        meta.phases[0].title = "benchmark".to_owned();
+        meta.phases[0].name = "benchmark".to_owned();
         assert!(benchmark(None).missing_from(&meta).is_empty());
     }
 }

@@ -1,0 +1,33 @@
+# The fake installed as `opencode` owns a Captain task: `opencode run --format json` writes
+# hello.txt and prints the events in opencode-worker.stdout.jsonl. Those events are synthetic,
+# shaped like `opencode run --format json` output as the OpenCode research describes it
+# (step_start, tool_use, text, step_finish), and end with the worker's JSON report.
+
+[version]
+claude = "2.1.284 (Claude Code)"
+codex = "codex-cli 0.158.0"
+agy = "1.2.13"
+opencode = "1.18.34"   # a version the adapter was recorded with, so no update is asked for
+
+[[rule]]
+argv0 = "opencode"
+args_contain = ["run", "--format", "json"]
+[[rule.step]]
+write = { path = "hello.txt", content = "hi\n" }
+[[rule.step]]
+emit_file = "opencode-worker.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+# Probes the app may make before a run: no providers or models to report.
+[[rule]]
+argv0 = "opencode"
+args_contain = ["models"]
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "opencode"
+args_contain = ["auth", "list"]
+[[rule.step]]
+exit = 0

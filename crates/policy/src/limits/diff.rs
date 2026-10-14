@@ -1,5 +1,5 @@
 //! Reads a unified diff (`git diff` output) into one change per file. A line it can't place is
-//! an error, so a malformed diff fails the gates instead of hiding a change.
+//! an error, so a malformed diff fails the checks instead of hiding a change.
 //!
 //! It also tells where a changed line sits in a TOML, INI, JSON, or `go.mod` file, as far as
 //! the hunk's own lines show it, because the dependency and test-config checks see only hunks.
@@ -385,7 +385,7 @@ fn header_path(raw: &str) -> Result<String, String> {
     }
 }
 
-/// Refuses paths that leave the worktree, since a gate matching `.argonauts/**` must never
+/// Refuses paths that leave the worktree, since a check matching `.argonauts/**` must never
 /// be walked around with `x/../.argonauts`.
 fn clean_path(raw: &str, prefix: &str) -> Result<String, String> {
     let path = raw.strip_prefix(prefix).unwrap_or(raw);

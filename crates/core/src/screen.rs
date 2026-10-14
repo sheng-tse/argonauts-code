@@ -1,7 +1,7 @@
-//! A screen that joins a CLI's session to draw what the CLI draws for its own, as Argonauts
+//! A screen that joins a CLI's session to draw what the CLI draws for its own, as Argonauts Code
 //! joins Claude Code's main session for You should know. The CLI sends a component's tree; the
 //! adapter reads it into rows of text and buttons, and a press goes back with the button's own
-//! handle, so a button Argonauts has never seen works without a change.
+//! handle, so a button Argonauts Code has never seen works without a change.
 
 use serde::{Deserialize, Serialize};
 

@@ -20,10 +20,10 @@ use ratatui::layout::Rect;
 
 use super::draw;
 use super::rows::{self, Cells, Group, Row, Tick, Top};
+use crate::kit::{Drawn, Kit};
 use crate::theme::{Role, Theme};
 use crate::views::ViewOutcome;
 use crate::views::panes::Footer;
-use crate::widgets::{Drawn, Kit};
 
 const BODY_ROW: usize = 0;
 const FORM_ROW: usize = 1;
@@ -65,7 +65,7 @@ pub struct ModPage {
 /// A place as the page says it.
 fn place_label(place: ModPlace) -> &'static str {
     match place {
-        ModPlace::ModeLine => "bottom line",
+        ModPlace::BottomLine => "bottom line",
         other => other.word(),
     }
 }
@@ -470,14 +470,14 @@ impl ModPage {
     fn description(&self) -> String {
         if self.closed {
             return format!(
-                "Built in, drawn from Argonauts' own numbers. How it draws is ui.mods.{} in \
+                "Built in, drawn from Argonauts Code's own numbers. How it draws is ui.mods.{} in \
                  /config; here you pick where it shows",
                 self.name()
             );
         }
         let from = match &self.file.data {
             ModSource::Builtin { source } => {
-                format!("Argonauts' own numbers: {}", source.describe())
+                format!("Argonauts Code's own numbers: {}", source.describe())
             }
             ModSource::Command { command, every, .. } => {
                 format!("{}, run every {}", command.join(" "), span_words(*every))
@@ -508,10 +508,10 @@ impl ModPage {
             caption.push(kit.span(
                 "The project's mod, and it runs a command. t trusts it as it is now; until then \
                  these are sample numbers",
-                Role::Warning,
+                Role::Warn,
             ));
         } else if self.changed() {
-            caption.push(kit.span("Not saved yet. s saves it", Role::Warning));
+            caption.push(kit.span("Not saved yet. s saves it", Role::Warn));
         } else if self.closed {
             caption.push(kit.dim("A file of this name changes neither how nor what it draws"));
         } else if self.reading.is_none() {

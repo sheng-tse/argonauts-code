@@ -7,7 +7,7 @@
 //!
 //! Antigravity CLI keeps its conversations as binary protocol buffers whose layout is not
 //! published, with no plain record of each answer's tokens, so it isn't imported: its share is
-//! what ran through Argonauts.
+//! what ran through Argonauts Code.
 
 mod claude;
 mod codex;
@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use argonauts_core::overview::ImportStatus;
+use argonauts_core::overview::{ImportStatus, OwnCount};
 use time::{Date, OffsetDateTime, UtcOffset};
 
 use self::seen::Seen;
@@ -61,6 +61,21 @@ impl Locations {
             zstd: files::find_program("zstd"),
         }
     }
+}
+
+/// What Claude Code's own /stats adds up from `first` on, or over every day, and the last
+/// day it has counted. Nothing while its totals aren't there to read.
+pub(crate) fn claude_count(locations: &Locations, first: Option<Date>) -> Option<OwnCount> {
+    let cache = stats_cache::read(locations.claude.as_deref()?).ok()??;
+    let through = cache.through?;
+    // A period it hasn't counted a day of has no count, which is not a count of nothing.
+    if first.is_some_and(|first| through < first) {
+        return None;
+    }
+    Some(OwnCount {
+        tokens: cache.since(first),
+        through,
+    })
 }
 
 /// How far the import running now has got, and when the last one ended.

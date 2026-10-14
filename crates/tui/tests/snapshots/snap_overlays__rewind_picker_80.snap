@@ -7,7 +7,7 @@ Go back to a fallback checkpoint. The work after it stays on a s…  3 checkpoin
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │   Checkpoint           Why                                                   │
-│   task-001 fallback-1  usage limit, resets at 3:45 PM  reverted here         │
+│   task-001 fallback-1  usage limit, resets at 3:45 PM  rewound here          │
 │   task-002 fallback-1  usage limit, resets at 3:45 PM                        │
 │ ❯ task-001 fallback-2  usage limit, resets at 3:45 PM                        │
 │                                                                              │

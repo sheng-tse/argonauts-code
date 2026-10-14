@@ -2,8 +2,8 @@
 //!
 //! Single newlines inside a paragraph stay line breaks, so each source line maps to its own
 //! rows. That keeps streaming stable: a finished line renders the same once more text arrives.
-//! A heading always has a blank row after it, and a list written right under its lead-in line
-//! stays attached to it.
+//! A heading always has a blank row after it, and a list written right under the line that
+//! introduces it stays attached to it.
 
 pub mod highlight;
 mod list;

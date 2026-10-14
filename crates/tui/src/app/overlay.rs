@@ -1,5 +1,5 @@
 //! The transcript overlay shows every item so far, expanded, on the alternate screen. The same
-//! screen shows views the host opens, such as the diff a card asks about.
+//! screen shows views the host opens, such as the diff a question asks about.
 
 use std::cell::{Cell, RefCell};
 

@@ -1,14 +1,14 @@
-//! The interactive app, the per-run supervisor process, and the conductor API.
+//! The interactive app, the per-run run host process, and Argonauts Code API.
 //! Every other crate meets here, so its dependencies are the whole wiring.
 
 mod adapters;
 mod ancestry;
 mod app_settings;
-mod chat_store;
 mod choices;
 mod client;
 mod commands;
 mod controller;
+mod conversation_store;
 mod env;
 mod example_prompt;
 mod git;
@@ -18,7 +18,6 @@ mod keep_awake;
 mod learning;
 mod live_registry;
 mod mods;
-mod old_names;
 mod overview;
 mod prompts;
 mod repo_files;
@@ -40,19 +39,20 @@ use std::sync::Arc;
 
 use argonauts_core::agent_sessions::AgentSessionRef;
 use argonauts_core::api::ConductorApi;
-use argonauts_core::names::ChatId;
-use argonauts_core::vendor_sessions::VendorSessionRef;
+use argonauts_core::cli_sessions::CliSessionRef;
+use argonauts_core::names::ConversationId;
 use argonauts_core::{Paths, RunId};
 
 pub use adapters::builtin_adapters;
 pub use ancestry::refuse_inside_agent;
 pub use commands::{
-    ApprovalsReport, DoctorExtras, ParkedReminder, StatusReport, approvals_report, auto_off,
+    ApprovalsReport, DoctorExtras, StatusReport, WaitingReminder, approvals_report, auto_off,
     config_schema, config_set, config_show, current_settings, doctor_adapters, doctor_details,
-    doctor_extras, inbox, models, repo_root, settings_warnings, status,
+    doctor_extras, doctor_version_checks, models, repo_root, settings_warnings, status,
+    waiting_runs,
 };
-pub use learning::shell::{LearningShell, ShellOutput, learning, learning_inbox};
-pub use live_registry::{LiveSupervisor, live_supervisors};
+pub use learning::shell::{LearningShell, ShellOutput, learning, learning_proposals};
+pub use live_registry::{LiveRunHost, live_run_hosts};
 pub use mods::doctor_problems as mod_problems;
 pub use run_command::{RunCommand, RunCommandExit, run_command};
 pub use telemetry::{TelemetryAction, telemetry};
@@ -68,21 +68,21 @@ pub struct InteractiveOptions {
     pub guided_setup: bool,
 }
 
-/// What the app opens on besides the chat. `argonauts resume` uses the other two.
+/// What the app opens on besides the conversation. `argonauts resume` uses the other two.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum FirstView {
     #[default]
-    Chat,
+    Conversation,
     /// The `/resume` picker.
     ResumePicker,
     /// Resumes this run and attaches to it.
     Resume(RunId),
     /// Attaches to a run just started, as `argonauts run` does.
     Attach(RunId),
-    /// Carries on this earlier conversation, as `argonauts resume chat-<n>` does.
-    Conversation(ChatId),
+    /// Carries on this earlier conversation, as `argonauts resume conversation-<n>` does.
+    PastConversation(ConversationId),
     /// Carries on the main agent CLI's own session, as `argonauts resume codex:<id>` does.
-    VendorSession(VendorSessionRef),
+    CliSession(CliSessionRef),
     /// Carries on an agent's session from a run, as `argonauts resume run-<n>/s-<n>` does.
     Agent(AgentSessionRef),
     /// Carries on the newest conversation in this repo, as `argonauts -c` does.
@@ -94,9 +94,9 @@ pub fn needs_guided_setup(home: &Paths) -> bool {
     !home.global_config().exists()
 }
 
-/// Runs the chat until you exit. Runs keep going after it closes.
+/// Runs the conversation until you exit. Runs keep going after it closes.
 pub async fn run_interactive(options: InteractiveOptions) -> anyhow::Result<()> {
-    startup::run(options, FirstView::Chat).await
+    startup::run(options, FirstView::Conversation).await
 }
 
 /// `run_interactive`, opening on a run or the resume picker.
@@ -108,16 +108,16 @@ pub async fn run_interactive_with(
 }
 
 /// Hosts one run: takes its lock, rebuilds it from its log, and drives the engine until it
-/// finishes or parks.
-pub async fn supervise(repo_root: &Path, run: &RunId) -> anyhow::Result<()> {
+/// finishes or waits.
+pub async fn host(repo_root: &Path, run: &RunId) -> anyhow::Result<()> {
     if let Ok(env) = Paths::from_env()
         .map_err(anyhow::Error::from)
         .and_then(|paths| env::AppEnv::for_repo(paths, repo_root, false))
     {
-        // The approver and the narrator run here, and read your templates for their prompts.
+        // The judge and the narrator run here, and read your templates for their prompts.
         prompts::catalog::use_files_of(&env);
     }
-    host::supervise(repo_root, run).await
+    host::host(repo_root, run).await
 }
 
 /// For the CLI and the MCP server: never reads the approval token and holds no `Approvals`.

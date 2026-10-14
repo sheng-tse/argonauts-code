@@ -90,10 +90,13 @@ fn roles_of(var: &str) -> &'static [Role] {
         "var(--term-dim)" => &[Role::Dim],
         "var(--term-faint)" => &[Role::Faint],
         "var(--term-org)" => &[Role::Accent, Role::Shimmer],
+        "var(--term-acc)" => &[Role::Question],
         "var(--term-grn)" => &[Role::Success, Role::AddedMarker],
-        "var(--term-red)" => &[Role::Error, Role::RemovedMarker],
-        "var(--term-amb)" => &[Role::Warning],
+        "var(--term-red)" => &[Role::Danger, Role::RemovedMarker],
+        "var(--term-amb)" => &[Role::Warn],
         "var(--term-band)" => &[Role::UserBand],
+        "var(--v-claude)" => &[Role::CliClaude],
+        "var(--v-codex)" => &[Role::CliCodex],
         "rgba(255,122,140,.18)" => &[Role::RemovedRow, Role::RemovedWord],
         "rgba(92,200,120,.18)" => &[Role::AddedRow, Role::AddedWord],
         _ => &[],
@@ -134,7 +137,7 @@ pub fn assert_matches(
     crate::picture_dump::lines(name, lines);
     for u in unlike {
         eprintln!(
-            "{name}: row {} cols {}-{} differ: {}",
+            "{name}: row {} cols {}-{} are different: {}",
             u.row, u.cols.0, u.cols.1, u.why
         );
     }

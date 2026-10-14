@@ -7,11 +7,11 @@ mod support;
 
 use std::sync::Arc;
 
-use argonauts_core::CardId;
-use argonauts_core::events::card::{CardBudget, CardEvent, CardKind, CardSpec};
-use argonauts_core::events::card::{GateKind, GateOutcome};
+use argonauts_core::TaskId;
 use argonauts_core::events::goal::{GoalEvent, GoalStatus};
 use argonauts_core::events::run::RunMode;
+use argonauts_core::events::task::{CheckKind, CheckOutcome};
+use argonauts_core::events::task::{TaskEvent, TaskKind, TaskLimit, TaskSpec};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::goal::{GoalScope, KeptBy};
 use argonauts_core::names::WorkflowId;
@@ -47,17 +47,17 @@ fn the_files_goal(round: u32) -> Asked<'static> {
         step: None,
         task: None,
         kept_by: None,
-        attempt: None,
+        try_number: None,
         round: Some(round),
         max_rounds: None,
     }
 }
 
 /// `make check` failing `failed` of its 12 tests.
-fn failing(failed: u32) -> GateOutcome {
-    GateOutcome {
+fn failing(failed: u32) -> CheckOutcome {
+    CheckOutcome {
         name: "make check".to_owned(),
-        kind: GateKind::Command,
+        kind: CheckKind::Command,
         passed: false,
         command: None,
         exit_code: Some(1),
@@ -92,8 +92,8 @@ fn statuses(events: &[RunEvent]) -> Vec<(GoalStatus, Option<String>)> {
 
 /// A crew run that has only started, over a host a test asks as the runner would.
 fn crew_run(crew: &mut Crew) -> anyhow::Result<(Host, Arc<MemorySink>)> {
-    crew.worker("codex/gpt-x", "gpt");
-    crew.worker("claude-code/opus", "claude");
+    crew.worker("codex/gpt-x", "openai");
+    crew.worker("claude-code/opus", "anthropic");
     let started = crew.run_started(RunMode::Crew, REQUEST)?;
     crew.host_over(vec![started])
 }
@@ -115,7 +115,7 @@ async fn a_files_goal_goes_round_until_it_holds() -> anyhow::Result<()> {
     assert_eq!(goal.kept_by, KeptBy::Argonauts);
     assert_eq!(goal.max_rounds, None, "no fixed number of rounds");
 
-    crew.services.gates.push(failing(2));
+    crew.services.checks.push(failing(2));
     let first = until::held(&host, &at(), &the_files_goal(1), &workdir).await?;
     assert!(!first.holds && !first.stop, "{first:?}");
     assert!(
@@ -133,7 +133,7 @@ async fn a_files_goal_goes_round_until_it_holds() -> anyhow::Result<()> {
     let again = until::held(&host, &at(), &the_files_goal(1), &workdir).await?;
     assert_eq!(again, first);
     assert_eq!(sink.events().len(), before);
-    assert_eq!(crew.services.gates.requests().len(), 1);
+    assert_eq!(crew.services.checks.requests().len(), 1);
 
     let second = until::held(&host, &at(), &the_files_goal(2), &workdir).await?;
     assert_eq!(
@@ -167,7 +167,7 @@ async fn a_files_goal_that_is_stuck_changes_approach_once_then_stops() -> anyhow
 
     let mut answers = Vec::new();
     for round in 1..=3 {
-        crew.services.gates.push(failing(2));
+        crew.services.checks.push(failing(2));
         answers.push(until::held(&host, &at(), &the_files_goal(round), &workdir).await?);
     }
     let [first, second, third] = answers.as_slice() else {
@@ -198,7 +198,7 @@ async fn a_files_goal_that_is_stuck_changes_approach_once_then_stops() -> anyhow
     // Asked once more, it stays stopped and nothing more is checked.
     let after = until::held(&host, &at(), &the_files_goal(4), &workdir).await?;
     assert!(after.stop && !after.holds, "{after:?}");
-    assert_eq!(crew.services.gates.requests().len(), 3);
+    assert_eq!(crew.services.checks.requests().len(), 3);
     Ok(())
 }
 
@@ -216,7 +216,7 @@ async fn a_files_goal_you_pause_gets_no_further_round() -> anyhow::Result<()> {
         .await
         .map_err(anyhow::Error::msg)?;
 
-    crew.services.gates.push(failing(1));
+    crew.services.checks.push(failing(1));
     let paused = until::held(&host, &at(), &the_files_goal(1), &workdir).await?;
     assert_eq!(
         paused,
@@ -233,38 +233,38 @@ async fn a_files_goal_you_pause_gets_no_further_round() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A task of the plan, owned by `owner`, with a worktree of its own.
-fn task_events(crew: &Crew, started: &RunEvent, owner: &str) -> anyhow::Result<Vec<RunEvent>> {
-    let id = CardId::numbered(1);
-    let spec = CardSpec {
+/// A task of the plan, owned by `worker`, with a worktree of its own.
+fn task_events(crew: &Crew, started: &RunEvent, worker: &str) -> anyhow::Result<Vec<RunEvent>> {
+    let id = TaskId::numbered(1);
+    let spec = TaskSpec {
         id: id.clone(),
         title: "Add the overdue command".to_owned(),
         task: "Add a command that lists what's overdue.".to_owned(),
-        kind: CardKind::Build,
+        kind: TaskKind::Build,
         owned_paths: Vec::new(),
         read_only_paths: Vec::new(),
         forbidden_paths: Vec::new(),
         hidden_paths: Vec::new(),
         depends_on: Vec::new(),
         criteria: Vec::new(),
-        owner: Some(owner.parse().expect("a worker")),
+        worker: Some(worker.parse().expect("a model")),
         reviewers: Vec::new(),
-        budget: CardBudget::default(),
+        limit: TaskLimit::default(),
         predictions: None,
         item: None,
     };
-    let of_task = |seq: u64, event: CardEvent| RunEvent {
+    let of_task = |seq: u64, event: TaskEvent| RunEvent {
         seq,
-        card_id: Some(id.clone()),
-        kind: RunEventKind::Card(event),
+        task_id: Some(id.clone()),
+        kind: RunEventKind::Task(event),
         ..started.clone()
     };
     Ok(vec![
         started.clone(),
-        of_task(1, CardEvent::Created(Box::new(spec))),
+        of_task(1, TaskEvent::Created(Box::new(spec))),
         of_task(
             2,
-            CardEvent::Worktree {
+            TaskEvent::Worktree {
                 path: crew.repo.root().to_path_buf(),
                 branch: "argonauts/run-01/task-001".to_owned(),
                 base: crew.repo.head()?,
@@ -279,19 +279,19 @@ fn task_events(crew: &Crew, started: &RunEvent, owner: &str) -> anyhow::Result<V
 #[tokio::test]
 async fn a_steps_until_is_asked_about_as_its_tasks_goal() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
-    crew.worker("codex/gpt-x", "gpt");
-    crew.worker("claude-code/opus", "claude");
+    crew.worker("codex/gpt-x", "openai");
+    crew.worker("claude-code/opus", "anthropic");
     let started = crew.run_started(RunMode::Crew, REQUEST)?;
     let (host, sink) = crew.host_over(task_events(&crew, &started, "codex/gpt-x")?)?;
     let workdir = crew.repo.root().to_path_buf();
-    let task = CardId::numbered(1);
-    let asked = |attempt: u32| Asked {
+    let task = TaskId::numbered(1);
+    let asked = |try_number: u32| Asked {
         condition: CONDITION,
         commands: &[],
         step: Some("Build"),
         task: Some(&task),
         kept_by: Some("cli"),
-        attempt: Some(attempt),
+        try_number: Some(try_number),
         round: None,
         max_rounds: None,
     };
@@ -308,11 +308,11 @@ async fn a_steps_until_is_asked_about_as_its_tasks_goal() -> anyhow::Result<()> 
     assert_eq!(set.kept.cli.as_deref(), Some("Codex"));
     assert_eq!(
         set.kept_words(),
-        "kept by Codex's own goal · checked by Argonauts"
+        "kept by Codex's own goal · checked by Argonauts Code"
     );
-    assert_eq!(set.role(), Some("workers"));
+    assert_eq!(set.role(), Some("worker"));
 
-    crew.services.gates.push(failing(1));
+    crew.services.checks.push(failing(1));
     let first = until::held(&host, &at(), &asked(1), &workdir).await?;
     assert!(!first.holds && !first.stop, "{first:?}");
     assert!(
@@ -324,7 +324,7 @@ async fn a_steps_until_is_asked_about_as_its_tasks_goal() -> anyhow::Result<()> 
     // Once it holds, asking again checks nothing more.
     let again = until::held(&host, &at(), &asked(3), &workdir).await?;
     assert!(again.holds);
-    assert_eq!(crew.services.gates.requests().len(), 2);
+    assert_eq!(crew.services.checks.requests().len(), 2);
 
     let events = sink.events();
     assert_eq!(statuses(&events), [(GoalStatus::Met, None)]);
@@ -333,11 +333,11 @@ async fn a_steps_until_is_asked_about_as_its_tasks_goal() -> anyhow::Result<()> 
     assert_eq!(told.row_words(), "goal met in 2 tries");
 
     // A script that asks about the task's work by itself gets its own answer, not the goal's.
-    crew.services.gates.push(failing(3));
+    crew.services.checks.push(failing(3));
     let its_own = Asked {
         condition: "`make lint` passes",
         step: None,
-        attempt: None,
+        try_number: None,
         ..asked(1)
     };
     let told = until::held(&host, &at(), &its_own, &workdir).await?;
@@ -366,20 +366,20 @@ async fn a_step_with_no_task_is_checked_and_stops_when_it_never_holds() -> anyho
     crew.settings.goal.stuck_after = 2;
     let (host, sink) = crew_run(&mut crew)?;
     let workdir = crew.repo.root().to_path_buf();
-    let asked = |attempt: u32| Asked {
+    let asked = |try_number: u32| Asked {
         condition: CONDITION,
         commands: &[],
         step: Some("Review"),
         task: None,
         kept_by: None,
-        attempt: Some(attempt),
+        try_number: Some(try_number),
         round: None,
         max_rounds: None,
     };
     let mut answers = Vec::new();
-    for attempt in 1..=3 {
-        crew.services.gates.push(failing(1));
-        answers.push(until::held(&host, &at(), &asked(attempt), &workdir).await?);
+    for try_number in 1..=3 {
+        crew.services.checks.push(failing(1));
+        answers.push(until::held(&host, &at(), &asked(try_number), &workdir).await?);
     }
     assert!(!answers[0].stop && answers[0].failed.contains("make check: 1 of 12 fails"));
     assert!(answers[1].failed.contains("Take a different approach"));
@@ -425,7 +425,7 @@ async fn the_goal_a_run_was_started_with_goes_round_its_workflow() -> anyhow::Re
     assert_eq!(goal.from, Some(GoalFrom::Setting));
     let ran: Vec<String> = crew
         .services
-        .gates
+        .checks
         .requests()
         .iter()
         .map(|request| request.name.clone())
@@ -442,7 +442,7 @@ async fn the_goal_a_run_was_started_with_goes_round_its_workflow() -> anyhow::Re
 #[tokio::test]
 async fn a_script_that_asks_by_itself_is_told_about_its_own_condition() -> anyhow::Result<()> {
     let its_own = Asked {
-        attempt: None,
+        try_number: None,
         round: None,
         ..the_files_goal(1)
     };
@@ -450,7 +450,7 @@ async fn a_script_that_asks_by_itself_is_told_about_its_own_condition() -> anyho
     let mut crew = Crew::new()?;
     let (host, sink) = crew_run(&mut crew)?;
     let workdir = crew.repo.root().to_path_buf();
-    crew.services.gates.push(failing(2));
+    crew.services.checks.push(failing(2));
     let first = until::held(&host, &at(), &its_own, &workdir).await?;
     assert!(!first.holds && !first.stop, "{first:?}");
     assert!(
@@ -471,7 +471,7 @@ async fn a_script_that_asks_by_itself_is_told_about_its_own_condition() -> anyho
             .await?
             .holds
     );
-    crew.services.gates.push(failing(1));
+    crew.services.checks.push(failing(1));
     let asked = until::held(&host, &at(), &its_own, &workdir).await?;
     assert!(!asked.holds && !asked.stop, "{asked:?}");
     assert!(
@@ -493,7 +493,7 @@ check = ["cargo test --test acceptance"]
 
 [[step]]
 name = "Build"
-role = "workers"
+role = "worker"
 "#;
     let mut crew = Crew::new()?;
     crew.settings.workflow = "spec-first".to_owned();
@@ -513,7 +513,7 @@ role = "workers"
     assert_eq!(goal.commands, ["cargo test --test acceptance"]);
     let ran: Vec<String> = crew
         .services
-        .gates
+        .checks
         .requests()
         .iter()
         .map(|request| request.name.clone())

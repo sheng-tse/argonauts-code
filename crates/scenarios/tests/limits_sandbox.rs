@@ -1,5 +1,5 @@
 //! The sandbox, end to end: a probe set as the agent's binary tries what no session may do,
-//! inside the session the real app starts, and then hands over to the fake vendor.
+//! inside the session the real app starts, and then hands over to the fake agent.
 
 mod limits_support;
 
@@ -44,7 +44,7 @@ fn limits_sandbox_blocks_write_outside_worktree() -> anyhow::Result<()> {
     ))?;
 
     let mut pty = limits.run(&[])?;
-    limits.wait_for("the task to finish", CARD_WAIT, completed_by("claude-code"))?;
+    limits.wait_for("the task to finish", LONG_WAIT, completed_by("claude-code"))?;
     assert_blocked(&limits.sessions_stderr()?, "write", &["outside.txt"]);
     assert_eq!(
         probe_lines(&limits.sessions_stderr()?, BLOCKED, "write").len(),
@@ -53,7 +53,7 @@ fn limits_sandbox_blocks_write_outside_worktree() -> anyhow::Result<()> {
     for target in &targets {
         assert!(!target.exists(), "{} was written", target.display());
     }
-    pty.wait_for_exit(CARD_WAIT)?;
+    pty.wait_for_exit(LONG_WAIT)?;
     Ok(())
 }
 
@@ -69,13 +69,13 @@ fn limits_readonly_session_cannot_read_state_or_drafts() -> anyhow::Result<()> {
     ];
     let probe = write_probe(&limits.repo.scratch().join("probe-codex"), "codex", &checks)?;
     limits.write_settings(&format!(
-        "[solo]\nreview = true\n\n[roles.reviewer]\nworkers = [\"codex\"]\n\n\
+        "[captain]\nreview = true\n\n[roles.reviewer]\nmodels = [\"codex\"]\n\n\
          [agents.codex]\nbinary = {}\n",
         toml_string(&probe.display().to_string())
     ))?;
 
     let _pty = limits.start()?;
-    limits.wait_for("the review session to end", CARD_WAIT, |events| {
+    limits.wait_for("the review session to end", LONG_WAIT, |events| {
         !ends_of(events, "codex").is_empty()
     })?;
     assert_blocked(
@@ -102,8 +102,8 @@ fn limits_build_session_cannot_read_other_worktrees() -> anyhow::Result<()> {
     ))?;
 
     let mut pty = limits.run(&[])?;
-    limits.wait_for("the task to finish", CARD_WAIT, completed_by("claude-code"))?;
+    limits.wait_for("the task to finish", LONG_WAIT, completed_by("claude-code"))?;
     assert_blocked(&limits.sessions_stderr()?, "read", &["task-009/secret.txt"]);
-    pty.wait_for_exit(CARD_WAIT)?;
+    pty.wait_for_exit(LONG_WAIT)?;
     Ok(())
 }

@@ -49,8 +49,8 @@ pub fn build_command(program: &str, req: &SessionRequest) -> anyhow::Result<Comm
         .args(["--input-format", "stream-json"])
         .args(["--output-format", "stream-json"])
         .args(own_sandbox(req));
-    // A vendor command turn reads its prompt as the command, as `-p "/skill …"` needs.
-    if !req.vendor_command {
+    // A CLI command turn reads its prompt as the command, as `-p "/skill …"` needs.
+    if !req.cli_command {
         spec = spec.arg("--disable-slash-commands");
     }
     if matches!(req.role, SessionRole::Build | SessionRole::Direct) {
@@ -90,7 +90,7 @@ pub fn build_command(program: &str, req: &SessionRequest) -> anyhow::Result<Comm
             flag_value("conversation id", conversation)?,
         ]);
     }
-    // `max_budget_usd` is not passed on, because agy has no spend cap. Compaction and user
+    // `spend_cap_usd` is not passed on, because agy has no spend cap. Compaction and user
     // hooks have no per-run control either (see `tweaks`).
     spec = spec.args(&req.extra_args);
 
@@ -206,10 +206,10 @@ mod tests {
         assert!(has_arg(&auto, "--dangerously-skip-permissions"));
         assert_eq!(value_after(&auto, "--mode"), Some("accept-edits"));
 
-        // A vendor command must reach agy as one.
+        // A CLI command must reach agy as one.
         assert!(has_arg(&auto, "--disable-slash-commands"));
         let command = build(&SessionRequest {
-            vendor_command: true,
+            cli_command: true,
             ..request(SessionRole::Direct)
         });
         assert!(!has_arg(&command, "--disable-slash-commands"));
@@ -375,7 +375,7 @@ mod tests {
         // goal is approved.
         let unapproved = SessionRequest {
             workdir: PathBuf::from("/work/base"),
-            prompt: "Restate the goal".into(),
+            prompt: "Read the request back".into(),
             scratch_dir: Some(PathBuf::from("/state/sessions/s2")),
             ..SessionRequest::default()
         };
@@ -431,12 +431,12 @@ mod tests {
     #[test]
     fn cheapest_model_and_effort_are_passed() {
         let req = SessionRequest {
-            model: Some("gemini-3.6-flash-low".into()),
+            model: Some(crate::CHEAPEST_MODEL.into()),
             effort: Some("low".into()),
             ..request(SessionRole::ReadOnly)
         };
         let spec = build(&req);
-        assert_eq!(value_after(&spec, "--model"), Some("gemini-3.6-flash-low"));
+        assert_eq!(value_after(&spec, "--model"), Some(crate::CHEAPEST_MODEL));
         assert_eq!(value_after(&spec, "--effort"), Some("low"));
     }
 
@@ -470,7 +470,7 @@ mod tests {
     #[test]
     fn resume_passes_every_flag_again() {
         let fresh = SessionRequest {
-            model: Some("gemini-3.6-flash-low".into()),
+            model: Some("gemini-3.8-flash-low".into()),
             project: Some("run-1".into()),
             ..request(SessionRole::ReadOnly)
         };
@@ -501,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn env_scrubbed_per_vendor() {
+    fn env_scrubbed_per_agent() {
         let spec = build(&request(SessionRole::Build));
         for name in [
             "GEMINI_API_KEY",
@@ -537,12 +537,12 @@ mod tests {
     }
 
     #[test]
-    fn native_budget_is_ignored() {
+    fn native_limit_is_ignored() {
         let req = SessionRequest {
-            max_budget_usd: Some(1.0),
+            spend_cap_usd: Some(1.0),
             ..request(SessionRole::Build)
         };
-        assert!(!build(&req).args.iter().any(|a| a.contains("budget")));
+        assert!(!build(&req).args.iter().any(|a| a.contains("usd")));
     }
 
     #[test]

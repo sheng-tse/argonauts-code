@@ -148,13 +148,13 @@ fn the_bullet_carries_the_state() {
     let failed = running.clone().with_state(ToolState::Failed);
     assert_eq!(
         bullet(&failed, &at(&theme, 700)),
-        ("●".into(), theme.style(Role::Error))
+        ("●".into(), theme.style(Role::Danger))
     );
     assert!(!failed.is_animating());
     let stopped = running.with_state(ToolState::Stopped);
     assert_eq!(
         bullet(&stopped, &at(&theme, 700)),
-        ("●".into(), theme.style(Role::Warning))
+        ("●".into(), theme.style(Role::Warn))
     );
     assert!(!stopped.is_animating());
 }
@@ -318,7 +318,7 @@ fn nested_names_show_their_state() {
     };
     let bold = |role| Some(theme.style(role).add_modifier(Modifier::BOLD));
     assert_eq!(name(1), bold(Role::Dim));
-    assert_eq!(name(2), bold(Role::Error));
+    assert_eq!(name(2), bold(Role::Danger));
     assert_eq!(name(3), bold(Role::Text));
 }
 
@@ -475,7 +475,7 @@ fn escapes_in_tool_output_never_reach_a_line() {
 }
 
 #[test]
-fn squeezing_keeps_what_matters_and_never_exceeds_the_budget() {
+fn squeezing_keeps_what_matters_and_never_exceeds_the_limit() {
     let theme = theme();
     let ctx = ctx(&theme, 80);
     let mut call = session();
@@ -498,9 +498,9 @@ fn squeezing_keeps_what_matters_and_never_exceeds_the_budget() {
     ]));
     let full = call.lines(&ctx);
     assert_eq!(call.lines_within(&ctx, full.len()), full);
-    for budget in 0..full.len() {
-        let squeezed = call.lines_within(&ctx, budget);
-        assert!(squeezed.len() <= budget, "{budget}: {}", text(&squeezed));
+    for limit in 0..full.len() {
+        let squeezed = call.lines_within(&ctx, limit);
+        assert!(squeezed.len() <= limit, "{limit}: {}", text(&squeezed));
         for line in &squeezed {
             assert!(spans_width(&line.spans) <= 80);
         }
@@ -635,13 +635,13 @@ fn a_retry_counts_down_and_gives_way_before_the_stats() {
     };
     assert_eq!(
         row(120, 252),
-        "● Opus 5.5 on Claude Code · worker · task-003 (Middleware) · 4m12s · ↓ 18.1k · retrying in 12s (attempt 2)"
+        "● Opus 5.5 on Claude Code · worker · task-003 (Middleware) · 4m12s · ↓ 18.1k · retrying in 12s (try 2)"
     );
     assert_eq!(
         row(120, 260),
-        "● Opus 5.5 on Claude Code · worker · task-003 (Middleware) · 4m20s · ↓ 18.1k · retrying in 4s (attempt 2)"
+        "● Opus 5.5 on Claude Code · worker · task-003 (Middleware) · 4m20s · ↓ 18.1k · retrying in 4s (try 2)"
     );
-    assert!(row(120, 300).ends_with("· 5m0s · ↓ 18.1k · retrying (attempt 2)"));
+    assert!(row(120, 300).ends_with("· 5m0s · ↓ 18.1k · retrying (try 2)"));
     assert_eq!(
         row(83, 252),
         "● Opus 5.5 on Claude Code · worker · task-003 · 4m12s · ↓ 18.1k · retrying in 12s"
@@ -684,7 +684,7 @@ fn a_quiet_spell_shows_after_a_while_and_warns_later() {
     );
     assert_eq!(
         lines[0].spans.last().unwrap().style,
-        theme.style(Role::Warning)
+        theme.style(Role::Warn)
     );
 }
 
@@ -734,7 +734,7 @@ fn streaming_text_shows_its_newest_row_with_a_cursor() {
 
 fn phase(title: &str, detail: &str, required: bool) -> PhaseLine {
     PhaseLine {
-        title: title.into(),
+        name: title.into(),
         detail: detail.into(),
         required,
     }

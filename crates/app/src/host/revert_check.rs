@@ -11,12 +11,12 @@ use anyhow::Context as _;
 use argonauts_core::RunId;
 use argonauts_core::events::RunEvent;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::card::IntegrationEvent;
-use argonauts_core::events::checkpoint::{AnswerAction, CheckpointEvent, CheckpointKind};
+use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind};
 use argonauts_core::events::run::Party;
+use argonauts_core::events::task::MergeEvent;
 use argonauts_core::journal::read_all;
 use argonauts_core::layout::run_files;
-use argonauts_core::names::CheckpointId;
+use argonauts_core::names::ApprovalId;
 use argonauts_core::paths::create_private_dir_all;
 use argonauts_core::policy::{ApprovalPolicy, DecisionPoint};
 use serde::{Deserialize, Serialize};
@@ -24,11 +24,11 @@ use time::{Duration, OffsetDateTime};
 
 use crate::git::git;
 
-/// How far back an auto-merge still counts. After that its shadow match stands.
+/// How far back an auto-merge still counts. After that its auto preview match stands.
 const WINDOW: Duration = Duration::days(7);
 
 /// The reverts already counted, in the repo's state directory, so each counts once however many
-/// supervisors start in the window.
+/// run hosts start in the window.
 const COUNTED: &str = "reverts-counted.json";
 
 /// Calls `policy.spot_checked(point, false)` once for each reverted auto-merge, and returns one
@@ -45,15 +45,15 @@ pub(crate) fn check_reverts(
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err).with_context(|| format!("reading {}", runs_dir.display())),
     };
-    // Held until the check is done, so two supervisors starting at once count a revert once.
+    // Held until the check is done, so two run hosts starting at once count a revert once.
     let mut ledger = Ledger::open(state_dir)?;
     ledger
         .counted
-        .retain(|counted| now.unix_timestamp() - counted.landed <= WINDOW.whole_seconds());
+        .retain(|counted| now.unix_timestamp() - counted.run_merged <= WINDOW.whole_seconds());
     let mut found = Vec::new();
     for entry in entries.flatten() {
         let journal = entry.path().join(run_files::EVENTS);
-        // A landing is written to the journal, so one last written before the window has none
+        // A merge is written to the journal, so one last written before the window has none
         // inside it, and isn't worth reading.
         let written = std::fs::metadata(&journal).and_then(|meta| meta.modified());
         match written {
@@ -113,7 +113,7 @@ pub(crate) fn check_reverts(
         .extend(found.iter().map(|(merge, _)| Counted {
             run: merge.run.clone(),
             sha: merge.sha.clone(),
-            landed: merge.landed.unix_timestamp(),
+            run_merged: merge.run_merged.unix_timestamp(),
         }));
     ledger.save()?;
     let mut notices = Vec::new();
@@ -121,19 +121,19 @@ pub(crate) fn check_reverts(
         policy.spot_checked(
             &DecisionPoint {
                 run: merge.run.clone(),
-                checkpoint: merge.checkpoint,
-                kind: CheckpointKind::Merge,
-                recipe: None,
+                approval: merge.approval,
+                kind: ApprovalKind::Merge,
+                learned_workflow: None,
                 authors: Vec::new(),
                 mode_override: None,
-                lead: None,
+                main_agent: None,
             },
             false,
         );
         notices.push(format!(
             "The auto-merge of {} was reverted on {} ({}), so it counts as a wrong auto-approval. \
-             Merges are back in auto preview mode: they wait for you until you turn auto on again in \
-             /approvals.",
+             Merges are back in auto preview mode: they wait for you until you turn auto on again \
+             in /approvals.",
             merge.run,
             merge.target,
             short(&revert),
@@ -144,10 +144,10 @@ pub(crate) fn check_reverts(
 
 struct AutoMerge {
     run: RunId,
-    checkpoint: CheckpointId,
+    approval: ApprovalId,
     target: String,
     sha: String,
-    landed: OffsetDateTime,
+    run_merged: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,7 +155,7 @@ struct Counted {
     run: RunId,
     sha: String,
     /// Unix seconds, so an entry can go once it falls out of the window.
-    landed: i64,
+    run_merged: i64,
 }
 
 /// `reverts-counted.json`, open and locked.
@@ -209,41 +209,41 @@ impl Ledger {
     }
 }
 
-/// The run's landing within the window, when your rules or an approver model approved its merge.
+/// The run's merge within the window, when your rules or a judge approved it.
 fn auto_merge(events: &[RunEvent], now: OffsetDateTime) -> Option<AutoMerge> {
-    let mut kinds: HashMap<&CheckpointId, CheckpointKind> = HashMap::new();
-    let mut approved: Option<&CheckpointId> = None;
-    let mut landed = None;
+    let mut kinds: HashMap<&ApprovalId, ApprovalKind> = HashMap::new();
+    let mut approved: Option<&ApprovalId> = None;
+    let mut merged = None;
     for event in events {
         match &event.kind {
-            RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) => {
+            RunEventKind::Approval(ApprovalEvent::Opened(opened)) => {
                 kinds.insert(&opened.id, opened.kind);
             }
-            RunEventKind::Checkpoint(CheckpointEvent::Decided(decided)) => {
-                let merge = kinds.get(&decided.id) == Some(&CheckpointKind::Merge)
+            RunEventKind::Approval(ApprovalEvent::Decided(decided)) => {
+                let merge = kinds.get(&decided.id) == Some(&ApprovalKind::Merge)
                     || decided.action == AnswerAction::Merge;
                 if merge {
-                    let automatic = matches!(decided.by, Party::Rules | Party::Approver { .. });
+                    let automatic = matches!(decided.by, Party::Rules | Party::Judge { .. });
                     approved = automatic.then_some(&decided.id);
                 }
             }
-            RunEventKind::Integration(IntegrationEvent::Landed { target, sha, .. }) => {
-                landed = Some((event, target, sha));
+            RunEventKind::Merge(MergeEvent::RunMerged { target, sha, .. }) => {
+                merged = Some((event, target, sha));
             }
             _ => {}
         }
     }
-    let (event, target, sha) = landed?;
-    let checkpoint = approved?;
+    let (event, target, sha) = merged?;
+    let approval = approved?;
     if now - event.ts > WINDOW {
         return None;
     }
     Some(AutoMerge {
         run: event.run_id.clone(),
-        checkpoint: checkpoint.clone(),
+        approval: approval.clone(),
         target: target.clone(),
         sha: sha.clone(),
-        landed: event.ts,
+        run_merged: event.ts,
     })
 }
 
@@ -253,8 +253,8 @@ fn short(sha: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::checkpoint::CheckpointDecided;
-    use argonauts_core::names::WorkerRef;
+    use argonauts_core::events::approval::ApprovalDecided;
+    use argonauts_core::names::ModelRef;
     use argonauts_testkit::TempRepo;
     use argonauts_testkit::services::AskingPolicy;
 
@@ -265,9 +265,9 @@ mod tests {
             seq,
             ts,
             run_id: run.clone(),
-            card_id: None,
+            task_id: None,
             session: None,
-            source: "conductor".to_owned(),
+            source: "argonauts-code".to_owned(),
             kind,
         }
     }
@@ -277,19 +277,19 @@ mod tests {
         run: &str,
         by: Party,
         sha: &str,
-        landed: OffsetDateTime,
+        run_merged: OffsetDateTime,
     ) -> RunId {
         let run = RunId::new(run).unwrap();
-        let decided = RunEventKind::Checkpoint(CheckpointEvent::Decided(CheckpointDecided {
-            id: CheckpointId::numbered(4),
+        let decided = RunEventKind::Approval(ApprovalEvent::Decided(ApprovalDecided {
+            id: ApprovalId::numbered(4),
             action: AnswerAction::Merge,
             text: None,
             by,
             evidence_sha256: "e".repeat(64),
-            shadow: None,
-            cards: Vec::new(),
+            auto_preview: None,
+            tasks: Vec::new(),
         }));
-        let landing = RunEventKind::Integration(IntegrationEvent::Landed {
+        let merge = RunEventKind::Merge(MergeEvent::RunMerged {
             target: "main".to_owned(),
             sha: sha.to_owned(),
             fast_forward: true,
@@ -297,8 +297,8 @@ mod tests {
         let dir = runs_dir.join(run.as_str());
         std::fs::create_dir_all(&dir).unwrap();
         let mut lines = String::new();
-        for (seq, kind) in [decided, landing].into_iter().enumerate() {
-            let line = serde_json::to_string(&event(&run, seq as u64, landed, kind)).unwrap();
+        for (seq, kind) in [decided, merge].into_iter().enumerate() {
+            let line = serde_json::to_string(&event(&run, seq as u64, run_merged, kind)).unwrap();
             lines.push_str(&line);
             lines.push('\n');
         }
@@ -336,8 +336,8 @@ mod tests {
         write_run(
             &runs,
             "run-20260930-010000-0004",
-            Party::Approver {
-                model: WorkerRef::new("codex", None),
+            Party::Judge {
+                model: ModelRef::new("codex", None),
             },
             &reverted,
             now - Duration::days(8),
@@ -350,8 +350,8 @@ mod tests {
         let (point, correct) = &checks[0];
         assert!(!correct);
         assert_eq!(point.run, hit);
-        assert_eq!(point.checkpoint, CheckpointId::numbered(4));
-        assert_eq!(point.kind, CheckpointKind::Merge);
+        assert_eq!(point.approval, ApprovalId::numbered(4));
+        assert_eq!(point.kind, ApprovalKind::Merge);
         assert_eq!(notices.len(), 1);
         assert!(notices[0].contains(hit.as_str()), "{}", notices[0]);
 

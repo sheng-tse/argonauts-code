@@ -15,7 +15,7 @@ prompt_contains = "LIMITS-PROGRESS-NOTE"
 [[rule.step]]
 write = { path = "hello.txt", content = "hi\n" }
 [[rule.step]]
-emit_file = "../../../adapters/codex/fixtures/0.158.0/build_hello.stdout.jsonl"
+emit_file = "../../../adapters/codex/fixtures/build_hello_resumed.stdout.jsonl"
 [[rule.step]]
 exit = 0
 

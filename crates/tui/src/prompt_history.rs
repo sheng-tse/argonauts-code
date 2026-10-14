@@ -57,8 +57,7 @@ impl Stamp {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptEntry {
-    #[serde(rename = "prompt")]
-    pub text: String,
+    pub prompt: String,
     /// Unix seconds when it was sent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<u64>,
@@ -67,7 +66,7 @@ pub struct PromptEntry {
 impl PromptEntry {
     pub fn new(text: impl Into<String>, at: Option<u64>) -> Self {
         Self {
-            text: text.into(),
+            prompt: text.into(),
             at,
         }
     }
@@ -114,7 +113,7 @@ impl PromptHistory {
 
     /// Oldest first.
     pub fn texts(&self) -> impl Iterator<Item = &str> {
-        self.entries.iter().map(|entry| entry.text.as_str())
+        self.entries.iter().map(|entry| entry.prompt.as_str())
     }
 
     /// Remembers the prompt, sent now, and appends it to the file, unless it repeats the
@@ -124,7 +123,7 @@ impl PromptHistory {
     }
 
     pub fn append_at(&mut self, prompt: &str, at: u64) -> Result<(), HistoryError> {
-        let newest = self.entries.last().map(|entry| entry.text.as_str());
+        let newest = self.entries.last().map(|entry| entry.prompt.as_str());
         if prompt.trim().is_empty() || newest == Some(prompt) {
             return Ok(());
         }
@@ -214,10 +213,14 @@ impl PromptHistory {
 
     /// An older copy of the same prompt moves to the newest place.
     fn remember(&mut self, entry: PromptEntry) {
-        if entry.text.trim().is_empty() {
+        if entry.prompt.trim().is_empty() {
             return;
         }
-        if let Some(at) = self.entries.iter().position(|old| old.text == entry.text) {
+        if let Some(at) = self
+            .entries
+            .iter()
+            .position(|old| old.prompt == entry.prompt)
+        {
             self.entries.remove(at);
         }
         self.entries.push(entry);
@@ -260,7 +263,7 @@ fn newest_once(entries: Vec<PromptEntry>, limit: usize) -> Vec<PromptEntry> {
         if kept == limit {
             break;
         }
-        if !entry.text.trim().is_empty() && seen.insert(entry.text.as_str()) {
+        if !entry.prompt.trim().is_empty() && seen.insert(entry.prompt.as_str()) {
             keep[at] = true;
             kept += 1;
         }
@@ -309,7 +312,7 @@ mod tests {
     use super::*;
 
     fn texts(entries: &[PromptEntry]) -> Vec<&str> {
-        entries.iter().map(|entry| entry.text.as_str()).collect()
+        entries.iter().map(|entry| entry.prompt.as_str()).collect()
     }
 
     #[test]
@@ -470,9 +473,9 @@ mod tests {
 
         let history = PromptHistory::load(&file).unwrap();
         assert_eq!(history.entries.len(), HISTORY_LIMIT);
-        assert_eq!(history.entries[0].text, "prompt 1000");
+        assert_eq!(history.entries[0].prompt, "prompt 1000");
         assert_eq!(history.entries[0].at, Some(49_000));
-        assert_eq!(history.entries.last().unwrap().text, "prompt 499");
+        assert_eq!(history.entries.last().unwrap().prompt, "prompt 499");
 
         let rewritten = fs::read_to_string(&file).unwrap();
         assert_eq!(rewritten.lines().count(), HISTORY_LIMIT);

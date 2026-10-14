@@ -130,8 +130,8 @@ fn leaves(settings: &BottomLineSettings) -> Vec<(String, Value)> {
 
 /// What the page's keys do to the file's settings.
 pub trait PageEdits {
-    /// The keys that differ from `from`, each with its value as TOML text, in the file's
-    /// order.
+    /// The keys whose values are different from `from`, each with its value as TOML text, in the
+    /// file's order.
     fn changes_from(&self, from: &Self) -> Vec<(String, String)>;
 
     /// The parts on the line that a narrow terminal gives up whole, the first to go first:
@@ -398,7 +398,7 @@ mod tests {
         let before = BottomLineSettings::default();
         let mut after = before.clone();
         assert!(after.changes_from(&before).is_empty());
-        after.plan_usage.shown_as = PlanUsageAs::Left;
+        after.plan_usage.r#as = PlanUsageAs::Left;
         after.toggle(false, "context");
         after.form = LineForm::Compact;
         assert_eq!(
@@ -431,7 +431,7 @@ mod tests {
         after.toggle(false, "spend");
         after.plan_usage.show = PlanUsageShow::NearLimit;
         after.plan_usage.windows = PlanUsageWindows::SevenDays;
-        after.plan_usage.shown_as = PlanUsageAs::Left;
+        after.plan_usage.r#as = PlanUsageAs::Left;
         after.plan_usage.resets = PlanUsageResets::Never;
         after.narrow.drop = vec!["branch".to_owned()];
         let pairs = after.changes_from(&before);

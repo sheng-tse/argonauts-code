@@ -1,4 +1,4 @@
-//! What planning measured, for the plan checkpoint and the pick card: the judging facts the
+//! What planning measured, for the plan approval and the pick question: the judging facts the
 //! plan rules read, and the flags you see.
 
 use argonauts_core::events::plan::JudgingResult;
@@ -7,7 +7,7 @@ use argonauts_core::policy::EvidenceFacts;
 
 use crate::engine::host::Host;
 
-/// A plan nobody contested, merged on the fast path or planned by the coordinator, has the
+/// A plan nobody contested, merged on the fast path or planned by the orchestrator, has the
 /// whole scale as its margin.
 const UNCONTESTED_MARGIN: f64 = 10.0;
 
@@ -31,8 +31,8 @@ pub fn review(host: &Host) -> PlanReview {
 }
 
 impl PlanReview {
-    /// The judging facts. Every counted score comes from another family than the plan's
-    /// author, so the judges were of other families when every plan has a counted score. With
+    /// The judging facts. Every counted score comes from another provider than the plan's
+    /// author, so the judges were of other providers when every plan has a counted score. With
     /// `judging.method: human` nobody scored, and the facts say nothing.
     pub fn facts(&self) -> EvidenceFacts {
         let (spread, margin, other_provider) = match &self.judging {
@@ -136,7 +136,7 @@ mod tests {
         assert!(flags[0].contains("Plan 2 holds text addressed to its judges"));
         assert!(flags[1].contains("counters"));
 
-        // A plan scored only by its own family has no counted judge.
+        // A plan scored only by its own provider has no counted judge.
         let lopsided = PlanReview {
             judging: judged(
                 JudgingMethod::Cross,

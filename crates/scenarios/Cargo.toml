@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-scenarios"
-description = "Real-binary scenario tests for Argonauts: the argonauts binary in a pty with fake vendor CLIs."
+description = "Real-binary scenario tests for Argonauts Code: the argonauts binary in a pty with fake agent CLIs."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,7 @@ argonauts-core.workspace = true
 argonauts-testkit.workspace = true
 
 [dev-dependencies]
+argonauts-conductor.workspace = true
 argonauts-learning.workspace = true
 regex.workspace = true
 rmcp = { workspace = true, features = ["client"] }

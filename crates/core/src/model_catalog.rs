@@ -1,14 +1,14 @@
 //! How the pickers name and describe models. Names derive from the model id by one rule, so new
 //! models name themselves. Descriptions, the "recommended" mark, and the picker's order come from
 //! a catalog merged in layers, each later one winning field by field: the catalog shipped with
-//! Argonauts, a newer one fetched from its repository, what the CLIs say of their own models, and
-//! your own entries in `models.toml`.
+//! Argonauts Code, a newer one fetched from its repository, what the CLIs say of their own models,
+//! and your own entries in `models.toml`.
 
 use std::cmp::{Ordering, Reverse};
 
 use serde::{Deserialize, Serialize};
 
-use crate::names::WorkerRef;
+use crate::names::ModelRef;
 use crate::pricing::ListPrice;
 use crate::registry::ModelEntry;
 
@@ -69,8 +69,8 @@ impl Eq for Dollars {}
 /// Every field but `id` is optional, so a later layer changes only what it sets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogEntry {
-    /// `harness/model`, or the harness alone for the model it runs when you name none.
-    pub id: WorkerRef,
+    /// `cli/model`, or the CLI alone for the model it runs when you name none.
+    pub id: ModelRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -85,13 +85,13 @@ pub struct CatalogEntry {
     /// Short names the CLI resolves to this model, such as `opus`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aliases: Option<Vec<String>>,
-    /// Where the picker lists it among its harness's models, lowest first.
+    /// Where the picker lists it among its CLI's models, lowest first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rank: Option<u32>,
-    /// On a harness's own entry: the model its default runs, when the CLI doesn't say.
+    /// On a CLI's own entry: the model its default runs, when the CLI doesn't say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runs: Option<String>,
-    /// What a level means on this model, where it differs from the catalog's notes.
+    /// What a level means on this model, where it is different from the catalog's notes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effort_notes: Vec<EffortNote>,
 }
@@ -106,7 +106,7 @@ pub struct EffortNote {
 /// What a picker shows for one model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelLabel {
-    /// "Opus 5.5", or "Default" for the harness's default.
+    /// "Opus 5.5", or "Default" for the CLI's default.
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -118,7 +118,7 @@ pub struct ModelLabel {
 }
 
 impl CatalogEntry {
-    pub fn new(id: WorkerRef) -> Self {
+    pub fn new(id: ModelRef) -> Self {
         Self {
             id,
             name: None,
@@ -193,18 +193,18 @@ impl ModelCatalog {
         }
     }
 
-    /// The entry for `id`, or for the model a harness alias such as `claude-code/opus` names.
-    pub fn entry(&self, id: &WorkerRef) -> Option<&CatalogEntry> {
+    /// The entry for `id`, or for the model a CLI alias such as `claude-code/opus` names.
+    pub fn entry(&self, id: &ModelRef) -> Option<&CatalogEntry> {
         self.models
             .iter()
             .find(|entry| entry.id == *id)
             .or_else(|| self.alias_target(id))
     }
 
-    fn alias_target(&self, id: &WorkerRef) -> Option<&CatalogEntry> {
+    fn alias_target(&self, id: &ModelRef) -> Option<&CatalogEntry> {
         let alias = id.model.as_deref()?;
         self.models.iter().find(|entry| {
-            entry.id.worker == id.worker
+            entry.id.agent == id.agent
                 && entry
                     .aliases
                     .as_ref()
@@ -212,12 +212,31 @@ impl ModelCatalog {
         })
     }
 
+    /// The model a session of `id` runs, spelled the one way the catalog spells it: the model
+    /// an alias such as `opus` names, and for a CLI named alone the model its default runs.
+    /// `None` when the catalog doesn't know it.
+    pub fn runs(&self, id: &ModelRef) -> Option<String> {
+        let entry = self.entry(id)?;
+        match &entry.runs {
+            // A default names a model, which may itself be an alias.
+            Some(runs) if entry.id.model.as_ref() != Some(runs) => {
+                let named = ModelRef::new(id.agent.clone(), Some(runs.clone()));
+                Some(
+                    self.entry(&named)
+                        .and_then(|entry| entry.id.model.clone())
+                        .unwrap_or_else(|| runs.clone()),
+                )
+            }
+            _ => entry.id.model.clone(),
+        }
+    }
+
     /// Whether `id` is an alias the catalog resolves, rather than a model of its own.
-    pub fn is_alias(&self, id: &WorkerRef) -> bool {
+    pub fn is_alias(&self, id: &ModelRef) -> bool {
         !self.models.iter().any(|entry| entry.id == *id) && self.alias_target(id).is_some()
     }
 
-    pub fn label(&self, id: &WorkerRef) -> ModelLabel {
+    pub fn label(&self, id: &ModelRef) -> ModelLabel {
         let entry = self.entry(id);
         let name = entry
             .and_then(|entry| entry.name.as_deref())
@@ -234,8 +253,8 @@ impl ModelCatalog {
         }
     }
 
-    /// What `level` means on `id`: its own note, the catalog's, or Argonauts' own words.
-    pub fn effort_note(&self, id: &WorkerRef, level: &str) -> Option<String> {
+    /// What `level` means on `id`: its own note, the catalog's, or Argonauts Code's own words.
+    pub fn effort_note(&self, id: &ModelRef, level: &str) -> Option<String> {
         let own = self
             .entry(id)
             .and_then(|entry| entry.effort_notes.iter().find(|note| note.level == level));
@@ -244,10 +263,10 @@ impl ModelCatalog {
             .or_else(|| builtin_effort_note(level).map(str::to_owned))
     }
 
-    /// Newest first: models the catalog hasn't ranked lead, by their version numbers, since
+    /// Newest first: models the catalog hasn't ranked come first, by their version numbers, since
     /// they came out after it was written. Ranked ones follow in rank order.
-    pub fn newest_first(&self, a: &WorkerRef, b: &WorkerRef) -> Ordering {
-        let key = |id: &WorkerRef| {
+    pub fn newest_first(&self, a: &ModelRef, b: &ModelRef) -> Ordering {
+        let key = |id: &ModelRef| {
             let rank = self.entry(id).and_then(|entry| entry.rank);
             let version = id.model.as_deref().map(version_numbers).unwrap_or_default();
             (rank.is_some(), rank, Reverse(version))
@@ -256,7 +275,7 @@ impl ModelCatalog {
     }
 }
 
-/// Argonauts' own words for each effort level, when no catalog layer says more.
+/// Argonauts Code's own words for each effort level, when no catalog layer says more.
 pub fn builtin_effort_note(level: &str) -> Option<&'static str> {
     Some(match level {
         "minimal" => "Answers right away, with almost no reasoning",
@@ -270,7 +289,7 @@ pub fn builtin_effort_note(level: &str) -> Option<&'static str> {
     })
 }
 
-/// A model's name as every place in Argonauts writes it, with its words apart: a CLI's own
+/// A model's name as every place in Argonauts Code writes it, with its words apart: a CLI's own
 /// list may join them, as Codex's "GPT-5.6-Luna", and the same model then read two ways.
 pub fn spelled_one_way(name: &str) -> String {
     name.split(|c: char| c.is_whitespace() || c == '-')
@@ -300,7 +319,7 @@ pub fn display_name_from_id(id: &str) -> String {
     {
         tokens.pop();
     }
-    // The family name says it's Claude, unless only a version follows, as in `claude-3-5-sonnet`.
+    // The first word says it's Claude, unless only a version follows, as in `claude-3-5-sonnet`.
     if tokens.first() == Some(&"claude")
         && tokens
             .get(1)
@@ -388,7 +407,7 @@ mod tests {
 
     use super::*;
 
-    fn id(text: &str) -> WorkerRef {
+    fn id(text: &str) -> ModelRef {
         text.parse().unwrap()
     }
 
@@ -550,6 +569,30 @@ mod tests {
     }
 
     #[test]
+    fn a_model_is_spelled_one_way_however_a_session_names_it() {
+        let catalog = seed();
+        for named in [
+            "claude-code",
+            "claude-code/opus",
+            "claude-code/claude-opus-5-5",
+        ] {
+            assert_eq!(
+                catalog.runs(&id(named)).as_deref(),
+                Some("claude-opus-5-5"),
+                "{named}"
+            );
+        }
+        assert_eq!(
+            catalog
+                .runs(&id("claude-code/claude-sonnet-4-6"))
+                .as_deref(),
+            Some("claude-sonnet-4-6")
+        );
+        assert_eq!(catalog.runs(&id("claude-code/claude-opus-9")), None);
+        assert_eq!(catalog.runs(&id("codex")), None);
+    }
+
+    #[test]
     fn aliases_resolve_and_new_models_sort_first() {
         let catalog = seed();
         assert!(catalog.is_alias(&id("claude-code/opus")));
@@ -578,8 +621,8 @@ mod tests {
 
     fn entry(worker: &str) -> ModelEntry {
         serde_json::from_value(json!({
-            "id": worker, "family": "gpt", "kind": "harness", "access": "subscription",
-            "cost": {"unit": "quota"}
+            "id": worker, "provider": "openai", "kind": "cli", "access": "subscription",
+            "cost": {"unit": "plan_usage"}
         }))
         .unwrap()
     }

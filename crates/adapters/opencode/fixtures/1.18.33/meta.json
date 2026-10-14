@@ -1,8 +1,0 @@
-{
-  "adapter": "opencode",
-  "cli_version": "1.18.33",
-  "synthetic": true,
-  "why": "OpenCode isn't installed here, so nothing in this folder was recorded from a run",
-  "source": "https://github.com/anomalyco/opencode at tag v1.18.33: packages/opencode/src/cli/cmd/run.ts (the emit calls), packages/schema/src/v1/session.ts (part shapes), packages/core/src/v1/session.ts (named errors)",
-  "written": "2026-09-29"
-}

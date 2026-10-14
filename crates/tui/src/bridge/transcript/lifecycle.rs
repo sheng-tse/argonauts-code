@@ -1,17 +1,18 @@
-//! Where a run stands: resumed, paused, parked, and finished, with the turn end after it.
+//! Where a run stands: resumed, paused, waiting, and finished, with the turn end after it.
 
 use std::time::Duration;
 
 use argonauts_core::events::RunEvent;
-use argonauts_core::events::run::{ClosingAnswer, ParkReason, ResumeCause, RunOutcome, RunResumed};
+use argonauts_core::events::run::{ClosingAnswer, ResumeCause, RunOutcome, RunResumed, WaitReason};
+use argonauts_core::hidden_git::{HISTORY_KEPT, MergedInto};
 use argonauts_core::settings::ui::VerbTheme;
-use argonauts_core::{CardId, RunId, Spend, Verbosity};
+use argonauts_core::{RunId, Spend, TaskId, Verbosity};
 use time::OffsetDateTime;
 
 use crate::bottom::WorkflowRowState;
 use crate::bottom::verbs::VerbStyle;
 use crate::bridge::failure;
-use crate::cell::{AssistantMessage, Notice, Tone, ToolState, TurnEnd};
+use crate::cell::{AssistantMessage, Cell, DecidedOnAutopilot, Notice, Tone, ToolState, TurnEnd};
 use crate::format::{self, WallClock};
 use crate::state::RunState;
 
@@ -19,14 +20,16 @@ use super::milestones::RunStory;
 use super::steps::{plural, step};
 use super::{Cx, emit, quiet, run_name};
 
-/// The glyph of a run that stopped moving, paused or parked.
+/// The glyph of a run that stopped moving, paused or waiting.
 const STOPPED: &str = "■";
 /// At normal verbosity the closing answer names this many files, then counts the rest.
 const FILES_NAMED: usize = 4;
 /// And keeps this many of what's left.
 const LEFT_NAMED: usize = 2;
+/// And this many of what autopilot decided, then counts the rest.
+const DECIDED_NAMED: usize = 4;
 
-/// `● Resume(Add a --json flag)` and what changed while it waited. A run that waited on a card
+/// `● Resume(Add a --json flag)` and what changed while it waited. A run that waited on a question
 /// prints nothing when it stops, so it prints nothing when your answer moves it on either,
 /// unless something changed meanwhile.
 pub(super) fn resumed(run: &RunId, resumed: &RunResumed, cx: &mut Cx<'_>) {
@@ -34,10 +37,10 @@ pub(super) fn resumed(run: &RunId, resumed: &RunResumed, cx: &mut Cx<'_>) {
     if resumed.settings_changed {
         details.push("Settings changed since it stopped".to_owned());
     }
-    if !resumed.harness_versions_changed.is_empty() {
+    if !resumed.cli_versions_changed.is_empty() {
         details.push(format!(
             "New versions of {}",
-            resumed.harness_versions_changed.join(", ")
+            resumed.cli_versions_changed.join(", ")
         ));
     }
     if let Some(commits) = resumed.main_moved_by {
@@ -66,9 +69,9 @@ pub(super) fn resumed(run: &RunId, resumed: &RunResumed, cx: &mut Cx<'_>) {
         ResumeCause::User => None,
         ResumeCause::Answer if details.is_empty() => return,
         ResumeCause::Answer => Some("After your answer"),
-        ResumeCause::VendorBack => Some("An agent it waited for is back"),
+        ResumeCause::AgentBack => Some("An agent it waited for is tried again"),
         ResumeCause::AskTimeout => {
-            Some("The fallback question waited too long, so the first fallback takes over")
+            Some("The fallback question waited too long, so it fell back to the first choice")
         }
         ResumeCause::Crash => Some("After a crash, from its log"),
     };
@@ -84,7 +87,7 @@ pub(super) fn resumed(run: &RunId, resumed: &RunResumed, cx: &mut Cx<'_>) {
 
 /// `■ Paused the run at a safe point · 2 sessions stopped after their tool calls · work
 /// committed`, and how to go on.
-pub(super) fn paused(now: bool, sessions_stopped: u32, committed: &[CardId], cx: &mut Cx<'_>) {
+pub(super) fn paused(now: bool, sessions_stopped: u32, committed: &[TaskId], cx: &mut Cx<'_>) {
     let mut text = if now {
         "Paused the run".to_owned()
     } else {
@@ -111,35 +114,38 @@ pub(super) fn paused(now: bool, sessions_stopped: u32, committed: &[CardId], cx:
     emit(cx, notice);
 }
 
-/// A run parked because the agents it needs are out, or nobody could take a seat over. Pauses
-/// and checkpoints have their own lines. It says it carries on by itself only when it will.
-pub(super) fn parked(reason: &ParkReason, clock: &WallClock, cx: &mut Cx<'_>) {
+/// A run waiting because the agents it needs are out, or a job has nobody to fall back to.
+/// Pauses and approvals have their own lines. It says it carries on by itself only when it will.
+pub(super) fn waiting(reason: &WaitReason, clock: &WallClock, cx: &mut Cx<'_>) {
     let until = |at: &Option<OffsetDateTime>| {
         at.map(|at| format!(" until {}", clock.clock(at)))
             .unwrap_or_default()
     };
     let back = "It resumes when one is back · /resume tries now".to_owned();
     let (text, detail) = match reason {
-        ParkReason::AllVendorsOut { until: at } => (
+        WaitReason::AllAgentsOut { until: at } => (
             format!("The run waits · every agent is out{}", until(at)),
             back,
         ),
-        ParkReason::WaitingForVendor { vendor, until: at } => (
+        WaitReason::WaitingForAgent {
+            agent_id,
+            until: at,
+        } => (
             format!(
                 "The run waits · its tasks wait for {}{}",
-                cx.state.names.harness(&vendor.0),
+                cx.state.names.cli(&agent_id.0),
                 until(at)
             ),
             back,
         ),
-        ParkReason::NoStandIn { detail, until: at } => (
+        WaitReason::NoFallback { detail, until: at } => (
             format!("The run waits · {detail}"),
             match at {
                 Some(at) => format!("It tries again at {} · /resume tries now", clock.clock(*at)),
                 None => "/resume tries again".to_owned(),
             },
         ),
-        ParkReason::Paused | ParkReason::Checkpoint => return,
+        WaitReason::Paused | WaitReason::Approval => return,
     };
     let notice = Notice::new(Tone::Normal, text)
         .with_glyph(STOPPED)
@@ -147,8 +153,8 @@ pub(super) fn parked(reason: &ParkReason, clock: &WallClock, cx: &mut Cx<'_>) {
     emit(cx, notice);
 }
 
-/// `● Merged the run into main (4 cards, 7 files, +120 -18)`, then `⎿  Run finished · 42s ·
-/// $0.06 · retro saved`, then the turn end.
+/// `● Merged the run into main (4 tasks, 7 files, +120 -18)`, then `⎿  Run finished · 42s ·
+/// $0.06 · run review saved`, then the turn end.
 pub(super) fn run_end(
     event: &RunEvent,
     story: &RunStory,
@@ -165,8 +171,14 @@ pub(super) fn run_end(
         Duration::from_secs(u64::try_from(seconds).unwrap_or(0))
     });
     let totals = state.and_then(totals).unwrap_or_default();
-    let target = story.landed.as_deref().unwrap_or("main");
+    let target = story.run_merged.as_deref().unwrap_or("main");
+    // A folder without git has no branch the run merged into: its work was written in.
+    let merged_into = MergedInto::of(target);
+    let written_into_folder = merged_into == MergedInto::YourFolder;
     let (tone, glyph, title, verb) = match outcome {
+        RunOutcome::Merged if written_into_folder => {
+            (Tone::Success, None, merged_into.heading(), "finished")
+        }
         RunOutcome::Merged => (
             Tone::Success,
             None,
@@ -194,7 +206,7 @@ pub(super) fn run_end(
         RunOutcome::Abandoned => (
             Tone::Normal,
             None,
-            "Abandoned the run · its branches are kept".to_owned(),
+            "Abandoned the run · its work is removed".to_owned(),
             "ended",
         ),
         RunOutcome::Stopped => (
@@ -206,7 +218,7 @@ pub(super) fn run_end(
         RunOutcome::Failed => (Tone::Error, None, "The run failed".to_owned(), "ended"),
     };
     if outcome == RunOutcome::Failed {
-        let tasks = state.map(|run| run.cards_done());
+        let tasks = state.map(|run| run.tasks_done());
         failed_run(
             story,
             detail,
@@ -216,7 +228,11 @@ pub(super) fn run_end(
             cx,
         );
     } else {
-        let mut notice = Notice::new(tone, title);
+        let mut notice = if outcome == RunOutcome::Merged && written_into_folder {
+            Notice::plain_with_after(tone, title, written_after(state))
+        } else {
+            Notice::new(tone, title)
+        };
         if let Some(glyph) = glyph {
             notice = notice.with_glyph(glyph);
         }
@@ -240,13 +256,15 @@ pub(super) fn run_end(
         if let Some(run) = state {
             finished.push_str(&format!(" · {}", format::spend(&run.spend())));
         }
-        if story.retro {
+        if let Some(removed) = &story.copies_removed {
+            finished.push_str(&format!(" · {removed}"));
+        }
+        if story.run_review {
             finished.push_str(" · run review saved");
         }
         emit(cx, notice.with_detail(finished));
         if let Some(answer) = &story.closing {
-            let markdown = closing_markdown(answer, cx.verbosity());
-            emit(cx, AssistantMessage::new(markdown));
+            emit_closing(answer, cx);
         }
     }
     if let Some(elapsed) = elapsed
@@ -306,13 +324,31 @@ fn failed_run(
     }
     if let Some(answer) = &story.closing {
         let text = answer.text.trim();
-        let restates =
+        let reads_back =
             text.starts_with("The run failed") || (!said.is_empty() && text.contains(&said));
-        if !restates {
-            let markdown = closing_markdown(answer, cx.verbosity());
-            emit(cx, AssistantMessage::new(markdown));
+        if !reads_back {
+            emit_closing(answer, cx);
         }
     }
+}
+
+/// The run's last word, and under it what the run decided in your place, each with whose call
+/// it was. Quiet keeps the words alone.
+fn emit_closing(answer: &ClosingAnswer, cx: &mut Cx<'_>) {
+    let verbosity = cx.verbosity();
+    emit(
+        cx,
+        AssistantMessage::new(closing_markdown(answer, verbosity)),
+    );
+    if answer.decided.is_empty() || verbosity == Verbosity::Quiet {
+        return;
+    }
+    let named = match verbosity {
+        Verbosity::Full => answer.decided.len(),
+        _ => DECIDED_NAMED,
+    };
+    let decided = DecidedOnAutopilot::new(&answer.decided, named);
+    emit(cx, Cell::Custom(Box::new(decided)));
 }
 
 /// The run's last word, as a message in the main agent's voice: its own words, then what
@@ -378,7 +414,24 @@ fn closing_markdown(answer: &ClosingAnswer, verbosity: Verbosity) -> String {
     markdown.trim_end().to_owned()
 }
 
-/// ` (4 cards, 7 files, +120 -18)`: what the merge card put up, or without one, the cards'
+/// `4 files +52 −6 · history kept by Argonauts`, after "Written into your folder".
+fn written_after(run: Option<&RunState>) -> String {
+    match run.and_then(|run| run.merge_totals.as_ref()) {
+        Some(merge) => {
+            let stat = &merge.combined;
+            let files = usize::try_from(stat.files_changed).unwrap_or(usize::MAX);
+            format!(
+                "{} +{} \u{2212}{} · {HISTORY_KEPT}",
+                plural(files, "file", "files"),
+                stat.insertions,
+                stat.deletions
+            )
+        }
+        None => HISTORY_KEPT.to_owned(),
+    }
+}
+
+/// ` (4 tasks, 7 files, +120 -18)`: what the merge question put up, or without one, the tasks'
 /// diffs.
 fn totals(run: &RunState) -> Option<String> {
     if let Some(merge) = &run.merge_totals {
@@ -386,7 +439,7 @@ fn totals(run: &RunState) -> Option<String> {
         return Some(format!(
             " ({}, {}, +{} -{})",
             plural(
-                usize::try_from(merge.cards).unwrap_or(usize::MAX),
+                usize::try_from(merge.tasks).unwrap_or(usize::MAX),
                 "task",
                 "tasks"
             ),
@@ -399,11 +452,11 @@ fn totals(run: &RunState) -> Option<String> {
             combined.deletions
         ));
     }
-    if run.cards.is_empty() {
+    if run.tasks.is_empty() {
         return None;
     }
-    let mut parts = vec![plural(run.cards.len(), "task", "tasks")];
-    let diffs: Vec<_> = run.cards.values().filter_map(|card| card.diff).collect();
+    let mut parts = vec![plural(run.tasks.len(), "task", "tasks")];
+    let diffs: Vec<_> = run.tasks.values().filter_map(|task| task.diff).collect();
     if !diffs.is_empty() {
         let files: u32 = diffs.iter().map(|diff| diff.files_changed).sum();
         let added: u32 = diffs.iter().map(|diff| diff.insertions).sum();

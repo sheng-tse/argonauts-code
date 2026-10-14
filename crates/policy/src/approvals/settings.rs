@@ -1,18 +1,18 @@
-//! The settings a checkpoint uses: the stricter of the run-start settings and the files as they
-//! are now. A tighter change applies at the next checkpoint, and a looser one waits for the
+//! The settings an approval uses: the stricter of the run-start settings and the files as they
+//! are now. A tighter change applies at the next approval, and a looser one waits for the
 //! next run.
 
 use std::sync::Arc;
 
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{
-    Answerer, ApprovalMode, ApprovalRules, ApprovalSettings, ApproverSettings, AtHardLimit,
-    BudgetRules, CheckpointSettings, DecideWith, Decides, EscalationRules, GoalChanges,
-    HardLimitSettings, IsolatedLeak, MergeRules, Otherwise, PlanRules, Presence, PromotionRules,
-    SandboxChoice, SandboxSettings, UntrustedRepos, UserHooks,
+    Answerer, ApprovalMode, ApprovalPointSettings, ApprovalRules, ApprovalSettings, AtHardLimit,
+    DecideWith, Decides, GoalChanges, HardLimitSettings, IsolatedLeak, JudgeSettings, LimitRules,
+    MergeRules, Otherwise, PlanRules, Presence, PromotionRules, SandboxChoice, SandboxSettings,
+    StuckRules, UntrustedRepos, UserHooks,
 };
 use argonauts_core::settings::asking::WhenDeclined;
-use argonauts_core::settings::budget::BudgetSettings;
+use argonauts_core::settings::limit::SpendLimits;
 
 use crate::SettingsReloader;
 
@@ -40,7 +40,7 @@ impl SettingsSource {
     }
 }
 
-/// For each checkpoint: the less autonomous mode, the stricter rule numbers, and the smaller
+/// For each approval: the less autonomous mode, the stricter rule numbers, and the smaller
 /// caps of the two, plus the stricter hard limits and sandbox. Everything the policy doesn't
 /// read keeps its run-start value.
 pub fn stricter(run_start: &Settings, reloaded: &Settings) -> Settings {
@@ -53,7 +53,7 @@ pub fn stricter(run_start: &Settings, reloaded: &Settings) -> Settings {
 
 fn approvals(a: &ApprovalSettings, b: &ApprovalSettings) -> ApprovalSettings {
     ApprovalSettings {
-        // Full auto everywhere only while both say so.
+        // Autopilot everywhere only while both say so.
         autopilot: a.autopilot && b.autopilot,
         answers: answered_by(a.answers.as_ref(), b.answers.as_ref()),
         decides: decides(&a.decides, &b.decides),
@@ -76,18 +76,18 @@ fn approvals(a: &ApprovalSettings, b: &ApprovalSettings) -> ApprovalSettings {
             .suggest_auto_after_matches
             .max(b.suggest_auto_after_matches),
         rules: rules(&a.rules, &b.rules),
-        goal: checkpoint(&a.goal, &b.goal),
-        plan: checkpoint(&a.plan, &b.plan),
-        merge: checkpoint(&a.merge, &b.merge),
-        workflow_promotion: checkpoint(
-            &a.workflow_promotion.as_checkpoint(),
-            &b.workflow_promotion.as_checkpoint(),
+        understand: approval(&a.understand, &b.understand),
+        plan: approval(&a.plan, &b.plan),
+        merge: approval(&a.merge, &b.merge),
+        workflow_promotion: approval(
+            &a.workflow_promotion.as_approval(),
+            &b.workflow_promotion.as_approval(),
         )
         .into(),
-        escalation: checkpoint(&a.escalation, &b.escalation),
-        budget: checkpoint(&a.budget, &b.budget),
-        change_request: checkpoint(&a.change_request, &b.change_request),
-        approver: approver(&a.approver, &b.approver),
+        stuck: approval(&a.stuck, &b.stuck),
+        limit: approval(&a.limit, &b.limit),
+        change_request: approval(&a.change_request, &b.change_request),
+        judge: judge(&a.judge, &b.judge),
         presence: presence(a.presence, b.presence),
         refuse_ancestor_env: union(&a.refuse_ancestor_env, &b.refuse_ancestor_env),
         // A command runs without asking only while both allow it.
@@ -100,8 +100,8 @@ fn approvals(a: &ApprovalSettings, b: &ApprovalSettings) -> ApprovalSettings {
     }
 }
 
-/// You answering is the strictest, then following the mode, then the lead, or a model you
-/// picked for full auto, which both must name.
+/// You answering is the strictest, then following the mode, then the main agent, or a model you
+/// picked for autopilot, which both must name.
 fn answered_by(a: Option<&Answerer>, b: Option<&Answerer>) -> Option<Answerer> {
     match (a, b) {
         (Some(Answerer::You), _) | (_, Some(Answerer::You)) => Some(Answerer::You),
@@ -110,8 +110,8 @@ fn answered_by(a: Option<&Answerer>, b: Option<&Answerer>) -> Option<Answerer> {
     }
 }
 
-fn checkpoint(a: &CheckpointSettings, b: &CheckpointSettings) -> CheckpointSettings {
-    CheckpointSettings {
+fn approval(a: &ApprovalPointSettings, b: &ApprovalPointSettings) -> ApprovalPointSettings {
+    ApprovalPointSettings {
         mode: less_autonomous(a.mode, b.mode),
         decide_with: decide_with(a.decide_with, b.decide_with),
         otherwise: otherwise(a.otherwise, b.otherwise),
@@ -147,12 +147,12 @@ fn otherwise(a: Otherwise, b: Otherwise) -> Otherwise {
     if a == b { a } else { Otherwise::Ask }
 }
 
-/// When the two disagree: park when either says so, else stop, which ends that part safely,
+/// When the two disagree: wait when either says so, else stop, which ends that part safely,
 /// so a run never waits for you at a hard limit that neither file left to you.
 fn at_hard_limit(a: AtHardLimit, b: AtHardLimit) -> AtHardLimit {
     match (a, b) {
         _ if a == b => a,
-        (AtHardLimit::Park, _) | (_, AtHardLimit::Park) => AtHardLimit::Park,
+        (AtHardLimit::Wait, _) | (_, AtHardLimit::Wait) => AtHardLimit::Wait,
         _ => AtHardLimit::Stop,
     }
 }
@@ -183,14 +183,11 @@ fn rules(a: &ApprovalRules, b: &ApprovalRules) -> ApprovalRules {
         plan: plan_rules(&a.plan, &b.plan),
         merge: merge_rules(&a.merge, &b.merge),
         workflow_promotion: promotion_rules(&a.workflow_promotion, &b.workflow_promotion),
-        escalation: EscalationRules {
-            max_extra_attempts: u32::min(
-                a.escalation.max_extra_attempts,
-                b.escalation.max_extra_attempts,
-            ),
+        stuck: StuckRules {
+            max_extra_tries: u32::min(a.stuck.max_extra_tries, b.stuck.max_extra_tries),
         },
-        budget: BudgetRules {
-            use_reserve: a.budget.use_reserve && b.budget.use_reserve,
+        limit: LimitRules {
+            use_reserve: a.limit.use_reserve && b.limit.use_reserve,
         },
     }
 }
@@ -226,8 +223,8 @@ fn decides(a: &Decides, b: &Decides) -> Decides {
     if a == b { a.clone() } else { Decides::Judge }
 }
 
-fn approver(a: &ApproverSettings, b: &ApproverSettings) -> ApproverSettings {
-    ApproverSettings {
+fn judge(a: &JudgeSettings, b: &JudgeSettings) -> JudgeSettings {
+    JudgeSettings {
         model_rules: a.model_rules.clone(),
         different_provider: a.different_provider || b.different_provider,
         second_model: a.second_model.clone().or_else(|| b.second_model.clone()),
@@ -243,16 +240,16 @@ fn limits(a: &HardLimitSettings, b: &HardLimitSettings) -> HardLimitSettings {
         irreversible_allowlist: intersection(&a.irreversible_allowlist, &b.irreversible_allowlist),
         evolution_usd_per_month: smaller_cap(a.evolution_usd_per_month, b.evolution_usd_per_month),
         // Of the run and task limits, only the run's dollars are a cap the policy reads.
-        budget: BudgetSettings {
-            spend_per_run: smaller_cap(a.budget.spend_per_run, b.budget.spend_per_run),
-            ..a.budget.clone()
+        spend: SpendLimits {
+            spend_per_run: smaller_cap(a.spend.spend_per_run, b.spend.spend_per_run),
+            ..a.spend.clone()
         },
     }
 }
 
 /// The run keeps the sandbox it started with, unless the files now ask for a stricter one:
 /// ours over each tool's own, and that over none. Then new sessions get it, and the
-/// checkpoints still ask, since the earlier sessions ran without it.
+/// approvals still ask, since the earlier sessions ran without it.
 fn sandbox(a: &SandboxSettings, b: &SandboxSettings) -> SandboxSettings {
     fn rank(mode: SandboxChoice) -> u8 {
         match mode {

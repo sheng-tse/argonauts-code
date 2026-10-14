@@ -1,4 +1,4 @@
-//! The guided setup: on the first start, again with `argonauts init`, with Enter or Esc, with
+//! The guided setup: on the first start, again with `argonauts setup`, with Enter or Esc, with
 //! a local model server, a logged-out CLI, or no CLI at all, and what it writes.
 
 mod app_support;
@@ -10,18 +10,20 @@ use std::process::Command;
 use anyhow::Context as _;
 use app_support::*;
 use argonauts_core::app::{AppChoice, AppEvent, ChoiceKind, UiCommand};
-use argonauts_core::events::checkpoint::{AnswerAction, AnswerOption};
+use argonauts_core::events::approval::{AnswerAction, AnswerOption};
 use argonauts_core::prompt_files;
 use argonauts_core::settings::workflows::WORKFLOW_FILE_KEYS;
 use argonauts_scenarios::{Scenario, scenario_file};
 use argonauts_testkit::{FakeOpenAi, FakeRule, FakeScenario, FakeStep, Key, Pty};
 
 /// The keys an Enter-through setup writes, and nothing else.
-const SETUP_KEYS: [&str; 12] = [
-    "crew",
-    "main_agent",
+const SETUP_KEYS: [&str; 14] = [
+    "crew.main",
+    "crew.worker",
+    "crew.reviewer",
+    "crew.judge",
     "workflow",
-    "approvals.goal.mode",
+    "approvals.understand.mode",
     "approvals.plan.mode",
     "approvals.merge.mode",
     "approvals.stuck.mode",
@@ -94,7 +96,7 @@ fn enter_through(scenario: &Scenario, pty: &mut Pty) -> anyhow::Result<Vec<AppCh
     walk_setup(scenario, pty, |_| None)
 }
 
-/// What a setup option answers with, such as `codex` for the option the card labels Codex.
+/// What a setup option answers with, such as `codex` for the option the question labels Codex.
 fn value_of(option: &AnswerOption) -> &str {
     match &option.action {
         AnswerAction::Choose { value } => value,
@@ -128,11 +130,14 @@ fn assert_recommended_global(scenario: &Scenario) -> anyhow::Result<()> {
     for entry in &entries {
         assert!(entry.commented, "{} has no comment:\n{text}", entry.key);
     }
-    let crew = toml_value(&text, "crew").unwrap_or_default();
+    let workers = toml_value(&text, "crew.worker").unwrap_or_default();
     for agent in ["claude-code", "codex", "antigravity-cli"] {
-        assert!(crew.contains(agent), "{agent} isn't in the crew: {crew}");
+        assert!(
+            workers.contains(agent),
+            "{agent} isn't in the crew: {workers}"
+        );
     }
-    assert!(toml_value(&text, "main_agent").is_some_and(|v| v.contains("claude-code")));
+    assert!(toml_value(&text, "crew.main").is_some_and(|v| v.contains("claude-code")));
     assert!(same_toml(
         &toml_value(&text, "workflow").unwrap_or_default(),
         "\"council\""
@@ -153,9 +158,9 @@ fn assert_recommended_global(scenario: &Scenario) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A preset file as the setup writes it: the default named, the built-in's hash recorded, each
+/// A workflow file as the setup writes it: the default named, the built-in's hash recorded, each
 /// key it sets commented, and the protocol keys it leaves alone commented out at their defaults.
-fn assert_commented_preset(path: &Path) -> anyhow::Result<String> {
+fn assert_commented_workflow(path: &Path) -> anyhow::Result<String> {
     let text = read(path)?;
     let comments: Vec<&str> = text
         .lines()
@@ -202,7 +207,7 @@ fn describes_the_workflow(key: &str) -> bool {
     })
 }
 
-fn presets_dir(scenario: &Scenario) -> std::path::PathBuf {
+fn workflows_dir(scenario: &Scenario) -> std::path::PathBuf {
     scenario.repo.home().join("workflows")
 }
 
@@ -233,14 +238,15 @@ fn app_first_run_enter_through_writes_commented_global() -> anyhow::Result<()> {
             "the closing line doesn't name {command}:\n{text}"
         );
     }
-    assert_commented_preset(&presets_dir(&scenario).join("council.toml"))?;
-    let coordinated = assert_commented_preset(&presets_dir(&scenario).join("orchestrator.toml"))?;
+    assert_commented_workflow(&workflows_dir(&scenario).join("council.toml"))?;
+    let orchestrated =
+        assert_commented_workflow(&workflows_dir(&scenario).join("orchestrator.toml"))?;
     assert!(
         same_toml(
-            &toml_value(&coordinated, "phases").unwrap_or_default(),
+            &toml_value(&orchestrated, "drafting.by").unwrap_or_default(),
             "\"orchestrator\""
         ),
-        "{coordinated}"
+        "{orchestrated}"
     );
     assert!(
         !scenario.repo.root().join(".argonauts").exists(),
@@ -282,7 +288,7 @@ fn app_first_run_esc_takes_defaults() -> anyhow::Result<()> {
         "a step still waits after Esc"
     );
     assert_recommended_global(&scenario)?;
-    check_mode_line(&pty)?;
+    check_bottom_row(&pty)?;
     scenario.shot(&pty, "app_first_run_esc_takes_defaults")?;
     Ok(())
 }
@@ -330,7 +336,7 @@ fn app_first_run_offers_local_server() -> anyhow::Result<()> {
         "true"
     ));
     assert!(same_toml(
-        &toml_value(&text, "roles.reviewer.workers").unwrap_or_default(),
+        &toml_value(&text, "roles.reviewer.models").unwrap_or_default(),
         "[\"ollama/llama3.2\"]"
     ));
     let requests = server.requests();
@@ -349,8 +355,8 @@ fn app_first_run_offers_local_server() -> anyhow::Result<()> {
 #[test]
 fn app_first_run_shows_logged_out_codex() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let mut vendors = FakeScenario::load(&scenario_file(VENDORS))?;
-    vendors.rules.insert(
+    let mut fakes = FakeScenario::load(&scenario_file(AGENTS))?;
+    fakes.rules.insert(
         0,
         FakeRule::for_program("codex")
             .args(&["login", "status"])
@@ -358,7 +364,7 @@ fn app_first_run_shows_logged_out_codex() -> anyhow::Result<()> {
             .step(FakeStep::Exit(1)),
     );
     let logged_out = dir.path().join("logged-out-codex.toml");
-    vendors.save(&logged_out)?;
+    fakes.save(&logged_out)?;
     let scenario = scenario_playing(&logged_out)?;
 
     let mut pty = launch_setup(&scenario, &[], &[])?;
@@ -400,16 +406,16 @@ fn app_first_run_without_clis_still_finishes() -> anyhow::Result<()> {
     enter_through(&scenario, &mut pty)?;
     let text = read(&scenario.repo.global_config())?;
     assert!(
-        toml_value(&text, "crew").is_none(),
+        toml_value(&text, "crew.worker").is_none(),
         "a crew without agents:\n{text}"
     );
     let screen = pty.screen().text();
     assert!(screen.to_lowercase().contains("install"), "{screen}");
     assert!(
-        scenario.vendors.invocations()?.is_empty(),
+        scenario.clis.invocations()?.is_empty(),
         "an agent CLI was found through the fakes"
     );
-    check_mode_line(&pty)?;
+    check_bottom_row(&pty)?;
     scenario.shot(&pty, "app_first_run_without_clis_still_finishes")?;
     Ok(())
 }
@@ -436,10 +442,10 @@ fn app_second_start_skips_setup() -> anyhow::Result<()> {
 }
 
 #[test]
-fn app_init_again_keeps_your_choices_and_presets() -> anyhow::Result<()> {
+fn app_setup_again_keeps_your_choices_and_workflows() -> anyhow::Result<()> {
     let scenario = first_run_scenario()?;
     let mut pty = launch_setup(&scenario, &[], &[])?;
-    // Not the recommendations: Codex to chat with, solo, and shadow approvals.
+    // Not the recommendations: Codex to talk to, Captain, and auto preview approvals.
     walk_setup(&scenario, &mut pty, |step| {
         let has = |value: &str| step.options.iter().any(|o| value_of(o) == value);
         let key_of = |value: &str| {
@@ -451,7 +457,7 @@ fn app_init_again_keeps_your_choices_and_presets() -> anyhow::Result<()> {
         if has("claude-code") && has("codex") {
             key_of("codex")
         } else if has("council") {
-            key_of("solo")
+            key_of("captain")
         } else if has("auto_preview") {
             key_of("auto_preview")
         } else {
@@ -460,34 +466,34 @@ fn app_init_again_keeps_your_choices_and_presets() -> anyhow::Result<()> {
     })?;
     quit(&mut pty)?;
 
-    let peer = presets_dir(&scenario).join("council.toml");
-    let coordinated = presets_dir(&scenario).join("orchestrator.toml");
-    let edited = format!("{}# my own change\n", read(&peer)?);
-    std::fs::write(&peer, &edited)?;
-    std::fs::remove_file(&coordinated)?;
+    let council = workflows_dir(&scenario).join("council.toml");
+    let orchestrated = workflows_dir(&scenario).join("orchestrator.toml");
+    let edited = format!("{}# my own change\n", read(&council)?);
+    std::fs::write(&council, &edited)?;
+    std::fs::remove_file(&orchestrated)?;
 
     rotate_trace(&scenario, "first")?;
-    let mut pty = launch_setup(&scenario, &["init"], &[])?;
+    let mut pty = launch_setup(&scenario, &["setup"], &[])?;
     let steps = enter_through(&scenario, &mut pty)?;
-    let chat_step = steps
+    let main_agent_step = steps
         .iter()
         .find(|s| s.options.iter().any(|o| value_of(o) == "claude-code"))
         .expect("no main agent step");
     assert_eq!(
-        value_of(&chat_step.options[0]),
+        value_of(&main_agent_step.options[0]),
         "codex",
-        "your choice isn't preselected: {chat_step:?}"
+        "your choice isn't preselected: {main_agent_step:?}"
     );
 
     let text = read(&scenario.repo.global_config())?;
     assert!(
-        toml_value(&text, "main_agent").is_some_and(|v| v.contains("codex")),
+        toml_value(&text, "crew.main").is_some_and(|v| v.contains("codex")),
         "{text}"
     );
     assert!(
         same_toml(
             &toml_value(&text, "workflow").unwrap_or_default(),
-            "\"solo\""
+            "\"captain\""
         ),
         "{text}"
     );
@@ -498,14 +504,18 @@ fn app_init_again_keeps_your_choices_and_presets() -> anyhow::Result<()> {
         ),
         "{text}"
     );
-    assert_eq!(read(&peer)?, edited, "init replaced your edited workflow");
-    assert_commented_preset(&coordinated)?;
-    scenario.shot(&pty, "app_init_again_keeps_your_choices_and_presets")?;
+    assert_eq!(
+        read(&council)?,
+        edited,
+        "setup replaced your edited workflow"
+    );
+    assert_commented_workflow(&orchestrated)?;
+    scenario.shot(&pty, "app_setup_again_keeps_your_choices_and_workflows")?;
     Ok(())
 }
 
 #[test]
-fn app_init_shows_terms_note_once() -> anyhow::Result<()> {
+fn app_setup_shows_terms_note_once() -> anyhow::Result<()> {
     let scenario = first_run_scenario()?;
     let mut pty = launch_setup(&scenario, &[], &[])?;
     let first = enter_through(&scenario, &mut pty)?;
@@ -514,21 +524,21 @@ fn app_init_shows_terms_note_once() -> anyhow::Result<()> {
     quit(&mut pty)?;
 
     rotate_trace(&scenario, "first")?;
-    let mut pty = launch_setup(&scenario, &["init"], &[])?;
+    let mut pty = launch_setup(&scenario, &["setup"], &[])?;
     let again = enter_through(&scenario, &mut pty)?;
     assert!(!again.is_empty(), "init showed no steps");
     assert!(
         again.iter().all(|step| step.kind == ChoiceKind::Init),
         "the terms note showed twice: {again:?}"
     );
-    scenario.shot(&pty, "app_init_shows_terms_note_once")?;
+    scenario.shot(&pty, "app_setup_shows_terms_note_once")?;
     Ok(())
 }
 
 #[test]
-fn app_init_writes_peer_crew() -> anyhow::Result<()> {
+fn app_setup_writes_council() -> anyhow::Result<()> {
     let scenario = first_run_scenario()?;
-    let mut pty = launch_setup(&scenario, &["init"], &[])?;
+    let mut pty = launch_setup(&scenario, &["setup"], &[])?;
     enter_through(&scenario, &mut pty)?;
 
     let text = read(&scenario.repo.global_config())?;
@@ -539,22 +549,22 @@ fn app_init_writes_peer_crew() -> anyhow::Result<()> {
         ),
         "{text}"
     );
-    // The defaults are council, and a preset sits above your settings files, so beside its
+    // The defaults are council, and a workflow sits above your settings files, so beside its
     // own steps the file sets no key that would hide your own.
-    let preset = assert_commented_preset(&presets_dir(&scenario).join("council.toml"))?;
-    let settings: Vec<String> = toml_entries(&preset)
+    let workflow = assert_commented_workflow(&workflows_dir(&scenario).join("council.toml"))?;
+    let settings: Vec<String> = toml_entries(&workflow)
         .into_iter()
         .map(|entry| entry.key)
         .filter(|key| !describes_the_workflow(key))
         .collect();
     assert!(
         settings.is_empty(),
-        "the council workflow sets {settings:?} over your settings:\n{preset}"
+        "the council workflow sets {settings:?} over your settings:\n{workflow}"
     );
     assert!(
-        same_toml(&toml_value(&preset, "adapt").unwrap_or_default(), "true"),
-        "the council workflow's steps are its orchestrator's to adapt:\n{preset}"
+        same_toml(&toml_value(&workflow, "adapt").unwrap_or_default(), "true"),
+        "the council workflow's steps are its orchestrator's to adapt:\n{workflow}"
     );
-    scenario.shot(&pty, "app_init_writes_peer_crew")?;
+    scenario.shot(&pty, "app_setup_writes_council")?;
     Ok(())
 }

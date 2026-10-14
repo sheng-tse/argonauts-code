@@ -7,19 +7,19 @@
 
 use std::collections::BTreeMap;
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::app::SettingRow;
-use argonauts_core::events::card::CardState;
-use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
+use argonauts_core::events::task::TaskState;
+use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use ratatui::text::Span;
 
 use super::status::task_state;
 use crate::format;
+use crate::kit::{Drawn, Frame, Header, Kit, Level, States, bars, ljust, rjust, spread};
 use crate::state::RunState;
 use crate::text::{sanitize_line, spans_width, str_width, truncate_spans};
 use crate::theme::Role;
 use crate::views::settings::words::value_words;
-use crate::widgets::{Drawn, Frame, Header, Kit, Level, States, bars, ljust, rjust, spread};
 
 /// From this share of a limit on, a task's spend shows amber.
 const NEAR_LIMIT: f64 = 0.9;
@@ -35,31 +35,31 @@ const KEYS_FROM: usize = 90;
 /// What one task of a run has spent, as its sessions reported it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskSpend {
-    pub task: CardId,
+    pub task: TaskId,
     pub title: String,
-    pub state: CardState,
+    pub state: TaskState,
     pub usd: f64,
     pub tokens: u64,
 }
 
 /// Each task of `run` with what its sessions spent on it, in the run's order.
 pub fn tasks_of(run: &RunState) -> Vec<TaskSpend> {
-    let mut spent: BTreeMap<&CardId, (f64, u64)> = BTreeMap::new();
+    let mut spent: BTreeMap<&TaskId, (f64, u64)> = BTreeMap::new();
     for session in run.sessions.values() {
-        if let Some(task) = &session.card {
+        if let Some(task) = &session.task {
             let sum = spent.entry(task).or_default();
             sum.0 += session.cost_usd.unwrap_or(0.0);
             sum.1 += session.tokens_in + session.tokens_out;
         }
     }
-    run.cards
+    run.tasks
         .values()
         .map(|task| {
             let (usd, tokens) = spent.get(&task.id).copied().unwrap_or_default();
             TaskSpend {
                 task: task.id.clone(),
                 title: task.title.clone(),
-                state: task.state.unwrap_or(CardState::Waiting),
+                state: task.state.unwrap_or(TaskState::Waiting),
                 usd,
                 tokens,
             }
@@ -72,7 +72,7 @@ pub fn tasks_of(run: &RunState) -> Vec<TaskSpend> {
 pub struct LimitsCards<'a> {
     pub tasks: &'a [TaskSpend],
     /// The limit of a task that has none of its own, when you set one.
-    pub task_limit: Option<BudgetAmount>,
+    pub task_limit: Option<LimitAmount>,
     pub limits: &'a [SettingRow],
 }
 
@@ -158,20 +158,20 @@ impl LimitsCards<'_> {
 
     /// The limit a task's spend can be read against: dollars or tokens. Time and plan
     /// usage aren't counted by task on this screen.
-    fn measured_limit(&self) -> Option<BudgetAmount> {
+    fn measured_limit(&self) -> Option<LimitAmount> {
         self.task_limit.filter(|limit| {
-            limit.amount > 0.0 && matches!(limit.unit, BudgetUnit::Usd | BudgetUnit::Tokens)
+            limit.amount > 0.0 && matches!(limit.unit, LimitUnit::Usd | LimitUnit::Tokens)
         })
     }
 
     /// How far the task's meter fills, and its level. Without a limit nothing is near one.
-    fn share(&self, task: &TaskSpend, limit: Option<BudgetAmount>, total: f64) -> (f64, Level) {
+    fn share(&self, task: &TaskSpend, limit: Option<LimitAmount>, total: f64) -> (f64, Level) {
         let Some(limit) = limit else {
             let share = if total > 0.0 { task.usd / total } else { 0.0 };
             return (share, Level::Ok);
         };
         let used = match limit.unit {
-            BudgetUnit::Tokens => task.tokens as f64,
+            LimitUnit::Tokens => task.tokens as f64,
             _ => task.usd,
         };
         let share = used / limit.amount;
@@ -195,7 +195,7 @@ impl LimitsCards<'_> {
         let picked = picked.min(rows.len() - 1);
         let any_set = rows.iter().any(is_set);
         let note = if any_set {
-            "at a limit the fallbacks take over, or the run stops"
+            "at a limit the task falls back, or the run stops"
         } else {
             "none set, so nothing stops a run"
         };
@@ -220,7 +220,7 @@ impl LimitsCards<'_> {
         for (at, row) in rows.iter().enumerate().skip(first).take(LIMIT_ROWS) {
             let on = at == picked;
             let mut line = vec![if on {
-                kit.span(format!(" {mark} "), Role::Card)
+                kit.span(format!(" {mark} "), Role::Question)
             } else {
                 Span::raw("   ")
             }];
@@ -257,9 +257,9 @@ fn clean(text: &str) -> String {
 }
 
 /// `$1.00` or `200k tokens`.
-fn limit_words(limit: &BudgetAmount) -> String {
+fn limit_words(limit: &LimitAmount) -> String {
     match limit.unit {
-        BudgetUnit::Tokens => format!("{} tokens", format::tokens(limit.amount.max(0.0) as u64)),
+        LimitUnit::Tokens => format!("{} tokens", format::tokens(limit.amount.max(0.0) as u64)),
         _ => format::usd(limit.amount),
     }
 }

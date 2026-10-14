@@ -1,16 +1,16 @@
 //! Your auto-approval rules, one module per decision point. They read only the facts code
-//! measured, never agent text, and any fact they need but don't have means escalate.
+//! measured, never agent text, and any fact they need but don't have means it comes to you.
 
-pub mod budget;
 pub mod change_request;
-pub mod escalation;
-pub mod goal;
 pub mod goal_change;
+pub mod limit;
 pub mod merge;
 pub mod plan;
 pub mod promotion;
+pub mod stuck;
+pub mod understand;
 
-use argonauts_core::events::checkpoint::CheckpointKind;
+use argonauts_core::events::approval::ApprovalKind;
 use argonauts_core::policy::{DecisionPoint, EvidencePacket, Verdict};
 use argonauts_core::settings::Settings;
 use time::OffsetDateTime;
@@ -30,9 +30,9 @@ impl RuleVerdict {
         }
     }
 
-    pub fn escalate(reason: impl Into<String>) -> Self {
+    pub fn ask_you(reason: impl Into<String>) -> Self {
         Self {
-            verdict: Verdict::Escalate,
+            verdict: Verdict::AskYou,
             reasons: vec![reason.into()],
         }
     }
@@ -45,7 +45,7 @@ impl RuleVerdict {
     }
 }
 
-/// Your rules' verdict on one decision point at `now`. A kind without rules escalates.
+/// Your rules' verdict on one decision point at `now`. A kind without rules comes to you.
 pub fn check(
     point: &DecisionPoint,
     evidence: &EvidencePacket,
@@ -55,40 +55,38 @@ pub fn check(
     let facts = &evidence.facts;
     let approvals = &settings.approvals;
     match point.kind {
-        CheckpointKind::Goal => goal::check(facts),
-        CheckpointKind::Plan => plan::check(
+        ApprovalKind::Understand => understand::check(facts),
+        ApprovalKind::Plan => plan::check(
             facts,
             &approvals.rules.plan,
             &settings.limits,
-            settings.limits.budget.spend_per_run,
+            settings.limits.spend.spend_per_run,
         ),
-        CheckpointKind::Merge => merge::check(facts, &approvals.rules.merge),
-        CheckpointKind::Escalation => {
-            escalation::check(facts.escalation.as_ref(), &approvals.rules.escalation)
-        }
-        CheckpointKind::Budget => budget::check(facts.budget.as_ref(), &approvals.rules.budget),
-        CheckpointKind::ChangeRequest => change_request::check(facts),
-        CheckpointKind::GoalChange => goal_change::check(approvals.goal_changes),
-        CheckpointKind::WorkflowPromotion => {
+        ApprovalKind::Merge => merge::check(facts, &approvals.rules.merge),
+        ApprovalKind::Stuck => stuck::check(facts.stuck.as_ref(), &approvals.rules.stuck),
+        ApprovalKind::Limit => limit::check(facts.spend.as_ref(), &approvals.rules.limit),
+        ApprovalKind::ChangeRequest => change_request::check(facts),
+        ApprovalKind::GoalChange => goal_change::check(approvals.goal_changes),
+        ApprovalKind::WorkflowPromotion => {
             promotion::check(facts, &approvals.rules.workflow_promotion, now)
         }
-        CheckpointKind::Handoff
-        | CheckpointKind::VendorDown
-        | CheckpointKind::TakeOverReturn
-        | CheckpointKind::Question
-        | CheckpointKind::OriginalReturned => {
-            RuleVerdict::escalate("no rules decide this kind of approval")
+        ApprovalKind::Fallback
+        | ApprovalKind::AgentDown
+        | ApprovalKind::TakeOverReturn
+        | ApprovalKind::Question
+        | ApprovalKind::OriginalReturned => {
+            RuleVerdict::ask_you("no rules decide this kind of approval")
         }
     }
 }
 
 /// The outcome of every condition of one rule. Any failed condition rejects, any fact that
-/// wasn't measured or call that is yours escalates, and only a clean sweep approves.
+/// wasn't measured or call that is yours comes to you, and only a clean sweep approves.
 #[derive(Debug, Default)]
 pub(crate) struct Conditions {
     held: Vec<String>,
     failed: Vec<String>,
-    escalated: Vec<String>,
+    needs_you: Vec<String>,
 }
 
 impl Conditions {
@@ -102,7 +100,7 @@ impl Conditions {
         match fact.map(judge) {
             Some(Ok(held)) => self.held.push(held),
             Some(Err(failed)) => self.failed.push(failed),
-            None => self.escalated.push(missing.to_owned()),
+            None => self.needs_you.push(missing.to_owned()),
         }
     }
 
@@ -135,8 +133,8 @@ impl Conditions {
     }
 
     /// Holds the approval back without failing: a fact wasn't measured, or the call is yours.
-    pub fn escalate(&mut self, why: impl Into<String>) {
-        self.escalated.push(why.into());
+    pub fn ask_you(&mut self, why: impl Into<String>) {
+        self.needs_you.push(why.into());
     }
 
     /// Holds when `found` is empty; otherwise fails naming each item.
@@ -152,19 +150,19 @@ impl Conditions {
         let Self {
             held,
             mut failed,
-            escalated,
+            needs_you,
         } = self;
         if !failed.is_empty() {
-            failed.extend(escalated);
+            failed.extend(needs_you);
             return RuleVerdict {
                 verdict: Verdict::Reject,
                 reasons: failed,
             };
         }
-        if !escalated.is_empty() {
+        if !needs_you.is_empty() {
             return RuleVerdict {
-                verdict: Verdict::Escalate,
-                reasons: escalated,
+                verdict: Verdict::AskYou,
+                reasons: needs_you,
             };
         }
         RuleVerdict {
@@ -209,10 +207,10 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_fact_escalates_and_a_clean_sweep_approves() {
+    fn a_missing_fact_asks_you_and_a_clean_sweep_approves() {
         let mut c = Conditions::default();
         c.flag(None, "checks passed", "a check failed", "no check result");
-        assert_eq!(c.verdict(), RuleVerdict::escalate("no check result"));
+        assert_eq!(c.verdict(), RuleVerdict::ask_you("no check result"));
 
         let mut c = Conditions::default();
         c.flag(

@@ -23,11 +23,11 @@ use ratatui::text::Span;
 
 use super::rows::{self, Cells, Group, PageGlyphs, Row, Tick, Top};
 use crate::bridge::bottom_line::{Sample, SampleCli};
+use crate::kit::{Drawn, Frame, Kit, spread};
 use crate::text::marks::decorative;
 use crate::theme::{AgentColor, Role, Theme};
 use crate::views::ViewOutcome;
 use crate::views::panes::Footer;
-use crate::widgets::{Drawn, Frame, Kit, spread};
 
 /// The colors a CLI can take: Claude Code's eight for telling agents apart, less the amber
 /// and the red, which on this line mean a limit is near or reached.
@@ -260,7 +260,7 @@ impl LinePage {
                 rows: vec![
                     self.choice("CLIs", plan.show, built_plan.show),
                     self.choice("Windows", plan.windows, built_plan.windows),
-                    self.choice("Shows", plan.shown_as, built_plan.shown_as),
+                    self.choice("Shows", plan.r#as, built_plan.r#as),
                     self.choice("Resets", plan.resets, built_plan.resets),
                 ],
             },
@@ -398,7 +398,7 @@ impl LinePage {
             FORM_ROW => file.form = next(file.form, forward),
             CLIS_ROW => plan.show = next(plan.show, forward),
             WINDOWS_ROW => plan.windows = next(plan.windows, forward),
-            SHOWS_ROW => plan.shown_as = next(plan.shown_as, forward),
+            SHOWS_ROW => plan.r#as = next(plan.r#as, forward),
             RESETS_ROW => plan.resets = next(plan.resets, forward),
             LEFT_ROW | RIGHT_ROW => {
                 let left = self.selected == LEFT_ROW;
@@ -440,7 +440,7 @@ impl LinePage {
         };
         if !self.file.toggle(left, &part) {
             return ViewOutcome::Notice(
-                "mode stays on the line: it tells you whether Argonauts will ask. Shift+←→ \
+                "mode stays on the line: it tells you whether Argonauts Code will ask. Shift+←→ \
                  moves it"
                     .to_owned(),
             );
@@ -552,10 +552,10 @@ impl LinePage {
         if let Some(problem) = &self.problem {
             caption.push(kit.span(
                 format!("The file didn't read, so this starts from the built-in line: {problem}"),
-                Role::Warning,
+                Role::Warn,
             ));
         } else if self.changed() {
-            caption.push(kit.span("Not saved yet. s saves it", Role::Warning));
+            caption.push(kit.span("Not saved yet. s saves it", Role::Warn));
         } else if !has_numbers(&self.numbers) {
             caption.push(kit.dim("Sample numbers, until a CLI reports its plan usage"));
         }
@@ -627,13 +627,13 @@ fn clis(numbers: &LineNumbers) -> Vec<LineCli> {
 /// them `cli-claude`, `cli-codex` and `cli-agy`. In a theme that doesn't have them, the agent
 /// color nearest each stands in, so the page draws and picks the same way either way.
 fn own_role(id: &str) -> Option<Role> {
-    let (name, stand_in) = match id {
+    let (name, nearest) = match id {
         "claude-code" => ("cli-claude", Role::AgentOrange),
         "codex" => ("cli-codex", Role::AgentBlue),
         "antigravity-cli" => ("cli-agy", Role::AgentCyan),
         _ => return None,
     };
-    Some(Role::from_name(name).unwrap_or(stand_in))
+    Some(Role::from_name(name).unwrap_or(nearest))
 }
 
 /// One color per CLI, the same in every mod. A CLI the theme has no color for is grey.

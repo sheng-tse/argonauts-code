@@ -1,4 +1,4 @@
-//! `subscribe` and `reattach`: the socket while a supervisor is live, else `journal::tail`,
+//! `subscribe` and `reattach`: the socket while a run host is live, else `journal::tail`,
 //! deduplicated by `seq` when one hands over to the other.
 
 use std::path::{Path, PathBuf};
@@ -18,11 +18,11 @@ use super::journal_ends;
 use super::socket::Connection;
 
 const STREAM_BUFFER: usize = 1024;
-/// How often a tailed stream looks for a supervisor that came back.
-const SUPERVISOR_CHECK: Duration = Duration::from_millis(250);
+/// How often a tailed stream looks for a run host that came back.
+const RUN_HOST_CHECK: Duration = Duration::from_millis(250);
 
 /// `from_snapshot` starts at the latest `Run::Snapshot` instead of `from_seq`. The stream's
-/// `live` turns false once the supervisor has let go of the run and everything it wrote was
+/// `live` turns false once the run host has let go of the run and everything it wrote was
 /// passed on.
 pub(crate) async fn subscribe(
     client: &Client,
@@ -36,7 +36,7 @@ pub(crate) async fn subscribe(
     }
     let events_path = run_dir.join(names::EVENTS);
     let replay_until = journal_ends::last_seq(&events_path);
-    // Reading the journal needs no supervisor, so a socket that fails only costs liveness.
+    // Reading the journal needs no run host, so a socket that fails only costs liveness.
     let connection = match Connection::connect(&run_dir, client.kind).await {
         Ok(connection) => connection,
         Err(err) => {
@@ -82,8 +82,8 @@ enum Flow {
 
 enum Handover {
     Done,
-    SupervisorGone,
-    SupervisorBack(Connection),
+    RunHostGone,
+    RunHostBack(Connection),
 }
 
 impl Follower {
@@ -96,8 +96,8 @@ impl Follower {
                 }
             }
             match self.over_journal().await {
-                Handover::SupervisorBack(live) => connection = Some(live),
-                Handover::Done | Handover::SupervisorGone => break,
+                Handover::RunHostBack(live) => connection = Some(live),
+                Handover::Done | Handover::RunHostGone => break,
             }
         }
         self.live.send_replace(false);
@@ -112,7 +112,7 @@ impl Follower {
             Ok(subscription) => subscription,
             Err(err) => {
                 tracing::warn!("following the run's journal instead of its socket: {err:#}");
-                return Handover::SupervisorGone;
+                return Handover::RunHostGone;
             }
         };
         loop {
@@ -126,10 +126,10 @@ impl Follower {
                         return Handover::Done;
                     }
                 }
-                Ok(None) => return Handover::SupervisorGone,
+                Ok(None) => return Handover::RunHostGone,
                 Err(err) => {
                     tracing::warn!("following the run's journal instead of its socket: {err:#}");
-                    return Handover::SupervisorGone;
+                    return Handover::RunHostGone;
                 }
             }
         }
@@ -141,10 +141,10 @@ impl Follower {
             None => snapshot_seq(&self.events_path),
         };
         let mut tail = journal::tail(&self.events_path, from);
-        let mut check = tokio::time::interval(SUPERVISOR_CHECK);
+        let mut check = tokio::time::interval(RUN_HOST_CHECK);
         check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            // `None` is time to look for a supervisor.
+            // `None` is time to look for a run host.
             let step = tokio::select! {
                 () = self.sender.closed() => return Handover::Done,
                 event = tail.recv() => Some(event),
@@ -162,10 +162,10 @@ impl Follower {
                     if RunLock::is_held(&self.run_dir) {
                         if let Ok(Some(live)) = Connection::connect(&self.run_dir, self.kind).await
                         {
-                            return Handover::SupervisorBack(live);
+                            return Handover::RunHostBack(live);
                         }
                     } else if *self.live.borrow() && self.caught_up() {
-                        // A socket can close before the supervisor's last events go out, so
+                        // A socket can close before the run host's last events go out, so
                         // they come from the journal before its exit does.
                         self.live.send_replace(false);
                     }
@@ -205,8 +205,8 @@ fn snapshot_seq(events: &Path) -> u64 {
         .unwrap_or(0)
 }
 
-/// The run's supervisor died: nothing holds the run, and its log ends neither parked nor
+/// The run's run host died: nothing holds the run, and its log ends neither waiting nor
 /// finished.
-pub(crate) fn supervisor_crashed(run_dir: &Path) -> bool {
+pub(crate) fn run_host_crashed(run_dir: &Path) -> bool {
     !RunLock::is_held(run_dir) && !journal_ends::ends_settled(&run_dir.join(names::EVENTS))
 }

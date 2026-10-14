@@ -1,0 +1,5 @@
+name  = "ablate-same-provider"
+about = "Reviewers may share the worker's provider"
+
+[review]
+other_provider = false

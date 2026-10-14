@@ -46,7 +46,7 @@ pub(super) enum Origin {
 }
 
 impl AskedPart {
-    /// `Frame · built in`, `From the orchestrator · Opus 5.5`, `Your file · roles/reviewers.md`.
+    /// `Frame · built in`, `From the orchestrator · Opus 5.5`, `Your file · roles/reviewer.md`.
     pub fn heading(&self) -> String {
         let origin = match &self.origin {
             Origin::Frame => "Frame".to_owned(),
@@ -73,7 +73,7 @@ fn capitalized(label: &str) -> String {
 }
 
 /// The parts of one delivery, in the order they were sent, each without runs of blank lines.
-/// The goal's summary restates the request an earlier part already gave, so it shows once.
+/// The goal's summary repeats the request an earlier part already gave, so it shows once.
 /// Every rule the agent was given reads under one `Rules` heading, where the last of them was
 /// sent, so a rule never repeats its heading as its first words.
 pub(super) fn parts_of(input: &SessionInput) -> Vec<AskedPart> {
@@ -135,7 +135,7 @@ fn asked(part: &InputPart) -> AskedPart {
         // The role's own instructions are the frame, whatever today's templates label them.
         _ if part.kind == InputPartKind::Prompt => (Origin::Frame, source.or_else(built_in)),
         // The task under its id would read as code, so it reads as the task, in words.
-        _ if part.kind == InputPartKind::Card => {
+        _ if part.kind == InputPartKind::Task => {
             return AskedPart {
                 origin: Origin::Named("Task".to_owned()),
                 from: None,
@@ -340,7 +340,7 @@ fn part_lines(part: &AskedPart, index: usize, draw: &Draw<'_>) -> Vec<Line<'stat
 
 fn heading(text: &str, selected: bool, theme: &Theme) -> Line<'static> {
     let style = if selected {
-        theme.style(Role::Card).add_modifier(Modifier::BOLD)
+        theme.style(Role::Question).add_modifier(Modifier::BOLD)
     } else {
         theme.style(Role::Dim)
     };
@@ -379,11 +379,11 @@ fn launch_lines(launch: &LaunchRecord, index: usize, draw: &Draw<'_>) -> Vec<Lin
     let selected = index == draw.selected;
     if draw.expanded != Some(index) {
         let hint = panes::key_names(" · → expands", theme);
-        let lead = "Launched as ";
+        let opening = "Launched as ";
         let room = draw
             .width
-            .saturating_sub(crate::text::str_width(lead) + crate::text::str_width(&hint));
-        let mut line = heading(lead, selected, theme);
+            .saturating_sub(crate::text::str_width(opening) + crate::text::str_width(&hint));
+        let mut line = heading(opening, selected, theme);
         line.spans
             .push(Span::styled(crate::views::layout::cut(&command, room), dim));
         line.spans.push(Span::styled(hint, dim));
@@ -472,7 +472,7 @@ mod tests {
                     "Decide, don't ask. Nobody reads a question at the end of your turn.",
                 ),
                 part(
-                    InputPartKind::Card,
+                    InputPartKind::Task,
                     "task-001",
                     None,
                     "task-001 · add due dates",
@@ -510,7 +510,7 @@ mod tests {
                      it. Accept it, or list what must change.",
                 ),
                 part(
-                    InputPartKind::Card,
+                    InputPartKind::Task,
                     "orchestrator",
                     Some("Opus 5.5"),
                     "Review the due-date change against docs/due.md. Check that\ndates parse as \
@@ -519,7 +519,7 @@ mod tests {
                 part(
                     InputPartKind::Rules,
                     "your file",
-                    Some("roles/reviewers.md"),
+                    Some("roles/reviewer.md"),
                     "Treat a missing test as a required change, never as a note.",
                 ),
                 part(
@@ -557,7 +557,7 @@ mod tests {
              \x20 Review the due-date change against docs/due.md. Check that\n\
              \x20 dates parse as ISO only and that overdue excludes today.\n\
              \n\
-             Your file · roles/reviewers.md\n\
+             Your file · roles/reviewer.md\n\
              \x20 Treat a missing test as a required change, never as a note.\n\
              \n\
              From your request\n\
@@ -578,7 +578,7 @@ mod tests {
             parts: vec![
                 prompt_parts::frame("You build one task.", None),
                 prompt_parts::from_workflow("Build the due field.", "ship · Build".into()),
-                prompt_parts::role_file("Keep functions short.", "roles/workers.md".into()),
+                prompt_parts::role_file("Keep functions short.", "roles/worker.md".into()),
                 prompt_parts::built_in("Report what you did.", None),
             ],
             queued: Vec::new(),
@@ -589,7 +589,7 @@ mod tests {
             [
                 "Frame · built in",
                 "From the workflow · ship · Build",
-                "Your file · roles/workers.md",
+                "Your file · roles/worker.md",
                 "Instructions · built in",
             ]
         );
@@ -601,7 +601,7 @@ mod tests {
             launch: launch(),
             parts: vec![
                 part(InputPartKind::Prompt, "prompt", None, "You own one task."),
-                part(InputPartKind::Card, "task", None, "Add the JSON writer."),
+                part(InputPartKind::Task, "task", None, "Add the JSON writer."),
                 part(
                     InputPartKind::Notes,
                     "notes",
@@ -718,7 +718,7 @@ mod tests {
                     "Add due dates to tasks.\n\n\n\nKeep the CLI's flags as they are.",
                 ),
                 part(
-                    InputPartKind::Card,
+                    InputPartKind::Task,
                     "task-add-due-dates-tasks",
                     None,
                     "task-add-due-dates-tasks · add due dates\n\nKind: building\nPaths you own:\n- src/due.js",
@@ -761,12 +761,12 @@ mod tests {
     fn a_request_run_whole_reads_once_as_its_task() {
         let request =
             "the install command in README.md is wrong, it should be npm install @acme/api";
-        let card = format!(
+        let task = format!(
             "task-001 · the install command in README.md is wrong, it should be npm…\n\n\
              Kind: the whole change\n{request}\n\nPaths you own:\n- README.md"
         );
         assert_eq!(
-            task_text(&card),
+            task_text(&task),
             format!("{request} · the whole change\n\nPaths you own:\n- README.md")
         );
         // A title said again word for word goes once too.

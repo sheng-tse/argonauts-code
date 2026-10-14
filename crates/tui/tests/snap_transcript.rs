@@ -7,10 +7,10 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use argonauts_core::api::{RunState as RunStatus, RunSummary};
-use argonauts_core::app::{AgentReady, AppEvent, ChatEvent, ReplayTurn, StatusLine, TurnReply};
-use argonauts_core::events::card::{
-    CardBudget, CardEvent, CardKind, CardSpec, CardState, GateKind, GateOutcome, IntegrationEvent,
+use argonauts_core::app::{
+    AgentReady, AppEvent, ConversationEvent, HeaderAndBottomLine, ReplayTurn, TurnReply,
 };
+use argonauts_core::events::agent_status::{AgentStatusEvent, FallbackEvent, FallbackPlan};
 use argonauts_core::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
 use argonauts_core::events::plan::{
     DivideEvent, JudgingResult, MappedPosition, MappedTopic, PlanEvent, TaskGraph,
@@ -19,27 +19,29 @@ use argonauts_core::events::run::{
     Party, PhaseChange, RunLifecycle, RunMode, RunOutcome, RunPhase, RunStarted,
 };
 use argonauts_core::events::session::{EndReason, SessionEnd, SessionEvent, SessionStarted};
-use argonauts_core::events::vendor::{HandoffEvent, HandoffPlan, VendorEvent};
+use argonauts_core::events::task::{
+    CheckKind, CheckOutcome, MergeEvent, TaskEvent, TaskKind, TaskLimit, TaskSpec, TaskState,
+};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::limits::{HealthState, VendorHealth};
-use argonauts_core::names::{DraftId, RoleName, SessionKey, TurnId, VendorId, WorkerRef};
+use argonauts_core::limits::{AgentHealth, HealthState};
+use argonauts_core::names::{AgentId, DraftId, ModelRef, RoleName, SessionKey, TurnId};
+use argonauts_core::session_runner::{Access, RunnerKind};
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::approvals::ApprovalMode;
-use argonauts_core::settings::handoff::{HandoffContext, HandoffMode, HandoffStrategy};
+use argonauts_core::settings::fallback::{FallbackContext, FallbackMode, FallbackStrategy};
 use argonauts_core::settings::protocol::JudgingMethod;
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::settings::ui::{NarratorMode, UiSettings, VerbTheme};
-use argonauts_core::steps::goal::Restatement;
-use argonauts_core::worker::{Access, WorkerKind};
-use argonauts_core::{AgentEvent, CardId, DiffStat, PhaseStatus, RunId, Spend, Verbosity};
+use argonauts_core::steps::understand::Reading;
+use argonauts_core::{AgentEvent, DiffStat, PhaseStatus, RunId, Spend, TaskId, Verbosity};
 use argonauts_tui::bridge::agents::AgentBlocks;
-use argonauts_tui::bridge::transcript::{ChatTurns, Transcript};
+use argonauts_tui::bridge::transcript::{ConversationTurns, Transcript};
 use argonauts_tui::bridge::{Cx, Effects};
 use argonauts_tui::cell::ToolKind;
 use argonauts_tui::format::WallClock;
 use argonauts_tui::model::ViewModel;
 use argonauts_tui::stability::{self, WIDTHS, samples};
-use argonauts_tui::state::{AppState, CardRow, Replay, RunState};
+use argonauts_tui::state::{AppState, Replay, RunState, TaskRow};
 use argonauts_tui::theme::Role;
 use common::{fg, still, style_of, text, theme};
 use ratatui::text::Line;
@@ -49,7 +51,7 @@ use time::macros::datetime;
 /// 10:42 AM where the user is, seven hours behind UTC.
 const NOW: OffsetDateTime = datetime!(2026-09-30 10:42 -7);
 
-struct Harness {
+struct TestDriver {
     model: ViewModel,
     state: AppState,
     settings: UiSettings,
@@ -57,10 +59,10 @@ struct Harness {
     agents: AgentBlocks,
 }
 
-impl Harness {
+impl TestDriver {
     fn new() -> Self {
         let mut transcript = Transcript::with_clock(WallClock::pinned(NOW));
-        transcript.chat = ChatTurns::with_tool_kinds(|_, name| match name {
+        transcript.conversation = ConversationTurns::with_tool_kinds(|_, name| match name {
             "Read" => ToolKind::Read,
             "Grep" => ToolKind::Search,
             _ => ToolKind::Other,
@@ -109,12 +111,12 @@ impl Harness {
     }
 }
 
-type Scenario = fn(&mut Harness, Option<&str>);
+type Scenario = fn(&mut TestDriver, Option<&str>);
 
 fn render(scenario: Scenario, text: Option<&str>, width: u16) -> Vec<Line<'static>> {
-    let mut harness = Harness::new();
-    scenario(&mut harness, text);
-    harness.printed(width)
+    let mut driver = TestDriver::new();
+    scenario(&mut driver, text);
+    driver.printed(width)
 }
 
 /// The snapshot at 80 columns, and the frame check at every width with every sample in place
@@ -143,38 +145,38 @@ fn run_id() -> RunId {
     RunId::new("run-01").expect("a valid run id")
 }
 
-fn card(n: u32) -> CardId {
-    CardId::numbered(n)
+fn task(n: u32) -> TaskId {
+    TaskId::numbered(n)
 }
 
-fn worker(harness: &str, model: &str) -> WorkerRef {
-    WorkerRef::new(harness, Some(model.to_owned()))
+fn worker(driver: &str, model: &str) -> ModelRef {
+    ModelRef::new(driver, Some(model.to_owned()))
 }
 
-fn at(ts: OffsetDateTime, card_id: Option<CardId>, kind: RunEventKind) -> AppEvent {
+fn at(ts: OffsetDateTime, task_id: Option<TaskId>, kind: RunEventKind) -> AppEvent {
     AppEvent::Run {
         event: Box::new(RunEvent {
             seq: 0,
             ts,
             run_id: run_id(),
-            card_id,
+            task_id,
             session: None,
-            source: "conductor".into(),
+            source: "argonauts-code".into(),
             kind,
         }),
     }
 }
 
-fn run_event(card_id: Option<CardId>, kind: RunEventKind) -> AppEvent {
-    at(datetime!(2026-09-30 17:00 UTC), card_id, kind)
+fn run_event(task_id: Option<TaskId>, kind: RunEventKind) -> AppEvent {
+    at(datetime!(2026-09-30 17:00 UTC), task_id, kind)
 }
 
-fn chat(event: ChatEvent) -> AppEvent {
-    AppEvent::Chat { event }
+fn conversation(event: ConversationEvent) -> AppEvent {
+    AppEvent::Conversation { event }
 }
 
 fn turn_started(n: u32, text: &str) -> AppEvent {
-    chat(ChatEvent::TurnStarted {
+    conversation(ConversationEvent::TurnStarted {
         turn: TurnId::numbered(n),
         text: text.into(),
         worker: worker("claude-code", "haiku"),
@@ -187,7 +189,7 @@ fn turn_started(n: u32, text: &str) -> AppEvent {
 }
 
 fn agent(n: u32, event: AgentEvent) -> AppEvent {
-    chat(ChatEvent::Agent {
+    conversation(ConversationEvent::Agent {
         turn: TurnId::numbered(n),
         event,
     })
@@ -204,7 +206,7 @@ fn delta(n: u32, text: &str) -> AppEvent {
 }
 
 fn answered(n: u32, markdown: &str, seconds: u64) -> AppEvent {
-    chat(ChatEvent::TurnFinished {
+    conversation(ConversationEvent::TurnFinished {
         turn: TurnId::numbered(n),
         reply: TurnReply::Answer {
             markdown: markdown.into(),
@@ -214,8 +216,8 @@ fn answered(n: u32, markdown: &str, seconds: u64) -> AppEvent {
     })
 }
 
-fn gate(name: &str, kind: GateKind, passed: bool, summary: &str) -> RunEventKind {
-    RunEventKind::Gate(GateOutcome {
+fn check(name: &str, kind: CheckKind, passed: bool, summary: &str) -> RunEventKind {
+    RunEventKind::Check(CheckOutcome {
         name: name.into(),
         kind,
         passed,
@@ -230,10 +232,10 @@ fn gate(name: &str, kind: GateKind, passed: bool, summary: &str) -> RunEventKind
     })
 }
 
-fn gating_done() -> RunEventKind {
-    RunEventKind::Card(CardEvent::State {
-        from: Some(CardState::Gating),
-        to: CardState::InReview,
+fn checking_done() -> RunEventKind {
+    RunEventKind::Task(TaskEvent::State {
+        from: Some(TaskState::Checking),
+        to: TaskState::InReview,
         reason: String::new(),
     })
 }
@@ -246,8 +248,8 @@ fn started(mode: RunMode, request: &str) -> RunEventKind {
         forced: false,
         workflow: "council".into(),
         estimate: None,
-        triage: None,
-        chat_turn: None,
+        captain_or_crew: None,
+        conversation_turn: None,
         continues: None,
         repo_root: PathBuf::from("/repo"),
         base_branch: Some("main".into()),
@@ -257,46 +259,46 @@ fn started(mode: RunMode, request: &str) -> RunEventKind {
         settings_sha256: String::new(),
         settings: serde_json::Value::Null,
         overrides: vec![],
-        harness_versions: Default::default(),
+        cli_versions: Default::default(),
         version: "0.0.1".into(),
-        front_end: None,
+        outside_agent: None,
         instructions: Vec::new(),
         required_steps: Vec::new(),
     })))
 }
 
-fn card_row(n: u32, title: &str, owner: WorkerRef, diff: Option<DiffStat>) -> CardRow {
-    CardRow {
-        id: card(n),
+fn task_row(n: u32, title: &str, worker: ModelRef, diff: Option<DiffStat>) -> TaskRow {
+    TaskRow {
+        id: task(n),
         title: title.into(),
-        state: Some(CardState::Integrated),
-        owner: Some(owner),
-        attempt: 1,
+        state: Some(TaskState::Merged),
+        worker: Some(worker),
+        try_number: 1,
         diff,
-        standing_in_for: None,
+        fallback_for: None,
         debt: vec![],
         checkpoints: 0,
         rotations: 0,
-        last_gate: None,
+        last_check: None,
         reviews: 0,
-        waiting_on_vendor: None,
+        waiting_on_agent: None,
         item: None,
     }
 }
 
 #[test]
 fn startup_header() {
-    snapshot("startup_header", |harness, text| {
-        // The controller sends the welcome first and the status line with the default agent
+    snapshot("startup_header", |driver, text| {
+        // The controller sends the welcome first and the bottom line with the main agent
         // just after it.
-        let status = StatusLine {
+        let status = HeaderAndBottomLine {
             title: "argonauts".into(),
             repo: "~/github/argonauts".into(),
             workflow: "council".into(),
             ultracode: false,
             run: None,
             main_agent: worker("claude-code", "haiku-4.5"),
-            quotas: vec![],
+            plan_chips: vec![],
             line: Default::default(),
             spent: None,
             limit: None,
@@ -310,7 +312,7 @@ fn startup_header() {
             ready: true,
             note: None,
         };
-        harness.send(AppEvent::Welcome {
+        driver.send(AppEvent::Welcome {
             version: "0.0.1".into(),
             repo: text.unwrap_or("~/github/argonauts").into(),
             workflow: "council".into(),
@@ -330,20 +332,20 @@ fn startup_header() {
             main_agent: None,
             effort: None,
         });
-        harness.send(AppEvent::Status { status });
+        driver.send(AppEvent::Status { status });
     });
 }
 
 #[test]
 fn turn_end_line() {
-    snapshot("turn_end_line", |harness, text| {
+    snapshot("turn_end_line", |driver, text| {
         let answer = text.unwrap_or(
-            "Hi! I'm the main agent (claude-code/haiku). Ask me about this repo, or describe a change and I'll run it solo or with the crew.",
+            "Hi! I'm the main agent (claude-code/haiku). Ask me about this repo, or describe a change and I'll run it as Captain or with the crew.",
         );
-        harness.send_all([turn_started(1, "hi"), answered(1, answer, 3)]);
-        harness.settings.verbs = VerbTheme::Plain;
-        harness.send_all([turn_started(2, "thanks"), answered(2, "Any time.", 64)]);
-        harness.settings.verbs = VerbTheme::Voyage;
+        driver.send_all([turn_started(1, "hi"), answered(1, answer, 3)]);
+        driver.settings.verbs = VerbTheme::Plain;
+        driver.send_all([turn_started(2, "thanks"), answered(2, "Any time.", 64)]);
+        driver.settings.verbs = VerbTheme::Voyage;
         let mut run = RunState::new(run_id());
         run.spent.cost_usd = 0.46;
         let diff = |files, insertions, deletions| DiffStat {
@@ -356,16 +358,16 @@ fn turn_end_line() {
             .enumerate()
         {
             let n = u32::try_from(n + 1).expect("four tasks");
-            let row = card_row(
+            let row = task_row(
                 n,
                 "a task",
                 worker("codex", "gpt-5.6"),
                 Some(diff(files, added, removed)),
             );
-            run.cards.insert(card(n), row);
+            run.tasks.insert(task(n), row);
         }
-        harness.state.runs.insert(run_id(), run);
-        harness.send_all([
+        driver.state.runs.insert(run_id(), run);
+        driver.send_all([
             at(
                 datetime!(2026-09-30 17:47 UTC),
                 None,
@@ -373,7 +375,7 @@ fn turn_end_line() {
             ),
             run_event(
                 None,
-                RunEventKind::Integration(IntegrationEvent::Landed {
+                RunEventKind::Merge(MergeEvent::RunMerged {
                     target: "main".into(),
                     sha: "9f2c1ab".into(),
                     fast_forward: true,
@@ -382,7 +384,7 @@ fn turn_end_line() {
             run_event(
                 None,
                 RunEventKind::Phase(PhaseChange {
-                    phase: RunPhase::Retro,
+                    phase: RunPhase::RunReview,
                     status: PhaseStatus::Finished,
                     summary: None,
                 }),
@@ -398,7 +400,7 @@ fn turn_end_line() {
         ]);
     });
     let lines = render(
-        |harness, _| harness.send_all([turn_started(1, "hi"), answered(1, "Hi.", 3)]),
+        |driver, _| driver.send_all([turn_started(1, "hi"), answered(1, "Hi.", 3)]),
         None,
         80,
     );
@@ -408,7 +410,7 @@ fn turn_end_line() {
 
 #[test]
 fn setting_changed_line() {
-    snapshot("setting_changed_line", |harness, text| {
+    snapshot("setting_changed_line", |driver, text| {
         let changed = |key: &str, value: &str, scope, previous: Option<&str>, reset| {
             AppEvent::SettingChanged {
                 key: key.into(),
@@ -419,7 +421,7 @@ fn setting_changed_line() {
             }
         };
         let value = text.map(|text| format!("\"{text}\""));
-        harness.send_all([
+        driver.send_all([
             changed(
                 "approvals.merge.mode",
                 value.as_deref().unwrap_or("\"auto\""),
@@ -437,7 +439,7 @@ fn setting_changed_line() {
             changed("ui.theme", "\"dark\"", SettingScope::Global, None, true),
             changed("narrator.model", "", SettingScope::Session, None, true),
             changed(
-                "main_agent",
+                "crew.main",
                 "\"claude-code/claude-opus-5-5\"",
                 SettingScope::ProjectLocal,
                 Some("\"claude-code\""),
@@ -451,7 +453,7 @@ fn setting_changed_line() {
                 false,
             ),
             changed(
-                "roles.reviewer.workers",
+                "roles.reviewer.models",
                 "[\"codex/gpt-6-sol\"]",
                 SettingScope::Global,
                 Some("[\"claude-code/opus\"]"),
@@ -480,23 +482,23 @@ argonauts-export --json > rows.jsonl
 
 #[test]
 fn markdown_headings_lists_code() {
-    snapshot("markdown_headings_lists_code", |harness, text| {
+    snapshot("markdown_headings_lists_code", |driver, text| {
         let markdown = match text {
             Some(text) => format!("# {text}\n\n- {text}\n\n```\n{text}\n```\n"),
             None => MARKDOWN.to_owned(),
         };
-        harness.send_all([
+        driver.send_all([
             turn_started(1, "how do I export JSON?"),
             answered(1, &markdown, 12),
         ]);
     });
 }
 
-fn restated(label: &str, who: WorkerRef) -> RunEventKind {
-    RunEventKind::Goal(GoalEvent::Restated {
+fn read_event(label: &str, who: ModelRef) -> RunEventKind {
+    RunEventKind::Goal(GoalEvent::Read {
         label: label.into(),
         worker: who,
-        restatement: Restatement {
+        reading: Reading {
             summary: "Export takes --json".into(),
             success_criteria: vec![],
             in_scope: vec![],
@@ -507,7 +509,7 @@ fn restated(label: &str, who: WorkerRef) -> RunEventKind {
     })
 }
 
-fn sealed(label: u8, who: WorkerRef) -> RunEventKind {
+fn sealed(label: u8, who: ModelRef) -> RunEventKind {
     RunEventKind::Plan(PlanEvent::Sealed {
         draft: DraftId::numbered(u32::from(label)),
         label,
@@ -528,21 +530,21 @@ fn position(label: u8, summary: &str) -> MappedPosition {
     }
 }
 
-fn card_spec(n: u32, title: &str) -> CardSpec {
-    CardSpec {
-        id: card(n),
+fn task_spec(n: u32, title: &str) -> TaskSpec {
+    TaskSpec {
+        id: task(n),
         title: title.into(),
         task: title.into(),
-        kind: CardKind::Build,
+        kind: TaskKind::Build,
         owned_paths: vec![],
         read_only_paths: vec![],
         forbidden_paths: vec![],
         hidden_paths: vec![],
         depends_on: vec![],
         criteria: vec![],
-        owner: None,
+        worker: None,
         reviewers: vec![],
-        budget: CardBudget::default(),
+        limit: TaskLimit::default(),
         predictions: None,
         item: None,
     }
@@ -550,27 +552,27 @@ fn card_spec(n: u32, title: &str) -> CardSpec {
 
 #[test]
 fn finished_step_collapses_with_details() {
-    snapshot("finished_step_collapses_with_details", |harness, text| {
+    snapshot("finished_step_collapses_with_details", |driver, text| {
         let goal = text.unwrap_or("Add a --json flag to export");
         let claude = worker("claude-code", "opus");
         let codex = worker("codex", "gpt-5.6");
         let agy = worker("agy", "gemini-3.6-pro");
-        // A card goes by its label in the chat, never its id.
+        // A task goes by its label in the conversation, never its id.
         let mut run = RunState::new(run_id());
         for (n, title, item) in [
             (2, "Add the flag", "json-flag"),
             (3, "Write rows", "json-rows"),
         ] {
-            let mut row = card_row(n, title, codex.clone(), None);
+            let mut row = task_row(n, title, codex.clone(), None);
             row.item = Some(item.into());
-            run.cards.insert(card(n), row);
+            run.tasks.insert(task(n), row);
         }
-        harness.state.runs.insert(run_id(), run);
-        harness.send_all([
+        driver.state.runs.insert(run_id(), run);
+        driver.send_all([
             run_event(None, started(RunMode::Crew, goal)),
-            run_event(None, restated("A", claude.clone())),
-            run_event(None, restated("B", codex.clone())),
-            run_event(None, restated("C", agy.clone())),
+            run_event(None, read_event("A", claude.clone())),
+            run_event(None, read_event("B", codex.clone())),
+            run_event(None, read_event("C", agy.clone())),
             run_event(
                 None,
                 RunEventKind::Goal(GoalEvent::Approved {
@@ -583,7 +585,7 @@ fn finished_step_collapses_with_details() {
                         out_of_scope: vec![],
                         assumptions: vec![],
                         answers: vec!["Per line, not one array".into()],
-                        source: GoalSource::Restatements,
+                        source: GoalSource::Readings,
                         path: PathBuf::from("goal.md"),
                         sha256: String::new(),
                     },
@@ -634,38 +636,38 @@ fn finished_step_collapses_with_details() {
             run_event(
                 None,
                 RunEventKind::Divide(DivideEvent::Graph(TaskGraph {
-                    cards: (1..=5).map(|n| card_spec(n, "a task")).collect(),
+                    tasks: (1..=5).map(|n| task_spec(n, "a task")).collect(),
                     critical_path: vec![],
                 })),
             ),
-            run_event(Some(card(2)), gate("tests", GateKind::Command, true, "")),
-            run_event(Some(card(2)), gate("lint", GateKind::Command, true, "")),
+            run_event(Some(task(2)), check("tests", CheckKind::Command, true, "")),
+            run_event(Some(task(2)), check("lint", CheckKind::Command, true, "")),
             run_event(
-                Some(card(2)),
-                gate("link check", GateKind::Command, true, ""),
+                Some(task(2)),
+                check("link check", CheckKind::Command, true, ""),
             ),
             run_event(
-                Some(card(2)),
-                gate("secrets", GateKind::SecretScan, true, ""),
+                Some(task(2)),
+                check("secrets", CheckKind::SecretScan, true, ""),
             ),
-            run_event(Some(card(2)), gating_done()),
+            run_event(Some(task(2)), checking_done()),
             run_event(
-                Some(card(3)),
-                gate("tests", GateKind::Command, false, "41 passed, 1 failed"),
+                Some(task(3)),
+                check("tests", CheckKind::Command, false, "41 passed, 1 failed"),
             ),
-            run_event(Some(card(3)), gating_done()),
+            run_event(Some(task(3)), checking_done()),
             run_event(
-                Some(card(4)),
-                gate("protected paths", GateKind::ProtectedPaths, true, ""),
+                Some(task(4)),
+                check("protected paths", CheckKind::ProtectedPaths, true, ""),
             ),
-            run_event(Some(card(4)), gating_done()),
+            run_event(Some(task(4)), checking_done()),
         ]);
     });
 }
 
-fn handoff_plan(n: u32, title: &str, resets_at: Option<OffsetDateTime>) -> HandoffPlan {
-    HandoffPlan {
-        card: card(n),
+fn fallback_plan(n: u32, title: &str, resets_at: Option<OffsetDateTime>) -> FallbackPlan {
+    FallbackPlan {
+        task: task(n),
         title: title.into(),
         stopped: worker("claude-code", "opus"),
         reason: "usage limit".into(),
@@ -675,18 +677,18 @@ fn handoff_plan(n: u32, title: &str, resets_at: Option<OffsetDateTime>) -> Hando
             insertions: 30,
             deletions: 4,
         },
-        gates_ran: false,
+        checks_ran: false,
         candidates: vec![],
-        mode: HandoffMode::Ask,
-        strategy: HandoffStrategy::First,
+        mode: FallbackMode::Ask,
+        strategy: FallbackStrategy::First,
         race_count: 1,
         also_moving: vec![],
     }
 }
 
 fn health(state: HealthState) -> RunEventKind {
-    RunEventKind::Vendor(VendorEvent::Health(VendorHealth {
-        vendor: VendorId("claude-code".into()),
+    RunEventKind::AgentStatus(AgentStatusEvent::Health(AgentHealth {
+        agent_id: AgentId("claude-code".into()),
         state,
         since: datetime!(2026-09-30 17:00 UTC),
         reason: None,
@@ -696,30 +698,34 @@ fn health(state: HealthState) -> RunEventKind {
 }
 
 #[test]
-fn handoff_and_return_transcript_lines() {
-    snapshot("handoff_and_return_transcript_lines", |harness, text| {
+fn fallback_and_return_transcript_lines() {
+    snapshot("fallback_and_return_transcript_lines", |driver, text| {
         let title = text.unwrap_or("Middleware");
         let codex = worker("codex", "gpt-5.6");
         let mut run = RunState::new(run_id());
-        let mut stand_in = card_row(2, "Redis store", codex.clone(), None);
-        stand_in.state = Some(CardState::Running);
-        stand_in.standing_in_for = Some(worker("claude-code", "opus"));
-        // Cards go by their labels in the chat; ids stay in commands.
-        stand_in.item = Some("redis-store".into());
-        run.cards.insert(card(2), stand_in);
-        let mut limiter = card_row(3, "Middleware", worker("claude-code", "opus"), None);
+        let mut fallback = task_row(2, "Redis store", codex.clone(), None);
+        fallback.state = Some(TaskState::Running);
+        fallback.fallback_for = Some(worker("claude-code", "opus"));
+        // Tasks go by their labels in the conversation; ids stay in commands.
+        fallback.item = Some("redis-store".into());
+        run.tasks.insert(task(2), fallback);
+        let mut limiter = task_row(3, "Middleware", worker("claude-code", "opus"), None);
         limiter.item = Some("limiter".into());
-        run.cards.insert(card(3), limiter);
-        harness.state.runs.insert(run_id(), run);
+        run.tasks.insert(task(3), limiter);
+        driver.state.runs.insert(run_id(), run);
         let resets = Some(datetime!(2026-09-30 22:45 UTC));
-        harness.send_all([
+        driver.send_all([
             run_event(
-                Some(card(2)),
-                RunEventKind::Handoff(HandoffEvent::Needed(handoff_plan(2, "Redis store", resets))),
+                Some(task(2)),
+                RunEventKind::Fallback(FallbackEvent::Needed(fallback_plan(
+                    2,
+                    "Redis store",
+                    resets,
+                ))),
             ),
             run_event(
-                Some(card(2)),
-                RunEventKind::Card(CardEvent::CheckpointTagged {
+                Some(task(2)),
+                RunEventKind::Task(TaskEvent::CheckpointTagged {
                     n: 1,
                     commit: "4c1d2e9".into(),
                     from: worker("claude-code", "opus"),
@@ -728,32 +734,32 @@ fn handoff_and_return_transcript_lines() {
                 }),
             ),
             run_event(
-                Some(card(2)),
-                RunEventKind::Handoff(HandoffEvent::HandedOff {
-                    card: card(2),
+                Some(task(2)),
+                RunEventKind::Fallback(FallbackEvent::FellBack {
+                    task: task(2),
                     to: codex.clone(),
-                    mode: HandoffMode::Ask,
+                    mode: FallbackMode::Ask,
                     by: Party::User,
-                    context: Some(HandoffContext::NoteAndTranscript),
+                    context: Some(FallbackContext::NoteAndTranscript),
                 }),
             ),
             run_event(
-                Some(card(3)),
-                RunEventKind::Handoff(HandoffEvent::Needed(handoff_plan(3, title, None))),
+                Some(task(3)),
+                RunEventKind::Fallback(FallbackEvent::Needed(fallback_plan(3, title, None))),
             ),
             run_event(
-                Some(card(3)),
-                RunEventKind::Handoff(HandoffEvent::HandedOff {
-                    card: card(3),
+                Some(task(3)),
+                RunEventKind::Fallback(FallbackEvent::FellBack {
+                    task: task(3),
                     to: worker("agy", "gemini-3.6-pro"),
-                    mode: HandoffMode::Auto,
+                    mode: FallbackMode::Auto,
                     by: Party::Rules,
-                    context: Some(HandoffContext::NoteAndSummary),
+                    context: Some(FallbackContext::NoteAndSummary),
                 }),
             ),
             run_event(
-                Some(card(2)),
-                RunEventKind::Card(CardEvent::Reverted {
+                Some(task(2)),
+                RunEventKind::Task(TaskEvent::Rewound {
                     to: 1,
                     kept_on: "argonauts/run-01/task-002-after-fallback-1".into(),
                 }),
@@ -766,8 +772,8 @@ fn handoff_and_return_transcript_lines() {
 
 #[test]
 fn recap_line() {
-    snapshot("recap_line", |harness, text| {
-        harness.send(AppEvent::Recap {
+    snapshot("recap_line", |driver, text| {
+        driver.send(AppEvent::Recap {
             text: text
                 .unwrap_or(
                     "Export now takes --json, all 4 tasks merged, and the tests pass. Ask for another change, or /resume an older run.",
@@ -779,7 +785,7 @@ fn recap_line() {
 }
 
 fn session(ts: OffsetDateTime, key: &str, kind: SessionEvent) -> AppEvent {
-    let AppEvent::Run { mut event } = at(ts, Some(card(1)), RunEventKind::Session(kind)) else {
+    let AppEvent::Run { mut event } = at(ts, Some(task(1)), RunEventKind::Session(kind)) else {
         unreachable!("at builds run events");
     };
     event.session = SessionKey::parse(key);
@@ -789,10 +795,10 @@ fn session(ts: OffsetDateTime, key: &str, kind: SessionEvent) -> AppEvent {
 /// A session that started and finished in the replayed history.
 fn replayed_session(key: &str) -> [AppEvent; 2] {
     let started = SessionStarted {
-        vendor: VendorId("claude-code".into()),
+        agent_id: AgentId("claude-code".into()),
         worker: worker("claude-code", "opus"),
-        family: "test".into(),
-        kind: WorkerKind::Harness,
+        provider: "test".into(),
+        kind: RunnerKind::Cli,
         role: RoleName::Worker,
         step: None,
         access: Access::Build,
@@ -804,7 +810,7 @@ fn replayed_session(key: &str) -> [AppEvent; 2] {
         asked: None,
     };
     let ended = SessionEnd {
-        vendor_session: None,
+        cli_session: None,
         exit_code: Some(0),
         signal: None,
         duration_ms: 60_000,
@@ -841,15 +847,15 @@ fn condensed_replay_layout() {
     );
 }
 
-fn resumed_run(harness: &mut Harness, text: Option<&str>) {
+fn resumed_run(driver: &mut TestDriver, text: Option<&str>) {
     let title = text.unwrap_or("Add a --json flag to export");
-    harness.send(AppEvent::Attached {
+    driver.send(AppEvent::Attached {
         summary: RunSummary {
             run: run_id(),
             title: title.into(),
             mode: RunMode::Crew,
             workflow: "council".into(),
-            state: RunStatus::Parked,
+            state: RunStatus::Waiting,
             stopped_at: "plan approval, waiting for you".into(),
             updated: datetime!(2026-09-30 17:00 UTC),
             spent: Spend {
@@ -864,35 +870,37 @@ fn resumed_run(harness: &mut Harness, text: Option<&str>) {
         },
         started_here: false,
     });
-    harness.send_all(replayed_session("s-001"));
-    harness.send_all(replayed_session("s-002"));
+    driver.send_all(replayed_session("s-001"));
+    driver.send_all(replayed_session("s-002"));
     for n in 0..50 {
-        harness.send(run_event(
-            Some(card(1)),
-            gate("tests", GateKind::Command, true, &format!("run {n}")),
+        driver.send(run_event(
+            Some(task(1)),
+            check("tests", CheckKind::Command, true, &format!("run {n}")),
         ));
-        harness.send(run_event(Some(card(1)), gating_done()));
+        driver.send(run_event(Some(task(1)), checking_done()));
     }
-    harness.send_all([
+    driver.send_all([
         AppEvent::CondensedReplay {
             run: run_id(),
             turns: vec![
                 ReplayTurn {
                     from: Party::User,
                     text: title.into(),
+                    steps: Vec::new(),
                 },
                 ReplayTurn {
                     from: Party::Agent {
-                        session: argonauts_core::names::SessionKey::parse("chat-1")
+                        session: argonauts_core::names::SessionKey::parse("conversation-1")
                             .expect("a valid session key"),
                         worker: worker("claude-code", "opus"),
                     },
                     text: "That touches the CLI and the writer, so I'll run it with the crew."
                         .into(),
+                    steps: Vec::new(),
                 },
             ],
             milestones: vec![
-                "Triage: crew · 7 files, tests exist".into(),
+                "Crew · 7 files, tests exist".into(),
                 "Goal approved · 3 criteria".into(),
                 "Plan 1 won · 5 tasks".into(),
             ],
@@ -930,9 +938,9 @@ fn tool(n: u32, id: &str, name: &str, path: &str) -> [AppEvent; 2] {
 }
 
 #[test]
-fn chat_answer_with_folded_tools() {
-    snapshot("chat_answer_with_folded_tools", |harness, text| {
-        harness.settings.verbosity = Verbosity::Normal;
+fn conversation_answer_with_folded_tools() {
+    snapshot("conversation_answer_with_folded_tools", |driver, text| {
+        driver.settings.verbosity = Verbosity::Normal;
         let answer = text.map_or_else(
             || {
                 "Export writes CSV today. The writer lives in `src/export.rs`, and the flag \
@@ -941,12 +949,12 @@ fn chat_answer_with_folded_tools() {
             },
             ToOwned::to_owned,
         );
-        harness.send(turn_started(1, "how does export work?"));
+        driver.send(turn_started(1, "how does export work?"));
         for (id, path) in ["src/cli.rs", "src/export.rs", "src/lib.rs", "Cargo.toml"]
             .into_iter()
             .enumerate()
         {
-            harness.send_all(tool(1, &format!("t{id}"), "Read", path));
+            driver.send_all(tool(1, &format!("t{id}"), "Read", path));
         }
         // Split mid-sentence, as deltas arrive.
         let middle = (0..=answer.len() / 2)
@@ -954,21 +962,21 @@ fn chat_answer_with_folded_tools() {
             .find(|at| answer.is_char_boundary(*at))
             .unwrap_or(0);
         let (first, rest) = answer.split_at(middle);
-        harness.send_all([delta(1, first), delta(1, rest), answered(1, &answer, 9)]);
+        driver.send_all([delta(1, first), delta(1, rest), answered(1, &answer, 9)]);
     });
 }
 
 #[test]
 fn a_call_between_parts_of_the_answer_folds_under_the_first_part() {
     let lines = render(
-        |harness, _| {
-            harness.settings.verbosity = Verbosity::Normal;
-            harness.send_all([
+        |driver, _| {
+            driver.settings.verbosity = Verbosity::Normal;
+            driver.send_all([
                 turn_started(1, "where is the writer?"),
                 delta(1, "Let me look.\n"),
             ]);
-            harness.send_all(tool(1, "t1", "Grep", "fn write"));
-            harness.send_all([
+            driver.send_all(tool(1, "t1", "Grep", "fn write"));
+            driver.send_all([
                 delta(1, "It's in `src/export.rs`."),
                 answered(1, "Let me look.\nIt's in `src/export.rs`.", 2),
             ]);
@@ -985,16 +993,16 @@ fn a_call_between_parts_of_the_answer_folds_under_the_first_part() {
 #[test]
 fn an_answer_split_by_calls_prints_each_part_once() {
     let lines = render(
-        |harness, _| {
-            harness.settings.verbosity = Verbosity::Normal;
-            harness.send_all([
+        |driver, _| {
+            driver.settings.verbosity = Verbosity::Normal;
+            driver.send_all([
                 turn_started(1, "where is the writer?"),
                 delta(1, "Let me look."),
             ]);
-            harness.send_all(tool(1, "t1", "Grep", "fn write"));
-            harness.send(delta(1, "Found the writer. Now the flag."));
-            harness.send_all(tool(1, "t2", "Read", "src/cli.rs"));
-            harness.send_all([
+            driver.send_all(tool(1, "t1", "Grep", "fn write"));
+            driver.send(delta(1, "Found the writer. Now the flag."));
+            driver.send_all(tool(1, "t2", "Read", "src/cli.rs"));
+            driver.send_all([
                 delta(1, "Both are in `src`."),
                 answered(
                     1,
@@ -1043,41 +1051,41 @@ fn call(
 }
 
 /// A turn that reads a file, runs a failing test, and fixes it, with the shared tool table.
-fn chat_with_tools(harness: &mut Harness, text: Option<&str>, level: Verbosity) {
-    harness.settings.verbosity = level;
-    harness.transcript.chat = ChatTurns::default();
+fn conversation_with_tools(driver: &mut TestDriver, text: Option<&str>, level: Verbosity) {
+    driver.settings.verbosity = level;
+    driver.transcript.conversation = ConversationTurns::default();
     let answer = text.unwrap_or("The test expected the old header, so I added the email column.");
-    harness.send(turn_started(1, "why does the export test fail?"));
+    driver.send(turn_started(1, "why does the export test fail?"));
     let read = serde_json::json!({ "file_path": "src/export.rs" });
-    harness.send_all(call(1, "t1", "Read", read, true, "1\n2\n3"));
+    driver.send_all(call(1, "t1", "Read", read, true, "1\n2\n3"));
     let test = serde_json::json!({ "command": "cargo test export" });
     let failed =
         "Exit code 101\ntest export_header ... FAILED\nassertion failed: header == \"id,name\"";
-    harness.send_all(call(1, "t2", "Bash", test, false, failed));
+    driver.send_all(call(1, "t2", "Bash", test, false, failed));
     let edit = serde_json::json!({
         "file_path": "tests/export.rs",
         "old_string": "\"id,name\"",
         "new_string": "\"id,name,email\"",
     });
-    harness.send_all(call(1, "t3", "Edit", edit, true, "ok"));
-    harness.send_all([delta(1, answer), answered(1, answer, 12)]);
+    driver.send_all(call(1, "t3", "Edit", edit, true, "ok"));
+    driver.send_all([delta(1, answer), answered(1, answer, 12)]);
 }
 
 #[test]
-fn chat_tools_at_each_verbosity() {
-    snapshot("chat_tools_full", |harness, text| {
-        chat_with_tools(harness, text, Verbosity::Full);
+fn conversation_tools_at_each_verbosity() {
+    snapshot("conversation_tools_full", |driver, text| {
+        conversation_with_tools(driver, text, Verbosity::Full);
     });
-    snapshot("chat_tools_normal", |harness, text| {
-        chat_with_tools(harness, text, Verbosity::Normal);
+    snapshot("conversation_tools_normal", |driver, text| {
+        conversation_with_tools(driver, text, Verbosity::Normal);
     });
-    snapshot("chat_tools_quiet", |harness, text| {
-        chat_with_tools(harness, text, Verbosity::Quiet);
+    snapshot("conversation_tools_quiet", |driver, text| {
+        conversation_with_tools(driver, text, Verbosity::Quiet);
     });
     let at = |level| {
-        let mut harness = Harness::new();
-        chat_with_tools(&mut harness, None, level);
-        text(&harness.printed(80))
+        let mut driver = TestDriver::new();
+        conversation_with_tools(&mut driver, None, level);
+        text(&driver.printed(80))
     };
     let full = at(Verbosity::Full);
     for shown in [
@@ -1097,12 +1105,12 @@ fn chat_tools_at_each_verbosity() {
 
 #[test]
 fn interrupted_turn_line() {
-    snapshot("interrupted_turn_line", |harness, text| {
-        harness.send_all([
+    snapshot("interrupted_turn_line", |driver, text| {
+        driver.send_all([
             turn_started(1, "rewrite the exporter"),
             delta(1, "Let me look at the exporter first.\n"),
             delta(1, text.unwrap_or("It writes each row")),
-            chat(ChatEvent::TurnCancelled {
+            conversation(ConversationEvent::TurnCancelled {
                 turn: TurnId::numbered(1),
             }),
         ]);
@@ -1124,13 +1132,13 @@ const CLAUDE_CODE_EDIT_TURN: &str = "\
 
 ✻ Worked for 3s · done 1:07 PM";
 
-/// A direct solo turn as Claude Code ran it in your checkout: your message, its calls drawn as
-/// Argonauts draws a CLI's, its own answer, and nothing after it but the `✻` line. No Triage
-/// item, card, report, merge, or recap. Shown beside Claude Code's own screen for the turn.
-fn direct_edit_turn(harness: &mut Harness, text: Option<&str>) {
-    harness.settings.verbosity = Verbosity::Normal;
+/// A direct Captain turn as Claude Code ran it in your checkout: your message, its calls drawn as
+/// Argonauts Code draws a CLI's, its own answer, and nothing after it but the `✻` line. No run
+/// item, task, report, merge, or recap. Shown beside Claude Code's own screen for the turn.
+fn direct_edit_turn(driver: &mut TestDriver, text: Option<&str>) {
+    driver.settings.verbosity = Verbosity::Normal;
     let answer = text.unwrap_or("Changed hello to hi in greet.txt.");
-    harness.send(chat(ChatEvent::TurnStarted {
+    driver.send(conversation(ConversationEvent::TurnStarted {
         turn: TurnId::numbered(1),
         text: "In greet.txt, change hello to hi.".into(),
         worker: worker("claude-code", "haiku"),
@@ -1141,19 +1149,19 @@ fn direct_edit_turn(harness: &mut Harness, text: Option<&str>) {
         continues: false,
     }));
     let read = serde_json::json!({ "file_path": "greet.txt" });
-    harness.send_all(call(1, "t1", "Read", read, true, "1\thello world"));
+    driver.send_all(call(1, "t1", "Read", read, true, "1\thello world"));
     let edit = serde_json::json!({
         "file_path": "greet.txt",
         "old_string": "hello world",
         "new_string": "hi world",
     });
-    harness.send_all(call(1, "t2", "Edit", edit, true, "ok"));
-    harness.send_all([delta(1, answer), answered(1, answer, 3)]);
+    driver.send_all(call(1, "t2", "Edit", edit, true, "ok"));
+    driver.send_all([delta(1, answer), answered(1, answer, 3)]);
 }
 
 #[test]
-fn a_direct_solo_turn_reads_like_claude_codes() {
-    snapshot("direct_solo_turn", direct_edit_turn);
+fn a_direct_captain_turn_reads_like_claude_codes() {
+    snapshot("direct_captain_turn", direct_edit_turn);
     for width in [100, 120] {
         let lines = render(direct_edit_turn, None, width);
         let printed = text(&lines);
@@ -1173,9 +1181,9 @@ fn a_direct_solo_turn_reads_like_claude_codes() {
             "only the ✻ line follows the answer:\n{printed}"
         );
         insta::assert_snapshot!(
-            format!("direct_solo_turn_beside_claude_code_{width}"),
+            format!("direct_captain_turn_beside_claude_code_{width}"),
             format!(
-                "Argonauts, direct solo:\n\n{printed}\n\nClaude Code:\n\n{CLAUDE_CODE_EDIT_TURN}"
+                "Argonauts Code, direct Captain:\n\n{printed}\n\nClaude Code:\n\n{CLAUDE_CODE_EDIT_TURN}"
             )
         );
     }
@@ -1183,11 +1191,11 @@ fn a_direct_solo_turn_reads_like_claude_codes() {
 
 /// The agent ran out mid-turn and the next one carries on under a `↷` line.
 #[test]
-fn a_direct_turn_handed_off_goes_on_under_one_line() {
+fn a_direct_turn_fell_back_goes_on_under_one_line() {
     let lines = render(
-        |harness, _| {
-            harness.settings.verbosity = Verbosity::Normal;
-            harness.send(chat(ChatEvent::TurnStarted {
+        |driver, _| {
+            driver.settings.verbosity = Verbosity::Normal;
+            driver.send(conversation(ConversationEvent::TurnStarted {
                 turn: TurnId::numbered(1),
                 text: "Fix invoice/money.py".into(),
                 worker: worker("claude-code", "haiku"),
@@ -1202,8 +1210,8 @@ fn a_direct_turn_handed_off_goes_on_under_one_line() {
                 "old_string": "sign = 1",
                 "new_string": "negative = True",
             });
-            harness.send_all(call(1, "t1", "Edit", edit, true, "ok"));
-            harness.send(chat(ChatEvent::HandedOff {
+            driver.send_all(call(1, "t1", "Edit", edit, true, "ok"));
+            driver.send(conversation(ConversationEvent::FellBack {
                 turn: TurnId::numbered(1),
                 from: worker("claude-code", "haiku"),
                 to: worker("codex", "gpt-5.6-luna"),
@@ -1212,8 +1220,8 @@ fn a_direct_turn_handed_off_goes_on_under_one_line() {
                     .into(),
             }));
             let test = serde_json::json!({ "command": "python -m pytest -q" });
-            harness.send_all(call(1, "t2", "Bash", test, true, "6 passed in 0.04s"));
-            harness.send_all([
+            driver.send_all(call(1, "t2", "Bash", test, true, "6 passed in 0.04s"));
+            driver.send_all([
                 delta(1, "All 6 tests pass."),
                 answered(1, "All 6 tests pass.", 32),
             ]);
@@ -1222,7 +1230,7 @@ fn a_direct_turn_handed_off_goes_on_under_one_line() {
         100,
     );
     let printed = text(&lines);
-    insta::assert_snapshot!("direct_turn_handed_off_100", printed);
+    insta::assert_snapshot!("direct_turn_fell_back_100", printed);
     assert!(
         printed.contains("↷ Claude Code hit its usage limit · Codex continues with"),
         "{printed}"

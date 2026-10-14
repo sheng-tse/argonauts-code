@@ -6,8 +6,8 @@ use argonauts_core::api::{ApiError, ConductorApi, RunState, StartRun};
 use argonauts_core::control::{ClientKind, ControlRequest};
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::run::{
-    ParkReason, Party, PhaseChange, ResumeCause, RunLifecycle, RunMode, RunOutcome, RunPhase,
-    RunResumed,
+    Party, PhaseChange, ResumeCause, RunLifecycle, RunMode, RunOutcome, RunPhase, RunResumed,
+    WaitReason,
 };
 use argonauts_core::events::session::SessionEvent;
 use argonauts_core::journal::RunLock;
@@ -18,7 +18,7 @@ use time::OffsetDateTime;
 
 use super::approvals::approvals_refusal;
 use super::test_support::{
-    FakeSupervisor, Script, TestHome, event, event_at, queued, run_started, serve, write_journal,
+    FakeRunHost, Script, TestHome, event, event_at, queued, run_started, serve, write_journal,
 };
 use super::*;
 use crate::run_files;
@@ -26,33 +26,33 @@ use crate::run_files;
 fn request(text: &str) -> StartRun {
     StartRun {
         request: text.to_owned(),
-        mode: RunMode::Solo,
+        mode: RunMode::Captain,
         forced: false,
         estimate: None,
-        triage: None,
-        chat_turn: None,
+        captain_or_crew: None,
+        conversation_turn: None,
         continues: None,
         overrides: Vec::new(),
         include_uncommitted: false,
         main_agent: None,
         approval_mode: None,
-        front_end: Some("hermes".to_owned()),
+        outside_agent: Some("hermes".to_owned()),
         instructions: Vec::new(),
         request_settings: Vec::new(),
         required_steps: Vec::new(),
     }
 }
 
-fn app_client(home: &TestHome, launcher: Arc<FakeSupervisor>) -> Client {
+fn app_client(home: &TestHome, launcher: Arc<FakeRunHost>) -> Client {
     Client::new(home.env(true), launcher, true)
 }
 
-fn parked(seq: u64, at: OffsetDateTime) -> argonauts_core::events::RunEvent {
+fn waiting_event(seq: u64, at: OffsetDateTime) -> argonauts_core::events::RunEvent {
     event_at(
         seq,
         at,
-        RunEventKind::Run(RunLifecycle::Parked {
-            reason: ParkReason::Paused,
+        RunEventKind::Run(RunLifecycle::Waiting {
+            reason: WaitReason::Paused,
             waiting_on: Vec::new(),
         }),
     )
@@ -74,7 +74,7 @@ fn resumed(seq: u64) -> argonauts_core::events::RunEvent {
         RunEventKind::Run(RunLifecycle::Resumed(RunResumed {
             cause: ResumeCause::User,
             settings_changed: false,
-            harness_versions_changed: Vec::new(),
+            cli_versions_changed: Vec::new(),
             main_moved_by: None,
             sessions: Vec::new(),
         })),
@@ -104,7 +104,7 @@ fn run_ids_look_like_a_timestamp_and_a_suffix() {
 #[tokio::test]
 async fn start_refuses_auto() {
     let home = TestHome::new();
-    let launcher = Arc::new(FakeSupervisor::default());
+    let launcher = Arc::new(FakeRunHost::default());
     let client = app_client(&home, Arc::clone(&launcher));
     for mode in [ApprovalMode::Auto, ApprovalMode::AutoPreview] {
         let refused = client
@@ -122,7 +122,7 @@ async fn start_refuses_auto() {
 #[tokio::test]
 async fn start_writes_its_files_and_waits_for_welcome() {
     let home = TestHome::new();
-    let launcher = Arc::new(FakeSupervisor::default());
+    let launcher = Arc::new(FakeRunHost::default());
     let client = app_client(&home, Arc::clone(&launcher));
     let handle = client
         .start(StartRun {
@@ -140,11 +140,11 @@ async fn start_writes_its_files_and_waits_for_welcome() {
     assert_eq!(start.run, handle.run);
     assert_eq!(start.overrides, ["runs.remind_waiting_days=3"]);
     assert!(start.interactive);
-    assert_eq!(start.request.front_end.as_deref(), Some("hermes"));
+    assert_eq!(start.request.outside_agent.as_deref(), Some("hermes"));
     assert_eq!(start.repo_root, client.env.repo_root);
 
     let settings = run_files::read_settings(&run_dir).unwrap();
-    assert_eq!(settings.settings.runs.remind_parked_days, 3);
+    assert_eq!(settings.settings.runs.remind_waiting_days, 3);
     assert_eq!(settings.sha256.len(), 64);
 
     let token = run_files::read_token(&run_dir).unwrap();
@@ -157,7 +157,7 @@ async fn start_writes_its_files_and_waits_for_welcome() {
 }
 
 #[tokio::test]
-async fn start_gives_up_when_no_supervisor_answers() {
+async fn start_gives_up_when_no_run_host_answers() {
     struct Silent;
     impl Launcher for Silent {
         fn launch(&self, _: &Path, _: &RunId, _: &Path) -> anyhow::Result<()> {
@@ -169,16 +169,16 @@ async fn start_gives_up_when_no_supervisor_answers() {
     let run = other_run("0001");
     let run_dir = home.run_with(&client.env, &run, &[]);
     let waited = start::await_welcome(&client, &run_dir, Duration::from_millis(200)).await;
-    let Err(ApiError::Supervisor(message)) = waited else {
+    let Err(ApiError::RunHost(message)) = waited else {
         panic!("expected a timeout, got {waited:?}");
     };
-    assert!(message.contains("supervisor.log"), "{message}");
+    assert!(message.contains("run_host.log"), "{message}");
 }
 
 #[tokio::test]
-async fn list_tells_crashed_starting_and_parked_runs_apart() {
+async fn list_tells_crashed_starting_and_waiting_runs_apart() {
     let home = TestHome::new();
-    let client = app_client(&home, Arc::new(FakeSupervisor::default()));
+    let client = app_client(&home, Arc::new(FakeRunHost::default()));
     let env = Arc::clone(&client.env);
     let now = OffsetDateTime::now_utc();
 
@@ -222,7 +222,7 @@ async fn list_tells_crashed_starting_and_parked_runs_apart() {
         &old,
         &[
             run_started(0, "waiting long ago", None),
-            parked(1, now - time::Duration::days(8)),
+            waiting_event(1, now - time::Duration::days(8)),
         ],
     );
     let recent = other_run("00f1");
@@ -231,7 +231,7 @@ async fn list_tells_crashed_starting_and_parked_runs_apart() {
         &recent,
         &[
             run_started(0, "waiting today", None),
-            parked(1, now - time::Duration::hours(2)),
+            waiting_event(1, now - time::Duration::hours(2)),
         ],
     );
     let merged = other_run("0101");
@@ -261,10 +261,10 @@ async fn list_tells_crashed_starting_and_parked_runs_apart() {
     assert_eq!(summary.title, "Starting now");
 
     let summary = by_id(&old);
-    assert_eq!((summary.state, summary.remind), (RunState::Parked, true));
+    assert_eq!((summary.state, summary.remind), (RunState::Waiting, true));
     assert_eq!(summary.stopped_at, "paused");
     let summary = by_id(&recent);
-    assert_eq!((summary.state, summary.remind), (RunState::Parked, false));
+    assert_eq!((summary.state, summary.remind), (RunState::Waiting, false));
 
     assert_eq!(by_id(&merged).state, RunState::Merged);
     let summary = by_id(&live);
@@ -278,17 +278,17 @@ async fn list_tells_crashed_starting_and_parked_runs_apart() {
 }
 
 #[tokio::test]
-async fn parked_guidance_lands_in_pending_answers_and_launches() {
+async fn waiting_guidance_lands_in_pending_answers_and_launches() {
     let home = TestHome::new();
-    let launcher = Arc::new(FakeSupervisor::default());
+    let launcher = Arc::new(FakeRunHost::default());
     let client = app_client(&home, Arc::clone(&launcher));
     let run = other_run("0201");
     let run_dir = home.run_with(
         &client.env,
         &run,
         &[
-            run_started(0, "parked", None),
-            parked(1, OffsetDateTime::now_utc()),
+            run_started(0, "waiting", None),
+            waiting_event(1, OffsetDateTime::now_utc()),
         ],
     );
     let sent = client.guidance(&run, "use the v2 API".to_owned()).await;
@@ -300,12 +300,12 @@ async fn parked_guidance_lands_in_pending_answers_and_launches() {
         run_files::take_pending(&run_dir).unwrap(),
         vec![ControlRequest::Guidance {
             text: "use the v2 API".to_owned(),
-            front_end: None,
+            outside_agent: None,
         }]
     );
     assert_eq!(launcher.launches(), vec![run.clone()]);
 
-    // Now a supervisor answers, so the next call goes over the socket.
+    // Now a run host answers, so the next call goes over the socket.
     let id = client
         .guidance(&run, "and add tests".to_owned())
         .await
@@ -316,7 +316,7 @@ async fn parked_guidance_lands_in_pending_answers_and_launches() {
         launcher.script.requests.lock().unwrap().clone(),
         vec![ControlRequest::Guidance {
             text: "and add tests".to_owned(),
-            front_end: None,
+            outside_agent: None,
         }]
     );
 }
@@ -324,7 +324,7 @@ async fn parked_guidance_lands_in_pending_answers_and_launches() {
 #[tokio::test]
 async fn resume_refuses_a_merged_run_and_resumes_a_stopped_one() {
     let home = TestHome::new();
-    let launcher = Arc::new(FakeSupervisor::default());
+    let launcher = Arc::new(FakeRunHost::default());
     let client = app_client(&home, Arc::clone(&launcher));
     let merged = other_run("0301");
     home.run_with(
@@ -352,7 +352,7 @@ async fn resume_refuses_a_merged_run_and_resumes_a_stopped_one() {
         client.stop(&merged).await,
         Err(ApiError::Merged(merged.clone()))
     );
-    // The new supervisor's engine reopens the stopped run and records `Resumed`.
+    // The new run host's engine reopens the stopped run and records `Resumed`.
     let engine = {
         let launcher = Arc::clone(&launcher);
         let events = stopped_dir.join(names::EVENTS);
@@ -369,16 +369,52 @@ async fn resume_refuses_a_merged_run_and_resumes_a_stopped_one() {
     assert_eq!(
         run_files::take_pending(&stopped_dir).unwrap(),
         [ControlRequest::CancelPause],
-        "the next supervisor is asked to reopen it"
+        "the next run host is asked to reopen it"
     );
     let missing = other_run("0303");
     assert_eq!(client.resume(&missing).await, Err(ApiError::NoRun(missing)));
 }
 
+/// A run another build wrote can't be read, so `/resume` starts nothing for it, leaves its
+/// folder as it is, and says so in one sentence.
 #[tokio::test]
-async fn resume_wakes_a_supervisor_waiting_out_its_park_grace() {
+async fn resume_starts_nothing_for_a_run_another_build_wrote() {
     let home = TestHome::new();
-    let launcher = Arc::new(FakeSupervisor::default());
+    let launcher = Arc::new(FakeRunHost::default());
+    let client = app_client(&home, Arc::clone(&launcher));
+    let old = RunId::new("run-20261004-072329-63c3").unwrap();
+    let run_dir = client.env.run_dir(&old);
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/older-run");
+    for file in [names::START, names::EVENTS] {
+        std::fs::copy(fixture.join(file), run_dir.join(file)).unwrap();
+    }
+    let files = || {
+        let mut files: Vec<_> = std::fs::read_dir(&run_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        files.sort();
+        files
+    };
+    let before = files();
+
+    assert_eq!(
+        client.resume(&old).await,
+        Err(ApiError::NotNow(
+            "\"hi\" (Oct 4) was written by an older Argonauts and can't be resumed · /runs \
+             archive moves it out of the way"
+                .to_owned()
+        ))
+    );
+    assert!(launcher.launches().is_empty(), "no run host is started");
+    assert_eq!(files(), before, "nothing is written into its folder");
+}
+
+#[tokio::test]
+async fn resume_wakes_a_run_host_waiting_out_its_wait_grace() {
+    let home = TestHome::new();
+    let launcher = Arc::new(FakeRunHost::default());
     let client = app_client(&home, Arc::clone(&launcher));
     let run = other_run("0304");
     let run_dir = home.run_with(
@@ -386,7 +422,7 @@ async fn resume_wakes_a_supervisor_waiting_out_its_park_grace() {
         &run,
         &[
             run_started(0, "paused", None),
-            parked(1, OffsetDateTime::now_utc()),
+            waiting_event(1, OffsetDateTime::now_utc()),
         ],
     );
     let _lock = RunLock::try_acquire(&run_dir).unwrap().unwrap();
@@ -408,10 +444,7 @@ async fn resume_wakes_a_supervisor_waiting_out_its_park_grace() {
         .await
         .expect("resume never woke the engine")
         .unwrap();
-    assert!(
-        launcher.launches().is_empty(),
-        "the live supervisor took it"
-    );
+    assert!(launcher.launches().is_empty(), "the live run host took it");
 
     // Now it runs, so resuming again asks for nothing.
     client.resume(&run).await.unwrap();
@@ -422,9 +455,9 @@ async fn resume_wakes_a_supervisor_waiting_out_its_park_grace() {
 }
 
 #[tokio::test]
-async fn take_back_asks_a_started_supervisor_and_never_defers() {
+async fn take_back_asks_a_started_run_host_and_never_defers() {
     let home = TestHome::new();
-    let launcher = Arc::new(FakeSupervisor::default());
+    let launcher = Arc::new(FakeRunHost::default());
     let client = app_client(&home, Arc::clone(&launcher));
     let run = other_run("0204");
     let waiting = queued(1, "use the v2 API", Party::User);
@@ -435,9 +468,9 @@ async fn take_back_asks_a_started_supervisor_and_never_defers() {
         &client.env,
         &run,
         &[
-            run_started(0, "parked", None),
+            run_started(0, "waiting", None),
             waiting,
-            parked(2, OffsetDateTime::now_utc()),
+            waiting_event(2, OffsetDateTime::now_utc()),
         ],
     );
     *launcher.script.queued.lock().unwrap() = vec![message.clone()];
@@ -472,13 +505,13 @@ async fn take_back_asks_a_started_supervisor_and_never_defers() {
 }
 
 #[tokio::test]
-async fn revert_asks_the_supervisor_and_starts_one_when_none_runs() {
+async fn rewind_asks_the_run_host_and_starts_one_when_none_runs() {
     let home = TestHome::new();
-    let launcher = Arc::new(FakeSupervisor::default());
+    let launcher = Arc::new(FakeRunHost::default());
     let client = app_client(&home, Arc::clone(&launcher));
-    let card = argonauts_core::CardId::numbered(2);
-    let revert = ControlRequest::Revert {
-        card: card.clone(),
+    let task = argonauts_core::TaskId::numbered(2);
+    let rewind = ControlRequest::Rewind {
+        task: task.clone(),
         checkpoint: 1,
     };
     let run = other_run("0601");
@@ -486,16 +519,16 @@ async fn revert_asks_the_supervisor_and_starts_one_when_none_runs() {
         &client.env,
         &run,
         &[
-            run_started(0, "parked", None),
-            parked(1, OffsetDateTime::now_utc()),
+            run_started(0, "waiting", None),
+            waiting_event(1, OffsetDateTime::now_utc()),
         ],
     );
-    client.revert(&run, &card, 1).await.unwrap();
+    client.rewind(&run, &task, 1).await.unwrap();
     assert_eq!(launcher.launches(), vec![run.clone()]);
-    assert!(asked(&launcher.script, &revert));
+    assert!(asked(&launcher.script, &rewind));
     assert!(
         !run_dir.join(names::PENDING_ANSWERS).exists(),
-        "a revert needs the engine's answer, so it never waits on disk"
+        "a rewind needs the engine's answer, so it never waits on disk"
     );
 
     let merged = other_run("0602");
@@ -507,7 +540,7 @@ async fn revert_asks_the_supervisor_and_starts_one_when_none_runs() {
             finished(1, RunOutcome::Merged),
         ],
     );
-    let refused = client.revert(&merged, &card, 1).await;
+    let refused = client.rewind(&merged, &task, 1).await;
     assert!(matches!(refused, Err(ApiError::Merged(_))), "{refused:?}");
     assert_eq!(launcher.launches(), vec![run]);
 }
@@ -515,9 +548,9 @@ async fn revert_asks_the_supervisor_and_starts_one_when_none_runs() {
 #[tokio::test]
 async fn a_spot_check_goes_to_the_live_engine_or_waits_for_the_next() {
     let home = TestHome::new();
-    let launcher = Arc::new(FakeSupervisor::default());
+    let launcher = Arc::new(FakeRunHost::default());
     let client = app_client(&home, Arc::clone(&launcher));
-    let id = argonauts_core::names::CheckpointId::numbered(4);
+    let id = argonauts_core::names::ApprovalId::numbered(4);
     let check = ControlRequest::SpotCheck {
         id: id.clone(),
         correct: false,
@@ -535,8 +568,8 @@ async fn a_spot_check_goes_to_the_live_engine_or_waits_for_the_next() {
         &client.env,
         &run,
         &[
-            run_started(0, "parked", None),
-            parked(1, OffsetDateTime::now_utc()),
+            run_started(0, "waiting", None),
+            waiting_event(1, OffsetDateTime::now_utc()),
         ],
     );
     client.spot_check(&run, &id, false).await.unwrap();
@@ -546,22 +579,22 @@ async fn a_spot_check_goes_to_the_live_engine_or_waits_for_the_next() {
 
 #[tokio::test]
 async fn a_finished_runs_spot_check_goes_to_the_repos_policy() {
-    use argonauts_core::events::checkpoint::CheckpointEvent;
+    use argonauts_core::events::approval::ApprovalEvent;
 
     let home = TestHome::new();
-    let launcher = Arc::new(FakeSupervisor::default());
+    let launcher = Arc::new(FakeRunHost::default());
     let client = app_client(&home, Arc::clone(&launcher));
-    let id = argonauts_core::names::CheckpointId::numbered(4);
+    let id = argonauts_core::names::ApprovalId::numbered(4);
     let run = other_run("0605");
     home.run_with(
         &client.env,
         &run,
         &[
             run_started(0, "merged", None),
-            super::test_support::plan_checkpoint(1, &id, 1),
+            super::test_support::plan_approval(1, &id, 1),
             event(
                 2,
-                RunEventKind::Checkpoint(CheckpointEvent::SpotCheckQueued { id: id.clone() }),
+                RunEventKind::Approval(ApprovalEvent::SpotCheckQueued { id: id.clone() }),
             ),
             finished(3, RunOutcome::Merged),
         ],
@@ -581,7 +614,7 @@ async fn a_finished_runs_spot_check_goes_to_the_repos_policy() {
         "{records}"
     );
 
-    let unqueued = argonauts_core::names::CheckpointId::numbered(1);
+    let unqueued = argonauts_core::names::ApprovalId::numbered(1);
     let refused = client.spot_check(&run, &unqueued, true).await;
     assert!(matches!(refused, Err(ApiError::Refused(_))), "{refused:?}");
 
@@ -593,7 +626,7 @@ async fn a_finished_runs_spot_check_goes_to_the_repos_policy() {
 #[tokio::test]
 async fn continuing_needs_a_merged_run() {
     let home = TestHome::new();
-    let launcher = Arc::new(FakeSupervisor::default());
+    let launcher = Arc::new(FakeRunHost::default());
     let client = app_client(&home, Arc::clone(&launcher));
     let merged = other_run("0401");
     home.run_with(
@@ -623,7 +656,7 @@ async fn continuing_needs_a_merged_run() {
 #[tokio::test]
 async fn the_conductor_holds_no_approvals_and_resolves_without_a_person() {
     let home = TestHome::new();
-    let launcher = Arc::new(FakeSupervisor::default());
+    let launcher = Arc::new(FakeRunHost::default());
     let client = conductor_client(home.paths.clone(), &home.repo, launcher).unwrap();
     assert!(!client.interactive);
     assert_eq!(client.kind, ClientKind::Cli);
@@ -664,22 +697,22 @@ fn presence_required_refused_until_passkey_exists() {
 }
 
 #[tokio::test]
-async fn status_comes_from_the_supervisor_or_else_the_journal() {
+async fn status_comes_from_the_run_host_or_else_the_journal() {
     let home = TestHome::new();
-    let launcher = Arc::new(FakeSupervisor::default());
+    let launcher = Arc::new(FakeRunHost::default());
     let client = app_client(&home, Arc::clone(&launcher));
     let run = other_run("0501");
     let run_dir = home.run_with(
         &client.env,
         &run,
         &[
-            run_started(0, "parked", None),
-            parked(1, OffsetDateTime::now_utc()),
+            run_started(0, "waiting", None),
+            waiting_event(1, OffsetDateTime::now_utc()),
         ],
     );
     let offline = client.status(&run).await.unwrap();
     assert!(offline.run.is_some());
-    assert_ne!(offline.recent, ["from the supervisor"]);
+    assert_ne!(offline.recent, ["from the run host"]);
     assert!(
         launcher.launches().is_empty(),
         "reading status starts nothing"
@@ -687,7 +720,7 @@ async fn status_comes_from_the_supervisor_or_else_the_journal() {
 
     let _server = serve(&run_dir, run.clone(), Arc::new(Script::default()));
     let live = client.status(&run).await.unwrap();
-    assert_eq!(live.recent, ["from the supervisor"]);
+    assert_eq!(live.recent, ["from the run host"]);
     let steer = client
         .steer(
             &other_run("0502"),
@@ -718,7 +751,7 @@ fn numbered(range: std::ops::RangeInclusive<u64>) -> Vec<argonauts_core::events:
 #[tokio::test]
 async fn a_stream_dedupes_across_the_socket_to_tail_handover() {
     let home = TestHome::new();
-    let client = app_client(&home, Arc::new(FakeSupervisor::default()));
+    let client = app_client(&home, Arc::new(FakeRunHost::default()));
     let run = other_run("0601");
     let mut journal = numbered(0..=4);
     journal.push(finished(5, RunOutcome::Merged));
@@ -741,14 +774,14 @@ async fn a_stream_dedupes_across_the_socket_to_tail_handover() {
     assert_eq!(first, [0, 1, 2, 3]);
     server.stop();
     let rest = collect(&mut stream).await;
-    assert_eq!(rest, [4, 5], "the journal takes over without repeating");
+    assert_eq!(rest, [4, 5], "the journal carries on without repeating");
     assert!(!*stream.live.borrow());
 }
 
 #[tokio::test]
-async fn a_stream_dedupes_when_a_supervisor_comes_back() {
+async fn a_stream_dedupes_when_a_run_host_comes_back() {
     let home = TestHome::new();
-    let client = app_client(&home, Arc::new(FakeSupervisor::default()));
+    let client = app_client(&home, Arc::new(FakeRunHost::default()));
     let run = other_run("0701");
     let run_dir = home.run_with(&client.env, &run, &numbered(0..=2));
 
@@ -758,7 +791,7 @@ async fn a_stream_dedupes_when_a_supervisor_comes_back() {
     assert_eq!(stream.events.recv().await.unwrap().seq, 1);
     assert_eq!(stream.events.recv().await.unwrap().seq, 2);
 
-    // A supervisor comes back and resends everything from the start.
+    // A run host comes back and resends everything from the start.
     let _lock = RunLock::try_acquire(&run_dir).unwrap().unwrap();
     let script = Arc::new(Script::default());
     let mut resent = numbered(0..=3);
@@ -773,13 +806,13 @@ async fn a_stream_dedupes_when_a_supervisor_comes_back() {
 #[tokio::test]
 async fn a_stream_passes_the_last_events_on_before_it_turns_not_live() {
     let home = TestHome::new();
-    let client = app_client(&home, Arc::new(FakeSupervisor::default()));
+    let client = app_client(&home, Arc::new(FakeRunHost::default()));
     let run = other_run("0901");
     let mut journal = numbered(0..=3);
-    journal.push(parked(4, OffsetDateTime::now_utc()));
+    journal.push(waiting_event(4, OffsetDateTime::now_utc()));
     let run_dir = home.run_with(&client.env, &run, &journal);
 
-    // The socket closes before the supervisor's `Parked` goes out on it.
+    // The socket closes before the run host's `Waiting` goes out on it.
     let script = Arc::new(Script::default());
     *script.events.lock().unwrap() = numbered(0..=3);
     let server = serve(&run_dir, run.clone(), Arc::clone(&script));
@@ -800,9 +833,9 @@ async fn a_stream_passes_the_last_events_on_before_it_turns_not_live() {
 }
 
 #[tokio::test]
-async fn a_stream_stays_live_while_the_supervisor_holds_the_run() {
+async fn a_stream_stays_live_while_the_run_host_holds_the_run() {
     let home = TestHome::new();
-    let client = app_client(&home, Arc::new(FakeSupervisor::default()));
+    let client = app_client(&home, Arc::new(FakeRunHost::default()));
     let run = other_run("0902");
     let run_dir = home.run_with(&client.env, &run, &numbered(0..=1));
     let lock = RunLock::try_acquire(&run_dir).unwrap().unwrap();
@@ -828,22 +861,25 @@ fn a_run_crashed_only_when_nothing_holds_it_and_its_log_is_unsettled() {
     let home = TestHome::new();
     let env = home.env(true);
     let run_dir = home.run_with(&env, &other_run("1001"), &numbered(0..=1));
-    assert!(supervisor_crashed(&run_dir));
+    assert!(run_host_crashed(&run_dir));
     let lock = RunLock::try_acquire(&run_dir).unwrap().unwrap();
-    assert!(!supervisor_crashed(&run_dir), "a supervisor still holds it");
+    assert!(!run_host_crashed(&run_dir), "a run host still holds it");
     drop(lock);
     write_journal(
         &run_dir.join(names::EVENTS),
-        &[parked(2, OffsetDateTime::now_utc())],
+        &[waiting_event(2, OffsetDateTime::now_utc())],
     );
-    assert!(!supervisor_crashed(&run_dir), "it waiting before leaving");
+    assert!(
+        !run_host_crashed(&run_dir),
+        "it began to wait before leaving"
+    );
 }
 
 #[tokio::test]
-async fn a_reattach_without_a_supervisor_starts_at_the_latest_snapshot() {
+async fn a_reattach_without_a_run_host_starts_at_the_latest_snapshot() {
     use argonauts_core::events::run::RunSnapshot;
     let home = TestHome::new();
-    let client = app_client(&home, Arc::new(FakeSupervisor::default()));
+    let client = app_client(&home, Arc::new(FakeRunHost::default()));
     let run = other_run("0801");
     let mut journal = numbered(0..=2);
     journal.push(event(
@@ -852,7 +888,7 @@ async fn a_reattach_without_a_supervisor_starts_at_the_latest_snapshot() {
             upto: 2,
             engine: serde_json::json!({}),
             summary: Default::default(),
-            open_checkpoints: Vec::new(),
+            open_approvals: Vec::new(),
             running: Vec::new(),
         }))),
     ));

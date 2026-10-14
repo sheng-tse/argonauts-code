@@ -8,17 +8,17 @@ use anyhow::{Context, anyhow, bail};
 use argonauts_core::adapter::Transport;
 use argonauts_core::layout::{session_files, user_files};
 use argonauts_core::paths::argonauts_home;
-use argonauts_core::registry::HarnessManifest;
-use argonauts_core::registry::harness::PromptChannel;
+use argonauts_core::registry::CliManifest;
+use argonauts_core::registry::cli::PromptChannel;
 use argonauts_core::session::{SessionRole, SpecFile, env_remove_except};
 use argonauts_core::{CommandSpec, SessionRequest};
 
 use crate::home::home_files;
 use crate::placeholders::{Fill, fill_args, placeholders_in};
 
-/// `templates_root` is where home templates live, `~/.argonauts/harnesses/` when `None`.
+/// `templates_root` is where home templates live, `~/.argonauts/clis/` when `None`.
 pub(crate) fn build(
-    manifest: &HarnessManifest,
+    manifest: &CliManifest,
     req: &SessionRequest,
     templates_root: Option<&Path>,
 ) -> anyhow::Result<CommandSpec> {
@@ -49,7 +49,7 @@ pub(crate) fn build(
         })
     };
 
-    // A harness that takes no schema itself learns the report's shape from the prompt.
+    // A CLI that takes no schema itself learns the report's shape from the prompt.
     let wants_schema = manifest.schema.is_some() || uses("schema_file");
     let prompt = if wants_schema {
         req.prompt.clone()
@@ -84,7 +84,7 @@ pub(crate) fn build(
             let home = in_scratch(session_files::HOME)?;
             let root = match templates_root {
                 Some(root) => root.to_path_buf(),
-                None => argonauts_home()?.join(user_files::HARNESSES),
+                None => argonauts_home()?.join(user_files::CLIS),
             };
             files.extend(home_files(template, &root, &home)?);
             Some(home)
@@ -146,9 +146,9 @@ pub(crate) fn build(
 
 /// What the placeholders become in one launch.
 struct Values<'a> {
-    manifest: &'a HarnessManifest,
+    manifest: &'a CliManifest,
     req: &'a SessionRequest,
-    /// The prompt as sent, with the report's schema when the harness takes none itself.
+    /// The prompt as sent, with the report's schema when the CLI takes none itself.
     prompt: &'a str,
     workdir: String,
     prompt_file: Option<String>,
@@ -179,7 +179,7 @@ impl Values<'_> {
 /// manifest with a home template, since only the session folder knows that home and the
 /// take-over would otherwise run on your real one, without the session.
 pub(crate) fn interactive_resume(
-    manifest: &HarnessManifest,
+    manifest: &CliManifest,
     session_id: &str,
     workdir: &Path,
 ) -> anyhow::Result<Option<CommandSpec>> {
@@ -197,7 +197,7 @@ pub(crate) fn interactive_resume(
 }
 
 fn take_over_args(
-    manifest: &HarnessManifest,
+    manifest: &CliManifest,
     session_id: &str,
     workdir: &Path,
 ) -> anyhow::Result<Vec<String>> {
@@ -228,14 +228,14 @@ fn text(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::registry::harness::{HomeKeep, HomeTemplate};
+    use argonauts_core::registry::cli::{HomeKeep, HomeTemplate};
 
-    fn with_take_over(args: &[&str]) -> HarnessManifest {
-        HarnessManifest {
+    fn with_take_over(args: &[&str]) -> CliManifest {
+        CliManifest {
             id: "cli".into(),
             binary: "cli".into(),
             interactive_resume: args.iter().map(|arg| (*arg).to_owned()).collect(),
-            ..HarnessManifest::default()
+            ..CliManifest::default()
         }
     }
 
@@ -249,11 +249,11 @@ mod tests {
 
     #[test]
     fn a_home_template_means_no_take_over() {
-        let manifest = HarnessManifest {
+        let manifest = CliManifest {
             home: Some(HomeTemplate {
                 env: "CLI_HOME".into(),
                 template: "cli".into(),
-                keep: HomeKeep::Card,
+                keep: HomeKeep::Task,
             }),
             ..with_take_over(&["--resume", "{session}"])
         };

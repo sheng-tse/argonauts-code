@@ -1,5 +1,5 @@
 //! Keeps the journal small: each session's `TextDelta` and `Reasoning` events are buffered and
-//! recorded merged, at most `supervisor.journal_deltas_per_second` a second, and a session's
+//! recorded merged, at most `run_host.journal_deltas_per_second` a second, and a session's
 //! buffer is flushed before any other event of that session.
 
 use std::collections::BTreeMap;

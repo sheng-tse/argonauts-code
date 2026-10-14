@@ -37,9 +37,9 @@ pub struct ToolCall {
     pub full: Option<Box<ToolCall>>,
     /// Shown in the transcript overlay, like `10:58 AM codex/gpt-5.6`.
     pub stamp: Option<String>,
-    /// Rides after the header's stats, such as `· retrying in 12s (attempt 2)`.
+    /// Rides after the header's stats, such as `· retrying in 12s (try 2)`.
     pub note: Option<HeaderNote>,
-    /// The body wraps at this many columns however wide the screen is, as the Triage item's
+    /// The body wraps at this many columns however wide the screen is, as the start item's
     /// lines wrap at 100.
     pub wrap_at: Option<u16>,
     /// Dim words after the title, such as ` · orchestrator · ctrl+t to open`. The first thing
@@ -64,9 +64,12 @@ pub struct Held {
 /// Worked out at each frame, so a countdown counts and a quiet spell grows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeaderNote {
-    /// `· retrying in 12s (attempt 2)` in the warning color.
-    Retrying { at: Option<Instant>, attempt: u32 },
-    /// `· quiet 2m · may be waiting on a limit`, for harnesses that wait out limits without a
+    /// `· retrying in 12s (try 2)` in the warning color.
+    Retrying {
+        at: Option<Instant>,
+        try_number: u32,
+    },
+    /// `· quiet 2m · may be waiting on a limit`, for CLIs that wait out limits without a
     /// word. Dim once nothing has come for a while, then the warning color.
     Quiet { since: Instant },
 }
@@ -84,12 +87,12 @@ pub enum ToolTitle {
         args: String,
     },
     Text(String),
-    /// Reads `Opus 5.5 on Claude Code · owner · card-002 (Add the JSON writer)`.
+    /// Reads `Opus 5.5 on Claude Code · worker · task-002 (Add the JSON writer)`.
     Agent {
         /// Its display name, such as `Opus 5.5 on Claude Code`.
         name: String,
         color: Option<AgentColor>,
-        /// Such as `owner · card-002`.
+        /// Such as `worker · task-002`.
         role: String,
         task: String,
     },
@@ -167,6 +170,8 @@ pub enum ToolItem {
     TodoLine(Vec<Todo>),
     /// A workflow's steps on one row, each after its state's mark: `✓ build · ◐ review · ○ judge`.
     Steps(Vec<StepMark>),
+    /// How a workflow stands, under its call, in Claude Code's words.
+    Workflow(WorkflowResult),
     /// The newest line of text an agent is writing, with a cursor after it.
     Streaming(String),
     /// `Running… (4s)` while a call waits for its first output. It goes when anything else
@@ -178,10 +183,30 @@ pub enum ToolItem {
     },
 }
 
-/// One phase of a workflow, as the chat lists it.
+/// What a workflow's call came to. While it goes: `Running in background · /workflows to
+/// monitor and save`. Once it ended: `✔ Completed in 6m 20s · 6 agents · 177k tokens`, then
+/// what Argonauts Code adds, such as `merged onto main`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkflowResult {
+    Running,
+    Ended {
+        how: WorkflowEnd,
+        /// What follows `Completed in`, the time first.
+        counts: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WorkflowEnd {
+    Completed,
+    Failed,
+    Stopped,
+}
+
+/// One phase of a workflow, as the conversation lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhaseLine {
-    pub title: String,
+    pub name: String,
     /// One line on who does what. Empty when the workflow gave none.
     pub detail: String,
     /// A step you require of the workflow.
@@ -191,7 +216,7 @@ pub struct PhaseLine {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepMark {
     pub label: String,
-    pub state: crate::widgets::State,
+    pub state: crate::kit::State,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -332,9 +357,9 @@ impl ToolCall {
         self
     }
 
-    /// `at` is when the next attempt starts, if the vendor said.
-    pub fn retrying(&mut self, at: Option<Instant>, attempt: u32) {
-        self.note = Some(HeaderNote::Retrying { at, attempt });
+    /// `at` is when the next try starts, if the agent said.
+    pub fn retrying(&mut self, at: Option<Instant>, try_number: u32) {
+        self.note = Some(HeaderNote::Retrying { at, try_number });
     }
 
     /// Nothing has arrived since `since`.
@@ -548,14 +573,12 @@ impl ToolCall {
             }
             ToolState::Running => working_bullet(ctx),
             ToolState::Writing => marks::decorative(theme.glyphs.bullet, theme.style(Role::Dim)),
-            ToolState::Stopped => {
-                marks::decorative(theme.glyphs.bullet, theme.style(Role::Warning))
-            }
+            ToolState::Stopped => marks::decorative(theme.glyphs.bullet, theme.style(Role::Warn)),
             ToolState::Done => marks::decorative(theme.glyphs.bullet, theme.style(Role::Success)),
             ToolState::Failed if self.crossed => {
-                marks::decorative(theme.glyphs.not_ready, theme.style(Role::Error))
+                marks::decorative(theme.glyphs.not_ready, theme.style(Role::Danger))
             }
-            ToolState::Failed => marks::decorative(theme.glyphs.bullet, theme.style(Role::Error)),
+            ToolState::Failed => marks::decorative(theme.glyphs.bullet, theme.style(Role::Danger)),
             ToolState::Refused => marks::decorative(theme.glyphs.bullet, theme.style(Role::Dim)),
         }
     }
@@ -567,8 +590,8 @@ impl ToolCall {
             return None;
         }
         match self.state {
-            ToolState::Failed => Some(Span::styled(" failed", ctx.theme.style(Role::Error))),
-            ToolState::Stopped => Some(Span::styled(" stopped", ctx.theme.style(Role::Warning))),
+            ToolState::Failed => Some(Span::styled(" failed", ctx.theme.style(Role::Danger))),
+            ToolState::Stopped => Some(Span::styled(" stopped", ctx.theme.style(Role::Warn))),
             ToolState::Running | ToolState::Writing | ToolState::Done | ToolState::Refused => None,
         }
     }
@@ -642,7 +665,7 @@ impl ToolCall {
         let theme = ctx.theme;
         let now = ctx.clock.now;
         match self.note? {
-            HeaderNote::Retrying { at, attempt } => {
+            HeaderNote::Retrying { at, try_number } => {
                 let mut short = String::from(" · retrying");
                 if let Some(wait) = at
                     .map(|at| at.saturating_duration_since(now))
@@ -652,10 +675,10 @@ impl ToolCall {
                     short.push_str(&format::duration(wait));
                 }
                 let mut full = short.clone();
-                if attempt > 0 {
-                    full.push_str(&format!(" (attempt {attempt})"));
+                if try_number > 0 {
+                    full.push_str(&format!(" (try {try_number})"));
                 }
-                let style = theme.style(Role::Warning);
+                let style = theme.style(Role::Warn);
                 Some((Span::styled(full, style), Span::styled(short, style)))
             }
             HeaderNote::Quiet { since } => {
@@ -669,7 +692,7 @@ impl ToolCall {
                     format!("{}m", quiet.as_secs() / 60)
                 };
                 let role = if quiet >= QUIET_WARN_AFTER {
-                    Role::Warning
+                    Role::Warn
                 } else {
                     Role::Dim
                 };

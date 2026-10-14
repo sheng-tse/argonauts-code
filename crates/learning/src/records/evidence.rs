@@ -8,7 +8,7 @@ use time::{Date, OffsetDateTime, Time};
 
 use argonauts_core::RunId;
 use argonauts_core::limits::TrackRecord;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::protocol::RoutingSettings;
 
 use crate::outcomes::{LogLine, Outcome};
@@ -16,7 +16,7 @@ use crate::types::Assignment;
 
 use super::{Beta, POOLED_ALL_TYPES, POOLED_CREW};
 
-/// Cost and time ratios stop here, so one runaway card can't bury a worker.
+/// Cost and time ratios stop here, so one runaway task can't bury a worker.
 const RATIO_CAP: f64 = 2.0;
 
 /// Weighted passes and failures, before any prior.
@@ -56,15 +56,15 @@ impl Tally {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct Pools {
     crew: Tally,
-    workers: BTreeMap<WorkerRef, Tally>,
-    groups: BTreeMap<(WorkerRef, String), Tally>,
-    cells: BTreeMap<(WorkerRef, String), Tally>,
+    workers: BTreeMap<ModelRef, Tally>,
+    groups: BTreeMap<(ModelRef, String), Tally>,
+    cells: BTreeMap<(ModelRef, String), Tally>,
 }
 
 impl Pools {
     fn add(
         &mut self,
-        worker: &WorkerRef,
+        worker: &ModelRef,
         task_type: &str,
         settings: &RoutingSettings,
         value: f64,
@@ -87,19 +87,19 @@ impl Pools {
             .add(value, weight);
     }
 
-    pub(super) fn cell(&self, worker: &WorkerRef, task_type: &str) -> Tally {
+    pub(super) fn cell(&self, worker: &ModelRef, task_type: &str) -> Tally {
         self.cells
             .get(&(worker.clone(), task_type.to_owned()))
             .copied()
             .unwrap_or_default()
     }
 
-    /// The posterior a cell is scored with, what it borrowed from, and the weighted cards
+    /// The posterior a cell is scored with, what it borrowed from, and the weighted tasks
     /// behind it. The prior is centered on the worker's rate on other task types, itself
     /// centered on the crew's; a sparse cell takes its group's evidence, then the worker's.
     pub(super) fn posterior(
         &self,
-        worker: &WorkerRef,
+        worker: &ModelRef,
         task_type: &str,
         configured: Option<f64>,
         sparse: bool,
@@ -108,7 +108,7 @@ impl Pools {
         let strength = settings.prior_strength;
         let crew_rate = self.crew.on(Beta::prior(0.5, strength)).mean();
         let overall = self.workers.get(worker).copied().unwrap_or_default();
-        // Leaving out the evidence the posterior adds itself, so no card counts twice.
+        // Leaving out the evidence the posterior adds itself, so no task counts twice.
         let elsewhere = |part: Tally| {
             let rate = overall.without(part).on(Beta::prior(crew_rate, strength));
             Beta::prior(rate.mean(), strength)
@@ -160,7 +160,7 @@ pub(super) struct Counted<'a> {
 }
 
 impl Counted<'_> {
-    /// Fallbacks and retries inherit cards that already failed.
+    /// Fallbacks and retries inherit tasks that already failed.
     fn first_pass(&self) -> bool {
         !matches!(
             self.outcome.assigned,
@@ -173,7 +173,7 @@ impl Counted<'_> {
 pub(super) struct Evidence<'a> {
     pub(super) outcomes: Vec<Counted<'a>>,
     /// Each worker's newest model id.
-    pub(super) models: BTreeMap<WorkerRef, String>,
+    pub(super) models: BTreeMap<ModelRef, String>,
     resets: BTreeMap<String, OffsetDateTime>,
 }
 
@@ -235,7 +235,7 @@ impl<'a> Evidence<'a> {
     }
 
     /// Whether `worker`'s reset drops something that happened at `at`.
-    pub(super) fn reset_drops(&self, worker: &WorkerRef, at: OffsetDateTime) -> bool {
+    pub(super) fn reset_drops(&self, worker: &ModelRef, at: OffsetDateTime) -> bool {
         setting_for(&self.resets, worker).is_some_and(|reset| at < *reset)
     }
 
@@ -256,7 +256,7 @@ impl<'a> Evidence<'a> {
     }
 
     /// Approvals measured against each reviewer's usual rate and recentered on the crew's, so
-    /// a strict reviewer's rejection costs an owner less than a lenient one's.
+    /// a strict reviewer's rejection costs a worker less than a lenient one's.
     pub(super) fn approval_pools(&self, settings: &RoutingSettings) -> Pools {
         let strength = settings.prior_strength;
         let reviewed = || {
@@ -266,7 +266,7 @@ impl<'a> Evidence<'a> {
             })
         };
         let mut crew = Tally::default();
-        let mut reviewers: BTreeMap<&WorkerRef, Tally> = BTreeMap::new();
+        let mut reviewers: BTreeMap<&ModelRef, Tally> = BTreeMap::new();
         for (counted, value) in reviewed() {
             crew.add(value, counted.recency);
             if let Some(reviewer) = &counted.outcome.reviewer {
@@ -300,10 +300,10 @@ impl<'a> Evidence<'a> {
     }
 
     /// Plain counts and cost and time ratios for every cell with an outcome.
-    pub(super) fn cells(&self) -> BTreeMap<(WorkerRef, String), CellFacts> {
+    pub(super) fn cells(&self) -> BTreeMap<(ModelRef, String), CellFacts> {
         let mut costs: Medians = BTreeMap::new();
         let mut times: Medians = BTreeMap::new();
-        let mut counts: BTreeMap<(WorkerRef, String), TrackRecord> = BTreeMap::new();
+        let mut counts: BTreeMap<(ModelRef, String), TrackRecord> = BTreeMap::new();
         for counted in &self.outcomes {
             let outcome = counted.outcome;
             let key = (outcome.worker.clone(), outcome.task_type.clone());
@@ -354,9 +354,9 @@ impl Default for CellFacts {
 }
 
 /// Weighted values per cell, and per task type across workers under the type alone.
-type Medians = BTreeMap<(Option<WorkerRef>, String), Vec<(f64, f64)>>;
+type Medians = BTreeMap<(Option<ModelRef>, String), Vec<(f64, f64)>>;
 
-fn add_value(values: &mut Medians, key: &(WorkerRef, String), value: f64, weight: f64) {
+fn add_value(values: &mut Medians, key: &(ModelRef, String), value: f64, weight: f64) {
     values
         .entry((Some(key.0.clone()), key.1.clone()))
         .or_default()
@@ -367,11 +367,11 @@ fn add_value(values: &mut Medians, key: &(WorkerRef, String), value: f64, weight
         .push((value, weight));
 }
 
-struct MedianTable(BTreeMap<(Option<WorkerRef>, String), f64>);
+struct MedianTable(BTreeMap<(Option<ModelRef>, String), f64>);
 
 impl MedianTable {
     /// The cell's median over its task type's, 1.0 when either is unknown.
-    fn ratio(&self, key: &(WorkerRef, String)) -> f64 {
+    fn ratio(&self, key: &(ModelRef, String)) -> f64 {
         let cell = self.0.get(&(Some(key.0.clone()), key.1.clone()));
         let crew = self.0.get(&(None, key.1.clone()));
         match (cell, crew) {
@@ -420,8 +420,8 @@ fn recency(at: Option<OffsetDateTime>, as_of: OffsetDateTime, half_life_days: f6
 
 /// Each worker's model id on its newest outcome that names one. Later lines win a tie, and
 /// undated lines count as the oldest.
-fn newest_models(kept: &[(&Outcome, Option<OffsetDateTime>)]) -> BTreeMap<WorkerRef, String> {
-    let mut newest: BTreeMap<&WorkerRef, (Option<OffsetDateTime>, &str)> = BTreeMap::new();
+fn newest_models(kept: &[(&Outcome, Option<OffsetDateTime>)]) -> BTreeMap<ModelRef, String> {
+    let mut newest: BTreeMap<&ModelRef, (Option<OffsetDateTime>, &str)> = BTreeMap::new();
     for (outcome, at) in kept {
         let Some(model) = outcome.model_id.as_deref() else {
             continue;
@@ -463,12 +463,9 @@ pub(super) fn group_of<'a>(task_type: &str, settings: &'a RoutingSettings) -> Op
         .map(|(group, _)| group.as_str())
 }
 
-/// A per-worker setting: the exact `harness/model` key first, then the harness alone, which
+/// A per-worker setting: the exact `cli/model` key first, then the CLI alone, which
 /// covers every model it runs.
-pub(super) fn setting_for<'a, T>(
-    map: &'a BTreeMap<String, T>,
-    worker: &WorkerRef,
-) -> Option<&'a T> {
+pub(super) fn setting_for<'a, T>(map: &'a BTreeMap<String, T>, worker: &ModelRef) -> Option<&'a T> {
     map.get(&worker.to_string())
-        .or_else(|| map.get(&worker.worker))
+        .or_else(|| map.get(&worker.agent))
 }

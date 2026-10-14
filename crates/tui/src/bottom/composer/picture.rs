@@ -13,7 +13,7 @@ use super::{Composer, ComposerEvent, Saved, undo};
 /// Where pictures pasted from the clipboard are kept until they're sent.
 const PASTED_DIR: &str = "argonauts-pictures";
 
-/// What Ctrl+V reads a picture from: the clipboard, or a stand-in in tests. `holds` says at
+/// What Ctrl+V reads a picture from: the clipboard, or a fake in tests. `holds` says at
 /// once whether there's a picture, from the clipboard's types alone; `save` writes it out,
 /// which for a large screenshot takes a while, so it runs off the key thread.
 #[derive(Clone, Copy)]

@@ -1,5 +1,5 @@
 //! The learning commands from the shell, with the real binary over a temp repo: track records
-//! rebuilt from the outcome log as of a date, and a recipe rolled back by hand.
+//! rebuilt from the outcome log as of a date, and a learned workflow rolled back by hand.
 
 mod app_support;
 
@@ -8,11 +8,11 @@ use app_support::*;
 use argonauts_core::{Paths, RepoId};
 use serde_json::Value;
 
-/// One outcome line per card, as the retro writes them.
-fn outcome(run: &str, card: u32, worker: &str, first_try: bool, at: &str) -> String {
+/// One outcome line per task, as the run review writes them.
+fn outcome(run: &str, task: u32, worker: &str, first_try: bool, at: &str) -> String {
     format!(
-        "{{\"type\":\"outcome\",\"run\":\"{run}\",\"card\":\"task-{card:03}\",\"worker\":\"{worker}\",\
-         \"task_type\":\"backend\",\"first_try\":{first_try},\"attempts\":1,\"integrated\":true,\
+        "{{\"type\":\"outcome\",\"run\":\"{run}\",\"task\":\"task-{task:03}\",\"worker\":\"{worker}\",\
+         \"task_type\":\"backend\",\"first_try\":{first_try},\"tries\":1,\"merged\":true,\
          \"spent_usd\":1.0,\"at\":\"{at}\",\"minutes\":10.0}}\n"
     )
 }
@@ -84,9 +84,9 @@ fn learning_records_rebuild_from_the_shell() -> anyhow::Result<()> {
 }
 
 #[test]
-fn learning_recipe_rollback_by_hand() -> anyhow::Result<()> {
+fn learning_learned_workflow_rollback_by_hand() -> anyhow::Result<()> {
     let scenario = scenario()?;
-    let recipe = |version: u32, rounds: u32| {
+    let learned_workflow = |version: u32, rounds: u32| {
         format!(
             "name: api-feature\nversion: {version}\n{}description: HTTP endpoints, with tests\n\
              mode: crew\nmatch: {{ task_types: [backend] }}\ncritique: {{ rounds: {rounds} }}\n",
@@ -97,16 +97,20 @@ fn learning_recipe_rollback_by_hand() -> anyhow::Result<()> {
             }
         )
     };
-    scenario
-        .repo
-        .write(".argonauts/learned/api-feature/v1.yaml", &recipe(1, 1))?;
-    scenario
-        .repo
-        .write(".argonauts/learned/api-feature/v2.yaml", &recipe(2, 2))?;
+    scenario.repo.write(
+        ".argonauts/learned/api-feature/v1.yaml",
+        &learned_workflow(1, 1),
+    )?;
+    scenario.repo.write(
+        ".argonauts/learned/api-feature/v2.yaml",
+        &learned_workflow(2, 2),
+    )?;
     scenario
         .repo
         .write(".argonauts/learned/api-feature/current", "2\n")?;
-    scenario.repo.commit_all("two versions of a recipe")?;
+    scenario
+        .repo
+        .commit_all("two versions of a learned workflow")?;
     let main_before = scenario.repo.head()?;
 
     let listed = json(&run_cli(&scenario, &["learned", "list", "--json"])?)?;
@@ -133,7 +137,7 @@ fn learning_recipe_rollback_by_hand() -> anyhow::Result<()> {
         !branches.trim().is_empty(),
         "no branch proposes the pointer"
     );
-    let inbox = output_text(&run_cli(&scenario, &["inbox"])?);
-    assert!(inbox.contains("argonauts/learned/"), "{inbox}");
+    let waiting = output_text(&run_cli(&scenario, &["approvals"])?);
+    assert!(waiting.contains("argonauts/learned/"), "{waiting}");
     Ok(())
 }

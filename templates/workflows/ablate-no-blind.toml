@@ -1,0 +1,5 @@
+name  = "ablate-no-blind"
+about = "Drafts see each other"
+
+[drafting]
+blind = false

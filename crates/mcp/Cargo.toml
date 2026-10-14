@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-mcp"
-description = "Argonauts MCP servers: start and watch runs from another agent (no approve tool), and the read-only status tool."
+description = "Argonauts Code MCP servers: start and watch runs from another agent (no approve tool), and the read-only status tool."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

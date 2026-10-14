@@ -14,7 +14,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::prompt_parts::CrewRole;
+use crate::settings::crew::CrewRole;
 
 pub use always::{FILE, GUIDE, STARTER, parse, steps_toml};
 pub use words::label;
@@ -125,14 +125,9 @@ pub fn when_problem(when: &str) -> Option<String> {
     })
 }
 
-/// The crew role a file or the setup names, in the singular too: `reviewer` is `reviewers`.
+/// The crew role a file or the setup names, in any case.
 pub fn role_named(name: &str) -> Option<CrewRole> {
-    let name = name.trim().to_ascii_lowercase();
-    match name.as_str() {
-        "worker" => Some(CrewRole::Workers),
-        "reviewer" => Some(CrewRole::Reviewers),
-        _ => CrewRole::parse(&name),
-    }
+    CrewRole::parse(&name.trim().to_ascii_lowercase())
 }
 
 #[cfg(test)]

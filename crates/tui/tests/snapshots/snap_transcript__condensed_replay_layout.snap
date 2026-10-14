@@ -12,7 +12,7 @@ expression: text(&lines)
 ● That touches the CLI and the writer, so I'll run it with the crew.
 
 ● So far in this run
-  ⎿  Triage: crew · 7 files, tests exist
+  ⎿  Crew · 7 files, tests exist
      Goal approved · 3 criteria
      Plan 1 won · 5 tasks
 

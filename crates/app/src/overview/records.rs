@@ -118,6 +118,9 @@ fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 
+/// The import's folder, by its name in the usage ledger's folder.
+pub(super) const IMPORTED: &str = "imported";
+
 /// The import's folder.
 pub(crate) struct Store {
     dir: PathBuf,
@@ -125,7 +128,7 @@ pub(crate) struct Store {
 
 impl Store {
     pub fn new(paths: &Paths) -> Self {
-        Self::at(&paths.usage_dir().join("imported"))
+        Self::at(&paths.usage_dir().join(IMPORTED))
     }
 
     pub fn at(dir: &Path) -> Self {

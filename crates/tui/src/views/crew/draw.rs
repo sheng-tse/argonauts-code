@@ -1,16 +1,16 @@
-//! What the crew panel draws: the title row with quotas, the state tabs, the grouped list, the
+//! What the agent panel draws: the title row with plan usage, the state tabs, the grouped list, the
 //! details of the highlighted row, and the keys.
 
-use argonauts_core::crew_panel::{
-    CrewDetails, CrewPanel, CrewRow, CrewRun, CrewState, CrewTab, CrewTarget, RepoGroup,
+use argonauts_core::agent_panel::{
+    AgentPanelRows, CrewDetails, CrewRow, CrewRun, CrewState, CrewTab, CrewTarget, RepoGroup,
 };
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::limits::{QuotaReading, QuotaStatus};
+use argonauts_core::limits::{PlanUsageReading, PlanUsageStatus};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use time::OffsetDateTime;
 
-use crate::bridge::status::label_for_vendor;
+use crate::bridge::status::label_for_agent;
 use crate::format;
 use crate::state::{AppState, binding_reading};
 use crate::text::{str_width, truncate_line, wrap_text};
@@ -66,15 +66,15 @@ pub(super) fn state_word(state: CrewState) -> &'static str {
 pub(super) fn glyph(state: CrewState, sleeping: bool, theme: &Theme) -> (&'static str, Role) {
     let marks = Marks::for_theme(theme);
     match state {
-        CrewState::NeedsYou => (marks.needs_you, Role::Card),
+        CrewState::NeedsYou => (marks.needs_you, Role::Question),
         CrewState::Working => (marks.running, Role::Accent),
         CrewState::Waiting if sleeping => (theme.glyphs.agent_timer, Role::Dim),
         CrewState::Waiting => (marks.waiting, Role::Dim),
         // Lavender marks a conversation you can carry on.
-        CrewState::Ready => (ready_glyph(theme), Role::Card),
+        CrewState::Ready => (ready_glyph(theme), Role::Question),
         CrewState::Done => (marks.done, Role::Success),
         CrewState::Stopped => (marks.stopped, Role::Dim),
-        CrewState::Failed => (marks.failed, Role::Error),
+        CrewState::Failed => (marks.failed, Role::Danger),
     }
 }
 
@@ -87,13 +87,13 @@ fn ready_glyph(theme: &Theme) -> &'static str {
     }
 }
 
-/// `argonauts › crew` at the left and the quotas at the right, the quotas giving way first.
+/// `argonauts › crew` at the left and the plan usage at the right, the plan usage giving way first.
 pub(super) fn title_line(state: &AppState, width: usize, theme: &Theme) -> Line<'static> {
     let marks = Marks::for_theme(theme);
     let title = format!("argonauts {} crew", marks.crumb);
     let title_width = str_width(&title);
     let mut spans = vec![Span::styled(title, theme.style(Role::Label))];
-    let mut parts = quota_parts(state);
+    let mut parts = plan_usage_parts(state);
     let joined = |parts: &[(String, Role)]| {
         parts.iter().map(|(text, _)| str_width(text)).sum::<usize>()
             + 3 * parts.len().saturating_sub(1)
@@ -114,63 +114,66 @@ pub(super) fn title_line(state: &AppState, width: usize, theme: &Theme) -> Line<
     Line::from(spans)
 }
 
-/// `Claude 39%` for each vendor with a reading, in the status line's order.
-fn quota_parts(state: &AppState) -> Vec<(String, Role)> {
-    let chips: Vec<QuotaReading> = state
+/// `Claude 39%` for each agent with a reading, in the bottom line's order.
+fn plan_usage_parts(state: &AppState) -> Vec<(String, Role)> {
+    let chips: Vec<PlanUsageReading> = state
         .status
         .iter()
-        .flat_map(|status| &status.quotas)
+        .flat_map(|status| &status.plan_chips)
         .filter_map(|chip| chip.reading.clone())
         .collect();
-    let mut vendors: Vec<String> = Vec::new();
-    for vendor in chips
+    let mut agent_ids: Vec<String> = Vec::new();
+    for agent_id in chips
         .iter()
-        .map(|reading| &reading.vendor.0)
-        .chain(state.quotas.keys())
+        .map(|reading| &reading.agent_id.0)
+        .chain(state.plan_windows.keys())
     {
-        if !vendors.contains(vendor) {
-            vendors.push(vendor.clone());
+        if !agent_ids.contains(agent_id) {
+            agent_ids.push(agent_id.clone());
         }
     }
-    vendors
+    agent_ids
         .iter()
-        .filter_map(|vendor| {
-            let mut readings: Vec<QuotaReading> =
-                state.quotas.get(vendor).cloned().unwrap_or_default();
+        .filter_map(|agent_id| {
+            let mut readings: Vec<PlanUsageReading> = state
+                .plan_windows
+                .get(agent_id)
+                .cloned()
+                .unwrap_or_default();
             readings.extend(
                 chips
                     .iter()
-                    .filter(|reading| reading.vendor.0 == *vendor)
+                    .filter(|reading| reading.agent_id.0 == *agent_id)
                     .cloned(),
             );
             let reading = binding_reading(&readings)?;
-            Some(quota_part(&clean(&label_for_vendor(vendor)), reading))
+            Some(plan_usage_part(&clean(&label_for_agent(agent_id)), reading))
         })
         .collect()
 }
 
-pub(super) fn quota_part(label: &str, reading: &QuotaReading) -> (String, Role) {
-    let warn = reading.status == QuotaStatus::Warning || reading.used.is_some_and(|u| u >= 0.9);
-    let role = if warn { Role::Warning } else { Role::Dim };
+pub(super) fn plan_usage_part(label: &str, reading: &PlanUsageReading) -> (String, Role) {
+    let warn = reading.status == PlanUsageStatus::Warning || reading.used.is_some_and(|u| u >= 0.9);
+    let role = if warn { Role::Warn } else { Role::Dim };
     match (reading.status, reading.used) {
-        (QuotaStatus::Rejected, _) if reading.wrap_up => {
-            (format!("{label} wrapping up"), Role::Warning)
+        (PlanUsageStatus::Rejected, _) if reading.wrap_up => {
+            (format!("{label} wrapping up"), Role::Warn)
         }
-        (QuotaStatus::Rejected, _) => (format!("{label} out"), Role::Error),
+        (PlanUsageStatus::Rejected, _) => (format!("{label} out"), Role::Danger),
         (_, Some(used)) => {
             let percent = (used.clamp(0.0, 1.0) * 100.0).round();
             (format!("{label} {percent}%"), role)
         }
-        (QuotaStatus::Warning, None) => (format!("{label} near"), role),
-        (QuotaStatus::Allowed, None) => (format!("{label} ok"), role),
-        (QuotaStatus::Unknown, None) => (format!("{label} ?"), role),
+        (PlanUsageStatus::Warning, None) => (format!("{label} near"), role),
+        (PlanUsageStatus::Allowed, None) => (format!("{label} ok"), role),
+        (PlanUsageStatus::Unknown, None) => (format!("{label} ?"), role),
     }
 }
 
 /// Every tab with its count. Each takes the same cells shown or not, so none moves when you
 /// switch; when the roomy `[ All 3 ]` form doesn't fit, the tabs close up to `[All 3]`.
 pub(super) fn tabs_line(
-    panel: &CrewPanel,
+    panel: &AgentPanelRows,
     shown: CrewTab,
     width: usize,
     theme: &Theme,
@@ -193,7 +196,7 @@ pub(super) fn tabs_line(
                 Span::styled(text, theme.style(Role::Label).add_modifier(Modifier::BOLD))
             } else {
                 let role = if tab == CrewTab::NeedsYou && panel.count(tab) > 0 {
-                    Role::Card
+                    Role::Question
                 } else {
                     Role::Dim
                 };
@@ -226,12 +229,12 @@ pub(super) fn list_lines(
 ) -> Vec<BodyLine> {
     let marks = Marks::for_theme(theme);
     // Two cells of indent, the selection mark and a space, the glyph slot and a space.
-    let lead = 2 + 2 + marks.slot() + 1;
+    let margin = 2 + 2 + marks.slot() + 1;
     let rows: Vec<&CrewRow> = groups
         .iter()
         .flat_map(|repo| repo.runs.iter().flat_map(|run| run.rows.iter().copied()))
         .collect();
-    let columns = row_columns(&rows, width.saturating_sub(lead), now, names);
+    let columns = row_columns(&rows, width.saturating_sub(margin), now, names);
     let dim = theme.style(Role::Dim);
     let named = groups.len() > 1 || groups.iter().any(|repo| repo.repo != this_repo);
     let mut lines = Vec::new();
@@ -268,11 +271,11 @@ pub(super) fn list_lines(
                 let asleep = sleeping.get(index).copied().unwrap_or(false);
                 let (glyph, role) = glyph(row.state, asleep, theme);
                 // The chosen row is lavender from its pointer to its last line, its mark too.
-                let role = if chosen { Role::Card } else { role };
+                let role = if chosen { Role::Question } else { role };
                 let mut spans = vec![
                     Span::raw("  "),
                     if chosen {
-                        Span::styled(format!("{} ", marks.selected), theme.style(Role::Card))
+                        Span::styled(format!("{} ", marks.selected), theme.style(Role::Question))
                     } else {
                         Span::raw("  ")
                     },
@@ -285,10 +288,10 @@ pub(super) fn list_lines(
                     }
                     let cell = column.cell(&column.cells[index]);
                     let style = match column.heading {
-                        "name" | "latest" if chosen => theme.style(Role::Card),
+                        "name" | "latest" if chosen => theme.style(Role::Question),
                         "name" => theme.style(Role::Text),
-                        "latest" if row.state == CrewState::NeedsYou => theme.style(Role::Card),
-                        "latest" if row.state == CrewState::Failed => theme.style(Role::Error),
+                        "latest" if row.state == CrewState::NeedsYou => theme.style(Role::Question),
+                        "latest" if row.state == CrewState::Failed => theme.style(Role::Danger),
                         "latest" if row.run.is_some() => theme.style(Role::Text),
                         _ => dim,
                     };
@@ -344,10 +347,10 @@ fn run_heading(
             tail.push_str(&format!(" · {spend}"));
         }
     }
-    let lead = match (&run.stands, chosen) {
+    let opening = match (&run.stands, chosen) {
         (_, true) => Span::styled(
             pad_glyph(marks.selected, marks.slot()),
-            theme.style(Role::Card),
+            theme.style(Role::Question),
         ),
         (Some(stands), false) => {
             let (glyph, role) = glyph(stands.state, false, theme);
@@ -362,9 +365,9 @@ fn run_heading(
         room.saturating_sub(str_width(&tail)).max(RUN_NAME_MIN),
     );
     let tail = cut(&tail, room.saturating_sub(str_width(&name)));
-    let role = if chosen { Role::Card } else { Role::Bright };
+    let role = if chosen { Role::Question } else { Role::Bright };
     Line::from(vec![
-        lead,
+        opening,
         Span::raw(" "),
         Span::styled(name, theme.style(role).add_modifier(Modifier::BOLD)),
         Span::styled(tail, theme.style(Role::Dim)),
@@ -404,12 +407,11 @@ fn name_cell(row: &CrewRow) -> String {
 /// Enter carries it on, since that's what its row is for.
 fn latest_cell(row: &CrewRow, names: &DisplayNames) -> String {
     match &row.target {
-        CrewTarget::Conversation { .. } | CrewTarget::VendorSession { .. } => {
+        CrewTarget::Conversation { .. } | CrewTarget::CliSession { .. } => {
             match row.worker.as_ref() {
-                Some(worker) => format!(
-                    "{} · enter continues",
-                    clean(&names.harness(&worker.worker))
-                ),
+                Some(worker) => {
+                    format!("{} · enter continues", clean(&names.cli(&worker.agent)))
+                }
                 None => "enter continues".to_owned(),
             }
         }
@@ -551,8 +553,8 @@ fn fields(
         };
         fields.push(("Run", value));
     }
-    if let Some(card) = &details.card {
-        fields.push(("Task", clean(card.as_str())));
+    if let Some(task) = &details.task {
+        fields.push(("Task", clean(task.as_str())));
     }
     // The details are where the id shows too, for commands such as /reassign.
     if let Some(worker) = &row.worker {
@@ -668,7 +670,7 @@ pub(super) fn keys_lines(
         ("x", "stop the agent, once more to be sure"),
         ("c", "carry a finished agent's session on in its own CLI"),
         ("?", "hide these keys"),
-        (back, "back to the chat"),
+        (back, "back to the conversation"),
     ]);
     let key_width = 16;
     let mut lines = vec![Line::from(Span::styled(

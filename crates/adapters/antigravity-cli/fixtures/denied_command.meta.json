@@ -1,0 +1,63 @@
+{
+  "adapter": "antigravity-cli",
+  "program": "agy",
+  "name": "denied_command",
+  "args": [
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--disable-slash-commands",
+    "--mode",
+    "accept-edits",
+    "--project",
+    "argonauts-live-f11-3",
+    "--model",
+    "gemini-3.6-flash-low",
+    "--effort",
+    "low",
+    "--log-file",
+    "<live>/out/denied_command.agy.log"
+  ],
+  "date": "2026-10-04T02:25:58.794903Z",
+  "duration_ms": 4495,
+  "exit_code": 0,
+  "sanitized": "absolute paths replaced with <workdir> (the throwaway repo) and <live> (its check folder), Claude Code's folder slug with <workdir-slug>, the home directory with ~, and email addresses with <email>",
+  "cli_version": "1.2.16",
+  "also_matches": [],
+  "model": "gemini-3.6-flash-low",
+  "effort": "low",
+  "env_removed": [
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_PID",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY"
+  ],
+  "env_set": [
+    [
+      "AGY_CLI_DISABLE_AUTO_UPDATE",
+      "true"
+    ]
+  ],
+  "keep_stdin_open": false,
+  "role": "direct",
+  "stdin": [
+    {
+      "after_ms": 0,
+      "line": "{\"event\": \"user\", \"message\": {\"content\": \"Use the run_command tool to run this exact command in this folder: echo hi > shell.txt\\nDo not write the file any other way. Then reply with: done\"}}"
+    }
+  ],
+  "files_after": [
+    "README.md",
+    "notes.txt"
+  ],
+  "note": "Turn 1: neither --sandbox nor --dangerously-skip-permissions. agy refused run_command 'echo hi > shell.txt' ('permission check failed for unsandboxed ...'), the result listed denied_actions [{action: command, display_name: RunCommand}] with no command text (that is only in the ERROR step_update's tool_info.parameters), and the response was empty. stderr suggests permissions.allow rules in settings.json."
+}

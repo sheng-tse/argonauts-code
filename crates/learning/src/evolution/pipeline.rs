@@ -1,5 +1,5 @@
-//! From the retro's proposal to the promotion checkpoint: stage 1's recorded recipes, the
-//! mutation rules, the replay queue under the monthly budget, the comparison, and the answer.
+//! From the run review's proposal to the promotion approval: stage 1's recorded learned workflows,
+//! the mutation rules, the replay queue under the monthly limit, the comparison, and the answer.
 
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -8,20 +8,20 @@ use time::format_description::well_known::Rfc3339;
 
 use argonauts_core::events::run::{Party, RunOutcome};
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::card::ProcessChange;
+use argonauts_core::steps::task::ProcessChange;
 
 use super::{
     Action, Candidate, CandidateState, Evolution, Stage, Thresholds, candidate, check_mutation,
-    compare, holdout_ok, recipe_branch, state, stats,
+    compare, holdout_ok, learned_workflow_branch, state, stats,
 };
 use crate::error::{LearningError, Result};
 use crate::git;
-use crate::recipes::{self, Change, LoadedRecipe, Match, Recipe};
-use crate::types::{RecipeRef, ReplayResult, RunRecord};
+use crate::learned_workflows::{self, Change, LearnedWorkflow, LoadedLearnedWorkflow, Match};
+use crate::types::{LearnedWorkflowRef, ReplayResult, RunRecord};
 
 impl Evolution {
-    /// Stage 1: a run with no recipe that merged and passed its final checks first time
-    /// proposes its workflow as v1 of a recipe for its task type.
+    /// Stage 1: a run with no learned workflow that merged and passed its final checks first time
+    /// proposes its workflow as v1 of a learned workflow for its task type.
     pub(super) fn record(&self, settings: &Settings, run: &RunRecord) -> Result<Vec<Action>> {
         if run.outcome != RunOutcome::Merged || !run.final_checks_passed {
             return Ok(Vec::new());
@@ -29,18 +29,22 @@ impl Evolution {
         let Some((workflow, sha256)) = &run.workflow else {
             return Ok(Vec::new());
         };
-        let sets = recipes::load_all(&self.store)?;
-        let name = recipe_name(&run.task_type);
+        let sets = learned_workflows::load_all(&self.store)?;
+        let name = learned_workflow_name(&run.task_type);
         let covered = sets.iter().any(|set| {
             set.name == name
-                || set
-                    .current()
-                    .is_some_and(|loaded| loaded.recipe.matches.task_types.contains(&run.task_type))
+                || set.current().is_some_and(|loaded| {
+                    loaded
+                        .learned_workflow
+                        .matches
+                        .task_types
+                        .contains(&run.task_type)
+                })
         });
         if covered {
             return Ok(Vec::new());
         }
-        let branch = recipe_branch(&name, 1);
+        let branch = learned_workflow_branch(&name, 1);
         let repo = &self.store.repo_root;
         let exists = git::run(
             repo,
@@ -54,8 +58,8 @@ impl Evolution {
         if exists.is_ok() {
             return Ok(Vec::new());
         }
-        let recipe = Recipe {
-            recipe: name.clone(),
+        let learned_workflow = LearnedWorkflow {
+            name: name.clone(),
             version: 1,
             parent: None,
             description: format!("What worked for {} tasks", run.task_type),
@@ -69,7 +73,7 @@ impl Evolution {
             prompts: Default::default(),
             settings: Default::default(),
         };
-        let problems = recipes::validate(&recipe);
+        let problems = learned_workflows::validate(&learned_workflow);
         if !problems.is_empty() {
             return Ok(vec![Action::Tell {
                 text: format!(
@@ -80,8 +84,8 @@ impl Evolution {
             }]);
         }
         let entries = vec![(
-            recipes::repo_path(&name, &recipes::version_file(1)),
-            git::Entry::File(recipes::render(&recipe)?),
+            learned_workflows::repo_path(&name, &learned_workflows::version_file(1)),
+            git::Entry::File(learned_workflows::render(&learned_workflow)?),
         )];
         let message = format!(
             "Record learned workflow {name} v1\n\nRun {} merged with workflow {workflow} \
@@ -90,12 +94,13 @@ impl Evolution {
         );
         git::commit_on_branch(repo, "HEAD", &branch, &entries, &message)?;
         Ok(vec![Action::Recorded {
-            recipe: RecipeRef { name, version: 1 },
+            learned_workflow: LearnedWorkflowRef { name, version: 1 },
             branch,
         }])
     }
 
-    /// Turns the retro's one proposed change into a candidate, if the stage and the rules let it.
+    /// Turns the run review's one proposed change into a candidate, if the stage and the rules let
+    /// it.
     pub(super) fn propose(
         &self,
         settings: &Settings,
@@ -104,19 +109,19 @@ impl Evolution {
         stage: Stage,
     ) -> Result<Vec<Action>> {
         let tell = |text: String| Ok(vec![Action::Tell { text }]);
-        let Some(ran) = &run.recipe else {
+        let Some(ran) = &run.learned_workflow else {
             return tell(format!(
                 "The run review proposed changing `{}`, but no learned workflow ran, so there's nothing to change",
                 proposal.setting
             ));
         };
         // Fixed-core and safety keys never even become candidates.
-        if let Some(reason) = recipes::guarded(&proposal.setting) {
+        if let Some(reason) = learned_workflows::guarded(&proposal.setting) {
             return tell(format!("Refused the run review's proposal: {reason}"));
         }
 
-        // The engine asks the retro for a proposal only every `propose_every` runs, so one that
-        // arrives is due.
+        // The engine asks the run review for a proposal only every `propose_every` runs, so one
+        // that arrives is due.
         if self.canaries()?.contains_key(&ran.name) {
             return tell(format!(
                 "The run review's proposal for {} waits: a canary is running",
@@ -133,9 +138,9 @@ impl Evolution {
         let id = format!("{}-v{version}", ran.name);
         let proposed = Change {
             key: proposal.setting.clone(),
-            class: recipes::class_for_key(&proposal.setting),
+            class: learned_workflows::class_for_key(&proposal.setting),
             before: None,
-            after: recipes::toml_to_json(&proposal.value).ok(),
+            after: learned_workflows::toml_to_json(&proposal.value).ok(),
         };
         let checked = write_child(&parent, version, proposal, &self.candidate_dir(&id))
             .and_then(|child| check_mutation(&parent, &child, settings));
@@ -150,7 +155,7 @@ impl Evolution {
             not_worse: settings
                 .evolution
                 .not_worse_classes
-                .contains(&recipes::class_name(change.class)),
+                .contains(&learned_workflows::class_name(change.class)),
         };
         let text = match &state {
             CandidateState::Rejected { reason } => format!("Rejected {id}: {reason}"),
@@ -177,7 +182,7 @@ impl Evolution {
     }
 
     /// Hands out the oldest queued candidate when nothing is replaying and this month's
-    /// evolution budget has room. Candidates replay one at a time.
+    /// evolution limit has room. Candidates replay one at a time.
     pub fn next_replay(&self, settings: &Settings) -> Result<Vec<Action>> {
         let mut candidates = self.candidates()?;
         if candidates
@@ -229,7 +234,7 @@ impl Evolution {
         }
         self.record_spend(candidate, spent_usd)?;
 
-        let child = RecipeRef {
+        let child = LearnedWorkflowRef {
             name: found.parent.name.clone(),
             version: found.version,
         };
@@ -266,11 +271,11 @@ impl Evolution {
             let last_promoted = self.last_promoted(&found.parent.name)?;
             let packet = json!({
                 "candidate": found.id,
-                "recipe": found.parent.name,
+                "learned_workflow": found.parent.name,
                 "parent": found.parent.version,
                 "version": found.version,
                 "change": found.change,
-                "change_class": recipes::class_name(found.change.class),
+                "change_class": learned_workflows::class_name(found.change.class),
                 "last_promoted": last_promoted.and_then(|at| at.format(&Rfc3339).ok()),
                 "why": found.why,
                 "thresholds": found.thresholds,
@@ -288,8 +293,8 @@ impl Evolution {
         Ok(actions)
     }
 
-    /// A replay the month's budget stopped: what it spent so far counts against this month,
-    /// and the candidate keeps replaying when there's budget again.
+    /// A replay the month's limit stopped: what it spent so far counts against this month,
+    /// and the candidate keeps replaying when there's room under it again.
     pub fn replay_paused(&self, candidate: &str, spent_usd: f64) -> Result<Vec<Action>> {
         let Some(found) = self.candidate(candidate)? else {
             return Err(LearningError::Refused(format!(
@@ -336,7 +341,7 @@ impl Evolution {
         state::write(&path, &ledger)
     }
 
-    /// The promotion checkpoint's answer. Promoting starts the canary.
+    /// The promotion approval's answer. Promoting starts the canary.
     pub fn decide(&self, candidate: &str, promote: bool, by: &Party) -> Result<Vec<Action>> {
         let mut candidates = self.candidates()?;
         let Some(found) = candidates.iter_mut().find(|c| c.id == candidate) else {
@@ -370,7 +375,7 @@ impl Evolution {
         canaries.insert(
             name.clone(),
             state::Canary {
-                recipe: name.clone(),
+                learned_workflow: name.clone(),
                 candidate: candidate.to_owned(),
                 version: found.version,
                 parent: found.parent.version,
@@ -381,11 +386,11 @@ impl Evolution {
         );
         found.state = CandidateState::Canary { runs: 0 };
         let version = found.version;
-        let mut states = self.recipe_states()?;
+        let mut states = self.learned_workflow_states()?;
         states.entry(name.clone()).or_default().last_promoted = Some(now);
         self.save_canaries(&canaries)?;
         self.save_candidates(&candidates)?;
-        self.save_recipe_states(&states)?;
+        self.save_learned_workflow_states(&states)?;
         Ok(vec![Action::Tell {
             text: format!(
                 "{name} v{version} runs as a canary; its runs merge through pull requests and it \
@@ -396,16 +401,16 @@ impl Evolution {
 }
 
 fn write_child(
-    parent: &LoadedRecipe,
+    parent: &LoadedLearnedWorkflow,
     version: u32,
     proposal: &ProcessChange,
     folder: &std::path::Path,
-) -> std::result::Result<LoadedRecipe, String> {
+) -> std::result::Result<LoadedLearnedWorkflow, String> {
     candidate::materialize(parent, version, proposal, folder).map_err(|error| error.to_string())
 }
 
-/// A recipe name from a task type: lowercase letters, digits, and dashes.
-fn recipe_name(task_type: &str) -> String {
+/// A learned workflow name from a task type: lowercase letters, digits, and dashes.
+fn learned_workflow_name(task_type: &str) -> String {
     let mut name = String::new();
     for c in task_type.chars() {
         if c.is_ascii_alphanumeric() {
@@ -431,11 +436,11 @@ fn who(by: &Party) -> String {
     match by {
         Party::User | Party::Declined => "you".to_owned(),
         Party::Rules => "your rules".to_owned(),
-        Party::Approver { model } => format!("the approver {model}"),
+        Party::Judge { model } => format!("the judge {model}"),
         Party::Config => "a setting".to_owned(),
         Party::Autopilot => "autopilot".to_owned(),
-        Party::Conductor => "the conductor".to_owned(),
+        Party::ArgonautsCode => "Argonauts Code".to_owned(),
         Party::Agent { worker, .. } => worker.to_string(),
-        Party::FrontEnd { client } => client.clone(),
+        Party::OutsideAgent { client } => client.clone(),
     }
 }

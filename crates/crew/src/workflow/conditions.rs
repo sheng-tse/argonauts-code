@@ -3,7 +3,7 @@
 
 use serde_json::Value;
 
-use argonauts_core::events::checkpoint::{AnswerAction, CheckpointKind};
+use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
 use argonauts_core::names::RoleName;
 use argonauts_core::settings::Settings;
 
@@ -12,11 +12,11 @@ use crate::state::sessions::SessionRecord;
 use crate::workflow::StepAt;
 
 /// Everything after the goal waits on it, so a goal loop that runs out of rounds stops the run.
-pub const GOAL_APPROVED: &str = "goal_approved";
+pub const UNDERSTOOD: &str = "understood";
 
 /// Every condition name a workflow may use. The validator refuses any other.
 pub const KNOWN: &[&str] = &[
-    GOAL_APPROVED,
+    UNDERSTOOD,
     "plan_decided",
     "plan_approved",
     "drafts_agree",
@@ -24,7 +24,7 @@ pub const KNOWN: &[&str] = &[
     "critique_done",
     "reviewers_agree",
     "reviewers_disagree",
-    "restate_first",
+    "understand_first",
 ];
 
 /// Whether `condition` holds now for the step at `at`. A loop's `until` is asked before each
@@ -36,7 +36,7 @@ pub fn holds(
     at: &StepAt,
 ) -> Result<bool, String> {
     Ok(match condition {
-        GOAL_APPROVED => state.goal.approved.is_some(),
+        UNDERSTOOD => state.goal.approved.is_some(),
         "plan_decided" => plan_answer(state).is_some_and(|action| action != AnswerAction::SendBack),
         "plan_approved" => plan_answer(state).is_some_and(|action| {
             matches!(
@@ -53,15 +53,15 @@ pub fn holds(
         }
         "reviewers_agree" => reviewer_verdicts(state).is_some_and(|verdicts| verdicts <= 1),
         "reviewers_disagree" => reviewer_verdicts(state).is_some_and(|verdicts| verdicts > 1),
-        "restate_first" => settings.solo.restate_first,
+        "understand_first" => settings.captain.understand_first,
         other => return Err(format!("`{other}` isn't a condition a workflow can use")),
     })
 }
 
 fn plan_answer(state: &RunState) -> Option<AnswerAction> {
     state
-        .checkpoints
-        .last_decided(CheckpointKind::Plan, None)
+        .approvals
+        .last_decided(ApprovalKind::Plan, None)
         .and_then(|record| record.decided.as_ref())
         .map(|decided| decided.action.clone())
 }
@@ -72,7 +72,7 @@ enum Drafts {
     /// One draft, or a map with no topic disputed: the fast path takes it.
     Agree,
     Disagree,
-    /// Several drafts and no map, such as when no mapper was free: judging picks one.
+    /// Several drafts and no map, such as when no mapping agent was free: judging picks one.
     Unmapped,
 }
 
@@ -130,7 +130,7 @@ mod tests {
     use serde_json::json;
 
     use argonauts_core::events::session::EndReason;
-    use argonauts_core::names::{WorkerRef, WorkflowId};
+    use argonauts_core::names::{ModelRef, WorkflowId};
     use argonauts_core::workflow::{StandardPhase, StepKind, StepRef};
 
     use super::*;
@@ -156,7 +156,7 @@ mod tests {
                 from: None,
                 version: "v1".to_owned(),
                 parent: None,
-                workflow: crate::workflow::builtin::load("solo").unwrap(),
+                workflow: crate::workflow::builtin::load("captain").unwrap(),
                 steps: Vec::new(),
                 finished: false,
                 changed_from_phase: None,
@@ -181,7 +181,7 @@ mod tests {
     }
 
     fn reviewed(state: &mut RunState, key: &str, since: u64, verdict: &str) {
-        let worker = WorkerRef::new("codex", None);
+        let worker = ModelRef::new("codex", None);
         let mut record = session_record(key, &worker, RoleName::Reviewer);
         record.since = since;
         record.started.workflow_step = Some(review_step());

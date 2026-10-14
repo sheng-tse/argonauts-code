@@ -3,6 +3,7 @@
 //! a typed line, then where to save it, with Reset where the layer allows.
 
 use argonauts_core::app::{ConfigEntry, SettingRow, ViewData};
+use argonauts_core::settings::layer;
 use argonauts_core::settings::{FILE_LAYERS, SettingScope};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
@@ -66,7 +67,7 @@ impl ConfigView {
                 key: entry.key.clone(),
                 value: entry.value.clone(),
                 layer: entry.layer.clone(),
-                preset_from: picked.clone().filter(|_| entry.layer == "workflow"),
+                workflow_from: picked.clone().filter(|_| entry.layer == layer::WORKFLOW),
                 default_scope: reset_scope(&entry.layer).unwrap_or(SettingScope::Global),
                 safety: entry.safety,
                 allowed: Vec::new(),
@@ -146,7 +147,7 @@ impl ConfigView {
     }
 }
 
-/// `ui` for `ui.theme`; keys with no dot, such as `preset`, go under `general`.
+/// `ui` for `ui.theme`; keys with no dot, such as `workflow`, go under `general`.
 fn section_of(key: &str) -> &str {
     match key.split_once('.') {
         Some((section, _)) => section,

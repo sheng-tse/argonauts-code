@@ -1,5 +1,5 @@
-//! Starting a run's supervisor: `argonauts supervise --repo <root> --run <id>`, detached in its
-//! own session, stdin null, stdout and stderr to `supervisor.log`.
+//! Starting a run's run host: `argonauts host --repo <root> --run <id>`, detached in its
+//! own session, stdin null, stdout and stderr to `run_host.log`.
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
@@ -16,7 +16,7 @@ use argonauts_core::layout::run_files;
 pub(crate) trait Launcher: Send + Sync {
     fn launch(&self, repo_root: &Path, run: &RunId, run_dir: &Path) -> anyhow::Result<()>;
 
-    /// How the supervisor last launched for `run_dir` failed, such as "exited with status 1",
+    /// How the run host last launched for `run_dir` failed, such as "exited with status 1",
     /// once it has. `None` while it runs, and after it exits cleanly.
     fn failed(&self, _run_dir: &Path) -> Option<String> {
         None
@@ -53,7 +53,7 @@ impl ProcessLauncher {
     fn command(&self, repo_root: &Path, run: &RunId) -> Command {
         let mut command = Command::new(&self.binary);
         command
-            .arg("supervise")
+            .arg("host")
             .arg("--repo")
             .arg(repo_root)
             .arg("--run")
@@ -64,7 +64,7 @@ impl ProcessLauncher {
 
 impl Launcher for ProcessLauncher {
     fn launch(&self, repo_root: &Path, run: &RunId, run_dir: &Path) -> anyhow::Result<()> {
-        let log_path = run_dir.join(run_files::SUPERVISOR_LOG);
+        let log_path = run_dir.join(run_files::RUN_HOST_LOG);
         let log = OpenOptions::new()
             .create(true)
             .append(true)
@@ -77,7 +77,7 @@ impl Launcher for ProcessLauncher {
             .stdout(log.try_clone()?)
             .stderr(log);
         // SAFETY: setsid is async-signal-safe and touches no memory the parent shares. Its own
-        // session keeps the supervisor running when the app's terminal closes.
+        // session keeps the run host running when the app's terminal closes.
         unsafe {
             command.pre_exec(|| {
                 nix::unistd::setsid()
@@ -89,12 +89,12 @@ impl Launcher for ProcessLauncher {
         let mut child = command
             .spawn()
             .with_context(|| format!("starting {}", self.binary.display()))?;
-        // Reaped by a thread so an exited supervisor never lingers as a zombie of the app. A
+        // Reaped by a thread so an exited run host never lingers as a zombie of the app. A
         // failed exit is kept, so a wait for its Welcome can stop at once.
         let failures = self.failures.clone();
         let run_dir = run_dir.to_owned();
         let _reaper = std::thread::Builder::new()
-            .name("argonauts-supervisor-reaper".to_owned())
+            .name("argonauts-run-host-reaper".to_owned())
             .spawn(move || {
                 let failure = match child.wait() {
                     Ok(status) if status.success() => return,
@@ -119,7 +119,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_supervisor_gets_the_repo_and_the_run_as_arguments() {
+    fn the_run_host_gets_the_repo_and_the_run_as_arguments() {
         let launcher = ProcessLauncher::with_binary(PathBuf::from("/usr/local/bin/argonauts"));
         let run = RunId::new("run-20260930-101500-00ab").unwrap();
         let command = launcher.command(Path::new("/code/app"), &run);
@@ -127,7 +127,7 @@ mod tests {
         assert_eq!(
             args,
             [
-                "supervise",
+                "host",
                 "--repo",
                 "/code/app",
                 "--run",
@@ -137,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn a_launched_supervisor_writes_to_its_log() {
+    fn a_launched_run_host_writes_to_its_log() {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-argonauts");
         std::fs::write(&script, "#!/bin/sh\necho \"args: $*\"\n").unwrap();
@@ -147,7 +147,7 @@ mod tests {
         ProcessLauncher::with_binary(script)
             .launch(Path::new("/code/app"), &run, dir.path())
             .unwrap();
-        let log = dir.path().join(run_files::SUPERVISOR_LOG);
+        let log = dir.path().join(run_files::RUN_HOST_LOG);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut text = String::new();
         while std::time::Instant::now() < deadline {
@@ -159,12 +159,12 @@ mod tests {
         }
         assert_eq!(
             text.trim(),
-            "args: supervise --repo /code/app --run run-20260930-101500-00ab"
+            "args: host --repo /code/app --run run-20260930-101500-00ab"
         );
     }
 
     #[test]
-    fn a_failed_supervisor_is_remembered_until_the_next_launch() {
+    fn a_failed_run_host_is_remembered_until_the_next_launch() {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-argonauts");
         std::fs::write(&script, "#!/bin/sh\nexit 3\n").unwrap();

@@ -87,7 +87,7 @@ fn setting(key: &str, value: &str, description: &str, safety: bool) -> SettingRo
         key: key.to_owned(),
         value: value.to_owned(),
         layer: "built-in".to_owned(),
-        preset_from: None,
+        workflow_from: None,
         default_scope: SettingScope::Project,
         safety,
         allowed: Vec::new(),
@@ -117,7 +117,7 @@ fn view(area: LearningArea, tabs: Vec<LearningTab>, summary: &str) -> LearningVi
                 false,
             ),
         ],
-        LearningArea::Recipes => vec![
+        LearningArea::LearnedWorkflows => vec![
             setting(
                 "evolution.stage",
                 "\"evolve\"",
@@ -131,9 +131,9 @@ fn view(area: LearningArea, tabs: Vec<LearningTab>, summary: &str) -> LearningVi
                 true,
             ),
             setting(
-                "solo_or_crew.use_learned",
+                "captain_or_crew.use_learned",
                 "true",
-                "Learned workflows decide solo or crew",
+                "Learned workflows decide Captain or crew",
                 false,
             ),
         ],
@@ -206,7 +206,7 @@ fn records() -> LearningView {
                     "Cost",
                     "Time",
                     "Predictions",
-                    "Cards",
+                    "Tasks",
                 ],
                 vec![
                     row(
@@ -259,7 +259,7 @@ fn records() -> LearningView {
                     "codex p_pass",
                     &[
                         "codex/gpt-5.6",
-                        "p_pass_gates_first_try",
+                        "p_pass_checks_first_try",
                         "14",
                         "0.180",
                         "+0.12",
@@ -275,7 +275,7 @@ fn records() -> LearningView {
     )
 }
 
-fn recipes() -> LearningView {
+fn learned_workflows() -> LearningView {
     let mut candidate = row(
         "api-feature api-feature-v5",
         &[
@@ -307,7 +307,7 @@ fn recipes() -> LearningView {
     );
     candidate.waiting = true;
     view(
-        LearningArea::Recipes,
+        LearningArea::LearnedWorkflows,
         vec![
             tab(
                 "Workflows",
@@ -321,14 +321,14 @@ fn recipes() -> LearningView {
                             'r',
                             "roll back",
                             LearningCommand::Rollback {
-                                recipe: "api-feature".to_owned(),
+                                learned_workflow: "api-feature".to_owned(),
                             },
                         ),
                         act(
                             'e',
                             "export as a skill",
                             LearningCommand::Export {
-                                recipe: "api-feature".to_owned(),
+                                learned_workflow: "api-feature".to_owned(),
                             },
                         ),
                     ],
@@ -343,7 +343,7 @@ fn recipes() -> LearningView {
             ),
             tab(
                 "Replay set",
-                &["Task", "Kind of work", "Set", "Budget"],
+                &["Task", "Kind of work", "Set", "Limit"],
                 Vec::new(),
                 "No replay tasks yet.",
             ),
@@ -469,7 +469,7 @@ fn memory() -> LearningView {
 fn learning_pickers_at_80_and_120_columns() {
     let pickers = [
         ("records", records(), 0usize),
-        ("learned", recipes(), 1),
+        ("learned", learned_workflows(), 1),
         ("skills", skills(), 0),
         ("memory", memory(), 1),
     ];
@@ -503,7 +503,7 @@ fn learning_pickers_at_80_and_120_columns() {
 
 #[test]
 fn a_long_setting_value_is_cut_and_keeps_its_columns() {
-    let mut data = recipes();
+    let mut data = learned_workflows();
     data.settings.push(setting(
         "evolution.evolvable",
         r#"["critique.rounds", "critique.checklist", "drafting.prompt", "divide.max_task_lines", "limits.per_task_usd"]"#,
@@ -549,7 +549,7 @@ fn the_selected_row_shows_its_detail_and_its_keys() {
 /// The line under the name holds the whole description and summary at 80 and 100 columns.
 #[test]
 fn learning_headers_fit_at_80_and_100_columns() {
-    for data in [records(), recipes(), skills(), memory()] {
+    for data in [records(), learned_workflows(), skills(), memory()] {
         for width in [80u16, 100] {
             let mut picker = LearningPicker::new(data.clone());
             let text = screen(&mut picker, width, HEIGHT);

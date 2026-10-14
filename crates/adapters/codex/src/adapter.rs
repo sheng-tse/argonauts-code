@@ -1,10 +1,10 @@
 use std::path::Path;
 
+use argonauts_core::cli_commands::{BuiltinCommand, CliCommand};
+use argonauts_core::cli_sessions::{CliScan, CliSession, CliTurn};
 use argonauts_core::keywords::Keyword;
-use argonauts_core::limits::{QuotaAnswer, QuotaReading};
+use argonauts_core::limits::{PlanUsageAnswer, PlanUsageReading};
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
-use argonauts_core::vendor_commands::{BuiltinCommand, VendorCommand};
-use argonauts_core::vendor_sessions::{VendorScan, VendorSession, VendorTurn};
 use argonauts_core::{
     Adapter, Capabilities, CommandSpec, LaunchTweak, PARENT_SESSION_ENV_VARS, SessionRequest,
     SetupHints, StopPlan, StreamParser, extract_version,
@@ -18,15 +18,18 @@ use crate::{commands, probe, sessions, tweaks};
 
 pub const ID: &str = "codex";
 
-pub const CHEAPEST_MODEL: &str = "gpt-5.6-luna";
+pub const CHEAPEST_MODEL: &str = "gpt-6-luna";
 
-pub const FALLBACK_CHEAPEST_MODEL: &str = "gpt-6-luna";
+/// The next cheapest, for a recording when Codex doesn't offer [`CHEAPEST_MODEL`].
+pub const FALLBACK_CHEAPEST_MODEL: &str = "gpt-5.6-luna";
 
 pub const CHEAPEST_EFFORT: &str = "low";
 
 pub const OUTPUT_SCHEMA_FILE: &str = "codex-output-schema.json";
 
-pub const TESTED_VERSIONS: &[&str] = &["0.158.0", "0.160.0"];
+/// The versions the recordings in `fixtures/` were made with or also match, oldest first,
+/// read from the `.meta.json` beside each recording when the crate is built.
+pub const TESTED_VERSIONS: &[&str] = include!(concat!(env!("OUT_DIR"), "/tested_versions.rs"));
 
 /// Words Codex treats specially in a prompt: none in 0.160.0. Its `ultra` is a reasoning level
 /// picked in the model menu, not a word you type.
@@ -45,6 +48,18 @@ impl CodexAdapter {
         Self
     }
 }
+
+/// `thread.started`, which names the session.
+const STARTUP_MESSAGE: argonauts_core::adapter::StartupMessage =
+    argonauts_core::adapter::StartupMessage {
+        marker: r#""type":"thread.started""#,
+        is: &[("/type", "thread.started")],
+        fields: &[argonauts_core::adapter::StartupField {
+            pointer: "/thread_id",
+            what: "its session",
+            without: "its conversations can't be resumed",
+        }],
+    };
 
 impl Adapter for CodexAdapter {
     fn id(&self) -> &'static str {
@@ -88,6 +103,10 @@ impl Adapter for CodexAdapter {
         StopPlan::default()
     }
 
+    fn estimates_context_fill(&self) -> bool {
+        true
+    }
+
     fn capabilities(&self) -> Capabilities {
         // Usage comes only with turn.completed, and thread.started doesn't name the model.
         Capabilities {
@@ -104,19 +123,19 @@ impl Adapter for CodexAdapter {
     }
 
     /// `app-server` reads the account's limits, which no model changes.
-    fn quota_probe(&self, workdir: &Path, _model: Option<&str>) -> Option<CommandSpec> {
+    fn plan_usage_probe(&self, workdir: &Path, _model: Option<&str>) -> Option<CommandSpec> {
         Some(probe::command(self.binary(), workdir))
     }
 
-    fn parse_quota_probe(&self, stdout: &str) -> Option<QuotaReading> {
+    fn parse_plan_usage_probe(&self, stdout: &str) -> Option<PlanUsageReading> {
         probe::parse(stdout, OffsetDateTime::now_utc())
     }
 
-    fn parse_quota_probe_answer(&self, stdout: &str) -> Option<QuotaAnswer> {
+    fn parse_plan_usage_probe_answer(&self, stdout: &str) -> Option<PlanUsageAnswer> {
         probe::answer(stdout, OffsetDateTime::now_utc())
     }
 
-    fn parse_quota_probe_end(&self, stdout: &str) -> Option<QuotaAnswer> {
+    fn parse_plan_usage_probe_end(&self, stdout: &str) -> Option<PlanUsageAnswer> {
         probe::answer_at_end(stdout, OffsetDateTime::now_utc())
     }
 
@@ -154,25 +173,21 @@ impl Adapter for CodexAdapter {
         Some(spec)
     }
 
-    fn vendor_sessions(
-        &self,
-        scan: &VendorScan,
-        limit: usize,
-    ) -> anyhow::Result<Vec<VendorSession>> {
+    fn cli_sessions(&self, scan: &CliScan, limit: usize) -> anyhow::Result<Vec<CliSession>> {
         sessions::list(scan, limit)
     }
 
-    fn vendor_session_turns(
+    fn cli_session_turns(
         &self,
-        scan: &VendorScan,
+        scan: &CliScan,
         session: &str,
         count: usize,
-    ) -> anyhow::Result<Vec<VendorTurn>> {
+    ) -> anyhow::Result<Vec<CliTurn>> {
         sessions::turns(scan, session, count)
     }
 
-    fn default_family(&self) -> &'static str {
-        "gpt"
+    fn default_provider(&self) -> &'static str {
+        "openai"
     }
 
     fn setup_hints(&self) -> SetupHints {
@@ -189,6 +204,19 @@ impl Adapter for CodexAdapter {
         Some(&["update"])
     }
 
+    fn startup_message(&self) -> Option<&'static argonauts_core::adapter::StartupMessage> {
+        Some(&STARTUP_MESSAGE)
+    }
+
+    /// Codex comes from Homebrew or npm, and never updates itself while it runs.
+    fn install_sources(&self) -> argonauts_core::adapter::InstallSources {
+        argonauts_core::adapter::InstallSources {
+            homebrew: Some("codex"),
+            npm: Some("@openai/codex"),
+            own: None,
+        }
+    }
+
     fn builtin_commands(&self) -> &'static [BuiltinCommand] {
         BUILTIN_COMMANDS
     }
@@ -197,11 +225,11 @@ impl Adapter for CodexAdapter {
         KEYWORDS
     }
 
-    fn discover_commands(&self, scan: &VendorScan) -> anyhow::Result<Vec<VendorCommand>> {
+    fn discover_commands(&self, scan: &CliScan) -> anyhow::Result<Vec<CliCommand>> {
         Ok(commands::discover(scan))
     }
 
-    fn command_prompt(&self, command: &VendorCommand, args: &str) -> Option<String> {
+    fn command_prompt(&self, command: &CliCommand, args: &str) -> Option<String> {
         commands::prompt(command, args)
     }
 }
@@ -215,7 +243,7 @@ mod tests {
     use argonauts_core::registry::LaunchHints;
     use argonauts_core::settings::sessions::FanoutSwitch;
     use argonauts_core::{
-        AuthMode, SessionRole, TweakEffect, VENDOR_KEY_ENV_VARS, report_json_schema,
+        AuthMode, PROVIDER_KEY_ENV_VARS, SessionRole, TweakEffect, report_json_schema,
     };
     use serde_json::Value;
 
@@ -268,7 +296,7 @@ mod tests {
                 "read-only",
                 "--skip-git-repo-check",
                 "--model",
-                "gpt-5.6-luna",
+                "gpt-6-luna",
                 "-",
             ]
         );
@@ -449,7 +477,7 @@ mod tests {
             resume_session: Some("0199a213-81c0-7800-8aa1-bbab2a035a53".into()),
             effort: Some("low".into()),
             json_schema: Some(report_json_schema()),
-            scratch_dir: Some(PathBuf::from("/state/card")),
+            scratch_dir: Some(PathBuf::from("/state/task")),
             extra_args: vec!["--add-dir".into(), "/extra".into()],
             compaction: Some(Compaction::Auto),
             native_fanout: Some(NativeFanout::Limit { max: 2 }),
@@ -492,8 +520,37 @@ mod tests {
         }
     }
 
+    /// `codex exec fork <id>` carries on a copy of the session under an id of its own.
     #[test]
-    fn compaction_flags_per_harness() {
+    fn codex_fork_resumes_a_copy_of_the_session() {
+        const ORIGINAL: &str = "0199a213-81c0-7800-8aa1-bbab2a035a53";
+        let resume = SessionRequest {
+            resume_session: Some(ORIGINAL.into()),
+            ..request(SessionRole::Build)
+        };
+        let resumed = command(&resume);
+        let forked = command(&SessionRequest {
+            fork_session: true,
+            ..resume
+        });
+        let fork = position(&forked.args, "fork");
+        assert_eq!(&forked.args[fork..], ["fork", ORIGINAL, "-"]);
+        assert_eq!(
+            &forked.args[..fork],
+            &resumed.args[..position(&resumed.args, "resume")],
+            "a fork repeats every flag of a resume"
+        );
+        assert_eq!(forked.stdin, resumed.stdin);
+
+        let nothing_to_copy = SessionRequest {
+            fork_session: true,
+            ..request(SessionRole::Build)
+        };
+        assert!(CodexAdapter.command(&nothing_to_copy).is_err());
+    }
+
+    #[test]
+    fn compaction_flags_per_cli() {
         let adapter = CodexAdapter::new();
         assert_eq!(
             adapter.compaction(Compaction::Inherit),
@@ -522,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn native_fanout_flags_per_harness() {
+    fn native_fanout_flags_per_cli() {
         let adapter = CodexAdapter::new();
         let capped = adapter.native_fanout(NativeFanout::Limit { max: 2 });
         assert_eq!(
@@ -581,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn env_scrubbed_per_vendor() {
+    fn env_scrubbed_per_agent() {
         let req = SessionRequest {
             env_set: vec![
                 ("ARGONAUTS_SESSION".into(), "s-001".into()),
@@ -593,7 +650,7 @@ mod tests {
         // Subscription: every key goes but the plan's access token, and no key comes back
         // through env_set.
         let spec = command(&req);
-        for var in VENDOR_KEY_ENV_VARS {
+        for var in PROVIDER_KEY_ENV_VARS {
             let removed = spec.env_remove.iter().any(|v| v == var);
             assert_eq!(removed, *var != "CODEX_ACCESS_TOKEN", "{var}");
         }
@@ -608,7 +665,7 @@ mod tests {
             ..req
         };
         let spec = command(&api);
-        for var in VENDOR_KEY_ENV_VARS {
+        for var in PROVIDER_KEY_ENV_VARS {
             let removed = spec.env_remove.iter().any(|v| v == var);
             assert_eq!(removed, !API_KEY_ENV_VARS.contains(var), "{var}");
         }
@@ -620,15 +677,17 @@ mod tests {
             ]
         );
 
-        // The quota probe reads the plan, so it never sees an API key.
-        let probe = CodexAdapter.quota_probe(Path::new("/w"), None).unwrap();
+        // The plan usage probe reads the plan, so it never sees an API key.
+        let probe = CodexAdapter
+            .plan_usage_probe(Path::new("/w"), None)
+            .unwrap();
         assert!(probe.env_remove.iter().any(|v| v == "OPENAI_API_KEY"));
     }
 
     #[test]
     fn cheapest_model_and_effort_become_flags() {
         let (model, effort) = CodexAdapter.cheapest_model();
-        assert_eq!((model, effort), ("gpt-5.6-luna", Some("low")));
+        assert_eq!((model, effort), ("gpt-6-luna", Some("low")));
         let req = SessionRequest {
             effort: effort.map(Into::into),
             ..request(SessionRole::ReadOnly)
@@ -678,11 +737,11 @@ mod tests {
     fn schema_is_written_to_the_scratch_dir() {
         let req = SessionRequest {
             json_schema: Some(report_json_schema()),
-            scratch_dir: Some(PathBuf::from("/state/cards/task-001")),
+            scratch_dir: Some(PathBuf::from("/state/tasks/task-001")),
             ..request(SessionRole::Build)
         };
         let spec = command(&req);
-        let path = output_schema_path(Path::new("/state/cards/task-001"));
+        let path = output_schema_path(Path::new("/state/tasks/task-001"));
         assert_eq!(
             value_after(&spec.args, "--output-schema"),
             path.to_str().unwrap()
@@ -753,14 +812,14 @@ mod tests {
         assert_eq!(adapter.id(), "codex");
         assert_eq!(adapter.binary(), "codex");
         assert_eq!(adapter.display_name(), "Codex");
-        assert_eq!(adapter.default_family(), "gpt");
+        assert_eq!(adapter.default_provider(), "openai");
         assert_eq!(adapter.version_args(), ["--version"]);
         assert_eq!(
             adapter.parse_version("codex-cli 0.158.0\n").as_deref(),
             Some("0.158.0")
         );
         assert_eq!(adapter.parse_version("codex-cli"), None);
-        assert_eq!(adapter.tested_versions(), ["0.158.0", "0.160.0"]);
+        assert_eq!(adapter.tested_versions(), TESTED_VERSIONS);
         assert!(adapter.wrap_up_input("wrap up").is_none());
         assert_eq!(adapter.stop_plan(), StopPlan::default());
         let caps = adapter.capabilities();

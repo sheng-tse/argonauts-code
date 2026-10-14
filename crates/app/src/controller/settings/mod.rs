@@ -1,6 +1,6 @@
 //! Every setting changed from inside the app: the settings commands' pickers and arguments,
 //! the scope question, the safety confirm, trust carried forward on a write, resets, the
-//! toggles, and the detected-gates offer.
+//! toggles, and the detected-checks offer.
 //!
 //! A write goes through up to three questions, each a pending choice here: where to save it
 //! (`SettingScope`), whether to change a safety key (`ConfirmSafetySetting`), and whether to
@@ -10,8 +10,8 @@
 //! question on its own, so they aren't ignored without your knowing.
 
 mod args;
+mod checks;
 mod confirm;
-mod gates;
 mod labels;
 mod models;
 mod pickers;
@@ -26,7 +26,7 @@ mod tests;
 #[cfg(test)]
 mod tests_models;
 
-pub(crate) use args::{check_known, preset_list};
+pub(crate) use args::{check_known, workflow_list};
 pub(crate) use models::choices as model_choices;
 pub(crate) use rows::model_keys;
 pub(crate) use rows::rows as setting_rows;
@@ -36,10 +36,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use argonauts_core::app::{AppEvent, ChoiceKind, ViewData, ViewRequest};
-use argonauts_core::events::checkpoint::AnswerAction;
+use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::input::SlashCommand;
-use argonauts_core::names::{ChoiceId, RoleName, WorkerRef};
+use argonauts_core::names::{ChoiceId, ModelRef, RoleName};
 use argonauts_core::settings::SettingScope;
+use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::ui::NarratorMode;
 use argonauts_core::{KeyScheme, NoteLevel, Verbosity};
 use argonauts_registry::{SettingsError, safety_keys_in, setting_meta};
@@ -50,16 +51,21 @@ use crate::commands::refuse_safety_change;
 use crate::trust::{cant_trust, hash_of};
 use save::{Change, TrustAfter};
 
-const COORDINATED_CREW: &str = "orchestrator";
+const ORCHESTRATOR: &str = "orchestrator";
 
 pub(crate) struct SettingsState {
     /// The questions asked here that haven't been answered.
     pending: HashMap<ChoiceId, Pending>,
-    /// `preset = "orchestrator"` waiting for its coordinator, with the scope picked for it.
+    /// `workflow = "orchestrator"` waiting for its orchestrator, with the scope picked for it.
     hold: Option<SettingScope>,
-    /// The gates offer was answered in this app session, so it isn't made again even when the
-    /// answer left `gates.run` ignored in a file you didn't trust.
-    gates_answered: bool,
+    /// The checks offer was answered in this app session, so it isn't made again even when the
+    /// answer left `checks.run` ignored in a file you didn't trust.
+    checks_answered: bool,
+    /// The checks found here were named on autopilot in this app session, where they aren't
+    /// offered, so the line is said once.
+    checks_named: bool,
+    /// The mode on screen is autopilot, as the controller last told it, so nothing here asks.
+    autopilot: bool,
     /// A model list refresh is running.
     refreshing: bool,
     /// The model list last sent, for the refresh to bring up to date.
@@ -68,11 +74,13 @@ pub(crate) struct SettingsState {
 
 impl SettingsState {
     pub(crate) fn new(ctx: &Ctx) -> Self {
-        let _ = ctx;
         Self {
             pending: HashMap::new(),
             hold: None,
-            gates_answered: false,
+            checks_answered: false,
+            checks_named: false,
+            // Until Shift+Tab or a run says otherwise, the mode on screen is the settings'.
+            autopilot: ctx.settings().approvals.mode() == ApprovalMode::Autopilot,
             refreshing: false,
             shown: None,
         }
@@ -97,7 +105,7 @@ enum Pending {
         scope: SettingScope,
         hash: String,
     },
-    Gates {
+    Checks {
         commands: Vec<String>,
     },
 }
@@ -108,7 +116,7 @@ impl Pending {
             Self::Scope { .. } => ChoiceKind::SettingScope,
             Self::Confirm { .. } => ChoiceKind::ConfirmSafetySetting,
             Self::Trust { .. } | Self::TrustAtStart { .. } => ChoiceKind::TrustProject,
-            Self::Gates { .. } => ChoiceKind::DetectedGates,
+            Self::Checks { .. } => ChoiceKind::DetectedChecks,
         }
     }
 }
@@ -119,14 +127,14 @@ pub(crate) fn owns_choice(settings: &SettingsState, id: &ChoiceId) -> bool {
     settings.pending.contains_key(id)
 }
 
-/// Something other than a settings command arrived, so a preset held for its coordinator is
-/// dropped and a later coordinator pick is a plain `/model coordinator`.
+/// Something other than a settings command arrived, so a workflow held for its orchestrator is
+/// dropped and a later orchestrator pick is a plain `/model orchestrator`.
 pub(crate) fn interrupt(settings: &mut SettingsState) {
     settings.hold = None;
 }
 
-/// `/model`, `/effort`, `/agents`, `/preset <name>`, `/workflows`, `/approvals`, `/budget`,
-/// `/handoff`, `/permissions`, `/verbosity`, `/narrator`, `/theme`, and `/config`: a picker with
+/// `/model`, `/effort`, `/agents`, `/workflow <name>`, `/workflows`, `/approvals`, `/limit`,
+/// `/fallback`, `/permissions`, `/verbosity`, `/narrator`, `/theme`, and `/config`: a picker with
 /// no argument, the scope question with one.
 pub(crate) async fn command(
     ctx: &mut Ctx,
@@ -140,7 +148,7 @@ pub(crate) async fn command(
     } = &command
         && let Some(scope) = settings.hold.take()
     {
-        return coordinator_picked(ctx, settings, scope, worker);
+        return orchestrator_picked(ctx, settings, scope, worker);
     }
     settings.hold = None;
     if let SlashCommand::Config {
@@ -187,9 +195,9 @@ pub(crate) fn refresh_models(ctx: &Ctx, settings: &mut SettingsState) {
     refresh::start(ctx, settings);
 }
 
-/// A model list refresh landed.
+/// A model list refresh merged.
 pub(crate) fn models_refreshed(ctx: &Ctx, settings: &mut SettingsState) -> Handled {
-    refresh::landed(ctx, settings)
+    refresh::merged(ctx, settings)
 }
 
 /// `Config`, `Settings`, `Models`, and `Approvals`.
@@ -198,7 +206,7 @@ pub(crate) async fn view(
     settings: &mut SettingsState,
     view: ViewRequest,
 ) -> Handled {
-    // The coordinator's picker may ask for its rows again; anything else ends the hold.
+    // The orchestrator's picker may ask for its rows again; anything else ends the hold.
     if !matches!(
         view,
         ViewRequest::Models {
@@ -240,7 +248,7 @@ pub(crate) async fn set(
     begin(ctx, settings, Change::Set(vec![(key, value)]), scope)
 }
 
-/// A safety key you set by answering a card that said what it saves, such as a direct turn's
+/// A safety key you set by answering a question that said what it saves, such as a direct turn's
 /// "don't ask again": the answer was the confirm, so it's saved at once.
 pub(crate) fn save_answered(
     ctx: &mut Ctx,
@@ -262,7 +270,7 @@ pub(crate) async fn reset(
     begin_reset(ctx, settings, key, scope)
 }
 
-/// The scope question for a value worked out elsewhere, such as a remembered handoff pick.
+/// The scope question for a value worked out elsewhere, such as a remembered fallback pick.
 pub(crate) async fn ask_scope(
     ctx: &mut Ctx,
     settings: &mut SettingsState,
@@ -293,7 +301,7 @@ pub(crate) fn save(
     begin(ctx, settings, Change::Set(pairs), scope)
 }
 
-/// Settings you confirmed already by picking where a setup applies on its card, so a safety
+/// Settings you confirmed already by picking where a setup applies on its question, so a safety
 /// key among them asks no second question. A project file you haven't trusted still asks.
 pub(crate) fn save_confirmed(
     ctx: &mut Ctx,
@@ -317,7 +325,7 @@ pub(crate) fn save_confirmed(
     trust_step(ctx, settings, change, scope)
 }
 
-/// `SettingScope`, `ConfirmSafetySetting`, `TrustProject`, and `DetectedGates`.
+/// `SettingScope`, `ConfirmSafetySetting`, `TrustProject`, and `DetectedChecks`.
 pub(crate) async fn answer_choice(
     ctx: &mut Ctx,
     settings: &mut SettingsState,
@@ -377,22 +385,22 @@ pub(crate) async fn answer_choice(
             still_untrusted(ctx, id, scope);
             Ok(Vec::new())
         }
-        (Pending::Gates { commands }, AnswerAction::Approve) => {
+        (Pending::Checks { commands }, AnswerAction::Approve) => {
             close(ctx, id, "Use these");
-            save_gates(ctx, settings, &commands)
+            save_checks(ctx, settings, &commands)
         }
-        (Pending::Gates { .. }, AnswerAction::ApproveWithEdits) => {
+        (Pending::Checks { .. }, AnswerAction::ApproveWithEdits) => {
             let lines: Vec<String> = text
                 .unwrap_or_default()
                 .lines()
                 .map(str::to_owned)
                 .collect();
             close(ctx, id, "Edited");
-            save_gates(ctx, settings, &lines)
+            save_checks(ctx, settings, &lines)
         }
-        (Pending::Gates { .. }, AnswerAction::Cancel) => {
-            settings.gates_answered = true;
-            gates::remember_skip(&ctx.env.state_dir)?;
+        (Pending::Checks { .. }, AnswerAction::Cancel) => {
+            settings.checks_answered = true;
+            checks::remember_skip(&ctx.env.state_dir)?;
             close(ctx, id, "Skipped. Not offered again in this repo.");
             Ok(Vec::new())
         }
@@ -400,6 +408,34 @@ pub(crate) async fn answer_choice(
             settings.pending.insert(id, pending);
             anyhow::bail!("That answer doesn't fit this question")
         }
+    }
+}
+
+/// Said when autopilot comes on with the check commands' offer open.
+const CHECKS_LEFT_ON_AUTOPILOT: &str = "Decided on autopilot · not saved, since check commands \
+                                        are yours to confirm. Offered again for a run started \
+                                        off autopilot.";
+
+/// Follows the mode on screen. True when autopilot just came on, by Shift+Tab, a setting, or
+/// a run that brings its own mode.
+pub(crate) fn follow_mode(settings: &mut SettingsState, autopilot: bool) -> bool {
+    let was = std::mem::replace(&mut settings.autopilot, autopilot);
+    autopilot && !was
+}
+
+/// Autopilot came on with the check commands' offer open. Saving them is yours to confirm, so
+/// the offer closes and waits for a run started off autopilot, as one found on autopilot does.
+pub(crate) fn settle_on_autopilot(ctx: &Ctx, settings: &mut SettingsState) {
+    let mut offers: Vec<ChoiceId> = settings
+        .pending
+        .iter()
+        .filter(|(_, pending)| matches!(pending, Pending::Checks { .. }))
+        .map(|(id, _)| id.clone())
+        .collect();
+    offers.sort();
+    for id in offers {
+        settings.pending.remove(&id);
+        close(ctx, id, CHECKS_LEFT_ON_AUTOPILOT);
     }
 }
 
@@ -441,7 +477,7 @@ pub(crate) async fn vim(ctx: &mut Ctx, settings: &mut SettingsState, on: bool) -
     let keys = if on {
         KeyScheme::Vim
     } else {
-        KeyScheme::Standard
+        KeyScheme::Default
     };
     let value = toml::Value::try_from(keys)?.to_string();
     toggles::save_toggle(ctx, "ui.keys", &value)
@@ -452,10 +488,10 @@ pub(crate) async fn toggle_vim(ctx: &mut Ctx, settings: &mut SettingsState) -> H
     vim(ctx, settings, on).await
 }
 
-/// "Yes, and let the lead answer" on a go-ahead card: the lead answers the crew's questions in
-/// this project from now on, just for you, as Claude Code's "don't ask again" does. Picking it
-/// on the card is the confirm a safety key needs; `/approvals` undoes it.
-pub(crate) fn let_the_lead_answer(ctx: &mut Ctx) -> Handled {
+/// "Yes, and let the main agent answer" on a go-ahead question: the main agent answers the crew's
+/// questions in this project from now on, just for you, as Claude Code's "don't ask again" does.
+/// Picking it on the question is the confirm a safety key needs; `/approvals` undoes it.
+pub(crate) fn let_the_main_agent_answer(ctx: &mut Ctx) -> Handled {
     const KEY: &str = "approvals.answers";
     refuse_safety_change(&ctx.env, &[KEY.to_owned()])?;
     let change = Change::Set(vec![(KEY.to_owned(), "\"main\"".to_owned())]);
@@ -485,31 +521,47 @@ pub(crate) async fn narrator_mode(
     save::apply(ctx, &change, SettingScope::Session, TrustAfter::Carry)
 }
 
-/// Before a run starts: the detected gates, once per repo, when `gates.run` is empty.
-pub(crate) async fn offer_gates(ctx: &mut Ctx, settings: &mut SettingsState) -> Handled {
+/// Said on autopilot in place of offering the check commands found in the folder.
+pub(crate) const CHECKS_ON_AUTOPILOT: &str = "Decided on autopilot · this run has no check commands. Saving the ones found here is yours \
+     to confirm, so they aren't used:";
+
+/// Before a run starts: the detected checks, once per repo, when `checks.run` is empty. On
+/// autopilot nothing is asked, since checks are a safety setting only you confirm: one line
+/// names what was found, once, and the question waits for a run you start off autopilot.
+pub(crate) async fn offer_checks(ctx: &mut Ctx, settings: &mut SettingsState) -> Handled {
     settings.hold = None;
     let open = settings
         .pending
         .values()
-        .any(|pending| matches!(pending, Pending::Gates { .. }));
+        .any(|pending| matches!(pending, Pending::Checks { .. }));
     if open
-        || settings.gates_answered
+        || settings.checks_answered
         || ctx.env.agent_session
         || !ctx.env.interactive
         || !ctx.settings().checks.run.is_empty()
-        || gates::skipped(&ctx.env.state_dir)
+        || checks::skipped(&ctx.env.state_dir)
     {
         return Ok(Vec::new());
     }
-    let commands = gates::detect(&ctx.env.repo_root);
+    let commands = checks::detect(&ctx.env.repo_root);
     if commands.is_empty() {
+        return Ok(Vec::new());
+    }
+    if settings.autopilot {
+        if !std::mem::replace(&mut settings.checks_named, true) {
+            let found = commands.join(", ");
+            ctx.notice(
+                NoteLevel::Info,
+                format!("{CHECKS_ON_AUTOPILOT} {found}. /config checks.run sets them."),
+            );
+        }
         return Ok(Vec::new());
     }
     let id = ctx.next_choice_id();
     ctx.send(AppEvent::Choice {
-        choice: gates::offer(id.clone(), &commands),
+        choice: checks::offer(id.clone(), &commands),
     });
-    settings.pending.insert(id, Pending::Gates { commands });
+    settings.pending.insert(id, Pending::Checks { commands });
     Ok(Vec::new())
 }
 
@@ -537,7 +589,7 @@ fn ask_where(
     Ok(Vec::new())
 }
 
-/// The scope is known: hold for the coordinator, confirm a safety key, then the trust step.
+/// The scope is known: hold for the orchestrator, confirm a safety key, then the trust step.
 fn begin(
     ctx: &mut Ctx,
     settings: &mut SettingsState,
@@ -575,7 +627,7 @@ fn hold_for_orchestrator(
     change: &Change,
     scope: SettingScope,
 ) -> bool {
-    if !needs_coordinator(ctx, change) {
+    if !needs_orchestrator(ctx, change) {
         return false;
     }
     settings.hold = Some(scope);
@@ -702,8 +754,8 @@ fn trust_at_start(
         save::send_ui(ctx);
     }
     let mut effects = Vec::new();
-    if ctx.settings().main_agent != before.main_agent {
-        effects.push(Effect::FreshChat);
+    if ctx.settings().crew.main != before.crew.main {
+        effects.push(Effect::FreshConversation);
     }
     effects.push(Effect::SettingsApplied { keys });
     Ok(effects)
@@ -762,11 +814,11 @@ fn reset_in_effect(ctx: &mut Ctx, settings: &mut SettingsState, key: &str) -> Ha
         anyhow::bail!("{key} isn't a setting; /config lists them");
     }
     let layer = ctx.settings.layer(key);
-    let preset = ctx.settings().workflow.clone();
+    let chosen = ctx.settings().workflow.clone();
     let explain = match layer.as_str() {
         "workflow" => Some(format!(
-            "{key} comes from the {preset} workflow, so it can't be reset here. Use /workflow copy \
-             {preset} to edit the workflow."
+            "{key} comes from the {chosen} workflow, so it can't be reset here. Use /workflow copy \
+             {chosen} to edit the workflow."
         )),
         "flag" => Some(format!(
             "{key} comes from a --set flag, so it can't be reset here. It holds until you quit."
@@ -787,51 +839,51 @@ fn reset_in_effect(ctx: &mut Ctx, settings: &mut SettingsState, key: &str) -> Ha
     begin_reset(ctx, settings, key.to_owned(), scope)
 }
 
-/// The held preset and the coordinator you picked go together, to the scope picked for the
-/// preset, without asking it again.
-fn coordinator_picked(
+/// The held workflow and the orchestrator you picked go together, to the scope picked for the
+/// workflow, without asking it again.
+fn orchestrator_picked(
     ctx: &mut Ctx,
     settings: &mut SettingsState,
     scope: SettingScope,
-    worker: &WorkerRef,
+    worker: &ModelRef,
 ) -> Handled {
     if let Some(why) = models::refusal(ctx, Some(RoleName::Orchestrator), worker) {
         anyhow::bail!("{why}");
     }
-    trust_step(ctx, settings, coordinator_change(worker), scope)
+    trust_step(ctx, settings, orchestrator_change(worker), scope)
 }
 
-fn coordinator_change(worker: &WorkerRef) -> Change {
+fn orchestrator_change(worker: &ModelRef) -> Change {
     let (key, value) = args::model_key(Some(RoleName::Orchestrator), worker);
     Change::Set(vec![
-        ("workflow".to_owned(), args::quoted(COORDINATED_CREW)),
+        ("workflow".to_owned(), args::quoted(ORCHESTRATOR)),
         (key, value),
     ])
 }
 
-/// `preset = "orchestrator"` alone while no coordinator is set.
-fn needs_coordinator(ctx: &Ctx, change: &Change) -> bool {
+/// `workflow = "orchestrator"` alone while no orchestrator is set.
+fn needs_orchestrator(ctx: &Ctx, change: &Change) -> bool {
     let Change::Set(pairs) = change else {
         return false;
     };
-    let quoted = args::quoted(COORDINATED_CREW);
+    let quoted = args::quoted(ORCHESTRATOR);
     let picks_crew = pairs
         .iter()
         .any(|(key, value)| key == "workflow" && *value == quoted);
-    let names_coordinator = pairs
+    let names_orchestrator = pairs
         .iter()
-        .any(|(key, _)| key == "roles.orchestrator.workers");
-    let has_coordinator = ctx
+        .any(|(key, _)| key == "roles.orchestrator.models");
+    let has_orchestrator = ctx
         .settings()
         .roles
         .get(&RoleName::Orchestrator)
-        .is_some_and(|role| !role.workers.is_empty());
-    picks_crew && !names_coordinator && !has_coordinator
+        .is_some_and(|role| !role.models.is_empty());
+    picks_crew && !names_orchestrator && !has_orchestrator
 }
 
-fn save_gates(ctx: &mut Ctx, settings: &mut SettingsState, lines: &[String]) -> Handled {
-    settings.gates_answered = true;
-    let commands = gates::gate_commands(lines);
+fn save_checks(ctx: &mut Ctx, settings: &mut SettingsState, lines: &[String]) -> Handled {
+    settings.checks_answered = true;
+    let commands = checks::check_commands(lines);
     if commands.is_empty() {
         ctx.notice(
             NoteLevel::Info,
@@ -841,10 +893,10 @@ fn save_gates(ctx: &mut Ctx, settings: &mut SettingsState, lines: &[String]) -> 
     }
     let change = Change::Set(vec![(
         "checks.run".to_owned(),
-        gates::gates_value(&commands)?,
+        checks::checks_value(&commands)?,
     )]);
     refuse_unless_at_terminal(ctx, &change)?;
-    // The offer said gates are a safety setting, so answering it was the confirm.
+    // The offer said checks are a safety setting, so answering it was the confirm.
     trust_step(ctx, settings, change, SettingScope::Project)
 }
 

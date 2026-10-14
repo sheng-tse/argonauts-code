@@ -5,13 +5,13 @@ mod replay_support;
 
 use std::sync::Arc;
 
-use argonauts_core::limits::GateRunner;
+use argonauts_core::limits::CheckRunner;
 use argonauts_core::settings::evolution::EntryAcceptance;
 use argonauts_learning::LearningError;
 use argonauts_learning::replay::{SplitReason, holdout_draw, isolated_repo, score};
 
 use replay_support::{
-    Fixture, IDENTITY, RUN_SPEND_USD, ShellGates, files_under, git_in, holdout_share, seed_for,
+    Fixture, IDENTITY, RUN_SPEND_USD, ShellChecks, files_under, git_in, holdout_share, seed_for,
     settings,
 };
 
@@ -88,9 +88,9 @@ async fn replay_entry_needs_fail_then_pass() {
         "test -f src/missing.txt\n",
     );
     let settings = settings();
-    let gates = Arc::new(ShellGates::default());
+    let checks = Arc::new(ShellChecks::default());
 
-    let accepted = fixture.consider(&good, &settings, &gates).await.unwrap();
+    let accepted = fixture.consider(&good, &settings, &checks).await.unwrap();
     assert!(accepted.valid(), "{:?}", accepted.checks);
     let entries = fixture.set.entries().unwrap();
     assert_eq!(entries.len(), 1);
@@ -103,7 +103,7 @@ async fn replay_entry_needs_fail_then_pass() {
         (good.base.as_str(), good.merged.as_str())
     );
     assert_eq!(entry.test_command, ["sh", "tests/alpha.sh"]);
-    assert_eq!(entry.budget_usd, RUN_SPEND_USD);
+    assert_eq!(entry.limit_usd, RUN_SPEND_USD);
     assert_eq!(
         entry.tests,
         [fixture
@@ -118,7 +118,7 @@ async fn replay_entry_needs_fail_then_pass() {
         (&passes_at_base, "fails_at_base"),
         (&fails_when_merged, "passes_when_merged"),
     ] {
-        let proposal = fixture.consider(task, &settings, &gates).await.unwrap();
+        let proposal = fixture.consider(task, &settings, &checks).await.unwrap();
         assert!(!proposal.valid());
         let check = proposal
             .checks
@@ -135,7 +135,7 @@ async fn replay_entry_needs_fail_then_pass() {
     let mut asking = settings.clone();
     asking.evolution.replay.accept_entries = EntryAcceptance::Ask;
     let delta = fixture.task("delta");
-    let waiting = fixture.consider(&delta, &asking, &gates).await.unwrap();
+    let waiting = fixture.consider(&delta, &asking, &checks).await.unwrap();
     assert!(waiting.valid(), "{:?}", waiting.checks);
     assert_eq!(fixture.set.entries().unwrap().len(), 1);
     assert!(
@@ -150,8 +150,8 @@ async fn replay_entry_needs_fail_then_pass() {
     assert_eq!(fixture.set.entries().unwrap().len(), 2);
 
     assert!(files_under(&fixture.replay_dir().join("work")).is_empty());
-    assert!(fixture.consider(&good, &settings, &gates).await.is_none());
-    for (request, _) in gates.requests() {
+    assert!(fixture.consider(&good, &settings, &checks).await.is_none());
+    for (request, _) in checks.requests() {
         assert!(
             request
                 .workdir
@@ -186,13 +186,13 @@ async fn replay_entry_refuses_unseen_names() {
         "grep -q thrice src/lib.txt\n",
     );
     let settings = settings();
-    let gates = Arc::new(ShellGates::default());
+    let checks = Arc::new(ShellChecks::default());
 
     for (task, unseen) in [
         (&named_by_solution, "twice"),
         (&file_by_solution, "src/loader_conf.json"),
     ] {
-        let proposal = fixture.consider(task, &settings, &gates).await.unwrap();
+        let proposal = fixture.consider(task, &settings, &checks).await.unwrap();
         let check = proposal
             .checks
             .iter()
@@ -210,7 +210,7 @@ async fn replay_entry_refuses_unseen_names() {
     }
 
     let proposal = fixture
-        .consider(&named_by_request, &settings, &gates)
+        .consider(&named_by_request, &settings, &checks)
         .await
         .unwrap();
     assert!(proposal.valid(), "{:?}", proposal.checks);
@@ -234,9 +234,9 @@ async fn replay_split_is_seeded_and_recorded() {
     settings.evolution.replay.accept_entries = EntryAcceptance::Ask;
     settings.evolution.replay.holdout_tasks = 2;
     let share = holdout_share(&settings);
-    let gates = Arc::new(ShellGates::default());
+    let checks = Arc::new(ShellChecks::default());
     for task in &tasks {
-        fixture.consider(task, &settings, &gates).await.unwrap();
+        fixture.consider(task, &settings, &checks).await.unwrap();
     }
 
     let holdout_seed = seed_for(true, share);
@@ -284,7 +284,7 @@ async fn replay_split_is_seeded_and_recorded() {
         .map(|name| again.task(name))
         .to_vec();
     for task in &replayed {
-        again.consider(task, &settings, &gates).await.unwrap();
+        again.consider(task, &settings, &checks).await.unwrap();
     }
     let redrawn: Vec<bool> = replayed
         .iter()
@@ -357,8 +357,8 @@ async fn hidden_tests_never_reach_a_worktree() {
     let mut settings = settings();
     settings.evolution.replay.holdout_tasks = 0;
     let entry = fixture.accept(&[(&task, false)], &settings).await.remove(0);
-    let gates = Arc::new(ShellGates::default());
-    let runner_gates: Arc<dyn GateRunner> = gates.clone();
+    let checks = Arc::new(ShellChecks::default());
+    let runner_checks: Arc<dyn CheckRunner> = checks.clone();
 
     let agent_repo = isolated_repo(
         fixture.repo.root(),
@@ -381,7 +381,7 @@ async fn hidden_tests_never_reach_a_worktree() {
     let head = git_in(&agent_repo, &["rev-parse", "HEAD"]);
 
     assert!(
-        score(&entry, &agent_repo, &head, runner_gates.clone())
+        score(&entry, &agent_repo, &head, runner_checks.clone())
             .await
             .unwrap()
     );
@@ -400,7 +400,7 @@ async fn hidden_tests_never_reach_a_worktree() {
     let ever_committed = git_in(&agent_repo, &["log", "--all", "--name-only", "--format="]);
     assert!(!ever_committed.contains("alpha.sh"), "{ever_committed}");
 
-    let (request, files) = gates.requests().pop().unwrap();
+    let (request, files) = checks.requests().pop().unwrap();
     assert!(
         request
             .workdir
@@ -420,7 +420,7 @@ async fn hidden_tests_never_reach_a_worktree() {
     unsolved.set_file_name("unsolved");
     let unsolved = isolated_repo(fixture.repo.root(), &task.base, &unsolved).unwrap();
     assert!(
-        !score(&entry, &unsolved, &task.base, runner_gates)
+        !score(&entry, &unsolved, &task.base, runner_checks)
             .await
             .unwrap()
     );

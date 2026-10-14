@@ -1,8 +1,8 @@
-//! The OS sandbox around every harness session and gate: Seatbelt on macOS, Landlock with
+//! The OS sandbox around every CLI session and check: Seatbelt on macOS, Landlock with
 //! namespaces on Linux, or a container. With `sandbox.network` on, the commands a session runs
-//! reach the internet themselves; with it off, only the harness's own hosts, through the proxy.
+//! reach the internet themselves; with it off, only the CLI's own hosts, through the proxy.
 //! It writes only where the session's access allows, and fails closed: when the self-test fails,
-//! harness sessions are refused. Each role's `sandbox.mode` picks Argonauts' sandbox (`os` or
+//! CLI sessions are refused. Each role's `sandbox.mode` picks Argonauts Code's sandbox (`os` or
 //! `container`), each tool's own (`tool`), or none at all (`none`).
 
 pub mod container;
@@ -19,8 +19,8 @@ pub mod view;
 use std::sync::Arc;
 
 use argonauts_core::CommandSpec;
+use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
 use argonauts_core::settings::approvals::{SandboxChoice, SandboxSettings};
-use argonauts_core::worker::{SandboxMode, SandboxProfile};
 
 pub use profile::{ProfileInput, can_read, can_write, session_profile};
 pub use scope::{FORBIDDEN_PATHS, permission_scope};
@@ -105,7 +105,7 @@ fn describe_network(profile: &SandboxProfile) -> String {
 }
 
 /// No sandbox of ours: endpoints, and `sandbox.mode` set to `tool` or `none`, which
-/// `check_session` reports on every checkpoint.
+/// `check_session` reports on every approval.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Unsandboxed;
 

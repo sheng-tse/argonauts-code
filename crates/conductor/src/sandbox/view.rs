@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use argonauts_core::worker::SandboxProfile;
+use argonauts_core::session_runner::SandboxProfile;
 use serde::{Deserialize, Serialize};
 
 use super::profile::{PathRule, RuleKind, is_git_lock, ordered_rules};
@@ -181,7 +181,7 @@ fn hide(path: &Path, entry: Entry, pass: bool) -> Option<Step> {
 }
 
 /// Brings `path` back into view inside a hidden area. A folder is bound itself. A file is shown
-/// through its folder, since the conductor replaces some files by renaming a new one over them,
+/// through its folder, since Argonauts Code replaces some files by renaming a new one over them,
 /// and a bound file would keep showing the old one. The folder's other entries stay hidden.
 fn show(
     rules: &[PathRule],
@@ -324,7 +324,7 @@ impl Disk for RealDisk {
 mod tests {
     use std::collections::BTreeMap;
 
-    use argonauts_core::worker::SandboxMode;
+    use argonauts_core::session_runner::SandboxMode;
 
     use super::*;
 

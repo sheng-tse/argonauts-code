@@ -1,12 +1,17 @@
-//! Everything that goes into scrollback other than agent sessions and cards: the startup
-//! header, chat turns, milestones, settings changes, notices, recaps, narrator lines, and the
-//! condensed replay of a resumed run. Items print once, whole; only the chat answer streams.
+//! Everything that goes into scrollback other than agent sessions and tasks: the startup
+//! header, conversation turns, milestones, settings changes, notices, recaps, narrator lines, and
+//! the condensed replay of a resumed run. Items print once, whole; only the conversation answer
+//! streams.
 
-mod chat;
+#[cfg(test)]
+mod autopilot_picture_tests;
+#[cfg(test)]
+mod awake_picture_tests;
+mod checks;
+mod conversation;
 #[cfg(test)]
 mod crew_start_tests;
-mod gates;
-mod handoff;
+mod fallback;
 mod items;
 mod lifecycle;
 #[cfg(test)]
@@ -26,18 +31,23 @@ mod shell;
 mod status;
 mod steps;
 #[cfg(test)]
+mod templates_picture_tests;
+#[cfg(test)]
 mod tests;
 mod workflows;
+#[cfg(test)]
+mod working_line_picture_tests;
 
 use argonauts_core::app::{AppEvent, ViewData};
 use argonauts_core::{RunId, Verbosity};
 
-use crate::cell::Cell;
+use crate::cell::{Cell, UserMessage};
 use crate::format::WallClock;
+use crate::overview::ContextPrinted;
 
 use super::Cx;
 
-pub use chat::ChatTurns;
+pub use conversation::ConversationTurns;
 pub use replay::ReplayPrinter;
 pub use status::{NOTHING_RUNNING, status_cells, status_sections};
 
@@ -47,7 +57,7 @@ use shell::ShellBlocks;
 
 #[derive(Debug, Default)]
 pub struct Transcript {
-    pub chat: ChatTurns,
+    pub conversation: ConversationTurns,
     pub replay: ReplayPrinter,
     items: Items,
     milestones: Milestones,
@@ -66,7 +76,7 @@ impl Transcript {
 
     pub fn on_event(&mut self, event: &AppEvent, cx: &mut Cx<'_>) {
         let clock = &self.clock;
-        // These print nothing, so the header can go on waiting for the status line.
+        // These print nothing, so the header can go on waiting for the bottom line.
         match event {
             AppEvent::Welcome { .. }
             | AppEvent::Status { .. }
@@ -85,16 +95,36 @@ impl Transcript {
                 self.milestones
                     .on_run_event(event, &mut self.items, clock, cx)
             }
-            AppEvent::Chat { event } => self.chat.on_chat(event, clock, cx),
-            AppEvent::ChatResumed {
-                chat,
+            AppEvent::Conversation { event } => self.conversation.on_conversation(event, clock, cx),
+            AppEvent::ConversationResumed {
+                conversation,
                 title,
                 worker,
                 earlier,
                 turns,
                 ..
-            } => replay::chat_resumed(chat, title, worker.as_ref(), earlier, turns, cx),
+            } => replay::conversation_resumed(
+                conversation,
+                title,
+                worker.as_ref(),
+                earlier,
+                turns,
+                cx,
+            ),
             AppEvent::Report { title, lines } => items::report(title, lines, cx),
+            AppEvent::Switched { text, undo, caveat } => {
+                items::switched(text, undo.as_deref(), caveat.as_deref(), cx);
+            }
+            AppEvent::Templates { list } => {
+                let folder = crate::cell::TemplateFolder::new(list.folder.clone());
+                // The rows hang under the command that printed them, as Claude Code's do.
+                emit(cx, UserMessage::command("/templates"));
+                emit(
+                    cx,
+                    Cell::Custom(Box::new(crate::cell::TemplateRows::new(list.clone()))),
+                );
+                emit(cx, Cell::Custom(Box::new(folder)));
+            }
             AppEvent::Folded { title, lines, more } => items::folded(title, lines, more, cx),
             AppEvent::Record {
                 title,
@@ -122,18 +152,26 @@ impl Transcript {
             AppEvent::Notice { level, text } => self.items.notice(*level, text, cx),
             AppEvent::Narrator { line } => items::narrator(line, cx),
             AppEvent::Shell { event } => self.shell.on_event(event, cx),
-            AppEvent::View { data } => {
-                if let ViewData::Status { summary } = data.as_ref() {
+            AppEvent::View { data } => match data.as_ref() {
+                ViewData::Status { summary } => {
                     for cell in status_cells(summary, &cx.state.names) {
                         emit(cx, cell);
                     }
                 }
-            }
+                ViewData::ContextPrint { view } => {
+                    // The rows hang under the command that printed them, as Claude Code's do.
+                    emit(cx, UserMessage::command("/context print"));
+                    let now = crate::bottom::wall_now();
+                    let printed = ContextPrinted::of(view, cx.state, now);
+                    emit(cx, Cell::Custom(Box::new(printed)));
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
 
-    /// Anything you do prints the startup header first, if it still waits for the status line.
+    /// Anything you do prints the startup header first, if it still waits for the bottom line.
     pub fn print_header(&mut self, cx: &mut Cx<'_>) {
         self.items.print_header(cx);
     }

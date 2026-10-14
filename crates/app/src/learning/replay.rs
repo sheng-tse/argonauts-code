@@ -1,10 +1,10 @@
 //! Replays: the app's `ReplayRunner` and the background worker that drains the candidate
 //! queue. A replay is a supervised run in an isolated repo under the state folder, with the
-//! candidate version's settings, the replay's workers, its budget, and `merge.mode = "leave"`,
-//! so it never touches your repository. Its cards keep the task's hidden tests out of reach, and
+//! candidate version's settings, the replay's workers, its limit, and `merge.mode = "leave"`,
+//! so it never touches your repository. Its tasks keep the task's hidden tests out of reach, and
 //! its asks before the phase the change touches take what the task's own run answered. One
 //! replays at a time, while candidates wait and the month's `limits.evolution_usd_per_month`
-//! lasts; then each candidate that passes reaches the promotion checkpoint.
+//! lasts; then each candidate that passes reaches the promotion approval.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,20 +19,20 @@ use argonauts_core::events::run::{RunLifecycle, RunMode};
 use argonauts_core::events::session::SessionEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::future::BoxFuture;
-use argonauts_core::limits::GateRunner;
-use argonauts_core::names::WorkerRef;
+use argonauts_core::limits::CheckRunner;
+use argonauts_core::names::ModelRef;
 use argonauts_core::policy::ApprovalPolicy;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::crew::CrewSettings;
 use argonauts_crew::replay_terms::{self, ReplayTerms};
 use argonauts_learning::evolution::{self, Action, Candidate, CandidateState, Evolution, Stage};
-use argonauts_learning::recipes::{self, RecipeMode};
+use argonauts_learning::learned_workflows::{self, LearnedWorkflowMode};
 use argonauts_learning::replay::{self, ReplayRequest, ReplayRun, ReplayRunner, ReplaySet};
 use argonauts_learning::{LearningError, Store};
-use argonauts_registry::RecipeOverlay;
+use argonauts_registry::LearnedWorkflowOverlay;
 
+use super::learned_workflow::ForRun;
 use super::promotion::{self, Promotion};
-use super::recipe::ForRun;
 use crate::client::{Client, Launcher};
 use crate::env::AppEnv;
 
@@ -62,7 +62,7 @@ impl SupervisedReplays {
         }
     }
 
-    /// What the replay's cards keep hidden, and with `from_phase`, what the run its task came
+    /// What the replay's tasks keep hidden, and with `from_phase`, what the run its task came
     /// from answered before that phase. A log that's gone or unreadable leaves the whole run
     /// to the replay's workers.
     fn terms(&self, request: &ReplayRequest) -> ReplayTerms {
@@ -90,8 +90,8 @@ impl SupervisedReplays {
         let client = Client::new(env, Arc::clone(&self.launcher), false);
         let mut resolved = crate::client::resolve_settings(&client, &[], Some(overlay(request)?))?;
         fence(&mut resolved, &request.workers)?;
-        let mode = match request.recipe.recipe.mode {
-            Some(RecipeMode::Solo) => RunMode::Solo,
+        let mode = match request.learned_workflow.learned_workflow.mode {
+            Some(LearnedWorkflowMode::Captain) => RunMode::Captain,
             _ => RunMode::Crew,
         };
         let start = StartRun {
@@ -99,27 +99,28 @@ impl SupervisedReplays {
             mode,
             forced: true,
             estimate: None,
-            triage: None,
-            chat_turn: None,
+            captain_or_crew: None,
+            conversation_turn: None,
             continues: None,
             overrides: Vec::new(),
             include_uncommitted: false,
             main_agent: request.workers.first().cloned(),
             approval_mode: None,
-            front_end: Some("evolution".to_owned()),
+            outside_agent: Some("evolution".to_owned()),
             instructions: Vec::new(),
             request_settings: Vec::new(),
             required_steps: Vec::new(),
         };
-        let recipe = ForRun {
-            loaded: request.recipe.clone(),
+        let learned_workflow = ForRun {
+            loaded: request.learned_workflow.clone(),
             canary: false,
             replay: Some(self.terms(request)),
         };
         let began = Instant::now();
-        let handle = crate::client::start_resolved(&client, start, resolved, Some(&recipe))
-            .await
-            .map_err(|err| anyhow::anyhow!("{err}"))?;
+        let handle =
+            crate::client::start_resolved(&client, start, resolved, Some(&learned_workflow))
+                .await
+                .map_err(|err| anyhow::anyhow!("{err}"))?;
         let end = wait_for_end(&handle.events, self.poll, self.give_up).await;
         if end != End::Finished {
             // Nobody answers a replay, so whatever it waits on, its agents stop spending now.
@@ -131,16 +132,14 @@ impl SupervisedReplays {
         let head = match end {
             End::Finished => {
                 let state = argonauts_crew::state::RunState::fold(&events);
-                argonauts_crew::integrate::merge_packet::landing_branch_of(&state).and_then(
-                    |branch| {
-                        argonauts_learning::git::run(
-                            &request.repo,
-                            &["rev-parse", "--verify", &format!("{branch}^{{commit}}")],
-                        )
-                        .ok()
-                        .map(|sha| sha.trim().to_owned())
-                    },
-                )
+                argonauts_crew::merge::merge_packet::landing_branch_of(&state).and_then(|branch| {
+                    argonauts_learning::git::run(
+                        &request.repo,
+                        &["rev-parse", "--verify", &format!("{branch}^{{commit}}")],
+                    )
+                    .ok()
+                    .map(|sha| sha.trim().to_owned())
+                })
             }
             End::Asked | End::GaveUp => None,
         };
@@ -153,20 +152,20 @@ impl SupervisedReplays {
 }
 
 /// A replay's own terms over whatever your settings say. Only the replay's workers fill the
-/// crew and every role, with no handoff to anyone else, no narrator, and no retro proposal,
-/// and the goal and plan checkpoints follow your rules, since nobody answers a replay. A
+/// crew and every role, with no fallback to anyone else, no narrator, and no run review proposal,
+/// and the goal and plan approvals follow your rules, since nobody answers a replay. A
 /// worker that would still come from elsewhere refuses the replay.
 pub(crate) fn fence(
     resolved: &mut argonauts_registry::ResolvedSettings,
-    workers: &[WorkerRef],
+    workers: &[ModelRef],
 ) -> anyhow::Result<()> {
     let Some(first) = workers.first() else {
         anyhow::bail!("a replay needs at least one worker");
     };
     let settings = &mut resolved.settings;
-    settings.main_agent = first.clone();
     settings.crew = CrewSettings::of(workers.to_vec());
-    let no_fallbacks = |fallback: &mut argonauts_core::settings::handoff::HandoffSettings| {
+    settings.crew.main = first.clone();
+    let no_fallbacks = |fallback: &mut argonauts_core::settings::fallback::FallbackTable| {
         fallback.order.clear();
         fallback.replace.clear();
         fallback.summarizer = None;
@@ -174,22 +173,25 @@ pub(crate) fn fence(
     no_fallbacks(&mut settings.fallback);
     settings.fallback.roles.values_mut().for_each(no_fallbacks);
     for role in settings.roles.values_mut() {
-        role.workers = workers.to_vec();
+        role.models = workers.to_vec();
     }
     settings.ui.narrator = argonauts_core::settings::ui::NarratorMode::Off;
     settings.narrator.model = None;
-    // A replay is an evaluation: its retro proposes nothing and shares nothing.
+    // A replay is an evaluation: its run review proposes nothing and shares nothing.
     settings.evolution.propose_every = 0;
     settings.outcomes.share = false;
     replay_approvals(settings);
-    let approver = &settings.approvals.approver;
+    let judge_settings = &settings.approvals.judge;
     let named = argonauts_crew::workflow::runner::allowed_workers(settings)
         .into_iter()
         .chain(
-            approver_decides(settings)
+            judge_decides(settings)
                 .then(|| {
-                    let model = settings.approvals.approver_model();
-                    model.into_iter().chain(&approver.second_model).cloned()
+                    let model = settings.approvals.judge_model();
+                    model
+                        .into_iter()
+                        .chain(&judge_settings.second_model)
+                        .cloned()
                 })
                 .into_iter()
                 .flatten(),
@@ -201,7 +203,7 @@ pub(crate) fn fence(
                  same terms",
                 workers
                     .iter()
-                    .map(WorkerRef::to_string)
+                    .map(ModelRef::to_string)
                     .collect::<Vec<_>>()
                     .join(", ")
             );
@@ -212,25 +214,25 @@ pub(crate) fn fence(
     Ok(())
 }
 
-/// The goal and plan checkpoints of a replay follow your rules: nobody answers a replay, and
-/// it never merges. One the rules can't settle still waits, which ends the attempt.
+/// The goal and plan approvals of a replay follow your rules: nobody answers a replay, and
+/// it never merges. One the rules can't settle still waits, which ends the try.
 pub(crate) fn replay_approvals(settings: &mut Settings) {
     use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
     let approvals = &mut settings.approvals;
-    approvals.goal.mode = ApprovalMode::Auto;
-    approvals.goal.decide_with = DecideWith::Rules;
+    approvals.understand.mode = ApprovalMode::Auto;
+    approvals.understand.decide_with = DecideWith::Rules;
     approvals.plan.mode = ApprovalMode::Auto;
     approvals.plan.decide_with = DecideWith::Rules;
 }
 
-/// Whether a checkpoint a replay can open, left to auto mode, asks your approver model. A
-/// replay leaves its branch before the merge checkpoint, so that one never opens.
-fn approver_decides(settings: &Settings) -> bool {
+/// Whether an approval a replay can open, left to auto mode, asks your judge. A
+/// replay leaves its branch before the merge approval, so that one never opens.
+fn judge_decides(settings: &Settings) -> bool {
     use argonauts_core::settings::approvals::DecideWith;
     let a = &settings.approvals;
     [
-        (a.escalation.mode, a.escalation.decide_with),
-        (a.budget.mode, a.budget.decide_with),
+        (a.stuck.mode, a.stuck.decide_with),
+        (a.limit.mode, a.limit.decide_with),
         (a.change_request.mode, a.change_request.decide_with),
     ]
     .into_iter()
@@ -250,10 +252,10 @@ impl ReplayRunner for SupervisedReplays {
     }
 }
 
-/// The version's settings with the replay's workers, as a replay's preset layer: it never
-/// merges and spends at most the replay's budget.
-pub(crate) fn overlay(request: &ReplayRequest) -> anyhow::Result<RecipeOverlay> {
-    let mut table = recipes::settings_overlay(&request.recipe)?;
+/// The version's settings with the replay's workers, as a replay's workflow layer: it never
+/// merges and spends at most the replay's limit.
+pub(crate) fn overlay(request: &ReplayRequest) -> anyhow::Result<LearnedWorkflowOverlay> {
+    let mut table = learned_workflows::settings_overlay(&request.learned_workflow)?;
     if !request.workers.is_empty() {
         let crew = request
             .workers
@@ -262,11 +264,11 @@ pub(crate) fn overlay(request: &ReplayRequest) -> anyhow::Result<RecipeOverlay> 
             .collect();
         table.insert("crew".to_owned(), toml::Value::Array(crew));
     }
-    Ok(RecipeOverlay {
-        label: format!("replay of {}", request.recipe.reference()),
+    Ok(LearnedWorkflowOverlay {
+        label: format!("replay of {}", request.learned_workflow.reference()),
         settings: table.to_string(),
         canary: false,
-        replay_budget_usd: Some(request.budget_usd.max(0.0).ceil() as u64),
+        replay_limit_usd: Some(request.limit_usd.max(0.0).ceil() as u64),
     })
 }
 
@@ -274,7 +276,7 @@ pub(crate) fn overlay(request: &ReplayRequest) -> anyhow::Result<RecipeOverlay> 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum End {
     Finished,
-    /// A checkpoint waits for you, or the run parked: a replay has nobody to answer it.
+    /// An approval waits for you, or the run stopped to wait: a replay has nobody to answer it.
     Asked,
     /// Still going at `give_up`.
     GaveUp,
@@ -286,7 +288,7 @@ async fn wait_for_end(events: &Path, poll: Duration, give_up: Duration) -> End {
     let mut read = 0;
     loop {
         let text = std::fs::read(events).unwrap_or_default();
-        // Only whole lines: the supervisor may be halfway through writing the last one.
+        // Only whole lines: the run host may be halfway through writing the last one.
         let upto = text
             .iter()
             .rposition(|byte| *byte == b'\n')
@@ -311,18 +313,18 @@ async fn wait_for_end(events: &Path, poll: Duration, give_up: Duration) -> End {
     }
 }
 
-/// Whether `event` ends a replay's attempt.
+/// Whether `event` ends a replay's try.
 fn ends(event: &RunEvent) -> Option<End> {
-    use argonauts_core::events::checkpoint::CheckpointEvent;
+    use argonauts_core::events::approval::ApprovalEvent;
     use argonauts_core::policy::Verdict;
     match &event.kind {
         RunEventKind::Run(RunLifecycle::Finished { .. }) => Some(End::Finished),
-        RunEventKind::Run(RunLifecycle::Parked { .. }) => Some(End::Asked),
-        RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) if opened.needs_you => {
+        RunEventKind::Run(RunLifecycle::Waiting { .. }) => Some(End::Asked),
+        RunEventKind::Approval(ApprovalEvent::Opened(opened)) if opened.needs_you => {
             Some(End::Asked)
         }
-        RunEventKind::Checkpoint(CheckpointEvent::Checked(check))
-            if !check.shadow
+        RunEventKind::Approval(ApprovalEvent::Checked(check))
+            if !check.auto_preview
                 && !matches!(check.verdict, Some(Verdict::Approve | Verdict::Reject)) =>
         {
             Some(End::Asked)
@@ -353,9 +355,9 @@ fn spent(events: &[RunEvent]) -> f64 {
 /// What one turn of the worker did.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Turn {
-    /// Nothing queued, the stage doesn't replay, or the month's budget is spent.
+    /// Nothing queued, the stage doesn't replay, or the month's limit is spent.
     Idle(String),
-    /// A candidate was replayed; the loop's actions, and the promotion checkpoint's result when
+    /// A candidate was replayed; the loop's actions, and the promotion approval's result when
     /// it reached one.
     Replayed {
         candidate: String,
@@ -365,13 +367,13 @@ pub(crate) enum Turn {
 }
 
 /// Replays the candidate whose replay is under way, else the oldest queued one, if the stage
-/// and the month's budget allow, and takes a passing one to the promotion checkpoint. A replay
-/// the budget stops books what it spent and waits for next month.
+/// and the month's limit allow, and takes a passing one to the promotion approval. A replay
+/// the limit stops books what it spent and waits for next month.
 pub(crate) async fn replay_next(
     store: &Store,
     settings: &Settings,
     runner: Arc<dyn ReplayRunner>,
-    gates: Arc<dyn GateRunner>,
+    checks: Arc<dyn CheckRunner>,
     policy: &dyn ApprovalPolicy,
 ) -> anyhow::Result<Turn> {
     if !matches!(evolution::stage(settings), Stage::Evolve | Stage::Auto) {
@@ -379,7 +381,7 @@ pub(crate) async fn replay_next(
     }
     let evolution = Evolution::open(store)?;
     let spent = super::or_empty(evolution.spent_this_month(OffsetDateTime::now_utc()))?;
-    // Without a monthly limit, each replay run still keeps to its own budget.
+    // Without a monthly limit, each replay run still keeps to its own limit.
     let left = settings
         .limits
         .evolution_usd_per_month
@@ -403,19 +405,19 @@ pub(crate) async fn replay_next(
             )
         })?;
     // The candidate's own files, as the loop wrote them, never rebuilt from its change.
-    let child = evolution.candidate_recipe(&candidate.id)?;
+    let child = evolution.candidate_learned_workflow(&candidate.id)?;
     let set = ReplaySet::open(store)?;
     let versions = replay::Versions {
         parent: &parent,
         child: &child,
         thresholds: &candidate.thresholds,
     };
-    let report = replay::replay(&set, versions, settings, left, runner, gates).await?;
-    if report.out_of_budget {
+    let report = replay::replay(&set, versions, settings, left, runner, checks).await?;
+    if report.at_limit {
         let told = evolution.replay_paused(&candidate.id, report.spent_usd)?;
         let text = told
             .iter()
-            .map(|action| argonauts_crew::retro::action_note(action).text)
+            .map(|action| argonauts_crew::run_review::action_note(action).text)
             .collect::<Vec<_>>()
             .join(" ");
         return Ok(Turn::Idle(text));
@@ -430,7 +432,7 @@ pub(crate) async fn replay_next(
         } = action
             && let Some(asked) = evolution.candidate(id)?
         {
-            promotion = Some(promotion::checkpoint(policy, &evolution, &asked, packet).await?);
+            promotion = Some(promotion::approval(policy, &evolution, &asked, packet).await?);
         }
     }
     Ok(Turn::Replayed {
@@ -440,7 +442,7 @@ pub(crate) async fn replay_next(
     })
 }
 
-/// The candidate replaying already, which a retro may have handed out, else the oldest queued
+/// The candidate replaying already, which a run review may have handed out, else the oldest queued
 /// one, handed out the same way, so two never replay at once.
 fn next_candidate(evolution: &Evolution, settings: &Settings) -> anyhow::Result<Option<Candidate>> {
     let replaying = |candidates: Vec<Candidate>| {
@@ -460,11 +462,11 @@ const CONSIDERED: &str = "considered.json";
 
 /// Checks each merged run the outcome log names, once, for the replay set: under
 /// `accept_entries = "auto"` one that passes joins at once, and under "ask" it waits for you in
-/// /learned and the inbox. Returns the tasks proposed.
+/// /learned and `argonauts approvals`. Returns the tasks proposed.
 pub(crate) async fn consider_merged(
     store: &Store,
     settings: &Settings,
-    gates: Arc<dyn GateRunner>,
+    checks: Arc<dyn CheckRunner>,
 ) -> anyhow::Result<Vec<String>> {
     use argonauts_core::events::run::RunOutcome;
     use argonauts_learning::outcomes::{self, LogLine};
@@ -487,7 +489,7 @@ pub(crate) async fn consider_merged(
         if !considered.insert(run.as_str().to_owned()) {
             continue;
         }
-        match set.consider(&run, settings, Arc::clone(&gates)).await {
+        match set.consider(&run, settings, Arc::clone(&checks)).await {
             Ok(Some(proposal)) => proposed.push(proposal.entry.id),
             Ok(None) => {}
             Err(err) => tracing::warn!("run {run} wasn't checked for the replay set: {err}"),
@@ -533,8 +535,8 @@ async fn drain(
     let store = super::store(env);
     let launcher: Arc<dyn Launcher> = Arc::new(crate::client::ProcessLauncher::current()?);
     let runner: Arc<dyn ReplayRunner> = Arc::new(SupervisedReplays::new(env, launcher));
-    let gates = argonauts_conductor::gate_runner(Arc::clone(settings));
-    if let Err(err) = consider_merged(&store, settings, Arc::clone(&gates)).await {
+    let checks = argonauts_conductor::check_runner(Arc::clone(settings));
+    if let Err(err) = consider_merged(&store, settings, Arc::clone(&checks)).await {
         tracing::warn!("merged runs weren't checked for the replay set: {err:#}");
     }
     loop {
@@ -542,7 +544,7 @@ async fn drain(
             &store,
             settings,
             Arc::clone(&runner),
-            Arc::clone(&gates),
+            Arc::clone(&checks),
             policy,
         )
         .await
@@ -564,30 +566,32 @@ mod tests {
 
     use argonauts_core::RunId;
     use argonauts_core::events::run::RunOutcome;
-    use argonauts_core::names::WorkerRef;
+    use argonauts_core::names::ModelRef;
     use argonauts_core::settings::agents::EndpointSettings;
-    use argonauts_core::steps::card::ProcessChange;
-    use argonauts_learning::recipes::{ChangeClass, LoadedRecipe, Match, Recipe};
+    use argonauts_core::steps::task::ProcessChange;
+    use argonauts_learning::learned_workflows::{
+        ChangeClass, LearnedWorkflow, LoadedLearnedWorkflow, Match,
+    };
     use argonauts_learning::replay::{Check, Entry, Proposal, holdout_draw};
-    use argonauts_learning::{RecipeRef, RunRecord};
+    use argonauts_learning::{LearnedWorkflowRef, RunRecord};
     use argonauts_testkit::repo::TempRepo;
 
     use super::*;
 
-    fn parent() -> LoadedRecipe {
+    fn parent() -> LoadedLearnedWorkflow {
         let mut settings = std::collections::BTreeMap::new();
         settings.insert(
             "critique".to_owned(),
             serde_json::json!({"rounds": 1, "checklist": ["criteria"]}),
         );
-        LoadedRecipe {
-            recipe: Recipe {
-                recipe: "api-feature".to_owned(),
+        LoadedLearnedWorkflow {
+            learned_workflow: LearnedWorkflow {
+                name: "api-feature".to_owned(),
                 version: 4,
                 parent: Some(3),
                 description: "HTTP endpoints".to_owned(),
                 workflow: None,
-                mode: Some(RecipeMode::Crew),
+                mode: Some(LearnedWorkflowMode::Crew),
                 phases: Some("council".to_owned()),
                 matches: Match::default(),
                 prompts: Default::default(),
@@ -634,7 +638,7 @@ mod tests {
                       critique: { rounds: 1, checklist: [criteria, testability] }\n";
 
     /// A repo with `api-feature` v1 in its checkout and `tasks` tuning tasks in the replay set,
-    /// each with a $1 budget, under settings whose one worker is an endpoint you let bill.
+    /// each with a $1 limit, under settings whose one worker is an endpoint you let bill.
     struct World {
         repo: TempRepo,
         store: Store,
@@ -667,7 +671,7 @@ mod tests {
                         merged: base.clone(),
                         tests: Vec::new(),
                         test_command: vec!["true".to_owned()],
-                        budget_usd: 1.0,
+                        limit_usd: 1.0,
                         holdout: false,
                         accepted: OffsetDateTime::UNIX_EPOCH,
                     },
@@ -687,7 +691,7 @@ mod tests {
                 assert!(!entry.holdout);
             }
             let mut settings = Settings::default();
-            let worker = WorkerRef::new("openrouter", Some("open-model".to_owned()));
+            let worker = ModelRef::new("openrouter", Some("open-model".to_owned()));
             settings.endpoints.insert(
                 "openrouter".to_owned(),
                 EndpointSettings {
@@ -696,7 +700,7 @@ mod tests {
                 },
             );
             settings.crew = CrewSettings::of(vec![worker.clone()]);
-            settings.main_agent = worker;
+            settings.crew.main = worker;
             Self {
                 repo,
                 store,
@@ -708,20 +712,20 @@ mod tests {
             Evolution::open(&self.store).unwrap()
         }
 
-        /// What a run of v1 whose retro proposed `setting = value` leaves the loop with.
+        /// What a run of v1 whose run review proposed `setting = value` leaves the loop with.
         fn propose(&self, setting: &str, value: &str) -> Candidate {
             let count = self.evolution().candidates().unwrap().len();
             let run = RunRecord {
                 run: RunId::new(format!("run-1{count:02}")).unwrap(),
                 at: OffsetDateTime::now_utc(),
                 task_type: "backend".to_owned(),
-                recipe: Some(RecipeRef {
+                learned_workflow: Some(LearnedWorkflowRef {
                     name: "api-feature".to_owned(),
                     version: 1,
                 }),
                 workflow: None,
                 outcome: RunOutcome::Merged,
-                escalations: 0,
+                stuck_tasks: 0,
                 final_checks_passed: true,
                 cost_usd: 1.0,
                 minutes: 5.0,
@@ -744,12 +748,12 @@ mod tests {
 
         async fn turn(&self, fake: &Arc<Fake>) -> Turn {
             let runner: Arc<dyn ReplayRunner> = fake.clone();
-            let gates = argonauts_conductor::gate_runner(Arc::new(self.settings.clone()));
+            let checks = argonauts_conductor::check_runner(Arc::new(self.settings.clone()));
             let policy = crate::commands::policy_for_state(
                 &self.store.state_dir,
                 Arc::new(self.settings.clone()),
             );
-            replay_next(&self.store, &self.settings, runner, gates, policy.as_ref())
+            replay_next(&self.store, &self.settings, runner, checks, policy.as_ref())
                 .await
                 .unwrap()
         }
@@ -758,7 +762,7 @@ mod tests {
     fn requests_for(fake: &Fake, version: u32) -> Vec<ReplayRequest> {
         fake.asked()
             .into_iter()
-            .filter(|request| request.recipe.recipe.version == version)
+            .filter(|request| request.learned_workflow.learned_workflow.version == version)
             .collect()
     }
 
@@ -767,8 +771,8 @@ mod tests {
     }
 
     /// A checklist item added is the whole list with one more item, as the candidate's own
-    /// file has it, never the one item alone. The retro's hand-off already marked it replaying,
-    /// and the worker takes it from there.
+    /// file has it, never the one item alone. The run review already marked it replaying
+    /// when it passed it on, and the worker takes it from there.
     #[tokio::test]
     async fn a_checklist_item_candidate_replays_as_written() {
         let world = World::new(2);
@@ -791,10 +795,13 @@ mod tests {
         assert!(!asked.is_empty());
         for request in &asked {
             assert_eq!(
-                request.recipe.recipe.settings["critique"]["checklist"],
+                request.learned_workflow.learned_workflow.settings["critique"]["checklist"],
                 serde_json::json!(["criteria", "testability", "names the risk"])
             );
-            assert_eq!(request.recipe.recipe.settings["critique"]["rounds"], 1);
+            assert_eq!(
+                request.learned_workflow.learned_workflow.settings["critique"]["rounds"],
+                1
+            );
             assert_eq!(
                 overlay_of(request)["critique"]["checklist"]
                     .as_array()
@@ -806,13 +813,13 @@ mod tests {
         let parent = requests_for(&fake, 1);
         assert_eq!(parent.len(), asked.len());
         assert_eq!(
-            parent[0].recipe.recipe.settings["critique"]["checklist"],
+            parent[0].learned_workflow.learned_workflow.settings["critique"]["checklist"],
             serde_json::json!(["criteria", "testability"])
         );
     }
 
     /// A drafting prompt candidate replays with its own template, read from the candidate's
-    /// folder in the conductor's state by its full path, since neither your checkout nor the
+    /// folder in Argonauts Code's state by its full path, since neither your checkout nor the
     /// isolated repo has it.
     #[tokio::test]
     async fn a_drafting_prompt_candidate_replays_with_its_own_template() {
@@ -849,11 +856,11 @@ mod tests {
         );
     }
 
-    /// The month's budget stops a replay part way: it books what it spent, keeps replaying,
+    /// The month's limit stops a replay part way: it books what it spent, keeps replaying,
     /// never reaches the comparison with part of its results, and carries on where it stopped
-    /// when there's budget again, booking only the rest.
+    /// when there's limit again, booking only the rest.
     #[tokio::test]
-    async fn a_replay_the_budget_stops_waits_without_a_verdict() {
+    async fn a_replay_the_limit_stops_waits_without_a_verdict() {
         let mut world = World::new(3);
         world.settings.limits.evolution_usd_per_month = Some(3.0);
         let candidate = world.propose("critique.rounds", "2");
@@ -902,11 +909,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_worker_waits_when_the_stage_or_the_budget_says_so() {
+    async fn the_worker_waits_when_the_stage_or_the_limit_says_so() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("state"), dir.path().join("repo"));
         let runner: Arc<dyn ReplayRunner> = Arc::new(Fake::default());
-        let gates = argonauts_conductor::gate_runner(Arc::new(Settings::default()));
+        let checks = argonauts_conductor::check_runner(Arc::new(Settings::default()));
         let policy = crate::commands::policy_for_state(
             &dir.path().join("state"),
             Arc::new(Settings::default()),
@@ -917,7 +924,7 @@ mod tests {
             &store,
             &settings,
             Arc::clone(&runner),
-            Arc::clone(&gates),
+            Arc::clone(&checks),
             policy.as_ref(),
         )
         .await
@@ -929,15 +936,21 @@ mod tests {
             &store,
             &settings,
             Arc::clone(&runner),
-            Arc::clone(&gates),
+            Arc::clone(&checks),
             policy.as_ref(),
         )
         .await
         .unwrap();
         assert!(matches!(turn, Turn::Idle(why) if why.contains("limit")));
-        let turn = replay_next(&store, &Settings::default(), runner, gates, policy.as_ref())
-            .await
-            .unwrap();
+        let turn = replay_next(
+            &store,
+            &Settings::default(),
+            runner,
+            checks,
+            policy.as_ref(),
+        )
+        .await
+        .unwrap();
         assert!(matches!(turn, Turn::Idle(why) if why.contains("no candidate")));
     }
 
@@ -952,27 +965,27 @@ mod tests {
                 merged: "b".repeat(40),
                 tests: Vec::new(),
                 test_command: Vec::new(),
-                budget_usd: 7.5,
+                limit_usd: 7.5,
                 holdout: false,
                 accepted: OffsetDateTime::UNIX_EPOCH,
             },
-            recipe: parent(),
+            learned_workflow: parent(),
             repo: PathBuf::from("/nowhere"),
-            budget_usd: 7.5,
+            limit_usd: 7.5,
             from_phase: None,
-            workers: vec![WorkerRef::new("codex", None)],
+            workers: vec![ModelRef::new("codex", None)],
             hidden_paths: vec!["tests/limits.rs".to_owned(), "/state/replay".to_owned()],
         }
     }
 
-    /// The log of a run whose goal phase asked one restater, which answered.
+    /// The log of a run whose Understand phase asked one reader, which answered.
     fn answered_run(env: &AppEnv, run: &RunId) {
         use argonauts_core::events::session::{EndReason, SessionEnd, SessionStarted};
         use argonauts_core::events::workflow::{StepStarted, WorkflowEvent, WorkflowStarted};
-        use argonauts_core::names::{RoleName, SessionKey, VendorId, WorkflowId};
+        use argonauts_core::names::{AgentId, RoleName, SessionKey, WorkflowId};
+        use argonauts_core::session_runner::{Access, RunnerKind};
         use argonauts_core::settings::sessions::SessionLifetime;
         use argonauts_core::steps::StepName;
-        use argonauts_core::worker::{Access, WorkerKind};
         use argonauts_core::workflow::{StandardPhase, StepKind, StepRef};
         let id = WorkflowId::numbered(1);
         let step = StepRef {
@@ -987,21 +1000,21 @@ mod tests {
                 from: None,
                 version: "v1".to_owned(),
                 parent: None,
-                workflow: argonauts_crew::workflow::builtin::load("solo").unwrap(),
+                workflow: argonauts_crew::workflow::builtin::load("captain").unwrap(),
             }))),
             RunEventKind::Workflow(WorkflowEvent::StepStarted(StepStarted {
                 step: step.clone(),
-                kind: StepKind::Restate,
+                kind: StepKind::Read,
                 standard: StandardPhase::Understand,
                 round: 1,
             })),
             RunEventKind::Session(SessionEvent::Started(Box::new(SessionStarted {
-                worker: WorkerRef::new("claude-code", None),
-                vendor: VendorId("claude-code".to_owned()),
-                family: "claude".to_owned(),
-                kind: WorkerKind::Harness,
+                worker: ModelRef::new("claude-code", None),
+                agent_id: AgentId("claude-code".to_owned()),
+                provider: "anthropic".to_owned(),
+                kind: RunnerKind::Cli,
                 role: RoleName::Main,
-                step: Some(StepName::Restate),
+                step: Some(StepName::Read),
                 access: Access::ReadOnly,
                 lifetime: SessionLifetime::Task,
                 resumed_from: None,
@@ -1025,9 +1038,9 @@ mod tests {
                 seq: seq as u64,
                 ts: OffsetDateTime::UNIX_EPOCH,
                 run_id: run.clone(),
-                card_id: None,
+                task_id: None,
                 session,
-                source: "conductor".to_owned(),
+                source: "argonauts-code".to_owned(),
                 kind,
             };
             log.push_str(&serde_json::to_string(&event).unwrap());
@@ -1036,7 +1049,7 @@ mod tests {
         std::fs::write(dir.join(argonauts_core::layout::run_files::EVENTS), log).unwrap();
     }
 
-    /// A replay's cards always keep the request's hidden paths. With a phase to start from, it
+    /// A replay's tasks always keep the request's hidden paths. With a phase to start from, it
     /// reuses what the task's own run answered before that phase, from your repository's runs;
     /// a run whose log is gone, or one asked to replay whole, reuses nothing.
     #[test]
@@ -1058,7 +1071,7 @@ mod tests {
         answered_run(&env, &request.entry.run);
         let terms = replays.terms(&request);
         assert_eq!(terms.hidden_paths, request.hidden_paths);
-        let reuse = terms.reuse.expect("the goal phase's answer");
+        let reuse = terms.reuse.expect("the Understand phase's answer");
         assert_eq!(reuse.run, request.entry.run);
         assert_eq!(reuse.from, StandardPhase::Do);
         assert_eq!(reuse.answers.len(), 1);
@@ -1071,10 +1084,10 @@ mod tests {
     }
 
     #[test]
-    fn a_replay_never_merges_and_keeps_to_its_budget() {
+    fn a_replay_never_merges_and_keeps_to_its_limit() {
         let request = request();
         let overlay = overlay(&request).unwrap();
-        assert_eq!(overlay.replay_budget_usd, Some(8));
+        assert_eq!(overlay.replay_limit_usd, Some(8));
         assert!(
             overlay.settings.contains("crew = [\"codex\"]"),
             "{}",
@@ -1093,43 +1106,46 @@ mod tests {
         }
     }
 
-    /// Only the replay's workers work in it, whatever your roles, handoffs, or narrator name,
-    /// and its goal and plan checkpoints follow your rules. The settings' hash is the fenced
+    /// Only the replay's workers work in it, whatever your roles, fallbacks, or narrator name,
+    /// and its goal and plan approvals follow your rules. The settings' hash is the fenced
     /// settings' own.
     #[test]
     fn a_replay_runs_only_its_workers_and_answers_to_rules() {
         use argonauts_core::names::RoleName;
         use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
-        use argonauts_core::settings::handoff::{CrewRole, FallbackEntry};
-        let open = WorkerRef::new("openrouter", Some("open-model".to_owned()));
-        let subscription = WorkerRef::new("claude-code", None);
+        use argonauts_core::settings::crew::CrewRole;
+        use argonauts_core::settings::fallback::FallbackEntry;
+        let open = ModelRef::new("openrouter", Some("open-model".to_owned()));
+        let subscription = ModelRef::new("claude-code", None);
         let mut settings = Settings {
-            crew: vec![subscription.clone()].into(),
-            main_agent: subscription.clone(),
+            crew: CrewSettings {
+                main: subscription.clone(),
+                ..CrewSettings::of(vec![subscription.clone()])
+            },
             ..Settings::default()
         };
         let reviewer = settings.roles.entry(RoleName::Reviewer).or_default();
-        reviewer.workers = vec![subscription.clone()];
+        reviewer.models = vec![subscription.clone()];
         let reviewers = settings
             .fallback
             .roles
-            .entry(CrewRole::Reviewers)
+            .entry(CrewRole::Reviewer)
             .or_default();
-        reviewers.order = vec![FallbackEntry::Worker(subscription.clone())];
-        settings.fallback.order = vec![FallbackEntry::Worker(subscription.clone())];
+        reviewers.order = vec![FallbackEntry::Model(subscription.clone())];
+        settings.fallback.order = vec![FallbackEntry::Model(subscription.clone())];
         settings.fallback.summarizer = Some(subscription.clone());
         settings.narrator.model = Some(subscription.clone());
         let mut fenced = resolved(settings);
         fence(&mut fenced, std::slice::from_ref(&open)).unwrap();
         let settings = &fenced.settings;
         assert_eq!(settings.crew.members(), std::slice::from_ref(&open));
-        assert_eq!(settings.main_agent, open);
+        assert_eq!(settings.crew.main, open);
         assert_eq!(
-            settings.roles[&RoleName::Reviewer].workers,
+            settings.roles[&RoleName::Reviewer].models,
             std::slice::from_ref(&open)
         );
         assert!(
-            settings.fallback.roles[&CrewRole::Reviewers]
+            settings.fallback.roles[&CrewRole::Reviewer]
                 .order
                 .is_empty()
         );
@@ -1139,8 +1155,8 @@ mod tests {
         assert_eq!(settings.evolution.propose_every, 0);
         for (mode, with) in [
             (
-                settings.approvals.goal.mode,
-                settings.approvals.goal.decide_with,
+                settings.approvals.understand.mode,
+                settings.approvals.understand.decide_with,
             ),
             (
                 settings.approvals.plan.mode,
@@ -1155,12 +1171,12 @@ mod tests {
             argonauts_core::sha256_hex(argonauts_core::canonical_json(&json).as_bytes())
         );
 
-        // An approver model your auto checkpoints ask would work in it too, so it's refused.
-        let mut asks_approver = Settings::default();
-        asks_approver.approvals.escalation.mode = ApprovalMode::Auto;
-        asks_approver.approvals.escalation.decide_with = DecideWith::Model;
-        asks_approver.approvals.decides = subscription.clone().into();
-        let refused = fence(&mut resolved(asks_approver), std::slice::from_ref(&open));
+        // A judge your auto approvals ask would work in it too, so it's refused.
+        let mut asks_judge = Settings::default();
+        asks_judge.approvals.stuck.mode = ApprovalMode::Auto;
+        asks_judge.approvals.stuck.decide_with = DecideWith::Model;
+        asks_judge.approvals.decides = subscription.clone().into();
+        let refused = fence(&mut resolved(asks_judge), std::slice::from_ref(&open));
         assert!(
             refused
                 .as_ref()
@@ -1175,36 +1191,36 @@ mod tests {
             seq: 1,
             ts: OffsetDateTime::UNIX_EPOCH,
             run_id: RunId::new("run-01").unwrap(),
-            card_id: None,
+            task_id: None,
             session: None,
-            source: "conductor".to_owned(),
+            source: "argonauts-code".to_owned(),
             kind,
         };
         format!("{}\n", serde_json::to_string(&event).unwrap())
     }
 
-    /// A finished run ends the wait; so does the first checkpoint that waits for you, opened
-    /// that way or escalated, since nobody answers a replay. A half-written last line waits
+    /// A finished run ends the wait; so does the first approval that waits for you, opened
+    /// that way or left to you, since nobody answers a replay. A half-written last line waits
     /// for the rest of it.
     #[tokio::test]
-    async fn a_replay_attempt_ends_at_the_first_checkpoint_that_asks() {
-        use argonauts_core::events::checkpoint::CheckpointEvent;
+    async fn a_replay_try_ends_at_the_first_approval_that_asks() {
+        use argonauts_core::events::approval::ApprovalEvent;
         use argonauts_core::events::run::RunOutcome;
-        use argonauts_core::names::CheckpointId;
+        use argonauts_core::names::ApprovalId;
         use argonauts_core::policy::Verdict;
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("events.jsonl");
         let poll = Duration::from_millis(5);
-        let check = |verdict: Verdict, shadow: bool| {
-            line(RunEventKind::Checkpoint(CheckpointEvent::Checked(
-                argonauts_core::events::checkpoint::PolicyCheck {
-                    id: CheckpointId::numbered(1),
+        let check = |verdict: Verdict, auto_preview: bool| {
+            line(RunEventKind::Approval(ApprovalEvent::Checked(
+                argonauts_core::events::approval::PolicyCheck {
+                    id: ApprovalId::numbered(1),
                     violations: Vec::new(),
                     verdict: Some(verdict),
                     by: None,
-                    approver: None,
+                    judge: None,
                     reasons: Vec::new(),
-                    shadow,
+                    auto_preview,
                 },
             )))
         };
@@ -1223,21 +1239,13 @@ mod tests {
             End::Finished
         );
 
-        std::fs::write(
-            &log,
-            format!("{}{finished}", check(Verdict::Escalate, true)),
-        )
-        .unwrap();
+        std::fs::write(&log, format!("{}{finished}", check(Verdict::AskYou, true))).unwrap();
         assert_eq!(
             wait_for_end(&log, poll, Duration::from_secs(5)).await,
             End::Finished
         );
 
-        std::fs::write(
-            &log,
-            format!("{}{finished}", check(Verdict::Escalate, false)),
-        )
-        .unwrap();
+        std::fs::write(&log, format!("{}{finished}", check(Verdict::AskYou, false))).unwrap();
         assert_eq!(
             wait_for_end(&log, poll, Duration::from_secs(5)).await,
             End::Asked
@@ -1256,14 +1264,14 @@ mod tests {
         );
     }
 
-    /// Runs each gate's command in its folder, outside any sandbox.
-    struct ShellGates;
+    /// Runs each check's command in its folder, outside any sandbox.
+    struct ShellChecks;
 
-    impl GateRunner for ShellGates {
+    impl CheckRunner for ShellChecks {
         fn run(
             &self,
-            request: argonauts_core::limits::GateRequest,
-        ) -> BoxFuture<'_, argonauts_core::events::GateOutcome> {
+            request: argonauts_core::limits::CheckRequest,
+        ) -> BoxFuture<'_, argonauts_core::events::CheckOutcome> {
             let output = request.command.split_first().map(|(program, args)| {
                 std::process::Command::new(program)
                     .args(args)
@@ -1271,9 +1279,9 @@ mod tests {
                     .output()
             });
             let passed = matches!(output, Some(Ok(ref output)) if output.status.success());
-            let outcome = argonauts_core::events::GateOutcome {
+            let outcome = argonauts_core::events::CheckOutcome {
                 name: request.name.clone(),
-                kind: argonauts_core::events::card::GateKind::Command,
+                kind: argonauts_core::events::task::CheckKind::Command,
                 passed,
                 command: Some(request.command.clone()),
                 exit_code: Some(i32::from(!passed)),
@@ -1291,11 +1299,11 @@ mod tests {
     /// Commits a feature and its test as one merged change, and leaves what the run that merged
     /// it leaves: its journal and its run line.
     fn merged_run(repo: &TempRepo, store: &Store, n: u32, name: &str) -> RunId {
-        use argonauts_core::budget::Spend;
-        use argonauts_core::events::card::GateKind;
+        use argonauts_core::events::agent_status::RunSpend;
         use argonauts_core::events::run::RunStarted;
-        use argonauts_core::events::vendor::RunBudget;
-        use argonauts_core::events::{BudgetEvent, GateOutcome, IntegrationEvent, ReviewEvent};
+        use argonauts_core::events::task::CheckKind;
+        use argonauts_core::events::{CheckOutcome, MergeEvent, ReviewEvent, SpendEvent};
+        use argonauts_core::meter::Spend;
         use argonauts_core::steps::intake::ChangeEstimate;
         let request = format!("Add the {name} feature in src/{name}.txt");
         let test = format!("tests/{name}.sh");
@@ -1320,8 +1328,8 @@ mod tests {
                 tests_exist: true,
                 unknowns: Vec::new(),
             }),
-            triage: None,
-            chat_turn: None,
+            captain_or_crew: None,
+            conversation_turn: None,
             continues: None,
             repo_root: repo.root().to_path_buf(),
             base_branch: Some("main".to_owned()),
@@ -1331,22 +1339,22 @@ mod tests {
             settings_sha256: String::new(),
             settings: serde_json::Value::Null,
             overrides: Vec::new(),
-            harness_versions: Default::default(),
+            cli_versions: Default::default(),
             version: "0.0.1".to_owned(),
-            front_end: None,
+            outside_agent: None,
             instructions: Vec::new(),
             required_steps: Vec::new(),
         };
         let kinds = vec![
             RunEventKind::Run(RunLifecycle::Started(Box::new(started))),
             RunEventKind::Review(ReviewEvent::TestsWritten {
-                reviewer: WorkerRef::new("codex", None),
-                for_card: argonauts_core::CardId::numbered(1),
+                reviewer: ModelRef::new("codex", None),
+                for_task: argonauts_core::TaskId::numbered(1),
                 files: vec![test.clone()],
             }),
-            RunEventKind::Gate(GateOutcome {
+            RunEventKind::Check(CheckOutcome {
                 name: "suite".to_owned(),
-                kind: GateKind::FullSuite,
+                kind: CheckKind::FullSuite,
                 passed: true,
                 command: Some(vec!["sh".to_owned(), test]),
                 exit_code: Some(0),
@@ -1357,7 +1365,7 @@ mod tests {
                 sandboxed: true,
                 skipped: false,
             }),
-            RunEventKind::Budget(BudgetEvent::Run(RunBudget {
+            RunEventKind::Spend(SpendEvent::Run(RunSpend {
                 spent: Spend {
                     cost_usd: 1.0,
                     ..Spend::default()
@@ -1366,7 +1374,7 @@ mod tests {
                 lines: Vec::new(),
                 reserve_left: None,
             })),
-            RunEventKind::Integration(IntegrationEvent::Landed {
+            RunEventKind::Merge(MergeEvent::RunMerged {
                 target: "main".to_owned(),
                 sha: merged,
                 fast_forward: true,
@@ -1378,9 +1386,9 @@ mod tests {
                 seq: seq as u64,
                 ts: OffsetDateTime::now_utc(),
                 run_id: run.clone(),
-                card_id: None,
+                task_id: None,
                 session: None,
-                source: "conductor".to_owned(),
+                source: "argonauts-code".to_owned(),
                 kind,
             };
             journal.push_str(&serde_json::to_string(&event).unwrap());
@@ -1393,10 +1401,10 @@ mod tests {
             run: run.clone(),
             at: OffsetDateTime::now_utc(),
             task_type: "feature".to_owned(),
-            recipe: None,
+            learned_workflow: None,
             workflow: None,
             outcome: RunOutcome::Merged,
-            escalations: 0,
+            stuck_tasks: 0,
             final_checks_passed: true,
             cost_usd: 1.0,
             minutes: 5.0,
@@ -1413,7 +1421,7 @@ mod tests {
 
     /// Each merged run is checked for the replay set once, however often the worker wakes.
     /// Under `accept_entries = "ask"` it waits for you: accepting it at the terminal puts it on
-    /// the side the conductor's seed draws, recorded with the split, and rejecting drops it.
+    /// the side Argonauts Code's seed draws, recorded with the split, and rejecting drops it.
     #[tokio::test]
     async fn merged_runs_are_checked_once_and_wait_for_you() {
         use super::super::act::{Asker, act};
@@ -1426,13 +1434,13 @@ mod tests {
         let beta = merged_run(&repo, &store, 2, "beta");
         let mut settings = Settings::default();
         settings.evolution.replay.accept_entries = EntryAcceptance::Ask;
-        let gates: Arc<dyn GateRunner> = Arc::new(ShellGates);
+        let checks: Arc<dyn CheckRunner> = Arc::new(ShellChecks);
 
-        let proposed = consider_merged(&store, &settings, Arc::clone(&gates))
+        let proposed = consider_merged(&store, &settings, Arc::clone(&checks))
             .await
             .unwrap();
         assert_eq!(proposed, [alpha.as_str(), beta.as_str()]);
-        let again = consider_merged(&store, &settings, gates).await.unwrap();
+        let again = consider_merged(&store, &settings, checks).await.unwrap();
         assert!(again.is_empty());
         let set = ReplaySet::open(&store).unwrap();
         assert_eq!(set.proposals().unwrap().len(), 2);

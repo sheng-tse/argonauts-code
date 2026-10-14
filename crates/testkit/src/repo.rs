@@ -1,4 +1,4 @@
-//! A throwaway git repository with its own Argonauts home, config home, and git config, so no
+//! A throwaway git repository with its own Argonauts Code home, config home, and git config, so no
 //! test ever reads or writes yours.
 
 use std::ffi::OsString;
@@ -20,7 +20,7 @@ pub struct TempRepo {
     git_config: PathBuf,
 }
 
-/// A temp directory parent short enough that a run's control socket under the Argonauts home
+/// A temp directory parent short enough that a run's control socket under the Argonauts Code home
 /// fits in a socket address, which holds 104 bytes on macOS.
 const SHORT_PARENT: usize = 24;
 
@@ -45,7 +45,7 @@ impl TempRepo {
         }
         fs::write(
             &repo.git_config,
-            "[user]\n\tname = Argonauts Test\n\temail = test@argonauts.invalid\n\
+            "[user]\n\tname = Argonauts Code Test\n\temail = test@argonauts.invalid\n\
              [commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n\
              [init]\n\tdefaultBranch = main\n[core]\n\thooksPath = /dev/null\n",
         )
@@ -65,7 +65,7 @@ impl TempRepo {
         &self.home
     }
 
-    /// The private `XDG_CONFIG_HOME`. Argonauts' own global config lives in `ARGONAUTS_HOME`.
+    /// The private `XDG_CONFIG_HOME`. Argonauts Code's own global config lives in `ARGONAUTS_HOME`.
     pub fn config_home(&self) -> &Path {
         &self.config_home
     }

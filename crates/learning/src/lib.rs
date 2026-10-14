@@ -1,31 +1,32 @@
 //! What the crew learns from its runs, and how it changes itself within your rules.
 //!
-//! Every part reads what the conductor measured, never what an agent says about itself, and
+//! Every part reads what Argonauts Code measured, never what an agent says about itself, and
 //! everything that changes is a file you can read, diff, and revert. The fixed core (approvals,
-//! hard limits, the sandbox, gates, budget ceilings, the evaluation, and the mutation rules) is
+//! hard limits, the sandbox, checks, limit ceilings, the evaluation, and the mutation rules) is
 //! read here and never written.
 //!
 //! - [`outcomes`]: the outcome log, one file per run, appended and never edited.
 //! - [`records`]: track records derived from it, and the live `TrackRecords` service.
 //! - [`routing`]: the router's utility, Thompson draws, and exploration guardrails.
 //! - [`predictions`]: Brier scores, skill against the base rate, and reliability.
-//! - [`recipes`]: versioned workflows for task types, their structural diff, Starlark loops.
+//! - [`learned_workflows`]: versioned workflows for task types, their structural diff, Starlark
+//!   loops.
 //! - [`evolution`]: mutation rules, the promotion pipeline, the canary, and the stages.
 //! - [`replay`]: the replay set and replays in isolated repos.
-//! - [`skills`]: exporting recipes as skills, the validator, imports, and drift.
+//! - [`skills`]: exporting learned workflows as skills, the validator, imports, and drift.
 //! - [`memory`]: the safety checks on notes and how sessions receive them.
 //! - [`sync`]: `AGENTS.md` and the `CLAUDE.md` that imports it, from the conventions.
 //! - [`scan`]: the text scan notes, skills, and imports share.
-//! - [`package`]: the delegation package other agents install.
+//! - [`package`]: the outside agent package other agents install.
 
 pub mod error;
 pub mod evolution;
 pub mod git;
+pub mod learned_workflows;
 pub mod memory;
 pub mod outcomes;
 pub mod package;
 pub mod predictions;
-pub mod recipes;
 pub mod records;
 pub mod replay;
 pub mod routing;
@@ -37,4 +38,4 @@ pub mod types;
 
 pub use error::{LearningError, Result};
 pub use store::Store;
-pub use types::{Assignment, RecipeRef, ReplayResult, RunRecord};
+pub use types::{Assignment, LearnedWorkflowRef, ReplayResult, RunRecord};

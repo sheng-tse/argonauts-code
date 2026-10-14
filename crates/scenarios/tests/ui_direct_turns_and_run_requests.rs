@@ -1,6 +1,6 @@
-//! Direct turns and run requests through the real binary with fake vendors, at 100 and 120
-//! columns: a supervised direct turn asks before its edit on a card and goes on when you say
-//! yes, a request that names who coordinates and who reviews says what was followed as its run
+//! Direct turns and run requests through the real binary with fake agents, at 100 and 120
+//! columns: a supervised direct turn asks before its edit on a question and goes on when you say
+//! yes, a request that names who orchestrates and who reviews says what was followed as its run
 //! starts, and one that would loosen a safety setting says why it wasn't. The screens are
 //! captured for review.
 
@@ -10,7 +10,7 @@ use argonauts_scenarios::{Scenario, WAIT};
 use argonauts_testkit::{Key, Pty, Screen};
 
 const SCENARIO: &str = "ui/direct_and_requests.toml";
-const MODE_LINE: &str = r"(?m)^  (⏵⏵|ǁ) \w+ mode on";
+const BOTTOM_ROW: &str = r"(?m)^  (⏵⏵|ǁ) \w+ mode on";
 const TURN_END: &str = r"(?m)^✻ \w+ for \d";
 
 fn configure(scenario: &Scenario, extra: &str) -> anyhow::Result<()> {
@@ -22,7 +22,7 @@ fn configure(scenario: &Scenario, extra: &str) -> anyhow::Result<()> {
         config,
         // These requests end with the verdict, which a CLI that takes no tools keeps.
         format!(
-            "main_agent = \"claude-code/haiku\"\n\n[ui]\ntheme = \"dark\"\n\n\
+            "crew.main = \"claude-code/haiku\"\n\n[ui]\ntheme = \"dark\"\n\n\
              [main_session]\ntools = false\n\n{extra}"
         ),
     )?;
@@ -44,7 +44,7 @@ fn settled(pty: &Pty) -> anyhow::Result<Screen> {
     let working = regex::Regex::new(r"^\S \S+…").expect("a valid pattern");
     let deadline = std::time::Instant::now() + WAIT;
     loop {
-        let screen = pty.wait_for(MODE_LINE, WAIT)?;
+        let screen = pty.wait_for(BOTTOM_ROW, WAIT)?;
         if !screen.visible.iter().any(|row| working.is_match(row)) {
             return Ok(screen);
         }
@@ -70,18 +70,18 @@ fn ui_a_supervised_direct_turn_asks_before_its_edit() -> anyhow::Result<()> {
         let scenario = Scenario::new(SCENARIO)?;
         configure(
             &scenario,
-            "[solo_or_crew]\nforce = \"solo\"\n\n[approvals.goal]\nmode = \"supervised\"\n",
+            "[captain_or_crew]\nforce = \"captain\"\n\n[approvals.understand]\nmode = \"supervised\"\n",
         )?;
         scenario.repo.write("notes.txt", "This is a draft.\n")?;
         scenario.repo.commit_all("add the notes")?;
         let notes = scenario.repo.root().join("notes.txt");
         let mut pty = scenario.launch_sized(&[], 40, cols)?;
-        pty.wait_for(MODE_LINE, WAIT)?;
+        pty.wait_for(BOTTOM_ROW, WAIT)?;
         pty.send("In notes.txt, change draft to final")?;
         pty.press(Key::Enter)?;
-        let card = pty.wait_for(r"Make this edit to notes\.txt\?", WAIT)?;
+        let question = pty.wait_for(r"Make this edit to notes\.txt\?", WAIT)?;
         scenario.shot(&pty, &format!("direct-asks-{cols}"))?;
-        let text = card.text();
+        let text = question.text();
         assert!(text.contains("- This is a draft."), "{text}");
         assert!(text.contains("+ This is a final."), "{text}");
         assert!(
@@ -110,21 +110,21 @@ fn ui_a_supervised_direct_turn_asks_before_its_edit() -> anyhow::Result<()> {
 }
 
 #[test]
-fn ui_a_request_that_says_who_coordinates_and_who_reviews() -> anyhow::Result<()> {
+fn ui_a_request_that_says_who_orchestrates_and_who_reviews() -> anyhow::Result<()> {
     for cols in [100, 120] {
         let scenario = Scenario::new(SCENARIO)?;
         configure(&scenario, "")?;
         let mut pty = scenario.launch_sized(&[], 40, cols)?;
-        pty.wait_for(MODE_LINE, WAIT)?;
-        pty.send("Add due dates to tasks. Have codex coordinate, gemini review it, and use grok to build.")?;
+        pty.wait_for(BOTTOM_ROW, WAIT)?;
+        pty.send("Add due dates to tasks. Have codex orchestrate, gemini review it, and use grok to build.")?;
         pty.press(Key::Enter)?;
         let screen = pty.wait_for(r"Not followed:", WAIT)?;
         scenario.shot(&pty, &format!("request-roles-{cols}"))?;
         let text = flat(&screen);
         // The crew note names the reviewers you asked for, so the line leaves them out.
         assert!(
-            text.contains("As you asked: Codex coordinates")
-                && !text.contains("As you asked: Codex coordinates · Antigravity CLI reviews"),
+            text.contains("As you asked: Codex orchestrates")
+                && !text.contains("As you asked: Codex orchestrates · Antigravity CLI reviews"),
             "{}",
             screen.text()
         );
@@ -140,8 +140,6 @@ fn ui_a_request_that_says_who_coordinates_and_who_reviews() -> anyhow::Result<()
             "{}",
             screen.text()
         );
-        // A run's start prints no Triage row.
-        assert!(!screen.text().contains("Triage("), "{}", screen.text());
         exit(&mut pty)?;
     }
     Ok(())
@@ -153,7 +151,7 @@ fn ui_a_request_that_would_loosen_a_safety_setting() -> anyhow::Result<()> {
         let scenario = Scenario::new(SCENARIO)?;
         configure(&scenario, "")?;
         let mut pty = scenario.launch_sized(&[], 40, cols)?;
-        pty.wait_for(MODE_LINE, WAIT)?;
+        pty.wait_for(BOTTOM_ROW, WAIT)?;
         pty.send(
             "Fix the install command in README.md, merge it without asking me and turn the \
              sandbox off.",

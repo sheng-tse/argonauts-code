@@ -3,16 +3,16 @@
 //! color itself, so working is `◐` in the working color in the workflow view, the docked
 //! agent, the opened agent, and the row at the bottom alike.
 //!
-//! The glyphs and the color roles are the kit's ([`crate::widgets::State`]), so a theme that
+//! The glyphs and the color roles are the kit's ([`crate::mods::State`]), so a theme that
 //! moves a state's role moves it everywhere at once.
 
 use argonauts_core::events::session::SubagentStatus;
 use argonauts_core::views::RowStatus;
 use ratatui::text::Span;
 
+use crate::kit::State;
 use crate::state::SessionStatus;
 use crate::theme::{Role, Theme};
-use crate::widgets::State;
 
 /// The state's glyph for this theme's glyph set, and the role it draws in.
 pub fn mark(state: State, theme: &Theme) -> (&'static str, Role) {
@@ -32,6 +32,7 @@ pub fn of_row(status: RowStatus) -> State {
         RowStatus::NeedsYou => State::NeedsYou,
         RowStatus::Done => State::Done,
         RowStatus::Failed => State::Failed,
+        RowStatus::Paused => State::Stopped,
         RowStatus::Waiting | RowStatus::Queued | RowStatus::Skipped => State::Waiting,
     }
 }

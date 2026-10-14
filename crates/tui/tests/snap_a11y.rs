@@ -6,16 +6,16 @@ use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use argonauts_core::app::{AnswerTarget, AppEvent, UiCommand};
-use argonauts_core::events::checkpoint::AnswerAction;
-use argonauts_core::events::{RunEventKind, checkpoint::CheckpointEvent};
-use argonauts_core::names::CheckpointId;
+use argonauts_core::events::approval::AnswerAction;
+use argonauts_core::events::{RunEventKind, approval::ApprovalEvent};
+use argonauts_core::names::ApprovalId;
 use argonauts_core::settings::ui::{ColorChoice, Motion, UiSettings};
 use argonauts_core::{RunId, Verbosity};
 use argonauts_tui::a11y::{Reader, lines_for, run_lines};
 use argonauts_tui::bottom::WorkingLine;
 use argonauts_tui::bridge::settings::theme_for;
 use argonauts_tui::bridge::tools::{finish_call, start_call};
-use argonauts_tui::cards::checkpoint_card;
+use argonauts_tui::questions::approval_question;
 use argonauts_tui::render::{Clock, RenderCtx};
 use argonauts_tui::runtime::AppIo;
 use argonauts_tui::state::AppState;
@@ -35,14 +35,14 @@ fn read(reader: &mut Reader, events: &[AppEvent]) -> Vec<String> {
         .collect()
 }
 
-fn chat(turn: &str, prompt: &str, answer: &str) -> Vec<AppEvent> {
-    chat_turn(turn, prompt, answer, 5)
+fn conversation(turn: &str, prompt: &str, answer: &str) -> Vec<AppEvent> {
+    conversation_turn(turn, prompt, answer, 5)
         .into_iter()
         .map(|(_, event)| event)
         .collect()
 }
 
-fn checkpoint_id(id: &str) -> CheckpointId {
+fn approval_id(id: &str) -> ApprovalId {
     serde_json::from_value(json!(id)).expect("an approval id")
 }
 
@@ -57,7 +57,7 @@ fn screen_reader_lines_for_a_crew_run() {
     let mut lines = read(&mut reader, &[welcome()]);
     lines.extend(read(
         &mut reader,
-        &chat("t-001", "hi", "Hello there.\nWhat should we build?"),
+        &conversation("t-001", "hi", "Hello there.\nWhat should we build?"),
     ));
     lines.extend(read(&mut reader, &events));
     let rest = [
@@ -131,15 +131,15 @@ fn screen_reader_lines_stay_quiet_during_replay() {
 }
 
 #[test]
-fn screen_reader_card_as_numbered_list() {
+fn screen_reader_question_as_numbered_list() {
     let (mut run, crew, events) = crew_run(1);
     let mut reader = Reader::new(&UiOptions::default());
     read(&mut reader, &events);
 
-    let merge = run.merge_checkpoint("cp-001");
+    let merge = run.merge_approval("approval-001");
     let said = reader.event(&merge);
     assert!(said.bell, "a task that needs you rings the bell");
-    insta::assert_snapshot!("merge_card", said.lines.join("\n"));
+    insta::assert_snapshot!("merge_question", said.lines.join("\n"));
     assert!(
         said.lines
             .iter()
@@ -157,16 +157,16 @@ fn screen_reader_card_as_numbered_list() {
     }
     assert_eq!(lines_for(&merge, &state), said.lines);
 
-    // By number, with or without a note, the answer carries the card's evidence hash.
+    // By number, with or without a note, the answer carries the question's evidence hash.
     let answer = |action: AnswerAction, text: Option<&str>| UiCommand::Answer {
-        to: AnswerTarget::Checkpoint {
+        to: AnswerTarget::Approval {
             run: run_id(),
-            id: checkpoint_id("cp-001"),
+            id: approval_id("approval-001"),
         },
         action,
         text: text.map(str::to_owned),
         evidence_sha256: Some(EVIDENCE.to_owned()),
-        cards: Vec::new(),
+        tasks: Vec::new(),
         remember: false,
     };
     let mut noted = Reader::new(&UiOptions::default());
@@ -185,7 +185,7 @@ fn screen_reader_card_as_numbered_list() {
         vec![answer(AnswerAction::PullRequest, None)]
     );
     assert_eq!(picked.lines, vec!["you: 2. Open a pull request"]);
-    // Answered here, the card no longer takes numbers.
+    // Answered here, the question no longer takes numbers.
     assert_eq!(
         reader.typed("1").commands,
         vec![UiCommand::Submit {
@@ -196,7 +196,7 @@ fn screen_reader_card_as_numbered_list() {
     );
 
     // A question with your own answer: the number, then the answer on the next line.
-    let question = reader.event(&run.question_checkpoint("cp-002", &crew[0]));
+    let question = reader.event(&run.question_approval("approval-002", &crew[0]));
     assert!(
         question
             .lines
@@ -214,14 +214,14 @@ fn screen_reader_card_as_numbered_list() {
     assert_eq!(
         own.commands,
         vec![UiCommand::Answer {
-            to: AnswerTarget::Checkpoint {
+            to: AnswerTarget::Approval {
                 run: run_id(),
-                id: checkpoint_id("cp-002"),
+                id: approval_id("approval-002"),
             },
             action: AnswerAction::Answer,
             text: Some("Keep it for one release".into()),
             evidence_sha256: Some(EVIDENCE.to_owned()),
-            cards: Vec::new(),
+            tasks: Vec::new(),
             remember: false,
         }]
     );
@@ -245,13 +245,13 @@ fn screen_reader_card_as_numbered_list() {
 }
 
 #[test]
-fn screen_reader_cards_follow_one_another() {
+fn screen_reader_questions_follow_one_another() {
     let (mut run, crew, events) = crew_run(1);
     let mut reader = Reader::new(&UiOptions::default());
     read(&mut reader, &events);
-    reader.event(&run.merge_checkpoint("cp-001"));
-    reader.event(&run.question_checkpoint("cp-002", &crew[0]));
-    // Numbers answer the card read out last.
+    reader.event(&run.merge_approval("approval-001"));
+    reader.event(&run.question_approval("approval-002", &crew[0]));
+    // Numbers answer the question read out last.
     let picked = reader.typed("1");
     assert!(matches!(
         picked.commands.as_slice(),
@@ -346,7 +346,7 @@ async fn screen_reader_rings_and_leaves() {
             .expect("the reader is listening");
     }
     events_in
-        .send(run.merge_checkpoint("cp-001"))
+        .send(run.merge_approval("approval-001"))
         .await
         .expect("the reader is listening");
     typed_in
@@ -366,7 +366,7 @@ async fn screen_reader_rings_and_leaves() {
     let (typed_in, typed) = mpsc::unbounded_channel::<String>();
     let mut run = RunScript::new(RUN);
     events_in
-        .send(run.merge_checkpoint("cp-001"))
+        .send(run.merge_approval("approval-001"))
         .await
         .expect("the reader is listening");
     drop(typed_in);
@@ -421,7 +421,7 @@ fn no_color_has_no_color_codes() {
     );
     assert_ne!(theme_for(&always, &dumb, None).level, ColorLevel::None);
 
-    // A failed call and a card, written out as the terminal gets them, set no color.
+    // A failed call and a question, written out as the terminal gets them, set no color.
     let mut call = start_call(
         "claude-code",
         "Bash",
@@ -433,15 +433,15 @@ fn no_color_has_no_color_codes() {
         Some("cat: missing.txt: No such file or directory"),
     );
     let mut run = RunScript::new(RUN);
-    let AppEvent::Run { event } = run.merge_checkpoint("cp-001") else {
+    let AppEvent::Run { event } = run.merge_approval("approval-001") else {
         unreachable!("a run event")
     };
-    let RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) = event.kind else {
+    let RunEventKind::Approval(ApprovalEvent::Opened(opened)) = event.kind else {
         unreachable!("an opened approval")
     };
     let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
     let mut lines: Vec<Line<'static>> = Cell::Tool(call).lines(&ctx);
-    lines.extend(checkpoint_card(1, &opened, None).lines(&ctx));
+    lines.extend(approval_question(1, &opened, None).lines(&ctx));
     let mut raw = Vec::new();
     for line in &lines {
         write_line(&mut raw, line, 80).expect("writing to memory");
@@ -460,7 +460,7 @@ fn no_color_has_no_color_codes() {
     let colored = theme_for(&always, &no_color_env(), None);
     let ctx = RenderCtx::new(80, &colored, Clock::still(Instant::now()));
     let mut raw = Vec::new();
-    for line in checkpoint_card(1, &opened, None).lines(&ctx) {
+    for line in approval_question(1, &opened, None).lines(&ctx) {
         write_line(&mut raw, &line, 80).expect("writing to memory");
     }
     assert!(sets_color(&raw));
@@ -515,18 +515,18 @@ fn screen_reader_says_nothing_of_argonauts_own_calls() {
         &mut reader,
         &[
             turn_started(turn, "hi"),
-            chat_tool_started(turn, "c1", "Read", json!({"file_path": "src/cli.rs"})),
-            chat_tool_finished(turn, "c1", "fn main() {}"),
-            chat_tool_started(
+            conversation_tool_started(turn, "c1", "Read", json!({"file_path": "src/cli.rs"})),
+            conversation_tool_finished(turn, "c1", "fn main() {}"),
+            conversation_tool_started(
                 turn,
                 "c2",
                 "mcp__argonauts_status__argonauts_status",
                 json!({}),
             ),
-            chat_tool_finished(turn, "c2", "no run is going"),
+            conversation_tool_finished(turn, "c2", "no run is going"),
             text_delta(turn, "Hello there."),
-            chat_tool_started(turn, "c3", "StructuredOutput", json!({"status": "done"})),
-            chat_tool_finished(turn, "c3", "Structured output provided successfully"),
+            conversation_tool_started(turn, "c3", "StructuredOutput", json!({"status": "done"})),
+            conversation_tool_finished(turn, "c3", "Structured output provided successfully"),
             turn_finished(turn, "Hello there.", 3_000),
         ],
     ));

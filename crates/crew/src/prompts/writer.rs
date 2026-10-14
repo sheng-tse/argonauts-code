@@ -6,11 +6,12 @@
 use argonauts_core::events::session::{InputPart, InputPartKind};
 use argonauts_core::future::BoxFuture;
 use argonauts_core::names::RoleName;
-use argonauts_core::prompt_parts::{self as parts, CrewRole};
+use argonauts_core::prompt_parts as parts;
+use argonauts_core::session_runner::Access;
+use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::prompts::Writer;
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::instructions::{WriteInstructions, WriteInstructionsInput};
-use argonauts_core::worker::Access;
 
 use crate::engine::host::{Ask, Host};
 use crate::error::{EngineError, EngineResult};
@@ -19,7 +20,8 @@ use crate::roles;
 use super::assemble;
 use super::instructions::Agent;
 
-pub const WRITE_INSTRUCTIONS: &str = include_str!("writer/write_instructions.md");
+pub const WRITE_INSTRUCTIONS: &str =
+    argonauts_core::template!("prompts/writer/write-instructions.md");
 
 /// `task` with the writer model's instructions in place of the ones it led with, when the
 /// agent's role has a writer model. Otherwise `task` as it was: the writer never writes for
@@ -52,7 +54,7 @@ pub fn written<'a>(
             WRITE_INSTRUCTIONS,
             input,
         );
-        ask.card = agent.card.cloned();
+        ask.task = agent.task.cloned();
         ask.access = Access::NoTools;
         ask.slot = slot(&agent, &ask.input.draft);
         let instructions = match host.ask::<WriteInstructions>(ask).await {
@@ -121,7 +123,7 @@ mod tests {
             role: RoleName::Reviewer,
             step: None,
             at: None,
-            card: None,
+            task: None,
         };
         assert_eq!(
             slot(&agent, "Check the dates."),

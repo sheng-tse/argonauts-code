@@ -49,14 +49,14 @@ impl<'a> Table<'a> {
         self.rows[..self.len].iter().map(|row| row.proc)
     }
 
-    /// Marks the leader, everything in its session or group, and all their descendants. The
-    /// session id is the leader's pid, since every agent leads a session of its own.
-    pub fn mark_tree(&mut self, leader: i32, pgid: i32) {
+    /// Marks the head, everything in its session or group, and all their descendants. The
+    /// session id is the head's pid, since every agent heads a session of its own.
+    pub fn mark_tree(&mut self, head: i32, pgid: i32) {
         // Session and group 1 hold the system's own processes.
-        if leader <= 1 || pgid <= 1 {
+        if head <= 1 || pgid <= 1 {
             return;
         }
-        self.mark_with(|proc| proc.pid == leader || proc.sid == leader || proc.pgid == pgid);
+        self.mark_with(|proc| proc.pid == head || proc.sid == head || proc.pgid == pgid);
     }
 
     /// Marks every process in `noted` (pid and start time) that's still the same process, and
@@ -156,7 +156,7 @@ mod tests {
         let (mut rows, len) = table_of(&[
             (1, 0, 1, 1),
             (50, 1, 50, 50),
-            // The leader, a child in its group, and one in a group of its own in the session.
+            // The head, a child in its group, and one in a group of its own in the session.
             (100, 50, 100, 100),
             (101, 100, 100, 100),
             (102, 100, 102, 100),

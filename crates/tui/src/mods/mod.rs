@@ -16,16 +16,16 @@ use argonauts_core::settings::mods::view::{ModRowKind, ModsView};
 use argonauts_core::settings::mods::{ModFile, ModForm, ModOrigin, ModPlace, ModReading, builtin};
 use ratatui::text::Span;
 
+use crate::kit::{Drawn, Kit, stack_cards};
 use crate::text::sanitize_line;
-use crate::widgets::{Drawn, Kit, stack_cards};
 
 /// The mods this drawer draws in `place`, in the order `/mods` lists them: those that show
 /// there and have numbers. A mod without numbers draws nothing where it shows; `/mods` says
 /// why it has none. A built-in card isn't among them where a place list or the bottom line
-/// records it, since the band above the input, the Overview's tabs and the line draw those
+/// records it, since the band above the input, the usage panel's tabs and the line draw those
 /// themselves, and it would show twice.
 pub fn placed(view: &ModsView, place: ModPlace) -> impl Iterator<Item = (&ModFile, &ModReading)> {
-    let drawn_elsewhere = place.list().is_some() || place == ModPlace::ModeLine;
+    let drawn_elsewhere = place.list().is_some() || place == ModPlace::BottomLine;
     view.rows
         .iter()
         .filter(move |row| !(drawn_elsewhere && builtin::closed_card(&row.name).is_some()))
@@ -88,7 +88,7 @@ pub fn above_input(kit: &Kit<'_>, view: &ModsView, room: BandRoom) -> Drawn {
     }
 }
 
-/// Every mod of yours that shows on the Overview tab `place`, as cards one under another.
+/// Every mod of yours that shows on the usage panel's tab `place`, as cards one under another.
 /// The tab puts them under the cards it draws itself.
 pub fn on_tab(kit: &Kit<'_>, view: &ModsView, place: ModPlace, screen: usize) -> Drawn {
     stack_cards(placed(view, place).map(|(file, reading)| draw::on_tab(kit, file, reading, screen)))
@@ -106,13 +106,24 @@ pub fn own_command(typed: &str, view: Option<&ModsView>) -> Option<SlashCommand>
     })
 }
 
+/// The names of your own mods, each of which is a command that shows or hides it.
+pub fn own_command_names(view: Option<&ModsView>) -> Vec<String> {
+    let rows = view.map(|view| view.rows.as_slice()).unwrap_or_default();
+    rows.iter()
+        .filter(|row| {
+            matches!(row.kind, ModRowKind::Card { .. }) && row.origin != ModOrigin::BuiltIn
+        })
+        .map(|row| row.name.clone())
+        .collect()
+}
+
 /// Every mod the bottom line's file lists that has numbers, by name, as the few words it
 /// draws there. The line puts each where its file says, and draws its own parts itself.
 pub fn line_parts(
     kit: &Kit<'_>,
     view: &ModsView,
 ) -> impl Iterator<Item = (String, Vec<Span<'static>>)> {
-    placed(view, ModPlace::ModeLine)
+    placed(view, ModPlace::BottomLine)
         .map(|(file, reading)| (file.name.clone(), draw::chip(kit, file, reading)))
 }
 
@@ -248,7 +259,7 @@ mod tests {
                 .collect()
         };
         assert_eq!(names(ModPlace::Above), ["checks"]);
-        assert_eq!(names(ModPlace::ModeLine), ["branch"]);
+        assert_eq!(names(ModPlace::BottomLine), ["branch"]);
         // The context card has a place and no numbers yet, so it draws nothing there.
         assert!(names(ModPlace::Context).is_empty());
     }
@@ -261,7 +272,7 @@ mod tests {
         if let ModRowKind::Card { file, .. } = &mut view.rows[2].kind {
             file.places = vec![
                 ModPlace::Above,
-                ModPlace::ModeLine,
+                ModPlace::BottomLine,
                 ModPlace::Overview,
                 ModPlace::Context,
             ];
@@ -273,7 +284,7 @@ mod tests {
         };
         // The band, the line and the Context tab draw the context card themselves.
         assert_eq!(names(ModPlace::Above), ["checks"]);
-        assert_eq!(names(ModPlace::ModeLine), ["branch"]);
+        assert_eq!(names(ModPlace::BottomLine), ["branch"]);
         assert!(names(ModPlace::Context).is_empty());
         // No list keeps the Overview tab, so there the mod's own file is all there is.
         assert_eq!(names(ModPlace::Overview), ["context"]);

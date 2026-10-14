@@ -1,16 +1,16 @@
 //! What ultracode and the typed `ultracode` do with one request. They
 //! change how often a workflow is used, never what one is:
 //! - with a crew workflow in use, the word sends this request to it, and the setting sends
-//!   every real request, small ones too (triage's own rule);
-//! - in solo on Claude Code, the main session runs Claude Code's own workflow;
-//! - in solo on a CLI with no workflow of its own, Argonauts runs one in its place, with every
+//!   every real request, small ones too (the Captain-or-crew rules' own);
+//! - in Captain on Claude Code, the main session runs Claude Code's own workflow;
+//! - in Captain on a CLI with no workflow of its own, Argonauts Code runs one in its place, with every
 //!   agent on that same CLI and model.
 
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::session_runner::CliWorkflow;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::protocol::ForcedMode;
 use argonauts_core::settings::sessions::{FanoutSwitch, NativeFanout};
-use argonauts_core::worker::CliWorkflow;
 use argonauts_crew::ultra::has_own_workflow;
 
 /// Where one request goes.
@@ -20,7 +20,7 @@ pub(crate) enum Route {
     AsUsual,
     /// The main session, with what its CLI's own workflow does for this message.
     MainSession(CliWorkflow),
-    /// A workflow Argonauts runs in the main agent's place, every agent on its CLI and model.
+    /// A workflow Argonauts Code runs in the main agent's place, every agent on its CLI and model.
     SameModel,
     /// The crew workflow in use runs this request.
     Crew,
@@ -28,14 +28,14 @@ pub(crate) enum Route {
 
 /// `typed_keyword`: you typed `ultracode` with this message and didn't ignore it.
 pub(crate) fn route(settings: &Settings, typed_keyword: bool) -> Route {
-    if !solo(settings) {
+    if !captain(settings) {
         return if typed_keyword {
             Route::Crew
         } else {
             Route::AsUsual
         };
     }
-    if has_own_workflow(&settings.main_agent) {
+    if has_own_workflow(&settings.crew.main) {
         return Route::MainSession(CliWorkflow {
             ultracode: settings.ultracode,
             typed_keyword,
@@ -50,19 +50,19 @@ pub(crate) fn route(settings: &Settings, typed_keyword: bool) -> Route {
 }
 
 /// What the main session's CLI does with its own workflow, for a turn that isn't a request of
-/// yours, such as a reply to a question: ultracode stays on in solo on Claude Code.
+/// yours, such as a reply to a question: ultracode stays on in Captain on Claude Code.
 pub(crate) fn main_session(settings: &Settings) -> CliWorkflow {
     CliWorkflow {
-        ultracode: solo(settings) && has_own_workflow(&settings.main_agent) && settings.ultracode,
+        ultracode: captain(settings) && has_own_workflow(&settings.crew.main) && settings.ultracode,
         typed_keyword: false,
         ..CliWorkflow::default()
     }
 }
 
-/// Solo with ultracode on, on a CLI with no workflow of its own: a run the main session starts
+/// Captain with ultracode on, on a CLI with no workflow of its own: a run the main session starts
 /// for real work is a workflow on that same model, as Claude Code's would be.
 pub(crate) fn runs_on_the_same_model(settings: &Settings) -> bool {
-    solo(settings) && settings.ultracode && !has_own_workflow(&settings.main_agent)
+    captain(settings) && settings.ultracode && !has_own_workflow(&settings.crew.main)
 }
 
 /// The main session's standing line while [`runs_on_the_same_model`]: real work goes to a
@@ -79,12 +79,12 @@ const ULTRACODE_LINE: &str = "Ultracode is on: for every substantive task, call 
 /// The request's settings for a workflow on the main agent's model alone: the orchestrator
 /// writes the steps, and every role is that model, its own reviewer included.
 pub(crate) fn same_model(settings: &Settings) -> Vec<String> {
-    let main = toml_list(std::slice::from_ref(&settings.main_agent));
+    let main = toml_list(std::slice::from_ref(&settings.crew.main));
     vec![
         "workflow=\"orchestrator\"".to_owned(),
         "crew.orchestrator=\"main\"".to_owned(),
-        format!("crew.workers={main}"),
-        format!("crew.reviewers={main}"),
+        format!("crew.worker={main}"),
+        format!("crew.reviewer={main}"),
         format!("crew.judge={main}"),
         "review.other_provider=false".to_owned(),
     ]
@@ -107,11 +107,11 @@ pub(crate) fn unavailable(settings: &Settings) -> Option<&'static str> {
     )
 }
 
-fn solo(settings: &Settings) -> bool {
-    settings.triage.force == Some(ForcedMode::Solo)
+fn captain(settings: &Settings) -> bool {
+    settings.captain_or_crew.force == Some(ForcedMode::Captain)
 }
 
-fn toml_list(workers: &[WorkerRef]) -> String {
+fn toml_list(workers: &[ModelRef]) -> String {
     let items: Vec<String> = workers
         .iter()
         .map(|worker| toml::Value::String(worker.to_string()).to_string())
@@ -122,21 +122,21 @@ fn toml_list(workers: &[WorkerRef]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::controller::test_support::{Harness, HarnessOptions};
-    use argonauts_core::app::{AppEvent, ChatEvent, UiCommand};
+    use crate::controller::test_support::{CliOptions, TestDriver};
+    use argonauts_core::app::{AppEvent, ConversationEvent, UiCommand};
     use argonauts_testkit::FakeSession;
 
-    /// The harness with `config` as your global settings.
-    fn with_config(config: &'static str) -> HarnessOptions {
-        HarnessOptions {
+    /// The test driver with `config` as your global settings.
+    fn with_config(config: &'static str) -> CliOptions {
+        CliOptions {
             prepare: Some(Box::new(move |repo: &argonauts_testkit::TempRepo| {
                 std::fs::write(repo.global_config(), config).unwrap();
             })),
-            ..HarnessOptions::default()
+            ..CliOptions::default()
         }
     }
 
-    const SOLO: &str = "[solo_or_crew]\nforce = \"solo\"\n";
+    const CAPTAIN: &str = "[captain_or_crew]\nforce = \"captain\"\n";
 
     fn typed(text: &str) -> UiCommand {
         UiCommand::Submit {
@@ -149,35 +149,36 @@ mod tests {
     fn turn_ended(event: &AppEvent) -> bool {
         matches!(
             event,
-            AppEvent::Chat {
-                event: ChatEvent::TurnFinished { .. } | ChatEvent::TurnFailed { .. }
+            AppEvent::Conversation {
+                event: ConversationEvent::TurnFinished { .. }
+                    | ConversationEvent::TurnFailed { .. }
             }
         )
     }
 
-    /// Solo on Claude Code: the message you typed the word in goes to the main session marked
+    /// Captain on Claude Code: the message you typed the word in goes to the main session marked
     /// as yours, so Claude Code's own keyword runs its workflow. With ultracode on, every turn
     /// has Claude Code's own ultracode.
     #[tokio::test]
-    async fn solo_on_claude_code_hands_the_word_and_the_switch_to_claude_code() {
-        let mut harness = Harness::start_with(with_config(SOLO)).await;
-        harness.agent.push(FakeSession::completed("Tidied."));
-        harness.send(typed("ultracode tidy the date helpers")).await;
-        harness.until(turn_ended).await;
-        let spec = harness.agent.specs().remove(0);
-        harness.exit().await;
+    async fn captain_on_claude_code_hands_the_word_and_the_switch_to_claude_code() {
+        let mut driver = TestDriver::start_with(with_config(CAPTAIN)).await;
+        driver.agent.push(FakeSession::completed("Tidied."));
+        driver.send(typed("ultracode tidy the date helpers")).await;
+        driver.until(turn_ended).await;
+        let spec = driver.agent.specs().remove(0);
+        driver.exit().await;
         assert!(spec.cli_workflow.typed_keyword);
         assert!(!spec.cli_workflow.ultracode);
         assert_eq!(spec.prompt[0].text, "ultracode tidy the date helpers");
 
-        let config = "ultracode = true\n[solo_or_crew]\nforce = \"solo\"\n";
-        let mut harness = Harness::start_with(with_config(config)).await;
-        harness.agent.push(FakeSession::completed("Tidied."));
-        harness.submit("tidy the date helpers").await;
-        harness.until(turn_ended).await;
-        let spec = harness.agent.specs().remove(0);
-        let started = harness.conductor.starts();
-        harness.exit().await;
+        let config = "ultracode = true\n[captain_or_crew]\nforce = \"captain\"\n";
+        let mut driver = TestDriver::start_with(with_config(config)).await;
+        driver.agent.push(FakeSession::completed("Tidied."));
+        driver.submit("tidy the date helpers").await;
+        driver.until(turn_ended).await;
+        let spec = driver.agent.specs().remove(0);
+        let started = driver.conductor.starts();
+        driver.exit().await;
         assert!(spec.cli_workflow.ultracode);
         assert!(!spec.cli_workflow.typed_keyword);
         assert!(started.is_empty(), "Claude Code runs its own workflow");
@@ -186,44 +187,44 @@ mod tests {
     /// With a crew workflow in use, the word sends this one request to it.
     #[tokio::test]
     async fn the_word_starts_the_crew_workflow_for_one_request() {
-        let mut harness = Harness::start_with(HarnessOptions::default()).await;
-        harness.send(typed("ultracode tidy the date helpers")).await;
-        harness
+        let mut driver = TestDriver::start_with(CliOptions::default()).await;
+        driver.send(typed("ultracode tidy the date helpers")).await;
+        driver
             .until(|event| matches!(event, AppEvent::Attached { .. }))
             .await;
-        let started = harness.conductor.starts();
-        harness.exit().await;
+        let started = driver.conductor.starts();
+        driver.exit().await;
         assert_eq!(started.len(), 1);
         assert_eq!(started[0].request, "ultracode tidy the date helpers");
         assert_eq!(started[0].mode, argonauts_core::events::run::RunMode::Crew);
     }
 
-    /// Solo on Codex, which has no workflow of its own: Argonauts runs one with every agent
+    /// Captain on Codex, which has no workflow of its own: Argonauts Code runs one with every agent
     /// on Codex's model.
     #[tokio::test]
-    async fn solo_elsewhere_runs_the_workflow_on_the_main_agents_model() {
-        let config = "main_agent = \"codex/gpt-5.6\"\n[solo_or_crew]\nforce = \"solo\"\n";
-        let mut harness = Harness::start_with(with_config(config)).await;
-        harness.send(typed("ultracode tidy the date helpers")).await;
-        harness
+    async fn captain_elsewhere_runs_the_workflow_on_the_main_agents_model() {
+        let config = "crew.main = \"codex/gpt-5.6\"\n[captain_or_crew]\nforce = \"captain\"\n";
+        let mut driver = TestDriver::start_with(with_config(config)).await;
+        driver.send(typed("ultracode tidy the date helpers")).await;
+        driver
             .until(|event| matches!(event, AppEvent::Attached { .. }))
             .await;
-        let started = harness.conductor.starts();
-        harness.exit().await;
+        let started = driver.conductor.starts();
+        driver.exit().await;
         assert_eq!(started.len(), 1);
         assert!(
             started[0]
                 .request_settings
-                .contains(&"crew.workers=[\"codex/gpt-5.6\"]".to_owned()),
+                .contains(&"crew.worker=[\"codex/gpt-5.6\"]".to_owned()),
             "{:?}",
             started[0].request_settings
         );
     }
 
-    fn settings(solo: bool, main: &str, ultracode: bool) -> Settings {
+    fn settings(captain: bool, main: &str, ultracode: bool) -> Settings {
         let mut settings = Settings::default();
-        settings.triage.force = solo.then_some(ForcedMode::Solo);
-        settings.main_agent = main.parse().unwrap();
+        settings.captain_or_crew.force = captain.then_some(ForcedMode::Captain);
+        settings.crew.main = main.parse().unwrap();
         settings.ultracode = ultracode;
         settings
     }
@@ -233,7 +234,7 @@ mod tests {
         let crew = settings(false, "codex", false);
         assert_eq!(route(&crew, true), Route::Crew);
         assert_eq!(route(&crew, false), Route::AsUsual);
-        // The setting sends every real request through triage's own rule instead.
+        // The setting sends every real request through the Captain-or-crew rules' own instead.
         assert_eq!(
             route(&settings(false, "codex", true), false),
             Route::AsUsual
@@ -241,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn solo_on_claude_code_is_claude_codes_own() {
+    fn captain_on_claude_code_is_claude_codes_own() {
         let on = settings(true, "claude-code/opus-5-5", true);
         assert_eq!(
             route(&on, false),
@@ -273,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn solo_elsewhere_runs_a_workflow_on_that_same_model() {
+    fn captain_elsewhere_runs_a_workflow_on_that_same_model() {
         let codex = settings(true, "codex/gpt-5.6", true);
         assert_eq!(route(&codex, true), Route::SameModel);
         assert_eq!(route(&codex, false), Route::AsUsual);
@@ -285,8 +286,8 @@ mod tests {
             [
                 "workflow=\"orchestrator\"",
                 "crew.orchestrator=\"main\"",
-                "crew.workers=[\"codex/gpt-5.6\"]",
-                "crew.reviewers=[\"codex/gpt-5.6\"]",
+                "crew.worker=[\"codex/gpt-5.6\"]",
+                "crew.reviewer=[\"codex/gpt-5.6\"]",
                 "crew.judge=[\"codex/gpt-5.6\"]",
                 "review.other_provider=false",
             ]

@@ -1,7 +1,7 @@
-//! A replay with the real binary and fake vendors: `argonauts recipes replay` runs a candidate
+//! A replay with the real binary and fake agents: `argonauts learned replay` runs a candidate
 //! and its parent as supervised runs in isolated repos, which finish on their own with only the
 //! replay's workers, scores each with the hidden tests, and takes the winner to the promotion
-//! checkpoint.
+//! approval.
 
 mod app_support;
 
@@ -10,31 +10,30 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use app_support::*;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::card::CardEvent;
-use argonauts_core::events::checkpoint::{CheckpointEvent, CheckpointKind};
+use argonauts_core::events::approval::{ApprovalEvent, ApprovalKind};
 use argonauts_core::events::run::{Party, RunLifecycle, RunOutcome};
+use argonauts_core::events::task::TaskEvent;
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::card::ProcessChange;
+use argonauts_core::steps::task::ProcessChange;
 use argonauts_core::{Paths, RepoId, RunId};
 use argonauts_learning::evolution::{CandidateState, Evolution};
 use argonauts_learning::replay::{Check, Entry, Proposal, ReplaySet, holdout_draw};
-use argonauts_learning::{RecipeRef, RunRecord, Store};
+use argonauts_learning::{LearnedWorkflowRef, RunRecord, Store};
 use argonauts_scenarios::scenario_file;
 
 /// What both versions are asked. No fake rule but the candidate's build template answers it.
 const TASK: &str = "Correct the package name people are told to install";
-/// The candidate's build template; the fake owner fixes README.md only when it reads this.
+/// The candidate's build template; the fake worker fixes README.md only when it reads this.
 const HOUSE_RULE: &str = "House rule: name the scoped package @acme/api in README.md.";
 
 /// Replays run on the crew's one agent, once per task, and your rules promote a build prompt.
 const CONFIG: &str = "\
-main_agent = \"claude-code\"
 crew = [\"claude-code\"]
 
 [ui]
 keys = \"default\"
 
-[supervisor]
+[run_host]
 wait_grace = \"1s\"
 
 [evolution.replay]
@@ -46,15 +45,15 @@ use_subscriptions = true
 change_classes = [\"build_prompt\"]
 ";
 
-const V1: &str = "name: docs-fix\nversion: 1\ndescription: Small docs fixes\nmode: solo\n\
-                  match: { task_types: [docs] }\nsolo: { restate_first: true }\n";
+const V1: &str = "name: docs-fix\nversion: 1\ndescription: Small docs fixes\nmode: captain\n\
+                  match: { task_types: [docs] }\ncaptain: { understand_first: true }\n";
 
-/// The app scenario's fakes, with one owner first that fixes README.md when its prompt
+/// The app scenario's fakes, with one worker first that fixes README.md when its prompt
 /// carries the candidate's build template.
-fn vendors(scratch: &Path) -> anyhow::Result<PathBuf> {
-    let base = std::fs::read_to_string(scenario_file(VENDORS))?;
+fn fakes_file(scratch: &Path) -> anyhow::Result<PathBuf> {
+    let base = std::fs::read_to_string(scenario_file(AGENTS))?;
     let result = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\
-                  \"session_id\":\"sess-owner-house\",\"result\":\"Fixed README.md.\",\
+                  \"session_id\":\"sess-worker-house\",\"result\":\"Fixed README.md.\",\
                   \"total_cost_usd\":0.001,\"usage\":{\"input_tokens\":12,\"output_tokens\":20},\
                   \"structured_output\":{\"status\":\"done\",\"summary\":\"the readme names the \
                   scoped package\",\"files_changed\":[\"README.md\"],\"tests_run\":[],\
@@ -67,7 +66,7 @@ fn vendors(scratch: &Path) -> anyhow::Result<PathBuf> {
         "{primer}[[rule]]\nargv0 = \"claude\"\nargs_contain = [\"acceptEdits\"]\n\
          prompt_contains = '{HOUSE_RULE}'\nstdin_prompt = \"line\"\n\
          [[rule.step]]\nemit = '{{\"type\":\"system\",\"subtype\":\"init\",\
-         \"session_id\":\"sess-owner-house\",\"cwd\":\".\",\"tools\":[\"Read\"],\
+         \"session_id\":\"sess-worker-house\",\"cwd\":\".\",\"tools\":[\"Read\"],\
          \"model\":\"claude-haiku-4-5\"}}'\n\
          [[rule.step]]\nwrite = {{ path = \"README.md\", content = \"# Test repo\\n\\nnpm install @acme/api\\n\" }}\n\
          [[rule.step]]\nemit = '{result}'\n\
@@ -76,7 +75,7 @@ fn vendors(scratch: &Path) -> anyhow::Result<PathBuf> {
     let at = base
         .find("[[rule]]")
         .context("no rule in the app's fakes")?;
-    let path = scratch.join("replay-vendors.toml");
+    let path = scratch.join("replay-agents.toml");
     std::fs::write(&path, format!("{}{rule}{}", &base[..at], &base[at..]))?;
     Ok(path)
 }
@@ -114,7 +113,7 @@ fn run_cli_within(
     Ok(child.wait_with_output()?)
 }
 
-/// Puts a task in the replay set: its hidden test kept in the conductor's state, on the side
+/// Puts a task in the replay set: its hidden test kept in Argonauts Code's state, on the side
 /// `holdout` asks for.
 fn add_task(
     store: &Store,
@@ -137,7 +136,7 @@ fn add_task(
             merged: merged.to_owned(),
             tests: vec![test],
             test_command: vec!["sh".to_owned(), "tests/readme.sh".to_owned()],
-            budget_usd: 1.0,
+            limit_usd: 1.0,
             holdout: false,
             accepted: time::OffsetDateTime::now_utc(),
         },
@@ -162,12 +161,12 @@ fn add_task(
 #[test]
 fn a_replay_finishes_on_its_own_and_reaches_promotion() -> anyhow::Result<()> {
     let fakes = tempfile::tempdir()?;
-    let scenario = scenario_playing(&vendors(fakes.path())?)?;
+    let scenario = scenario_playing(&fakes_file(fakes.path())?)?;
     std::fs::write(scenario.repo.global_config(), CONFIG)?;
     let repo = &scenario.repo;
     repo.write("README.md", "# Test repo\n\nnpm install api\n")?;
     repo.write(".argonauts/learned/docs-fix/v1.yaml", V1)?;
-    let base = repo.commit_all("a docs recipe")?;
+    let base = repo.commit_all("a docs learned workflow")?;
     repo.write("README.md", "# Test repo\n\nnpm install @acme/api\n")?;
     repo.write("tests/readme.sh", "grep -q '@acme/api' README.md\n")?;
     let merged = repo.commit_all(TASK)?;
@@ -182,13 +181,13 @@ fn a_replay_finishes_on_its_own_and_reaches_promotion() -> anyhow::Result<()> {
         run: RunId::new("run-003")?,
         at: time::OffsetDateTime::now_utc(),
         task_type: "docs".to_owned(),
-        recipe: Some(RecipeRef {
+        learned_workflow: Some(LearnedWorkflowRef {
             name: "docs-fix".to_owned(),
             version: 1,
         }),
         workflow: None,
         outcome: RunOutcome::Merged,
-        escalations: 0,
+        stuck_tasks: 0,
         final_checks_passed: true,
         cost_usd: 0.01,
         minutes: 1.0,
@@ -219,7 +218,7 @@ fn a_replay_finishes_on_its_own_and_reaches_promotion() -> anyhow::Result<()> {
     assert!(said.contains("Replayed docs-fix-v2"), "{said}");
 
     // Four runs, each version on each task, each finished with nobody answering: the goal
-    // checkpoint went to your rules, and the branch was left, never merged.
+    // approval went to your rules, and the branch was left, never merged.
     let replays: Vec<PathBuf> = run_dirs(&scenario)
         .into_iter()
         .filter(|dir| {
@@ -234,11 +233,11 @@ fn a_replay_finishes_on_its_own_and_reaches_promotion() -> anyhow::Result<()> {
     for dir in &replays {
         let events = argonauts_testkit::journal::events(dir)?;
         let goal = events.iter().any(|event| {
-            matches!(&event.kind, RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
-                if opened.kind == CheckpointKind::Goal)
+            matches!(&event.kind, RunEventKind::Approval(ApprovalEvent::Opened(opened))
+                if opened.kind == ApprovalKind::Understand)
         });
         let by_rules = events.iter().any(|event| {
-            matches!(&event.kind, RunEventKind::Checkpoint(CheckpointEvent::Decided(decided))
+            matches!(&event.kind, RunEventKind::Approval(ApprovalEvent::Decided(decided))
                 if decided.by == Party::Rules)
         });
         let left = events.iter().any(|event| {
@@ -251,16 +250,16 @@ fn a_replay_finishes_on_its_own_and_reaches_promotion() -> anyhow::Result<()> {
             )
         });
         assert!(goal && by_rules && left, "{}", dir.display());
-        // Its cards keep the hidden test and the replay folder out of reach.
-        let cards: Vec<_> = events
+        // Its tasks keep the hidden test and the replay folder out of reach.
+        let questions: Vec<_> = events
             .iter()
             .filter_map(|event| match &event.kind {
-                RunEventKind::Card(CardEvent::Created(spec)) => Some(spec),
+                RunEventKind::Task(TaskEvent::Created(spec)) => Some(spec),
                 _ => None,
             })
             .collect();
-        assert!(!cards.is_empty(), "{}", dir.display());
-        for spec in cards {
+        assert!(!questions.is_empty(), "{}", dir.display());
+        for spec in questions {
             assert!(
                 spec.hidden_paths
                     .iter()

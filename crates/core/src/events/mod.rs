@@ -1,8 +1,8 @@
 //! The run event model. Each run's `events.jsonl` holds one [`RunEvent`] per line; it is the
 //! source of truth, and only the process holding the run lock appends to it.
 
-pub mod card;
-pub mod checkpoint;
+pub mod agent_status;
+pub mod approval;
 pub mod context;
 pub mod failure;
 pub mod goal;
@@ -10,24 +10,24 @@ pub mod plan;
 pub mod run;
 pub mod session;
 pub mod shared;
-pub mod vendor;
+pub mod task;
 pub mod workflow;
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::names::SessionKey;
-use crate::{AgentEvent, CardId, Note, RunId};
+use crate::{AgentEvent, Note, RunId, TaskId};
 
-pub use card::{CardEvent, GateOutcome, IntegrationEvent, ReviewEvent};
-pub use checkpoint::CheckpointEvent;
-pub use context::{ContextCategory, ContextDetail, ContextItem, ContextPart};
+pub use agent_status::{AgentStatusEvent, FallbackEvent, SpendEvent};
+pub use approval::ApprovalEvent;
+pub use context::{ContextCategory, ContextDetail, ContextKind, ContextUsage};
 pub use goal::GoalEvent;
 pub use plan::{DivideEvent, PlanEvent};
 pub use run::{PhaseChange, RunLifecycle};
 pub use session::SessionEvent;
-pub use shared::{BlackboardEvent, RetroEvent};
-pub use vendor::{BudgetEvent, HandoffEvent, VendorEvent};
+pub use shared::{BlackboardEvent, RunReviewEvent};
+pub use task::{CheckOutcome, MergeEvent, ReviewEvent, TaskEvent};
 pub use workflow::WorkflowEvent;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -39,10 +39,10 @@ pub struct RunEvent {
     pub ts: OffsetDateTime,
     pub run_id: RunId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub card_id: Option<CardId>,
+    pub task_id: Option<TaskId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionKey>,
-    /// `conductor`, `user`, `policy`, or an adapter or endpoint id.
+    /// `argonauts-code`, `user`, `policy`, or an adapter or endpoint id.
     pub source: String,
     pub kind: RunEventKind,
 }
@@ -54,23 +54,23 @@ pub enum RunEventKind {
     Phase(PhaseChange),
     Goal(GoalEvent),
     Plan(PlanEvent),
-    /// The task graph, owners, reviewers, predictions, budget lines.
+    /// The task graph, workers, reviewers, predictions, limit lines.
     Divide(DivideEvent),
-    Card(CardEvent),
+    Task(TaskEvent),
     Session(SessionEvent),
     /// The envelope's `session` says whose.
     Agent(AgentEvent),
-    Gate(GateOutcome),
+    Check(CheckOutcome),
     Review(ReviewEvent),
-    Integration(IntegrationEvent),
-    Checkpoint(CheckpointEvent),
-    /// A card's agent stopped and someone else continues, or it waits.
-    Handoff(HandoffEvent),
-    Vendor(VendorEvent),
-    Budget(BudgetEvent),
+    Merge(MergeEvent),
+    Approval(ApprovalEvent),
+    /// A task's agent stopped and someone else continues, or it waits.
+    Fallback(FallbackEvent),
+    AgentStatus(AgentStatusEvent),
+    Spend(SpendEvent),
     Blackboard(BlackboardEvent),
-    /// Predictions scored, outcomes, memory proposals, recipe candidates.
-    Retro(RetroEvent),
+    /// Predictions scored, outcomes, memory proposals, learned workflow candidates.
+    RunReview(RunReviewEvent),
     Note(Note),
     Workflow(WorkflowEvent),
 }

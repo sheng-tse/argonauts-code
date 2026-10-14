@@ -81,8 +81,8 @@ impl RepoFiles {
     /// With nothing typed, the repo's top level, files first, as Claude Code lists it. Typing
     /// matches anywhere in the path, best first: a name that starts with what you typed, or
     /// the path when you typed one from the top, then a word in the path that does, then the
-    /// letters together anywhere, then the letters in order with gaps. Within each, shallower and shorter paths come first. A
-    /// folder you've completed lists what's in it, not itself.
+    /// letters together anywhere, then the letters in order with gaps. Within each, shallower and
+    /// shorter paths come first. A folder you've completed lists what's in it, not itself.
     pub fn matches(&self, query: &str, limit: usize) -> Vec<FileMatch<'_>> {
         let limit = limit.min(MAX_MATCHES);
         if query.is_empty() {

@@ -35,7 +35,9 @@ pub fn for_request(library: &Library, kept: &[KeptStep], request: &str) -> Requi
 /// The names of the steps this run must contain, which its workflow's declaration carries so
 /// the screen marks them where the phases that run show.
 pub fn names(host: &Host) -> Vec<String> {
-    let request = host.read(crate::goal::round::request).unwrap_or_default();
+    let request = host
+        .read(crate::understand::round::request)
+        .unwrap_or_default();
     read(&super::library(host), &kept(host), &request)
         .0
         .steps
@@ -123,7 +125,7 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(
             project.join(argonauts_core::required::FILE),
-            "[[step]]\nname = \"benchmark\"\nrole = \"workers\"\ndoes = \"Run the benchmark.\"\n",
+            "[[step]]\nname = \"benchmark\"\nrole = \"worker\"\ndoes = \"Run the benchmark.\"\n",
         )
         .unwrap();
         let mut library = Library {
@@ -134,7 +136,7 @@ mod tests {
         let required = for_request(&library, &[], "add due dates");
         assert_eq!(required.steps.len(), 1, "{required:?}");
         assert_eq!(required.steps[0].name, "benchmark");
-        assert_eq!(required.steps[0].role, CrewRole::Workers);
+        assert_eq!(required.steps[0].role, CrewRole::Worker);
         assert!(required.tasks.is_empty());
 
         // One that came with the repository requires nothing until you trust it.
@@ -152,7 +154,7 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(
             project.join(argonauts_core::required::FILE),
-            "[[step]]\nname = \"benchmark\"\nrole = \"workers\"\ndoes = \"Run the benchmark.\"\n",
+            "[[step]]\nname = \"benchmark\"\nrole = \"worker\"\ndoes = \"Run the benchmark.\"\n",
         )
         .unwrap();
         let library = Library {
@@ -163,13 +165,13 @@ mod tests {
         let kept = [
             KeptStep {
                 name: "Benchmark".into(),
-                role: CrewRole::Reviewers,
+                role: CrewRole::Reviewer,
                 does: Some("Time the hot path.".into()),
                 when: Some("last".into()),
             },
             KeptStep {
                 name: "security review".into(),
-                role: CrewRole::Reviewers,
+                role: CrewRole::Reviewer,
                 does: None,
                 when: None,
             },
@@ -182,7 +184,7 @@ mod tests {
             .map(|step| step.name.as_str())
             .collect();
         assert_eq!(names, ["Benchmark", "security review"]);
-        assert_eq!(required.steps[0].role, CrewRole::Reviewers);
+        assert_eq!(required.steps[0].role, CrewRole::Reviewer);
         assert_eq!(
             required.steps[0].does.as_deref(),
             Some("Time the hot path.")

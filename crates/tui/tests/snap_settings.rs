@@ -1,10 +1,10 @@
 mod common;
 
 use argonauts_core::app::{ModelChoice, SettingRow, UiCommand, ViewRequest};
-use argonauts_core::events::checkpoint::CheckpointKind;
-use argonauts_core::limits::{CostEstimate, QuotaReading, QuotaSource, QuotaStatus};
+use argonauts_core::events::approval::ApprovalKind;
+use argonauts_core::limits::{CostEstimate, PlanUsageReading, PlanUsageSource, PlanUsageStatus};
 use argonauts_core::model_picker::{EffortSlider, EffortStop};
-use argonauts_core::names::{CheckpointId, RoleName, VendorId};
+use argonauts_core::names::{AgentId, ApprovalId, RoleName};
 use argonauts_core::policy::{ApprovalRow, ApprovalsView as ApprovalsData};
 use argonauts_core::registry::ModelAccess;
 use argonauts_core::settings::SettingScope;
@@ -33,7 +33,7 @@ fn row(key: &str, value: &str, layer: &str, allowed: &[&str], description: &str)
         key: key.to_owned(),
         value: value.to_owned(),
         layer: layer.to_owned(),
-        preset_from: None,
+        workflow_from: None,
         default_scope: SettingScope::Project,
         safety: key.starts_with("approvals.") || key.starts_with("limits."),
         allowed: allowed.iter().map(|value| (*value).to_owned()).collect(),
@@ -63,18 +63,18 @@ fn press(picker: &mut Picker, code: KeyCode) -> Step {
     flow::advance(picker, event)
 }
 
-fn presets() -> Picker {
+fn workflows() -> Picker {
     let names = [
         "council",
         "orchestrator",
-        "solo",
+        "captain",
         "maker-checker",
         "best-of-n",
         "draft-and-vote",
-        "ablate-restate",
-        "ablate-mapper",
+        "ablate-read",
+        "ablate-map",
         "ablate-critic",
-        "ablate-retro",
+        "ablate-run_review",
     ];
     let allowed: Vec<String> = names.iter().map(|name| format!("\"{name}\"")).collect();
     let allowed: Vec<&str> = allowed.iter().map(String::as_str).collect();
@@ -82,7 +82,7 @@ fn presets() -> Picker {
         "workflow",
         vec![row(
             "workflow",
-            "\"solo\"",
+            "\"captain\"",
             "project",
             &allowed,
             "How the crew works together",
@@ -92,22 +92,22 @@ fn presets() -> Picker {
 
 #[test]
 fn settings_picker_frame() {
-    let picker = presets();
+    let picker = workflows();
     check_picker("settings_picker_frame", &picker);
 
     let shown = picker_lines(&picker, 80);
-    assert!(shown.contains("❯ 3. solo ✓"), "{shown}");
-    assert!(shown.contains("↓ 8. ablate-mapper"), "{shown}");
+    assert!(shown.contains("❯ 3. captain ✓"), "{shown}");
+    assert!(shown.contains("↓ 8. ablate-map"), "{shown}");
     assert!(shown.contains("… +3 more"), "{shown}");
     assert!(!shown.contains("Reset"), "Reset is past the fold:\n{shown}");
 
     let theme = theme();
     let lines = picker.lines(&still(&theme, 80));
     assert_eq!(style_of(&lines, "✓").unwrap().fg, fg(Role::Success));
-    assert_eq!(style_of(&lines, "───").unwrap().fg, fg(Role::Card));
-    assert_eq!(style_of(&lines, "Workflow").unwrap().fg, fg(Role::Card));
+    assert_eq!(style_of(&lines, "───").unwrap().fg, fg(Role::Question));
+    assert_eq!(style_of(&lines, "Workflow").unwrap().fg, fg(Role::Question));
     assert_eq!(
-        style_of(&lines, "The main agent does it, as its CLI would")
+        style_of(&lines, "The CLI you talk to does the work itself")
             .unwrap()
             .fg,
         fg(Role::Dim)
@@ -186,10 +186,10 @@ fn choice(
 ) -> ModelChoice {
     ModelChoice {
         worker: worker.parse().unwrap(),
-        family: String::new(),
+        provider: String::new(),
         access,
         cost,
-        quota: None,
+        plan_usage: None,
         efforts: Vec::new(),
         strengths: strengths.iter().map(|s| (*s).to_owned()).collect(),
         current: false,
@@ -214,18 +214,18 @@ fn claude(model: Option<&str>, note: Option<&str>, older: bool) -> ModelChoice {
     let mut choice = choice(
         &worker,
         ModelAccess::Subscription,
-        CostEstimate::Quota(0.04),
+        CostEstimate::PlanUsage(0.04),
         &[],
     );
     choice.note = note.map(str::to_owned);
     choice.older = older;
-    choice.quota = Some(QuotaReading {
-        vendor: VendorId("claude-code".into()),
-        status: QuotaStatus::Allowed,
+    choice.plan_usage = Some(PlanUsageReading {
+        agent_id: AgentId("claude-code".into()),
+        status: PlanUsageStatus::Allowed,
         used: Some(0.42),
         resets_at: None,
         window: Some("five_hour".into()),
-        source: QuotaSource::RateLimitEvent,
+        source: PlanUsageSource::RateLimitEvent,
         observed_at: OffsetDateTime::UNIX_EPOCH,
         detail: None,
         wrap_up: false,
@@ -301,17 +301,17 @@ fn reviewer_choices() -> Vec<ModelChoice> {
     ]
 }
 
-/// `/model` opens on the default agent's CLIs, with "Roles…" a row away, and each role's
+/// `/model` opens on the main agent's CLIs, with "Roles…" a row away, and each role's
 /// workers named by their CLI.
 #[test]
 fn model_picker_opens_on_the_main_agent() {
     let rows = vec![
         row(
-            "main_agent",
+            "crew.main",
             "\"claude-code\"",
             "global",
             &[],
-            "Who answers in chat",
+            "Who answers in conversation",
         ),
         row(
             "narrator.model",
@@ -321,7 +321,7 @@ fn model_picker_opens_on_the_main_agent() {
             "The narrator's model",
         ),
         row(
-            "roles.reviewer.workers",
+            "roles.reviewer.models",
             "[\"codex/gpt-5.6\", \"claude-code/opus\"]",
             "built-in",
             &[],
@@ -507,11 +507,11 @@ fn with_no_effort_set_the_slider_starts_on_the_models_default() {
             );
         }
         let lines = unset.lines(&still(&theme, 80));
-        assert_eq!(style_of(&lines, "▲"), Some(theme.style(Role::Card)));
+        assert_eq!(style_of(&lines, "▲"), Some(theme.style(Role::Question)));
         let label = style_of(&lines, &format!(" {level} ")).or_else(|| style_of(&lines, &level));
         assert_eq!(
             label.and_then(|style| style.fg),
-            theme.style(Role::Card).fg,
+            theme.style(Role::Question).fg,
             "{level} in the accent color"
         );
     }
@@ -563,7 +563,7 @@ fn effort_slider() {
         })
     );
 
-    // The chosen level is drawn in the card color, and the others dim.
+    // The chosen level is drawn in the question color, and the others dim.
     let theme = theme();
     let picker = flow::effort_picker("effort", slider("low"));
     let lines = picker.lines(&still(&theme, 80));
@@ -581,11 +581,11 @@ fn effort_slider() {
         .iter()
         .find(|span| span.content == "max")
         .unwrap();
-    assert_eq!(low.style.fg, theme.style(Role::Card).fg);
+    assert_eq!(low.style.fg, theme.style(Role::Question).fg);
     assert_eq!(max.style.fg, theme.style(Role::Dim).fg);
 }
 
-/// All hands beside the slider, off and then on, as Claude Code places Ultracode: its name and
+/// Ultracode beside the slider, off and then on, as Claude Code places Ultracode: its name and
 /// state level with the line, `Tab to toggle` under them, and while it's on a line saying what
 /// it does. Tab flips it, and Enter saves it without pinning the level it left alone.
 #[test]
@@ -682,7 +682,7 @@ fn effort_slider_ultracode() {
     );
 }
 
-/// With nothing to slide, All hands takes a row of its own under what the model runs at: a
+/// With nothing to slide, Ultracode takes a row of its own under what the model runs at: a
 /// level fixed by the model, or none at all.
 #[test]
 fn effort_ultracode_without_a_slider() {
@@ -720,15 +720,15 @@ const CONTEXTS: [&str; 4] = [
     "\"note+summary\"",
 ];
 
-/// `/handoff`'s rows once note+summary is picked, which brings the summarizer row in.
-fn handoff_rows() -> Vec<SettingRow> {
+/// `/fallback`'s rows once note+summary is picked, which brings the summarizer row in.
+fn fallback_rows() -> Vec<SettingRow> {
     vec![
         row(
             "fallback.mode",
             "\"auto\"",
             "built-in",
             &["\"ask\"", "\"auto\"", "\"wait\""],
-            "When an agent stops, such as at a usage limit: ask you, hand off to the next \
+            "When an agent stops, such as at a usage limit: ask you, go to the next \
              fallback, or wait for the agent. A role's own setting wins",
         ),
         row(
@@ -760,9 +760,9 @@ fn handoff_rows() -> Vec<SettingRow> {
     ]
 }
 
-/// The handoff rows with the fallback list, empty as it is unless you set one.
-fn handoff_rows_with_fallback() -> Vec<SettingRow> {
-    let mut rows = handoff_rows();
+/// The fallback rows with the fallback list, empty as it is unless you set one.
+fn fallback_rows_with_fallback() -> Vec<SettingRow> {
+    let mut rows = fallback_rows();
     rows.insert(
         1,
         row(
@@ -770,7 +770,7 @@ fn handoff_rows_with_fallback() -> Vec<SettingRow> {
             "[]",
             "built-in",
             &[],
-            "Who takes over, in order: an agent, or a table with its own rules. With no list \
+            "The fallbacks, in order: an agent, or a table with its own rules. With no list \
              anywhere, the other installed and logged-in CLIs. A role's own setting wins",
         ),
     );
@@ -778,9 +778,9 @@ fn handoff_rows_with_fallback() -> Vec<SettingRow> {
 }
 
 #[test]
-fn handoff_picker() {
-    let mut picker = flow::settings_picker("fallback", handoff_rows());
-    check_picker("handoff_picker", &picker);
+fn fallback_picker() {
+    let mut picker = flow::settings_picker("fallback", fallback_rows());
+    check_picker("fallback_picker", &picker);
     let shown = picker_lines(&picker, 120);
     // Names, as /permissions has them, with the value and where it's set.
     assert!(
@@ -790,9 +790,9 @@ fn handoff_picker() {
     assert!(shown.contains("Who summarizes the old session"), "{shown}");
     assert!(!shown.contains("summarizer"), "{shown}");
 
-    // The four values, each with what the replacement gets, the one in effect marked.
+    // The four values, each with what the fallback gets, the one in effect marked.
     press(&mut picker, KeyCode::Char('3'));
-    check_picker("handoff_context_values", &picker);
+    check_picker("fallback_context_values", &picker);
     let values = picker_lines(&picker, 120);
     assert!(
         values.contains("fresh") && values.contains("The task only"),
@@ -801,7 +801,7 @@ fn handoff_picker() {
     assert!(values.contains("note+summary ✓"), "{values}");
     assert!(values.contains("Reset"), "{values}");
 
-    // Picking one asks where to save it, this project first, like every handoff row.
+    // Picking one asks where to save it, this project first, like every fallback row.
     press(&mut picker, KeyCode::Char('2'));
     let scope = picker_lines(&picker, 120);
     assert!(scope.contains("fallback.context = note"), "{scope}");
@@ -816,24 +816,24 @@ fn handoff_picker() {
     );
 
     // The summarizer takes any worker, typed.
-    let mut picker = flow::settings_picker("fallback", handoff_rows());
+    let mut picker = flow::settings_picker("fallback", fallback_rows());
     press(&mut picker, KeyCode::Char('4'));
     assert_eq!(picker.input.as_deref(), Some(""));
-    check_picker("handoff_summarizer", &picker);
+    check_picker("fallback_summarizer", &picker);
 }
 
 #[test]
-fn handoff_picker_shows_the_autonomous_defaults() {
-    let picker = flow::settings_picker("fallback", handoff_rows_with_fallback());
-    check_picker("handoff_picker_defaults", &picker);
-    // The next replacement is picked on its own, from the other CLIs.
+fn fallback_picker_shows_the_autonomous_defaults() {
+    let picker = flow::settings_picker("fallback", fallback_rows_with_fallback());
+    check_picker("fallback_picker_defaults", &picker);
+    // The next fallback is picked on its own, from the other CLIs.
     let shown = picker_lines(&picker, 120);
     assert!(
         shown.contains("When an agent stops              auto · built-in"),
         "{shown}"
     );
     assert!(
-        shown.contains("Who takes over                   other logged-in CLIs · built-in"),
+        shown.contains("Who it falls back to             other logged-in CLIs · built-in"),
         "{shown}"
     );
 }
@@ -846,9 +846,9 @@ fn type_text(picker: &mut Picker, text: &str) {
 }
 
 #[test]
-fn handoff_picker_with_vim_keys() {
+fn fallback_picker_with_vim_keys() {
     let vim_picker = || {
-        let mut picker = flow::settings_picker("fallback", handoff_rows());
+        let mut picker = flow::settings_picker("fallback", fallback_rows());
         picker.vim = true;
         picker
     };
@@ -952,11 +952,11 @@ fn config_rows() -> Vec<SettingRow> {
             "How the crew works together",
         ),
         row(
-            "main_agent",
+            "crew.main",
             "\"claude-code/opus\"",
             "global",
             &[],
-            "Chat, triage, and solo work",
+            "Conversation, the estimate, and Captain work",
         ),
         row(
             "ui.theme",
@@ -1139,7 +1139,7 @@ fn config_view_opens_an_editor_with_right_and_left_goes_back() {
 }
 
 #[test]
-fn config_view_lists_the_handoff_context_and_summarizer() {
+fn config_view_lists_the_fallback_context_and_summarizer() {
     let mut rows = config_rows();
     rows.extend([
         row(
@@ -1171,7 +1171,7 @@ fn config_view_lists_the_handoff_context_and_summarizer() {
             key(&mut view, KeyCode::Char(ch), &state);
         }
         let shown = screen(&mut view, width, height, &state);
-        insta::assert_snapshot!(format!("config_view_handoff_{width}"), shown);
+        insta::assert_snapshot!(format!("config_view_fallback_{width}"), shown);
         for (key, value, layer) in [
             ("fallback.context", "note+summary", "this project"),
             (
@@ -1191,7 +1191,7 @@ fn config_view_lists_the_handoff_context_and_summarizer() {
 }
 
 #[test]
-fn config_view_edits_the_handoff_summarizer_with_vim_keys() {
+fn config_view_edits_the_fallback_summarizer_with_vim_keys() {
     let mut rows = config_rows();
     rows.push(row(
         "fallback.summarizer",
@@ -1241,7 +1241,7 @@ fn approvals_state() -> AppState {
     let id = RunId::new("run-01").unwrap();
     let mut run = RunState::new(id.clone());
     run.title = "Fix the flaky export test".into();
-    run.spot_checks = vec![CheckpointId::numbered(3)];
+    run.spot_checks = vec![ApprovalId::numbered(3)];
     state.runs.insert(id, run);
     state
 }
@@ -1249,7 +1249,7 @@ fn approvals_state() -> AppState {
 fn approvals() -> ApprovalsView {
     let data = ApprovalsData {
         points: vec![ApprovalRow {
-            kind: CheckpointKind::Merge,
+            kind: ApprovalKind::Merge,
             mode: ApprovalMode::AutoPreview,
             decide_with: DecideWith::Rules,
             matches_in_a_row: 12,
@@ -1257,7 +1257,7 @@ fn approvals() -> ApprovalsView {
             suggest_auto: true,
         }],
         spot_checks_waiting: 1,
-        approver: Some("codex/gpt-5.6".parse().unwrap()),
+        judge: Some("codex/gpt-5.6".parse().unwrap()),
         warnings: Vec::new(),
     };
     let rows = vec![
@@ -1297,11 +1297,11 @@ fn approvals() -> ApprovalsView {
             "Who settles what your rules can't decide",
         ),
         row(
-            "approvals.approver.model_rules",
-            "\"~/.argonauts/approver.md\"",
+            "approvals.judge.model_rules",
+            "\"~/.argonauts/judge.md\"",
             "global",
             &[],
-            "The approver's rules file",
+            "The judge's rules file",
         ),
         row(
             "approvals.spot_check_sample",
@@ -1349,7 +1349,7 @@ fn approvals_view() {
         "{shown}"
     );
     assert!(
-        shown.contains("Fix the flaky export test · cp-003"),
+        shown.contains("Fix the flaky export test · approval-003"),
         "{shown}"
     );
 
@@ -1365,7 +1365,7 @@ fn approvals_view() {
         command,
         UiCommand::SpotCheck {
             run: RunId::new("run-01").unwrap(),
-            id: CheckpointId::numbered(3),
+            id: ApprovalId::numbered(3),
             correct: false
         }
     );
@@ -1437,7 +1437,7 @@ fn pastes_reach_the_settings_editors() {
     for _ in 0..7 {
         key(&mut view, KeyCode::Up, &state);
     }
-    // Past who checks, the approver model and its rules file, to the merge's coverage.
+    // Past who checks, the judge and its rules file, to the merge's coverage.
     for _ in 0..4 {
         key(&mut view, KeyCode::Down, &state);
     }
@@ -1456,7 +1456,7 @@ const BOOL: [&str; 2] = ["true", "false"];
 const SANDBOX_MODES: [&str; 4] = ["\"os\"", "\"container\"", "\"tool\"", "\"none\""];
 
 /// What `/permissions` answers: every agent's sandbox at its defaults, the daily cap set
-/// everywhere, and three roles, the owner with its own rules set in this project.
+/// everywhere, and three roles, the worker with its own rules set in this project.
 fn permission_rows() -> Vec<SettingRow> {
     let safety = |mut row: SettingRow| {
         row.safety = true;
@@ -1491,7 +1491,7 @@ fn permission_rows() -> Vec<SettingRow> {
             "true",
             "built-in",
             &BOOL,
-            "Whether agents commit their own work. Off, Argonauts commits for them. A role's \
+            "Whether agents commit their own work. Off, Argonauts Code commits for them. A role's \
              own setting wins",
         ),
         row(
@@ -1548,7 +1548,7 @@ fn permissions_picker() {
     let shown = picker_lines(&picker, 120);
     for words in [
         "Whose rules guard the agents",
-        "Argonauts' (OS sandbox) · built-in",
+        "Argonauts Code's (OS sandbox) · built-in",
         "Internet for agents' commands",
         "Agents see each other's worktrees",
         "Agents make their own commits",
@@ -1564,10 +1564,13 @@ fn permissions_picker() {
     press(&mut picker, KeyCode::Char('1'));
     check_picker("permissions_mode_values", &picker);
     let values = picker_lines(&picker, 120);
-    assert!(values.contains("Argonauts' (OS sandbox) ✓"), "{values}");
+    assert!(
+        values.contains("Argonauts Code's (OS sandbox) ✓"),
+        "{values}"
+    );
     assert!(
         values.contains("each AI tool's own")
-            && values.contains("No protection at all, neither Argonauts' nor the tool's"),
+            && values.contains("No protection at all, neither Argonauts Code's nor the tool's"),
         "{values}"
     );
     press(&mut picker, KeyCode::Char('3'));
@@ -1590,7 +1593,7 @@ fn permissions_picker() {
     let role = picker_lines(&picker, 120);
     assert!(role.contains("Permissions for reviewer"), "{role}");
     assert!(
-        role.contains("same as every agent: Argonauts' (OS sandbox)"),
+        role.contains("same as every agent: Argonauts Code's (OS sandbox)"),
         "{role}"
     );
     press(&mut picker, KeyCode::Char('2'));
@@ -1619,7 +1622,7 @@ fn permissions_picker() {
         )
     );
 
-    // The owner's own rules can be reset back to every agent's.
+    // The worker's own rules can be reset back to every agent's.
     let mut picker = flow::settings_picker("permissions", permission_rows());
     press(&mut picker, KeyCode::Char('8'));
     press(&mut picker, KeyCode::Char('1'));
@@ -1649,8 +1652,8 @@ fn permissions_for_one_role_open_it_at_once() {
     assert_eq!(picker.rows.len(), 4, "{shown}");
 }
 
-/// `/approvals` at the built-in settings: the checkpoints decide on their own, rules and a
-/// reviewer from another company together, merges by rules alone, and you're asked otherwise.
+/// `/approvals` at the built-in settings: the approvals decide on their own, rules and a
+/// reviewer from another provider together, merges by rules alone, and you're asked otherwise.
 fn autonomous_approvals() -> ApprovalsView {
     let point = |kind, decide_with| ApprovalRow {
         kind,
@@ -1662,11 +1665,11 @@ fn autonomous_approvals() -> ApprovalsView {
     };
     let data = ApprovalsData {
         points: vec![
-            point(CheckpointKind::Goal, DecideWith::RulesAndModel),
-            point(CheckpointKind::Merge, DecideWith::Rules),
+            point(ApprovalKind::Understand, DecideWith::RulesAndModel),
+            point(ApprovalKind::Merge, DecideWith::Rules),
         ],
         spot_checks_waiting: 0,
-        approver: None,
+        judge: None,
         warnings: Vec::new(),
     };
     let modes = ["\"supervised\"", "\"auto_preview\"", "\"auto\""];
@@ -1678,21 +1681,21 @@ fn autonomous_approvals() -> ApprovalsView {
     ];
     let rows = vec![
         row(
-            "approvals.goal.mode",
+            "approvals.understand.mode",
             "\"auto\"",
             "built-in",
             &modes,
             "Goal: who approves",
         ),
         row(
-            "approvals.goal.decide_with",
+            "approvals.understand.decide_with",
             "\"rules_and_model\"",
             "built-in",
             &deciders,
             "Goal: who decides in auto mode",
         ),
         row(
-            "approvals.goal.otherwise",
+            "approvals.understand.otherwise",
             "\"ask\"",
             "built-in",
             &["\"ask\"", "\"send_back\"", "\"stop\""],
@@ -1751,7 +1754,7 @@ fn approvals_view_shows_the_autonomous_defaults() {
     }
     let shown = screen(&mut autonomous_approvals(), 120, 40, &state);
     for words in [
-        "Goal · auto · rules and approver both agree",
+        "Understand · auto · rules and judge both agree",
         "Merge · auto · your rules decide",
         "the cheapest model from another provider",
         "cheapest, other provider",
@@ -1769,11 +1772,11 @@ fn approvals_view_gives_descriptions_the_room_left() {
         let mut view = autonomous_approvals();
         view.rows.extend([
             row(
-                "approvals.approver.model_rules",
-                "\"~/.argonauts/approver-rules.md\"",
+                "approvals.judge.model_rules",
+                "\"~/.argonauts/judge-rules.md\"",
                 "everywhere (global)",
                 &[],
-                "The approver's rules, in your words",
+                "The judge's rules, in your words",
             ),
             row(
                 "approvals.pause_auto_when_spot_checks_waiting",
@@ -1808,10 +1811,10 @@ fn approvals_view_gives_descriptions_the_room_left() {
     }
 }
 
-/// `/handoff`'s rows for every agent, then the default agent's and the owner's own.
-fn handoff_rows_with_roles() -> Vec<SettingRow> {
+/// `/fallback`'s rows for every agent, then the main agent's and the worker's own.
+fn fallback_rows_with_roles() -> Vec<SettingRow> {
     let modes = ["\"ask\"", "\"auto\"", "\"wait\""];
-    let mut rows = handoff_rows_with_fallback();
+    let mut rows = fallback_rows_with_fallback();
     rows.push(row(
         "fallback.main.mode",
         "",
@@ -1820,7 +1823,7 @@ fn handoff_rows_with_roles() -> Vec<SettingRow> {
         "When the main agent stops",
     ));
     rows.push(row(
-        "fallback.workers.mode",
+        "fallback.worker.mode",
         "\"ask\"",
         "project",
         &modes,
@@ -1830,13 +1833,13 @@ fn handoff_rows_with_roles() -> Vec<SettingRow> {
 }
 
 #[test]
-fn handoff_goes_by_name_with_a_row_per_role() {
-    let mut picker = flow::settings_picker("fallback", handoff_rows_with_roles());
+fn fallback_goes_by_name_with_a_row_per_role() {
+    let mut picker = flow::settings_picker("fallback", fallback_rows_with_roles());
     let theme = theme();
     for width in [80, 100, 120, 200] {
         assert_lines(&picker.lines(&still(&theme, width)), width);
         insta::assert_snapshot!(
-            format!("handoff_by_name_{width}"),
+            format!("fallback_by_name_{width}"),
             picker_lines(&picker, width)
         );
     }
@@ -1854,15 +1857,15 @@ fn handoff_goes_by_name_with_a_row_per_role() {
     // A role's row opens its own keys, an unset one saying what every agent has.
     press(&mut picker, KeyCode::Char('7'));
     assert_eq!(picker.title, "Fallback for workers");
-    let owner = picker_lines(&picker, 120);
+    let worker = picker_lines(&picker, 120);
     assert!(
-        owner.contains("When an agent stops   ask · this project"),
-        "{owner}"
+        worker.contains("When an agent stops   ask · this project"),
+        "{worker}"
     );
     press(&mut picker, KeyCode::Enter);
     assert_eq!(picker.title, "When an agent stops · workers");
 
-    let mut picker = flow::settings_picker("fallback", handoff_rows_with_roles());
+    let mut picker = flow::settings_picker("fallback", fallback_rows_with_roles());
     press(&mut picker, KeyCode::Char('6'));
     let default = picker_lines(&picker, 120);
     assert!(
@@ -1884,14 +1887,14 @@ fn approvals_like_the_catalog() -> ApprovalsView {
     };
     let data = ApprovalsData {
         points: vec![
-            point(CheckpointKind::Plan, DecideWith::RulesAndModel),
-            point(CheckpointKind::Merge, DecideWith::Rules),
+            point(ApprovalKind::Plan, DecideWith::RulesAndModel),
+            point(ApprovalKind::Merge, DecideWith::Rules),
         ],
         spot_checks_waiting: 0,
-        approver: None,
+        judge: None,
         warnings: Vec::new(),
     };
-    let checkpoint = |name: &str, label: &str, decide_with: &str| {
+    let approval = |name: &str, label: &str, decide_with: &str| {
         vec![
             row(
                 &format!("approvals.{name}.mode"),
@@ -1913,9 +1916,7 @@ fn approvals_like_the_catalog() -> ApprovalsView {
                     "\"rules_and_model\"",
                     "\"rules_or_model\"",
                 ],
-                &format!(
-                    "{label}: who decides in auto mode, your rules, your approver model, or both"
-                ),
+                &format!("{label}: who decides in auto mode, your rules, your judge, or both"),
             ),
             row(
                 &format!("approvals.{name}.otherwise"),
@@ -1928,12 +1929,12 @@ fn approvals_like_the_catalog() -> ApprovalsView {
                 &format!("approvals.{name}.at_hard_limit"),
                 "\"stop\"",
                 "built-in",
-                &["\"stop\"", "\"send_back\"", "\"park\""],
+                &["\"stop\"", "\"send_back\"", "\"wait\""],
                 &format!("{label}: what a hard limit does on autopilot"),
             ),
         ]
     };
-    // Full auto first: the one switch and who answers in your place.
+    // Autopilot first: the one switch and who answers in your place.
     let mut rows = vec![
         row(
             "approvals.autopilot",
@@ -1950,11 +1951,7 @@ fn approvals_like_the_catalog() -> ApprovalsView {
             "Who answers the crew's questions in your place",
         ),
     ];
-    rows.extend(checkpoint(
-        "plan",
-        "The plan approval",
-        "\"rules_and_model\"",
-    ));
+    rows.extend(approval("plan", "The plan approval", "\"rules_and_model\""));
     rows.push(row(
         "approvals.rules.plan.max_score_spread",
         "1.0",
@@ -1962,7 +1959,7 @@ fn approvals_like_the_catalog() -> ApprovalsView {
         &[],
         "Plan rules: the largest gap between one judge's two scores, out of 10",
     ));
-    rows.extend(checkpoint("merge", "The merge approval", "\"rules\""));
+    rows.extend(approval("merge", "The merge approval", "\"rules\""));
     rows.push(row(
         "approvals.rules.merge.allow_debt",
         "false",
@@ -1978,11 +1975,11 @@ fn approvals_like_the_catalog() -> ApprovalsView {
         "Who settles what your rules can't decide: judge, or a model you pick",
     ));
     rows.push(row(
-        "approvals.approver.second_model",
+        "approvals.judge.second_model",
         "",
         "built-in",
         &[],
-        "A second approver, from another agent, that must also approve",
+        "A second judge, from another agent, that must also approve",
     ));
     let mut view = ApprovalsView::new(data);
     view.rows = rows;

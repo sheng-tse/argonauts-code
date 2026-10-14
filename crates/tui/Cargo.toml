@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-tui"
-description = "Argonauts terminal interface: the inline chat screen, its overlays, and the screen-reader mode."
+description = "Argonauts Code terminal interface: the inline conversation screen, its overlays, and the screen-reader mode."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,8 +8,8 @@ license.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "argonauts-tui-harness"
-path = "src/bin/argonauts-tui-harness.rs"
+name = "argonauts-tui-driver"
+path = "src/bin/argonauts-tui-driver.rs"
 test = false
 
 [dependencies]

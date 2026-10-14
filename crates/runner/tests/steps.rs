@@ -4,7 +4,7 @@ mod support;
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use argonauts_core::events::session::{SubagentStatus, VendorAgentState};
+use argonauts_core::events::session::{CliAgentState, SubagentStatus};
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_runner::{Checked, Script, WorkflowFile, built_in, run};
 use serde_json::json;
@@ -37,13 +37,13 @@ async fn orchestrator_plans_builds_each_task_and_sends_a_rejected_one_back() {
         host.asked(),
         [
             "plan orchestrator 1",
-            "build:add-a-due workers 1",
-            "build:show-due-dates workers 1",
-            "review:add-a-due reviewers 1",
+            "build:add-a-due worker 1",
+            "build:show-due-dates worker 1",
+            "review:add-a-due reviewer 1",
             // A label is 20 characters at most, like every label in a run.
-            "review:show-due-date reviewers 1",
-            "build:add-a-due workers 2",
-            "review:add-a-due reviewers 2",
+            "review:show-due-date reviewer 1",
+            "build:add-a-due worker 2",
+            "review:add-a-due reviewer 2",
             "sign-off judge 1",
         ]
     );
@@ -113,7 +113,7 @@ async fn every_workflow_reports_its_own_name_phases_and_agents() {
         .agents
         .iter()
         .map(|agent| {
-            assert_eq!(agent.state, VendorAgentState::Done);
+            assert_eq!(agent.state, CliAgentState::Done);
             let model = agent.model.as_deref().unwrap_or("?");
             let phase = agent.phase.unwrap_or(0);
             format!(
@@ -138,16 +138,16 @@ async fn every_workflow_reports_its_own_name_phases_and_agents() {
     let reports = host.reports.lock().unwrap();
     assert_eq!(reports[0].phases.len(), 4);
     assert!(reports[0].agents.is_empty());
-    let states: Vec<VendorAgentState> = reports
+    let states: Vec<CliAgentState> = reports
         .iter()
         .filter_map(|report| report.agents.first().map(|agent| agent.state))
         .collect();
     assert_eq!(
         states[..3],
         [
-            VendorAgentState::Queued,
-            VendorAgentState::Running,
-            VendorAgentState::Done
+            CliAgentState::Queued,
+            CliAgentState::Running,
+            CliAgentState::Done
         ]
     );
 }
@@ -155,7 +155,7 @@ async fn every_workflow_reports_its_own_name_phases_and_agents() {
 #[tokio::test]
 async fn council_has_everyone_propose_and_challenge_then_builds_and_cross_reviews() {
     let host = Fake::new(|call| match call.phase.as_deref() {
-        Some("Propose") => text(&format!("plan from seat {}", call.seat)),
+        Some("Propose") => text(&format!("plan from model {}", call.model_index)),
         Some("Challenge") => text("the other plan skips migration"),
         Some("Decide") => tasks(&["Migrate"]),
         Some("Cross-review") => accept(),
@@ -167,24 +167,24 @@ async fn council_has_everyone_propose_and_challenge_then_builds_and_cross_review
     assert_eq!(
         host.asked(),
         [
-            "propose:1 workers 1",
-            "propose:2 workers 1",
-            "challenge:1 workers 1",
-            "challenge:2 workers 1",
+            "propose:1 worker 1",
+            "propose:2 worker 1",
+            "challenge:1 worker 1",
+            "challenge:2 worker 1",
             "decide judge 1",
-            "build:migrate workers 1",
-            "cross-review:migrate workers 1",
+            "build:migrate worker 1",
+            "cross-review:migrate worker 1",
             "sign-off judge 1",
         ]
     );
     let propose = host.call("propose:2", 1);
     assert!(propose.independent);
-    assert_eq!(propose.seat, 1);
+    assert_eq!(propose.model_index, 1);
     let challenge = host.call("challenge:1", 1);
     assert!(
         challenge
             .prompt
-            .contains("From Propose:\n1) plan from seat 0\n2) plan from seat 1"),
+            .contains("From Propose:\n1) plan from model 0\n2) plan from model 1"),
         "{}",
         challenge.prompt
     );
@@ -197,7 +197,7 @@ async fn council_has_everyone_propose_and_challenge_then_builds_and_cross_review
     assert!(decide.schema.is_some());
     let review = host.call("cross-review:migrate", 1);
     assert!(review.not_the_author);
-    assert_eq!(review.role, CrewRole::Workers);
+    assert_eq!(review.role, CrewRole::Worker);
     assert_eq!(ended.result.expect("ended")["accepted"], json!(true));
 }
 
@@ -233,13 +233,13 @@ async fn spec_first_keeps_building_until_its_goal_holds_and_revises_until_both_a
         host.asked(),
         [
             "spec orchestrator 1",
-            "build:due-dates workers 1",
-            "build:due-dates workers 2",
-            "review:due-dates:1 reviewers 1",
-            "review:due-dates:2 reviewers 1",
-            "revise:due-dates workers 1",
-            "review:due-dates:1 reviewers 2",
-            "review:due-dates:2 reviewers 2",
+            "build:due-dates worker 1",
+            "build:due-dates worker 2",
+            "review:due-dates:1 reviewer 1",
+            "review:due-dates:2 reviewer 1",
+            "revise:due-dates worker 1",
+            "review:due-dates:1 reviewer 2",
+            "review:due-dates:2 reviewer 2",
             "sign-off judge 1",
         ]
     );
@@ -270,7 +270,10 @@ async fn spec_first_keeps_building_until_its_goal_holds_and_revises_until_both_a
     assert_eq!(asked[0].condition, "its acceptance tests pass");
     assert_eq!(asked[0].step.as_deref(), Some("Build"));
     assert_eq!(asked[0].task.as_deref(), Some("due-dates"));
-    assert_eq!((asked[0].attempt, asked[1].attempt), (Some(1), Some(2)));
+    assert_eq!(
+        (asked[0].try_number, asked[1].try_number),
+        (Some(1), Some(2))
+    );
     let revise = host.call("revise:due-dates", 1);
     assert!(
         revise
@@ -279,7 +282,7 @@ async fn spec_first_keeps_building_until_its_goal_holds_and_revises_until_both_a
         "{}",
         revise.prompt
     );
-    assert_eq!(host.call("review:due-dates:2", 1).seat, 1);
+    assert_eq!(host.call("review:due-dates:2", 1).model_index, 1);
     assert_eq!(
         host.call("sign-off", 1).model.as_deref(),
         Some("codex/gpt-5.6")
@@ -298,18 +301,18 @@ async fn max_rounds_ends_a_loop_that_never_accepts_and_says_so() {
         _ => text("tried"),
     });
     let script = steps(
-        "name = \"strict\"\n[[step]]\nname = \"Build\"\nrole = \"workers\"\nmax_rounds = 2\n\
-         [[step]]\nname = \"Review\"\nrole = \"reviewers\"\nsend_back_to = \"Build\"\n\
+        "name = \"strict\"\n[[step]]\nname = \"Build\"\nrole = \"worker\"\nmax_rounds = 2\n\
+         [[step]]\nname = \"Review\"\nrole = \"reviewer\"\nsend_back_to = \"Build\"\n\
          [[step]]\nname = \"Sign off\"\nrole = \"judge\"\n",
     );
     let ended = run(&script, request("fix it", 1, 1), &host).await;
     assert_eq!(
         host.asked(),
         [
-            "build workers 1",
-            "review reviewers 1",
-            "build workers 2",
-            "review reviewers 2",
+            "build worker 1",
+            "review reviewer 1",
+            "build worker 2",
+            "review reviewer 2",
             "sign-off judge 1",
         ]
     );
@@ -359,19 +362,19 @@ async fn a_loop_with_no_max_rounds_stops_after_two_send_backs() {
         _ => text("tried"),
     });
     let script = steps(
-        "name = \"loose\"\n[[step]]\nname = \"Build\"\nrole = \"workers\"\n\
-         [[step]]\nname = \"Review\"\nrole = \"reviewers\"\nsend_back_to = \"Build\"\n",
+        "name = \"loose\"\n[[step]]\nname = \"Build\"\nrole = \"worker\"\n\
+         [[step]]\nname = \"Review\"\nrole = \"reviewer\"\nsend_back_to = \"Build\"\n",
     );
     let ended = run(&script, request("fix it", 1, 1), &host).await;
     assert_eq!(
         host.asked(),
         [
-            "build workers 1",
-            "review reviewers 1",
-            "build workers 2",
-            "review reviewers 2",
-            "build workers 3",
-            "review reviewers 3",
+            "build worker 1",
+            "review reviewer 1",
+            "build worker 2",
+            "review reviewer 2",
+            "build worker 3",
+            "review reviewer 3",
         ]
     );
     let result = ended.result.expect("ended");
@@ -396,10 +399,10 @@ async fn a_goal_on_the_file_goes_round_until_it_holds() {
     });
     let script = steps(
         "name = \"until-green\"\ngoal = \"every test passes\"\n\
-         [[step]]\nname = \"Fix\"\nrole = \"workers\"\n",
+         [[step]]\nname = \"Fix\"\nrole = \"worker\"\n",
     );
     let ended = run(&script, request("make it green", 1, 1), &host).await;
-    assert_eq!(host.asked(), ["fix workers 1", "fix workers 1"]);
+    assert_eq!(host.asked(), ["fix worker 1", "fix worker 1"]);
     let calls = host.calls.lock().unwrap();
     assert!(
         calls[1]
@@ -415,22 +418,22 @@ async fn a_goal_on_the_file_goes_round_until_it_holds() {
 async fn best_of_n_tries_side_by_side_and_the_judge_keeps_one() {
     let host = Fake::new(|call| match call.phase.as_deref() {
         Some("Pick") => support::said(json!({"keep": 2, "why": "the only one with tests"})),
-        _ => text(&format!("attempt {}", call.seat + 1)),
+        _ => text(&format!("try {}", call.model_index + 1)),
     });
     let script = steps(built_in("best-of-n").expect("built in"));
     let ended = run(&script, request("speed up search", 3, 1), &host).await;
     assert_eq!(
         host.asked(),
         [
-            "try:1 workers 1",
-            "try:2 workers 1",
-            "try:3 workers 1",
+            "try:1 worker 1",
+            "try:2 worker 1",
+            "try:3 worker 1",
             "pick judge 1"
         ]
     );
     let kept = host.kept.lock().unwrap().clone();
     assert_eq!(kept.len(), 1);
-    assert_eq!((kept[0].step.as_str(), kept[0].seat), ("Try", 1));
+    assert_eq!((kept[0].step.as_str(), kept[0].model_index), ("Try", 1));
     assert_eq!(kept[0].label, "try:2");
     assert_eq!(kept[0].why.as_deref(), Some("the only one with tests"));
     assert!(ended.result.is_ok());
@@ -448,8 +451,8 @@ async fn a_fixed_task_list_replaces_the_planners() {
     input.args["tasks"] = json!(["Rename the flag", "Update the docs"]);
     run(&script, input, &host).await;
     let asked = host.asked();
-    assert_eq!(asked[1], "build:rename-the-fla workers 1");
-    assert_eq!(asked[2], "build:update-the-doc workers 1");
+    assert_eq!(asked[1], "build:rename-the-fla worker 1");
+    assert_eq!(asked[2], "build:update-the-doc worker 1");
     // A long title still fits a row: three words of it, cut to the row's width.
     let long = steps(built_in("orchestrator").expect("built in"));
     let wordy = Fake::new(|call| match call.phase.as_deref() {
@@ -458,7 +461,7 @@ async fn a_fixed_task_list_replaces_the_planners() {
         _ => text("ok"),
     });
     run(&long, request("i18n", 1, 1), &wordy).await;
-    assert_eq!(wordy.asked()[1], "build:internationali workers 1");
+    assert_eq!(wordy.asked()[1], "build:internationali worker 1");
     assert_eq!(
         wordy.call("build:internationali", 1).task.as_deref(),
         Some("internationalization-of-the")

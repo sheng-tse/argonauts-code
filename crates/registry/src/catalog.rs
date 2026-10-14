@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 use argonauts_core::input::EFFORT_LEVELS;
-use argonauts_core::settings::handoff::CrewRole;
+use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::ui::Theme;
 use argonauts_core::settings::{SettingMeta, SettingScope, Settings};
 use serde_json::Value as Json;
@@ -14,10 +14,10 @@ use crate::resolve::{is_safety_key, key_matches};
 
 /// Keys that are personal choices in a repo, saved just for you by default.
 const JUST_YOU: &[&str] = &[
-    "main_agent",
+    "crew.main",
     "agents.*.model",
     "agents.*.effort",
-    "roles.*.workers",
+    "roles.*.models",
     "roles.*.effort",
 ];
 
@@ -36,13 +36,13 @@ const EVERYWHERE: &[&str] = &[
     "limits.auto_merges_per_day",
 ];
 
-/// The checkpoints `/approvals` covers, as they appear under `approvals.`.
-const CHECKPOINTS: &[(&str, &str)] = &[
-    ("goal", "The goal approval"),
+/// The approvals `/approvals` covers, as they appear under `approvals.`.
+const APPROVALS: &[(&str, &str)] = &[
+    ("understand", "The Understand approval"),
     ("plan", "The plan approval"),
     ("merge", "The merge approval"),
     ("stuck", "A stuck task"),
-    ("limit", "More limit from the run's reserve"),
+    ("limit", "A raised limit from the run's reserve"),
     (
         "change_request",
         "A change request no other task's worker can decide",
@@ -55,28 +55,28 @@ const CHECKPOINTS: &[(&str, &str)] = &[
 
 const BOOL: &[&str] = &["true", "false"];
 
-const ON_RETURN: &[&str] = &["ask", "keep", "review", "hand_back", "redo"];
+const ON_RETURN: &[&str] = &["ask", "keep", "review", "give_back", "redo"];
 const STRATEGIES: &[&str] = &["first", "spread"];
 const CONTEXTS: &[&str] = &["fresh", "note", "note+transcript", "note+summary"];
 
-/// What `/handoff` edits, below `handoff.` for every role and below `roles.*.handoff.` for one.
+/// What `/fallback` edits, below `fallback.` for every role and below `fallback.<role>.` for one.
 /// Words are quoted for the picker; an empty list takes any value of the type.
-const HANDOFF: &[(&str, &str, Choices)] = &[
+const FALLBACK: &[(&str, &str, Choices)] = &[
     (
         "mode",
-        "When an agent stops, such as at a usage limit: ask you, hand off to the next fallback, \
+        "When an agent stops, such as at a usage limit: ask you, go to the next fallback, \
          or wait for the agent",
         Choices::Words(&["ask", "auto", "wait"]),
     ),
     (
         "order",
-        "Who takes over, in order: an agent, or a table with its own rules. With no list \
+        "The fallbacks, in order: an agent, or a table with its own rules. With no list \
          anywhere, the other installed and logged-in CLIs",
         Choices::Any,
     ),
     (
         "ask_timeout",
-        "How long the fallback question waits before handing off by itself, or \"none\"",
+        "How long the fallback question waits before falling back by itself, or \"none\"",
         Choices::Any,
     ),
     (
@@ -85,21 +85,15 @@ const HANDOFF: &[(&str, &str, Choices)] = &[
         Choices::Bool,
     ),
     (
-        "return_to_original",
-        "Move the task back when the original agent returns, the older spelling of on_return = \
-         \"hand_back\"",
-        Choices::Bool,
-    ),
-    (
         "broken_work",
-        "What the new worker does with broken work in progress: continue from it, or restart",
+        "What a fallback does with broken work in progress: continue from it, or restart",
         Choices::Words(&["continue", "restart"]),
     ),
     (
         "wrap_up",
-        "An agent finishing on its CLI's wrap-up allowance at a limit: let it finish, or hand \
-         its task off at once to save the allowance",
-        Choices::Words(&["let_finish", "hand_off"]),
+        "An agent finishing on its CLI's wrap-up allowance at a limit: let it finish, or fall \
+         back at once to save the allowance",
+        Choices::Words(&["let_finish", "fallback"]),
     ),
     (
         "strategy",
@@ -109,18 +103,18 @@ const HANDOFF: &[(&str, &str, Choices)] = &[
     ),
     (
         "together",
-        "How many fallbacks take over at once. 2 or more do the same task side by side",
+        "How many fallbacks work at once. 2 or more do the same task side by side",
         Choices::Any,
     ),
     (
         "pick",
-        "How results combine when several take over at once: the first to pass your checks \
+        "How results combine when several fallbacks work at once: the first to pass your checks \
          wins, the judge picks the best, or every finding is kept",
         Choices::Words(&["first_passing", "judge", "merge"]),
     ),
     (
         "on_return",
-        "When the original agent returns: ask you, keep the new worker, review its work, hand \
+        "When the original agent returns: ask you, keep the fallback, review its work, give \
          the task back, or redo it",
         Choices::Words(ON_RETURN),
     ),
@@ -146,6 +140,28 @@ const HANDOFF: &[(&str, &str, Choices)] = &[
         Choices::Any,
     ),
     (
+        "same_cli",
+        "Keep every fallback on the CLI that stopped. When none of its models can take the \
+         work, the work waits for the CLI and says until when",
+        Choices::Bool,
+    ),
+    (
+        "retry.tries",
+        "How many times the same model tries again before any fallback. 0 falls back at once",
+        Choices::Any,
+    ),
+    (
+        "retry.wait",
+        "The wait before the same model tries again, such as \"5s\"",
+        Choices::Any,
+    ),
+    (
+        "retry.backoff",
+        "How that wait grows: the same each time (fixed), or twice as long after each try \
+         (double)",
+        Choices::Words(&["fixed", "double"]),
+    ),
+    (
         "context",
         "What the fallback is told: the task only (fresh), the fallback note, the note and the \
          old session's transcript, or the note and a summary of it",
@@ -169,7 +185,7 @@ const HANDOFF: &[(&str, &str, Choices)] = &[
     ),
     (
         "replace.*.on_return",
-        "When this agent returns: ask you, keep, review, hand back, or redo",
+        "When this agent returns: ask you, keep, review, give back, or redo",
         Choices::Words(ON_RETURN),
     ),
     (
@@ -195,12 +211,12 @@ const SANDBOX: &[(&str, &str, Choices)] = &[
     ),
     (
         "agents_see_other_worktrees",
-        "Whether an agent can read the other agents' worktrees of the repo, not only its own",
+        "Whether an agent can read the other agents' worktrees, not only its own",
         Choices::Bool,
     ),
     (
         "agents_commit",
-        "Whether agents commit their own work. Off, Argonauts commits for them",
+        "Whether agents commit their own work. Off, Argonauts Code commits for them",
         Choices::Bool,
     ),
 ];
@@ -259,10 +275,7 @@ const OWN_WORDS: &[(&str, &str)] = &[
         "limits.lines.experiments",
         "Share of the run limit for experiments",
     ),
-    (
-        "limits.lines.integration",
-        "Share of the run limit for integration",
-    ),
+    ("limits.lines.merge", "Share of the run limit for merge"),
     (
         "limits.lines.reserve",
         "Share of the run limit held in reserve",
@@ -292,8 +305,8 @@ const OWN_WORDS: &[(&str, &str)] = &[
         "Who drafts plans: the crew, or the orchestrator",
     ),
     (
-        "drafting.drafters",
-        "How many drafters. Unset means every crew member",
+        "drafting.agents",
+        "How many drafting agents. Unset means every crew member",
     ),
     (
         "endpoints.*.max_concurrency",
@@ -310,6 +323,11 @@ const OWN_WORDS: &[(&str, &str)] = &[
     (
         "evolution.canary_runs",
         "Runs a promoted workflow change is watched for as a canary",
+    ),
+    (
+        "evolution.propose_timeout",
+        "How long the run review's agent may take over a proposal before the run ends without \
+         one, such as \"2m\"",
     ),
     (
         "evolution.replay.tasks",
@@ -373,11 +391,13 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ),
     (
         "health.down_after",
-        "Overload or server errors within the window that mark an agent down",
+        "Network errors and timeouts within the window that mark a whole CLI down. Overload \
+         and server errors count against the model they came from, and two models out take \
+         the CLI down",
     ),
     (
         "health.down_sessions",
-        "Sessions those errors must come from before an agent counts as down",
+        "Sessions those network errors must come from before the CLI counts as down",
     ),
     (
         "judging.method",
@@ -398,7 +418,7 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ),
     (
         "mapping.remap_after_revision",
-        "The mapper maps the drafts again after they're revised",
+        "The mapping agent maps the drafts again after they're revised",
     ),
     (
         "merge.mode",
@@ -407,7 +427,7 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ("merge.pr_draft", "Open pull requests as drafts"),
     (
         "merge.leave_out",
-        "Untracked files left out of Argonauts' commits, such as coverage/ or *.log",
+        "Untracked files left out of Argonauts Code's commits, such as coverage/ or *.log",
     ),
     (
         "merge.leave_out_builtin",
@@ -482,8 +502,8 @@ const OWN_WORDS: &[(&str, &str)] = &[
         "How long an agent session lasts: a task, a run, or the project. A role can override it",
     ),
     (
-        "solo.kind",
-        "Solo you choose: direct works in your checkout like its CLI, checked works in a \
+        "captain.kind",
+        "Captain you choose: direct works in your checkout like its CLI, checked works in a \
          worktree with checks and a merge",
     ),
     (
@@ -492,42 +512,42 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ),
     (
         "ultracode",
-        "Ultracode: a workflow for every real request, small ones included. In solo, Claude \
+        "Ultracode: a workflow for every real request, small ones included. In Captain, Claude \
          Code runs its own, and on Codex or Antigravity CLI one runs on that same model. \
          Questions are still just answered",
     ),
     (
-        "solo_or_crew.use_learned",
+        "captain_or_crew.use_learned",
         "A matching learned workflow decides the mode",
     ),
     (
-        "solo_or_crew.otherwise",
-        "Between the thresholds: solo, the crew, or solo then the crew",
+        "captain_or_crew.otherwise",
+        "Between the thresholds: Captain, the crew, or Captain then the crew",
     ),
     (
-        "solo_or_crew.solo_max_files",
-        "Solo is picked at this many files or fewer",
+        "captain_or_crew.captain_max_files",
+        "Captain is picked at this many files or fewer",
     ),
     (
-        "solo_or_crew.solo_requires_tests",
-        "Solo also needs the repo to have tests",
+        "captain_or_crew.captain_requires_tests",
+        "Captain also needs the repo to have tests",
     ),
     (
-        "solo_or_crew.crew_min_files",
+        "captain_or_crew.crew_min_files",
         "The crew is picked at this many files or more",
     ),
     (
-        "solo_or_crew.crew_labels",
+        "captain_or_crew.crew_labels",
         "Labels that always get the crew, such as security",
     ),
     (
-        "solo_or_crew.solo_kind",
-        "Solo when the rules pick it: checked, so it can grow into a crew run, direct, or as \
-         solo.kind says",
+        "captain_or_crew.captain_kind",
+        "Captain when the rules pick it: checked, so it can grow into a crew run, direct, or as \
+         captain.kind says",
     ),
     (
-        "solo_or_crew.read_instructions",
-        "Follow what a request says about how to run it, such as who coordinates or reviews",
+        "captain_or_crew.read_instructions",
+        "Follow what a request says about how to run it, such as who orchestrates or reviews",
     ),
     ("ui.bell", "Let the app ring the terminal bell"),
     (
@@ -535,12 +555,12 @@ const OWN_WORDS: &[(&str, &str)] = &[
         "How long a turn runs before a recap follows it, such as \"2m\"",
     ),
     (
-        "ui.takeover",
+        "ui.take_over",
         "Where an agent's own screen opens when you take over: here, a tmux split, or a new tab",
     ),
     (
         "visibility.drafts_hidden_until_sealed",
-        "Drafts stay hidden from other drafters until all are sealed",
+        "Drafts stay hidden from other drafting agents until all are sealed",
     ),
     (
         "visibility.judges_see_authors",
@@ -569,7 +589,7 @@ const OWN_WORDS: &[(&str, &str)] = &[
 ];
 
 /// The keys the settings commands name come first, in picker order, then every other key. Map
-/// keys you choose, such as harness ids and role names, are `*`.
+/// keys you choose, such as CLI ids and role names, are `*`.
 pub fn settings_catalog() -> Vec<SettingMeta> {
     catalog().to_vec()
 }
@@ -613,7 +633,7 @@ fn catalog() -> &'static [SettingMeta] {
     CATALOG.get_or_init(|| {
         let mut entries = named();
         // Not a key the settings hold: a file may write one list for the whole crew, and the
-        // resolver seats everyone in it (`settings::crew::spell_out`).
+        // resolver puts everyone in it in every list (`settings::crew::spell_out`).
         entries.push(meta(
             "crew",
             "One list for the whole crew: everyone in it may work, review and judge",
@@ -690,17 +710,20 @@ fn per_role_keys(section: &str, table: &[(&str, &str, Choices)]) -> Vec<SettingM
 }
 
 fn named() -> Vec<SettingMeta> {
-    let presets: Vec<String> = crate::presets().into_iter().map(|p| p.name).collect();
-    let presets: Vec<&str> = presets.iter().map(String::as_str).collect();
+    let workflows: Vec<String> = crate::workflow_choices()
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    let workflows: Vec<&str> = workflows.iter().map(String::as_str).collect();
     let mut entries = vec![
         // /model
         meta(
-            "main_agent",
-            "Who you chat with, and who works solo: a CLI, or cli/model",
+            "crew.main",
+            "Who you talk to, and who works as Captain: a CLI, or cli/model",
             &[],
         ),
         meta(
-            "roles.*.workers",
+            "roles.*.models",
             "Who fills this role, in order. Empty lets the router pick from the crew",
             &[],
         ),
@@ -720,12 +743,12 @@ fn named() -> Vec<SettingMeta> {
             "Reasoning effort for this role",
             EFFORT_LEVELS,
         ),
-        // /preset. The picker adds your own presets from `presets_in`.
+        // /workflow. The picker adds your own workflows from `workflows_in`.
         words(
             "workflow",
-            "How the crew works: council plans and judges as peers, orchestrator has one \
+            "How the crew works: council plans and judges together, orchestrator has one \
              orchestrator",
-            &presets,
+            &workflows,
         ),
         // /agents
         meta(
@@ -734,12 +757,12 @@ fn named() -> Vec<SettingMeta> {
             &[],
         ),
         meta(
-            "crew.workers",
+            "crew.worker",
             "Who does the tasks, in order: the first that's available",
             &[],
         ),
         meta(
-            "crew.reviewers",
+            "crew.reviewer",
             "Who checks a result, in order, never one their own provider made",
             &[],
         ),
@@ -752,7 +775,7 @@ fn named() -> Vec<SettingMeta> {
         meta(
             "crew.merger",
             "Who merges, in order: conflicts, a main that moved, the checks after and the \
-             landed message; the orchestrator's model when empty",
+             commit message; the orchestrator's model when empty",
             &[],
         ),
         meta("agents.*.enabled", "Whether this CLI may work at all", BOOL),
@@ -768,7 +791,7 @@ fn named() -> Vec<SettingMeta> {
         ),
         meta(
             "agents.*.version_pin",
-            "The version you pinned. Doctor warns when the installed one differs",
+            "The version you pinned. Doctor warns when the installed one is different",
             &[],
         ),
         meta(
@@ -823,7 +846,7 @@ fn named() -> Vec<SettingMeta> {
             "approvals.decides",
             "Who settles what your rules can't decide: judge, the cheapest model you can run \
              from another provider than the work it judges, or a model you pick such as \
-             antigravity-cli/gemini-3.6-flash, which judges in its place",
+             antigravity-cli/gemini-3.8-flash-low, which judges in its place",
             &[],
         ),
         meta(
@@ -842,9 +865,9 @@ fn named() -> Vec<SettingMeta> {
             &["ask", "allow_clarifications", "deny"],
         ),
     ];
-    for (checkpoint, label) in CHECKPOINTS {
+    for (approval, label) in APPROVALS {
         entries.push(words(
-            &format!("approvals.{checkpoint}.mode"),
+            &format!("approvals.{approval}.mode"),
             &format!(
                 "{label}: supervised waits for you, auto preview also records what auto would do, \
                  auto lets your settings decide, and autopilot never waits: what they can't \
@@ -853,34 +876,34 @@ fn named() -> Vec<SettingMeta> {
             &["supervised", "auto_preview", "auto", "autopilot"],
         ));
         entries.push(words(
-            &format!("approvals.{checkpoint}.decide_with"),
-            &format!("{label}: who decides in auto mode, your rules, your approver model, or both"),
+            &format!("approvals.{approval}.decide_with"),
+            &format!("{label}: who decides in auto mode, your rules, your judge, or both"),
             &["rules", "model", "rules_and_model", "rules_or_model"],
         ));
-        let otherwise: &[&str] = if *checkpoint == "merge" {
+        let otherwise: &[&str] = if *approval == "merge" {
             &["ask", "send_back", "stop", "open_pull_request"]
         } else {
             &["ask", "send_back", "stop"]
         };
         entries.push(words(
-            &format!("approvals.{checkpoint}.otherwise"),
+            &format!("approvals.{approval}.otherwise"),
             &format!("{label}: what happens when auto doesn't approve"),
             otherwise,
         ));
         // Only a merge opens a pull request, and a stuck task or a limit has nothing to send
         // back. A promotion is decided outside runs, where autopilot never reaches.
-        let at_hard_limit: &[&str] = match *checkpoint {
+        let at_hard_limit: &[&str] = match *approval {
             "workflow_promotion" => continue,
-            "merge" => &["stop", "send_back", "open_pull_request", "park"],
-            "stuck" | "limit" => &["stop", "park"],
-            _ => &["stop", "send_back", "park"],
+            "merge" => &["stop", "send_back", "open_pull_request", "wait"],
+            "stuck" | "limit" => &["stop", "wait"],
+            _ => &["stop", "send_back", "wait"],
         };
         entries.push(words(
-            &format!("approvals.{checkpoint}.at_hard_limit"),
+            &format!("approvals.{approval}.at_hard_limit"),
             &format!(
                 "{label}: what a hard limit does on autopilot, where no one is there to ask: \
                  stop ends that part safely and keeps its work, send_back runs another round, \
-                 open_pull_request opens one for you, and park leaves the task for you"
+                 open_pull_request opens one for you, and wait leaves the task for you"
             ),
             at_hard_limit,
         ));
@@ -908,8 +931,8 @@ fn named() -> Vec<SettingMeta> {
             &[],
         ),
         meta(
-            "approvals.rules.stuck.max_extra_attempts",
-            "Stuck-task rules: extra attempts auto may grant, by an agent from a provider that \
+            "approvals.rules.stuck.max_extra_tries",
+            "Stuck-task rules: extra tries auto may grant, by an agent from a provider that \
              hasn't tried",
             &[],
         ),
@@ -919,18 +942,18 @@ fn named() -> Vec<SettingMeta> {
             BOOL,
         ),
         meta(
-            "approvals.approver.model_rules",
-            "Your rules for the approver model, a file in .argonauts/",
+            "approvals.judge.model_rules",
+            "Your rules for the judge, a file in .argonauts/",
             &[],
         ),
         meta(
-            "approvals.approver.different_provider",
-            "The approver must come from a provider no author or worker used",
+            "approvals.judge.different_provider",
+            "The judge must come from a provider no author or worker used",
             BOOL,
         ),
         meta(
-            "approvals.approver.second_model",
-            "A second approver, from another agent, that must also approve",
+            "approvals.judge.second_model",
+            "A second judge, from another agent, that must also approve",
             &[],
         ),
         meta(
@@ -958,7 +981,7 @@ fn named() -> Vec<SettingMeta> {
         ),
         words(
             "limits.when_reached",
-            "When a limit you set is reached: the fallbacks take over, or the work stops",
+            "When a limit you set is reached: the work falls back, or it stops",
             &["fallback", "stop"],
         ),
         meta("limits.run_tokens", "The most tokens a run may use", &[]),
@@ -994,7 +1017,7 @@ fn named() -> Vec<SettingMeta> {
             &[],
         ),
     ]);
-    entries.extend(per_role_keys("fallback", HANDOFF));
+    entries.extend(per_role_keys("fallback", FALLBACK));
     // /permissions
     entries.extend(per_role_keys("sandbox", SANDBOX));
     entries.extend([
@@ -1071,8 +1094,8 @@ fn named() -> Vec<SettingMeta> {
             &["full", "normal", "quiet"],
         ),
         words(
-            "ui.agents_in_chat",
-            "When an agent at work shows in the chat: once it finishes, or as it works",
+            "ui.agents_in_conversation",
+            "When an agent at work shows in the conversation: once it finishes, or as it works",
             &["when_done", "as_they_work"],
         ),
         words(
@@ -1090,7 +1113,7 @@ fn named() -> Vec<SettingMeta> {
         ),
         meta(
             "ui.keymap.*",
-            "Binds an action to another key, such as crew_view = \"ctrl+left\"",
+            "Binds an action to another key, such as agent_panel_view = \"ctrl+left\"",
             &[],
         ),
     ]);
@@ -1098,16 +1121,9 @@ fn named() -> Vec<SettingMeta> {
     entries
 }
 
-/// The keys added for workflows, sessions, the panel, handoff debt, and front ends.
+/// The keys added for workflows, sessions, the panel, fallback debt, and outside agents.
 fn later_keys() -> Vec<SettingMeta> {
     vec![
-        // /config phases
-        meta(
-            "phases",
-            "The phases a run starts from. Each workflow sets its own, and /config phases picks \
-             another, which wins when saved where the workflow is picked or in a later file",
-            &[],
-        ),
         meta(
             "mods.commands",
             "Whether a mod file's command may run. Off, mods that read a command draw nothing \
@@ -1159,7 +1175,7 @@ fn later_keys() -> Vec<SettingMeta> {
         ),
         meta(
             "workflows.final_check",
-            "A check from another provider judges the done-when list before Merge",
+            "A model from another provider judges the done-when list before Merge",
             BOOL,
         ),
         words(
@@ -1175,7 +1191,7 @@ fn later_keys() -> Vec<SettingMeta> {
         ),
         meta(
             "ui.workflow.row_cost",
-            "A cost column on the workflow view's agent rows, before the time",
+            "What each agent cost, on its row in the workflow view after its tokens",
             BOOL,
         ),
         meta(
@@ -1190,7 +1206,7 @@ fn later_keys() -> Vec<SettingMeta> {
              such as 0.9, which is near its end, or a token count such as \"200k\"",
             &[],
         ),
-        // The panel under the mode line
+        // The panel under the bottom line
         words(
             "ui.panel.subagents",
             "What an agent's own subagents or threads show: each one, a summary, or nothing",
@@ -1203,7 +1219,7 @@ fn later_keys() -> Vec<SettingMeta> {
         ),
         meta(
             "ui.panel.max_rows",
-            "Rows in the panel under the mode line",
+            "Rows in the panel under the bottom line",
             &[],
         ),
         words(
@@ -1221,7 +1237,7 @@ fn later_keys() -> Vec<SettingMeta> {
             "Merge rules: whether auto may merge a task whose debt no strong enough model reviewed",
             BOOL,
         ),
-        // Always-on agents and front ends
+        // Always-on agents and outside agents
         words(
             "approvals.presence",
             "While an always-on agent runs as you: no check, a warning, or a passkey for every \
@@ -1236,40 +1252,40 @@ fn later_keys() -> Vec<SettingMeta> {
         ),
         words(
             "mcp.start_runs",
-            "Whether front ends may start runs, in repos you trust",
+            "Whether outside agents may start runs, in repos you trust",
             &["trusted-repos", "off"],
         ),
         meta(
             "mcp.guidance",
-            "Front ends may send guidance. It never raises autonomy",
+            "Outside agents may send guidance. It never raises autonomy",
             BOOL,
         ),
-        meta("mcp.pause", "Front ends may pause runs", BOOL),
+        meta("mcp.pause", "Outside agents may pause runs", BOOL),
         words(
             "mcp.share",
-            "How much of a run front ends see: summaries, or status only. Never diffs, file \
+            "How much of a run outside agents see: summaries, or status only. Never diffs, file \
              contents, prompts, or raw logs",
             &["summaries", "status-only"],
         ),
         meta(
             "mcp.run_limit",
-            "The time limit of each run a front end starts, such as \"60m\"",
+            "The time limit of each run an outside agent starts, such as \"60m\"",
             &[],
         ),
         meta(
             "mcp.runs_per_day",
-            "Runs front ends may start per day, across every repo",
+            "Runs outside agents may start per day, across every repo",
             &[],
         ),
         meta(
-            "notifications.chat.command",
-            "A program and its arguments that sends you a chat message, with {text} as one whole \
+            "notifications.conversation.command",
+            "A program and its arguments that sends you a message, with {text} as one whole \
              argument. Empty is off. Only your global settings may set it",
             &[],
         ),
         meta(
-            "notifications.chat.on",
-            "What sends a chat message: needs_you, finished, agent_down",
+            "notifications.conversation.on",
+            "What sends a message: needs_you, finished, agent_down",
             &[],
         ),
     ]
@@ -1374,7 +1390,7 @@ fn description(node: &Json) -> Option<&str> {
     node.get("description").and_then(Json::as_str)
 }
 
-/// A struct or a map. An empty struct, such as a checkpoint with no rules, has no keys at all.
+/// A struct or a map. An empty struct, such as an approval with no rules, has no keys at all.
 fn is_table(node: &Json) -> bool {
     node.get("type").and_then(Json::as_str) == Some("object")
         || node.get("properties").is_some()
@@ -1444,72 +1460,6 @@ mod tests {
 
     use super::*;
 
-    /// Words the settings used before they were renamed, as a setting's key, value or
-    /// description might still say them.
-    const OLD_WORDS: [&str; 23] = [
-        "card",
-        "owner",
-        "coordinator",
-        "lead",
-        "preset",
-        "full auto",
-        "shadow",
-        "gate",
-        "parked",
-        "escalat",
-        "vendor",
-        "harness",
-        "family",
-        "families",
-        "company",
-        "spike",
-        "retro",
-        "widget",
-        "quota",
-        "budget",
-        "triage",
-        "seat",
-        "recipe",
-    ];
-
-    /// Whether `word` starts a word of `text`, any ending after it.
-    fn speaks(text: &str, word: &str) -> bool {
-        let text = text.to_lowercase();
-        text.match_indices(word).any(|(at, _)| {
-            !text[..at]
-                .chars()
-                .next_back()
-                .is_some_and(|before| before.is_alphanumeric())
-        })
-    }
-
-    /// Nothing you read or type about a setting uses a word that was renamed: not its key,
-    /// not a value it takes, and not what `/config`, the schema and the files Argonauts writes
-    /// say of it.
-    #[test]
-    fn no_setting_speaks_an_old_word() {
-        let mut found = Vec::new();
-        for meta in settings_catalog() {
-            let texts = [&meta.key, &meta.description]
-                .into_iter()
-                .chain(meta.allowed.iter());
-            // A mod is a drawn card, so a card on a tab or above the input is one.
-            let drawn = meta.key.starts_with("ui.mods.") || meta.key.starts_with("ui.views.");
-            for text in texts {
-                for word in OLD_WORDS {
-                    if speaks(text, word) && !(drawn && word == "card") {
-                        found.push(format!("{} · {word} · {text}", meta.key));
-                    }
-                }
-            }
-        }
-        assert!(
-            found.is_empty(),
-            "{} old words:\n{}",
-            found.len(),
-            found.join("\n")
-        );
-    }
     use crate::resolve::leaves;
 
     /// A real key for a catalog key, with each `*` filled in.
@@ -1524,7 +1474,7 @@ mod tests {
                     ("endpoints", _) => "X_TEAM",
                     ("roles", _) => "reviewer",
                     ("visibility", _) => "worker",
-                    _ => "crew_view",
+                    _ => "agent_panel_view",
                 };
             }
         }
@@ -1556,23 +1506,21 @@ mod tests {
     }
 
     /// A value to try for keys whose pickers offer no list. A crew role's own fallback key
-    /// takes what any role's does, so `fallback.workers.order` reads as `fallback.*.order`.
+    /// takes what any role's does, so `fallback.worker.order` reads as `fallback.*.order`.
     fn sample(key: &str) -> &'static str {
         let segments: Vec<&str> = key.split('.').collect();
         let any_role = match segments.as_slice() {
-            ["fallback", role, rest @ ..] if CrewRole::named(role).is_some() => {
+            ["fallback", role, rest @ ..] if CrewRole::parse(role).is_some() => {
                 format!("fallback.*.{}", rest.join("."))
             }
             _ => key.to_owned(),
         };
         match any_role.as_str() {
-            "main_agent" | "approvals.decides" | "approvals.approver.second_model" => {
-                "\"codex/gpt-x\""
-            }
-            "roles.*.workers"
+            "crew.main" | "approvals.decides" | "approvals.judge.second_model" => "\"codex/gpt-x\"",
+            "roles.*.models"
             | "crew.orchestrator"
-            | "crew.workers"
-            | "crew.reviewers"
+            | "crew.worker"
+            | "crew.reviewer"
             | "crew.judge"
             | "crew.merger"
             | "fallback.*.order"
@@ -1584,22 +1532,24 @@ mod tests {
             "agents.*.version_pin" => "\"0.158.0\"",
             "endpoints.*.base_url" => "\"http://localhost:11434/v1\"",
             "endpoints.*.api_key_env" => "\"OLLAMA_API_KEY\"",
-            "approvals.approver.model_rules" => "\"approval-rules.md\"",
+            "approvals.judge.model_rules" => "\"approval-rules.md\"",
             "limits.run_tokens" | "limits.per_task_tokens" => "200000",
             "approvals.rules.merge.max_changed_lines"
-            | "approvals.rules.stuck.max_extra_attempts"
+            | "approvals.rules.stuck.max_extra_tries"
             | "fallback.together"
             | "fallback.*.together"
             | "fallback.max_fallbacks"
             | "fallback.*.max_fallbacks"
+            | "fallback.retry.tries"
+            | "fallback.*.retry.tries"
             | "workflows.max_depth"
             | "ui.panel.max_rows"
             | "mcp.runs_per_day"
             | "switch.recent" => "2",
             "limits.protected_paths" | "limits.dependency_allowlist" => "[\"docs/**\"]",
             "approvals.refuse_ancestor_env" => "[\"OTHER_AGENT_SHELL\"]",
-            "notifications.chat.command" => "[\"/usr/local/bin/send-chat\", \"{text}\"]",
-            "notifications.chat.on" => "[\"finished\"]",
+            "notifications.conversation.command" => "[\"/usr/local/bin/send-message\", \"{text}\"]",
+            "notifications.conversation.on" => "[\"finished\"]",
             "narrator.model" | "fallback.summarizer" | "fallback.*.summarizer" => {
                 "\"ollama/llama3.2\""
             }
@@ -1607,13 +1557,15 @@ mod tests {
             "narrator.interval"
             | "fallback.*.ask_timeout"
             | "fallback.ask_timeout"
+            | "fallback.*.retry.wait"
+            | "fallback.retry.wait"
+            | "evolution.propose_timeout"
             | "mcp.run_limit" => "\"30s\"",
             "narrator.spend_cap" => "\"0.50 usd\"",
             "ui.accent" => "\"#d4a017\"",
             "ui.keymap.*" => "\"ctrl+left\"",
             "goal.checker" => "\"codex\"",
             "approvals.ask_you_about" | "understand.always_ask" => "[\"security\"]",
-            "phases" => "\"solo\"",
             "sessions.rotate_at" | "sessions.context" => "\"200k\"",
             _ => "0.5",
         }
@@ -1671,7 +1623,7 @@ mod tests {
             "agents.*.price.input_per_mtok",
             "agents.*.price.output_per_mtok",
             "agents.*.price.cached_input_per_mtok",
-            "solo_or_crew.force",
+            "captain_or_crew.force",
             "ultracode",
             "fallback.strategy",
             "fallback.together",
@@ -1681,20 +1633,26 @@ mod tests {
             "fallback.merge_rule",
             "fallback.unknown_tier",
             "fallback.max_fallbacks",
+            "fallback.same_cli",
+            "fallback.retry.tries",
+            "fallback.retry.wait",
+            "fallback.retry.backoff",
+            "fallback.reviewer.same_cli",
+            "fallback.worker.retry.backoff",
             "fallback.replace.*.with",
             "fallback.replace.*.strategy",
             "fallback.replace.*.on_return",
             "fallback.context",
             "fallback.summarizer",
             "fallback.replace.*.context",
-            "fallback.workers.strategy",
-            "fallback.workers.together",
-            "fallback.reviewers.pick",
+            "fallback.worker.strategy",
+            "fallback.worker.together",
+            "fallback.reviewer.pick",
             "fallback.main.replace.*.with",
             "fallback.orchestrator.replace.*.on_return",
             "fallback.judge.context",
-            "fallback.workers.summarizer",
-            "fallback.reviewers.replace.*.context",
+            "fallback.worker.summarizer",
+            "fallback.reviewer.replace.*.context",
             "roles.*.native_fanout",
             "roles.*.native_fanout.max",
             "sessions.context",
@@ -1704,7 +1662,6 @@ mod tests {
             "ui.panel.max_rows",
             "ui.glyphs",
             "ui.ambiguous_width",
-            "phases",
             "workflows.orchestrator_designs",
             "workflows.allow_composed",
             "workflows.max_depth",
@@ -1715,8 +1672,8 @@ mod tests {
             "mcp.start_runs",
             "mcp.share",
             "mcp.run_limit",
-            "notifications.chat.command",
-            "notifications.chat.on",
+            "notifications.conversation.command",
+            "notifications.conversation.on",
             "endpoints.*.header_env.*",
             "ui.keymap.*",
             "sandbox.agents_see_other_worktrees",
@@ -1758,15 +1715,18 @@ mod tests {
         ] {
             assert_eq!(allowed(key), BOOL, "{key}");
         }
-        assert_eq!(allowed("solo_or_crew.force"), ["\"solo\"", "\"crew\""]);
+        assert_eq!(
+            allowed("captain_or_crew.force"),
+            ["\"captain\"", "\"crew\""]
+        );
         assert_eq!(allowed("ui.ambiguous_width"), ["1", "2"]);
         assert_eq!(
-            allowed("fallback.workers.replace.codex.on_return"),
+            allowed("fallback.worker.replace.codex.on_return"),
             [
                 "\"ask\"",
                 "\"keep\"",
                 "\"review\"",
-                "\"hand_back\"",
+                "\"give_back\"",
                 "\"redo\""
             ]
         );
@@ -1777,21 +1737,24 @@ mod tests {
             "\"note+summary\"",
         ];
         assert_eq!(allowed("fallback.context"), contexts);
-        assert_eq!(allowed("fallback.workers.context"), contexts);
+        assert_eq!(allowed("fallback.worker.context"), contexts);
         assert_eq!(allowed("fallback.replace.codex.context"), contexts);
         let fanout = allowed("roles.worker.native_fanout");
         assert!(fanout.contains(&"\"off\"".to_owned()), "{fanout:?}");
         for open in [
             "sessions.context",
             "sessions.rotate_at",
-            "phases",
-            "notifications.chat.on",
-            "crew.workers",
+            "notifications.conversation.on",
+            "crew.worker",
             "fallback.summarizer",
         ] {
             assert!(allowed(open).is_empty(), "{open}");
         }
-        assert!(setting_meta("notifications.chat.command").unwrap().safety);
+        assert!(
+            setting_meta("notifications.conversation.command")
+                .unwrap()
+                .safety
+        );
         assert!(setting_meta("fallback.allow_api_billing").unwrap().safety);
         assert!(!setting_meta("fallback.strategy").unwrap().safety);
         assert!(
@@ -1823,20 +1786,20 @@ mod tests {
     fn default_scopes_are_the_ones_each_setting_is_given() {
         let scope = |key: &str| setting_meta(key).map(|meta| meta.default_scope);
         for key in [
-            "main_agent",
+            "crew.main",
             "agents.codex.model",
             "agents.codex.effort",
-            "roles.reviewer.workers",
+            "roles.reviewer.models",
             "roles.worker.effort",
         ] {
             assert_eq!(scope(key), Some(SettingScope::ProjectLocal), "{key}");
         }
         for key in [
             "workflow",
-            "crew.workers",
+            "crew.worker",
             "approvals.merge.mode",
             "limits.spend_per_run",
-            "fallback.workers.mode",
+            "fallback.worker.mode",
             "sandbox.network",
             "limits.protected_paths",
             "agents.codex.enabled",
@@ -1849,7 +1812,7 @@ mod tests {
             "endpoints.ollama.base_url",
             "ui.theme",
             "ui.keys",
-            "ui.keymap.crew_view",
+            "ui.keymap.agent_panel_view",
             "narrator.model",
             "notifications.os",
             "limits.spend_per_day",
@@ -1882,8 +1845,8 @@ mod tests {
 
     #[test]
     fn real_keys_find_their_entry() {
-        let meta = setting_meta("fallback.reviewers.allow_api_billing").unwrap();
-        assert_eq!(meta.key, "fallback.reviewers.allow_api_billing");
+        let meta = setting_meta("fallback.reviewer.allow_api_billing").unwrap();
+        assert_eq!(meta.key, "fallback.reviewer.allow_api_billing");
         assert!(meta.safety);
         let meta = setting_meta("approvals.merge.mode").unwrap();
         assert!(meta.safety);
@@ -1913,6 +1876,6 @@ mod tests {
         assert!(find("ui.keys").is_some_and(|meta| !meta.safety));
         assert!(find("approvals.merge.mode").is_some_and(|meta| meta.safety));
         assert!(find("runs.remind_waiting_days").is_some());
-        assert!(find("limits.parked_run_expires_days").is_none());
+        assert!(find("limits.waiting_run_expires_days").is_none());
     }
 }

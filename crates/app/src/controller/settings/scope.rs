@@ -3,7 +3,7 @@
 //! every file.
 
 use argonauts_core::app::{AppChoice, AppMode, ChoiceKind};
-use argonauts_core::events::checkpoint::AnswerAction;
+use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::names::ChoiceId;
 use argonauts_core::settings::SettingScope;
 
@@ -18,12 +18,12 @@ pub(crate) fn scope_question(
     recommended: SettingScope,
 ) -> AppChoice {
     let layer = ctx.settings.layer(key);
-    let preset_from = ctx.settings.preset_from(&layer);
-    let preset_from = preset_from.as_deref();
-    let preset = ctx.settings().workflow.clone();
+    let workflow_from = ctx.settings.workflow_from(&layer);
+    let workflow_from = workflow_from.as_deref();
+    let chosen = ctx.settings().workflow.clone();
     let local_tracked =
         crate::git::tracks(&ctx.env.repo_root, &ctx.env.project_local_config()).unwrap_or(false);
-    let hides_every_file = hidden_from_files(&layer, preset_from, &preset);
+    let hides_every_file = hidden_from_files(&layer, workflow_from, &chosen);
     let mut options = scope_options(recommended);
     for option in &mut options {
         let AnswerAction::Choose { value } = &option.action else {
@@ -34,7 +34,7 @@ pub(crate) fn scope_question(
         };
         let mut notes: Vec<String> = match hides_every_file {
             Some(_) => Vec::new(),
-            None => hidden_note(&layer, preset_from, scope, &preset)
+            None => hidden_note(&layer, workflow_from, scope, &chosen)
                 .into_iter()
                 .collect(),
         };
@@ -83,24 +83,24 @@ const FILE_SCOPES: [SettingScope; 3] = [
     SettingScope::Global,
 ];
 
-/// What to say once when a value from `layer` wins over every file: a preset, a `--set` flag,
+/// What to say once when a value from `layer` wins over every file: a workflow, a `--set` flag,
 /// or this session's own override. `None` when some file would still take effect, as the file
-/// that picked the preset does (`preset_from`).
+/// that picked the workflow does (`workflow_from`).
 pub(crate) fn hidden_from_files(
     layer: &str,
-    preset_from: Option<&str>,
-    preset: &str,
+    workflow_from: Option<&str>,
+    workflow: &str,
 ) -> Option<String> {
     if !FILE_SCOPES
         .iter()
-        .all(|scope| scope.hidden_by_value(layer, preset_from))
+        .all(|scope| scope.hidden_by_value(layer, workflow_from))
     {
         return None;
     }
     Some(match layer {
         "workflow" => format!(
-            "The {preset} workflow sets this, so saving it in a file changes nothing. Use \
-             /workflow copy {preset} to edit the workflow."
+            "The {workflow} workflow sets this, so saving it in a file changes nothing. Use \
+             /workflow copy {workflow} to edit the workflow."
         ),
         "flag" => {
             "A --set flag sets this until you quit, so saving it in a file changes nothing now."
@@ -116,11 +116,11 @@ pub(crate) fn hidden_from_files(
 /// What to say when a value from `layer` still wins over one saved in `scope`.
 pub(crate) fn hidden_note(
     layer: &str,
-    preset_from: Option<&str>,
+    workflow_from: Option<&str>,
     scope: SettingScope,
-    preset: &str,
+    workflow: &str,
 ) -> Option<String> {
-    if !scope.hidden_by_value(layer, preset_from) {
+    if !scope.hidden_by_value(layer, workflow_from) {
         return None;
     }
     let saving = match scope {
@@ -135,13 +135,13 @@ pub(crate) fn hidden_note(
             "Your own project file (config.local.toml) sets this, so {saving} won't change this \
              repo for you."
         ),
-        "workflow" if preset_from.is_some() => format!(
-            "The {preset} workflow sets this, and it's picked in a later file, so {saving} changes \
-             nothing. Save it where you picked the workflow, or later."
+        "workflow" if workflow_from.is_some() => format!(
+            "The {workflow} workflow sets this, and it's picked in a later file, so {saving} \
+             changes nothing. Save it where you picked the workflow, or later."
         ),
         "workflow" => format!(
-            "The {preset} workflow sets this, so {saving} changes nothing. Use /workflow copy \
-             {preset} to edit the workflow."
+            "The {workflow} workflow sets this, so {saving} changes nothing. Use /workflow copy \
+             {workflow} to edit the workflow."
         ),
         "flag" => {
             format!("A --set flag sets this until you quit, so {saving} changes nothing now.")
@@ -191,7 +191,7 @@ pub(crate) fn scope_of_layer(layer: &str) -> Option<SettingScope> {
 fn run_going(mode: &AppMode) -> bool {
     matches!(
         mode,
-        AppMode::Working { .. } | AppMode::Pausing { .. } | AppMode::Parked { .. }
+        AppMode::Working { .. } | AppMode::Pausing { .. } | AppMode::Waiting { .. }
     )
 }
 
@@ -207,8 +207,8 @@ mod tests {
             "This project's file sets this, so saving it everywhere won't change this repo."
         );
         assert!(hidden_note("project", None, SettingScope::ProjectLocal, "council").is_none());
-        let note = hidden_note("workflow", None, SettingScope::Project, "solo").unwrap();
-        assert!(note.contains("/workflow copy solo"), "{note}");
+        let note = hidden_note("workflow", None, SettingScope::Project, "captain").unwrap();
+        assert!(note.contains("/workflow copy captain"), "{note}");
         assert!(hidden_note("session", None, SettingScope::Global, "p").is_some());
         assert!(hidden_note("session", None, SettingScope::Session, "p").is_none());
         assert!(hidden_note("built-in", None, SettingScope::Global, "p").is_none());
@@ -228,9 +228,9 @@ mod tests {
                 .contains("--set flag")
         );
         assert!(
-            hidden_from_files("workflow", None, "solo")
+            hidden_from_files("workflow", None, "captain")
                 .unwrap()
-                .contains("/workflow copy solo")
+                .contains("/workflow copy captain")
         );
         for layer in ["built-in", "global", "project", "project-local"] {
             assert_eq!(hidden_from_files(layer, None, "p"), None, "{layer}");
@@ -238,13 +238,17 @@ mod tests {
     }
 
     #[test]
-    fn a_preset_picked_in_a_file_gives_way_to_that_file() {
-        assert_eq!(hidden_from_files("workflow", Some("global"), "solo"), None);
+    fn a_workflow_picked_in_a_file_gives_way_to_that_file() {
         assert_eq!(
-            hidden_note("workflow", Some("global"), SettingScope::Global, "solo"),
+            hidden_from_files("workflow", Some("global"), "captain"),
             None
         );
-        let note = hidden_note("workflow", Some("project"), SettingScope::Global, "solo").unwrap();
+        assert_eq!(
+            hidden_note("workflow", Some("global"), SettingScope::Global, "captain"),
+            None
+        );
+        let note =
+            hidden_note("workflow", Some("project"), SettingScope::Global, "captain").unwrap();
         assert!(note.contains("picked in a later file"), "{note}");
     }
 }

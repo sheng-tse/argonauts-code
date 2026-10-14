@@ -1,23 +1,26 @@
 //! An MCP client starts a run through `argonauts mcp serve` and reads its events up to the
-//! merge checkpoint, which waits for you. The run records the client as its front end.
+//! merge approval, which waits for you. The run records the client as its outside agent.
 
 mod policy_support;
 
 use policy_support::{
-    FrontEnd, McpServer, RUN_WAIT, SUPERVISED_MERGE, TASK, merge_opened, merge_waits, run_started,
-    runtime, solo_config, trusted_scenario, wait_for_events,
+    McpServer, OutsideAgent, RUN_WAIT, SUPERVISED_MERGE, TASK, captain_config, merge_opened,
+    merge_waits, run_started, runtime, trusted_scenario, wait_for_events,
 };
 use serde_json::json;
 
 #[test]
 fn policy_mcp_start_and_watch_run() -> anyhow::Result<()> {
-    let scenario = trusted_scenario("owner-writes-hello.toml", &solo_config(SUPERVISED_MERGE))?;
+    let scenario = trusted_scenario(
+        "worker-writes-hello.toml",
+        &captain_config(SUPERVISED_MERGE),
+    )?;
     let run = runtime()?.block_on(async {
-        let server = McpServer::start(&scenario, FrontEnd::OpenClaw).await?;
+        let server = McpServer::start(&scenario, OutsideAgent::OpenClaw).await?;
         let started = server
             .call_ok(
                 "argonauts_start_run",
-                json!({ "request": TASK, "mode": "solo" }),
+                json!({ "request": TASK, "mode": "captain" }),
             )
             .await?;
         let run = started["run"].as_str().unwrap_or_default().to_owned();
@@ -50,7 +53,7 @@ fn policy_mcp_start_and_watch_run() -> anyhow::Result<()> {
     let events = wait_for_events(&scenario, "the merge approval", RUN_WAIT, merge_opened)?;
     let started = run_started(&events).expect("RunStarted");
     assert_eq!(events[0].run_id.as_str(), run);
-    assert_eq!(started.front_end.as_deref(), Some("openclaw"));
+    assert_eq!(started.outside_agent.as_deref(), Some("openclaw"));
     assert_eq!(started.request, TASK);
     Ok(())
 }

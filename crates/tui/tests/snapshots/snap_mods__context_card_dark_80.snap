@@ -1,0 +1,12 @@
+---
+source: crates/tui/tests/snap_mods.rs
+expression: styled(&drawn.lines)
+---
+ [fg=#4f5468]╭────────────────────────────────────────────────────────────────────────╮[/] [fg=#999999][-][/]
+ [fg=#4f5468]│ [/][fg=#e6a23c]◆[/] [fg=#ffffff b]context[/]                         [fg=#ffffff b]212k[/][fg=#999999] of 1M · compacts at 950k[/]  [fg=#14161f bg=#4eba65 b] 21% [/][fg=#4f5468] │[/]
+ [fg=#4f5468]│ [/][bg=#7088c8] [/][bg=#3fa7a0] [/][bg=#b1b9f9] [/][bg=#4eba65] [/][bg=#e5c07b] [/][bg=#e27fb3] [/][bg=#d97757]             [/][bg=#3a3f55]                                               [/][fg=#ffc107 bg=#262a3a]▏[/][bg=#262a3a]   [/][fg=#4f5468] │[/]
+ [fg=#4f5468]│ [/][fg=#7088c8]▌[/] system prompt [fg=#ffffff b] 3.4k[/] [fg=#999999]0.3%[/]          [fg=#3fa7a0]▌[/] tools         [fg=#ffffff b]  12k[/] [fg=#999999]  1%[/]        [fg=#4f5468] │[/]
+ [fg=#4f5468]│ [/][fg=#b1b9f9]▌[/] mcp tools     [fg=#ffffff b] 2.6k[/] [fg=#999999]0.3%[/]          [fg=#4eba65]▌[/] agents        [fg=#ffffff b] 1.1k[/] [fg=#999999]0.1%[/]        [fg=#4f5468] │[/]
+ [fg=#4f5468]│ [/][fg=#e5c07b]▌[/] memory files  [fg=#ffffff b] 4.9k[/] [fg=#999999]0.5%[/]          [fg=#e27fb3]▌[/] skills        [fg=#ffffff b] 2.2k[/] [fg=#999999]0.2%[/]        [fg=#4f5468] │[/]
+ [fg=#4f5468]│ [/][fg=#d97757]▌[/] messages      [fg=#ffffff b] 186k[/] [fg=#999999] 19%[/]          [fg=#3a3f55]▌[/] free          [fg=#ffffff b] 788k[/] [fg=#999999]    [/]        [fg=#4f5468] │[/]
+ [fg=#4f5468]╰────────────────────────────────────────────────────────────────────────╯[/]

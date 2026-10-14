@@ -9,7 +9,7 @@ Workflows learned from your runs              stage auto · $41.20 of $1000/mont
 │   Setting                         Value     From                             │
 │ ❯ evolution.stage                 "evolve"  built-in                         │
 │   limits.evolution_usd_per_month  1000.0    built-in                         │
-│   solo_or_crew.use_learned        true      built-in                         │
+│   captain_or_crew.use_learned     true      built-in                         │
 │                                                                              │
 │                                                                              │
 │                                                                              │

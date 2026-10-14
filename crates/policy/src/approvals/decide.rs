@@ -1,6 +1,6 @@
-//! Who decides in auto mode: your rules, your approver model, both, or either.
+//! Who decides in auto mode: your rules, your judge, both, or either.
 
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::policy::{DecisionPoint, EvidencePacket, Verdict};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::DecideWith;
@@ -15,14 +15,14 @@ pub struct Decision {
     pub verdict: Verdict,
     pub by: DecideWith,
     /// Set only when the model was asked.
-    pub approver: Option<WorkerRef>,
+    pub judge: Option<ModelRef>,
     pub reasons: Vec<String>,
 }
 
 /// `rules_and_model` needs both to approve; `rules_or_model` asks the model only about what
 /// the rules didn't approve. The rules no model may waive are checked before this.
 pub async fn decide(
-    approver: &dyn Approve,
+    judge: &dyn Approve,
     point: &DecisionPoint,
     evidence: &EvidencePacket,
     settings: &Settings,
@@ -30,9 +30,9 @@ pub async fn decide(
     now: OffsetDateTime,
 ) -> Decision {
     let by_rules = || rules::check(point, evidence, settings, now);
-    let by_model = || approver.verdict(point, evidence, settings);
-    // Full auto never waits for you, so when no model can check, your rules decide alone.
-    let unchecked = |model: &ModelVerdict| in_autopilot(point) && model.approver.is_none();
+    let by_model = || judge.verdict(point, evidence, settings);
+    // Autopilot never waits for you, so when no model can check, your rules decide alone.
+    let unchecked = |model: &ModelVerdict| in_autopilot(point) && model.judge.is_none();
     match decide_with {
         DecideWith::Rules => from_rules(by_rules(), decide_with),
         DecideWith::Model => {
@@ -86,12 +86,12 @@ fn rules_alone(rules: RuleVerdict, model: ModelVerdict) -> Decision {
     decision
 }
 
-/// Approve only when both approve; otherwise a reject from either wins over an escalate.
+/// Approve only when both approve; otherwise a reject from either wins over an ask_you.
 fn both(rules: Verdict, model: Verdict) -> Verdict {
     match (rules, model) {
         (Verdict::Approve, Verdict::Approve) => Verdict::Approve,
         (Verdict::Reject, _) | (_, Verdict::Reject) => Verdict::Reject,
-        _ => Verdict::Escalate,
+        _ => Verdict::AskYou,
     }
 }
 
@@ -100,7 +100,7 @@ fn either(rules: Verdict, model: Verdict) -> Verdict {
     match (rules, model) {
         (Verdict::Approve, _) | (_, Verdict::Approve) => Verdict::Approve,
         (Verdict::Reject, _) | (_, Verdict::Reject) => Verdict::Reject,
-        _ => Verdict::Escalate,
+        _ => Verdict::AskYou,
     }
 }
 
@@ -108,7 +108,7 @@ fn from_rules(rules: RuleVerdict, by: DecideWith) -> Decision {
     Decision {
         verdict: rules.verdict,
         by,
-        approver: None,
+        judge: None,
         reasons: rules.reasons,
     }
 }
@@ -117,12 +117,12 @@ fn from_model(model: ModelVerdict, by: DecideWith) -> Decision {
     Decision {
         verdict: model.verdict,
         by,
-        approver: model.approver,
+        judge: model.judge,
         reasons: model.reasons,
     }
 }
 
-/// What held the verdict back comes first, so a card left to you leads with it.
+/// What held the verdict back comes first, so an approval left to you starts with it.
 fn combine(verdict: Verdict, rules: RuleVerdict, model: ModelVerdict, by: DecideWith) -> Decision {
     let model_first = verdict != Verdict::Approve && rules.verdict == Verdict::Approve;
     let reasons = if model_first {
@@ -133,7 +133,7 @@ fn combine(verdict: Verdict, rules: RuleVerdict, model: ModelVerdict, by: Decide
     Decision {
         verdict,
         by,
-        approver: model.approver,
+        judge: model.judge,
         reasons,
     }
 }

@@ -10,16 +10,16 @@ use std::time::{Duration, Instant};
 
 use argonauts_testkit::acp::WRONG_PICK_EXIT;
 use argonauts_testkit::scenario::{LogLine, NO_RULE_EXIT};
-use argonauts_testkit::{FakeVendors, TempRepo};
+use argonauts_testkit::{FakeClis, TempRepo};
 use serde_json::{Value, json};
 
-const FAKE: &str = env!("CARGO_BIN_EXE_argonauts-fake-vendor");
+const FAKE: &str = env!("CARGO_BIN_EXE_argonauts-fake-cli");
 const PATIENCE: Duration = Duration::from_secs(10);
 
-fn install(repo: &TempRepo, scenario: &str) -> FakeVendors {
+fn install(repo: &TempRepo, scenario: &str) -> FakeClis {
     let path = repo.scratch().join("scenario.toml");
     std::fs::write(&path, scenario).unwrap();
-    FakeVendors::install_with(Path::new(FAKE), repo.scratch(), &path).unwrap()
+    FakeClis::install_with(Path::new(FAKE), repo.scratch(), &path).unwrap()
 }
 
 /// The client side of one ACP session with the fake.
@@ -30,11 +30,11 @@ struct Client {
 }
 
 impl Client {
-    fn start(vendors: &FakeVendors, repo: &TempRepo, program: &str) -> Self {
-        let mut child = Command::new(vendors.bin_dir().join(program))
+    fn start(clis: &FakeClis, repo: &TempRepo, program: &str) -> Self {
+        let mut child = Command::new(clis.bin_dir().join(program))
             .arg("acp")
             .current_dir(repo.root())
-            .envs(vendors.envs())
+            .envs(clis.envs())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -127,9 +127,8 @@ impl Client {
     }
 }
 
-fn frames(vendors: &FakeVendors, from_agent: bool) -> Vec<Value> {
-    vendors
-        .log()
+fn frames(clis: &FakeClis, from_agent: bool) -> Vec<Value> {
+    clis.log()
         .unwrap()
         .into_iter()
         .filter_map(|line| match line {
@@ -143,9 +142,8 @@ fn frames(vendors: &FakeVendors, from_agent: bool) -> Vec<Value> {
         .collect()
 }
 
-fn wrong_picks(vendors: &FakeVendors) -> Vec<(String, String)> {
-    vendors
-        .log()
+fn wrong_picks(clis: &FakeClis) -> Vec<(String, String)> {
+    clis.log()
         .unwrap()
         .into_iter()
         .filter_map(|line| match line {
@@ -190,8 +188,8 @@ update_file = "updates.jsonl"
 "#,
         text_chunk("Hello")
     );
-    let vendors = install(&repo, &scenario);
-    let mut client = Client::start(&vendors, &repo, "hermes");
+    let clis = install(&repo, &scenario);
+    let mut client = Client::start(&clis, &repo, "hermes");
     let session = client.open_session(json!([]));
     assert_eq!(session, "s-1");
 
@@ -221,7 +219,7 @@ update_file = "updates.jsonl"
     assert_eq!(unknown["error"]["code"], -32601);
 
     assert_eq!(client.finish(), 0);
-    let received = frames(&vendors, false);
+    let received = frames(&clis, false);
     let methods: Vec<&str> = received
         .iter()
         .map(|frame| frame["method"].as_str().unwrap())
@@ -236,13 +234,13 @@ update_file = "updates.jsonl"
             "session/set_model"
         ]
     );
-    assert_eq!(frames(&vendors, true).len(), 2 + 4 + 1 + 1);
+    assert_eq!(frames(&clis, true).len(), 2 + 4 + 1 + 1);
 }
 
 #[test]
 fn permission_answers_are_checked_and_a_wrong_pick_fails_the_fake() {
     let repo = TempRepo::new().unwrap();
-    let vendors = install(
+    let clis = install(
         &repo,
         r#"
 [[acp]]
@@ -259,7 +257,7 @@ write = { path = "a.txt", content = "edited\n" }
 permission = { tool_call = { toolCallId = "edit-2", title = "Edit .hermes/config.yaml", kind = "edit" }, expect = "reject-once" }
 "#,
     );
-    let mut client = Client::start(&vendors, &repo, "goose");
+    let mut client = Client::start(&clis, &repo, "goose");
     let session = client.open_session(json!([]));
 
     client.prompt(3, &session, "edit a.txt");
@@ -297,7 +295,7 @@ permission = { tool_call = { toolCallId = "edit-2", title = "Edit .hermes/config
         std::fs::read_to_string(repo.root().join("a.txt")).unwrap(),
         "edited\n"
     );
-    assert!(wrong_picks(&vendors).is_empty());
+    assert!(wrong_picks(&clis).is_empty());
 
     client.prompt(4, &session, "edit the hermes config");
     let ask = client.next();
@@ -312,7 +310,7 @@ permission = { tool_call = { toolCallId = "edit-2", title = "Edit .hermes/config
 
     assert_eq!(client.finish(), WRONG_PICK_EXIT);
     assert_eq!(
-        wrong_picks(&vendors),
+        wrong_picks(&clis),
         [("reject-once".to_owned(), "allow-once".to_owned())]
     );
 }
@@ -342,8 +340,8 @@ update = {never}
         working = text_chunk("working"),
         never = text_chunk("never sent"),
     );
-    let vendors = install(&repo, &scenario);
-    let mut client = Client::start(&vendors, &repo, "openclaw");
+    let clis = install(&repo, &scenario);
+    let mut client = Client::start(&clis, &repo, "openclaw");
     let session = client.open_session(json!([]));
     let cancel = json!({
         "jsonrpc": "2.0",
@@ -376,8 +374,8 @@ update = {never}
     assert_eq!(end["result"]["stopReason"], "cancelled");
 
     assert_eq!(client.finish(), 0);
-    assert!(wrong_picks(&vendors).is_empty());
-    let sent = frames(&vendors, true);
+    assert!(wrong_picks(&clis).is_empty());
+    let sent = frames(&clis, true);
     assert!(
         !sent
             .iter()
@@ -388,7 +386,7 @@ update = {never}
 #[test]
 fn scripted_errors_and_resume() {
     let repo = TempRepo::new().unwrap();
-    let vendors = install(
+    let clis = install(
         &repo,
         r#"
 [[acp]]
@@ -404,7 +402,7 @@ error = { code = -32000, message = "Authentication required" }
 stop_reason = "max_turn_requests"
 "#,
     );
-    let mut client = Client::start(&vendors, &repo, "hermes");
+    let mut client = Client::start(&clis, &repo, "hermes");
     client.request(1, "initialize", json!({ "protocolVersion": 1 }));
     let (init, _) = client.reply(1);
     assert_eq!(init["result"]["authMethods"][0]["id"], "login");
@@ -457,7 +455,7 @@ done
     )
     .unwrap();
     std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let vendors = install(
+    let clis = install(
         &repo,
         r#"
 [[acp]]
@@ -468,7 +466,7 @@ argv0 = "hermes"
 report = { status = "done", summary = "All good" }
 "#,
     );
-    let mut client = Client::start(&vendors, &repo, "hermes");
+    let mut client = Client::start(&clis, &repo, "hermes");
     let session = client.open_session(json!([{
         "name": "argonauts",
         "command": server,
@@ -480,7 +478,7 @@ report = { status = "done", summary = "All good" }
     assert_eq!(end["result"]["stopReason"], "end_turn");
     assert_eq!(client.finish(), 0);
 
-    let calls: Vec<(String, Value, Value)> = vendors
+    let calls: Vec<(String, Value, Value)> = clis
         .log()
         .unwrap()
         .into_iter()
@@ -517,13 +515,13 @@ report = { status = "done", summary = "All good" }
 }
 
 #[test]
-fn chat_sends_are_recorded_and_succeed() {
+fn message_sends_are_recorded_and_succeed() {
     let repo = TempRepo::new().unwrap();
-    let vendors = install(&repo, "");
+    let clis = install(&repo, "");
     let run = |program: &str, args: &[&str]| {
-        Command::new(vendors.bin_dir().join(program))
+        Command::new(clis.bin_dir().join(program))
             .args(args)
-            .envs(vendors.envs())
+            .envs(clis.envs())
             .stdin(Stdio::null())
             .output()
             .unwrap()
@@ -551,7 +549,7 @@ fn chat_sends_are_recorded_and_succeed() {
     assert_eq!(run("openclaw", &["message", "read"]), Some(NO_RULE_EXIT));
 
     assert_eq!(
-        vendors.chat_sends().unwrap(),
+        clis.message_sends().unwrap(),
         [
             vec!["hermes", "send", "--to", "me", "A run needs you"],
             vec![

@@ -1,6 +1,6 @@
-//! `argonauts approve <run> <checkpoint>`: approving from a shell. Only the app holds the
+//! `argonauts approve <run> <approval>`: approving from a shell. Only the app holds the
 //! approval path, so this checks that a person can be at this terminal, then opens the app on
-//! the run with the checkpoint's card, and you answer it there.
+//! the run with the approval's question, and you answer it there.
 
 use std::io::IsTerminal as _;
 use std::process::ExitCode;
@@ -9,19 +9,19 @@ use anyhow::{anyhow, bail};
 use argonauts_app::{FirstView, InteractiveOptions};
 use argonauts_core::RunId;
 use argonauts_core::api::RunSummary;
-use argonauts_core::names::CheckpointId;
+use argonauts_core::names::ApprovalId;
 
 use crate::usage::usage;
 
 pub async fn run(
     run: &str,
-    checkpoint: &str,
+    approval: &str,
     options: InteractiveOptions,
 ) -> anyhow::Result<ExitCode> {
     let run = RunId::new(run).map_err(usage)?;
-    let checkpoint = CheckpointId::parse(checkpoint).ok_or_else(|| {
+    let approval = ApprovalId::parse(approval).ok_or_else(|| {
         usage(anyhow!(
-            "{checkpoint:?} isn't an approval id, such as cp-001"
+            "{approval:?} isn't an approval id, such as approval-001"
         ))
     })?;
     // An agent can fake a terminal, so its markers and ancestry count first.
@@ -31,25 +31,25 @@ pub async fn run(
     }
     let root = argonauts_app::repo_root(options.repo.as_deref())?;
     let runs = argonauts_app::conductor(&root)?.list().await?;
-    waiting_at(&runs, &run, &checkpoint)?;
+    waiting_at(&runs, &run, &approval)?;
     argonauts_app::run_interactive_with(options, FirstView::Resume(run)).await?;
     Ok(ExitCode::SUCCESS)
 }
 
-/// The run is this repo's, and the checkpoint waits for you on it.
-fn waiting_at(runs: &[RunSummary], run: &RunId, checkpoint: &CheckpointId) -> anyhow::Result<()> {
+/// The run is this repo's, and the approval waits for you on it.
+fn waiting_at(runs: &[RunSummary], run: &RunId, approval: &ApprovalId) -> anyhow::Result<()> {
     let Some(summary) = runs.iter().find(|summary| &summary.run == run) else {
-        bail!("there's no {run} in this repo; `argonauts inbox` lists what waits for you");
+        bail!("there's no {run} in this repo; `argonauts approvals` lists what waits for you");
     };
-    if summary.waiting.contains(checkpoint) {
+    if summary.waiting.contains(approval) {
         return Ok(());
     }
     if summary.waiting.is_empty() {
         bail!("{run} isn't waiting for you");
     }
-    let waiting: Vec<&str> = summary.waiting.iter().map(CheckpointId::as_str).collect();
+    let waiting: Vec<&str> = summary.waiting.iter().map(ApprovalId::as_str).collect();
     bail!(
-        "{run} isn't waiting at {checkpoint}; it waits at {}",
+        "{run} isn't waiting at {approval}; it waits at {}",
         waiting.join(", ")
     )
 }
@@ -68,34 +68,37 @@ mod tests {
             title: "Add a flag".to_owned(),
             mode: RunMode::Crew,
             workflow: "council".to_owned(),
-            state: RunState::Parked,
+            state: RunState::Waiting,
             stopped_at: String::new(),
             updated: time::OffsetDateTime::UNIX_EPOCH,
             spent: Spend::default(),
             sessions_to_resume: 0,
-            waiting: waiting.iter().map(|n| CheckpointId::numbered(*n)).collect(),
+            waiting: waiting.iter().map(|n| ApprovalId::numbered(*n)).collect(),
             live: false,
             remind: false,
             name: None,
         }
     }
 
-    fn check(runs: &[RunSummary], run: &str, checkpoint: u32) -> Result<(), String> {
+    fn check(runs: &[RunSummary], run: &str, approval: u32) -> Result<(), String> {
         waiting_at(
             runs,
             &RunId::new(run).unwrap(),
-            &CheckpointId::numbered(checkpoint),
+            &ApprovalId::numbered(approval),
         )
         .map_err(|err| err.to_string())
     }
 
     #[test]
-    fn only_a_checkpoint_waiting_on_the_run_opens() {
+    fn only_an_approval_waiting_on_the_run_opens() {
         let runs = [summary("run-01", &[]), summary("run-02", &[1, 3])];
         assert_eq!(check(&runs, "run-02", 3), Ok(()));
         assert_eq!(
             check(&runs, "run-02", 2),
-            Err("run-02 isn't waiting at cp-002; it waits at cp-001, cp-003".to_owned())
+            Err(
+                "run-02 isn't waiting at approval-002; it waits at approval-001, approval-003"
+                    .to_owned()
+            )
         );
         assert_eq!(
             check(&runs, "run-01", 1),

@@ -67,9 +67,15 @@ pub fn build(program: &str, req: &SessionRequest) -> anyhow::Result<CommandSpec>
     for picture in &req.pictures {
         spec = spec.args(["--image", utf8(&picture.path)?]);
     }
-    // A resume takes every flag again, since Codex applies the new call's settings.
+    ensure!(
+        !req.fork_session || req.resume_session.is_some(),
+        "a fork needs the session to copy"
+    );
+    // A resume takes every flag again, since Codex applies the new call's settings. A fork
+    // takes them the same way, and carries on a copy of the session under an id of its own.
     if let Some(session) = &req.resume_session {
-        spec = spec.args(["resume", flag_value("session id", session.trim())?]);
+        let how = if req.fork_session { "fork" } else { "resume" };
+        spec = spec.args([how, flag_value("session id", session.trim())?]);
     }
 
     // `-` makes Codex read the prompt from stdin, which keeps it out of the process list.
@@ -179,7 +185,7 @@ fn refuse_unsafe_extra_args(extra_args: &[String]) -> anyhow::Result<()> {
             })
     });
     match refused {
-        Some(arg) => anyhow::bail!("Argonauts never passes {arg} to Codex"),
+        Some(arg) => anyhow::bail!("Argonauts Code never passes {arg} to Codex"),
         None => Ok(()),
     }
 }
@@ -208,7 +214,7 @@ fn reasoning_effort_override(effort: &str) -> anyhow::Result<String> {
     Ok(format!("model_reasoning_effort=\"{effort}\""))
 }
 
-/// Kept in the scratch directory so it never ends up in the worktree, where the conductor
+/// Kept in the scratch directory so it never ends up in the worktree, where Argonauts Code
 /// would commit it.
 fn schema_file(req: &SessionRequest, schema: &Value) -> anyhow::Result<SpecFile> {
     let scratch = req

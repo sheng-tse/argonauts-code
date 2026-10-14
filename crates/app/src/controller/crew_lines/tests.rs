@@ -30,7 +30,10 @@ fn applied(instructions: Vec<CheckedInstruction>, settings: &[(&str, &str)]) -> 
 /// Fable is the main session and orchestrates.
 fn fable() -> Settings {
     Settings {
-        main_agent: "claude-code/fable-5-1".parse().unwrap(),
+        crew: CrewSettings {
+            main: "claude-code/fable-5-1".parse().unwrap(),
+            ..CrewSettings::default()
+        },
         ..Settings::default()
     }
 }
@@ -47,9 +50,9 @@ fn opus_workers_and_an_astra_reviewer() -> Applied {
             followed(InstructionKind::Review, "the reviewer will be astra"),
         ],
         &[
-            ("crew.workers", "[\"claude-code/opus-5-5\"]"),
+            ("crew.worker", "[\"claude-code/opus-5-5\"]"),
             ("crew.judge", "[\"claude-code/opus-5-5\"]"),
-            ("roles.reviewer.workers", "[\"astra\"]"),
+            ("roles.reviewer.models", "[\"astra\"]"),
             ("review.per_task", "1"),
         ],
     )
@@ -64,7 +67,7 @@ fn the_words_show_against_where_the_rest_came_from() {
         .expect("the words changed the crew");
     let from: Vec<(&str, &str)> = lines
         .iter()
-        .map(|line| (line.role.as_str(), line.from.as_str()))
+        .map(|line| (line.role.plural(), line.from.as_str()))
         .collect();
     assert_eq!(
         from,
@@ -89,16 +92,17 @@ fn the_words_show_against_where_the_rest_came_from() {
 fn a_role_that_follows_says_so() {
     let mut settings = fable();
     settings.crew = CrewSettings {
+        main: settings.crew.main.clone(),
         orchestrator: Orchestrator::Main,
-        workers: Vec::new(),
-        reviewers: vec!["antigravity-cli".parse().unwrap()],
+        worker: Vec::new(),
+        reviewer: vec!["antigravity-cli".parse().unwrap()],
         judge: Vec::new(),
         worker_workflows: false,
         merger: Vec::new(),
     };
     let words = applied(
         vec![followed(InstructionKind::Review, "astra reviews")],
-        &[("roles.reviewer.workers", "[\"astra\"]")],
+        &[("roles.reviewer.models", "[\"astra\"]")],
     );
     let lines = understood(&settings, &words, None).unwrap();
     assert_eq!(lines[3].who, lines[2].who, "the judge is Astra too");
@@ -108,17 +112,17 @@ fn a_role_that_follows_says_so() {
     assert!(lines[3].asked.is_none(), "a role that follows isn't kept");
 }
 
-/// Nothing is shown without words that seat agents: no words, words about something else,
-/// or settings that came another way, such as ultracode's same-model workflow.
+/// Nothing is shown without words that give roles their agents: no words, words about something
+/// else, or settings that came another way, such as ultracode's same-model workflow.
 #[test]
 fn only_your_words_show_a_crew() {
     assert!(understood(&fable(), &Applied::default(), None).is_none());
     let bell = applied(
-        vec![followed(InstructionKind::ForTheLead, "keep it short")],
+        vec![followed(InstructionKind::ForTheMainAgent, "keep it short")],
         &[("ui.bell", "false")],
     );
     assert!(understood(&fable(), &bell, None).is_none());
-    let not_words = applied(Vec::new(), &[("crew.workers", "[\"codex\"]")]);
+    let not_words = applied(Vec::new(), &[("crew.worker", "[\"codex\"]")]);
     assert!(understood(&fable(), &not_words, None).is_none());
     let not_followed = applied(
         vec![CheckedInstruction {
@@ -142,10 +146,10 @@ fn keeping_the_crew_writes_the_roles_your_words_set() {
         to_keep(&settings, &lines),
         [
             (
-                "crew.workers".to_owned(),
+                "crew.worker".to_owned(),
                 "[\"claude-code/opus-5-5\"]".to_owned()
             ),
-            ("crew.reviewers".to_owned(), "[\"astra\"]".to_owned()),
+            ("crew.reviewer".to_owned(), "[\"astra\"]".to_owned()),
             (
                 "crew.judge".to_owned(),
                 "[\"claude-code/opus-5-5\"]".to_owned()
@@ -157,31 +161,31 @@ fn keeping_the_crew_writes_the_roles_your_words_set() {
     own_reviewers.roles.insert(
         RoleName::Reviewer,
         RoleSettings {
-            workers: vec!["codex".parse().unwrap()],
+            models: vec!["codex".parse().unwrap()],
             ..RoleSettings::default()
         },
     );
     let lines = understood(&own_reviewers, &opus_workers_and_an_astra_reviewer(), None).unwrap();
     let kept = to_keep(&own_reviewers, &lines);
     assert!(
-        kept.contains(&(
-            "roles.reviewer.workers".to_owned(),
-            "[\"astra\"]".to_owned()
-        )),
+        kept.contains(&("roles.reviewer.models".to_owned(), "[\"astra\"]".to_owned())),
         "{kept:?}"
     );
 }
 
-/// "Use a workflow, with Codex as the reviewer" from solo: the checks infer workers from the
+/// "Use a workflow, with Codex as the reviewer" from Captain: the checks infer workers from the
 /// crew that aren't Codex, but the run builds with the main session, so the lines show what
-/// runs. Seats the run gave the main session say so and aren't kept; only the reviewer is.
+/// runs. Roles the run gave the main session say so and aren't kept; only the reviewer is.
 #[test]
-fn a_crew_from_solo_shows_the_seats_the_run_has() {
+fn a_crew_from_captain_shows_the_models_the_run_has() {
     let mut settings = Settings {
-        main_agent: "claude-code/claude-haiku-5-5".parse().unwrap(),
+        crew: CrewSettings {
+            main: "claude-code/claude-haiku-5-5".parse().unwrap(),
+            ..CrewSettings::default()
+        },
         ..Settings::default()
     };
-    settings.crew.workers = ["claude-code", "antigravity-cli", "codex"]
+    settings.crew.worker = ["claude-code", "antigravity-cli", "codex"]
         .map(|worker| worker.parse().unwrap())
         .to_vec();
     let words = applied(
@@ -190,9 +194,9 @@ fn a_crew_from_solo_shows_the_seats_the_run_has() {
             "with Codex as the reviewer",
         )],
         &[
-            ("roles.reviewer.workers", "[\"codex\"]"),
+            ("roles.reviewer.models", "[\"codex\"]"),
             (
-                "roles.worker.workers",
+                "roles.worker.models",
                 "[\"claude-code\", \"antigravity-cli\"]",
             ),
         ],
@@ -200,9 +204,9 @@ fn a_crew_from_solo_shows_the_seats_the_run_has() {
     let run: Vec<String> = [
         "workflow=\"orchestrator\"",
         "crew.orchestrator=\"main\"",
-        "roles.reviewer.workers=[\"codex\"]",
-        "roles.worker.workers=[\"claude-code\", \"antigravity-cli\"]",
-        "roles.worker.workers=[\"claude-code/claude-haiku-5-5\"]",
+        "roles.reviewer.models=[\"codex\"]",
+        "roles.worker.models=[\"claude-code\", \"antigravity-cli\"]",
+        "roles.worker.models=[\"claude-code/claude-haiku-5-5\"]",
     ]
     .map(str::to_owned)
     .to_vec();
@@ -210,7 +214,7 @@ fn a_crew_from_solo_shows_the_seats_the_run_has() {
     let lines = understood(&settings, &words, Some(&run)).expect("the reviewer is your words");
     let shown: Vec<(&str, &str)> = lines
         .iter()
-        .map(|line| (line.role.as_str(), line.from.as_str()))
+        .map(|line| (line.role.plural(), line.from.as_str()))
         .collect();
     assert_eq!(
         shown,
@@ -225,7 +229,7 @@ fn a_crew_from_solo_shows_the_seats_the_run_has() {
     assert!(!lines[1].who.contains("Antigravity"), "{}", lines[1].who);
     assert_eq!(
         to_keep(&settings, &lines),
-        [("crew.reviewers".to_owned(), "[\"codex\"]".to_owned())]
+        [("crew.reviewer".to_owned(), "[\"codex\"]".to_owned())]
     );
 
     // Without the run's own layer the inferred workers would read as your words.

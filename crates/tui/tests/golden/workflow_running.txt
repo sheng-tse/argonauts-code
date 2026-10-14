@@ -1,0 +1,15 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Add due dates
+ orchestrator workflow · add --due to the todo CLI, each part reviewed on another CLI              2/4 agents · 4m12s 
+ › review: GPT 5.6 Luna sent build:due-flag back; round 2 is under way
+
+ ╭ Phases ──────────┬ Review · 2 agents ────────────────────────────────────────────────────────────────────────────╮
+ │   1 Build    1/2 │  ✔ review:due-tests  Opus 5.5 · 18.4k tok · approved                                      41s │
+ │ ❯ 2 Review   1/2 │  ✔ review:due-flag   GPT 5.6 Luna · 21.7k tok · sent it back · 2 findings                 46s │
+ │   3 Sign-off     │                                                                                               │
+ │   4 Merge        │   build:due-flag is on round 2 with the findings · its review runs again after                │
+ ╰──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────╯
+ ↑↓ select · enter opens its agents · x stop workflow · p pause · esc back · s save
+
+  its row in the bottom list
+  ◯ Add due dates         ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  2/4 · 4m12s · ↓ 128k tokens

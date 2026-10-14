@@ -1,6 +1,6 @@
 //! The models a CLI lists itself, such as Claude Code's `initialize` reply: names,
 //! descriptions, effort levels, and what `default` runs today. They're kept in
-//! `~/.argonauts/state/<harness>-models.json`, so the picker mirrors the CLI from the next start
+//! `~/.argonauts/state/<cli>-models.json`, so the picker mirrors the CLI from the next start
 //! too, and a model the CLI adds shows up the same day. They count over the fetched catalog and
 //! under your own `models.toml`.
 
@@ -10,13 +10,13 @@ use std::path::Path;
 
 use argonauts_core::ReportedModel;
 use argonauts_core::model_catalog::{CatalogEntry, ModelCatalog};
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::registry::ModelEntry;
 use argonauts_core::settings::Settings;
 use argonauts_core::{create_private_dir_all, write_private_file};
 use serde::{Deserialize, Serialize};
 
-use super::builtin::harness_entry;
+use super::builtin::cli_entry;
 
 /// What `default` is called in the list.
 const DEFAULT: &str = "default";
@@ -54,14 +54,14 @@ fn runs(model: &ReportedModel) -> &str {
     model.resolved.as_deref().unwrap_or(&model.value)
 }
 
-/// The catalog layer the list makes: `default` says what the harness runs, and every other
+/// The catalog layer the list makes: `default` says what the CLI runs, and every other
 /// model its name, description, levels, short name, and place, in the CLI's order.
-pub fn layer(harness: &str, models: &[ReportedModel]) -> ModelCatalog {
+pub fn layer(cli: &str, models: &[ReportedModel]) -> ModelCatalog {
     let mut catalog = ModelCatalog::default();
     let mut rank = 0;
     for model in models {
         if model.value == DEFAULT {
-            let mut entry = CatalogEntry::new(WorkerRef::new(harness, None));
+            let mut entry = CatalogEntry::new(ModelRef::new(cli, None));
             entry.runs = model.resolved.clone();
             // `Opus 5.5 · Best for everyday, complex tasks`: the picker names the model itself.
             let description = model
@@ -74,7 +74,7 @@ pub fn layer(harness: &str, models: &[ReportedModel]) -> ModelCatalog {
         }
         rank += 1;
         let id = runs(model);
-        let mut entry = CatalogEntry::new(WorkerRef::new(harness, Some(id.to_owned())));
+        let mut entry = CatalogEntry::new(ModelRef::new(cli, Some(id.to_owned())));
         entry.name = Some(model.display_name.clone());
         entry.description = (!model.description.is_empty()).then(|| model.description.clone());
         entry.efforts = Some(model.efforts.clone());
@@ -89,13 +89,13 @@ pub fn layer(harness: &str, models: &[ReportedModel]) -> ModelCatalog {
 /// model the CLI adds can be picked before any catalog knows it.
 pub fn new_entries(
     settings: &Settings,
-    harness: &str,
+    cli: &str,
     models: &[ReportedModel],
     known: &[ModelEntry],
 ) -> Vec<ModelEntry> {
     let has = |name: &str| {
         known.iter().any(|entry| {
-            entry.id.worker == harness
+            entry.id.agent == cli
                 && (entry.id.model.as_deref() == Some(name)
                     || entry.aliases.iter().any(|alias| alias == name))
         })
@@ -104,7 +104,7 @@ pub fn new_entries(
         .iter()
         .filter(|model| model.value != DEFAULT && !has(&model.value) && !has(runs(model)))
         .map(|model| {
-            let mut entry = harness_entry(settings, harness, Some(runs(model)));
+            let mut entry = cli_entry(settings, cli, Some(runs(model)));
             entry.discovered = true;
             entry.efforts = model.efforts.clone();
             entry.name = Some(model.display_name.clone());
@@ -174,7 +174,7 @@ mod tests {
     fn the_list_says_what_default_runs_and_names_each_model() {
         let layer = layer("claude-code", &listed());
         let default = &layer.models[0];
-        assert_eq!(default.id, WorkerRef::new("claude-code", None));
+        assert_eq!(default.id, ModelRef::new("claude-code", None));
         assert_eq!(default.runs.as_deref(), Some("claude-opus-5-5"));
         assert_eq!(
             default.description.as_deref(),
@@ -203,9 +203,9 @@ mod tests {
     fn only_models_the_registry_lacks_get_entries() {
         let settings = Settings::default();
         let known = vec![
-            harness_entry(&settings, "claude-code", Some("opus")),
-            harness_entry(&settings, "claude-code", Some("sonnet")),
-            harness_entry(&settings, "claude-code", Some("haiku")),
+            cli_entry(&settings, "claude-code", Some("opus")),
+            cli_entry(&settings, "claude-code", Some("sonnet")),
+            cli_entry(&settings, "claude-code", Some("haiku")),
         ];
         let added = new_entries(&settings, "claude-code", &listed(), &known);
         let ids: Vec<_> = added.iter().map(|e| e.id.to_string()).collect();

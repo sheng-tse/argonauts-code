@@ -89,7 +89,9 @@ fn fill_one(arg: &str, lookup: &impl Fn(&str) -> Fill) -> Result<Option<String>,
             continue;
         };
         if !PLACEHOLDERS.contains(&name) {
-            return Err(format!("{{{name}}} isn't a placeholder Argonauts knows"));
+            return Err(format!(
+                "{{{name}}} isn't a placeholder Argonauts Code knows"
+            ));
         }
         match lookup(name) {
             Fill::Value(value) => out.push_str(&value),

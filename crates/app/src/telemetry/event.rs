@@ -104,7 +104,7 @@ pub(crate) fn count(
         } = &line.what
         {
             let name = match workflow {
-                Some(name) if argonauts_registry::builtin_preset(name).is_ok() => name.clone(),
+                Some(name) if argonauts_registry::builtin_workflow(name).is_ok() => name.clone(),
                 Some(_) => "custom".to_owned(),
                 None => "unknown".to_owned(),
             };
@@ -136,7 +136,7 @@ pub(crate) fn count(
 }
 
 /// Which CLI and model a line is, and how it was paid. A model is named only when it is one
-/// Argonauts knows a public list price for, whatever runs it, so a model you or your company
+/// Argonauts Code knows a public list price for, whatever runs it, so a model you or your provider
 /// named, such as a cloud deployment's id, never leaves the computer.
 fn model_of(line: &LedgerLine, settings: &Settings) -> (String, String, &'static str) {
     let agent = line.agent.as_str();
@@ -163,7 +163,7 @@ fn model_of(line: &LedgerLine, settings: &Settings) -> (String, String, &'static
 }
 
 /// A built-in model id as it may be sent, read without a context suffix such as `[1m]`, or
-/// "other" for any id Argonauts has no list price for.
+/// "other" for any id Argonauts Code has no list price for.
 fn shareable_model(model: &str) -> String {
     let base = model.split_once('[').map_or(model, |(base, _)| base).trim();
     if builtin_price(base).is_some() {
@@ -184,7 +184,7 @@ mod tests {
             run: None,
             agent: agent.to_owned(),
             model: Some(model.to_owned()),
-            vendor: agent.to_owned(),
+            agent_id: agent.to_owned(),
             input: 10,
             cached: 0,
             output: 0,
@@ -192,10 +192,12 @@ mod tests {
             estimated: false,
             partial: false,
             hour: None,
+            conversation: None,
+            took: 0,
         }
     }
 
-    /// Only a model Argonauts knows by its public id is named; an id a cloud, a gateway or a
+    /// Only a model Argonauts Code knows by its public id is named; an id a cloud, a gateway or a
     /// provider of your own gave it goes as "other".
     #[test]
     fn only_built_in_models_are_named() {

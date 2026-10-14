@@ -1,0 +1,2 @@
+◆ Keeping the computer and its screen awake until you quit. /awake off lets them sleep again.
+  On battery, closing the lid still puts the Mac to sleep.

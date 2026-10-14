@@ -1,4 +1,4 @@
-//! Fills a scenario's reset times in, since a vendor's reset must be relative to now, and
+//! Fills a scenario's reset times in, since an agent's reset must be relative to now, and
 //! makes its fixture paths absolute so the script works from a temp folder.
 
 use std::path::{Path, PathBuf};
@@ -14,10 +14,10 @@ use time::OffsetDateTime;
 /// Replaced by the Unix time [`SOON`] from now, in seconds, as Claude Code's `resetsAt` is.
 pub const RESET_SOON: &str = "@RESET_SOON@";
 
-/// Replaced by the Unix time two hours from now, for a vendor that must stay out.
+/// Replaced by the Unix time two hours from now, for an agent that must stay out.
 pub const RESET_LATER: &str = "@RESET_LATER@";
 
-/// How soon a vendor comes back in the scenarios that wait for it.
+/// How soon an agent comes back in the scenarios that wait for it.
 pub const SOON: Duration = Duration::from_secs(20);
 
 const LATER: Duration = Duration::from_secs(2 * 60 * 60);

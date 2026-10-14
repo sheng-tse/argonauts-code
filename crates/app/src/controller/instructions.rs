@@ -9,19 +9,19 @@
 use argonauts_core::api::StartRun;
 use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome, RunMode};
 use argonauts_core::goal::{CheckMeans, GoalFrom, GoalSpec};
-use argonauts_core::names::{RoleName, WorkerRef};
-use argonauts_core::registry::company_of;
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::ApprovalMode;
-use argonauts_core::settings::budget::BudgetUnit;
 use argonauts_core::settings::crew::CrewRole;
-use argonauts_core::settings::protocol::SoloStyle;
+use argonauts_core::settings::limit::LimitUnit;
+use argonauts_core::settings::protocol::CaptainKind;
 use argonauts_core::settings::workflows::RunStyle;
 use argonauts_core::steps::intake::{Instruction, InstructionKind, InstructionScope};
-use argonauts_crew::triage::Asked;
+use argonauts_crew::captain_or_crew::Asked;
 
 use crate::controller::turn::DirectWords;
 
+mod request_words;
 mod roster;
 mod words;
 
@@ -38,7 +38,7 @@ const HANDING_ON: [&str; 6] = ["use", "run", "start", "launch", "hand", "give"];
 
 /// Whether `message` plainly asks for a workflow or the crew: a clause where one of
 /// [`HANDING_ON`] comes just before the word, with no negation before it, and nothing in the
-/// message asking for solo. "Explain how the workflow works" asks for nothing.
+/// message asking for Captain. "Explain how the workflow works" asks for nothing.
 pub(crate) fn plainly_asks_for_a_workflow(message: &str) -> bool {
     if crew_stance(message) != Stance::For {
         return false;
@@ -54,12 +54,69 @@ pub(crate) fn plainly_asks_for_a_workflow(message: &str) -> bool {
                 let handed = before
                     .iter()
                     .any(|word| HANDING_ON.contains(&word.as_str()));
-                let negated = before
-                    .iter()
-                    .any(|word| ["dont", "not", "no", "never", "without"].contains(&word.as_str()));
+                let negated = before.iter().any(|word| NEGATIONS.contains(&word.as_str()));
                 cue && handed && !negated
             })
         })
+}
+
+/// Words that end a negation's reach before the word they come before, as in "don't".
+const NEGATIONS: [&str; 5] = ["dont", "not", "no", "never", "without"];
+
+/// Whether `message` names who reviews the work: a clause that calls an agent here, or one of
+/// its models, the reviewer, or has it review, as in "with Codex as the reviewer", "have Opus
+/// review it" and "reviewed by Codex". "Review the parser" names nobody, and "review the Codex
+/// adapter" names what to read, so neither asks for a reviewer.
+pub(crate) fn names_a_reviewer(message: &str, roster: &Roster) -> bool {
+    let names = name_words(roster);
+    let is_name = |word: &String| names.contains(word);
+    message
+        .split([',', ';', ':', '.', '!', '?', '(', ')', '\n'])
+        .any(|clause| {
+            let words = tokens(clause);
+            words.iter().enumerate().any(|(at, word)| {
+                let before = &words[at.saturating_sub(5)..at];
+                let after = &words[(at + 1).min(words.len())..(at + 4).min(words.len())];
+                let named = match word.as_str() {
+                    // "Codex as the reviewer", "the reviewer is Codex".
+                    "reviewer" | "reviewers" => {
+                        before.iter().any(is_name) || after.iter().any(is_name)
+                    }
+                    // "have Codex review it", "Codex reviews". The name comes first: after
+                    // the verb it is what gets reviewed.
+                    "review" | "reviews" | "reviewing" => {
+                        before[before.len().saturating_sub(3)..].iter().any(is_name)
+                    }
+                    "reviewed" => {
+                        after.first().is_some_and(|by| by == "by") && after.iter().any(is_name)
+                    }
+                    _ => false,
+                };
+                let negated = before.iter().any(|word| NEGATIONS.contains(&word.as_str()));
+                named && !negated
+            })
+        })
+}
+
+/// The words that name an agent here: the first word of its id, its name and its provider,
+/// and each word of its models' names, ids and aliases that isn't a bare number.
+fn name_words(roster: &Roster) -> Vec<String> {
+    let mut names = Vec::new();
+    for agent in &roster.agents {
+        for of in [&agent.id, &agent.name, &agent.provider] {
+            names.extend(tokens(of).into_iter().next());
+        }
+        let models = agent
+            .models
+            .iter()
+            .flat_map(|model| model.aliases.iter().chain([&model.name, &model.id]));
+        names.extend(
+            models
+                .flat_map(|model| tokens(model))
+                .filter(|word| word.len() > 2 && word.chars().any(char::is_alphabetic)),
+        );
+    }
+    names
 }
 
 /// Whether `says` stands in `message` word for word, two words at least, the way an
@@ -68,7 +125,7 @@ pub(crate) fn said_in(message: &str, says: &str) -> bool {
     quoted_at(&tokens(message), &tokens(says)).is_some()
 }
 
-/// What a command or a card chose, which beats the words.
+/// What a command or a question chose, which beats the words.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Command {
     pub mode: RunMode,
@@ -83,14 +140,14 @@ pub(crate) struct Command {
 pub(crate) struct Applied {
     /// Every instruction in your message's order, then the dropped ones.
     pub instructions: Vec<CheckedInstruction>,
-    /// The mode and solo style your words chose, for triage.
+    /// The mode and Captain kind your words chose, for the Captain-or-crew rules.
     pub asked: Asked,
     /// `(key, TOML value)` at the request layer.
     pub settings: Vec<(String, String)>,
-    /// Who leads this run, when your words named someone.
-    pub lead: Option<WorkerRef>,
-    /// Who works solo, when your words named one builder and the run turns out solo.
-    pub solo_lead: Option<WorkerRef>,
+    /// Who is the main agent of this run, when your words named someone.
+    pub main_agent: Option<ModelRef>,
+    /// Who works as Captain, when your words named one builder and the run turns out Captain.
+    pub captain_main_agent: Option<ModelRef>,
     /// Your words asked approvals to wait for you.
     pub supervised: bool,
     /// What "from now on" asked to keep, as `(key, TOML value)`, and as the line said it.
@@ -100,7 +157,7 @@ pub(crate) struct Applied {
 
 impl Applied {
     /// Your words, applied to the run they start: its instructions for the record and the
-    /// Triage line, the request layer, the lead, and the approval mode.
+    /// start line, the request layer, the main agent, and the approval mode.
     pub(crate) fn apply_to(&self, request: &mut StartRun) {
         request.instructions = self.instructions.clone();
         request.request_settings = self
@@ -108,17 +165,17 @@ impl Applied {
             .iter()
             .map(|(key, value)| format!("{key}={value}"))
             .collect();
-        let lead = match (&self.lead, &self.solo_lead) {
-            (Some(lead), _) => Some(lead),
-            (None, Some(lead)) if request.mode == RunMode::Solo => Some(lead),
+        let main_agent = match (&self.main_agent, &self.captain_main_agent) {
+            (Some(main_agent), _) => Some(main_agent),
+            (None, Some(main_agent)) if request.mode == RunMode::Captain => Some(main_agent),
             _ => None,
         };
-        if let Some(lead) = lead {
-            request.main_agent = Some(lead.clone());
-            // The run's own default agent too, since that's who designs and leads it.
+        if let Some(main_agent) = main_agent {
+            request.main_agent = Some(main_agent.clone());
+            // The run's own main agent too, since that's who designs and drives it.
             request
                 .request_settings
-                .push(format!("main_agent={}", toml_text(&lead.to_string())));
+                .push(format!("crew.main={}", toml_text(&main_agent.to_string())));
         }
         if self.supervised {
             request.approval_mode = Some(ApprovalMode::Supervised);
@@ -126,8 +183,8 @@ impl Applied {
     }
 
     /// The workers your words gave `role`, as the request layer holds them.
-    pub(crate) fn workers(&self, role: RoleName) -> Vec<WorkerRef> {
-        let key = format!("roles.{}.workers", role.as_str());
+    pub(crate) fn workers(&self, role: RoleName) -> Vec<ModelRef> {
+        let key = format!("roles.{}.models", role.as_str());
         let Some((_, list)) = self.settings.iter().rev().find(|(known, _)| *known == key) else {
             return Vec::new();
         };
@@ -144,8 +201,8 @@ impl Applied {
     }
 
     /// What a direct turn of `main` takes from your words: its model and effort, a lower
-    /// budget, no network, and asking you first. The rest needs a run, which triage already
-    /// chose when it applied.
+    /// limit, no network, and asking you first. The rest needs a run, which the Captain-or-crew
+    /// rules already chose when it applied.
     pub(crate) fn for_direct(&self, main: &str) -> DirectWords {
         let value = |key: &str| -> Option<toml::Value> {
             let (_, value) = self.settings.iter().rev().find(|(known, _)| known == key)?;
@@ -158,7 +215,7 @@ impl Applied {
         DirectWords {
             model: text(&format!("agents.{main}.model")),
             effort: text(&format!("agents.{main}.effort")),
-            budget_usd: value("limits.spend_per_run").and_then(|value| {
+            limit_usd: value("limits.spend_per_run").and_then(|value| {
                 value
                     .as_float()
                     .or_else(|| value.as_integer().map(|whole| whole as f64))
@@ -172,42 +229,25 @@ impl Applied {
 }
 
 /// Whether a message may say how to run it, so a command's words are worth an estimate first: it
-/// names an agent or one of its models, or speaks of the crew, roles, a copy, the budget,
+/// names an agent or one of its models, or speaks of the crew, roles, a worktree, the limit,
 /// approvals, merging, the network, effort, or "from now on". A false yes costs a read-only
 /// turn, and a false no runs the command as it always did.
 pub(crate) fn might_say_how(message: &str, roster: &Roster) -> bool {
     let said = tokens(message);
     let has = |word: &str| said.iter().any(|said| said == word);
-    let names = roster.agents.iter().any(|agent| {
-        let id = tokens(&agent.id);
-        let name = tokens(&agent.name);
-        let models = agent
-            .models
-            .iter()
-            .flat_map(|model| model.aliases.iter().chain([&model.name, &model.id]));
-        let company = tokens(&company_of(&agent.family));
-        [
-            id.first(),
-            name.first(),
-            tokens(&agent.family).first(),
-            company.first(),
-        ]
-        .into_iter()
-        .flatten()
-        .any(|word| has(word))
-            || models
-                .flat_map(|model| tokens(model))
-                .any(|word| word.len() > 2 && word.chars().any(char::is_alphabetic) && has(&word))
-    });
+    let names = name_words(roster).iter().any(|word| has(word));
     names
-        || HOW_CUES.iter().any(|cue| has(cue))
+        || HOW_CUES
+            .iter()
+            .chain(&request_words::SAY_HOW)
+            .any(|cue| has(cue))
         || message.contains('$')
         || quoted_at(&said, &tokens("from now on")).is_some()
 }
 
 /// Words that may say how to run a request. A role's verb alone, such as "the build runs",
 /// says nothing of who fills it: the agent's name does.
-const HOW_CUES: [&str; 32] = [
+const HOW_CUES: [&str; 29] = [
     // "keep going until its tests pass" sets a goal.
     "until",
     "crew",
@@ -216,15 +256,13 @@ const HOW_CUES: [&str; 32] = [
     "agents",
     "agy",
     "gemini",
-    "solo",
+    "captain",
     "yourself",
     "alone",
-    "drafters",
-    "copy",
     "checked",
     "worktree",
     "isolated",
-    "budget",
+    "limit",
     "dollars",
     "usd",
     "network",
@@ -240,7 +278,6 @@ const HOW_CUES: [&str; 32] = [
     "model",
     "models",
     "cheapest",
-    "coordinator",
 ];
 
 /// Checks each instruction against your message, the agents here, and your settings, in this
@@ -283,11 +320,14 @@ pub(crate) fn check(
     settle_disagreements(&mut entries);
     checker.settle_others(&mut entries);
     let mode = settle_mode(&mut entries, command);
-    checker.review_against_owners(&mut entries, mode);
-    needs_a_copy(&mut entries);
+    checker.review_against_workers(&mut entries, mode);
+    needs_a_worktree(&mut entries);
 
     let mut applied = Applied {
-        asked: Asked { mode, solo: None },
+        asked: Asked {
+            mode,
+            captain: None,
+        },
         ..Applied::default()
     };
     for entry in &entries {
@@ -296,22 +336,22 @@ pub(crate) fn check(
             applied.settings.retain(|(known, _)| known != key);
             applied.settings.push((key.clone(), value.clone()));
         }
-        if effect.lead.is_some() {
-            applied.lead = effect.lead.clone();
+        if effect.main_agent.is_some() {
+            applied.main_agent = effect.main_agent.clone();
         }
-        if effect.solo_lead.is_some() {
-            applied.solo_lead = effect.solo_lead.clone();
+        if effect.captain_main_agent.is_some() {
+            applied.captain_main_agent = effect.captain_main_agent.clone();
         }
-        if effect.solo.is_some() && applied.asked.solo != Some(SoloStyle::Checked) {
-            applied.asked.solo = effect.solo;
+        if effect.captain.is_some() && applied.asked.captain != Some(CaptainKind::Checked) {
+            applied.asked.captain = effect.captain;
         }
         applied.supervised |= effect.supervised;
         if entry.instruction.scope == InstructionScope::FromNowOn {
             applied.keep.extend(effect.settings.iter().cloned());
-            if let Some(lead) = &effect.lead {
+            if let Some(main_agent) = &effect.main_agent {
                 applied
                     .keep
-                    .push(("main_agent".to_owned(), toml_text(&lead.to_string())));
+                    .push(("crew.main".to_owned(), toml_text(&main_agent.to_string())));
             }
             if !effect.said.is_empty() {
                 applied.keep_said.push(effect.said.clone());
@@ -346,7 +386,7 @@ struct Entry {
 /// What one followed instruction does.
 #[derive(Debug, Clone, Default)]
 struct Effect {
-    /// As the Triage line says it.
+    /// As the start line says it.
     said: String,
     note: Option<String>,
     /// Two instructions with the same slot disagree, and the later one wins.
@@ -356,24 +396,24 @@ struct Effect {
     /// Agents it leaves out.
     leaves_out: Vec<String>,
     settings: Vec<(String, String)>,
-    lead: Option<WorkerRef>,
-    solo_lead: Option<WorkerRef>,
+    main_agent: Option<ModelRef>,
+    captain_main_agent: Option<ModelRef>,
     /// The mode it asks for in so many words.
     mode: Option<RunMode>,
-    /// The mode it needs: roles that only a crew has, or a checked copy that only solo has.
+    /// The mode it needs: roles that only a crew has, or a checked worktree that only Captain has.
     implies: Option<RunMode>,
-    solo: Option<SoloStyle>,
+    captain: Option<CaptainKind>,
     supervised: bool,
-    /// Settings it needs that the words didn't name, such as owners other than the reviewers.
+    /// Settings it needs that the words didn't name, such as workers other than the reviewers.
     /// They apply to the run, and "from now on" doesn't keep them.
     inferred: Vec<(String, String)>,
-    /// Who it gives the reviewer role to, for the family check against the owners.
-    reviewers: Vec<WorkerRef>,
-    /// Who it gives the owner role to.
-    owners: Vec<WorkerRef>,
-    /// Who "all the other agents" names. Which seats they fill is settled once every
+    /// Who it gives the reviewer role to, for the provider check against the workers.
+    reviewers: Vec<ModelRef>,
+    /// Who it gives the worker role to.
+    workers: Vec<ModelRef>,
+    /// Who "all the other agents" names. Which roles they fill is settled once every
     /// instruction is read, since a role another one names keeps that one.
-    others: Vec<WorkerRef>,
+    others: Vec<ModelRef>,
 }
 
 struct Checker<'a> {
@@ -388,8 +428,8 @@ impl Checker<'_> {
         use InstructionKind as Kind;
         let gives_a_role = matches!(
             instruction.kind,
-            Kind::Lead
-                | Kind::Coordinate
+            Kind::MainAgent
+                | Kind::Orchestrate
                 | Kind::Build
                 | Kind::Review
                 | Kind::Judge
@@ -411,7 +451,7 @@ impl Checker<'_> {
             Kind::Mode => mode(instruction),
             Kind::Goal => self.goal(instruction),
             Kind::Isolation => self.isolation(instruction),
-            Kind::Lead | Kind::Coordinate => self.lead(instruction),
+            Kind::MainAgent | Kind::Orchestrate => self.main_agent(instruction),
             Kind::Build => self.build(instruction),
             Kind::Review => self.review(instruction),
             Kind::Judge => self.judge(instruction),
@@ -424,22 +464,22 @@ impl Checker<'_> {
             Kind::Effort => self.effort(instruction),
             Kind::Approvals => self.approvals(instruction),
             Kind::Merge => self.merge(instruction),
-            Kind::Budget => self.budget(instruction),
+            Kind::Limit => self.limit(instruction),
             Kind::Network => self.network(instruction),
-            Kind::Gates => Err(
+            Kind::Checks => Err(
                 "checks.run is a safety setting, /config changes the tests a change must pass"
                     .to_owned(),
             ),
             Kind::Sandbox => {
                 Err("the sandbox is a safety setting, /permissions changes it".to_owned())
             }
-            Kind::ForTheLead => for_the_lead(instruction),
+            Kind::ForTheMainAgent => for_the_main_agent(instruction),
             Kind::ForARole => for_a_role(instruction),
         }
     }
 
     /// "Keep going until its tests pass": the request's own words set a goal for this request,
-    /// which the Triage line states back before work starts.
+    /// which the start line states back before work starts.
     fn goal(&self, instruction: &Instruction) -> Result<Effect, String> {
         if let Some(effect) = role_goal(instruction) {
             return Ok(effect);
@@ -461,14 +501,14 @@ impl Checker<'_> {
         })
     }
 
-    /// A checked copy only tightens. Your own checkout is followed only where `solo.style`
+    /// A checked worktree only tightens. Your own checkout is followed only where `captain.kind`
     /// already says so, since a request never loosens a safety setting.
     fn isolation(&self, instruction: &Instruction) -> Result<Effect, String> {
         let says = &instruction.says;
-        let copy = || stance(says, &COPY_CUES, &CHECKOUT_CUES);
-        let checkout = || stance(says, &CHECKOUT_CUES, &COPY_CUES);
+        let worktree = || stance(says, &worktree_cues(), &CHECKOUT_CUES);
+        let checkout = || stance(says, &CHECKOUT_CUES, &worktree_cues());
         let direct = match key(&instruction.value).as_str() {
-            "checked" => match copy() {
+            "checked" => match worktree() {
                 Stance::For => false,
                 _ => return Err(SAYS_OTHERWISE.to_owned()),
             },
@@ -476,159 +516,176 @@ impl Checker<'_> {
                 Stance::For => true,
                 _ => return Err(SAYS_OTHERWISE.to_owned()),
             },
-            _ => match (copy(), checkout()) {
+            _ => match (worktree(), checkout()) {
                 (Stance::For, _) => false,
                 (_, Stance::For) => true,
-                _ => return Err("it says neither a checked copy nor your checkout".to_owned()),
+                _ => return Err("it says neither a checked worktree nor your checkout".to_owned()),
             },
         };
         if direct {
-            if self.settings.solo.style == SoloStyle::Direct && !self.settings.solo.needs_a_copy() {
+            if self.settings.captain.kind == CaptainKind::Direct
+                && !self.settings.captain.needs_a_worktree()
+            {
                 return Ok(Effect {
                     said: "in your checkout".to_owned(),
                     slot: Some("isolation".to_owned()),
-                    implies: Some(RunMode::Solo),
-                    solo: Some(SoloStyle::Direct),
+                    implies: Some(RunMode::Captain),
+                    captain: Some(CaptainKind::Direct),
                     ..Effect::default()
                 });
             }
-            return Err("solo.kind is a safety setting, /config changes it".to_owned());
+            return Err("captain.kind is a safety setting, /config changes it".to_owned());
         }
         let mut effect = Effect {
-            said: "checked in a copy".to_owned(),
+            said: "checked in a worktree".to_owned(),
             slot: Some("isolation".to_owned()),
-            implies: Some(RunMode::Solo),
-            solo: Some(SoloStyle::Checked),
+            implies: Some(RunMode::Captain),
+            captain: Some(CaptainKind::Checked),
             ..Effect::default()
         };
-        if self.settings.solo.style != SoloStyle::Checked {
-            self.tighten(&mut effect, "solo.kind", toml_text("checked"))?;
+        if self.settings.captain.kind != CaptainKind::Checked {
+            self.tighten(&mut effect, "captain.kind", toml_text("checked"))?;
         }
         Ok(effect)
     }
 
-    /// `lead` and `coordinate`: the agent designs the run. A coordinator also plans the cards
-    /// and assigns their owners and reviewers, as the coordinated crew does.
-    fn lead(&self, instruction: &Instruction) -> Result<Effect, String> {
-        let coordinates = instruction.kind == InstructionKind::Coordinate;
-        let (verb, role) = if coordinates {
-            ("coordinates", "coordinate")
+    /// The main agent or the orchestrator your words name: the agent designs the run. An
+    /// orchestrator also plans the tasks and assigns their workers and reviewers, as the
+    /// orchestrator workflow does.
+    fn main_agent(&self, instruction: &Instruction) -> Result<Effect, String> {
+        let orchestrates = instruction.kind == InstructionKind::Orchestrate;
+        let (verb, role) = if orchestrates {
+            ("orchestrates", "orchestrate")
         } else {
-            ("leads", "lead")
+            ("is the main agent", "be the main agent")
         };
         let fallback = format!(
-            "{} leads",
-            self.roster.name(&self.settings.main_agent.worker)
+            "{} is the main agent",
+            self.roster.name(&self.settings.crew.main.agent)
         );
-        let seats = self.seats(instruction, &fallback)?;
-        let [seat] = seats.seats.as_slice() else {
+        let named = self.named(instruction, &fallback)?;
+        let [agent] = named.agents.as_slice() else {
             return Err(format!("only one agent can {role}"));
         };
-        if seat.endpoint {
+        if agent.endpoint {
             return Err(format!("an endpoint has no tools to {role} with"));
         }
         let mut effect = Effect {
-            said: format!("{} {verb}{}", seat.name, seat.with()),
-            note: seats.note.clone(),
-            slot: Some("lead".to_owned()),
-            names: vec![seat.worker.worker.clone()],
-            lead: Some(seat.worker.clone()),
+            said: format!("{} {verb}{}", agent.name, agent.with()),
+            note: named.note.clone(),
+            slot: Some("main_agent".to_owned()),
+            names: vec![agent.worker.agent.clone()],
+            main_agent: Some(agent.worker.clone()),
             ..Effect::default()
         };
-        if let Some(effort) = &seat.effort {
-            let key = format!("agents.{}.effort", seat.worker.worker);
+        if let Some(effort) = &agent.effort {
+            let key = format!("agents.{}.effort", agent.worker.agent);
             effect.settings.push((key, toml_text(effort)));
         }
-        if coordinates {
+        if orchestrates {
             effect.implies = Some(RunMode::Crew);
-            let worker = toml_list(std::slice::from_ref(&seat.worker));
+            let worker = toml_list(std::slice::from_ref(&agent.worker));
             effect.settings.extend([
-                ("phases".to_owned(), toml_text("orchestrator")),
+                ("workflow".to_owned(), toml_text("orchestrator")),
                 ("drafting.by".to_owned(), toml_text("orchestrator")),
                 ("judging.method".to_owned(), toml_text("orchestrator")),
                 ("routing.algorithm".to_owned(), toml_text("orchestrator")),
                 ("review.assign".to_owned(), toml_text("orchestrator")),
-                ("roles.orchestrator.workers".to_owned(), worker),
+                ("roles.orchestrator.models".to_owned(), worker),
             ]);
         }
         Ok(effect)
     }
 
     fn build(&self, instruction: &Instruction) -> Result<Effect, String> {
-        let seats = self.seats(instruction, "the crew's workers build")?;
-        if seats.seats.iter().any(|seat| seat.endpoint) {
+        let named = self.named(instruction, "the crew's workers build")?;
+        if named.agents.iter().any(|agent| agent.endpoint) {
             return Err("an endpoint has no tools to build with".to_owned());
         }
-        let workers: Vec<WorkerRef> = seats.seats.iter().map(|seat| seat.worker.clone()).collect();
-        let mut effect = self.role_effect(&seats, RoleName::Worker, "builds", "build");
+        let workers: Vec<ModelRef> = named
+            .agents
+            .iter()
+            .map(|agent| agent.worker.clone())
+            .collect();
+        let mut effect = self.role_effect(&named, RoleName::Worker, "builds", "build");
         effect.slot = Some("build".to_owned());
         if let [one] = workers.as_slice() {
-            effect.solo_lead = Some(one.clone());
-            // Your checkout is the main session's, so another agent builds solo in a copy.
-            if one.worker != self.settings.main_agent.worker {
-                effect.solo = Some(SoloStyle::Checked);
+            effect.captain_main_agent = Some(one.clone());
+            // Your checkout is the main session's, so another agent builds as Captain in a
+            // worktree.
+            if one.agent != self.settings.crew.main.agent {
+                effect.captain = Some(CaptainKind::Checked);
             }
         } else {
             effect.implies = Some(RunMode::Crew);
         }
-        effect.owners = workers;
+        effect.workers = workers;
         Ok(effect)
     }
 
-    /// Reviewers for every card. In solo, a review needs a copy, so it makes solo checked.
+    /// Reviewers for every task. In Captain, a review needs a worktree, so it makes Captain
+    /// checked.
     fn review(&self, instruction: &Instruction) -> Result<Effect, String> {
-        let seats = self.seats(instruction, "the crew's reviewers review")?;
-        let workers: Vec<WorkerRef> = seats.seats.iter().map(|seat| seat.worker.clone()).collect();
-        let mut effect = self.role_effect(&seats, RoleName::Reviewer, "reviews", "review");
+        let named = self.named(instruction, "the crew's reviewers review")?;
+        let workers: Vec<ModelRef> = named
+            .agents
+            .iter()
+            .map(|agent| agent.worker.clone())
+            .collect();
+        let mut effect = self.role_effect(&named, RoleName::Reviewer, "reviews", "review");
         effect.slot = Some("review".to_owned());
         effect.settings.extend([
             ("review.per_task".to_owned(), workers.len().to_string()),
-            ("solo.review".to_owned(), "true".to_owned()),
+            ("captain.review".to_owned(), "true".to_owned()),
         ]);
-        effect.solo = Some(SoloStyle::Checked);
+        effect.captain = Some(CaptainKind::Checked);
         effect.reviewers = workers;
         Ok(effect)
     }
 
     /// Who decides and signs off. Only a crew has a judge.
     fn judge(&self, instruction: &Instruction) -> Result<Effect, String> {
-        let seats = self.seats(instruction, "the crew's judge decides")?;
-        let mut effect = self.role_effect(&seats, RoleName::Judge, "judges", "judge");
+        let named = self.named(instruction, "the crew's judge decides")?;
+        let mut effect = self.role_effect(&named, RoleName::Judge, "judges", "judge");
         effect.slot = Some("judge".to_owned());
         effect.implies = Some(RunMode::Crew);
         Ok(effect)
     }
 
-    /// "All the other agents": the agents named fill every seat but the agent you talk to,
+    /// "All the other agents": the agents named fill every role but the agent you talk to,
     /// which [`Checker::settle_others`] works out. They build, so none can be an endpoint.
     fn others(&self, instruction: &Instruction) -> Result<Effect, String> {
-        let seats = self.seats(instruction, "the crew stays as it is")?;
-        if seats.seats.iter().any(|seat| seat.endpoint) {
+        let named = self.named(instruction, "the crew stays as it is")?;
+        if named.agents.iter().any(|agent| agent.endpoint) {
             return Err("an endpoint has no tools to build with".to_owned());
         }
-        let workers: Vec<WorkerRef> = seats.seats.iter().map(|seat| seat.worker.clone()).collect();
-        let who = match seats.seats.as_slice() {
-            [seat] => format!("{}{}", seat.name, seat.with()),
+        let workers: Vec<ModelRef> = named
+            .agents
+            .iter()
+            .map(|agent| agent.worker.clone())
+            .collect();
+        let who = match named.agents.as_slice() {
+            [agent] => format!("{}{}", agent.name, agent.with()),
             many => joined(
                 &many
                     .iter()
-                    .map(|seat| seat.name.clone())
+                    .map(|agent| agent.name.clone())
                     .collect::<Vec<_>>(),
             ),
         };
         Ok(Effect {
             said: format!("{who} for all the other agents"),
-            note: seats.note.clone(),
+            note: named.note.clone(),
             slot: Some("others".to_owned()),
-            names: workers.iter().map(|worker| worker.worker.clone()).collect(),
+            names: workers.iter().map(|worker| worker.agent.clone()).collect(),
             implies: Some(RunMode::Crew),
-            owners: workers.clone(),
+            workers: workers.clone(),
             others: workers,
             ..Effect::default()
         })
     }
 
-    /// The seats "all the other agents" fills: the workers, the reviewers, the judge, and an
+    /// The roles "all the other agents" fills: the workers, the reviewers, the judge, and an
     /// orchestrator that isn't the agent you talk to, except a role another of your
     /// instructions names, followed or not. As reviewers they would review their own work as
     /// workers, so while `review.other_provider` is on the reviewers stay as they are.
@@ -637,7 +694,7 @@ impl Checker<'_> {
             .iter()
             .filter_map(|entry| named_role(entry.instruction.kind))
             .collect();
-        let main = &self.settings.main_agent;
+        let main = &self.settings.crew.main;
         let orchestrator_is_main =
             argonauts_crew::roles::candidates(self.settings, RoleName::Orchestrator)
                 == [main.clone()];
@@ -652,15 +709,15 @@ impl Checker<'_> {
             let mut filled = 0;
             for role in [
                 CrewRole::Orchestrator,
-                CrewRole::Workers,
-                CrewRole::Reviewers,
+                CrewRole::Worker,
+                CrewRole::Reviewer,
                 CrewRole::Judge,
             ] {
                 if named.contains(&role) || (role == CrewRole::Orchestrator && orchestrator_is_main)
                 {
                     continue;
                 }
-                if role == CrewRole::Reviewers && self.settings.review.other_provider {
+                if role == CrewRole::Reviewer && self.settings.review.other_provider {
                     effect.note = Some(join_notes(
                         effect.note.take(),
                         "the reviewers stay as they are, since a review comes from another \
@@ -673,10 +730,10 @@ impl Checker<'_> {
                     .push((format!("crew.{}", role.as_str()), list.clone()));
                 // A role's own workers beat the crew's, so the ones you set are replaced too.
                 for (fine, own) in &self.settings.roles {
-                    if CrewRole::followed_by(*fine) == role && !own.workers.is_empty() {
+                    if CrewRole::followed_by(*fine) == role && !own.models.is_empty() {
                         effect
                             .settings
-                            .push((format!("roles.{}.workers", fine.as_str()), list.clone()));
+                            .push((format!("roles.{}.models", fine.as_str()), list.clone()));
                     }
                 }
                 filled += 1;
@@ -694,15 +751,15 @@ impl Checker<'_> {
                 return Err("it names no one to plan and no number of plans".to_owned());
             };
             return Ok(Effect {
-                said: format!("{count} drafters"),
+                said: format!("{count} drafting agents"),
                 slot: Some("plan".to_owned()),
-                settings: vec![("roles.drafter.count".to_owned(), count.to_string())],
+                settings: vec![("roles.draft.count".to_owned(), count.to_string())],
                 implies: Some(RunMode::Crew),
                 ..Effect::default()
             });
         }
-        let seats = self.seats(instruction, "the crew's drafters plan")?;
-        let mut effect = self.role_effect(&seats, RoleName::Drafter, "plans", "plan");
+        let named = self.named(instruction, "the crew's drafting agents plan")?;
+        let mut effect = self.role_effect(&named, RoleName::Draft, "plans", "plan");
         effect.slot = Some("plan".to_owned());
         effect.implies = Some(RunMode::Crew);
         Ok(effect)
@@ -713,25 +770,25 @@ impl Checker<'_> {
         if !has_key(self.settings, "/goal/checker") {
             return Err("this version has no final goal check to give".to_owned());
         }
-        let seats = self.seats(instruction, "the usual checker checks")?;
-        let [seat] = seats.seats.as_slice() else {
+        let named = self.named(instruction, "the usual checker checks")?;
+        let [agent] = named.agents.as_slice() else {
             return Err("only one agent can check the goal".to_owned());
         };
         Ok(Effect {
-            said: format!("{} checks{}", seat.name, seat.with()),
-            note: seats.note.clone(),
+            said: format!("{} checks{}", agent.name, agent.with()),
+            note: named.note.clone(),
             slot: Some("check".to_owned()),
-            names: vec![seat.worker.worker.clone()],
+            names: vec![agent.worker.agent.clone()],
             settings: vec![(
                 "goal.checker".to_owned(),
-                toml_text(&seat.worker.to_string()),
+                toml_text(&agent.worker.to_string()),
             )],
             ..Effect::default()
         })
     }
 
-    /// Only these agents, the lead among them. When the default agent isn't one, the first
-    /// named agent CLI leads.
+    /// Only these agents, the main agent among them. When the main agent isn't one, the first
+    /// named agent CLI is the main agent.
     fn crew(&self, instruction: &Instruction) -> Result<Effect, String> {
         if instruction.who.trim().is_empty() || is_generic(&instruction.who) {
             if crew_stance(&instruction.says) != Stance::For {
@@ -743,24 +800,32 @@ impl Checker<'_> {
                 ..Effect::default()
             });
         }
-        let seats = self.seats(instruction, "the crew stays as it is")?;
-        let workers: Vec<WorkerRef> = seats.seats.iter().map(|seat| seat.worker.clone()).collect();
-        let names: Vec<String> = seats.seats.iter().map(|seat| seat.name.clone()).collect();
+        let named = self.named(instruction, "the crew stays as it is")?;
+        let workers: Vec<ModelRef> = named
+            .agents
+            .iter()
+            .map(|agent| agent.worker.clone())
+            .collect();
+        let names: Vec<String> = named
+            .agents
+            .iter()
+            .map(|agent| agent.name.clone())
+            .collect();
         let mut effect = Effect {
             said: format!("Crew: {}", joined(&names)),
-            note: seats.note.clone(),
+            note: named.note.clone(),
             slot: Some("crew".to_owned()),
-            names: workers.iter().map(|worker| worker.worker.clone()).collect(),
+            names: workers.iter().map(|worker| worker.agent.clone()).collect(),
             settings: vec![("crew".to_owned(), toml_list(&workers))],
             ..Effect::default()
         };
-        let default = &self.settings.main_agent.worker;
-        if !workers.iter().any(|worker| &worker.worker == default) {
-            effect.lead = seats
-                .seats
+        let default = &self.settings.crew.main.agent;
+        if !workers.iter().any(|worker| &worker.agent == default) {
+            effect.main_agent = named
+                .agents
                 .iter()
-                .find(|seat| !seat.endpoint)
-                .map(|seat| seat.worker.clone());
+                .find(|agent| !agent.endpoint)
+                .map(|agent| agent.worker.clone());
         }
         if workers.len() > 1 {
             effect.implies = Some(RunMode::Crew);
@@ -768,8 +833,8 @@ impl Checker<'_> {
         Ok(effect)
     }
 
-    /// Out of the crew and every role's workers. When it was the default agent, the first agent
-    /// CLI left in the crew leads.
+    /// Out of the crew and every role's workers. When it was the main agent, the first agent
+    /// CLI left in the crew is.
     fn exclude(&self, instruction: &Instruction) -> Result<Effect, String> {
         let mut out = Vec::new();
         for name in names_in(&instruction.who) {
@@ -781,10 +846,10 @@ impl Checker<'_> {
         if out.is_empty() {
             return Err("it names no agent to leave out".to_owned());
         }
-        let kept = |workers: &[WorkerRef]| -> Vec<WorkerRef> {
+        let kept = |workers: &[ModelRef]| -> Vec<ModelRef> {
             workers
                 .iter()
-                .filter(|worker| !out.contains(&worker.worker))
+                .filter(|worker| !out.contains(&worker.agent))
                 .cloned()
                 .collect()
         };
@@ -794,18 +859,18 @@ impl Checker<'_> {
         }
         let mut settings = vec![("crew".to_owned(), toml_list(&crew))];
         for (role, role_settings) in &self.settings.roles {
-            let left = kept(&role_settings.workers);
-            if left.len() != role_settings.workers.len() {
-                settings.push((format!("roles.{}.workers", role.as_str()), toml_list(&left)));
+            let left = kept(&role_settings.models);
+            if left.len() != role_settings.models.len() {
+                settings.push((format!("roles.{}.models", role.as_str()), toml_list(&left)));
             }
         }
-        let lead = out
-            .contains(&self.settings.main_agent.worker)
+        let main_agent = out
+            .contains(&self.settings.crew.main.agent)
             .then(|| {
                 crew.iter()
                     .find(|worker| {
                         self.roster
-                            .agent(&worker.worker)
+                            .agent(&worker.agent)
                             .is_some_and(|a| !a.endpoint)
                     })
                     .cloned()
@@ -816,12 +881,12 @@ impl Checker<'_> {
             said: format!("Not {}", joined(&names)),
             leaves_out: out,
             settings,
-            lead,
+            main_agent,
             ..Effect::default()
         })
     }
 
-    /// The agent that runs a model uses it in every seat. "Cheapest" puts every agent in the
+    /// The agent that runs a model uses it in every role. "Cheapest" puts every agent in the
     /// crew on its cheapest model.
     fn model(&self, instruction: &Instruction) -> Result<Effect, String> {
         let asked = if instruction.model.trim().is_empty() {
@@ -832,18 +897,18 @@ impl Checker<'_> {
         let text = words(asked, &instruction.says);
         if text.contains("cheap") {
             let mut settings = Vec::new();
-            for worker in self.crew_and_lead() {
+            for worker in self.crew_and_main_agent() {
                 let Some((model, effort)) = self
                     .roster
-                    .agent(&worker.worker)
+                    .agent(&worker.agent)
                     .and_then(|agent| agent.cheapest.clone())
                 else {
                     continue;
                 };
-                settings.push((format!("agents.{}.model", worker.worker), toml_text(&model)));
+                settings.push((format!("agents.{}.model", worker.agent), toml_text(&model)));
                 if let Some(effort) = effort {
                     settings.push((
-                        format!("agents.{}.effort", worker.worker),
+                        format!("agents.{}.effort", worker.agent),
                         toml_text(&effort),
                     ));
                 }
@@ -898,15 +963,12 @@ impl Checker<'_> {
         if instruction.who.trim().is_empty() || is_generic(&instruction.who) {
             let mut settings = Vec::new();
             let mut notes = Vec::new();
-            for worker in self.crew_and_lead() {
-                let agent = self.roster.agent(&worker.worker);
+            for worker in self.crew_and_main_agent() {
+                let agent = self.roster.agent(&worker.agent);
                 let (taken, note) = clamp(&level, agent, worker.model.as_deref());
                 notes.extend(note);
                 if let Some(taken) = taken {
-                    settings.push((
-                        format!("agents.{}.effort", worker.worker),
-                        toml_text(&taken),
-                    ));
+                    settings.push((format!("agents.{}.effort", worker.agent), toml_text(&taken)));
                 }
             }
             return Ok(Effect {
@@ -933,7 +995,7 @@ impl Checker<'_> {
         })
     }
 
-    /// Only toward asking you: every checkpoint waits for you, and the run starts supervised.
+    /// Only toward asking you: every approval waits for you, and the run starts supervised.
     fn approvals(&self, instruction: &Instruction) -> Result<Effect, String> {
         if !plainly_asks_you(&instruction.says) {
             return Err(
@@ -946,8 +1008,8 @@ impl Checker<'_> {
             supervised: true,
             ..Effect::default()
         };
-        for checkpoint in CHECKPOINTS {
-            let key = format!("approvals.{checkpoint}.mode");
+        for approval in APPROVALS {
+            let key = format!("approvals.{approval}.mode");
             if self.now(&key).as_deref() != Some("supervised") {
                 self.tighten(&mut effect, &key, toml_text("supervised"))?;
             }
@@ -974,14 +1036,14 @@ impl Checker<'_> {
 
     /// Only a lower run limit in dollars, as code compares the amounts. With no run limit
     /// set, any amount is a lower one.
-    fn budget(&self, instruction: &Instruction) -> Result<Effect, String> {
+    fn limit(&self, instruction: &Instruction) -> Result<Effect, String> {
         let raising = "limits.spend_per_run is a safety setting, /limits changes it".to_owned();
         let Some(amount) = dollars_in(&instruction.value).or_else(|| dollars_in(&instruction.says))
         else {
             return Err("it names no amount in dollars".to_owned());
         };
-        let now = match self.settings.limits.budget.run_limit() {
-            Some(limit) if limit.unit == BudgetUnit::Usd => Some(limit.amount),
+        let now = match self.settings.limits.spend.run_limit() {
+            Some(limit) if limit.unit == LimitUnit::Usd => Some(limit.amount),
             Some(_) => {
                 return Err("the run limit isn't counted in dollars, /limits changes it".to_owned());
             }
@@ -992,7 +1054,7 @@ impl Checker<'_> {
         }
         let mut effect = Effect {
             said: format!("Limit ${}", money(amount)),
-            slot: Some("budget".to_owned()),
+            slot: Some("limit".to_owned()),
             ..Effect::default()
         };
         self.tighten(&mut effect, "limits.spend_per_run", format!("{amount}"))
@@ -1041,21 +1103,21 @@ impl Checker<'_> {
         value_at(current, key)?.as_str().map(str::to_owned)
     }
 
-    fn crew_and_lead(&self) -> Vec<WorkerRef> {
+    fn crew_and_main_agent(&self) -> Vec<ModelRef> {
         let mut workers = self.settings.crew.members();
         if !workers
             .iter()
-            .any(|worker| worker.worker == self.settings.main_agent.worker)
+            .any(|worker| worker.agent == self.settings.crew.main.agent)
         {
-            workers.push(self.settings.main_agent.clone());
+            workers.push(self.settings.crew.main.clone());
         }
         workers
     }
 
     /// The agents `who` names for a role, each on the model and effort the instruction names.
     /// One that can't take part is left out with a note; when none can, it's not followed.
-    fn seats(&self, instruction: &Instruction, fallback: &str) -> Result<Seats, String> {
-        let mut seats: Vec<Seat> = Vec::new();
+    fn named(&self, instruction: &Instruction, fallback: &str) -> Result<Named, String> {
+        let mut agents: Vec<NamedAgent> = Vec::new();
         let mut problems = Vec::new();
         for name in names_in(&instruction.who) {
             let Some((agent, named_model)) = self.roster.find(name) else {
@@ -1086,11 +1148,11 @@ impl Checker<'_> {
                 }
                 None => None,
             };
-            if seats.iter().any(|seat| seat.worker.worker == agent.id) {
+            if agents.iter().any(|known| known.worker.agent == agent.id) {
                 continue;
             }
-            seats.push(Seat {
-                worker: WorkerRef::new(agent.id.clone(), model.clone()),
+            agents.push(NamedAgent {
+                worker: ModelRef::new(agent.id.clone(), model.clone()),
                 name: agent.name.clone(),
                 model_name: model.as_deref().map(|model| display_model(agent, model)),
                 effort,
@@ -1098,14 +1160,14 @@ impl Checker<'_> {
             });
             problems.extend(note);
         }
-        if seats.is_empty() {
+        if agents.is_empty() {
             return Err(problems
                 .into_iter()
                 .next()
                 .unwrap_or_else(|| "it names no agent".to_owned()));
         }
-        Ok(Seats {
-            seats,
+        Ok(Named {
+            agents,
             note: (!problems.is_empty()).then(|| problems.join("; ")),
         })
     }
@@ -1146,7 +1208,7 @@ impl Checker<'_> {
 
     /// Whether `agent` can work now, and if not, why and what happens instead.
     fn ready(&self, agent: &Agent, fallback: &str) -> Result<(), String> {
-        let (harness, endpoint) = match agent.state {
+        let (cli, endpoint) = match agent.state {
             AgentState::Ready => return Ok(()),
             AgentState::NotInstalled => ("isn't installed", "isn't set up"),
             AgentState::TurnedOff => ("is turned off", "is turned off"),
@@ -1155,55 +1217,64 @@ impl Checker<'_> {
                 "is out of plan usage or down",
             ),
         };
-        let why = if agent.endpoint { endpoint } else { harness };
+        let why = if agent.endpoint { endpoint } else { cli };
         Err(format!("{} {why}, so {fallback}", agent.name))
     }
 
-    /// The role's workers for the seats, with the role's effort when one was named.
-    fn role_effect(&self, seats: &Seats, role: RoleName, one: &str, many: &str) -> Effect {
-        let workers: Vec<WorkerRef> = seats.seats.iter().map(|seat| seat.worker.clone()).collect();
+    /// The role's workers for the agents named, with the role's effort when one was named.
+    fn role_effect(&self, named: &Named, role: RoleName, one: &str, many: &str) -> Effect {
+        let workers: Vec<ModelRef> = named
+            .agents
+            .iter()
+            .map(|agent| agent.worker.clone())
+            .collect();
         let mut settings = vec![(
-            format!("roles.{}.workers", role.as_str()),
+            format!("roles.{}.models", role.as_str()),
             toml_list(&workers),
         )];
-        if let Some(effort) = seats.seats.iter().find_map(|seat| seat.effort.clone()) {
+        if let Some(effort) = named.agents.iter().find_map(|agent| agent.effort.clone()) {
             settings.push((
                 format!("roles.{}.effort", role.as_str()),
                 toml_text(&effort),
             ));
         }
-        let said = match seats.seats.as_slice() {
-            [seat] => format!("{} {one}{}", seat.name, seat.with()),
-            many_seats => {
-                let names: Vec<String> = many_seats.iter().map(|seat| seat.name.clone()).collect();
+        let said = match named.agents.as_slice() {
+            [agent] => format!("{} {one}{}", agent.name, agent.with()),
+            several => {
+                let names: Vec<String> = several.iter().map(|agent| agent.name.clone()).collect();
                 format!("{} {many}", joined(&names))
             }
         };
         Effect {
             said,
-            note: seats.note.clone(),
-            names: workers.iter().map(|worker| worker.worker.clone()).collect(),
+            note: named.note.clone(),
+            names: workers.iter().map(|worker| worker.agent.clone()).collect(),
             settings,
             ..Effect::default()
         }
     }
 
-    /// Reviewers come from another family than the owners unless you asked for one of the
+    /// Reviewers come from another provider than the workers unless you asked for one of the
     /// same, and then your words win and the line says so. Reviewers you named review every
-    /// card, so in a crew they own none while another agent can.
-    fn review_against_owners(&self, entries: &mut [Entry], mode: Option<RunMode>) {
+    /// task, so in a crew they build none while another agent can.
+    fn review_against_workers(&self, entries: &mut [Entry], mode: Option<RunMode>) {
         let followed: Vec<&Effect> = entries
             .iter()
             .filter_map(|entry| entry.result.as_ref().ok())
             .collect();
-        let owners_asked: Vec<WorkerRef> = followed
+        let workers_asked: Vec<ModelRef> = followed
             .iter()
-            .flat_map(|effect| effect.owners.clone())
+            .flat_map(|effect| effect.workers.clone())
             .collect();
-        let lead = followed
+        let main_agent = followed
             .iter()
-            .find_map(|effect| effect.lead.clone().or(effect.solo_lead.clone()))
-            .unwrap_or_else(|| self.settings.main_agent.clone());
+            .find_map(|effect| {
+                effect
+                    .main_agent
+                    .clone()
+                    .or(effect.captain_main_agent.clone())
+            })
+            .unwrap_or_else(|| self.settings.crew.main.clone());
         for entry in entries.iter_mut() {
             let Ok(effect) = &mut entry.result else {
                 continue;
@@ -1212,46 +1283,46 @@ impl Checker<'_> {
                 continue;
             }
             let reviewers = effect.reviewers.clone();
-            let reviews = |worker: &WorkerRef| reviewers.iter().any(|r| r.worker == worker.worker);
-            let mut owners = owners_asked.clone();
-            if owners_asked.is_empty() {
-                // Solo's owner is its lead. Until triage picks the mode, the crew's owners are
-                // the ones a family rule would refuse.
-                if mode == Some(RunMode::Solo) {
-                    owners.push(lead.clone());
+            let reviews = |model: &ModelRef| reviewers.iter().any(|r| r.agent == model.agent);
+            let mut workers = workers_asked.clone();
+            if workers_asked.is_empty() {
+                // Captain's worker is its main agent. Until the rules pick the mode, the crew's
+                // workers are the ones a provider rule would refuse.
+                if mode == Some(RunMode::Captain) {
+                    workers.push(main_agent.clone());
                 }
-                if mode != Some(RunMode::Solo) {
+                if mode != Some(RunMode::Captain) {
                     let base = self
                         .settings
                         .roles
                         .get(&RoleName::Worker)
-                        .map(|role| role.workers.clone())
-                        .filter(|workers| !workers.is_empty())
-                        .unwrap_or_else(|| self.crew_and_lead());
-                    let others: Vec<WorkerRef> = base
+                        .map(|role| role.models.clone())
+                        .filter(|models| !models.is_empty())
+                        .unwrap_or_else(|| self.crew_and_main_agent());
+                    let others: Vec<ModelRef> = base
                         .iter()
-                        .filter(|worker| !reviews(worker))
+                        .filter(|model| !reviews(model))
                         .cloned()
                         .collect();
                     if !others.is_empty() && others.len() != base.len() {
                         effect
                             .inferred
-                            .push(("roles.worker.workers".to_owned(), toml_list(&others)));
-                        owners.extend(others);
+                            .push(("roles.worker.models".to_owned(), toml_list(&others)));
+                        workers.extend(others);
                     } else {
-                        owners.extend(base);
+                        workers.extend(base);
                     }
                 }
             }
-            let family = |worker: &WorkerRef| {
+            let provider = |model: &ModelRef| {
                 self.roster
-                    .agent(&worker.worker)
-                    .map(|agent| agent.family.clone())
+                    .agent(&model.agent)
+                    .map(|agent| agent.provider.clone())
                     .unwrap_or_default()
             };
             let same = reviewers.iter().any(|reviewer| {
-                let theirs = family(reviewer);
-                !theirs.is_empty() && owners.iter().any(|owner| family(owner) == theirs)
+                let theirs = provider(reviewer);
+                !theirs.is_empty() && workers.iter().any(|worker| provider(worker) == theirs)
             });
             if same && self.settings.review.other_provider {
                 effect
@@ -1271,21 +1342,21 @@ impl Checker<'_> {
     }
 }
 
-struct Seats {
-    seats: Vec<Seat>,
+struct Named {
+    agents: Vec<NamedAgent>,
     /// What of the instruction couldn't be followed.
     note: Option<String>,
 }
 
-struct Seat {
-    worker: WorkerRef,
+struct NamedAgent {
+    worker: ModelRef,
     name: String,
     model_name: Option<String>,
     effort: Option<String>,
     endpoint: bool,
 }
 
-impl Seat {
+impl NamedAgent {
     /// ` with Opus 5.5, high effort`, or what of it was named.
     fn with(&self) -> String {
         match (&self.model_name, &self.effort) {
@@ -1304,7 +1375,7 @@ fn role_goal(instruction: &Instruction) -> Option<Effect> {
     let kept_by = key(&instruction.value);
     let said = match kept_by.as_str() {
         "cli" => "work each task as a goal, kept by the CLI's own goal where it has one",
-        "argonauts" => "work each task as a goal, kept by Argonauts",
+        "argonauts" => "work each task as a goal, kept by Argonauts Code",
         "off" => "don't work their tasks as goals",
         _ => return None,
     };
@@ -1318,21 +1389,28 @@ fn role_goal(instruction: &Instruction) -> Option<Effect> {
         said: format!("{who} {said}"),
         slot: Some("role goal".to_owned()),
         settings: vec![(format!("roles.{}.goal", role.as_str()), toml_text(&kept_by))],
-        // Workers are the crew's; the main agent alone has a goal in solo too.
+        // Workers are the crew's; the main agent alone has a goal in Captain too.
         implies: (!main).then_some(RunMode::Crew),
         ..Effect::default()
     })
 }
 
-/// The checkpoints that wait for you when a request asks to approve things itself.
-const CHECKPOINTS: [&str; 6] = ["goal", "plan", "merge", "stuck", "limit", "change_request"];
+/// The approvals that wait for you when a request asks to approve things itself.
+const APPROVALS: [&str; 6] = [
+    "understand",
+    "plan",
+    "merge",
+    "stuck",
+    "limit",
+    "change_request",
+];
 
 /// Why an instruction whose words ask for the opposite of what it was sorted as isn't followed,
-/// such as "don't do this alone" sorted as solo.
+/// such as "don't do this alone" sorted as Captain.
 const SAYS_OTHERWISE: &str = "its words say otherwise";
 
-const SOLO_CUES: [&str; 8] = [
-    "solo",
+const CAPTAIN_CUES: [&str; 8] = [
+    "captain",
     "yourself",
     "alone",
     "on your own",
@@ -1341,6 +1419,11 @@ const SOLO_CUES: [&str; 8] = [
     "one agent",
     "by itself",
 ];
+
+/// Captain's cues, with the other words people type for it.
+fn captain_cues() -> Vec<&'static str> {
+    [&CAPTAIN_CUES[..], &request_words::FOR_CAPTAIN].concat()
+}
 
 const CREW_CUES: [&str; 9] = [
     "crew",
@@ -1355,7 +1438,7 @@ const CREW_CUES: [&str; 9] = [
 ];
 
 /// Words for a role rather than for who fills it, as in "the reviewer".
-const ROLE_WORDS: [&str; 26] = [
+const ROLE_WORDS: [&str; 19] = [
     "the",
     "a",
     "an",
@@ -1365,10 +1448,7 @@ const ROLE_WORDS: [&str; 26] = [
     "review",
     "judge",
     "judges",
-    "lead",
-    "leader",
     "orchestrator",
-    "coordinator",
     "builder",
     "builders",
     "worker",
@@ -1377,39 +1457,36 @@ const ROLE_WORDS: [&str; 26] = [
     "planners",
     "checker",
     "checkers",
-    "drafter",
-    "drafters",
-    "owner",
-    "owners",
     "maker",
 ];
 
 /// Whether `who` holds a role, or nothing, where an agent belongs.
 fn names_a_role(who: &str) -> bool {
-    tokens(who)
-        .iter()
-        .all(|word| ROLE_WORDS.contains(&word.as_str()))
+    tokens(who).iter().all(|word| {
+        let word = word.as_str();
+        ROLE_WORDS.contains(&word) || request_words::FOR_ROLES.contains(&word)
+    })
 }
 
 /// "Use a workflow" asks for the crew as "use the crew" does, and "don't use a workflow" keeps
-/// the work solo. They count only in a clause whose words say neither, so "the solo workflow"
-/// stays solo.
+/// the work as Captain. They count only in a clause whose words say neither, so "the captain
+/// workflow" stays as Captain.
 const WORKFLOW_CUES: [&str; 2] = ["workflow", "workflows"];
 
-/// Verbs after which "yourself" hands a choice over rather than asking for solo work, as in
+/// Verbs after which "yourself" hands a choice over rather than asking for Captain work, as in
 /// "choose everything else yourself".
 const CHOOSING: [&str; 5] = ["choose", "decide", "pick", "select", "figure"];
 
 /// How `says` stands on the crew, clause by clause.
 fn crew_stance(says: &str) -> Stance {
-    let (crew, solo) = leanings(says);
-    side(crew, solo)
+    let (crew, captain) = leanings(says);
+    side(crew, captain)
 }
 
-/// How `says` stands on solo, where "don't use a workflow" is for it.
-fn solo_stance(says: &str) -> Stance {
-    let (crew, solo) = leanings(says);
-    side(solo, crew)
+/// How `says` stands on Captain, where "don't use a workflow" is for it.
+fn captain_stance(says: &str) -> Stance {
+    let (crew, captain) = leanings(says);
+    side(captain, crew)
 }
 
 fn side(toward: bool, away: bool) -> Stance {
@@ -1420,28 +1497,28 @@ fn side(toward: bool, away: bool) -> Stance {
     }
 }
 
-/// Whether any clause of `says` leans to the crew, and whether any leans to solo. Each clause
+/// Whether any clause of `says` leans to the crew, and whether any leans to Captain. Each clause
 /// stands on its own: in "use a workflow, with Codex as the reviewer, and choose everything
 /// else yourself" the first asks for the crew, and the last leaves the rest to it.
 fn leanings(says: &str) -> (bool, bool) {
-    let (mut crew, mut solo) = (false, false);
+    let (mut crew, mut captain) = (false, false);
     for clause in says.split([',', ';', ':', '.', '!', '?', '(', ')', '\n']) {
         let clause = without_handed_over_choices(clause);
-        let leaning = match stance(&clause, &CREW_CUES, &SOLO_CUES) {
+        let leaning = match stance(&clause, &CREW_CUES, &captain_cues()) {
             Stance::Silent => stance(&clause, &WORKFLOW_CUES, &[]),
             said => said,
         };
         match leaning {
             Stance::For => crew = true,
-            Stance::Against => solo = true,
+            Stance::Against => captain = true,
             Stance::Silent => {}
         }
     }
-    (crew, solo)
+    (crew, captain)
 }
 
 /// The clause's words without a "yourself" that follows a verb of choosing, so "choose the
-/// rest yourself" says nothing about solo while "do it yourself" still does.
+/// rest yourself" says nothing about Captain while "do it yourself" still does.
 fn without_handed_over_choices(clause: &str) -> String {
     let words = tokens(clause);
     let mut kept: Vec<&str> = Vec::new();
@@ -1457,8 +1534,7 @@ fn without_handed_over_choices(clause: &str) -> String {
     kept.join(" ")
 }
 
-const COPY_CUES: [&str; 9] = [
-    "copy",
+const WORKTREE_CUES: [&str; 8] = [
     "checked",
     "worktree",
     "branch",
@@ -1468,6 +1544,11 @@ const COPY_CUES: [&str; 9] = [
     "separate",
     "sandboxed",
 ];
+
+/// A worktree's cues, with the other words people type for one.
+fn worktree_cues() -> Vec<&'static str> {
+    [&WORKTREE_CUES[..], &request_words::FOR_A_WORKTREE].concat()
+}
 
 const CHECKOUT_CUES: [&str; 10] = [
     "directly",
@@ -1482,20 +1563,20 @@ const CHECKOUT_CUES: [&str; 10] = [
     "right here",
 ];
 
-/// Solo or the crew, as `value` names it and the words say it. Without a value, the words
+/// Captain or the crew, as `value` names it and the words say it. Without a value, the words
 /// alone.
 fn mode(instruction: &Instruction) -> Result<Effect, String> {
     let says = &instruction.says;
-    let solo = || solo_stance(says);
+    let captain = || captain_stance(says);
     let crew = || crew_stance(says);
     let mode = match key(&instruction.value).as_str() {
-        "solo" if solo() == Stance::For => RunMode::Solo,
+        "captain" if captain() == Stance::For => RunMode::Captain,
         "crew" if crew() == Stance::For => RunMode::Crew,
-        "solo" | "crew" => return Err(SAYS_OTHERWISE.to_owned()),
-        _ => match (solo(), crew()) {
-            (Stance::For, _) => RunMode::Solo,
+        "captain" | "crew" => return Err(SAYS_OTHERWISE.to_owned()),
+        _ => match (captain(), crew()) {
+            (Stance::For, _) => RunMode::Captain,
             (_, Stance::For) => RunMode::Crew,
-            _ => return Err("it says neither solo nor the crew".to_owned()),
+            _ => return Err("it says neither Captain nor the crew".to_owned()),
         },
     };
     Ok(Effect {
@@ -1508,9 +1589,9 @@ fn mode(instruction: &Instruction) -> Result<Effect, String> {
 /// The crew role an instruction of this kind gives to the agents it names.
 fn named_role(kind: InstructionKind) -> Option<CrewRole> {
     match kind {
-        InstructionKind::Coordinate => Some(CrewRole::Orchestrator),
-        InstructionKind::Build => Some(CrewRole::Workers),
-        InstructionKind::Review => Some(CrewRole::Reviewers),
+        InstructionKind::Orchestrate => Some(CrewRole::Orchestrator),
+        InstructionKind::Build => Some(CrewRole::Worker),
+        InstructionKind::Review => Some(CrewRole::Reviewer),
         InstructionKind::Judge => Some(CrewRole::Judge),
         _ => None,
     }
@@ -1547,8 +1628,8 @@ fn settle_disagreements(entries: &mut [Entry]) {
     }
 }
 
-/// A review in solo needs a copy, so it wins over words asking for your own checkout.
-fn needs_a_copy(entries: &mut [Entry]) {
+/// A review in Captain needs a worktree, so it wins over words asking for your own checkout.
+fn needs_a_worktree(entries: &mut [Entry]) {
     let review = entries.iter().find_map(|entry| {
         let effect = entry.result.as_ref().ok()?;
         (!effect.reviewers.is_empty()).then(|| entry.instruction.says.trim().to_owned())
@@ -1556,15 +1637,17 @@ fn needs_a_copy(entries: &mut [Entry]) {
     let Some(review) = review else { return };
     for entry in entries.iter_mut() {
         if let Ok(effect) = &entry.result
-            && effect.solo == Some(SoloStyle::Direct)
+            && effect.captain == Some(CaptainKind::Direct)
         {
-            entry.result = Err(format!("you also said {review}, and a review needs a copy"));
+            entry.result = Err(format!(
+                "you also said {review}, and a review needs a worktree"
+            ));
         }
     }
 }
 
 /// The mode your words ask for. A command wins over them, and an instruction that only a crew
-/// can follow loses to solo you asked for.
+/// can follow loses to Captain you asked for.
 fn settle_mode(entries: &mut [Entry], command: Option<&Command>) -> Option<RunMode> {
     let asked = entries.iter().rev().find_map(|entry| {
         Some((
@@ -1576,7 +1659,7 @@ fn settle_mode(entries: &mut [Entry], command: Option<&Command>) -> Option<RunMo
         for entry in entries.iter_mut() {
             let Ok(effect) = &entry.result else { continue };
             let against = effect.mode.is_some_and(|mode| mode != command.mode)
-                || (command.mode == RunMode::Solo && effect.implies == Some(RunMode::Crew));
+                || (command.mode == RunMode::Captain && effect.implies == Some(RunMode::Crew));
             if against {
                 entry.result = Err(command.said.clone());
             }
@@ -1585,7 +1668,7 @@ fn settle_mode(entries: &mut [Entry], command: Option<&Command>) -> Option<RunMo
             .filter(|(mode, _)| *mode == command.mode)
             .map(|(mode, _)| mode);
     }
-    if let Some((RunMode::Solo, says)) = &asked {
+    if let Some((RunMode::Captain, says)) = &asked {
         for entry in entries.iter_mut() {
             let Ok(effect) = &entry.result else { continue };
             if effect.implies == Some(RunMode::Crew) && effect.mode.is_none() {
@@ -1602,17 +1685,17 @@ fn settle_mode(entries: &mut [Entry], command: Option<&Command>) -> Option<RunMo
     asked.map(|(mode, _)| mode).or_else(|| {
         if implied(RunMode::Crew) {
             Some(RunMode::Crew)
-        } else if implied(RunMode::Solo) {
-            Some(RunMode::Solo)
+        } else if implied(RunMode::Captain) {
+            Some(RunMode::Captain)
         } else {
             None
         }
     })
 }
 
-/// Free text the lead gets as a must. It never touches a safety setting, as the lead can't
-/// change one, and on its own it doesn't make the run a crew's.
-fn for_the_lead(instruction: &Instruction) -> Result<Effect, String> {
+/// Free text the main agent gets as a must. It never touches a safety setting, as the main agent
+/// can't change one, and on its own it doesn't make the run a crew's.
+fn for_the_main_agent(instruction: &Instruction) -> Result<Effect, String> {
     let says = instruction.says.trim();
     let words = tokens(says);
     let has = |cues: &[&str]| words.iter().any(|word| cues.contains(&word.as_str()));
@@ -1632,7 +1715,7 @@ fn for_the_lead(instruction: &Instruction) -> Result<Effect, String> {
         ])
     {
         Some("approvals are safety settings, /approvals and Shift+Tab change them")
-    } else if has(&["gate", "gates"]) || (has(&["test", "tests", "checks"]) && loosens) {
+    } else if has(&["test", "tests", "check", "checks"]) && loosens {
         Some("checks.run is a safety setting, /config changes the tests a change must pass")
     } else if has(&[
         "key",
@@ -1644,7 +1727,7 @@ fn for_the_lead(instruction: &Instruction) -> Result<Effect, String> {
         "tokens",
     ]) {
         Some("auth is a safety setting, /config changes it")
-    } else if has(&["budget", "spend", "cost", "dollars", "usd"]) || says.contains('$') {
+    } else if has(&["limit", "spend", "cost", "dollars", "usd"]) || says.contains('$') {
         Some("the limit is a safety setting, /limits changes it")
     } else if has(&["network", "internet", "online", "offline"]) {
         Some("sandbox.network is a safety setting, /permissions changes it")
@@ -1673,7 +1756,7 @@ fn for_a_role(instruction: &Instruction) -> Result<Effect, String> {
     if words.is_empty() {
         return Err("it doesn't say what to tell them".to_owned());
     }
-    for_the_lead(instruction)?;
+    for_the_main_agent(instruction)?;
     let key = argonauts_core::settings::prompts::PromptSettings::request_key(role);
     Ok(Effect {
         said: argonauts_core::prompt_parts::for_role_line(role, words),
@@ -1705,6 +1788,30 @@ mod tests;
 #[cfg(test)]
 mod asked_for_a_workflow_tests {
     use super::plainly_asks_for_a_workflow;
+
+    #[test]
+    fn a_reviewer_is_named_only_where_an_agent_is_given_the_review() {
+        let roster = super::tests::roster();
+        for named in [
+            "Fix the money rounding with Codex as the reviewer.",
+            "Add due dates, and have Opus review it before it lands",
+            "Rename the loader. The reviewer is codex.",
+            "fix the flaky test, reviewed by Claude Code",
+            "Use haiku as reviewer for this one: tidy the imports",
+        ] {
+            assert!(super::names_a_reviewer(named, &roster), "{named}");
+        }
+        for not_named in [
+            "Review the error handling in parse()",
+            "review the Codex adapter's retry code",
+            "Fix the rounding. Don't have Codex review it.",
+            "What does the reviewer do?",
+            "Add a reviewer field to the Codex report",
+            "Fix the money rounding",
+        ] {
+            assert!(!super::names_a_reviewer(not_named, &roster), "{not_named}");
+        }
+    }
 
     #[test]
     fn only_words_that_hand_the_work_on_ask_for_a_workflow() {

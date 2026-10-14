@@ -533,12 +533,12 @@ impl<'a, 'c> Writer<'a, 'c> {
     /// The prefix for the next row and for the rows that wrap under it. Taking it draws any list
     /// markers still waiting, so each marker shows once.
     fn prefixes(&mut self) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
-        let lead = if self.lines.is_empty() && !self.cont.rows_before {
+        let opening = if self.lines.is_empty() && !self.cont.rows_before {
             &self.indent.first
         } else {
             &self.indent.rest
         };
-        let mut first = lead.clone();
+        let mut first = opening.clone();
         let mut rest = self.indent.rest.clone();
         let bar = quote_bar(self.ctx.theme);
         for frame in &mut self.frames {

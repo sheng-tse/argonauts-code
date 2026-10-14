@@ -1,11 +1,11 @@
-//! The four states a session shows, a chat answer, a run at work, a checkpoint, and a
+//! The four states a session shows, a conversation answer, a run at work, an approval, and a
 //! finished run, captured at 80, 100, 120, and 200 columns on dark and light themes and with
 //! `NO_COLOR`, for the side-by-side review with Claude Code's screens.
 
 use std::ffi::OsString;
 use std::fs;
 
-use argonauts_scenarios::{ROWS, Scenario, WAIT, past_the_card_guard};
+use argonauts_scenarios::{ROWS, Scenario, WAIT, past_the_question_guard};
 use argonauts_testkit::{Key, Pty, PtyCommand, Screen, argonauts_bin};
 use regex::Regex;
 
@@ -15,7 +15,7 @@ const README: &str = "# acme-api\n\nInstall it with:\n\n    npm install acme-api
 
 /// The mode by its sign and first word, which stay when a narrow terminal takes the rest of
 /// its words for the CLIs' plan usage.
-const MODE_LINE: &str = r"(?m)^  ǁ supervised";
+const BOTTOM_ROW: &str = r"(?m)^  ǁ supervised";
 
 struct Look {
     name: &'static str,
@@ -46,7 +46,7 @@ fn launch(scenario: &Scenario, look: &Look, cols: u16) -> anyhow::Result<Pty> {
     if let Some(dir) = config.parent() {
         fs::create_dir_all(dir)?;
     }
-    // Merging is automatic by default, and the checkpoint state needs the merge to wait. The
+    // Merging is automatic by default, and the approval state needs the merge to wait. The
     // request ends with the verdict, which a CLI that takes no tools keeps.
     fs::write(
         &config,
@@ -81,7 +81,7 @@ fn count(screen: &Screen, pattern: &str) -> usize {
         .count()
 }
 
-/// The live region fits the terminal, and the scrollback holds each item once. A card that
+/// The live region fits the terminal, and the scrollback holds each item once. A question that
 /// holds the keys stands in for the input, so its rules are gone then.
 fn check(screen: &Screen, cols: u16, state: &str) {
     check_with(screen, cols, state, true);
@@ -119,39 +119,39 @@ fn capture(scenario: &Scenario, look: &Look, cols: u16) -> anyhow::Result<()> {
     let shot =
         |pty: &Pty, state: &str| scenario.shot(pty, &format!("{}-{cols}-{state}", look.name));
     let mut pty = launch(scenario, look, cols)?;
-    pty.wait_for(MODE_LINE, WAIT)?;
+    pty.wait_for(BOTTOM_ROW, WAIT)?;
 
     pty.send("hi")?;
     pty.press(Key::Enter)?;
     pty.wait_for(r"(?m)^✻ \w+ for \d", WAIT)?;
-    let screen = pty.wait_for(MODE_LINE, WAIT)?;
-    check(&screen, cols, "chat answer");
-    shot(&pty, "chat-answer")?;
+    let screen = pty.wait_for(BOTTOM_ROW, WAIT)?;
+    check(&screen, cols, "conversation answer");
+    shot(&pty, "conversation-answer")?;
 
     pty.send(FIX)?;
     pty.press(Key::Enter)?;
     // The working line says the run is going. The mode's `esc to interrupt` hint is the
     // first thing a narrow terminal takes for the chips, so it's no sign of that here.
     let screen = pty.wait_for(r"(?m)^[∙✢✲✶✻✼*] [\w'-]+… \(", WAIT)?;
-    // Esc leaves a run's agents going, so the mode line counts them and makes
+    // Esc leaves a run's agents going, so the bottom line counts them and makes
     // no offer to interrupt.
     pty.wait_for(r"← \d+ agents?", WAIT)?;
     check(&screen, cols, "busy");
     shot(&pty, "busy")?;
 
     pty.wait_for(r"(?m)^◆ Merge", WAIT)?;
-    // The merge card needs you, so it takes the keys as it shows.
+    // The merge question needs you, so it takes the keys as it shows.
     let screen = pty.wait_for(r"(?m)^  Enter to \w+.* · Esc to carry on without me", WAIT)?;
-    check_with(&screen, cols, "checkpoint", false);
-    shot(&pty, "checkpoint")?;
+    check_with(&screen, cols, "approval", false);
+    shot(&pty, "approval")?;
 
-    past_the_card_guard();
+    past_the_question_guard();
     pty.press(Key::Up)?;
     pty.press(Key::Char('1'))?;
     pty.wait_for("Enter to merge", WAIT)?;
     pty.press(Key::Enter)?;
     pty.wait_for(r"(?m)^[●⏺] Merged", WAIT)?;
-    let screen = pty.wait_for(MODE_LINE, WAIT)?;
+    let screen = pty.wait_for(BOTTOM_ROW, WAIT)?;
     check(&screen, cols, "finished");
     shot(&pty, "finished")?;
 

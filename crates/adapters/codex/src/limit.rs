@@ -1,10 +1,10 @@
-//! Codex's usage-limit message as a quota reading. `codex exec` has no quota event, so "You've
-//! hit your usage limit ... try again at 3:00 PM." is the only sign in the stream.
+//! Codex's usage-limit message as a plan usage reading. `codex exec` has no plan usage event, so
+//! "You've hit your usage limit ... try again at 3:00 PM." is the only sign in the stream.
 
 use std::sync::LazyLock;
 
-use argonauts_core::limits::{QuotaReading, QuotaSource, QuotaStatus};
-use argonauts_core::names::VendorId;
+use argonauts_core::limits::{PlanUsageReading, PlanUsageSource, PlanUsageStatus};
+use argonauts_core::names::AgentId;
 use regex::Regex;
 use serde_json::json;
 use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time};
@@ -25,14 +25,18 @@ const MONTHS: [&str; 12] = [
     "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
 ];
 
-pub fn usage_limit_reading(message: &str, now: OffsetDateTime, zone: &LocalZone) -> QuotaReading {
-    QuotaReading {
-        vendor: VendorId(ID.to_owned()),
-        status: QuotaStatus::Rejected,
+pub fn usage_limit_reading(
+    message: &str,
+    now: OffsetDateTime,
+    zone: &LocalZone,
+) -> PlanUsageReading {
+    PlanUsageReading {
+        agent_id: AgentId(ID.to_owned()),
+        status: PlanUsageStatus::Rejected,
         used: Some(1.0),
         resets_at: reset_time(message, now, zone),
         window: None,
-        source: QuotaSource::ErrorMessage,
+        source: PlanUsageSource::ErrorMessage,
         observed_at: now,
         detail: Some(json!({ "message": message })),
         wrap_up: false,
@@ -72,7 +76,7 @@ fn next_at(time: Time, now: OffsetDateTime, zone: &LocalZone) -> OffsetDateTime 
     local_to_utc(PrimitiveDateTime::new(tomorrow, time), zone)
 }
 
-/// Uses the offset in force at that moment, which differs from today's across a DST change.
+/// Uses the offset in force at that moment, which is different from today's across a DST change.
 fn local_to_utc(local: PrimitiveDateTime, zone: &LocalZone) -> OffsetDateTime {
     let as_utc = local.assume_utc().unix_timestamp();
     let first_guess = zone.offset_at(as_utc);

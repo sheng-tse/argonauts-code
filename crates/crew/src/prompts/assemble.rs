@@ -5,7 +5,8 @@
 use argonauts_core::events::session::{InputPart, InputPartKind};
 use argonauts_core::names::RoleName;
 use argonauts_core::prompt_files::{PromptDirs, RoleFileMode};
-use argonauts_core::prompt_parts::{self as parts, CrewRole};
+use argonauts_core::prompt_parts as parts;
+use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::prompts::Writer;
 
 use crate::engine::host::Host;
@@ -50,7 +51,7 @@ fn sources<'a>(host: &'a Host, agent: &Agent<'_>, dirs: &'a PromptDirs) -> Sourc
         writer: settings.prompts.writer_for(agent.role),
         written: instructions::from_orchestrator(host, agent),
         author: author(host, agent),
-        others_build_too: host.read(|state| state.cards.by_id.len() > 1),
+        others_build_too: host.read(|state| state.tasks.by_id.len() > 1),
         step: instructions::from_step(host, agent),
         setting: settings
             .roles
@@ -61,7 +62,7 @@ fn sources<'a>(host: &'a Host, agent: &Agent<'_>, dirs: &'a PromptDirs) -> Sourc
 }
 
 /// The brief of the task `agent` builds as a part, under the name of whoever wrote it, unless
-/// Argonauts' own templates write for its role. A step that shows those words elsewhere in
+/// Argonauts Code's own templates write for its role. A step that shows those words elsewhere in
 /// its prompt asks first, so the agent reads them once.
 ///
 /// `None` too when your file for the role takes the instructions' place: the step then keeps
@@ -78,8 +79,8 @@ pub fn written(host: &Host, agent: &Agent<'_>) -> Option<InputPart> {
     instructions::of_task(host, agent)
 }
 
-/// What the agent would be told with no writer model: the instructions `task` leads with
-/// when someone wrote them, else the orchestrator's words, else Argonauts' own. `None` when
+/// What the agent would be told with no writer model: the instructions `task` opens with
+/// when someone wrote them, else the orchestrator's words, else Argonauts Code's own. `None` when
 /// there is nothing for a writer to work from, or a writer wrote already.
 pub fn draft(host: &Host, agent: &Agent<'_>, task: &[InputPart]) -> Option<String> {
     if !writer::open_to_a_writer(task) {
@@ -201,13 +202,13 @@ fn frame_of(role: CrewRole) -> &'static str {
     match role {
         CrewRole::Main => frame::MAIN,
         CrewRole::Orchestrator => frame::ORCHESTRATOR,
-        CrewRole::Workers => frame::WORKERS,
-        CrewRole::Reviewers => frame::REVIEWERS,
+        CrewRole::Worker => frame::WORKER,
+        CrewRole::Reviewer => frame::REVIEWER,
         CrewRole::Judge => frame::JUDGE,
     }
 }
 
-/// Argonauts' own instructions for a step: the built-in prompt, or your template for it.
+/// Argonauts Code's own instructions for a step: the built-in prompt, or your template for it.
 fn own_instructions(dirs: &PromptDirs, prompt: InputPart) -> InputPart {
     let yours = catalog::of(&prompt.text)
         .and_then(|template| dirs.template(template.id))
@@ -220,11 +221,11 @@ fn own_instructions(dirs: &PromptDirs, prompt: InputPart) -> InputPart {
 
 /// Who built the task the agent judges, as the screen names them.
 fn author(host: &Host, agent: &Agent<'_>) -> Option<String> {
-    let owner = host.read(|state| {
-        let record = state.cards.get(agent.card?)?;
-        record.owner.clone().or_else(|| record.spec.owner.clone())
+    let worker = host.read(|state| {
+        let record = state.tasks.get(agent.task?)?;
+        record.worker.clone().or_else(|| record.spec.worker.clone())
     })?;
-    Some(roles::display_name(&owner))
+    Some(roles::display_name(&worker))
 }
 
 #[cfg(test)]
@@ -282,7 +283,7 @@ mod tests {
         let repo = tempfile::tempdir().unwrap();
         write(
             &repo,
-            "roles/reviewers.md",
+            "roles/reviewer.md",
             "Treat a missing test as a required change, never as a note.\n",
         );
         let dirs = PromptDirs::new(Some(repo.path()), None);
@@ -303,7 +304,7 @@ mod tests {
             [
                 "Frame · built in",
                 "From the orchestrator · Opus 5.5",
-                "Your file · roles/reviewers.md",
+                "Your file · roles/reviewer.md",
                 "From your request",
             ]
         );
@@ -352,7 +353,7 @@ mod tests {
         let repo = tempfile::tempdir().unwrap();
         write(
             &repo,
-            "prompts/frames/reviewers.md",
+            "prompts/frames/reviewer.md",
             "You review. {{author}} wrote this.\n",
         );
         write(&repo, "prompts/review/review.md", "Review it strictly.\n");
@@ -368,7 +369,7 @@ mod tests {
         assert_eq!(
             headings(&prompt),
             [
-                "Frame · prompts/frames/reviewers.md",
+                "Frame · prompts/frames/reviewer.md",
                 "Instructions · prompts/review/review.md",
             ]
         );
@@ -419,7 +420,7 @@ mod tests {
     #[test]
     fn your_words_come_last_from_standing_to_particular() {
         let repo = tempfile::tempdir().unwrap();
-        write(&repo, "roles/reviewers.md", "Check error handling.\n");
+        write(&repo, "roles/reviewer.md", "Check error handling.\n");
         let dirs = PromptDirs::new(Some(repo.path()), None);
         let writer = Writer::Orchestrator;
         let prompt = assemble(
@@ -438,7 +439,7 @@ mod tests {
             [
                 "Frame · built in",
                 "Instructions · built in",
-                "Your file · roles/reviewers.md",
+                "Your file · roles/reviewer.md",
                 "From the workflow · review-panel, step review",
                 "From your request",
             ]

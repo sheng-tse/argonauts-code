@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-adapter-acp"
-description = "The generic ACP worker for Argonauts: any Agent Client Protocol agent in the crew, from a profile of data."
+description = "The generic ACP worker for Argonauts Code: any Agent Client Protocol agent in the crew, from a profile of data."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

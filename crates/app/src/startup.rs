@@ -15,10 +15,10 @@ use argonauts_core::clock::SystemClock;
 use argonauts_core::paths::{create_private_dir_all, old_global_config_path, write_private_file};
 use argonauts_core::registry::ModelRegistry;
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::handoff::FallbackEntry;
+use argonauts_core::settings::fallback::FallbackEntry;
 use argonauts_core::steps::SchemaStepRunner;
 use argonauts_core::text::sentence_case;
-use argonauts_registry::{PresetUpgrade, PresetUpgradeOutcome, upgrade_presets};
+use argonauts_registry::{WorkflowUpgrade, WorkflowUpgradeOutcome, upgrade_workflows};
 use argonauts_tui::{AppIo, UiOptions, history_file_in, run_app, run_screen_reader, stop_signal};
 use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinHandle};
@@ -28,7 +28,7 @@ use crate::app_settings::AppSettings;
 use crate::controller::{AppServices, Controller, Ctx, Opening, Outbox, header_agent};
 use crate::env::{AppEnv, FolderGit};
 use crate::example_prompt::example_prompt;
-use crate::host::harnesses::RepoModels;
+use crate::host::clis::RepoModels;
 use crate::host::services::{LiveRegistry, SettingsSource};
 use crate::trace::Trace;
 use crate::{FirstView, InteractiveOptions, builtin_adapters, client, host, needs_guided_setup};
@@ -40,7 +40,7 @@ const COMMAND_QUEUE: usize = 64;
 const EVENT_QUEUE: usize = 256;
 
 /// How long quitting waits for the controller. It is longer than the controller's own wait
-/// for a cancelled chat step to stop its vendor process.
+/// for a cancelled conversation step to stop its agent process.
 const EXIT_GRACE: Duration = Duration::from_secs(5);
 
 /// Markers for the one-time start notices, so each shows on one start and not the next.
@@ -56,7 +56,7 @@ pub(crate) async fn run(mut options: InteractiveOptions, first: FirstView) -> an
             .with_context(|| format!("moving to {}", repo.display()))?;
         options.repo = Some(repo);
         options.guided_setup = false;
-        first = FirstView::Chat;
+        first = FirstView::Conversation;
     }
     Ok(())
 }
@@ -136,8 +136,8 @@ async fn run_once(
         run_app(io, ui).await
     };
     // The screen dropped its command sender, so the controller's loop ends too, unless a call
-    // to a run's supervisor holds it. The run goes on without this app, so quitting doesn't wait.
-    // Screen-reader mode never took over the stop signals, so they still end the app at once.
+    // to a run's run host holds it. The run goes on without this app, so quitting doesn't wait.
+    // Screen-reader mode never caught the stop signals, so they still end the app at once.
     let mut app = app;
     let stop = async {
         if screen_reader {
@@ -177,22 +177,23 @@ async fn wait_for_controller<T>(
 }
 
 /// The registry and the workers follow the settings, so a change made in the app, such as
-/// turning an agent on, reaches the next chat turn and picker without a restart.
+/// turning an agent on, reaches the next conversation turn and picker without a restart.
 fn services(env: &Arc<AppEnv>, settings: &AppSettings) -> anyhow::Result<AppServices> {
     let (conductor, approvals) = client::for_app(Arc::clone(env))?;
-    let (quota, health) = argonauts_conductor::boards_with(&env.paths, &settings.settings().health);
     let repo_models = RepoModels::new(&env.repo_root, &env.state_dir);
     let registry: Arc<dyn ModelRegistry> = Arc::new(LiveRegistry::new(
         settings.follow(),
         Some(repo_models.clone()),
         Some(env.paths.models_cache()),
     ));
+    let (plan_usage, health) =
+        argonauts_conductor::boards_with(&env.paths, &settings.settings().health, registry.clone());
     let workers = host::services::directory(
         SettingsSource::live(settings),
         &env.paths,
         Some(&repo_models),
         Arc::clone(&registry),
-        Arc::clone(&quota),
+        Arc::clone(&plan_usage),
         Arc::clone(&health),
     );
     Ok(AppServices {
@@ -201,7 +202,7 @@ fn services(env: &Arc<AppEnv>, settings: &AppSettings) -> anyhow::Result<AppServ
         workers,
         steps: Arc::new(SchemaStepRunner),
         registry,
-        quota,
+        plan_usage,
         health,
         clock: Arc::new(SystemClock),
     })
@@ -224,10 +225,15 @@ async fn greet(ctx: &mut Ctx) {
     for text in newer_cli_notices(ctx, &report) {
         ctx.notice(NoteLevel::Info, text);
     }
+    for (level, text) in crate::controller::cli_updates::start_lines(ctx, &report) {
+        ctx.notice(level, text);
+    }
+    crate::controller::cli_updates::ask_newest(ctx, &report);
 }
 
 /// Once per new version, each installed CLI newer than the newest one its adapter was checked
-/// with. Sessions say the same when their CLI updates itself mid-day.
+/// with. Only start-up says it: a session never does, so nothing about versions is said while
+/// work runs.
 fn newer_cli_notices(ctx: &Ctx, report: &DoctorReport) -> Vec<String> {
     if !ctx.settings().ui.newer_cli_notice {
         return Vec::new();
@@ -271,7 +277,7 @@ pub(crate) async fn run_counts(conductor: &dyn ConductorApi) -> RunCounts {
     }
 }
 
-/// The startup header: version, repo, preset, each harness's readiness, and the runs going or
+/// The startup header: version, repo, workflow, each CLI's readiness, and the runs going or
 /// waiting on you.
 pub(crate) fn welcome_from(ctx: &Ctx, report: &DoctorReport, runs: RunCounts) -> AppEvent {
     let settings = ctx.settings();
@@ -300,7 +306,7 @@ fn readiness(report: &DoctorReport, settings: &Settings) -> Vec<AgentReady> {
         .collect()
 }
 
-/// The chat's agent, the crew, and every worker a role or a fallback names.
+/// The conversation's agent, the crew, and every worker a role or a fallback names.
 fn uses(settings: &Settings, id: &str) -> bool {
     let roles = settings.roles.values();
     let fallbacks = settings
@@ -309,13 +315,13 @@ fn uses(settings: &Settings, id: &str) -> bool {
         .values()
         .flat_map(|role| &role.order)
         .chain(&settings.fallback.order)
-        .map(FallbackEntry::worker);
+        .map(FallbackEntry::model);
     let members = settings.crew.members();
-    std::iter::once(&settings.main_agent)
+    std::iter::once(&settings.crew.main)
         .chain(&members)
-        .chain(roles.flat_map(|role| &role.workers))
+        .chain(roles.flat_map(|role| &role.models))
         .chain(fallbacks)
-        .any(|worker| worker.worker == id)
+        .any(|worker| worker.agent == id)
 }
 
 /// Ready is installed and turned on. An untested version is ready with a warning, since it may
@@ -352,13 +358,12 @@ fn agent_ready(check: &AgentCheck, settings: &Settings) -> AgentReady {
     }
 }
 
-/// What resolving the settings warned of, then the one-time notices: an edited preset file, the
+/// What resolving the settings warned of, then the one-time notices: an edited workflow file, the
 /// old settings file, a committed local file.
-pub(crate) fn start_notices(ctx: &mut Ctx) -> Vec<(NoteLevel, String)> {
-    let mut notices = crate::old_names::rename_in_your_files(ctx);
+pub(crate) fn start_notices(ctx: &Ctx) -> Vec<(NoteLevel, String)> {
     let env = &ctx.env;
-    notices.extend(settings_warnings(&ctx.settings.resolved().warnings));
-    notices.extend(preset_notices(&env.paths.global_presets()));
+    let mut notices = settings_warnings(&ctx.settings.resolved().warnings);
+    notices.extend(workflow_notices(&env.paths.global_workflows()));
     if let Ok(old) = old_global_config_path()
         && let Some(notice) = old_config_notice(&old, env)
     {
@@ -384,14 +389,14 @@ pub(crate) fn settings_warnings(warnings: &[String]) -> Vec<(NoteLevel, String)>
         .collect()
 }
 
-/// Only `~/.argonauts/presets/` is upgraded: a project's presets are the team's, reviewed and
+/// Only `~/.argonauts/workflows/` is upgraded: a project's workflows are the team's, reviewed and
 /// committed, and never rewritten.
-fn preset_notices(dir: &Path) -> Vec<(NoteLevel, String)> {
+fn workflow_notices(dir: &Path) -> Vec<(NoteLevel, String)> {
     if !dir.is_dir() {
         return Vec::new();
     }
-    match upgrade_presets(dir) {
-        Ok(upgrades) => upgrades.iter().filter_map(edited_preset_notice).collect(),
+    match upgrade_workflows(dir) {
+        Ok(upgrades) => upgrades.iter().filter_map(edited_workflow_notice).collect(),
         Err(err) => vec![(
             NoteLevel::Warn,
             format!("Couldn't check your workflow files for this version: {err}"),
@@ -400,14 +405,14 @@ fn preset_notices(dir: &Path) -> Vec<(NoteLevel, String)> {
 }
 
 /// The registry tells only the first time it keeps an edited file, so this shows once.
-fn edited_preset_notice(upgrade: &PresetUpgrade) -> Option<(NoteLevel, String)> {
-    if upgrade.outcome != (PresetUpgradeOutcome::KeptEdited { tell: true }) {
+fn edited_workflow_notice(upgrade: &WorkflowUpgrade) -> Option<(NoteLevel, String)> {
+    if upgrade.outcome != (WorkflowUpgradeOutcome::KeptEdited { tell: true }) {
         return None;
     }
     let name = &upgrade.name;
     Some((
         NoteLevel::Info,
-        format!("Your {name} workflow differs from this version's · /workflow diff {name}"),
+        format!("Your {name} workflow is different from this version's · /workflow diff {name}"),
     ))
 }
 
@@ -444,7 +449,7 @@ fn tracked_local_notice(env: &AppEnv) -> Option<(NoteLevel, String)> {
 }
 
 /// Said the first time the app opens in a folder with no git, since it works differently
-/// there: nothing is committed, and a workflow's branches live under Argonauts' home.
+/// there: nothing is committed, and a workflow's branches live under Argonauts Code's home.
 fn no_git_notice(env: &AppEnv) -> Option<(NoteLevel, String)> {
     if env.git() != FolderGit::Off || !first_time(&env.state_dir, NO_GIT_TOLD) {
         return None;
@@ -452,8 +457,8 @@ fn no_git_notice(env: &AppEnv) -> Option<(NoteLevel, String)> {
     Some((
         NoteLevel::Aside,
         format!(
-            "This folder has no git. Solo and chat work as they are. Workflows keep their own \
-             history in {}, and your folder stays as it is.",
+            "This folder has no git. Captain and the conversation work as they are. Workflows keep \
+             their own history in {}, and your folder stays as it is.",
             env.display(env.paths.home())
         ),
     ))
@@ -477,13 +482,14 @@ mod tests {
     use argonauts_core::future::BoxFuture;
     use argonauts_core::limits::CostEstimate;
     use argonauts_core::model_catalog::{CATALOG_VERSION, CatalogEntry, ModelCatalog};
-    use argonauts_core::names::WorkerRef;
+    use argonauts_core::names::ModelRef;
     use argonauts_core::registry::ModelEntry;
-    use argonauts_core::settings::handoff::CrewRole;
+    use argonauts_core::settings::crew::CrewRole;
     use argonauts_testkit::TempRepo;
 
     use super::*;
-    use crate::controller::test_support::{HarnessOptions, TestCtx};
+    use crate::controller::test_support::{CliOptions, TestCtx};
+    use argonauts_core::settings::crew::CrewSettings;
 
     /// Quitting waits for the controller's last call only up to the grace, and not at all once
     /// a stop signal comes, as one does when Ctrl+C is pressed again after the screen closed.
@@ -589,29 +595,32 @@ mod tests {
         assert!(noted(&settings, "opencode"), "in the crew");
 
         let settings = Settings {
-            main_agent: "opencode/glm-5".parse().unwrap(),
+            crew: CrewSettings {
+                main: "opencode/glm-5".parse().unwrap(),
+                ..CrewSettings::default()
+            },
             ..Settings::default()
         };
-        assert!(noted(&settings, "opencode"), "the chat's agent");
+        assert!(noted(&settings, "opencode"), "the conversation's agent");
 
         let mut settings = Settings::default();
         let role = settings.fallback.roles.entry(CrewRole::Main).or_default();
-        role.order = vec![FallbackEntry::Worker("opencode".parse().unwrap())];
+        role.order = vec![FallbackEntry::Model("opencode".parse().unwrap())];
         assert!(noted(&settings, "opencode"), "a fallback");
     }
 
     #[test]
-    fn the_welcome_names_the_chats_agent_model_and_effort() {
-        let (parts, _) = TestCtx::new(HarnessOptions {
+    fn the_welcome_names_the_conversations_agent_model_and_effort() {
+        let (parts, _) = TestCtx::new(CliOptions {
             prepare: Some(Box::new(|repo: &TempRepo| {
                 std::fs::write(
                     repo.global_config(),
-                    "main_agent = \"codex\"\n\n[agents.codex]\nmodel = \"gpt-5.6-luna\"\n\
+                    "crew.main = \"codex\"\n\n[agents.codex]\nmodel = \"gpt-5.6-luna\"\n\
                      effort = \"low\"\n",
                 )
                 .unwrap();
             })),
-            ..HarnessOptions::default()
+            ..CliOptions::default()
         });
         let report = DoctorReport {
             agents: Vec::new(),
@@ -637,7 +646,7 @@ mod tests {
     /// catalog's default, since this registry's CLIs mark none.
     #[test]
     fn the_welcome_names_a_model_and_effort_you_never_set() {
-        let (parts, _) = TestCtx::new(HarnessOptions::default());
+        let (parts, _) = TestCtx::new(CliOptions::default());
         let report = DoctorReport {
             agents: Vec::new(),
             git: GitCheck {
@@ -652,11 +661,11 @@ mod tests {
             panic!("a welcome");
         };
         let main_agent = main_agent.unwrap();
-        let worker = &parts.ctx.settings().main_agent.worker;
-        assert_eq!(main_agent.worker, *worker);
+        let worker = &parts.ctx.settings().crew.main.agent;
+        assert_eq!(main_agent.agent, *worker);
         let shipped = argonauts_registry::models::shipped_catalog();
-        let harness = WorkerRef::new(worker.clone(), None);
-        let runs = shipped.entry(&harness).and_then(|entry| entry.runs.clone());
+        let cli = ModelRef::new(worker.clone(), None);
+        let runs = shipped.entry(&cli).and_then(|entry| entry.runs.clone());
         assert!(runs.is_some(), "the catalog names what {worker} runs");
         assert_eq!(main_agent.model, runs);
         let starts_at = shipped
@@ -689,16 +698,16 @@ mod tests {
     struct WithCatalog(Arc<dyn ModelRegistry>);
 
     impl ModelRegistry for WithCatalog {
-        fn get(&self, worker: &WorkerRef) -> Option<ModelEntry> {
+        fn get(&self, worker: &ModelRef) -> Option<ModelEntry> {
             self.0.get(worker)
         }
-        fn family(&self, worker: &WorkerRef) -> String {
-            self.0.family(worker)
+        fn provider(&self, worker: &ModelRef) -> String {
+            self.0.provider(worker)
         }
         fn list(&self) -> Vec<ModelEntry> {
             self.0.list()
         }
-        fn estimate(&self, worker: &WorkerRef, input: u64, output: u64) -> CostEstimate {
+        fn estimate(&self, worker: &ModelRef, input: u64, output: u64) -> CostEstimate {
             self.0.estimate(worker, input, output)
         }
         fn discover(&self) -> BoxFuture<'_, Vec<ModelEntry>> {
@@ -719,12 +728,12 @@ mod tests {
     }
 
     fn header_of(config: &'static str) -> (Option<String>, Option<String>) {
-        let (parts, _) = TestCtx::new(HarnessOptions {
+        let (parts, _) = TestCtx::new(CliOptions {
             prepare: Some(Box::new(move |repo: &TempRepo| {
                 std::fs::write(repo.global_config(), config).unwrap();
             })),
             registry: Some(Arc::new(WithCatalog(codex_catalog()))),
-            ..HarnessOptions::default()
+            ..CliOptions::default()
         });
         let report = DoctorReport {
             agents: Vec::new(),
@@ -744,17 +753,17 @@ mod tests {
 
     #[test]
     fn the_welcome_names_the_model_a_cli_runs_when_none_is_set() {
-        let (agent, effort) = header_of("main_agent = \"codex\"\n");
+        let (agent, effort) = header_of("crew.main = \"codex\"\n");
         assert_eq!(agent.as_deref(), Some("codex/gpt-6.1-sol"));
         assert_eq!(effort.as_deref(), Some("low"));
 
         let (agent, effort) =
-            header_of("main_agent = \"codex\"\n\n[agents.codex]\neffort = \"xhigh\"\n");
+            header_of("crew.main = \"codex\"\n\n[agents.codex]\neffort = \"xhigh\"\n");
         assert_eq!(agent.as_deref(), Some("codex/gpt-6.1-sol"));
         assert_eq!(effort.as_deref(), Some("xhigh"), "the effort you set wins");
 
         let (agent, effort) =
-            header_of("main_agent = \"codex\"\n\n[agents.codex]\nmodel = \"gpt-5.5\"\n");
+            header_of("crew.main = \"codex\"\n\n[agents.codex]\nmodel = \"gpt-5.5\"\n");
         assert_eq!(agent.as_deref(), Some("codex/gpt-5.5"));
         assert_eq!(
             effort.as_deref(),
@@ -767,32 +776,32 @@ mod tests {
     /// which model it runs and the level that model starts at.
     #[test]
     fn the_welcome_names_the_catalogs_default_when_a_cli_marks_none() {
-        let (agent, effort) = header_of("main_agent = \"claude-code\"\n");
+        let (agent, effort) = header_of("crew.main = \"claude-code\"\n");
         assert_eq!(agent.as_deref(), Some("claude-code/claude-opus-5-5"));
         assert_eq!(effort.as_deref(), Some("xhigh"));
 
         let (agent, effort) =
-            header_of("main_agent = \"claude-code\"\n\n[agents.claude-code]\neffort = \"low\"\n");
+            header_of("crew.main = \"claude-code\"\n\n[agents.claude-code]\neffort = \"low\"\n");
         assert_eq!(agent.as_deref(), Some("claude-code/claude-opus-5-5"));
         assert_eq!(effort.as_deref(), Some("low"), "the effort you set wins");
 
         // A CLI's own mark wins over the catalog, and one the catalog doesn't know stays bare.
-        let (agent, _) = header_of("main_agent = \"codex\"\n");
+        let (agent, _) = header_of("crew.main = \"codex\"\n");
         assert_eq!(agent.as_deref(), Some("codex/gpt-6.1-sol"));
-        let (agent, effort) = header_of("main_agent = \"antigravity-cli\"\n");
+        let (agent, effort) = header_of("crew.main = \"antigravity-cli\"\n");
         assert_eq!(agent.as_deref(), Some("antigravity-cli"));
         assert_eq!(effort, None);
     }
 
     #[test]
     fn the_welcome_carries_an_example_from_recent_commits() {
-        let (parts, _) = TestCtx::new(HarnessOptions {
+        let (parts, _) = TestCtx::new(CliOptions {
             prepare: Some(Box::new(|repo: &TempRepo| {
                 repo.write("export.rs", "fn main() {}\n").unwrap();
                 repo.commit_all("fix(export): fix the flaky export test")
                     .unwrap();
             })),
-            ..HarnessOptions::default()
+            ..CliOptions::default()
         });
         let report = DoctorReport {
             agents: Vec::new(),
@@ -814,13 +823,13 @@ mod tests {
 
     #[test]
     fn each_settings_warning_is_a_notice_at_start() {
-        let (mut parts, _) = TestCtx::new(HarnessOptions {
+        let (parts, _) = TestCtx::new(CliOptions {
             prepare: Some(Box::new(|repo: &TempRepo| {
                 std::fs::write(repo.global_config(), "[ui]\nthme = \"dark\"\n").unwrap();
             })),
-            ..HarnessOptions::default()
+            ..CliOptions::default()
         });
-        let notices = start_notices(&mut parts.ctx);
+        let notices = start_notices(&parts.ctx);
         assert!(
             notices.iter().any(|(level, text)| *level == NoteLevel::Warn
                 && text.starts_with("Unknown setting ui.thme ")),
@@ -828,9 +837,60 @@ mod tests {
         );
     }
 
+    /// A key that went, a value no setting takes, and a role nobody has: the app starts, each
+    /// is named and ignored, and the file stays as you wrote it.
+    #[test]
+    fn an_older_settings_file_starts_with_a_notice_for_each_name_it_ignores() {
+        const OLDER: &str = "[goal]\nalways_ask = true\n\n\
+            [drafting]\nby = \"foreman\"\n\n\
+            [roles.foreman]\nmodels = [\"codex\"]\n";
+        let (parts, _) = TestCtx::new(CliOptions {
+            prepare: Some(Box::new(|repo: &TempRepo| {
+                std::fs::write(repo.global_config(), OLDER).unwrap();
+            })),
+            ..CliOptions::default()
+        });
+        let settings = parts.ctx.settings.settings();
+        assert_eq!(settings.drafting, Default::default());
+
+        let notices = start_notices(&parts.ctx);
+        let texts: Vec<&str> = notices.iter().map(|(_, text)| text.as_str()).collect();
+        for named in ["goal.always_ask", "drafting.by", "\"foreman\""] {
+            assert!(
+                texts.iter().any(|text| text.contains(named)),
+                "{named}: {texts:#?}"
+            );
+        }
+        let now = std::fs::read_to_string(parts.repo.global_config()).unwrap();
+        assert_eq!(now, OLDER);
+    }
+
+    #[test]
+    fn a_workflow_no_workflow_has_runs_the_default_with_one_notice() {
+        let (parts, _) = TestCtx::new(CliOptions {
+            prepare: Some(Box::new(|repo: &TempRepo| {
+                std::fs::write(repo.global_config(), "workflow = \"retired-mode\"\n").unwrap();
+            })),
+            ..CliOptions::default()
+        });
+        assert_eq!(parts.ctx.settings.settings().workflow, "council");
+        let notices = start_notices(&parts.ctx);
+        let named: Vec<&str> = notices
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .filter(|text| text.contains("retired-mode"))
+            .collect();
+        let wanted = format!(
+            "workflow = \"retired-mode\" in {} names no workflow, so the default is used; \
+             /workflow lists the ones you can pick",
+            parts.repo.global_config().display()
+        );
+        assert_eq!(named, [wanted.as_str()]);
+    }
+
     #[test]
     fn a_warning_that_starts_with_a_key_keeps_its_spelling() {
-        let (mut parts, _) = TestCtx::new(HarnessOptions {
+        let (parts, _) = TestCtx::new(CliOptions {
             prepare: Some(Box::new(|repo: &TempRepo| {
                 repo.write(
                     ".argonauts/config.local.toml",
@@ -838,9 +898,9 @@ mod tests {
                 )
                 .unwrap();
             })),
-            ..HarnessOptions::default()
+            ..CliOptions::default()
         });
-        let notices = start_notices(&mut parts.ctx);
+        let notices = start_notices(&parts.ctx);
         let texts: Vec<&str> = notices.iter().map(|(_, text)| text.as_str()).collect();
         for key in ["limits.spend_per_run", "checks.run"] {
             let warning = format!(
@@ -858,7 +918,7 @@ mod tests {
         let old = repo.config_home().join("argonauts").join("config.toml");
         assert!(old_config_notice(&old, &env).is_none());
         std::fs::create_dir_all(old.parent().unwrap()).unwrap();
-        std::fs::write(&old, "main_agent = \"codex\"\n").unwrap();
+        std::fs::write(&old, "crew.main = \"codex\"\n").unwrap();
         let (level, text) = old_config_notice(&old, &env).unwrap();
         assert_eq!(level, NoteLevel::Warn);
         assert!(text.starts_with("Nothing reads "), "{text}");
@@ -882,33 +942,34 @@ mod tests {
     }
 
     #[test]
-    fn an_edited_preset_is_told_only_when_the_registry_says_so() {
-        let upgrade = |outcome| PresetUpgrade {
+    fn an_edited_workflow_is_told_only_when_the_registry_says_so() {
+        let upgrade = |outcome| WorkflowUpgrade {
             name: "council".to_owned(),
-            path: "/home/workflows/council.toml".into(),
+            path: "/home/you/workflows/council.toml".into(),
             outcome,
         };
-        let told = edited_preset_notice(&upgrade(PresetUpgradeOutcome::KeptEdited { tell: true }));
+        let told =
+            edited_workflow_notice(&upgrade(WorkflowUpgradeOutcome::KeptEdited { tell: true }));
         assert_eq!(
             told,
             Some((
                 NoteLevel::Info,
-                "Your council workflow differs from this version's · /workflow diff council"
+                "Your council workflow is different from this version's · /workflow diff council"
                     .to_owned()
             ))
         );
         for quiet in [
-            PresetUpgradeOutcome::KeptEdited { tell: false },
-            PresetUpgradeOutcome::Updated,
-            PresetUpgradeOutcome::Current,
+            WorkflowUpgradeOutcome::KeptEdited { tell: false },
+            WorkflowUpgradeOutcome::Updated,
+            WorkflowUpgradeOutcome::Current,
         ] {
-            assert_eq!(edited_preset_notice(&upgrade(quiet)), None);
+            assert_eq!(edited_workflow_notice(&upgrade(quiet)), None);
         }
     }
 
     #[test]
-    fn presets_are_checked_only_in_the_global_folder_you_have() {
+    fn workflows_are_checked_only_in_the_global_folder_you_have() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(preset_notices(&dir.path().join("workflows")).is_empty());
+        assert!(workflow_notices(&dir.path().join("workflows")).is_empty());
     }
 }

@@ -1,10 +1,11 @@
-//! The free quota probe: `agy -p "/usage" --output-format json`, with `--model` when the
-//! sessions name one. The CLI answers `/usage` itself, so it starts no turn and spends no quota.
+//! The free plan usage probe: `agy -p "/usage" --output-format json`, with `--model` when the
+//! sessions name one. The CLI answers `/usage` itself, so it starts no turn and spends no plan
+//! usage.
 
 use std::path::Path;
 
-use argonauts_core::limits::{QuotaAnswer, QuotaReading, QuotaSource, QuotaStatus};
-use argonauts_core::names::VendorId;
+use argonauts_core::limits::{PlanUsageAnswer, PlanUsageReading, PlanUsageSource, PlanUsageStatus};
+use argonauts_core::names::AgentId;
 use argonauts_core::plan_usage::{LiveUsage, LiveWindow, plan_name};
 use argonauts_core::{CommandSpec, env_remove_except};
 use serde_json::Value;
@@ -16,7 +17,7 @@ use crate::command::{API_KEY_ENV, AUTO_UPDATE_ENV, AUTO_UPDATE_VALUE, flag_value
 /// Used share of a window from which the reading counts as a warning.
 const WARNING_AT: f64 = 0.8;
 
-pub fn quota_probe_command(program: &str, workdir: &Path, model: Option<&str>) -> CommandSpec {
+pub fn plan_usage_probe_command(program: &str, workdir: &Path, model: Option<&str>) -> CommandSpec {
     let mut spec =
         CommandSpec::new(program, workdir).args(["-p", "/usage", "--output-format", "json"]);
     // Every call names its model, as sessions do; one that isn't a plain name is left off,
@@ -25,7 +26,7 @@ pub fn quota_probe_command(program: &str, workdir: &Path, model: Option<&str>) -
         spec = spec.args(["--model", model]);
     }
     spec.env_set = vec![(AUTO_UPDATE_ENV.to_owned(), AUTO_UPDATE_VALUE.to_owned())];
-    // The key stays, so an API-key login reads its own quota. agy ignores it otherwise.
+    // The key stays, so an API-key login reads its own plan usage. agy ignores it otherwise.
     spec.env_remove = env_remove_except(&[API_KEY_ENV]);
     spec
 }
@@ -33,7 +34,7 @@ pub fn quota_probe_command(program: &str, workdir: &Path, model: Option<&str>) -
 /// agy 1.2.13 puts the buckets in `command.data.groups[].buckets[]` and repeats them as tab
 /// separated lines in `response`. The shape is undocumented, so both are read, and `None`
 /// means nothing usable came back.
-pub fn parse_usage(vendor: &str, stdout: &str) -> Option<QuotaReading> {
+pub fn parse_usage(agent_id: &str, stdout: &str) -> Option<PlanUsageReading> {
     let payload = last_json_object(stdout)?;
     if payload
         .get("status")
@@ -56,19 +57,19 @@ pub fn parse_usage(vendor: &str, stdout: &str) -> Option<QuotaReading> {
     let remaining = bucket.remaining.clamp(0.0, 1.0);
     let used = 1.0 - remaining;
     let status = if remaining <= 0.0 {
-        QuotaStatus::Rejected
+        PlanUsageStatus::Rejected
     } else if used >= WARNING_AT {
-        QuotaStatus::Warning
+        PlanUsageStatus::Warning
     } else {
-        QuotaStatus::Allowed
+        PlanUsageStatus::Allowed
     };
-    Some(QuotaReading {
-        vendor: VendorId(vendor.to_owned()),
+    Some(PlanUsageReading {
+        agent_id: AgentId(agent_id.to_owned()),
         status,
         used: Some(used),
         resets_at: bucket.resets_at,
         window: bucket.window.clone(),
-        source: QuotaSource::UsageProbe,
+        source: PlanUsageSource::UsageProbe,
         observed_at: OffsetDateTime::now_utc(),
         detail: Some(data.cloned().unwrap_or(payload)),
         wrap_up: false,
@@ -79,17 +80,17 @@ pub fn parse_usage(vendor: &str, stdout: &str) -> Option<QuotaReading> {
 /// `/usage` lists them, and the plan where the payload names one. agy doesn't say who is
 /// signed in, so the reading names no account, and only a fresh one is shown. A payload that
 /// isn't a success answers with agy's own error.
-pub fn usage_answer(vendor: &str, stdout: &str) -> Option<QuotaAnswer> {
+pub fn usage_answer(agent_id: &str, stdout: &str) -> Option<PlanUsageAnswer> {
     let payload = last_json_object(stdout)?;
     let status = payload.get("status").and_then(Value::as_str);
     if status.is_some_and(|status| status != "SUCCESS") {
         let error = payload.get("error").and_then(Value::as_str).map(str::trim);
         let error = error.filter(|error| !error.is_empty());
-        return Some(QuotaAnswer::failed(
+        return Some(PlanUsageAnswer::failed(
             error.unwrap_or("it answered with an error"),
         ));
     }
-    let binding = parse_usage(vendor, stdout)?;
+    let binding = parse_usage(agent_id, stdout)?;
     let data = payload.pointer("/command/data");
     let groups = data
         .map(groups_from_data)
@@ -102,15 +103,15 @@ pub fn usage_answer(vendor: &str, stdout: &str) -> Option<QuotaAnswer> {
         })
         .unwrap_or_default();
     let mut live = LiveUsage::new(
-        VendorId(vendor.to_owned()),
-        QuotaSource::UsageProbe,
+        AgentId(agent_id.to_owned()),
+        PlanUsageSource::UsageProbe,
         binding.observed_at,
     );
     live.plan = data
         .and_then(|data| text_field(data, "plan").or_else(|| text_field(data, "tier")))
         .and_then(|plan| plan_name(&plan));
     live.windows = live_windows(&groups);
-    let mut windows = live.quota_readings();
+    let mut windows = live.plan_usage_readings();
     if windows.is_empty() {
         windows.push(binding.clone());
     }
@@ -121,7 +122,7 @@ pub fn usage_answer(vendor: &str, stdout: &str) -> Option<QuotaAnswer> {
     {
         found.detail = binding.detail.clone();
     }
-    Some(QuotaAnswer {
+    Some(PlanUsageAnswer {
         windows,
         plan: live.plan.clone(),
         live: Some(live),
@@ -129,7 +130,7 @@ pub fn usage_answer(vendor: &str, stdout: &str) -> Option<QuotaAnswer> {
     })
 }
 
-/// The default model family's group gets a row per window. Every other group gets one row on
+/// The default model's group gets a row per window. Every other group gets one row on
 /// the card, its tightest window, with the window's length said beside the reset; its other
 /// windows show on the CLI's own page only.
 fn live_windows(groups: &[Group]) -> Vec<LiveWindow> {
@@ -145,7 +146,7 @@ fn live_windows(groups: &[Group]) -> Vec<LiveWindow> {
         };
         let row = |bucket: &Bucket, label: String, note: Option<String>| {
             let (window, _, length) = window_row(bucket);
-            // The default family's windows keep their plain names, which the bottom line
+            // The default model's windows keep their plain names, which the bottom line
             // shortens to `5h` and `7d`; another group's name tells its windows apart.
             let key = if is_default(group) {
                 window
@@ -230,13 +231,13 @@ struct Bucket {
     resets_at: Option<OffsetDateTime>,
 }
 
-/// The default model family's group decides, since one reading stands for the whole vendor;
+/// The default model's group decides, since one reading stands for the whole agent;
 /// the other groups stay in `detail`. Within it, the window closest to running out wins.
 fn tightest(groups: &[Group]) -> Option<&Bucket> {
-    let default_family = groups
+    let default_group = groups
         .iter()
         .filter(|group| group.name.to_ascii_lowercase().contains("gemini"));
-    lowest(default_family.flat_map(|group| &group.buckets))
+    lowest(default_group.flat_map(|group| &group.buckets))
         .or_else(|| lowest(groups.iter().flat_map(|group| &group.buckets)))
 }
 
@@ -378,7 +379,7 @@ mod tests {
 
     #[test]
     fn the_probe_spends_nothing_and_keeps_the_key() {
-        let spec = quota_probe_command("agy", Path::new("/work"), None);
+        let spec = plan_usage_probe_command("agy", Path::new("/work"), None);
         assert_eq!(spec.args, ["-p", "/usage", "--output-format", "json"]);
         assert_eq!(spec.cwd, Path::new("/work"));
         assert!(spec.stdin.is_none() && spec.files.is_empty());
@@ -389,7 +390,8 @@ mod tests {
 
     #[test]
     fn the_probe_names_the_sessions_model() {
-        let spec = quota_probe_command("agy", Path::new("/work"), Some("gemini-3.6-flash-low"));
+        let spec =
+            plan_usage_probe_command("agy", Path::new("/work"), Some("gemini-3.8-flash-low"));
         assert_eq!(
             spec.args,
             [
@@ -398,10 +400,10 @@ mod tests {
                 "--output-format",
                 "json",
                 "--model",
-                "gemini-3.6-flash-low"
+                "gemini-3.8-flash-low"
             ]
         );
-        let odd = quota_probe_command("agy", Path::new("/work"), Some("--yolo"));
+        let odd = plan_usage_probe_command("agy", Path::new("/work"), Some("--yolo"));
         assert_eq!(odd.args, ["-p", "/usage", "--output-format", "json"]);
     }
 
@@ -417,12 +419,12 @@ mod tests {
             ]},
         ]));
         let reading = parse_usage("antigravity-cli", &stdout).unwrap();
-        assert_eq!(reading.vendor, VendorId("antigravity-cli".into()));
-        assert_eq!(reading.status, QuotaStatus::Warning);
+        assert_eq!(reading.agent_id, AgentId("antigravity-cli".into()));
+        assert_eq!(reading.status, PlanUsageStatus::Warning);
         assert_eq!(reading.window.as_deref(), Some("weekly"));
         assert!((reading.used.unwrap() - 0.85).abs() < 1e-9);
         assert_eq!(reading.resets_at, Some(datetime!(2026-10-06 02:52:44 UTC)));
-        assert_eq!(reading.source, QuotaSource::UsageProbe);
+        assert_eq!(reading.source, PlanUsageSource::UsageProbe);
         assert_eq!(
             reading.detail.unwrap()["groups"].as_array().unwrap().len(),
             2
@@ -435,7 +437,7 @@ mod tests {
             {"window": "5h", "remaining_fraction": 0, "reset_time": "2026-09-30T09:09:04Z"},
         ]}]));
         let reading = parse_usage("antigravity-cli", &empty).unwrap();
-        assert_eq!(reading.status, QuotaStatus::Rejected);
+        assert_eq!(reading.status, PlanUsageStatus::Rejected);
         assert_eq!(reading.window.as_deref(), Some("five_hour"));
         assert_eq!(reading.used, Some(1.0));
 
@@ -443,7 +445,7 @@ mod tests {
             {"window": "weekly", "remaining_fraction": 1},
         ]}]));
         let reading = parse_usage("antigravity-cli", &fresh).unwrap();
-        assert_eq!(reading.status, QuotaStatus::Allowed);
+        assert_eq!(reading.status, PlanUsageStatus::Allowed);
         assert_eq!(reading.used, Some(0.0));
         assert!(reading.resets_at.is_none());
     }
@@ -471,7 +473,7 @@ mod tests {
         let reading = parse_usage("antigravity-cli", &stdout).unwrap();
         assert_eq!(reading.window.as_deref(), Some("weekly"));
         assert!((reading.used.unwrap() - 0.6).abs() < 1e-9);
-        assert_eq!(reading.status, QuotaStatus::Allowed);
+        assert_eq!(reading.status, PlanUsageStatus::Allowed);
     }
 
     #[test]
@@ -481,13 +483,12 @@ mod tests {
         ]}]));
         let stdout = format!("Update available\n{body}\n");
         let reading = parse_usage("antigravity-cli", &stdout).unwrap();
-        assert_eq!(reading.status, QuotaStatus::Warning);
+        assert_eq!(reading.status, PlanUsageStatus::Warning);
     }
 
     #[test]
-    fn the_recorded_usage_reads_as_a_row_per_window_and_one_card_row_per_other_group() {
-        let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/1.2.13/usage_probe.stdout.jsonl");
+    fn the_recorded_usage_reads_as_a_row_per_window_and_one_task_row_per_other_group() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/usage_probe.stdout.jsonl");
         let stdout = std::fs::read_to_string(path).unwrap();
         let answer = usage_answer("antigravity-cli", &stdout).unwrap();
         let live = answer.live.unwrap();
@@ -535,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn group_names_shorten_as_the_card_shows_them() {
+    fn group_names_shorten_as_the_task_shows_them() {
         assert_eq!(short_group("Gemini Models"), "Gemini");
         assert_eq!(short_group("Claude and GPT models"), "Claude, GPT");
         assert_eq!(short_group("Team pool"), "Team pool");

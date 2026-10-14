@@ -3,10 +3,10 @@
 //! Enter opens a mod's page. A file that didn't load is listed last with what's wrong with it.
 
 use argonauts_core::app::{UiCommand, ViewData, ViewRequest};
-use argonauts_core::input::{SlashCommand, WidgetsAction};
+use argonauts_core::input::{ModsAction, SlashCommand};
 use argonauts_core::settings::mods::view::{FileProblem, ModRow, ModRowKind, ModsView};
 use argonauts_core::settings::mods::{ModFile, ModReading, ModSource, builtin, span_words};
-use argonauts_core::settings::ui::WidgetName;
+use argonauts_core::settings::ui::ModName;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -16,11 +16,11 @@ use super::bottom_line::{self, LinePage};
 use super::draw;
 use super::page::ModPage;
 use super::rows::{PageGlyphs, breadcrumb};
+use crate::kit::{Kit, fit, spread};
 use crate::text::{sanitize_line, spans_width, str_width, wrap_text};
 use crate::theme::Role;
 use crate::views::panes::{self, Footer, Side};
 use crate::views::{View, ViewCtx, ViewOutcome};
-use crate::widgets::{Kit, fit, spread};
 
 /// The list's share of the screen, in cells.
 const LIST_CELLS: u16 = 52;
@@ -29,7 +29,7 @@ const NAME_CELLS: usize = 16;
 /// Cells the small picture takes.
 const PICTURE_CELLS: usize = 12;
 /// Cells before a mod's name: the pointer, the mark, and a space each.
-const LEAD_CELLS: usize = 4;
+const MARGIN_CELLS: usize = 4;
 
 #[derive(Debug)]
 enum Page {
@@ -137,9 +137,9 @@ impl ModsScreen {
         } else if row.name == builtin::STATS {
             // The stats mod's page is the Stats tab's own, where its card shows each change.
             return ViewOutcome::Send(UiCommand::Slash {
-                command: SlashCommand::Widgets {
-                    action: WidgetsAction::Page {
-                        widget: WidgetName::Stats,
+                command: SlashCommand::Mods {
+                    action: ModsAction::Page {
+                        the_mod: ModName::Stats,
                     },
                     scope: None,
                 },
@@ -165,7 +165,7 @@ impl ModsScreen {
         self.view.rows.iter().all(|row| match &row.kind {
             ModRowKind::Card { file, .. } => {
                 let words = str_width(&places_text(file)) + 1 + str_width(row.origin.word());
-                LEAD_CELLS + NAME_CELLS + 1 + PICTURE_CELLS + 2 + words <= width
+                MARGIN_CELLS + NAME_CELLS + 1 + PICTURE_CELLS + 2 + words <= width
             }
             ModRowKind::Own { .. } => true,
         })
@@ -186,13 +186,13 @@ impl ModsScreen {
             " "
         };
         let name_style = if selected {
-            kit.bold(Role::Card)
+            kit.bold(Role::Question)
         } else {
             kit.bold(Role::Bright)
         };
         let mut left = vec![
-            Span::styled(format!("{pointer} "), kit.bold(Role::Card)),
-            kit.span(kit.glyphs.widget, Role::Accent),
+            Span::styled(format!("{pointer} "), kit.bold(Role::Question)),
+            kit.span(kit.glyphs.the_mod, Role::Accent),
             Span::raw(" "),
         ];
         let mut places_role = Role::Dim;
@@ -204,7 +204,7 @@ impl ModsScreen {
                 ..
             } => {
                 if *hidden_by_line {
-                    places_role = Role::Warning;
+                    places_role = Role::Warn;
                 }
                 // Only real numbers get a picture here. The pane beside it draws sample ones
                 // and says so.
@@ -253,7 +253,7 @@ impl ModsScreen {
             } else {
                 format!("{count} files didn't load")
             };
-            lines.push(Line::from(kit.span(heading, Role::Warning)));
+            lines.push(Line::from(kit.span(heading, Role::Warn)));
             for (index, problem) in self.view.problems.iter().enumerate() {
                 let selected = self.view.rows.len() + index == self.selected;
                 let pointer = if selected {
@@ -263,8 +263,8 @@ impl ModsScreen {
                 };
                 let name = problem.path.rsplit('/').next().unwrap_or(&problem.path);
                 lines.push(Line::from(vec![
-                    Span::styled(format!("{pointer} "), kit.bold(Role::Card)),
-                    kit.span(format!("! {}", sanitize_line(name)), Role::Warning),
+                    Span::styled(format!("{pointer} "), kit.bold(Role::Question)),
+                    kit.span(format!("! {}", sanitize_line(name)), Role::Warn),
                 ]));
             }
         }
@@ -338,14 +338,14 @@ impl ModsScreen {
                  file. Rename the file to put this mod there",
                 row.name
             );
-            lines.extend(wrap_text(&why, kit.style(Role::Warning), width, &[], &[]));
+            lines.extend(wrap_text(&why, kit.style(Role::Warn), width, &[], &[]));
         }
         let (words, role) = if *needs_trust {
             (
                 "The project's, and it runs a command: its page trusts it. Sample numbers \
                  until then"
                     .to_owned(),
-                Role::Warning,
+                Role::Warn,
             )
         } else if reading.is_none() {
             let why = note.as_deref().unwrap_or("it has no numbers yet");
@@ -387,7 +387,7 @@ impl ModsScreen {
             },
             Some(Entry::Problem(problem)) => {
                 let mut lines = vec![
-                    Line::from(kit.span(sanitize_line(&problem.path).into_owned(), Role::Warning)),
+                    Line::from(kit.span(sanitize_line(&problem.path).into_owned(), Role::Warn)),
                     Line::from(kit.dim("It didn't load, and the rest work without it. Fix:")),
                 ];
                 for why in &problem.problems {
@@ -467,7 +467,7 @@ impl View for ModsScreen {
             None => None,
         };
         match outcome {
-            // A page goes back to the list, and the list back to the chat.
+            // A page goes back to the list, and the list back to the conversation.
             Some(ViewOutcome::Close) => {
                 self.page = None;
                 return ViewOutcome::Consumed;
@@ -481,10 +481,10 @@ impl View for ModsScreen {
             KeyCode::PageUp | KeyCode::Home => self.move_by(-(self.count() as isize)),
             KeyCode::PageDown | KeyCode::End => self.move_by(self.count() as isize),
             KeyCode::Enter | KeyCode::Right => return self.open_page(),
-            // On the way back the chat asks for the mods once more, since what a page saved
+            // On the way back the conversation asks for the mods once more, since what a page saved
             // came to this screen and not to the one behind it.
             KeyCode::Esc | KeyCode::Left => {
-                return ViewOutcome::SendToChat(UiCommand::Request {
+                return ViewOutcome::SendToConversation(UiCommand::Request {
                     view: ViewRequest::Mods {
                         open: None,
                         refresh: true,
@@ -681,7 +681,7 @@ mod tests {
         let mut view = sample_view();
         if let ModRowKind::Card { file, .. } = &mut view.rows[1].kind {
             file.places
-                .push(argonauts_core::settings::mods::ModPlace::ModeLine);
+                .push(argonauts_core::settings::mods::ModPlace::BottomLine);
         }
         let mut screen = ModsScreen::new(view);
         screen.selected = 1;
@@ -712,7 +712,7 @@ mod tests {
         assert!(screen.page.is_none());
         assert!(matches!(
             press(&mut screen, KeyCode::Esc),
-            ViewOutcome::SendToChat(UiCommand::Request {
+            ViewOutcome::SendToConversation(UiCommand::Request {
                 view: ViewRequest::Mods { refresh: true, .. }
             })
         ));
@@ -766,7 +766,7 @@ mod tests {
             ..
         } = &mut view.rows[at].kind
         {
-            file.places = vec![argonauts_core::settings::mods::ModPlace::ModeLine];
+            file.places = vec![argonauts_core::settings::mods::ModPlace::BottomLine];
             *hidden_by_line = true;
         }
         let mut screen = ModsScreen::new(view);
@@ -781,8 +781,8 @@ mod tests {
         let theme = Theme::dark();
         let kit = Kit::new(&theme);
         let line = screen.row_line(&kit, &screen.view.rows[at], true, 120, true);
-        let place = line.spans.iter().find(|span| span.content == "mode-line");
-        assert_eq!(place.unwrap().style, kit.style(Role::Warning));
+        let place = line.spans.iter().find(|span| span.content == "bottom-line");
+        assert_eq!(place.unwrap().style, kit.style(Role::Warn));
     }
 
     #[test]
@@ -790,7 +790,7 @@ mod tests {
         let mut view = sample_view();
         if let ModRowKind::Card { file, .. } = &mut view.rows[1].kind {
             file.places
-                .push(argonauts_core::settings::mods::ModPlace::ModeLine);
+                .push(argonauts_core::settings::mods::ModPlace::BottomLine);
         }
         let mut screen = ModsScreen::new(view);
         let text = screen_text(&mut screen, 100, 30);
@@ -852,10 +852,10 @@ mod tests {
         match press(&mut screen, KeyCode::Enter) {
             ViewOutcome::Send(UiCommand::Slash {
                 command:
-                    SlashCommand::Widgets {
+                    SlashCommand::Mods {
                         action:
-                            WidgetsAction::Page {
-                                widget: WidgetName::Stats,
+                            ModsAction::Page {
+                                the_mod: ModName::Stats,
                             },
                         scope: None,
                     },

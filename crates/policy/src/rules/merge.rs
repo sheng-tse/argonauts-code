@@ -1,8 +1,8 @@
-//! Merge: gates pass, every reviewer approved and a reviewer of another company than each
-//! card's owner gave the approval that stands, no protected path is touched, the diff is small
+//! Merge: checks pass, every reviewer approved and a reviewer of another provider than each
+//! task's worker gave the approval that stands, no protected path is touched, the diff is small
 //! enough, and the suite passed on the latest main. Acceptance tests, test tampering, and
 //! changed-line coverage count when they were measured, since not every repo can measure them.
-//! Quality debt no strong enough model reviewed escalates unless `allow_debt` is set, since
+//! Quality debt no strong enough model reviewed comes to you unless `allow_debt` is set, since
 //! merging it anyway is yours.
 
 use argonauts_core::policy::EvidenceFacts;
@@ -13,7 +13,7 @@ use super::{Conditions, RuleVerdict, percent};
 pub fn check(facts: &EvidenceFacts, rules: &MergeRules) -> RuleVerdict {
     let mut c = Conditions::default();
     c.flag(
-        facts.gates_passed,
+        facts.checks_passed,
         "every check passed",
         "a check failed or didn't run",
         "no check results",
@@ -32,15 +32,9 @@ pub fn check(facts: &EvidenceFacts, rules: &MergeRules) -> RuleVerdict {
     );
     c.measure_if_known(facts.acceptance_tests_valid, |valid| {
         if valid {
-            Ok(
-                "every acceptance test fails on the stubs and passes on the integration branch"
-                    .to_owned(),
-            )
+            Ok("every acceptance test fails on the stubs and passes on the run branch".to_owned())
         } else {
-            Err(
-                "an acceptance test passes on the stubs or fails on the integration branch"
-                    .to_owned(),
-            )
+            Err("an acceptance test passes on the stubs or fails on the run branch".to_owned())
         }
     });
     c.none_of(
@@ -101,12 +95,12 @@ pub fn check(facts: &EvidenceFacts, rules: &MergeRules) -> RuleVerdict {
     );
     match debt(facts.unreviewed_debt.as_deref(), rules) {
         Ok(held) => c.hold(held),
-        Err(why) => c.escalate(why),
+        Err(why) => c.ask_you(why),
     }
     c.verdict()
 }
 
-/// Why quality debt keeps auto from merging, given the cards whose debt no strong enough model
+/// Why quality debt keeps auto from merging, given the tasks whose debt no strong enough model
 /// reviewed. `None` when auto may merge: no debt, or `allow_debt` is set.
 pub fn debt_blocks(unreviewed_debt: Option<&[String]>, rules: &MergeRules) -> Option<String> {
     debt(unreviewed_debt, rules).err()
@@ -123,9 +117,9 @@ fn debt(unreviewed_debt: Option<&[String]>, rules: &MergeRules) -> Result<String
             "allow_debt lets auto merge quality debt no strong enough model reviewed".to_owned(),
         ),
         None => Err("no fact says whether a task carries quality debt".to_owned()),
-        Some(cards) => Err(format!(
+        Some(tasks) => Err(format!(
             "quality debt no strong enough model reviewed, and merging it anyway is yours: {}",
-            cards.join(", ")
+            tasks.join(", ")
         )),
     }
 }
@@ -137,7 +131,7 @@ mod tests {
 
     fn passing() -> EvidenceFacts {
         EvidenceFacts {
-            gates_passed: Some(true),
+            checks_passed: Some(true),
             reviews_approved: Some(true),
             reviewed_by_other_provider: Some(true),
             acceptance_tests_valid: Some(true),
@@ -163,9 +157,9 @@ mod tests {
     fn each_failed_condition_rejects() {
         let cases: Vec<(&str, EvidenceFacts)> = vec![
             (
-                "gates",
+                "checks",
                 EvidenceFacts {
-                    gates_passed: Some(false),
+                    checks_passed: Some(false),
                     ..passing()
                 },
             ),
@@ -246,12 +240,12 @@ mod tests {
     }
 
     #[test]
-    fn each_missing_fact_escalates() {
+    fn each_missing_fact_asks_you() {
         let cases: Vec<(&str, EvidenceFacts)> = vec![
             (
-                "gates",
+                "checks",
                 EvidenceFacts {
-                    gates_passed: None,
+                    checks_passed: None,
                     ..passing()
                 },
             ),
@@ -292,7 +286,7 @@ mod tests {
             ),
         ];
         for (name, facts) in cases {
-            assert_eq!(verdict(&facts), Verdict::Escalate, "{name}");
+            assert_eq!(verdict(&facts), Verdict::AskYou, "{name}");
         }
     }
 
@@ -314,7 +308,7 @@ mod tests {
     #[test]
     fn a_rejection_names_every_failed_condition() {
         let facts = EvidenceFacts {
-            gates_passed: Some(false),
+            checks_passed: Some(false),
             combined_diff_lines: Some(900),
             ..passing()
         };
@@ -324,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn unreviewed_debt_escalates_unless_allowed() {
+    fn unreviewed_debt_asks_you_unless_allowed() {
         let lenient = MergeRules {
             allow_debt: true,
             ..MergeRules::default()
@@ -334,7 +328,7 @@ mod tests {
             ..passing()
         };
         let strict = check(&indebted, &MergeRules::default());
-        assert_eq!(strict.verdict, Verdict::Escalate);
+        assert_eq!(strict.verdict, Verdict::AskYou);
         assert!(
             strict.reasons[0].contains("task-03"),
             "{:?}",
@@ -349,9 +343,9 @@ mod tests {
         };
         assert_eq!(check(&unmeasured, &lenient).verdict, Verdict::Approve);
 
-        // A measured failure still sends the card back.
+        // A measured failure still sends the task back.
         let failed = EvidenceFacts {
-            gates_passed: Some(false),
+            checks_passed: Some(false),
             ..indebted
         };
         assert_eq!(verdict(&failed), Verdict::Reject);

@@ -1,7 +1,8 @@
 //! The app's views. The workflow and agent views dock in the bottom region under the
 //! conversation, as Claude Code's do; the rest take the alternate screen: the workflow
-//! library, `/status`, `/context`, `/rewind`, the Learning pickers, the crew view, a session's
-//! view, the resume picker, the pagers, help, `/config`, and `/approvals`. Esc goes back one view, and from the last one to the chat exactly where it was.
+//! library, `/status`, `/context`, `/rewind`, the Learning pickers, the agent panel, a session's
+//! view, the resume picker, the pagers, help, `/config`, and `/approvals`. Esc goes back one view,
+//! and from the last one to the conversation exactly where it was.
 //!
 //! Views lay out with ratatui into a `Buffer`, so borders and columns line up at any width
 //! ([`crate::stability`] checks it).
@@ -36,12 +37,18 @@ mod structured;
 mod vim_tests;
 pub mod waiting;
 pub mod workflow;
-mod workflow_own;
 #[cfg(test)]
-mod workflow_own_tests;
+pub(crate) mod workflow_examples;
+#[cfg(test)]
+mod workflow_golden_tests;
+#[cfg(test)]
+mod workflow_inner_tests;
 pub mod workflow_page;
 #[cfg(test)]
+pub(crate) mod workflow_pictures;
+#[cfg(test)]
 mod workflow_row_tests;
+pub(crate) mod workflow_rows;
 #[cfg(test)]
 mod workflow_tests;
 mod workflow_tries;
@@ -53,8 +60,9 @@ use argonauts_core::agent_sessions::AgentSessionRef;
 use argonauts_core::app::{AnswerTarget, AppEvent, UiCommand, ViewData, ViewRequest};
 use argonauts_core::events::run::RunOutcome;
 use argonauts_core::input::{ResumeTarget, SlashCommand};
-use argonauts_core::names::SessionKey;
-use argonauts_core::{CardId, RunId};
+use argonauts_core::names::{RoleName, SessionKey};
+use argonauts_core::steps::StepName;
+use argonauts_core::{RunId, TaskId};
 use crossterm::event::KeyEvent;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -81,6 +89,13 @@ pub trait View: fmt::Debug + Send {
         None
     }
 
+    /// Whether a docked view stays up while a question holds the keys. The question then draws
+    /// under it, where its keys were, and takes every key until it is answered or passed on.
+    /// Any other view closes as a question takes the keys.
+    fn stays_over_question(&self) -> bool {
+        false
+    }
+
     fn handle_key(&mut self, key: KeyEvent, ctx: &ViewCtx<'_>) -> ViewOutcome;
 
     /// A bracketed paste. Most views have no line to type into, and the prompt behind them
@@ -103,7 +118,7 @@ pub trait View: fmt::Debug + Send {
     }
 
     /// Asked after every event: what shows in its place once the run it was opened for has
-    /// moved on, such as the lead's session once it starts. `None` keeps it.
+    /// moved on, such as the main agent's session once it starts. `None` keeps it.
     fn follow(&mut self, ctx: &ViewCtx<'_>) -> Option<Follow> {
         let _ = ctx;
         None
@@ -129,21 +144,21 @@ pub enum ViewOutcome {
     Consumed,
     /// Not a key this view uses.
     Ignored,
-    /// Back one view, or to the chat.
+    /// Back one view, or to the conversation.
     Close,
-    /// Back to the chat.
+    /// Back to the conversation.
     CloseAll,
     Open(Box<dyn View>),
     Replace(Box<dyn View>),
     Send(UiCommand),
     /// Ask the controller; the answer comes back through [`View::accept`].
     Request(ViewRequest),
-    /// Back to the chat with this card's keys, such as Enter on a ◆ row.
-    AnswerCard(AnswerTarget),
+    /// Back to the conversation with this question's keys, such as Enter on a ◆ row.
+    AnswerQuestion(AnswerTarget),
     /// The local confirm before a take-over.
     ConfirmTakeOver {
         run: RunId,
-        card: CardId,
+        task: TaskId,
     },
     /// A short line in the notice slot, such as why a key did nothing.
     Notice(String),
@@ -154,14 +169,103 @@ pub enum ViewOutcome {
         url: String,
         name: String,
     },
-    /// Back to the chat, where the answer shows, sending this on the way.
-    SendToChat(UiCommand),
+    /// Back to the conversation, where the answer shows, sending this on the way.
+    SendToConversation(UiCommand),
 }
 
-/// Whether `run` can still be paused or have agents stopped: not finished and not parked, as far
+/// Whether `run` can still be paused or have agents stopped: not finished and not waiting, as far
 /// as the screen knows it.
 pub(crate) fn run_going(state: &AppState, run: &RunId) -> bool {
     state.runs.get(run).is_none_or(|run| run.is_active())
+}
+
+/// Why a key that acts on an agent's session can't act on `row`, which is one of a workflow
+/// its CLI runs itself: it has no session of ours, and its CLI alone runs it.
+pub(crate) fn inner_why(state: &AppState, row: &argonauts_core::views::AgentRow) -> String {
+    let label = sanitize_line(&row.label).trim().to_owned();
+    let cli = sanitize_line(&state.names.cli(&row.worker.agent))
+        .trim()
+        .to_owned();
+    format!(
+        "{label} runs inside {cli}'s own workflow, so only {cli} can message, stop or restart it"
+    )
+}
+
+/// A restart `r` asked for, waiting for a second `r`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Restart {
+    /// The agent's label, for the line that asks.
+    pub label: String,
+    /// What the second `r` sends.
+    pub command: UiCommand,
+}
+
+impl Restart {
+    /// The keys' line while it waits.
+    pub(crate) fn ask(&self) -> String {
+        format!("r again to restart {}", self.label)
+    }
+}
+
+/// `r` on an agent, where Claude Code restarts an agent of a workflow: the agent's task
+/// starts over with the worker it has, in a session of its own, and the work so far is kept.
+/// The run does that when a running task is given to the worker that has it. An agent that
+/// a script's own step called has no task, and is stopped and asked again. `Err` says why
+/// there's nothing to restart, in plain words.
+pub(crate) fn restart(
+    state: &AppState,
+    run: &RunId,
+    agent: &argonauts_core::views::AgentRow,
+) -> Result<Restart, String> {
+    if let Some(why) = ended_why(state, run) {
+        return Err(why.to_owned());
+    }
+    if agent.inner.is_some() {
+        return Err(inner_why(state, agent));
+    }
+    let label = sanitize_line(&agent.label).trim().to_owned();
+    if agent.status != argonauts_core::views::RowStatus::Running {
+        return Err(format!(
+            "{label} isn't running, so there's nothing to restart"
+        ));
+    }
+    let session = state.session(run, &agent.session);
+    // An agent a script's own step called works no task: it is stopped and asked again, and
+    // the script waits for the new answer.
+    let called_by_a_script = session.is_some_and(|session| {
+        session.task.is_none() && session.step.is_none() && session.workflow_step.is_some()
+    });
+    if called_by_a_script {
+        return Ok(Restart {
+            label,
+            command: UiCommand::RestartAgent {
+                run: run.clone(),
+                session: agent.session.clone(),
+            },
+        });
+    }
+    // Only the session that builds a task starts over with it. A reviewer's or a planner's
+    // session is asked again by its step.
+    let task = session
+        .filter(|session| session.role == RoleName::Worker)
+        .filter(|session| matches!(session.step, None | Some(StepName::Build)))
+        .and_then(|session| session.task.clone());
+    let Some(task) = task else {
+        return Err(format!("{label} has no task of its own to start again"));
+    };
+    let worker = state
+        .runs
+        .get(run)
+        .and_then(|run| run.tasks.get(&task)?.worker.clone())
+        .unwrap_or_else(|| agent.worker.clone());
+    Ok(Restart {
+        label,
+        command: UiCommand::Reassign {
+            run: run.clone(),
+            task,
+            to: worker,
+        },
+    })
 }
 
 /// The run has finished, as far as this screen knows, so its sessions are free of it.
@@ -172,7 +276,7 @@ pub(crate) fn run_ended(state: &AppState, run: &RunId) -> bool {
         .is_some_and(|run| run.finished.is_some())
 }
 
-/// `c` on a finished agent: its session carries on in the chat as a direct conversation,
+/// `c` on a finished agent: its session carries on in the conversation as a direct conversation,
 /// through its CLI's own resume, once its run ended. Until then the run owns the session, and a
 /// running agent is taken over instead.
 pub(crate) fn carry_on(
@@ -193,7 +297,7 @@ pub(crate) fn carry_on(
              once the run ends"
         ));
     }
-    ViewOutcome::SendToChat(UiCommand::Slash {
+    ViewOutcome::SendToConversation(UiCommand::Slash {
         command: SlashCommand::Resume {
             target: Some(ResumeTarget::Agent(AgentSessionRef {
                 run: run.clone(),
@@ -227,7 +331,7 @@ pub(crate) fn ended_why(state: &AppState, run: &RunId) -> Option<&'static str> {
     })
 }
 
-/// `t` on an agent: the take-over confirm while its run goes on and it holds a card, else why
+/// `t` on an agent: the take-over confirm while its run goes on and it holds a question, else why
 /// not, in plain words.
 pub(crate) fn take_over(state: &AppState, run: &RunId, session: &SessionKey) -> ViewOutcome {
     if let Some(why) = ended_why(state, run) {
@@ -235,11 +339,11 @@ pub(crate) fn take_over(state: &AppState, run: &RunId, session: &SessionKey) -> 
     }
     match state
         .session(run, session)
-        .and_then(|session| session.card.clone())
+        .and_then(|session| session.task.clone())
     {
-        Some(card) => ViewOutcome::ConfirmTakeOver {
+        Some(task) => ViewOutcome::ConfirmTakeOver {
             run: run.clone(),
-            card,
+            task,
         },
         None => ViewOutcome::Notice("This agent has no task to take over".to_owned()),
     }
@@ -254,7 +358,7 @@ pub(crate) fn steer_refusal(state: &AppState, run: &RunId, session: &SessionKey)
     let session = state.session(run, session)?;
     (!session.is_running()).then(|| {
         format!(
-            "{} has finished, so it can't take a message. Type in the chat to guide the run",
+            "{} has finished, so it can't take a message. Type in the conversation to guide the run",
             sanitize_line(&state.names.worker(&session.worker)).trim()
         )
     })
@@ -285,7 +389,7 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
         ViewData::Agent { view } => cx
             .out
             .open(agent::AgentView::new((**view).clone()).following(refresh.follower())),
-        // Under its tab of the Overview, beside Status and Usage.
+        // Under its tab of the usage panel, beside Status and Usage.
         ViewData::Context { view } => cx.out.open(
             crate::overview::OverviewView::new(
                 crate::overview::Tab::Context,
@@ -295,12 +399,12 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
         ),
         ViewData::Runs {
             runs,
-            chats,
+            conversations,
             sessions,
             agents,
             agents_read,
         } => cx.out.open(
-            resume::ResumePicker::listing(runs.clone(), chats.clone(), sessions.clone())
+            resume::ResumePicker::listing(runs.clone(), conversations.clone(), sessions.clone())
                 .with_agents(agents.clone(), agents_read.clone()),
         ),
         // For a picker that closed before they came.
@@ -311,14 +415,14 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
         ViewData::Mods { view } => cx.out.open(crate::mods::ModsScreen::new((**view).clone())),
         ViewData::Goal { view } => cx.out.open(goal::GoalView::new((**view).clone())),
         ViewData::Raw { raw } => cx.out.open(pager::Pager::raw(raw.clone())),
-        // The crew panel lists every repo's runs itself now.
-        ViewData::AllRepos { .. } => cx.out.open(crew::CrewView::new(cx.state)),
+        // The agent panel lists every repo's runs itself now.
+        ViewData::AllRepos { .. } => cx.out.open(crew::AgentPanelView::new(cx.state)),
         ViewData::Settings { .. }
         | ViewData::Models { .. }
         | ViewData::Effort { .. }
         | ViewData::Config { .. }
         | ViewData::Approvals { .. } => settings::open_for(data, cx),
-        // The state keeps it for the crew panel.
+        // The state keeps it for the agent panel.
         ViewData::Crew { .. } => {}
         // A refresh is for a Library tab that closed before it came.
         ViewData::WorkflowLibrary { refresh: true, .. } => {}
@@ -333,11 +437,11 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
         }
         ViewData::Checkpoints {
             run,
-            card,
+            task,
             checkpoints,
         } => cx.out.open(rewind::RewindPicker::new(
             run.clone(),
-            card.clone(),
+            task.clone(),
             checkpoints.clone(),
         )),
         // A refresh is for a list of prompts that closed before it came.
@@ -352,7 +456,9 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
         }
         // The state keeps it for the Usage tab and the cards above the input.
         ViewData::Status { .. } | ViewData::Usage { .. } | ViewData::Overview { .. } => {}
-        // Only the Overview's Status tab draws it, and one that closed takes nothing.
+        // The conversation prints it.
+        ViewData::ContextPrint { .. } => {}
+        // Only the usage panel's Status tab draws it, and one that closed takes nothing.
         ViewData::StatusTab { .. } => {}
     }
 }

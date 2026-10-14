@@ -20,12 +20,12 @@ const CREW: [(&str, &str, &str); 4] = [
 ];
 
 fn session_started(run: &mut RunScript, session: &str, label: &str, worker: &str) -> AppEvent {
-    let vendor = worker.split('/').next().unwrap_or(worker);
+    let agent_id = worker.split('/').next().unwrap_or(worker);
     run.event(
         None,
         Some(session),
         json!({"type": "session", "data": {"event": "started", "worker": worker,
-            "vendor": vendor, "family": "any", "kind": "harness", "role": "worker",
+            "agent_id": agent_id, "provider": "any", "kind": "cli", "role": "worker",
             "step": "build", "access": "build", "lifetime": "task", "resumed_from": null,
             "follow_key": null, "label": label,
             "workflow_step": {"workflow": "wf-001", "phase": 1, "path": [0]}}}),
@@ -50,10 +50,10 @@ fn asked(run: &mut RunScript) -> AppEvent {
                 part("prompt", "frame", Value::Null,
                     "You build one task in your own worktree. Touch only the paths it owns.\n\
                      Report what you changed and how you checked it."),
-                part("card", "orchestrator", json!("Opus 5.5"),
+                part("task", "orchestrator", json!("Opus 5.5"),
                     "Add the overdue command: tasks overdue lists tasks due before today.\n\
                      Dates parse as ISO only. Every test in tests/overdue.rs must pass."),
-                part("rules", "your file", json!("roles/workers.md"),
+                part("rules", "your file", json!("roles/worker.md"),
                     "Keep commands small, and write the test before the code."),
                 part("message", "your request", Value::Null,
                     "have the workers use codex's own goal for each task"),
@@ -66,7 +66,7 @@ fn agent_row(session: &str, label: &str, worker: &str, status: &str, elapsed_ms:
     json!({"row": "agent", "session": session, "label": label, "worker": worker,
            "status": status, "tokens": 283_500, "spent": spend(0, 0.0),
            "elapsed_ms": elapsed_ms, "subagents": 0, "context": null,
-           "standing_in_for": null})
+           "fallback_for": null})
 }
 
 fn goal_line(text: &str, met: bool, by: &str, on_try: Option<u32>, failing: Option<&str>) -> Value {
@@ -74,7 +74,7 @@ fn goal_line(text: &str, met: bool, by: &str, on_try: Option<u32>, failing: Opti
            "failing": failing})
 }
 
-fn attempt(number: u32, did: &str, diff: (u32, u32, u32), failing: Option<u32>) -> Value {
+fn try_number(number: u32, did: &str, diff: (u32, u32, u32), failing: Option<u32>) -> Value {
     json!({"number": number, "did": did,
            "changed": {"insertions": diff.0, "deletions": diff.1, "files_changed": diff.2},
            "failing": failing})
@@ -82,9 +82,9 @@ fn attempt(number: u32, did: &str, diff: (u32, u32, u32), failing: Option<u32>) 
 
 fn build_cli() -> Value {
     let mut tries = vec![
-        attempt(1, "wrote the command and its tests", (142, 0, 3), Some(4)),
-        attempt(2, "fixed the date comparison", (9, 6, 1), Some(2)),
-        attempt(3, "handling tasks with no due date", (14, 2, 2), Some(1)),
+        try_number(1, "wrote the command and its tests", (142, 0, 3), Some(4)),
+        try_number(2, "fixed the date comparison", (9, 6, 1), Some(2)),
+        try_number(3, "handling tasks with no due date", (14, 2, 2), Some(1)),
     ];
     tries[0]["elapsed_ms"] = json!(125_000);
     tries[0]["tokens"] = json!(61_000);
@@ -92,8 +92,8 @@ fn build_cli() -> Value {
     tries[1]["tokens"] = json!(38_000);
     tries[2]["elapsed_ms"] = json!(137_000);
     tries[2]["running"] = json!(true);
-    json!({"session": "s-003", "label": "build:cli", "role": "workers",
-        "kept_by": {"by": "cli", "name": "Codex"}, "checked_by": "Argonauts",
+    json!({"session": "s-003", "label": "build:cli", "role": "worker",
+        "kept_by": {"by": "cli", "name": "Codex"}, "checked_by": "Argonauts Code",
         "state": "running", "set_ms_ago": 362_000,
         "lines": [
             goal_line("tasks overdue lists tasks due before today", true, "the judge",
@@ -117,18 +117,18 @@ fn build_cli() -> Value {
 
 fn goals() -> Value {
     let kept = json!({"by": "cli", "name": "Codex"});
-    let store = json!({"session": "s-002", "label": "build:store", "role": "workers",
-    "kept_by": kept, "checked_by": "Argonauts", "state": "met",
+    let store = json!({"session": "s-002", "label": "build:store", "role": "worker",
+    "kept_by": kept, "checked_by": "Argonauts Code", "state": "met",
     "lines": [
         goal_line("tasks keep an optional due date", true, "cargo test store", Some(1), None),
         goal_line("old task files still load", true, "the judge", Some(2), None),
     ],
     "tries": [
-        attempt(1, "added the field", (60, 4, 2), Some(1)),
-        attempt(2, "read old files", (12, 1, 1), Some(0)),
+        try_number(1, "added the field", (60, 4, 2), Some(1)),
+        try_number(2, "read old files", (12, 1, 1), Some(0)),
     ]});
-    let docs = json!({"session": "s-004", "label": "build:docs", "role": "workers",
-        "kept_by": kept, "checked_by": "Argonauts", "state": "running",
+    let docs = json!({"session": "s-004", "label": "build:docs", "role": "worker",
+        "kept_by": kept, "checked_by": "Argonauts Code", "state": "running",
         "lines": [
             goal_line("the README names the overdue command", false, "the judge", None, None),
             goal_line("every example runs", false, "sh docs/check.sh", None, None),
@@ -193,7 +193,7 @@ fn script() -> Script {
     events.push(asked(&mut run));
     let cli = Agent {
         session: "s-003".into(),
-        card: "task-003".into(),
+        task: "task-003".into(),
         title: "The overdue command".into(),
         worker: WORKER.into(),
         role: "worker".into(),
@@ -211,44 +211,44 @@ fn text_of(screen: &Screen) -> String {
 
 #[test]
 fn the_workflow_view_shows_each_goal_and_g_opens_the_agent_on_it() {
-    let mut harness = Harness::start(script());
-    harness.resize(64, 120);
-    harness.wait_visible("↓ to manage");
+    let mut driver = TestDriver::start(script());
+    driver.resize(64, 120);
+    driver.wait_visible("↓ to manage");
     // The run's row, then its workflow.
-    harness.press(Key::Down);
-    harness.press(Key::Enter);
-    let view = harness.wait_visible("Phases");
+    driver.press(Key::Down);
+    driver.press(Key::Enter);
+    let view = driver.wait_visible("Phases");
     let text = text_of(&view);
     assert!(
-        text.contains("add-due-dates · orchestrator workflow · workers on Codex's own goal"),
+        text.contains("orchestrator workflow · workers on Codex's own goal · "),
         "{text}"
     );
     // The run's own clock times it, so only the counts are checked here.
-    expect_row(&view, "5/8 steps · \\S+ · ↓ 1\\.1M tokens$");
+    expect_row(&view, "5/8 agents · \\S+\\s*$");
     assert!(
-        text.contains("Build · 3 steps · each task worked as a goal"),
+        text.contains("Build · 3 agents · each task worked as a goal"),
         "{text}"
     );
     // From the phases, the panel previews the goal still running.
     expect_row(
         &view,
-        "◆ Goal of build:cli .* kept by Codex's own goal · checked by Argonauts",
+        "◆ Goal of build:cli .* kept by Codex's own goal · checked by Argonauts Code",
     );
 
-    harness.press(Key::Right);
-    harness.press(Key::Down);
-    let view = harness.wait_visible("❯. build:cli");
+    driver.press(Key::Right);
+    driver.press(Key::Down);
+    let view = driver.wait_visible("❯. build:cli");
     expect_row(
         &view,
-        "build:store +GPT 5\\.6 on Codex +■■ goal met in 2 tries +4m10s",
+        "build:store +GPT 5\\.6 · ▪▪ goal met in 2 tries +4m10s",
     );
     expect_row(
         &view,
-        "build:cli +GPT 5\\.6 on Codex +■■■ try 3 · 2 of 3 lines met +6m02s",
+        "build:cli +GPT 5\\.6 · ▪▪▪ try 3 · 2 of 3 lines met +6m02s",
     );
     expect_row(
         &view,
-        "build:docs +GPT 5\\.6 on Codex +■■ try 1 · 0 of 2 lines met +1m30s",
+        "build:docs +GPT 5\\.6 · ▪▪ try 1 · 0 of 2 lines met +1m30s",
     );
     expect_row(
         &view,
@@ -257,12 +257,12 @@ fn the_workflow_view_shows_each_goal_and_g_opens_the_agent_on_it() {
     expect_row(&view, "1 failed · 11 passed · 4\\.1s");
     expect_row(
         &view,
-        "↑↓ agent · enter open it · g its goal · m message it · x stop it",
+        "↑↓ select · ⏎ open · g its goal · m message · x stop",
     );
 
     // The same agent opened, on its Goal tab: the same four parts at full size.
-    harness.press(Key::Char('g'));
-    let goal = harness.wait_visible("◆ the goal");
+    driver.press(Key::Char('g'));
+    let goal = driver.wait_visible("◆ the goal");
     expect_row(
         &goal,
         "^. build:cli · GPT 5\\.6 on Codex +Output +Input +Goal +Raw +try 3 · ",
@@ -285,17 +285,17 @@ fn the_workflow_view_shows_each_goal_and_g_opens_the_agent_on_it() {
     );
     expect_row(
         &goal,
-        "◆ checks +run by Argonauts after each try .* ◆ Codex says +its own account",
+        "◆ checks +run by Argonauts Code after each try .* ◆ Codex says +its own account",
     );
     expect_row(&goal, "turns +14 in this goal");
 
     // Shift+Tab goes back a tab, to what it was asked, each part under where it came from.
-    harness.press(Key::ShiftTab);
-    let input = harness.wait_visible("^Frame · built in");
+    driver.press(Key::ShiftTab);
+    let input = driver.wait_visible("^Frame · built in");
     for heading in [
         "^Frame · built in$",
         "^From the orchestrator · Opus 5\\.5$",
-        "^Your file · roles/workers\\.md$",
+        "^Your file · roles/worker\\.md$",
         "^From your request$",
         "^Launched as codex exec --json --sandbox workspace-write '<prompt>' · → expands$",
     ] {
@@ -307,20 +307,20 @@ fn the_workflow_view_shows_each_goal_and_g_opens_the_agent_on_it() {
     );
 
     // Esc goes back to the workflow, where it was.
-    harness.press(Key::Esc);
-    harness.wait_visible("◆ Goal of build:cli");
+    driver.press(Key::Esc);
+    driver.wait_visible("◆ Goal of build:cli");
 }
 
 #[test]
 fn the_row_at_the_bottom_counts_the_goals_still_running() {
-    let mut harness = Harness::start(script());
-    harness.resize(64, 120);
-    harness.wait_visible("↓ to manage");
-    harness.press(Key::Down);
-    harness.press(Key::Enter);
-    harness.wait_visible("◆ Goal of build:cli");
+    let mut driver = TestDriver::start(script());
+    driver.resize(64, 120);
+    driver.wait_visible("↓ to manage");
+    driver.press(Key::Down);
+    driver.press(Key::Enter);
+    driver.wait_visible("◆ Goal of build:cli");
     // Back at the input, the row knows the goals the view was just told of.
-    harness.press(Key::Esc);
-    let screen = harness.wait_visible("2 goals running");
-    expect_row(&screen, "0/4 steps · 2 goals running · ");
+    driver.press(Key::Esc);
+    let screen = driver.wait_visible("2 goals running");
+    expect_row(&screen, "0/4 · .* · 2 goals running");
 }

@@ -2,11 +2,9 @@
 //! Code, never the model, decides what happens next.
 
 pub mod asking;
-pub mod card;
 pub mod design;
 mod design_shorthand;
-pub mod goal;
-pub mod handoff;
+pub mod fallback;
 pub mod instructions;
 pub mod intake;
 pub mod judgment;
@@ -14,6 +12,8 @@ pub mod narrate;
 pub mod plan;
 pub mod pursue;
 mod runner;
+pub mod task;
+pub mod understand;
 
 pub use runner::{SchemaStepRunner, last_json_object};
 
@@ -24,7 +24,7 @@ use serde_json::{Map, Value, json};
 
 use crate::events::session::{EndReason, SessionEnd, loaded_words};
 use crate::future::BoxFuture;
-use crate::worker::{SessionControl, SessionSpec, Worker, WorkerError, WorkerEvent};
+use crate::session_runner::{RunnerError, RunnerEvent, SessionControl, SessionRunner, SessionSpec};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -32,43 +32,43 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StepName {
-    TriageEstimate,
-    ChatAnswer,
-    Restate,
-    Differ,
-    /// The lead answers the goal's open questions for you.
+    Estimate,
+    ConversationAnswer,
+    Read,
+    Compare,
+    /// The main agent answers the goal's open questions for you.
     AnswerQuestions,
     Draft,
     Map,
     Critique,
     Revise,
-    ProposeSpike,
-    SpikeReport,
+    ProposeExperiment,
+    ExperimentReport,
     Judge,
-    PlanToCards,
+    PlanToTasks,
     Predict,
     Build,
     AcceptanceTests,
     Review,
-    Adjudicate,
+    Settle,
     ResolveConflict,
-    Coordinate,
-    Retro,
+    Orchestrate,
+    RunReview,
     /// The closing answer of a crew run.
     CloseRun,
-    ModelApprover,
+    ModelJudge,
     Narrate,
     DesignWorkflow,
-    HandoffSummary,
+    FallbackSummary,
     /// The judge picks among fallbacks that did the same task at once.
-    PickAttempt,
-    /// The lead writes a goal's next attempt.
-    PlanAttempt,
-    /// A check from another company judges a goal's criteria.
+    PickTry,
+    /// The main agent writes a goal's next try.
+    PlanTry,
+    /// A model from another provider judges a goal's criteria.
     CheckGoal,
-    /// One of the main agent CLI's own commands, such as `/init`.
-    VendorCommand,
-    /// A direct solo turn: your message to the main session, as its CLI takes it.
+    /// A command of the main agent's CLI, such as `/init`.
+    CliCommand,
+    /// A direct Captain turn: your message to the main session, as its CLI takes it.
     Direct,
     /// A model you named writes another agent's instructions.
     WriteInstructions,
@@ -78,7 +78,7 @@ pub trait Step {
     const NAME: StepName;
     /// What the prompt template renders from.
     type Input: Serialize + JsonSchema;
-    /// What the worker must return, checked against [`output_schema`].
+    /// What the agent must return, checked against [`output_schema`].
     type Output: Serialize + DeserializeOwned + JsonSchema;
 
     /// The answer with the near-misses that can only mean one thing read as the schema says,
@@ -89,7 +89,7 @@ pub trait Step {
 }
 
 pub struct StepRequest {
-    pub worker: Arc<dyn Worker>,
+    pub worker: Arc<dyn SessionRunner>,
     /// Its prompt already holds the rendered input, and its `json_schema` is the output schema.
     pub spec: SessionSpec,
     /// Retries in the same session when the output doesn't match. Default 1.
@@ -109,7 +109,7 @@ pub struct StepRequest {
 
 impl StepRequest {
     /// A request with no steering and its own cancel token.
-    pub fn new(worker: Arc<dyn Worker>, spec: SessionSpec) -> Self {
+    pub fn new(worker: Arc<dyn SessionRunner>, spec: SessionSpec) -> Self {
         Self {
             worker,
             spec,
@@ -124,7 +124,7 @@ impl StepRequest {
 
 /// Called with every event of the step's session. It runs on the runner's task and must not
 /// block, so forward into an unbounded channel or streamed text is lost.
-pub type StepObserver = Box<dyn FnMut(&WorkerEvent) + Send>;
+pub type StepObserver = Box<dyn FnMut(&RunnerEvent) + Send>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StepOutcome {
@@ -133,14 +133,14 @@ pub struct StepOutcome {
     /// How the last session ended.
     pub end: SessionEnd,
     /// Sessions or turns used, 1 when the first answer matched.
-    pub attempts: u8,
+    pub tries: u8,
 }
 
 /// Why a step produced no usable output. Each step has a fixed fallback for these.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum StepError {
-    #[error("worker: {0}")]
-    Worker(#[from] WorkerError),
+    #[error("session runner: {0}")]
+    Runner(#[from] RunnerError),
     #[error("{}", ended_early(.0))]
     Session(Box<SessionEnd>),
     #[error("output didn't match the schema: {}", errors.join("; "))]
@@ -155,7 +155,7 @@ fn ended_early(end: &SessionEnd) -> String {
     let why = match &end.reason {
         EndReason::Completed => return "the session ended without an answer".to_owned(),
         // A CLI's error reads as the one plain cause every other line gives for it.
-        EndReason::VendorError { .. } => {
+        EndReason::CliError { .. } => {
             if let Some(line) = end.reason.plain_line("its CLI") {
                 return line;
             }
@@ -194,7 +194,7 @@ pub trait StepRunner: Send + Sync {
     ) -> BoxFuture<'_, Result<StepOutcome, StepError>>;
 }
 
-/// The strict JSON Schema for `S::Output`, accepted by every vendor's structured output mode.
+/// The strict JSON Schema for `S::Output`, accepted by every agent's structured output mode.
 pub fn output_schema<S: Step>() -> Value {
     strict_schema(schemars::schema_for!(S::Output).to_value())
 }
@@ -202,36 +202,36 @@ pub fn output_schema<S: Step>() -> Value {
 impl StepName {
     /// Every step, so a check can hold each one's answer format to the same rules.
     pub const ALL: [StepName; 32] = [
-        Self::TriageEstimate,
-        Self::ChatAnswer,
-        Self::Restate,
-        Self::Differ,
+        Self::Estimate,
+        Self::ConversationAnswer,
+        Self::Read,
+        Self::Compare,
         Self::AnswerQuestions,
         Self::Draft,
         Self::Map,
         Self::Critique,
         Self::Revise,
-        Self::ProposeSpike,
-        Self::SpikeReport,
+        Self::ProposeExperiment,
+        Self::ExperimentReport,
         Self::Judge,
-        Self::PlanToCards,
+        Self::PlanToTasks,
         Self::Predict,
         Self::Build,
         Self::AcceptanceTests,
         Self::Review,
-        Self::Adjudicate,
+        Self::Settle,
         Self::ResolveConflict,
-        Self::Coordinate,
-        Self::Retro,
+        Self::Orchestrate,
+        Self::RunReview,
         Self::CloseRun,
-        Self::ModelApprover,
+        Self::ModelJudge,
         Self::Narrate,
         Self::DesignWorkflow,
-        Self::HandoffSummary,
-        Self::PickAttempt,
-        Self::PlanAttempt,
+        Self::FallbackSummary,
+        Self::PickTry,
+        Self::PlanTry,
         Self::CheckGoal,
-        Self::VendorCommand,
+        Self::CliCommand,
         Self::Direct,
         Self::WriteInstructions,
     ];
@@ -241,44 +241,44 @@ impl StepName {
     /// be left out.
     pub fn output_schema(self) -> Option<Value> {
         let schema = match self {
-            Self::TriageEstimate => output_schema::<intake::TriageEstimate>(),
-            Self::ChatAnswer => output_schema::<intake::ChatAnswer>(),
-            Self::Restate => output_schema::<goal::Restate>(),
-            Self::Differ => output_schema::<goal::Differ>(),
-            Self::AnswerQuestions => output_schema::<goal::AnswerQuestions>(),
+            Self::Estimate => output_schema::<intake::Estimate>(),
+            Self::ConversationAnswer => output_schema::<intake::ConversationAnswer>(),
+            Self::Read => output_schema::<understand::Read>(),
+            Self::Compare => output_schema::<understand::Compare>(),
+            Self::AnswerQuestions => output_schema::<understand::AnswerQuestions>(),
             Self::Draft => output_schema::<plan::Draft>(),
             Self::Map => output_schema::<plan::Map>(),
             Self::Critique => output_schema::<plan::Critique>(),
             Self::Revise => output_schema::<plan::Revise>(),
-            Self::ProposeSpike => output_schema::<plan::ProposeSpike>(),
-            Self::SpikeReport => output_schema::<plan::SpikeReportStep>(),
+            Self::ProposeExperiment => output_schema::<plan::ProposeExperiment>(),
+            Self::ExperimentReport => output_schema::<plan::ExperimentReportStep>(),
             Self::Judge => output_schema::<plan::Judge>(),
-            Self::PlanToCards => output_schema::<plan::PlanToCards>(),
-            Self::Predict => output_schema::<card::Predict>(),
-            Self::Build => output_schema::<card::Build>(),
-            Self::AcceptanceTests => output_schema::<card::AcceptanceTests>(),
+            Self::PlanToTasks => output_schema::<plan::PlanToTasks>(),
+            Self::Predict => output_schema::<task::Predict>(),
+            Self::Build => output_schema::<task::Build>(),
+            Self::AcceptanceTests => output_schema::<task::AcceptanceTests>(),
             Self::Review => output_schema::<judgment::Review>(),
-            Self::Adjudicate => output_schema::<judgment::Adjudicate>(),
-            Self::ResolveConflict => output_schema::<card::ResolveConflict>(),
-            Self::Coordinate => output_schema::<plan::Coordinate>(),
-            Self::Retro => output_schema::<card::Retro>(),
-            Self::CloseRun => output_schema::<card::CloseRun>(),
-            Self::ModelApprover => output_schema::<judgment::ModelApprover>(),
+            Self::Settle => output_schema::<judgment::Settle>(),
+            Self::ResolveConflict => output_schema::<task::ResolveConflict>(),
+            Self::Orchestrate => output_schema::<plan::Orchestrate>(),
+            Self::RunReview => output_schema::<task::RunReview>(),
+            Self::CloseRun => output_schema::<task::CloseRun>(),
+            Self::ModelJudge => output_schema::<judgment::ModelJudge>(),
             Self::Narrate => output_schema::<narrate::Narrate>(),
             // The first brief and its fix answer in the same shape.
             Self::DesignWorkflow => output_schema::<design::DesignWorkflow>(),
-            Self::HandoffSummary => output_schema::<handoff::HandoffSummary>(),
-            Self::PickAttempt => output_schema::<handoff::PickAttempt>(),
-            Self::PlanAttempt => output_schema::<pursue::PlanAttempt>(),
+            Self::FallbackSummary => output_schema::<fallback::FallbackSummary>(),
+            Self::PickTry => output_schema::<fallback::PickTry>(),
+            Self::PlanTry => output_schema::<pursue::PlanTry>(),
             Self::CheckGoal => output_schema::<pursue::CheckGoal>(),
             Self::WriteInstructions => output_schema::<instructions::WriteInstructions>(),
-            Self::VendorCommand | Self::Direct => return None,
+            Self::CliCommand | Self::Direct => return None,
         };
         Some(schema)
     }
 }
 
-/// Rewrites a schema into the subset every vendor's strict mode accepts.
+/// Rewrites a schema into the subset every agent's strict mode accepts.
 ///
 /// Every object lists all its properties as required and gets `additionalProperties: false`
 /// (Codex strict mode needs both). A field with a serde default doesn't get `null` added,
@@ -310,7 +310,7 @@ pub fn strict_schema(schema: Value) -> Value {
     out
 }
 
-/// Keywords every vendor's structured output mode accepts, kept as they are.
+/// Keywords every agent's structured output mode accepts, kept as they are.
 const KEPT_KEYWORDS: &[&str] = &["type", "enum", "description"];
 
 struct Strict {
@@ -478,8 +478,8 @@ pub fn decode<S: Step>(outcome: &StepOutcome) -> Result<S::Output, StepError> {
     })
 }
 
-/// The line a person reads for a step's output: its `summary`, else the first line of a chat
-/// answer. The JSON itself is for code and the Ctrl+O detail.
+/// The line a person reads for a step's output: its `summary`, else the first line of a
+/// conversation answer. The JSON itself is for code and the Ctrl+O detail.
 pub fn summary_line(output: &Value) -> Option<String> {
     ["summary", "answer_markdown"]
         .iter()
@@ -488,9 +488,9 @@ pub fn summary_line(output: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Argonauts' own tools: the report, however the vendor sends it (`StructuredOutput`, agy's
+/// Argonauts Code's own tools: the report, however the agent sends it (`StructuredOutput`, agy's
 /// `finish`, or the `argonauts_report` MCP tool under any server prefix), and
-/// `argonauts_status`. They're how a session talks to Argonauts rather than work it does, so
+/// `argonauts_status`. They're how a session talks to Argonauts Code rather than work it does, so
 /// the screen leaves them out of an agent's activity.
 pub fn is_own_tool(name: &str) -> bool {
     let normal: String = name
@@ -506,14 +506,14 @@ pub fn is_own_tool(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::steps::{card, goal, intake, judgment, narrate, plan};
+    use crate::steps::{intake, judgment, narrate, plan, task, understand};
 
     /// A step's error is read in the main view's details, so it's words, never a record dump.
     #[test]
     fn a_step_error_says_why_in_words() {
         let ended = |reason: EndReason| {
             StepError::Session(Box::new(SessionEnd {
-                vendor_session: None,
+                cli_session: None,
                 exit_code: Some(0),
                 signal: None,
                 duration_ms: 745,
@@ -544,11 +544,11 @@ mod tests {
         );
         // A CLI's error gives the one plain cause every other line gives.
         assert_eq!(
-            ended(EndReason::VendorError {
+            ended(EndReason::CliError {
                 category: crate::ErrorCategory::InvalidRequest,
                 message: "Invalid schema for response_format: 'summary' is not in required".into(),
             }),
-            "its CLI refused the answer format Argonauts asked for"
+            "its CLI refused the answer format Argonauts Code asked for"
         );
         let mismatch = StepError::SchemaMismatch {
             raw: None,
@@ -596,7 +596,7 @@ mod tests {
         assert_eq!(summary_line(&json!(["summary"])), None);
     }
 
-    /// Keywords Codex's strict mode (and so every vendor) rejects or ignores.
+    /// Keywords Codex's strict mode (and so every agent) rejects or ignores.
     const FORBIDDEN: &[&str] = &[
         "$schema",
         "$ref",
@@ -687,27 +687,27 @@ mod tests {
 
     #[test]
     fn every_step_output_schema_meets_codex_strict_rules() {
-        assert_strict::<intake::TriageEstimate>();
-        assert_strict::<intake::ChatAnswer>();
-        assert_strict::<goal::Restate>();
-        assert_strict::<goal::Differ>();
+        assert_strict::<intake::Estimate>();
+        assert_strict::<intake::ConversationAnswer>();
+        assert_strict::<understand::Read>();
+        assert_strict::<understand::Compare>();
         assert_strict::<plan::Draft>();
         assert_strict::<plan::Map>();
         assert_strict::<plan::Critique>();
         assert_strict::<plan::Revise>();
-        assert_strict::<plan::ProposeSpike>();
-        assert_strict::<plan::SpikeReportStep>();
+        assert_strict::<plan::ProposeExperiment>();
+        assert_strict::<plan::ExperimentReportStep>();
         assert_strict::<plan::Judge>();
-        assert_strict::<plan::PlanToCards>();
-        assert_strict::<plan::Coordinate>();
-        assert_strict::<card::Predict>();
-        assert_strict::<card::Build>();
-        assert_strict::<card::ResolveConflict>();
-        assert_strict::<card::AcceptanceTests>();
-        assert_strict::<card::Retro>();
+        assert_strict::<plan::PlanToTasks>();
+        assert_strict::<plan::Orchestrate>();
+        assert_strict::<task::Predict>();
+        assert_strict::<task::Build>();
+        assert_strict::<task::ResolveConflict>();
+        assert_strict::<task::AcceptanceTests>();
+        assert_strict::<task::RunReview>();
         assert_strict::<judgment::Review>();
-        assert_strict::<judgment::Adjudicate>();
-        assert_strict::<judgment::ModelApprover>();
+        assert_strict::<judgment::Settle>();
+        assert_strict::<judgment::ModelJudge>();
         assert_strict::<narrate::Narrate>();
     }
 
@@ -741,27 +741,27 @@ mod tests {
             (S::NAME, schemars::schema_for!(S::Output).to_value())
         }
         for (name, schema) in [
-            raw::<intake::TriageEstimate>(),
-            raw::<intake::ChatAnswer>(),
-            raw::<goal::Restate>(),
-            raw::<goal::Differ>(),
+            raw::<intake::Estimate>(),
+            raw::<intake::ConversationAnswer>(),
+            raw::<understand::Read>(),
+            raw::<understand::Compare>(),
             raw::<plan::Draft>(),
             raw::<plan::Map>(),
             raw::<plan::Critique>(),
             raw::<plan::Revise>(),
-            raw::<plan::ProposeSpike>(),
-            raw::<plan::SpikeReportStep>(),
+            raw::<plan::ProposeExperiment>(),
+            raw::<plan::ExperimentReportStep>(),
             raw::<plan::Judge>(),
-            raw::<plan::PlanToCards>(),
-            raw::<plan::Coordinate>(),
-            raw::<card::Predict>(),
-            raw::<card::Build>(),
-            raw::<card::ResolveConflict>(),
-            raw::<card::AcceptanceTests>(),
-            raw::<card::Retro>(),
+            raw::<plan::PlanToTasks>(),
+            raw::<plan::Orchestrate>(),
+            raw::<task::Predict>(),
+            raw::<task::Build>(),
+            raw::<task::ResolveConflict>(),
+            raw::<task::AcceptanceTests>(),
+            raw::<task::RunReview>(),
             raw::<judgment::Review>(),
-            raw::<judgment::Adjudicate>(),
-            raw::<judgment::ModelApprover>(),
+            raw::<judgment::Settle>(),
+            raw::<judgment::ModelJudge>(),
             raw::<narrate::Narrate>(),
         ] {
             let mut found = Vec::new();
@@ -779,11 +779,11 @@ mod tests {
             schemars::schema_for!(S::Input).to_value()
         }
         for schema in [
-            input::<intake::TriageEstimate>(),
-            input::<goal::Restate>(),
+            input::<intake::Estimate>(),
+            input::<understand::Read>(),
             input::<plan::Judge>(),
-            input::<card::Build>(),
-            input::<judgment::ModelApprover>(),
+            input::<task::Build>(),
+            input::<judgment::ModelJudge>(),
             input::<narrate::Narrate>(),
         ] {
             assert!(jsonschema::validator_for(&schema).is_ok());
@@ -906,7 +906,7 @@ mod tests {
         let value = serde_json::to_value(&output).unwrap();
         assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&value));
 
-        let schema = output_schema::<intake::TriageEstimate>();
+        let schema = output_schema::<intake::Estimate>();
         let reply = json!({"kind": "unclear", "answer_markdown": "Could be either.",
             "estimate": null, "how_to_run": []});
         assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&reply));
@@ -924,9 +924,9 @@ mod tests {
             "tests_run": [],
             "concerns": []
         });
-        let report: card::CardReport = serde_json::from_value(old).unwrap();
+        let report: task::TaskReport = serde_json::from_value(old).unwrap();
         assert!(report.questions.is_empty() && report.memory_proposals.is_empty());
-        let schema = output_schema::<card::Build>();
+        let schema = output_schema::<task::Build>();
         let required = schema["required"].as_array().unwrap();
         for field in ["questions", "change_requests", "memory_proposals"] {
             assert!(required.iter().any(|name| name == field), "{field}");

@@ -1,12 +1,12 @@
 #!/bin/sh
-# A tiny harness plugin for tests. It speaks Argonauts' JSONL protocol, one normalized
+# A tiny CLI plugin for tests. It speaks Argonauts Code's JSONL protocol, one normalized
 # AgentEvent per stdout line, and calls no model.
 #
 #   --version         print a version and exit
 #   --model <id>      echo the model back in the init event
 #   --resume <id>     continue that session instead of starting one
-#   --write <path>    create <path> under the working folder, and end with a card report
-#                     of the change, as an owner does
+#   --write <path>    create <path> under the working folder, and end with a task report
+#                     of the change, as a worker does
 #   --events <file>   print that file's lines after the init event, in place of the reply
 #   --noise           print a line that isn't JSON, which the adapter keeps as unknown
 #   --fail            print an error to stderr and exit 3

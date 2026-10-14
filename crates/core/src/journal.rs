@@ -17,7 +17,7 @@ use crate::events::{RunEvent, RunEventKind};
 use crate::layout::run_files;
 use crate::names::SessionKey;
 use crate::paths::create_private_dir_all;
-use crate::{CardId, Note, NoteLevel, RunId};
+use crate::{Note, NoteLevel, RunId, TaskId};
 
 const TAIL_POLL: Duration = Duration::from_millis(50);
 
@@ -27,7 +27,7 @@ const TAIL_BUFFER: usize = 1024;
 pub enum JournalError {
     #[error("run journal {path}: {message}")]
     Io { path: PathBuf, message: String },
-    #[error("run {0} is locked by another supervisor")]
+    #[error("run {0} is locked by another run host")]
     Locked(RunId),
 }
 
@@ -35,6 +35,52 @@ fn io_error(path: &Path, err: impl std::fmt::Display) -> JournalError {
     JournalError::Io {
         path: path.to_owned(),
         message: err.to_string(),
+    }
+}
+
+/// The format of the journals this build writes and reads. A journal's first line carries it
+/// as `format`, beside the first event's own fields, and it goes up whenever a build can no
+/// longer read what the one before wrote.
+pub const FORMAT: u64 = 2;
+
+/// The key of the format in a journal's first line.
+const FORMAT_KEY: &str = "format";
+
+/// Who wrote a journal, by its first line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WrittenBy {
+    /// Nothing is written yet, or there is no journal.
+    NoOne,
+    /// A build whose journals this one reads.
+    ThisFormat,
+    /// An older Argonauts Code, in a format this build can't read. Nothing converts it.
+    AnOlderBuild,
+    /// A newer Argonauts Code.
+    ANewerBuild,
+}
+
+/// Who wrote the journal at `path`. A first line with no format number is from before
+/// journals carried one, and counts as this build's when its event still reads.
+pub fn written_by(path: &Path) -> WrittenBy {
+    let Ok(file) = File::open(path) else {
+        return WrittenBy::NoOne;
+    };
+    let first = BufReader::new(file)
+        .split(b'\n')
+        .map_while(Result::ok)
+        .find(|line| !line.trim_ascii().is_empty());
+    let Some(first) = first else {
+        return WrittenBy::NoOne;
+    };
+    let format = serde_json::from_slice::<serde_json::Value>(&first)
+        .ok()
+        .and_then(|line| line.get(FORMAT_KEY).and_then(serde_json::Value::as_u64));
+    let reads = || serde_json::from_slice::<RunEvent>(&first).is_ok();
+    match format {
+        Some(format) if format > FORMAT => WrittenBy::ANewerBuild,
+        Some(format) if format < FORMAT => WrittenBy::AnOlderBuild,
+        _ if reads() => WrittenBy::ThisFormat,
+        _ => WrittenBy::AnOlderBuild,
     }
 }
 
@@ -77,7 +123,7 @@ impl Journal {
     pub fn append(
         &mut self,
         run: &RunId,
-        card: Option<&CardId>,
+        task: Option<&TaskId>,
         session: Option<&SessionKey>,
         source: &str,
         kind: RunEventKind,
@@ -86,12 +132,23 @@ impl Journal {
             seq: self.next_seq,
             ts: OffsetDateTime::now_utc(),
             run_id: run.clone(),
-            card_id: card.cloned(),
+            task_id: task.cloned(),
             session: session.cloned(),
             source: source.to_owned(),
             kind,
         };
-        let mut line = serde_json::to_vec(&event).map_err(|err| io_error(&self.path, err))?;
+        let mut line = if event.seq == 0 {
+            // The journal's first line says which format wrote it.
+            let mut first =
+                serde_json::to_value(&event).map_err(|err| io_error(&self.path, err))?;
+            if let Some(fields) = first.as_object_mut() {
+                fields.insert(FORMAT_KEY.to_owned(), FORMAT.into());
+            }
+            serde_json::to_vec(&first)
+        } else {
+            serde_json::to_vec(&event)
+        }
+        .map_err(|err| io_error(&self.path, err))?;
         line.push(b'\n');
         // One write per line, so a crash tears at most the line being written.
         self.file
@@ -183,7 +240,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 /// Follows the journal from `from_seq`. A complete line that doesn't parse, such as an event
-/// from a newer Argonauts, comes through as a warning `Note`; a torn last line is waited for.
+/// from a newer Argonauts Code, comes through as a warning `Note`; a torn last line is waited for.
 /// A thread does the reading, so no Tokio runtime is needed. It stops when the receiver drops,
 /// or at the end of the log once it passed a `Finished` that no `Resumed` follows: a stopped run
 /// can be reopened, so a `Finished` is the last event only until then.
@@ -275,13 +332,13 @@ fn parse_or_note(line: &[u8]) -> Option<RunEvent> {
         seq,
         ts,
         run_id,
-        card_id: None,
+        task_id: None,
         session: None,
         source: "journal".to_owned(),
         kind: RunEventKind::Note(Note {
             level: NoteLevel::Warn,
             text: format!(
-                "event {seq} ({kind}) was written by a newer Argonauts and can't be shown here"
+                "event {seq} ({kind}) was written by a newer Argonauts Code and can't be shown here"
             ),
         }),
     })
@@ -312,7 +369,7 @@ impl RunLock {
         }
     }
 
-    /// A held lock means a supervisor is alive.
+    /// A held lock means a run host is alive.
     pub fn is_held(run_dir: &Path) -> bool {
         let path = run_dir.join(run_files::LOCK);
         let Ok(file) = File::open(&path) else {
@@ -325,7 +382,7 @@ impl RunLock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::run::{ParkReason, ResumeCause, RunOutcome, RunResumed};
+    use crate::events::run::{ResumeCause, RunOutcome, RunResumed, WaitReason};
     use crate::{Note, NoteLevel};
     use std::os::unix::fs::PermissionsExt;
     use std::time::Instant;
@@ -364,16 +421,22 @@ mod tests {
         let lock = RunLock::try_acquire(dir.path()).unwrap().unwrap();
         let path = dir.path().join(run_files::EVENTS);
         let mut journal = Journal::open(&path, &lock).unwrap();
-        let card = CardId::numbered(2);
+        let task = TaskId::numbered(2);
         let session = SessionKey::numbered(7);
         let first = journal
-            .append(&run(), Some(&card), Some(&session), "conductor", note("a"))
+            .append(
+                &run(),
+                Some(&task),
+                Some(&session),
+                "argonauts-code",
+                note("a"),
+            )
             .unwrap();
         let second = journal
             .append(&run(), None, None, "user", note("b"))
             .unwrap();
         assert_eq!((first.seq, second.seq), (0, 1));
-        assert_eq!(first.card_id, Some(card));
+        assert_eq!(first.task_id, Some(task));
         assert_eq!(first.session, Some(session));
         let back = read_all(&path).unwrap();
         assert_eq!(back.events, vec![first, second]);
@@ -389,10 +452,10 @@ mod tests {
         let path = dir.path().join(run_files::EVENTS);
         let mut journal = Journal::open(&path, &lock).unwrap();
         journal
-            .append(&run(), None, None, "conductor", note("a"))
+            .append(&run(), None, None, "argonauts-code", note("a"))
             .unwrap();
         journal
-            .append(&run(), None, None, "conductor", note("b"))
+            .append(&run(), None, None, "argonauts-code", note("b"))
             .unwrap();
         drop(journal);
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
@@ -402,7 +465,7 @@ mod tests {
         let mut journal = Journal::open(&path, &lock).unwrap();
         assert_eq!(journal.next_seq(), 2);
         let next = journal
-            .append(&run(), None, None, "conductor", note("c"))
+            .append(&run(), None, None, "argonauts-code", note("c"))
             .unwrap();
         assert_eq!(next.seq, 2);
         let back = read_all(&path).unwrap();
@@ -450,7 +513,7 @@ mod tests {
         let mut journal = Journal::open(&path, &lock).unwrap();
         for text in ["a", "b", "c"] {
             journal
-                .append(&run(), None, None, "conductor", note(text))
+                .append(&run(), None, None, "argonauts-code", note(text))
                 .unwrap();
         }
         let mut receiver = tail(&path, 1);
@@ -458,17 +521,17 @@ mod tests {
         assert_eq!(receive(&mut receiver).unwrap().seq, 2);
 
         journal
-            .append(&run(), None, None, "conductor", note("d"))
+            .append(&run(), None, None, "argonauts-code", note("d"))
             .unwrap();
-        let parked = RunEventKind::Run(RunLifecycle::Parked {
-            reason: ParkReason::Paused,
+        let waiting = RunEventKind::Run(RunLifecycle::Waiting {
+            reason: WaitReason::Paused,
             waiting_on: Vec::new(),
         });
         journal
-            .append(&run(), None, None, "conductor", parked)
+            .append(&run(), None, None, "argonauts-code", waiting)
             .unwrap();
         journal
-            .append(&run(), None, None, "conductor", finished())
+            .append(&run(), None, None, "argonauts-code", finished())
             .unwrap();
         assert_eq!(receive(&mut receiver).unwrap().seq, 3);
         assert_eq!(receive(&mut receiver).unwrap().seq, 4);
@@ -492,13 +555,13 @@ mod tests {
         let resumed = RunEventKind::Run(RunLifecycle::Resumed(RunResumed {
             cause: ResumeCause::User,
             settings_changed: false,
-            harness_versions_changed: Vec::new(),
+            cli_versions_changed: Vec::new(),
             main_moved_by: None,
             sessions: Vec::new(),
         }));
         for kind in [note("a"), stopped, resumed, note("b")] {
             journal
-                .append(&run(), None, None, "conductor", kind)
+                .append(&run(), None, None, "argonauts-code", kind)
                 .unwrap();
         }
         let mut receiver = tail(&path, 0);
@@ -507,13 +570,68 @@ mod tests {
         }
 
         journal
-            .append(&run(), None, None, "conductor", finished())
+            .append(&run(), None, None, "argonauts-code", finished())
             .unwrap();
         assert_eq!(receive(&mut receiver).unwrap().seq, 4);
         assert!(
             receive(&mut receiver).is_none(),
             "the tail ends after the last Finished"
         );
+    }
+
+    #[test]
+    fn a_journal_says_which_format_wrote_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = RunLock::try_acquire(dir.path()).unwrap().unwrap();
+        let path = dir.path().join(run_files::EVENTS);
+        assert_eq!(written_by(&path), WrittenBy::NoOne);
+        let mut journal = Journal::open(&path, &lock).unwrap();
+        assert_eq!(written_by(&path), WrittenBy::NoOne);
+        for kind in [note("a"), note("b")] {
+            journal
+                .append(&run(), None, None, "argonauts-code", kind)
+                .unwrap();
+        }
+        assert_eq!(written_by(&path), WrittenBy::ThisFormat);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines[0]["format"], FORMAT);
+        assert!(lines[1].get("format").is_none(), "only the first line says");
+        // The number changes nothing for a reader of events.
+        assert_eq!(read_all(&path).unwrap().events.len(), 2);
+    }
+
+    #[test]
+    fn a_journal_in_another_format_is_told_from_one_that_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(run_files::EVENTS);
+        let event = RunEvent {
+            seq: 0,
+            ts: OffsetDateTime::now_utc(),
+            run_id: run(),
+            task_id: None,
+            session: None,
+            source: "argonauts-code".into(),
+            kind: note("a"),
+        };
+        let mut first = serde_json::to_value(&event).unwrap();
+        let write = |first: &serde_json::Value| {
+            std::fs::write(&path, format!("\n{first}\n")).unwrap();
+            written_by(&path)
+        };
+        // From before journals carried a number, and its event still reads.
+        assert_eq!(write(&first), WrittenBy::ThisFormat);
+        first["format"] = (FORMAT - 1).into();
+        assert_eq!(write(&first), WrittenBy::AnOlderBuild);
+        first["format"] = (FORMAT + 1).into();
+        assert_eq!(write(&first), WrittenBy::ANewerBuild);
+        // No number, and an event of a kind this build never wrote.
+        let old = r#"{"seq":0,"ts":"2026-10-04T07:23:29Z","run_id":"run-01","source":"x","kind":{"type":"hologram","data":{}}}"#;
+        std::fs::write(&path, format!("{old}\n")).unwrap();
+        assert_eq!(written_by(&path), WrittenBy::AnOlderBuild);
     }
 
     #[test]
@@ -526,9 +644,9 @@ mod tests {
                 seq,
                 ts: OffsetDateTime::now_utc(),
                 run_id: run(),
-                card_id: None,
+                task_id: None,
                 session: None,
-                source: "conductor".into(),
+                source: "argonauts-code".into(),
                 kind,
             };
             serde_json::to_string(&event).unwrap()
@@ -553,7 +671,7 @@ mod tests {
                 upto,
                 engine: serde_json::json!({"next_session": 4}),
                 summary: crate::api::StatusSummary::default(),
-                open_checkpoints: Vec::new(),
+                open_approvals: Vec::new(),
                 running: Vec::new(),
             },
         )))
@@ -567,7 +685,7 @@ mod tests {
         let mut journal = Journal::open(&path, &lock).unwrap();
         for kind in [note("a"), snapshot(0), note("b"), snapshot(2), note("c")] {
             journal
-                .append(&run(), None, None, "conductor", kind)
+                .append(&run(), None, None, "argonauts-code", kind)
                 .unwrap();
         }
         let back = read_since_snapshot(&path).unwrap();
@@ -579,7 +697,7 @@ mod tests {
         let plain = dir.path().join("plain.jsonl");
         let mut journal = Journal::open(&plain, &lock).unwrap();
         journal
-            .append(&run(), None, None, "conductor", note("a"))
+            .append(&run(), None, None, "argonauts-code", note("a"))
             .unwrap();
         assert_eq!(read_since_snapshot(&plain).unwrap().events.len(), 1);
     }
@@ -593,9 +711,9 @@ mod tests {
                 seq,
                 ts: OffsetDateTime::now_utc(),
                 run_id: run(),
-                card_id: None,
+                task_id: None,
                 session: None,
-                source: "conductor".into(),
+                source: "argonauts-code".into(),
                 kind,
             })
             .unwrap()
@@ -632,7 +750,7 @@ mod tests {
         let lock = RunLock::try_acquire(dir.path()).unwrap().unwrap();
         let mut journal = Journal::open(&path, &lock).unwrap();
         journal
-            .append(&run(), None, None, "conductor", note("late"))
+            .append(&run(), None, None, "argonauts-code", note("late"))
             .unwrap();
         assert_eq!(receive(&mut receiver).unwrap().seq, 0);
     }

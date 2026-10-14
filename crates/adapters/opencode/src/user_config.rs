@@ -1,4 +1,4 @@
-//! How much of a local route your own OpenCode config already declares, so Argonauts leaves
+//! How much of a local route your own OpenCode config already declares, so Argonauts Code leaves
 //! yours in charge and only adds what's missing.
 //!
 //! The file list follows `loadInstanceState` in `opencode/src/config/config.ts` at v1.18.33, read
@@ -63,7 +63,8 @@ pub(crate) enum Declared {
     Nothing,
     /// `provider.<id>`, but not this model under it.
     Provider,
-    /// `provider.<id>.models.<model>`, or a file Argonauts can't read, which is never overridden.
+    /// `provider.<id>.models.<model>`, or a file Argonauts Code can't read, which is never
+    /// overridden.
     Model,
 }
 

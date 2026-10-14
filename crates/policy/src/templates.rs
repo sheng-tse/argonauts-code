@@ -1,14 +1,14 @@
-//! The approver's and the narrator's prompts by the names of their template files, so they can
+//! The judge's and the narrator's prompts by the names of their template files, so they can
 //! be written out and replaced like every other prompt.
 
 use argonauts_core::prompt_files::{Template, in_use};
-use argonauts_core::prompt_parts::CrewRole;
+use argonauts_core::settings::crew::CrewRole;
 
-pub const APPROVER: Template = Template {
-    id: "approvals/approver",
+pub const JUDGE: Template = Template {
+    id: "approvals/judge",
     role: CrewRole::Judge,
     part: "decide an approval",
-    text: crate::approver::PROMPT,
+    text: crate::judge::PROMPT,
 };
 
 pub const NARRATOR: Template = Template {
@@ -18,7 +18,7 @@ pub const NARRATOR: Template = Template {
     text: crate::narrator::PROMPT,
 };
 
-pub const ALL: [Template; 2] = [APPROVER, NARRATOR];
+pub const ALL: [Template; 2] = [JUDGE, NARRATOR];
 
 /// The template as this process sends it: yours when you wrote one.
 pub(crate) fn text(template: &Template) -> String {

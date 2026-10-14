@@ -10,13 +10,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use crate::budget::BudgetStatus;
-use crate::card::Report;
 use crate::event::AgentEvent;
-use crate::ids::{CardId, RunId};
-use crate::names::WorkerRef;
+use crate::ids::{RunId, TaskId};
+use crate::meter::SpendStatus;
+use crate::names::ModelRef;
 use crate::paths::create_private_dir_all;
 use crate::session::SessionRole;
+use crate::task::Report;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunEvent {
@@ -24,8 +24,8 @@ pub struct RunEvent {
     #[serde(with = "time::serde::rfc3339")]
     pub ts: OffsetDateTime,
     pub run_id: RunId,
-    pub card_id: Option<CardId>,
-    /// What produced it, such as an adapter id like `codex`, or `conductor`.
+    pub task_id: Option<TaskId>,
+    /// What produced it, such as an adapter id like `codex`, or `argonauts-code`.
     pub source: String,
     pub kind: RunEventKind,
 }
@@ -33,14 +33,14 @@ pub struct RunEvent {
 impl RunEvent {
     pub fn now(
         run_id: RunId,
-        card_id: Option<CardId>,
+        task_id: Option<TaskId>,
         source: impl Into<String>,
         kind: RunEventKind,
     ) -> Self {
         Self {
             ts: OffsetDateTime::now_utc(),
             run_id,
-            card_id,
+            task_id,
             source: source.into(),
             kind,
         }
@@ -55,12 +55,12 @@ pub enum RunEventKind {
     Phase(PhaseEvent),
     SessionStarted(SessionStarted),
     SessionEnded(SessionEnded),
-    GateResult(GateResult),
+    CheckResult(CheckResult),
     Commit(CommitInfo),
     Report(Report),
-    Checkpoint(Checkpoint),
+    Approval(Approval),
     Decision(DecisionRecord),
-    Budget(BudgetStatus),
+    Spend(SpendStatus),
     Note(Note),
     RunFinished(RunFinished),
 }
@@ -81,7 +81,7 @@ pub struct RunStarted {
     pub version: String,
 }
 
-/// Steps of the solo pipeline.
+/// Steps of the Captain pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
@@ -90,7 +90,7 @@ pub enum Phase {
     Worktree,
     Agent,
     Commit,
-    Gates,
+    Checks,
     Decision,
     Merge,
     Cleanup,
@@ -132,7 +132,7 @@ pub struct SessionStarted {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StopCause {
-    Budget,
+    Limit,
     User,
     Timeout,
 }
@@ -146,7 +146,7 @@ pub struct SessionEnded {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GateResult {
+pub struct CheckResult {
     pub command: Vec<String>,
     pub passed: bool,
     pub exit_code: Option<i32>,
@@ -171,51 +171,51 @@ impl DiffStat {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitInfo {
-    /// The card branch, such as `argonauts/run-01/card-001`.
+    /// The task branch, such as `argonauts/run-01/task-001`.
     pub branch: String,
     /// The new commit, or `None` when there was nothing to commit.
     pub sha: Option<String>,
     pub message: String,
     pub stat: DiffStat,
-    /// The worker whose work this commits, so the diff view and quality debt can tell
-    /// replacements' commits apart. `None` is your own, such as take-over work, and so is
+    /// The model whose work this commits, so the diff view and quality debt can tell
+    /// fallbacks' commits apart. `None` is your own, such as take-over work, and so is
     /// every commit in a log written before this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub by: Option<WorkerRef>,
+    pub by: Option<ModelRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CheckpointKind {
+pub enum ApprovalKind {
     Merge,
 }
 
 /// A point where the run waits for an answer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Checkpoint {
-    Merge(MergeCard),
+pub enum Approval {
+    Merge(MergeTask),
 }
 
-impl Checkpoint {
-    pub fn kind(&self) -> CheckpointKind {
+impl Approval {
+    pub fn kind(&self) -> ApprovalKind {
         match self {
-            Self::Merge(_) => CheckpointKind::Merge,
+            Self::Merge(_) => ApprovalKind::Merge,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MergeCard {
+pub struct MergeTask {
     pub branch: String,
     /// The branch an approval merges into, if one was checked out at start.
     pub target_branch: Option<String>,
     pub stat: DiffStat,
-    pub gates: Vec<GateResult>,
+    pub checks: Vec<CheckResult>,
     /// The agent's report, if it sent a valid one.
     pub report: Option<Report>,
-    pub budget: Option<BudgetStatus>,
-    /// Set when the conductor stopped the agent before it finished, so the work may be partial.
+    pub spend: Option<SpendStatus>,
+    /// Set when Argonauts Code stopped the agent before it finished, so the work may be partial.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped_by: Option<StopCause>,
 }
@@ -243,10 +243,10 @@ pub enum DecidedBy {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionRecord {
-    pub checkpoint: CheckpointKind,
+    pub approval: ApprovalKind,
     pub decision: MergeDecision,
     pub by: DecidedBy,
-    /// The card commit the answer applies to, the one the user reviewed.
+    /// The task commit the answer applies to, the one the user reviewed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
 }
@@ -260,26 +260,62 @@ pub enum NoteLevel {
     /// About where you are rather than about something that happened, such as a folder with
     /// no git: drawn with `※`, as Claude Code draws its asides.
     Aside,
+    /// Worth one dim line and no mark, said once and never again, such as a newer version of
+    /// a CLI being out.
+    Quiet,
 }
 
-/// The note a failed retro leaves. Why it failed is in the retro phase's `Failed` summary,
-/// which the main view keeps for Ctrl+O, so a raw schema error never shows there.
-pub const RETRO_FAILED: &str = "The run review failed. The run's result stands.";
+/// The note a failed run review leaves. Why it failed is in the run review phase's `Failed`
+/// summary, which the main view keeps for Ctrl+O, so a raw schema error never shows there.
+pub const RUN_REVIEW_FAILED: &str = "The run review failed. The run's result stands.";
 
-/// Why a takeover skips the retry, after ` · ` at the end of its note, such as `Claude Code
-/// takes over as reviewer · no second try, this error repeats every time`. The main view
-/// draws these words dim and the ones before them plain.
+/// Starts the note that names the copies removed when a run ended, such as `base, 2 tasks,
+/// merge`. The main view says it on the run's last row instead of a row of its own.
+pub const COPIES_REMOVED: &str = "the run's copies removed: ";
+
+/// Why a fallback skips the retry, after ` · ` at the end of its note. The main view draws
+/// these words dim and the ones before them plain.
 pub const NO_SECOND_TRY: &str = "no second try, this error repeats every time";
 
+/// How a fallback note's second line starts when `fallback.same_cli` kept the work on its own
+/// CLI, as in `same_cli is on, so Codex isn't asked`. The main view shows that line under the
+/// note rather than keeping it for Ctrl+O.
+pub const SAME_CLI_IS_ON: &str = "same_cli is on, so ";
+
 /// One line in plain words. Lines after the first are its detail, such as a validator's
-/// errors, which the main view keeps for Ctrl+O.
+/// errors, which the main view keeps for Ctrl+O, but for the rows right under the first
+/// line, which it shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Note {
     pub level: NoteLevel,
     pub text: String,
 }
 
+/// Starts a row in a note's text: a line the main view shows under the first, where any
+/// other waits for Ctrl+O.
+const ROW: &str = "\u{23bf} ";
+
 impl Note {
+    /// The text of a note that says `line` and shows `rows` under it, such as the files a
+    /// run left out.
+    pub fn text_with_rows(line: &str, rows: &[String]) -> String {
+        let mut text = line.trim().to_owned();
+        for row in rows {
+            text.push('\n');
+            text.push_str(ROW);
+            text.push_str(row.trim_end());
+        }
+        text
+    }
+
+    /// The rows the main view shows under the first line.
+    pub fn rows(&self) -> impl Iterator<Item = &str> {
+        self.text
+            .lines()
+            .skip(1)
+            .map_while(|line| line.strip_prefix(ROW))
+    }
+
     /// A note that says what happened in `line`, with the raw `detail` behind it.
     pub fn with_detail(level: NoteLevel, line: &str, detail: &str) -> Self {
         let (line, detail) = (line.trim(), detail.trim());
@@ -298,10 +334,11 @@ impl Note {
 
     /// The lines after the first, for Ctrl+O. `None` for a note of one line.
     pub fn detail(&self) -> Option<&str> {
-        self.text
-            .split_once('\n')
-            .map(|(_, rest)| rest.trim())
-            .filter(|rest| !rest.is_empty())
+        let mut rest = self.text.split_once('\n').map(|(_, rest)| rest)?;
+        while rest.starts_with(ROW) {
+            rest = rest.split_once('\n').map_or("", |(_, after)| after);
+        }
+        Some(rest.trim()).filter(|rest| !rest.is_empty())
     }
 }
 
@@ -338,7 +375,7 @@ pub struct EventLog {
 }
 
 impl EventLog {
-    /// New files and folders are private to the owner, because the log holds prompts, the
+    /// New files and folders are private to your user, because the log holds prompts, the
     /// transcript, and tool output.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, EventLogError> {
         let path = path.into();
@@ -353,7 +390,8 @@ impl EventLog {
             .mode(0o600)
             .open(&path)
             .map_err(io_err)?;
-        // A crash can leave a partial last line. Start a fresh line so the next event stays readable.
+        // A crash can leave a partial last line. Start a fresh line so the next event stays
+        // readable.
         if ends_without_newline(&mut file).map_err(io_err)? {
             file.write_all(b"\n").map_err(io_err)?;
         }
@@ -435,8 +473,36 @@ pub struct SkippedLine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::budget::{BudgetAction, BudgetDimension, BudgetLimit, Spend, WorkLimits, WorkUsed};
-    use crate::card::ReportStatus;
+
+    #[test]
+    fn a_note_shows_its_rows_and_keeps_the_rest_for_later() {
+        let rows = [
+            "secrets   .env".to_owned(),
+            "  packages  none here ".to_owned(),
+        ];
+        let text = Note::text_with_rows(" Left out: ", &rows);
+        let mut note = Note {
+            level: NoteLevel::Info,
+            text,
+        };
+        assert_eq!(note.line(), "Left out:");
+        assert_eq!(
+            note.rows().collect::<Vec<_>>(),
+            ["secrets   .env", "  packages  none here"]
+        );
+        assert_eq!(note.detail(), None);
+
+        note.text.push_str("\nthe raw error\nits second line");
+        assert_eq!(note.rows().count(), 2);
+        assert_eq!(note.detail(), Some("the raw error\nits second line"));
+
+        let plain = Note::with_detail(NoteLevel::Warn, "It failed", "why");
+        assert_eq!(plain.rows().count(), 0);
+        assert_eq!(plain.detail(), Some("why"));
+    }
+
+    use crate::meter::{LimitDimension, MeterAction, MeterLimit, Spend, WorkLimits, WorkUsed};
+    use crate::task::ReportStatus;
     use serde_json::json;
     use time::macros::datetime;
 
@@ -444,16 +510,16 @@ mod tests {
         RunId::new("run-01").unwrap()
     }
 
-    fn card() -> Option<CardId> {
-        Some(CardId::new("task-001").unwrap())
+    fn task() -> Option<TaskId> {
+        Some(TaskId::new("task-001").unwrap())
     }
 
     fn event(kind: RunEventKind) -> RunEvent {
         RunEvent {
             ts: datetime!(2026-09-29 04:15:03.25 UTC),
             run_id: run(),
-            card_id: card(),
-            source: "conductor".into(),
+            task_id: task(),
+            source: "argonauts-code".into(),
             kind,
         }
     }
@@ -469,16 +535,16 @@ mod tests {
     }
 
     fn every_kind() -> Vec<RunEventKind> {
-        let gate = GateResult {
+        let check = CheckResult {
             command: vec!["test".into(), "-f".into(), "hello.txt".into()],
             passed: true,
             exit_code: Some(0),
             duration_ms: 3,
             output: String::new(),
         };
-        let budget = BudgetStatus {
-            level: BudgetAction::Continue,
-            limit: BudgetLimit::Usd(3.0),
+        let spend = SpendStatus {
+            level: MeterAction::Continue,
+            limit: MeterLimit::Usd(3.0),
             spend: Spend::default(),
             fraction_used: Some(0.0),
             work: WorkUsed {
@@ -489,12 +555,12 @@ mod tests {
                 max_minutes: Some(60.0),
                 max_tool_calls: None,
             },
-            binding: Some(BudgetDimension::Spend),
+            binding: Some(LimitDimension::Spend),
         };
         vec![
             RunEventKind::RunStarted(RunStarted {
                 task: "t".into(),
-                mode: "solo".into(),
+                mode: "captain".into(),
                 agent: "codex".into(),
                 model: None,
                 effort: Some("low".into()),
@@ -502,7 +568,7 @@ mod tests {
                 base_branch: Some("main".into()),
                 base_commit: "abc".into(),
                 config_hash: "f00".into(),
-                config: json!({"main_agent": "codex"}),
+                config: json!({"crew": {"main": "codex"}}),
                 version: "0.0.1".into(),
             }),
             RunEventKind::Agent(AgentEvent::FileChanged {
@@ -510,7 +576,7 @@ mod tests {
                 kind: "add".into(),
             }),
             RunEventKind::Phase(PhaseEvent {
-                phase: Phase::Gates,
+                phase: Phase::Checks,
                 status: PhaseStatus::Started,
                 detail: None,
             }),
@@ -529,9 +595,9 @@ mod tests {
                 exit_code: None,
                 signal: Some(2),
                 duration_ms: 10,
-                stopped_by: Some(StopCause::Budget),
+                stopped_by: Some(StopCause::Limit),
             }),
-            RunEventKind::GateResult(gate.clone()),
+            RunEventKind::CheckResult(check.clone()),
             RunEventKind::Commit(CommitInfo {
                 branch: "argonauts/run-01/task-001".into(),
                 sha: Some("abc".into()),
@@ -544,24 +610,24 @@ mod tests {
                 by: None,
             }),
             RunEventKind::Report(report()),
-            RunEventKind::Checkpoint(Checkpoint::Merge(MergeCard {
+            RunEventKind::Approval(Approval::Merge(MergeTask {
                 branch: "b".into(),
                 target_branch: Some("main".into()),
                 stat: DiffStat::default(),
-                gates: vec![gate],
+                checks: vec![check],
                 report: Some(report()),
-                budget: Some(budget),
-                stopped_by: Some(StopCause::Budget),
+                spend: Some(spend),
+                stopped_by: Some(StopCause::Limit),
             })),
             RunEventKind::Decision(DecisionRecord {
-                checkpoint: CheckpointKind::Merge,
+                approval: ApprovalKind::Merge,
                 decision: MergeDecision::RequestChanges {
                     note: Some("rename it".into()),
                 },
                 by: DecidedBy::User,
                 commit: Some("abc".into()),
             }),
-            RunEventKind::Budget(budget),
+            RunEventKind::Spend(spend),
             RunEventKind::Note(Note {
                 level: NoteLevel::Warn,
                 text: "careful".into(),
@@ -585,25 +651,25 @@ mod tests {
             json!({
                 "ts": "2026-09-29T04:15:03.25Z",
                 "run_id": "run-01",
-                "card_id": "task-001",
-                "source": "conductor",
+                "task_id": "task-001",
+                "source": "argonauts-code",
                 "kind": {"type": "agent", "data": {"type": "text_delta", "text": "hi", "parent": null}},
             })
         );
         let decision = serde_json::to_value(MergeDecision::Approve).unwrap();
         assert_eq!(decision, json!({"choice": "approve"}));
-        let checkpoint = serde_json::to_value(Checkpoint::Merge(MergeCard {
+        let approval = serde_json::to_value(Approval::Merge(MergeTask {
             branch: "b".into(),
             target_branch: None,
             stat: DiffStat::default(),
-            gates: vec![],
+            checks: vec![],
             report: None,
-            budget: None,
+            spend: None,
             stopped_by: None,
         }))
         .unwrap();
-        assert_eq!(checkpoint["kind"], "merge");
-        assert!(checkpoint.get("stopped_by").is_none());
+        assert_eq!(approval["kind"], "merge");
+        assert!(approval.get("stopped_by").is_none());
     }
 
     #[test]
@@ -710,7 +776,7 @@ mod tests {
         let started = r#"{"agent":"codex","model":null,"effort":null,"role":"build","program":"codex","args":[],"cwd":"/w","prompt":"p"}"#;
         let started: SessionStarted = serde_json::from_str(started).unwrap();
         assert_eq!(started.goal_hash, None);
-        let decision = r#"{"checkpoint":"merge","decision":{"choice":"leave"},"by":"config"}"#;
+        let decision = r#"{"approval":"merge","decision":{"choice":"leave"},"by":"config"}"#;
         let decision: DecisionRecord = serde_json::from_str(decision).unwrap();
         assert_eq!(decision.commit, None);
     }
@@ -748,13 +814,13 @@ mod tests {
         let e = RunEvent::now(
             run(),
             None,
-            "conductor",
+            "argonauts-code",
             RunEventKind::Note(Note {
                 level: NoteLevel::Info,
                 text: "x".into(),
             }),
         );
         assert!(e.ts.offset().is_utc());
-        assert_eq!(e.source, "conductor");
+        assert_eq!(e.source, "argonauts-code");
     }
 }

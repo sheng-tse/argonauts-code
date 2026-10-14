@@ -1,4 +1,4 @@
-//! The fake ACP agent's script. When the fake vendor's first argument is `acp`, it speaks the
+//! The fake ACP agent's script. When the fake agent's first argument is `acp`, it speaks the
 //! Agent Client Protocol (version 1, newline-delimited JSON-RPC 2.0 on stdio) and plays the
 //! first `[[acp]]` rule whose program and arguments match.
 //!

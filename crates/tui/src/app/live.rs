@@ -23,7 +23,7 @@ pub struct LiveView {
 /// The blocks get at most half of `max_height`, so a terminal made a little shorter pushes only
 /// printed history into scrollback, never a frozen copy of a live block. Every block shrinks to
 /// its header and a line, then its header alone, before the oldest give way to a
-/// `+N more working` row. Cards and the composer always stay visible.
+/// `+N more working` row. Questions and the composer always stay visible.
 pub fn compose_live(
     blocks: &[LiveBlock],
     history: &History,
@@ -35,7 +35,15 @@ pub fn compose_live(
     compose(blocks, history, bottom_view, ctx, max_height)
 }
 
-/// As [`compose_live`], with a docked view's rows where the input, the mode line, and the
+/// A docked view's rows, drawn for the live region.
+#[derive(Debug, Clone, Default)]
+pub struct DockedRows {
+    pub lines: Vec<Line<'static>>,
+    /// The question that holds the keys draws under the view, where the view's keys were.
+    pub over_question: bool,
+}
+
+/// As [`compose_live`], with a docked view's rows where the input, the bottom line, and the
 /// panel go. The working line stays above it.
 pub fn compose_docked(
     blocks: &[LiveBlock],
@@ -43,10 +51,15 @@ pub fn compose_docked(
     bottom: &BottomState,
     ctx: &RenderCtx<'_>,
     max_height: u16,
-    view: Vec<Line<'static>>,
+    view: DockedRows,
 ) -> LiveView {
-    let bottom_view =
-        bottom.render_docked(ctx, usize::from(max_height), text_streaming(history), view);
+    let bottom_view = bottom.render_docked(
+        ctx,
+        usize::from(max_height),
+        text_streaming(history),
+        view.lines,
+        view.over_question,
+    );
     compose(blocks, history, bottom_view, ctx, max_height)
 }
 
@@ -131,8 +144,8 @@ fn fit_blocks(
     let more_row = if first > 0 { 1 + more_gap(first) } else { 0 };
     let shown = first..blocks.len();
     let gap_rows: usize = shown.clone().map(|i| gaps[i]).sum();
-    let budget = room.saturating_sub(more_row + gap_rows);
-    let allot = water_fill(&wants[shown.clone()], &mins[shown.clone()], budget);
+    let limit = room.saturating_sub(more_row + gap_rows);
+    let allot = water_fill(&wants[shown.clone()], &mins[shown.clone()], limit);
 
     let mut lines = Vec::new();
     if first > 0 && room >= more_row {
@@ -153,10 +166,10 @@ fn fit_blocks(
 }
 
 /// Rows per block: each starts at its minimum, then every block that wants more gets one row
-/// per round until the budget runs out, the newest first within a round.
-fn water_fill(wants: &[usize], mins: &[usize], budget: usize) -> Vec<usize> {
+/// per round until the limit runs out, the newest first within a round.
+fn water_fill(wants: &[usize], mins: &[usize], limit: usize) -> Vec<usize> {
     let mut allot = mins.to_vec();
-    let mut left = budget.saturating_sub(mins.iter().sum());
+    let mut left = limit.saturating_sub(mins.iter().sum());
     while left > 0 {
         let mut raised = false;
         for (given, want) in allot.iter_mut().zip(wants).rev() {
@@ -184,14 +197,14 @@ fn stack(
     ctx: &RenderCtx<'_>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    for (block, &budget) in blocks.iter().zip(rows).skip(first) {
-        if budget == 0 {
+    for (block, &limit) in blocks.iter().zip(rows).skip(first) {
+        if limit == 0 {
             continue;
         }
         if block.gap_before {
             lines.push(Line::default());
         }
-        lines.extend(squeeze_block(block, budget, history, ctx));
+        lines.extend(squeeze_block(block, limit, history, ctx));
     }
     lines
 }
@@ -218,7 +231,7 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
-    use crate::bottom::CardPrompt;
+    use crate::bottom::QuestionPrompt;
     use crate::cell::{Cell, HistoryCell};
     use crate::render::Clock;
     use crate::text::plain_text;
@@ -360,19 +373,19 @@ mod tests {
     }
 
     #[test]
-    fn the_card_and_composer_always_stay() {
+    fn the_question_and_composer_always_stay() {
         let theme = theme();
         let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
         let mut history = History::new();
         let blocks = live_agents(&mut history, &ctx, &[6, 6]);
         let mut bottom = bottom();
-        bottom.card = Some(CardPrompt::new(
+        bottom.question = Some(QuestionPrompt::new(
             1,
             "Merge?",
             "Merge?",
             vec![
-                crate::bottom::CardOption::new("Yes"),
-                crate::bottom::CardOption::new("No"),
+                crate::bottom::QuestionOption::new("Yes"),
+                crate::bottom::QuestionOption::new("No"),
             ],
         ));
         let view = compose_live(&blocks, &history, &bottom, &ctx, 9);

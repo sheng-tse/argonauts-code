@@ -13,7 +13,7 @@ use crate::controller::{Ctx, Internal};
 /// The model list last sent, so a refresh that lands knows which picker to bring up to date.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ModelsShown {
-    /// `None` is the default agent.
+    /// `None` is the main agent.
     role: Option<RoleName>,
     refreshed: Option<OffsetDateTime>,
 }
@@ -46,9 +46,9 @@ pub(crate) fn view(ctx: &Ctx, settings: &mut SettingsState, role: Option<RoleNam
     }
 }
 
-/// The refresh landed: the picker showing a model list gets the new one. A list read no later
+/// The refresh run_merged: the picker showing a model list gets the new one. A list read no later
 /// than the one it shows changes nothing, so nothing goes out.
-pub(crate) fn landed(ctx: &Ctx, settings: &mut SettingsState) -> Handled {
+pub(crate) fn merged(ctx: &Ctx, settings: &mut SettingsState) -> Handled {
     settings.refreshing = false;
     let refreshed = ctx.services.registry.refreshed();
     let Some(shown) = settings.shown.as_mut() else {

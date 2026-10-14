@@ -1,4 +1,4 @@
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::goal::{
     CheckRun, CheckedBy, CliGoalSaid, Criterion, CriterionCheck, CriterionState, CriterionVerdict,
@@ -12,13 +12,13 @@ use super::*;
 use crate::client::test_support::{event, run_id, session_started};
 use crate::views::workflow_view;
 
-fn task() -> CardId {
-    CardId::new("task-002").unwrap()
+fn task() -> TaskId {
+    TaskId::new("task-002").unwrap()
 }
 
 fn goal(seq: u64, goal: GoalEvent) -> RunEvent {
     let mut event = event(seq, RunEventKind::Goal(goal));
-    event.card_id = Some(task());
+    event.task_id = Some(task());
     event
 }
 
@@ -53,7 +53,7 @@ fn set(kept_by: KeptBy) -> GoalEvent {
 }
 
 fn started(n: u32) -> GoalEvent {
-    GoalEvent::AttemptStarted {
+    GoalEvent::TryStarted {
         n,
         title: format!("try {n}"),
         phase: 0,
@@ -104,7 +104,7 @@ fn checked(n: u32, failed: u32) -> GoalEvent {
         agent: Some("claude-code/astra".parse().unwrap()),
     };
     GoalEvent::Checked(Box::new(GoalChecked {
-        attempt: n,
+        try_number: n,
         verdicts: vec![
             verdict("G1", n >= 2),
             verdict("G2", true),
@@ -151,7 +151,7 @@ fn build_cli(session: &SessionKey) -> Vec<RunEvent> {
             9,
             GoalEvent::CheckingNow {
                 task: Some(task()),
-                attempt: 3,
+                try_number: 3,
             },
         ),
         goal(
@@ -176,7 +176,7 @@ fn a_tasks_goal_is_its_agents_with_the_four_parts_the_panels_draw() {
     };
     assert_eq!(goal.session, session);
     assert_eq!(goal.task, Some(task()));
-    assert_eq!(goal.role.as_deref(), Some("workers"));
+    assert_eq!(goal.role.as_deref(), Some("worker"));
     assert_eq!(
         goal.kept_by,
         GoalKeeper::Cli {
@@ -184,7 +184,7 @@ fn a_tasks_goal_is_its_agents_with_the_four_parts_the_panels_draw() {
         }
     );
     assert_eq!(goal.kept_by.words(), "Codex's own goal");
-    assert_eq!(goal.checked_by, "Argonauts");
+    assert_eq!(goal.checked_by, "Argonauts Code");
     assert_eq!(goal.state, GoalState::Running);
     assert_eq!(goal.set_ms_ago, Some(360_000));
     assert_eq!((goal.lines_met(), goal.current_try()), (2, 3));
@@ -264,7 +264,7 @@ fn a_tasks_goal_is_its_agents_with_the_four_parts_the_panels_draw() {
     );
 }
 
-/// The checks you asked for show as running until they answer, a goal Argonauts keeps says
+/// The checks you asked for show as running until they answer, a goal Argonauts Code keeps says
 /// why, and one that stopped short says why too.
 #[test]
 fn a_goal_says_when_its_checks_run_who_keeps_it_and_why_it_stopped() {
@@ -277,7 +277,7 @@ fn a_goal_says_when_its_checks_run_who_keeps_it_and_why_it_stopped() {
             4,
             GoalEvent::CheckingNow {
                 task: Some(task()),
-                attempt: 1,
+                try_number: 1,
             },
         ),
     ];
@@ -293,7 +293,7 @@ fn a_goal_says_when_its_checks_run_who_keeps_it_and_why_it_stopped() {
         5,
         GoalEvent::StatusChanged {
             status: GoalStatus::Stuck,
-            by: Party::Conductor,
+            by: Party::ArgonautsCode,
             task: Some(task()),
             why: Some("the same failure 3 rounds running".to_owned()),
         },
@@ -352,15 +352,15 @@ fn the_workflow_view_and_the_opened_agent_carry_the_goal() {
     )];
     events.extend(build_cli(&session));
     // The agent's row in the Build phase, under the label its session was given.
-    let seat = events
+    let build_row = events
         .iter_mut()
         .find_map(|event| match &mut event.kind {
             RunEventKind::Session(SessionEvent::Started(started)) => Some(started),
             _ => None,
         })
         .unwrap();
-    seat.label = Some("build:cli".to_owned());
-    seat.workflow_step = Some(StepRef {
+    build_row.label = Some("build:cli".to_owned());
+    build_row.workflow_step = Some(StepRef {
         workflow: WorkflowId::numbered(1),
         phase: 0,
         path: vec![0],

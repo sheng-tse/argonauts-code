@@ -1,13 +1,13 @@
-//! The blackboard and the retro.
+//! The blackboard and the run review.
 
 use serde::{Deserialize, Serialize};
 
 use super::run::Party;
-use crate::CardId;
-use crate::names::{MessageId, RoleName, SessionKey, WorkerRef};
-use crate::steps::card::{MemoryProposal, ProcessChange};
+use crate::TaskId;
+use crate::names::{MessageId, ModelRef, RoleName, SessionKey};
+use crate::steps::task::{MemoryProposal, ProcessChange};
 
-/// Typed messages between agents, and from you. No free chat.
+/// Typed messages between agents, and from you. No free conversation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum BlackboardEvent {
@@ -27,20 +27,20 @@ pub struct BlackboardMessage {
     pub to: Recipient,
     pub text: String,
     pub in_reply_to: Option<MessageId>,
-    /// Paths, cards, or decisions it refers to.
+    /// Paths, tasks, or decisions it refers to.
     pub refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BlackboardKind {
-    /// A question for the owner of another piece.
+    /// A question for the worker of another piece.
     Question,
     Answer,
     ChangeRequest,
     Decision,
-    SpikeReport,
-    Handoff,
+    ExperimentReport,
+    Fallback,
     /// Your guidance, typed while the run works.
     Guidance,
     /// Your `@mention`.
@@ -52,16 +52,16 @@ pub enum BlackboardKind {
 pub enum Recipient {
     /// Every working agent.
     All,
-    /// The owner of a card.
-    Card {
-        card: CardId,
+    /// The worker of a task.
+    Task {
+        task: TaskId,
     },
     Role {
         role: RoleName,
     },
-    /// Every session of a worker.
+    /// Every session of one agent and model.
     Worker {
-        worker: WorkerRef,
+        worker: ModelRef,
     },
     Session {
         session: SessionKey,
@@ -71,11 +71,11 @@ pub enum Recipient {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
-pub enum RetroEvent {
+pub enum RunReviewEvent {
     /// A prediction scored against the outcome.
     Scored {
-        card: CardId,
-        /// Such as `p_pass_gates_first_try`.
+        task: TaskId,
+        /// Such as `p_pass_checks_first_try`.
         metric: String,
         /// The predicted probability.
         predicted: f64,
@@ -85,17 +85,17 @@ pub enum RetroEvent {
     },
     /// An outcome record appended to the outcome log.
     Outcome {
-        card: CardId,
-        worker: WorkerRef,
+        task: TaskId,
+        worker: ModelRef,
         task_type: String,
-        /// Passed gates first try.
+        /// Passed checks first try.
         first_try: bool,
-        attempts: u32,
-        integrated: bool,
+        tries: u32,
+        merged: bool,
     },
     /// A memory proposal and its safety scan.
     Memory {
-        from: WorkerRef,
+        from: ModelRef,
         proposal: MemoryProposal,
         /// Whether it passed the scan.
         accepted: bool,
@@ -103,6 +103,6 @@ pub enum RetroEvent {
     },
     /// Notes and decisions committed to `.argonauts/`.
     Committed { sha: String, paths: Vec<String> },
-    /// A recipe candidate for the evolution loop.
+    /// A learned workflow candidate for the evolution loop.
     Candidate(ProcessChange),
 }

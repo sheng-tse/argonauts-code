@@ -1,9 +1,9 @@
 //! Learning in the engine, over real temp repos with fake workers: the outcome log a run writes
-//! (predictions and draws before cards start, an outcome per card with its model, assignment,
-//! reviewer, and recipe, and a run line), the router on learning's records, notes checked and
-//! committed one per commit, notes as quoted data that reviewers never get from the agent they
-//! review, recipes at triage and run start, the lead's examples from past runs, and canary runs
-//! that land as pull requests.
+//! (predictions and draws before tasks start, an outcome per task with its model, assignment,
+//! reviewer, and learned workflow, and a run line), the router on learning's records, notes checked
+//! and committed one per commit, notes as quoted data that reviewers never get from the agent they
+//! review, learned workflows at the Captain-or-crew choice and run start, the main agent's examples
+//! from past runs, and canary runs that land as pull requests.
 
 mod support;
 
@@ -13,37 +13,40 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
+use argonauts_core::clock::Clock;
 use argonauts_core::engine::EngineExit;
 use argonauts_core::event::AgentEvent;
-use argonauts_core::events::card::{IntegrationEvent, ReviewEvent};
 use argonauts_core::events::plan::DivideEvent;
 use argonauts_core::events::run::{RunMode, RunOutcome};
-use argonauts_core::events::shared::RetroEvent;
+use argonauts_core::events::shared::RunReviewEvent;
+use argonauts_core::events::task::{MergeEvent, ReviewEvent};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::session_runner::{RunnerEvent, SessionRunner, SessionSpec};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::delivery::DeliveryCommits;
 use argonauts_core::settings::protocol::MergeMode;
 use argonauts_core::steps::StepName;
-use argonauts_core::steps::card::Predictions;
 use argonauts_core::steps::design::WorkflowExample;
 use argonauts_core::steps::intake::ChangeEstimate;
-use argonauts_core::worker::{SessionSpec, Worker, WorkerEvent};
-use argonauts_core::{CardId, RepoId, RunId};
-use argonauts_crew::retro::notes;
-use argonauts_crew::retro::outcomes::{self, LogLine};
-use argonauts_crew::retro::recipe::{self, RunRecipe};
-use argonauts_crew::triage;
+use argonauts_core::steps::task::Predictions;
+use argonauts_core::{RepoId, RunId, TaskId};
+use argonauts_crew::captain_or_crew;
+use argonauts_crew::run_review::learned_workflow::{self, RunLearnedWorkflow};
+use argonauts_crew::run_review::notes;
+use argonauts_crew::run_review::outcomes::{self, LogLine};
 use argonauts_crew::workflow::{builtin, change, runner};
 use argonauts_learning::evolution::{CandidateState, Evolution};
+use argonauts_learning::learned_workflows::{
+    self, LearnedWorkflow, LearnedWorkflowMode, LoadedLearnedWorkflow, Match,
+};
 use argonauts_learning::outcomes::Outcome;
-use argonauts_learning::recipes::{self, LoadedRecipe, Match, Recipe, RecipeMode};
-use argonauts_learning::{Assignment, RecipeRef, RunRecord, Store};
+use argonauts_learning::{Assignment, LearnedWorkflowRef, RunRecord, Store};
+use argonauts_testkit::runner::{FakeRunner, FakeSession};
 use argonauts_testkit::services::TEST_RUN;
-use argonauts_testkit::worker::{FakeSession, FakeWorker};
 use support::{Crew, fill, names};
 
-/// The file every build session writes, so each card commits and merges.
+/// The file every build session writes, so each task commits and merges.
 const BUILT: &str = "VERBOSE.md";
 const CLAUDE: &str = "claude-code/opus";
 const CODEX: &str = "codex/gpt-x";
@@ -51,13 +54,13 @@ const CODEX: &str = "codex/gpt-x";
 type Hook = Arc<dyn Fn(&SessionSpec) + Send + Sync>;
 
 /// How a fake worker answers: the model its sessions report, its predictions, the notes its
-/// build reports propose, the retro's change, and anything to do when it builds.
+/// build reports propose, the run review's change, and anything to do when it builds.
 #[derive(Clone)]
 struct Script {
     model: String,
     predictions: Predictions,
     notes: Vec<(String, String)>,
-    retro: Option<Value>,
+    run_review: Option<Value>,
     on_build: Option<Hook>,
 }
 
@@ -66,20 +69,20 @@ impl Script {
         Self {
             model: model.to_owned(),
             predictions: Predictions {
-                p_pass_gates_first_try: 0.7,
+                p_pass_checks_first_try: 0.7,
                 p_within_time_cap: 0.8,
-                p_at_most_two_attempts: 0.9,
+                p_at_most_two_tries: 0.9,
             },
             notes: Vec::new(),
-            retro: None,
+            run_review: None,
             on_build: None,
         }
     }
 
     fn answer(&self, spec: &SessionSpec) -> FakeSession {
         let session = match (spec.step, &spec.json_schema) {
-            (Some(StepName::PlanToCards), _) => FakeSession::structured(json!({
-                "cards": [{
+            (Some(StepName::PlanToTasks), _) => FakeSession::structured(json!({
+                "tasks": [{
                     "key": "flag",
                     "title": "The --verbose flag",
                     "task": "Add a --verbose flag.",
@@ -93,8 +96,8 @@ impl Script {
             (Some(StepName::Predict), _) => {
                 FakeSession::structured(serde_json::to_value(self.predictions).unwrap_or_default())
             }
-            (Some(StepName::Retro), _) if self.retro.is_some() => {
-                FakeSession::structured(self.retro.clone().unwrap_or_default())
+            (Some(StepName::RunReview), _) if self.run_review.is_some() => {
+                FakeSession::structured(self.run_review.clone().unwrap_or_default())
             }
             (Some(StepName::Build), Some(schema)) => {
                 std::fs::write(spec.workdir.join(BUILT), "--verbose\n")
@@ -114,7 +117,7 @@ impl Script {
             (_, Some(schema)) => FakeSession::structured(fill(schema)),
             (_, None) => FakeSession::completed("done"),
         };
-        session.with_event(WorkerEvent::Agent(AgentEvent::Init {
+        session.with_event(RunnerEvent::Agent(AgentEvent::Init {
             session_id: None,
             model: Some(self.model.clone()),
             tools: Vec::new(),
@@ -125,21 +128,21 @@ impl Script {
     }
 }
 
-/// A crew of two from different families, both answering by `script`, dividing one card.
-fn crew_of_two(script: impl Fn(&str) -> Script) -> anyhow::Result<(Crew, Vec<Arc<FakeWorker>>)> {
+/// A crew of two from different providers, both answering by `script`, dividing one task.
+fn crew_of_two(script: impl Fn(&str) -> Script) -> anyhow::Result<(Crew, Vec<Arc<FakeRunner>>)> {
     let mut crew = Crew::new()?;
     crew.settings.evolution.propose_every = 0;
     crew.settings.divide.contracts_first = false;
     let mut fakes = Vec::new();
-    for (worker, family) in [(CLAUDE, "claude"), (CODEX, "gpt")] {
+    for (worker, provider) in [(CLAUDE, "anthropic"), (CODEX, "openai")] {
         let answers = script(worker);
         let fake = crew.services.workers.add(
-            FakeWorker::harness(worker, family)
+            FakeRunner::cli(worker, provider)
                 .respond_with(move |spec: &SessionSpec| answers.answer(spec)),
         );
-        let reference = fake.worker_ref().clone();
+        let reference = fake.model_ref().clone();
         if crew.settings.crew.is_empty() {
-            crew.settings.main_agent = reference.clone();
+            crew.settings.crew.main = reference.clone();
         }
         crew.settings.crew.add(reference);
         fakes.push(fake);
@@ -155,7 +158,7 @@ fn model_of(worker: &str) -> &'static str {
     }
 }
 
-fn worker(text: &str) -> anyhow::Result<WorkerRef> {
+fn worker(text: &str) -> anyhow::Result<ModelRef> {
     Ok(text.parse()?)
 }
 
@@ -195,7 +198,7 @@ fn found<T>(value: Option<T>, what: &str) -> anyhow::Result<T> {
     value.ok_or_else(|| anyhow::anyhow!("no {what}"))
 }
 
-/// Runs a crew request to its end, answering every checkpoint with its recommended option.
+/// Runs a crew request to its end, answering every approval with its recommended option.
 async fn crew_run(crew: &Crew) -> anyhow::Result<(EngineExit, Vec<RunEvent>)> {
     let outcomes = crew
         .run_to_end(RunMode::Crew, "add a --verbose flag", 12)
@@ -219,10 +222,10 @@ fn prompt_text(spec: &SessionSpec) -> String {
 }
 
 #[tokio::test]
-async fn outcomes_carry_model_assignment_and_recipe() -> anyhow::Result<()> {
+async fn outcomes_carry_model_assignment_and_learned_workflow() -> anyhow::Result<()> {
     let (crew, _fakes) = crew_of_two(|worker| Script::new(model_of(worker)))?;
-    let recorded = RunRecipe {
-        recipe: RecipeRef {
+    let recorded = RunLearnedWorkflow {
+        learned_workflow: LearnedWorkflowRef {
             name: "cli-flag".to_owned(),
             version: 3,
         },
@@ -230,7 +233,7 @@ async fn outcomes_carry_model_assignment_and_recipe() -> anyhow::Result<()> {
         canary: false,
         dir: None,
     };
-    recipe::write(&crew.repo_context()?.run_dir, &recorded)?;
+    learned_workflow::write(&crew.repo_context()?.run_dir, &recorded)?;
 
     let (exit, events) = crew_run(&crew).await?;
     assert_eq!(exit, EngineExit::Finished(RunOutcome::Merged));
@@ -243,7 +246,10 @@ async fn outcomes_carry_model_assignment_and_recipe() -> anyhow::Result<()> {
         Some(model_of(&outcome.worker.to_string())),
         "the exact model from the session's start, not the alias: {outcome:?}"
     );
-    assert_eq!(outcome.recipe.as_ref(), Some(&recorded.recipe));
+    assert_eq!(
+        outcome.learned_workflow.as_ref(),
+        Some(&recorded.learned_workflow)
+    );
     assert_eq!(outcome.assigned, Some(Assignment::Exploit));
     assert!(outcome.assign_p.is_some_and(|p| (0.0..=1.0).contains(&p)));
     let reviewer = found(outcome.reviewer.as_ref(), "reviewer")?;
@@ -252,7 +258,7 @@ async fn outcomes_carry_model_assignment_and_recipe() -> anyhow::Result<()> {
     assert_eq!(outcome.within_time_cap, Some(true));
     assert!(outcome.minutes.is_some());
     assert_eq!(found(outcome.difficulty, "difficulty")?.files_changed, 1);
-    assert!(outcome.integrated);
+    assert!(outcome.merged);
 
     // The draw is logged, and the outcome repeats its reason and probability.
     let draw = found(
@@ -262,7 +268,7 @@ async fn outcomes_carry_model_assignment_and_recipe() -> anyhow::Result<()> {
         }),
         "draw",
     )?;
-    assert_eq!(draw.card, outcome.card);
+    assert_eq!(draw.task, outcome.task);
     assert_eq!(draw.chosen, outcome.worker);
     assert_eq!(Some(draw.probability), outcome.assign_p);
     assert_eq!(draw.considered.len(), 2);
@@ -270,19 +276,22 @@ async fn outcomes_carry_model_assignment_and_recipe() -> anyhow::Result<()> {
     let runs = runs_in(&lines);
     assert_eq!(runs.len(), 1, "{lines:?}");
     let run = runs[0];
-    assert_eq!(run.recipe.as_ref(), Some(&recorded.recipe));
+    assert_eq!(
+        run.learned_workflow.as_ref(),
+        Some(&recorded.learned_workflow)
+    );
     assert_eq!(run.outcome, RunOutcome::Merged);
     assert!(!run.canary);
     assert_eq!(run.task_type, "build");
     let (name, version) = found(run.workflow.clone(), "workflow")?;
-    assert_eq!(name, crew.settings.phases.as_str());
+    assert_eq!(name, crew.settings.workflow);
     assert_eq!(version.len(), 64);
     assert!(matches!(lines.last(), Some(LogLine::Run(_))));
     Ok(())
 }
 
 #[tokio::test]
-async fn predictions_logged_before_cards_start() -> anyhow::Result<()> {
+async fn predictions_logged_before_tasks_start() -> anyhow::Result<()> {
     let seen_at_build = Arc::new(AtomicBool::new(false));
     let checked = Arc::new(AtomicBool::new(false));
     let state: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
@@ -330,11 +339,11 @@ async fn predictions_logged_before_cards_start() -> anyhow::Result<()> {
         "prediction",
     )?;
     let outcome = outcomes_in(&lines)[0];
-    assert_eq!(prediction.card, outcome.card);
+    assert_eq!(prediction.task, outcome.task);
     assert_eq!(prediction.worker, outcome.worker);
-    assert_eq!(prediction.p_pass_gates_first_try, Some(0.7));
+    assert_eq!(prediction.p_pass_checks_first_try, Some(0.7));
     assert_eq!(prediction.p_within_time_cap, Some(0.8));
-    assert_eq!(prediction.p_at_most_two_attempts, Some(0.9));
+    assert_eq!(prediction.p_at_most_two_tries, Some(0.9));
     let position = |want: fn(&LogLine) -> bool| lines.iter().position(want);
     let first_prediction = found(
         position(|line| matches!(line, LogLine::Prediction(_))),
@@ -348,25 +357,27 @@ async fn predictions_logged_before_cards_start() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Seeds the outcome log with past runs in which codex passed every build card first time and
+/// Seeds the outcome log with past runs in which codex passed every build task first time and
 /// claude-code failed every one.
 fn seed_history(crew: &Crew) -> anyhow::Result<()> {
     let state = state_dir(crew);
+    // Dated by the crew's clock, which the router reads, so the history is always in its past.
+    let now = crew.services.clock.now();
     for n in 0..12u32 {
         let run = RunId::new(format!("past-{n:02}"))?;
         let mut lines = Vec::new();
         for (who, passed) in [(CODEX, true), (CLAUDE, false)] {
             lines.push(LogLine::Outcome(Outcome {
                 run: run.clone(),
-                card: CardId::numbered(if passed { 1 } else { 2 }),
+                task: TaskId::numbered(if passed { 1 } else { 2 }),
                 worker: worker(who)?,
                 task_type: "build".to_owned(),
                 first_try: passed,
-                attempts: if passed { 1 } else { 3 },
-                integrated: passed,
+                tries: if passed { 1 } else { 3 },
+                merged: passed,
                 spent_usd: 1.0,
                 step: None,
-                at: Some(time::OffsetDateTime::now_utc() - time::Duration::days(i64::from(n))),
+                at: Some(now - time::Duration::days(i64::from(n))),
                 model_id: Some(model_of(who).to_owned()),
                 assigned: Some(Assignment::Exploit),
                 assign_p: Some(0.5),
@@ -375,7 +386,7 @@ fn seed_history(crew: &Crew) -> anyhow::Result<()> {
                 within_time_cap: Some(true),
                 minutes: Some(10.0),
                 difficulty: None,
-                recipe: None,
+                learned_workflow: None,
             }));
         }
         outcomes::append_lines(&state, &run, &lines)?;
@@ -415,11 +426,11 @@ async fn router_reads_learning_records() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn predictions_never_skip_a_gate() -> anyhow::Result<()> {
+async fn predictions_never_skip_a_check() -> anyhow::Result<()> {
     let sure = Predictions {
-        p_pass_gates_first_try: 1.0,
+        p_pass_checks_first_try: 1.0,
         p_within_time_cap: 1.0,
-        p_at_most_two_attempts: 1.0,
+        p_at_most_two_tries: 1.0,
     };
     let (crew, _fakes) = crew_of_two(|worker| Script {
         predictions: sure,
@@ -430,18 +441,18 @@ async fn predictions_never_skip_a_gate() -> anyhow::Result<()> {
         matches!(
             &event.kind,
             RunEventKind::Divide(DivideEvent::Predicted { predictions, .. })
-                if predictions.p_pass_gates_first_try == 1.0
+                if predictions.p_pass_checks_first_try == 1.0
         )
     });
     assert!(predicted, "{:?}", names(&events));
-    let gates: Vec<&str> = events
+    let checks: Vec<&str> = events
         .iter()
         .filter_map(|event| match &event.kind {
-            RunEventKind::Gate(gate) => Some(gate.name.as_str()),
+            RunEventKind::Check(check) => Some(check.name.as_str()),
             _ => None,
         })
         .collect();
-    assert!(gates.len() >= 4, "every check still ran: {gates:?}");
+    assert!(checks.len() >= 4, "every check still ran: {checks:?}");
     let reviewed = events.iter().any(|event| {
         matches!(
             &event.kind,
@@ -466,7 +477,7 @@ async fn flagged_note_waits_for_you() -> anyhow::Result<()> {
     let scanned: Vec<(bool, Option<String>)> = events
         .iter()
         .filter_map(|event| match &event.kind {
-            RunEventKind::Retro(RetroEvent::Memory {
+            RunEventKind::RunReview(RunReviewEvent::Memory {
                 accepted, reason, ..
             }) => Some((*accepted, reason.clone())),
             _ => None,
@@ -512,7 +523,7 @@ async fn notes_are_kept_outside_the_repository() -> anyhow::Result<()> {
     crew.settings.delivery.commits = DeliveryCommits::AsRun;
     let (exit, _) = crew_run(&crew).await?;
     assert_eq!(exit, EngineExit::Finished(RunOutcome::Merged));
-    // Notes are Argonauts' own: none reaches your branch.
+    // Notes are Argonauts Code's own: none reaches your branch.
     let log = crew
         .repo
         .git(&["log", "--format=%H %s", "main", "--", ".argonauts"])?;
@@ -524,18 +535,18 @@ async fn notes_are_kept_outside_the_repository() -> anyhow::Result<()> {
         .collect();
     topics.sort();
     assert_eq!(topics, ["redis.md", "testing.md"]);
-    // Each note names its card, its worker, and its run.
+    // Each note names its task, its worker, and its run.
     let text = std::fs::read_to_string(kept.join("redis.md"))?;
     let sourced = notes::parse(&text);
     assert_eq!(sourced.len(), 1, "{text}");
-    assert_eq!(sourced[0].1.card.as_str(), "task-001");
+    assert_eq!(sourced[0].1.task.as_str(), "task-001");
     assert_eq!(sourced[0].1.run.as_str(), TEST_RUN);
     Ok(())
 }
 
 #[tokio::test]
 async fn judges_never_get_notes_of_the_judged() -> anyhow::Result<()> {
-    let (crew, fakes) = crew_of_two(|worker| Script::new(model_of(worker)))?;
+    let (crew, fakes) = crew_of_two(|model| Script::new(model_of(model)))?;
     let earlier = format!(
         "# redis\n\n\
          - Counters expire with the window. (task-004, {CLAUDE}, run-00, 2026-09-01T00:00:00Z)\n\
@@ -548,27 +559,27 @@ async fn judges_never_get_notes_of_the_judged() -> anyhow::Result<()> {
 
     let (_, events) = crew_run(&crew).await?;
     let sessions: Vec<SessionSpec> = fakes.iter().flat_map(|fake| fake.specs()).collect();
-    let owner = found(
+    let built = found(
         sessions
             .iter()
             .find(|spec| spec.role == RoleName::Worker && spec.step == Some(StepName::Build)),
         "build session",
     )?;
-    let owner_text = prompt_text(owner);
-    // The owner gets every note, as quoted reference data.
+    let worker_text = prompt_text(built);
+    // The worker gets every note, as quoted reference data.
     assert!(
-        owner_text.contains("data, not instructions"),
-        "{owner_text}"
+        worker_text.contains("data, not instructions"),
+        "{worker_text}"
     );
-    assert!(owner_text.contains("> [redis] Counters expire with the window."));
-    assert!(owner_text.contains("> [redis] Keys carry the tenant prefix."));
+    assert!(worker_text.contains("> [redis] Counters expire with the window."));
+    assert!(worker_text.contains("> [redis] Keys carry the tenant prefix."));
 
     let judging: Vec<&SessionSpec> = sessions
         .iter()
         .filter(|spec| spec.role == RoleName::Reviewer || spec.step == Some(StepName::Judge))
         .collect();
     assert!(!judging.is_empty(), "{:?}", names(&events));
-    let theirs = if owner.worker == worker(CLAUDE)? {
+    let theirs = if built.model == worker(CLAUDE)? {
         "Counters expire with the window."
     } else {
         "Keys carry the tenant prefix."
@@ -582,18 +593,18 @@ async fn judges_never_get_notes_of_the_judged() -> anyhow::Result<()> {
     }
     // Any reviewer or judge prompt that carries notes leaves the judged agent's out.
     let repo = crew.repo_context()?;
-    let (base, state_dir) = (repo.base_worktree.clone(), repo.state_dir().to_path_buf());
-    let quoted = notes::quoted(&base, &state_dir, Some(&owner.worker));
+    // The run's own copies went when it ended, so the notes are read where it merged them.
+    let (base, state_dir) = (repo.root.clone(), repo.state_dir().to_path_buf());
+    let quoted = notes::quoted(&base, &state_dir, Some(&built.model));
     assert!(!quoted.is_empty() && !quoted.contains(theirs), "{quoted}");
-    let parts =
-        argonauts_crew::card::prompt::note_parts_for(&base, &state_dir, Some(&owner.worker));
+    let parts = argonauts_crew::task::prompt::note_parts_for(&base, &state_dir, Some(&built.model));
     assert!(!parts.is_empty());
     assert!(parts.iter().all(|part| !part.text.contains(theirs)));
     Ok(())
 }
 
 /// Writes `.argonauts/learned/cli-flag/v<version>.yaml` and commits it.
-fn write_recipe(crew: &Crew, version: u32) -> anyhow::Result<()> {
+fn write_learned_workflow(crew: &Crew, version: u32) -> anyhow::Result<()> {
     let path = format!(".argonauts/learned/cli-flag/v{version}.yaml");
     crew.repo.write(
         &path,
@@ -603,12 +614,13 @@ fn write_recipe(crew: &Crew, version: u32) -> anyhow::Result<()> {
         ),
     )?;
     crew.repo.git(&["add", &path])?;
-    crew.repo.git(&["commit", "--quiet", "-m", "a recipe"])?;
+    crew.repo
+        .git(&["commit", "--quiet", "-m", "a learned workflow"])?;
     Ok(())
 }
 
 #[tokio::test]
-async fn retro_candidate_enters_the_loop() -> anyhow::Result<()> {
+async fn run_review_candidate_enters_the_loop() -> anyhow::Result<()> {
     let change = json!({
         "change": {
             "setting": "critique.rounds",
@@ -617,13 +629,13 @@ async fn retro_candidate_enters_the_loop() -> anyhow::Result<()> {
         }
     });
     let (mut crew, _fakes) = crew_of_two(|worker| Script {
-        retro: Some(change.clone()),
+        run_review: Some(change.clone()),
         ..Script::new(model_of(worker))
     })?;
     crew.settings.evolution.propose_every = 1;
-    write_recipe(&crew, 1)?;
-    let recorded = RunRecipe {
-        recipe: RecipeRef {
+    write_learned_workflow(&crew, 1)?;
+    let recorded = RunLearnedWorkflow {
+        learned_workflow: LearnedWorkflowRef {
             name: "cli-flag".to_owned(),
             version: 1,
         },
@@ -631,17 +643,17 @@ async fn retro_candidate_enters_the_loop() -> anyhow::Result<()> {
         canary: false,
         dir: None,
     };
-    recipe::write(&crew.repo_context()?.run_dir, &recorded)?;
+    learned_workflow::write(&crew.repo_context()?.run_dir, &recorded)?;
 
     let (_, events) = crew_run(&crew).await?;
     assert!(events.iter().any(|event| matches!(
         &event.kind,
-        RunEventKind::Retro(RetroEvent::Candidate(change)) if change.setting == "critique.rounds"
+        RunEventKind::RunReview(RunReviewEvent::Candidate(change)) if change.setting == "critique.rounds"
     )));
     let store = Store::new(state_dir(&crew), crew.repo.root());
     let candidates = Evolution::open(&store)?.candidates()?;
     assert_eq!(candidates.len(), 1, "{:?}", names(&events));
-    assert_eq!(candidates[0].parent, recorded.recipe);
+    assert_eq!(candidates[0].parent, recorded.learned_workflow);
     assert_eq!(candidates[0].change.key, "critique.rounds");
     assert_eq!(
         candidates[0].from_run.as_ref().map(RunId::as_str),
@@ -655,10 +667,10 @@ async fn retro_candidate_enters_the_loop() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// At stage `record` the loop only saves what worked: the retro isn't asked for a change, so
+/// At stage `record` the loop only saves what worked: the run review isn't asked for a change, so
 /// nothing is spent on one and no candidate is queued.
 #[tokio::test]
-async fn stage_record_asks_the_retro_for_no_change() -> anyhow::Result<()> {
+async fn stage_record_asks_the_run_review_for_no_change() -> anyhow::Result<()> {
     let change = json!({
         "change": {
             "setting": "critique.rounds",
@@ -667,16 +679,16 @@ async fn stage_record_asks_the_retro_for_no_change() -> anyhow::Result<()> {
         }
     });
     let (mut crew, fakes) = crew_of_two(|worker| Script {
-        retro: Some(change.clone()),
+        run_review: Some(change.clone()),
         ..Script::new(model_of(worker))
     })?;
     crew.settings.evolution.propose_every = 1;
     crew.settings.evolution.stage = argonauts_core::settings::evolution::EvolutionStage::Record;
-    write_recipe(&crew, 1)?;
-    recipe::write(
+    write_learned_workflow(&crew, 1)?;
+    learned_workflow::write(
         &crew.repo_context()?.run_dir,
-        &RunRecipe {
-            recipe: RecipeRef {
+        &RunLearnedWorkflow {
+            learned_workflow: LearnedWorkflowRef {
                 name: "cli-flag".to_owned(),
                 version: 1,
             },
@@ -687,16 +699,15 @@ async fn stage_record_asks_the_retro_for_no_change() -> anyhow::Result<()> {
     )?;
 
     let (_, events) = crew_run(&crew).await?;
-    let asked_retro = fakes
+    let asked_run_review = fakes
         .iter()
         .flat_map(|fake| fake.specs())
-        .any(|spec| spec.step == Some(StepName::Retro));
-    assert!(!asked_retro);
-    assert!(
-        !events
-            .iter()
-            .any(|event| matches!(&event.kind, RunEventKind::Retro(RetroEvent::Candidate(_))))
-    );
+        .any(|spec| spec.step == Some(StepName::RunReview));
+    assert!(!asked_run_review);
+    assert!(!events.iter().any(|event| matches!(
+        &event.kind,
+        RunEventKind::RunReview(RunReviewEvent::Candidate(_))
+    )));
     let store = Store::new(state_dir(&crew), crew.repo.root());
     assert!(Evolution::open(&store)?.candidates()?.is_empty());
     Ok(())
@@ -715,25 +726,26 @@ fn cli_estimate() -> ChangeEstimate {
 }
 
 #[tokio::test]
-async fn recipe_applies_at_triage_and_run_start() -> anyhow::Result<()> {
+async fn learned_workflow_applies_at_the_choice_and_run_start() -> anyhow::Result<()> {
     let (crew, _fakes) = crew_of_two(|worker| Script::new(model_of(worker)))?;
-    write_recipe(&crew, 1)?;
+    write_learned_workflow(&crew, 1)?;
     let store = Store::new(state_dir(&crew), crew.repo.root());
-    let sets = recipes::load_all(&store)?;
+    let sets = learned_workflows::load_all(&store)?;
     let estimate = cli_estimate();
     let matched = found(
-        recipes::matching(&sets, &estimate.task_type, &estimate.risk_labels),
-        "matching recipe",
+        learned_workflows::matching(&sets, &estimate.task_type, &estimate.risk_labels),
+        "matching learned workflow",
     )?;
-    // One small file with tests would run solo; the recipe says crew.
+    // One small file with tests would run as Captain; the learned workflow says crew.
     assert_eq!(
-        triage::decide(&estimate, &crew.settings).mode,
-        RunMode::Solo
+        captain_or_crew::decide(&estimate, &crew.settings).mode,
+        RunMode::Captain
     );
-    let decided = triage::decide_with(&estimate, &crew.settings, Some(matched), Default::default());
+    let decided =
+        captain_or_crew::decide_with(&estimate, &crew.settings, Some(matched), Default::default());
     assert_eq!(decided.mode, RunMode::Crew);
     assert_eq!(decided.rule, "learned:cli-flag");
-    let overlay = recipes::settings_overlay(matched)?;
+    let overlay = learned_workflows::settings_overlay(matched)?;
     assert_eq!(
         overlay
             .get("divide")
@@ -742,10 +754,10 @@ async fn recipe_applies_at_triage_and_run_start() -> anyhow::Result<()> {
         Some(4)
     );
     // Recorded with the run, it reaches every outcome and the run line.
-    recipe::write(
+    learned_workflow::write(
         &crew.repo_context()?.run_dir,
-        &RunRecipe {
-            recipe: matched.reference(),
+        &RunLearnedWorkflow {
+            learned_workflow: matched.reference(),
             sha256: matched.sha256.clone(),
             canary: false,
             dir: None,
@@ -753,27 +765,30 @@ async fn recipe_applies_at_triage_and_run_start() -> anyhow::Result<()> {
     )?;
     crew_run(&crew).await?;
     let lines = log(&crew)?;
-    assert_eq!(runs_in(&lines)[0].recipe, Some(matched.reference()));
+    assert_eq!(
+        runs_in(&lines)[0].learned_workflow,
+        Some(matched.reference())
+    );
     assert!(
         outcomes_in(&lines)
             .iter()
-            .all(|outcome| outcome.recipe == Some(matched.reference()))
+            .all(|outcome| outcome.learned_workflow == Some(matched.reference()))
     );
     Ok(())
 }
 
 #[test]
-fn a_recipe_decides_the_mode_at_triage() {
+fn a_learned_workflow_decides_captain_or_crew() {
     let settings = Settings::default();
     let estimate = cli_estimate();
-    let loaded = LoadedRecipe {
-        recipe: Recipe {
-            recipe: "cli-flag".to_owned(),
+    let loaded = LoadedLearnedWorkflow {
+        learned_workflow: LearnedWorkflow {
+            name: "cli-flag".to_owned(),
             version: 2,
             parent: Some(1),
             description: "Command-line flags".to_owned(),
             workflow: None,
-            mode: Some(RecipeMode::Crew),
+            mode: Some(LearnedWorkflowMode::Crew),
             phases: None,
             matches: Match {
                 task_types: vec!["cli".to_owned()],
@@ -786,37 +801,43 @@ fn a_recipe_decides_the_mode_at_triage() {
         text: String::new(),
         sha256: "ef".repeat(32),
     };
-    assert_eq!(triage::decide(&estimate, &settings).mode, RunMode::Solo);
-    let decided = triage::decide_with(&estimate, &settings, Some(&loaded), Default::default());
+    assert_eq!(
+        captain_or_crew::decide(&estimate, &settings).mode,
+        RunMode::Captain
+    );
+    let decided =
+        captain_or_crew::decide_with(&estimate, &settings, Some(&loaded), Default::default());
     assert_eq!(decided.mode, RunMode::Crew);
     assert_eq!(decided.rule, "learned:cli-flag");
     assert!(decided.reason.contains("cli-flag v2"), "{}", decided.reason);
-    // `triage.use_learned = false` leaves it to the file and label rules.
+    // `captain_or_crew.use_learned = false` leaves it to the file and label rules.
     let mut off = settings.clone();
-    off.triage.use_learned = false;
+    off.captain_or_crew.use_learned = false;
     assert_eq!(
-        triage::decide_with(&estimate, &off, Some(&loaded), Default::default()).mode,
-        RunMode::Solo
+        captain_or_crew::decide_with(&estimate, &off, Some(&loaded), Default::default()).mode,
+        RunMode::Captain
     );
-    // A recipe without a mode doesn't decide one.
+    // A learned workflow without a mode doesn't decide one.
     let mut modeless = loaded.clone();
-    modeless.recipe.mode = None;
+    modeless.learned_workflow.mode = None;
     assert_eq!(
-        triage::decide_with(&estimate, &settings, Some(&modeless), Default::default()).mode,
-        RunMode::Solo
+        captain_or_crew::decide_with(&estimate, &settings, Some(&modeless), Default::default())
+            .mode,
+        RunMode::Captain
     );
 }
 
 #[tokio::test]
-async fn canary_run_opens_pull_request() -> anyhow::Result<()> {
+async fn a_canary_run_with_nowhere_to_open_a_pull_request_is_left_on_its_branch()
+-> anyhow::Result<()> {
     let (mut crew, _fakes) = crew_of_two(|worker| Script::new(model_of(worker)))?;
     // What resolving gives a canary run under `evolution.canary_pull_requests`.
     crew.settings.merge.mode = MergeMode::PullRequest;
     let main_before = crew.repo.head()?;
-    recipe::write(
+    learned_workflow::write(
         &crew.repo_context()?.run_dir,
-        &RunRecipe {
-            recipe: RecipeRef {
+        &RunLearnedWorkflow {
+            learned_workflow: LearnedWorkflowRef {
                 name: "cli-flag".to_owned(),
                 version: 4,
             },
@@ -826,44 +847,46 @@ async fn canary_run_opens_pull_request() -> anyhow::Result<()> {
         },
     )?;
     let (exit, events) = crew_run(&crew).await?;
-    assert_eq!(exit, EngineExit::Finished(RunOutcome::PullRequest));
-    let command = found(
+    // This repository has no remote, so no pull request can be opened: the run says so and
+    // is left on its branch, never merged.
+    assert_eq!(exit, EngineExit::Finished(RunOutcome::BranchLeft));
+    let said = found(
         events.iter().find_map(|event| match &event.kind {
-            RunEventKind::Integration(IntegrationEvent::PullRequest { command, .. }) => {
-                command.clone()
+            RunEventKind::Note(note) if note.text.starts_with("No pull request was opened") => {
+                Some(note.text.clone())
             }
             _ => None,
         }),
-        "pull request",
+        "a note saying no pull request was opened",
     )?;
-    assert_eq!(&command[..3], ["gh", "pr", "create"]);
+    assert!(said.contains("no remote"), "{said}");
     assert!(!events.iter().any(|event| matches!(
         event.kind,
-        RunEventKind::Integration(IntegrationEvent::Landed { .. })
+        RunEventKind::Merge(MergeEvent::RunMerged { .. } | MergeEvent::PullRequest { .. })
     )));
     assert_eq!(crew.repo.git(&["rev-parse", "main"])?.trim(), main_before);
     let lines = log(&crew)?;
     let run = runs_in(&lines)[0];
     assert!(run.canary);
-    assert_eq!(run.outcome, RunOutcome::PullRequest);
+    assert_eq!(run.outcome, RunOutcome::BranchLeft);
     Ok(())
 }
 
 #[tokio::test]
-async fn lead_examples_ranked_by_past_runs() -> anyhow::Result<()> {
+async fn main_agent_examples_ranked_by_past_runs() -> anyhow::Result<()> {
     let (crew, _fakes) = crew_of_two(|worker| Script::new(model_of(worker)))?;
     let state = state_dir(&crew);
     let version = |name: &str| -> anyhow::Result<String> {
         let workflow = builtin::load(name).map_err(anyhow::Error::msg)?;
         Ok(runner::version(&workflow)?)
     };
-    // `solo` passed three runs of three; `council` one of two.
+    // `captain` passed three runs of three; `council` one of two.
     let past = [
         ("council", true),
         ("council", false),
-        ("solo", true),
-        ("solo", true),
-        ("solo", true),
+        ("captain", true),
+        ("captain", true),
+        ("captain", true),
     ];
     for (n, (name, passed)) in past.into_iter().enumerate() {
         let run = RunId::new(format!("past-{n:02}"))?;
@@ -871,14 +894,14 @@ async fn lead_examples_ranked_by_past_runs() -> anyhow::Result<()> {
             run: run.clone(),
             at: time::OffsetDateTime::now_utc(),
             task_type: "build".to_owned(),
-            recipe: None,
+            learned_workflow: None,
             workflow: Some((name.to_owned(), version(name)?)),
             outcome: if passed {
                 RunOutcome::Merged
             } else {
                 RunOutcome::Abandoned
             },
-            escalations: 0,
+            stuck_tasks: 0,
             final_checks_passed: passed,
             cost_usd: 1.0,
             minutes: 5.0,
@@ -889,11 +912,11 @@ async fn lead_examples_ranked_by_past_runs() -> anyhow::Result<()> {
     let (host, _) = crew.host(RunMode::Crew)?;
     let examples = change::examples(&host);
     let at = |name: &str| examples.iter().position(|example| example.name == name);
-    let solo = found(at("solo"), "solo")?;
-    let peer = found(at("council"), "council")?;
-    assert!(solo < peer);
-    assert_eq!((examples[solo].runs, examples[solo].passed), (3, 3));
-    assert_eq!((examples[peer].runs, examples[peer].passed), (2, 1));
+    let captain = found(at("captain"), "captain")?;
+    let council = found(at("council"), "council")?;
+    assert!(captain < council);
+    assert_eq!((examples[captain].runs, examples[captain].passed), (3, 3));
+    assert_eq!((examples[council].runs, examples[council].passed), (2, 1));
     Ok(())
 }
 
@@ -974,11 +997,11 @@ async fn a_starlark_workflow_runs_like_any_other() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A recipe's own template and `.star` workflow come by their full paths, from beside the run's
-/// recipe version: for a candidate, its folder in the conductor's state, which neither your
-/// checkout nor a replay's repository has. A full path anywhere else is refused.
+/// A learned workflow's own template and `.star` workflow come by their full paths, from beside the
+/// run's learned workflow version: for a candidate, its folder in Argonauts Code's state, which
+/// neither your checkout nor a replay's repository has. A full path anywhere else is refused.
 #[tokio::test]
-async fn a_recipes_own_files_come_from_beside_its_version() -> anyhow::Result<()> {
+async fn a_learned_workflows_own_files_come_from_beside_its_version() -> anyhow::Result<()> {
     let (mut crew, fakes) = crew_of_two(|worker| Script::new(model_of(worker)))?;
     let folder = state_dir(&crew).join("evolution/candidates/cli-flag-v2");
     std::fs::create_dir_all(&folder)?;
@@ -997,10 +1020,10 @@ async fn a_recipes_own_files_come_from_beside_its_version() -> anyhow::Result<()
         folder.join("one-build.star"),
         elsewhere.join("one-build.star"),
     )?;
-    recipe::write(
+    learned_workflow::write(
         &crew.repo_context()?.run_dir,
-        &RunRecipe {
-            recipe: RecipeRef {
+        &RunLearnedWorkflow {
+            learned_workflow: LearnedWorkflowRef {
                 name: "cli-flag".to_owned(),
                 version: 2,
             },
@@ -1030,8 +1053,8 @@ async fn a_recipes_own_files_come_from_beside_its_version() -> anyhow::Result<()
 }
 
 /// With `outcomes.share`, finished runs' outcome logs go in `.argonauts/outcomes/` on the
-/// branch that lands, in a conductor commit before the merge checkpoint. A run counts as
-/// finished once its retro wrote its run line, so a run still going stays out, and this run's
+/// branch that lands, in a commit of Argonauts Code's before the merge approval. A run counts as
+/// finished once its run review wrote its run line, so a run still going stays out, and this run's
 /// own log lands with the next run that lands.
 #[tokio::test]
 async fn finished_runs_logs_land_with_the_next_run() -> anyhow::Result<()> {
@@ -1045,10 +1068,10 @@ async fn finished_runs_logs_land_with_the_next_run() -> anyhow::Result<()> {
         run: finished.clone(),
         at: time::OffsetDateTime::now_utc(),
         task_type: "cli".to_owned(),
-        recipe: None,
+        learned_workflow: None,
         workflow: None,
         outcome: RunOutcome::Merged,
-        escalations: 0,
+        stuck_tasks: 0,
         final_checks_passed: true,
         cost_usd: 2.0,
         minutes: 10.0,
@@ -1057,7 +1080,7 @@ async fn finished_runs_logs_land_with_the_next_run() -> anyhow::Result<()> {
     outcomes::append_lines(&state, &finished, &[LogLine::Run(record)])?;
     let reversal = argonauts_learning::outcomes::Reversal {
         run: going.clone(),
-        card: None,
+        task: None,
         what: "you answered send back at the plan approval".to_owned(),
         at: time::OffsetDateTime::now_utc(),
     };
@@ -1086,12 +1109,12 @@ async fn finished_runs_logs_land_with_the_next_run() -> anyhow::Result<()> {
 
 /// A replay of a build change takes what the run its task came from answered before the do
 /// phase: no goal or plan ask reaches a worker, each is logged as a session that ended at once
-/// at no cost, and the build goes to the workers as usual. Every card it plans keeps the
+/// at no cost, and the build goes to the workers as usual. Every task it plans keeps the
 /// hidden tests and the replay folder out of reach.
 #[tokio::test]
 async fn a_replay_reuses_what_its_task_answered_before_its_phase() -> anyhow::Result<()> {
-    use argonauts_core::events::card::CardEvent;
     use argonauts_core::events::session::SessionEvent;
+    use argonauts_core::events::task::TaskEvent;
     use argonauts_core::events::workflow::WorkflowEvent;
     use argonauts_core::workflow::StandardPhase;
     use argonauts_crew::replay_terms::{self, ReplayTerms};
@@ -1113,7 +1136,7 @@ async fn a_replay_reuses_what_its_task_answered_before_its_phase() -> anyhow::Re
         .iter()
         .filter_map(|answer| answer.step)
         .collect();
-    for step in [StepName::Restate, StepName::Draft, StepName::Judge] {
+    for step in [StepName::Read, StepName::Draft, StepName::Judge] {
         assert!(steps.contains(&step), "{steps:?}");
     }
     for step in [StepName::Build, StepName::Review] {
@@ -1134,8 +1157,8 @@ async fn a_replay_reuses_what_its_task_answered_before_its_phase() -> anyhow::Re
     let asked: Vec<SessionSpec> = fakes.iter().flat_map(|fake| fake.specs()).collect();
     let asked_steps: Vec<StepName> = asked.iter().filter_map(|spec| spec.step).collect();
     for step in [
-        StepName::Restate,
-        StepName::Differ,
+        StepName::Read,
+        StepName::Compare,
         StepName::Draft,
         StepName::Judge,
     ] {
@@ -1183,15 +1206,15 @@ async fn a_replay_reuses_what_its_task_answered_before_its_phase() -> anyhow::Re
     });
     assert!(noted, "{:?}", names(&events));
 
-    let cards: Vec<_> = events
+    let tasks: Vec<_> = events
         .iter()
         .filter_map(|event| match &event.kind {
-            RunEventKind::Card(CardEvent::Created(spec)) => Some(spec),
+            RunEventKind::Task(TaskEvent::Created(spec)) => Some(spec),
             _ => None,
         })
         .collect();
-    assert!(!cards.is_empty());
-    for spec in cards {
+    assert!(!tasks.is_empty());
+    for spec in tasks {
         for path in &hidden {
             assert!(spec.hidden_paths.contains(path), "{:?}", spec.hidden_paths);
         }

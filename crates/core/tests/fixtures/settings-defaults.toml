@@ -1,18 +1,17 @@
 workflow = "council"
-phases = "council"
 ultracode = false
 workflow_size = "medium"
-main_agent = "claude-code"
 compaction = "inherit"
 
 [crew]
+main = "claude-code"
 orchestrator = "main"
-workers = [
+worker = [
     "claude-code",
     "codex",
     "antigravity-cli",
 ]
-reviewers = [
+reviewer = [
     "claude-code",
     "codex",
     "antigravity-cli",
@@ -58,7 +57,6 @@ mode = "auto"
 order = []
 ask_timeout = "none"
 allow_api_billing = false
-return_to_original = false
 broken_work = "continue"
 wrap_up = "let_finish"
 strategy = "first"
@@ -68,36 +66,42 @@ checkpoint = true
 merge_rule = "upgrade_review"
 unknown_tier = "weaker"
 max_fallbacks = 3
+same_cli = false
 context = "note+transcript"
+
+[fallback.retry]
+tries = 1
+wait = "5s"
+backoff = "fixed"
 
 [fallback.replace]
 
 [intake]
 include_uncommitted = false
 
-[solo_or_crew]
+[captain_or_crew]
 use_learned = true
-solo_max_files = 3
-solo_requires_tests = true
+captain_max_files = 3
+captain_requires_tests = true
 crew_min_files = 8
 crew_labels = [
     "architecture",
     "migration",
     "security",
 ]
-otherwise = "solo_then_crew"
-solo_kind = "checked"
+otherwise = "captain_then_crew"
+captain_kind = "checked"
 read_instructions = true
 
-[solo]
+[captain]
 kind = "direct"
 asks = "like_cli"
 rewind = true
 rewind_max_mb = 50
 start_workflow_tool = true
-restate_first = false
+understand_first = false
 review = false
-attempts = 1
+tries = 1
 
 [understand]
 when = "crew"
@@ -264,12 +268,12 @@ change_classes = [
 min_days_between = 14
 
 [approvals.rules.stuck]
-max_extra_attempts = 1
+max_extra_tries = 1
 
 [approvals.rules.limit]
 use_reserve = true
 
-[approvals.goal]
+[approvals.understand]
 mode = "auto"
 decide_with = "rules_and_model"
 otherwise = "ask"
@@ -310,7 +314,7 @@ decide_with = "rules_and_model"
 otherwise = "ask"
 at_hard_limit = "stop"
 
-[approvals.approver]
+[approvals.judge]
 model_rules = "approval-rules.md"
 different_provider = true
 
@@ -336,7 +340,7 @@ experiments = 0.1
 contracts = 0.1
 tasks = 0.4
 review = 0.1
-integration = 0.05
+merge = 0.05
 reserve = 0.1
 
 [sandbox]
@@ -367,7 +371,7 @@ cooldown = "5m"
 lifetime = "task"
 context = "largest"
 rotate_at = 0.9
-chat_resumes = true
+conversation_resumes = true
 
 [switch]
 carry = "summary"
@@ -382,7 +386,7 @@ max_per_agent = 3
 
 [visibility]
 drafts_hidden_until_sealed = true
-reviews_hidden_until_adjudicated = true
+reviews_hidden_until_settled = true
 judges_see_authors = false
 
 [visibility.status_summary]
@@ -409,6 +413,7 @@ max_file_mb = 50
 max_total_mb = 2048
 max_files = 100000
 min_free_gb = 5
+leave_out = []
 
 [workflows]
 orchestrator_designs = true
@@ -428,6 +433,7 @@ evolvable = [
     "limits.per_task_usd",
 ]
 propose_every = 1
+propose_timeout = "2m"
 min_gain_points = 10.0
 max_cost_increase = 0.1
 not_worse_classes = []
@@ -469,7 +475,7 @@ build = ""
 verbosity = "full"
 narrator = "on_demand"
 keys = "default"
-takeover = "here"
+take_over = "here"
 screen = "fullscreen"
 screen_reader = false
 motion = "normal"
@@ -484,9 +490,9 @@ theme = "auto"
 glyphs = "unicode"
 ambiguous_width = 1
 newer_cli_notice = true
-mod_output = "show"
-heads_up = "when_enabled"
-agents_in_chat = "when_done"
+plugin_output = "show"
+notices = "when_enabled"
+agents_in_conversation = "when_done"
 
 [ui.keymap]
 
@@ -566,7 +572,7 @@ mods = [
     "runs",
 ]
 open = "view"
-period = "day"
+period = "all"
 
 [ui.views.context]
 mods = [
@@ -698,20 +704,20 @@ commands = true
 interval = "45s"
 spend_cap = "0.50 usd"
 
-[supervisor]
+[run_host]
 wait_grace = "10s"
 snapshot_every = 5000
 journal_deltas_per_second = 10
-retry_wait = "5s"
 
 [runs]
 remind_waiting_days = 7
+keep_copies = false
 
 [notifications]
 bell = true
 os = true
 
-[notifications.chat]
+[notifications.conversation]
 command = []
 on = [
     "needs_you",
@@ -733,6 +739,7 @@ discover = true
 
 [awake]
 while_working = true
+screen_while_working = false
 
 [main_session]
 tools = true

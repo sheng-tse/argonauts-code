@@ -20,7 +20,7 @@ pub struct StartedAgent {
     /// Its display name, such as `Opus 5.5 on Claude Code`.
     pub name: String,
     pub color: Option<AgentColor>,
-    /// Such as `owner · card-002 Add the JSON writer`.
+    /// Such as `worker · task-002 Add the JSON writer`.
     pub detail: String,
 }
 
@@ -68,7 +68,7 @@ impl HistoryCell for AgentsStarted {
             } else {
                 theme.glyphs.tree_mid
             };
-            let lead = [
+            let opening = [
                 Span::raw(" ".repeat(TREE_COL)),
                 Span::styled(branch, theme.style(Role::Dim)),
                 Span::raw(" "),
@@ -84,7 +84,7 @@ impl HistoryCell for AgentsStarted {
                     theme.style(Role::Text),
                 ));
             }
-            lines.extend(wrap_spans(&spans, width, &lead, &hang));
+            lines.extend(wrap_spans(&spans, width, &opening, &hang));
         }
         fit_lines(&mut lines, width);
         lines

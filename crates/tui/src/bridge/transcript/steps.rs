@@ -9,7 +9,7 @@ use argonauts_core::events::goal::{GoalChangeResolution, GoalFile, GoalSource};
 use argonauts_core::events::run::{
     CheckedInstruction, InstructionOutcome, Party, RunPhase, RunStarted,
 };
-use argonauts_core::log::RETRO_FAILED;
+use argonauts_core::log::RUN_REVIEW_FAILED;
 use argonauts_core::steps::intake::InstructionKind;
 
 use crate::cell::{Notice, Tone, ToolCall, ToolItem, ToolKind, ToolState};
@@ -42,16 +42,16 @@ pub(super) fn party_words(party: &Party, names: &DisplayNames) -> Option<String>
         Party::Rules => Some("your rules".to_owned()),
         Party::Config => Some("your settings".to_owned()),
         Party::Autopilot => Some("autopilot".to_owned()),
-        Party::Approver { model } | Party::Agent { worker: model, .. } => Some(names.worker(model)),
-        Party::FrontEnd { client } => Some(client.clone()),
-        Party::Conductor => None,
+        Party::Judge { model } | Party::Agent { worker: model, .. } => Some(names.worker(model)),
+        Party::OutsideAgent { client } => Some(client.clone()),
+        Party::ArgonautsCode => None,
     }
 }
 
 pub(super) fn plural(count: usize, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
 }
-/// What a run's start says in the chat. There is no Triage row: the workflow's
+/// What a run's start says in the conversation. It has no row of its own: the workflow's
 /// own row marks the start, as Claude Code's does. Only what you would otherwise never hear is
 /// said, in one quiet item: what your words asked and what of it wasn't followed, the files
 /// left out, and who else started it.
@@ -83,13 +83,13 @@ pub(super) fn run_started(started: &RunStarted, reviewers_beside: bool, cx: &mut
         };
         lines.push(format!("{files} {fate}"));
     }
-    if let Some(client) = &started.front_end {
+    if let Some(client) = &started.outside_agent {
         lines.push(format!("Started by {client}"));
     }
     start_note(lines, cx);
 }
 
-/// What your words asked of a solo that works in your checkout, which has no run to say it.
+/// What your words asked of a Captain that works in your checkout, which has no run to say it.
 pub(super) fn direct_asked(instructions: &[CheckedInstruction], cx: &mut Cx<'_>) {
     start_note(as_you_asked(instructions), cx);
 }
@@ -104,7 +104,7 @@ fn start_note(mut lines: Vec<String>, cx: &mut Cx<'_>) {
     emit(cx, note);
 }
 
-/// `As you asked: Codex coordinates · Claude Code reviews`, then a `Not followed:` line for
+/// `As you asked: Codex orchestrates · Claude Code reviews`, then a `Not followed:` line for
 /// each instruction that wasn't, or was only in part, with its words and why. Instructions
 /// whose words you didn't write show only in Ctrl+O.
 pub(super) fn as_you_asked(instructions: &[CheckedInstruction]) -> Vec<String> {
@@ -161,10 +161,10 @@ pub(super) fn phase(phase: RunPhase, status: PhaseStatus, summary: Option<&str>,
     }
 }
 
-/// `● The retro failed. The run's result stands.` Why is often a raw schema error, so it waits
+/// `● The run review failed. The run's result stands.` Why is often a raw schema error, so it waits
 /// for Ctrl+O.
-pub(super) fn retro_failed(reason: Option<&str>, cx: &mut Cx<'_>) {
-    let mut notice = Notice::new(Tone::Warning, RETRO_FAILED);
+pub(super) fn run_review_failed(reason: Option<&str>, cx: &mut Cx<'_>) {
+    let mut notice = Notice::new(Tone::Warning, RUN_REVIEW_FAILED);
     if let Some(reason) = reason.map(str::trim).filter(|reason| !reason.is_empty()) {
         notice = notice.with_more(reason);
     }
@@ -173,26 +173,26 @@ pub(super) fn retro_failed(reason: Option<&str>, cx: &mut Cx<'_>) {
 
 fn phase_name(phase: RunPhase) -> &'static str {
     match phase {
-        RunPhase::Goal => "The goal step",
+        RunPhase::Understand => "Understand",
         RunPhase::Planning => "Planning",
         RunPhase::Dividing => "Dividing the plan",
         RunPhase::Contracts => "The contracts step",
         RunPhase::Build => "The build",
         RunPhase::FinalCheck => "The final check",
         RunPhase::Merge => "The merge",
-        RunPhase::Retro => "The run review",
+        RunPhase::RunReview => "The run review",
     }
 }
 /// `● Goal(Add a --json flag to export)` then `⎿  Agreed by 3 agents · 1 question answered`,
-/// with the questions the lead answered for you counted apart from the other assumptions.
-/// A solo run's goal is your prompt, which triage already said.
+/// with the questions the main agent answered for you counted apart from the other assumptions.
+/// A Captain run's goal is your prompt, which the estimate already said.
 pub(super) fn goal(story: &RunStory, file: &GoalFile, by: &Party, cx: &mut Cx<'_>) {
     if file.source == GoalSource::Prompt {
         return;
     }
     let mut parts = Vec::new();
-    if story.restatements > 0 {
-        let agents = usize::try_from(story.restatements).unwrap_or(usize::MAX);
+    if story.readings > 0 {
+        let agents = usize::try_from(story.readings).unwrap_or(usize::MAX);
         parts.push(format!("Agreed by {}", plural(agents, "agent", "agents")));
     }
     if !file.answers.is_empty() {
@@ -201,18 +201,18 @@ pub(super) fn goal(story: &RunStory, file: &GoalFile, by: &Party, cx: &mut Cx<'_
             plural(file.answers.len(), "question", "questions")
         ));
     }
-    let by_lead = file
+    let by_main_agent = file
         .assumptions
         .iter()
-        .filter(|assumption| assumption.by_lead())
+        .filter(|assumption| assumption.by_main_agent())
         .count();
-    if by_lead > 0 {
+    if by_main_agent > 0 {
         parts.push(format!(
             "{} answered by the main agent",
-            plural(by_lead, "question", "questions")
+            plural(by_main_agent, "question", "questions")
         ));
     }
-    let stated = file.assumptions.len() - by_lead;
+    let stated = file.assumptions.len() - by_main_agent;
     if stated > 0 {
         parts.push(format!(
             "{} stated",
@@ -247,18 +247,18 @@ pub(super) fn goal_change(resolution: GoalChangeResolution, cx: &mut Cx<'_>) {
     emit(cx, Notice::new(tone, text));
 }
 
-/// `● Plan(3 drafts, judged)`, the winner and the card count, then the disputed topics.
-pub(super) fn plan(story: &RunStory, cards: usize, cx: &mut Cx<'_>) {
+/// `● Plan(3 drafts, judged)`, the winner and the task count, then the disputed topics.
+pub(super) fn plan(story: &RunStory, tasks: usize, cx: &mut Cx<'_>) {
     let drafts = usize::try_from(story.drafts).unwrap_or(usize::MAX);
-    let cards = plural(cards, "task", "tasks");
-    let (args, outcome) = if let Some(coordinator) = &story.coordinated {
-        let who = cx.state.names.worker(coordinator);
-        (format!("coordinated by {who}"), cards)
+    let tasks = plural(tasks, "task", "tasks");
+    let (args, outcome) = if let Some(orchestrator) = &story.orchestrated {
+        let who = cx.state.names.worker(orchestrator);
+        (format!("orchestrated by {who}"), tasks)
     } else if let Some(merger) = &story.fast_path {
         let who = cx.state.names.worker(merger);
         (
             format!("{}, merged", plural(drafts, "draft", "drafts")),
-            format!("No disputed topics · merged by {who} · {cards}"),
+            format!("No disputed topics · merged by {who} · {tasks}"),
         )
     } else if let Some(judged) = &story.judged {
         let won = match judged.winner {
@@ -267,10 +267,10 @@ pub(super) fn plan(story: &RunStory, cards: usize, cx: &mut Cx<'_>) {
         };
         (
             format!("{}, judged", plural(drafts, "draft", "drafts")),
-            format!("{won} · {cards}"),
+            format!("{won} · {tasks}"),
         )
     } else if drafts > 0 {
-        (plural(drafts, "draft", "drafts"), cards)
+        (plural(drafts, "draft", "drafts"), tasks)
     } else {
         return;
     };

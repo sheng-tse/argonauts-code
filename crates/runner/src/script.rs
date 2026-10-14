@@ -23,7 +23,7 @@ pub struct Meta {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetaPhase {
-    pub title: String,
+    pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub detail: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -101,8 +101,12 @@ impl Script {
     pub fn from_steps(file: &WorkflowFile) -> Self {
         let phases: Vec<MetaPhase> = (0..file.steps.len())
             .map(|index| MetaPhase {
-                title: file.steps[index].name.clone(),
-                detail: format!("{} · {}", file.steps[index].role, plan::how(file, index)),
+                name: file.steps[index].name.clone(),
+                detail: format!(
+                    "{} · {}",
+                    file.steps[index].role.plural(),
+                    plan::how(file, index)
+                ),
                 model: file.steps[index].model.as_ref().map(ToString::to_string),
             })
             .collect();
@@ -155,7 +159,7 @@ impl Script {
     }
 }
 
-fn read_meta(value: Value) -> Result<Meta, ScriptError> {
+fn read_meta(mut value: Value) -> Result<Meta, ScriptError> {
     let text = |key: &'static str| {
         value
             .get(key)
@@ -166,7 +170,22 @@ fn read_meta(value: Value) -> Result<Meta, ScriptError> {
     };
     text("name")?;
     text("description")?;
+    name_claude_code_phases(&mut value);
     serde_json::from_value(value).map_err(|err| ScriptError::MetaNotLiteral(err.to_string()))
+}
+
+/// Claude Code's own scripts give each phase a `title`, which is its name here.
+fn name_claude_code_phases(meta: &mut Value) {
+    let Some(phases) = meta.get_mut("phases").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for phase in phases.iter_mut().filter_map(Value::as_object_mut) {
+        if !phase.contains_key("name")
+            && let Some(title) = phase.remove("title")
+        {
+            phase.insert("name".to_owned(), title);
+        }
+    }
 }
 
 /// The first place at or after `from` that isn't whitespace or a comment.
@@ -237,23 +256,27 @@ mod tests {
     use super::*;
 
     const SCRIPT: &str = "// Finds flaky tests.\nexport const meta = {\n  name: 'find-flaky',\n  \
-                          description: 'Find flaky tests } and fix them',\n  phases: [{ title: \
-                          'Scan', detail: 'read the logs' }, { title: 'Fix' }],\n}\n\
-                          phase('Scan')\nconst found = await agent('look', { role: 'workers' \
+                          description: 'Find flaky tests } and fix them',\n  phases: [{ name: \
+                          'Scan', detail: 'read the logs' }, { name: 'Fix' }],\n}\n\
+                          phase('Scan')\nconst found = await agent('look', { role: 'worker' \
                           })\nreturn found\n";
+
+    #[test]
+    fn a_claude_code_script_names_its_phases_with_title() {
+        let script = Script::parse(
+            "export const meta = { name: 'a', description: 'b', phases: [{ title: 'Scan' }] }\n",
+        )
+        .expect("parses");
+        assert_eq!(script.meta.phases[0].name, "Scan");
+    }
 
     #[test]
     fn meta_is_read_before_anything_runs() {
         let script = Script::parse(SCRIPT).expect("parses");
         assert_eq!(script.meta.name, "find-flaky");
         assert_eq!(script.meta.description, "Find flaky tests } and fix them");
-        let titles: Vec<&str> = script
-            .meta
-            .phases
-            .iter()
-            .map(|p| p.title.as_str())
-            .collect();
-        assert_eq!(titles, ["Scan", "Fix"]);
+        let names: Vec<&str> = script.meta.phases.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Scan", "Fix"]);
         assert_eq!(script.meta.phases[0].detail, "read the logs");
         // Every line stays where its author wrote it, so an error names their line.
         let wrapped = script.wrapped();

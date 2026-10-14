@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 /// Kept in the repository's state folder, beside the trust of its settings files.
 const FILE: &str = "trusted-prompts.json";
 
-/// The project's workflows: files of steps, scripts, and the older phases files.
+/// The project's workflows: their own files, scripts, and files of phases alone.
 const WORKFLOWS_DIR: &str = "workflows";
 const WORKFLOW_EXTENSIONS: [&str; 5] = ["toml", "js", "mjs", "yaml", "star"];
 
@@ -248,7 +248,7 @@ mod tests {
         }
     }
 
-    const ROLE: &str = ".argonauts/roles/reviewers.md";
+    const ROLE: &str = ".argonauts/roles/reviewer.md";
 
     #[test]
     fn a_file_you_wrote_here_is_used_and_stays_yours_once_committed() {

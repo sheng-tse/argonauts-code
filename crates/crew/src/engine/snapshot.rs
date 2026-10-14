@@ -1,4 +1,4 @@
-//! `Run::Snapshot` every `supervisor.snapshot_every` events, so a long run stays cheap to
+//! `Run::Snapshot` every `run_host.snapshot_every` events, so a long run stays cheap to
 //! resume and reattach.
 
 use argonauts_core::api::StatusSummary;
@@ -20,7 +20,7 @@ pub fn due(state: &RunState, every: u64) -> bool {
     every > 0 && since >= every
 }
 
-/// The engine's versioned state, the user's status summary, the open checkpoints, and the
+/// The engine's versioned state, the user's status summary, the open approvals, and the
 /// running sessions.
 pub fn build(
     state: &RunState,
@@ -31,8 +31,8 @@ pub fn build(
         upto: state.seq.unwrap_or(0),
         engine: state.to_snapshot()?,
         summary,
-        open_checkpoints: state
-            .checkpoints
+        open_approvals: state
+            .approvals
             .open()
             .map(|record| record.opened.clone())
             .collect(),

@@ -12,12 +12,14 @@ use argonauts_core::settings::Settings;
 use serde::Serialize;
 
 use crate::git::Git;
-use crate::quota::{BinaryError, find_unsandboxed};
+use crate::plan_usage::{BinaryError, find_unsandboxed};
 
 pub mod always_on;
 mod command;
 pub mod details;
+pub mod newest;
 pub mod roles;
+pub mod standing;
 pub mod update;
 pub mod versions;
 
@@ -188,7 +190,7 @@ pub async fn check_agent_at(
         };
         if !flags.missing.is_empty() {
             check.problem = Some(format!(
-                "--help lacks flags Argonauts passes: {}",
+                "--help lacks flags Argonauts Code passes: {}",
                 flags.missing.join(", ")
             ));
         } else if let Some(problem) = flags.problem {
@@ -210,8 +212,8 @@ pub async fn installed_version(adapter: &dyn Adapter, binary: Option<&Path>) -> 
     adapter.parse_version(&output)
 }
 
-/// The binary doctor and the quota probe run: `configured` (from `agents.<id>.binary`) when set,
-/// else the adapter's binary on `PATH`. Both run outside the sandbox, so [`find_unsandboxed`]
+/// The binary doctor and the plan usage probe run: `configured` (from `agents.<id>.binary`) when
+/// set, else the adapter's binary on `PATH`. Both run outside the sandbox, so [`find_unsandboxed`]
 /// refuses one a repo or an agent could plant.
 pub fn resolve_binary(adapter: &dyn Adapter, configured: Option<&Path>) -> Result<PathBuf, String> {
     find_binary(adapter, configured).map_err(|problem| problem.to_string())
@@ -321,9 +323,9 @@ pub(crate) mod tests {
         extract_version,
     };
 
-    /// A harness for doctor's tests: any adapter id, a scripted binary or none at all, and the
+    /// A CLI for doctor's tests: any adapter id, a scripted binary or none at all, and the
     /// compaction, login check, and transport a test needs.
-    pub(crate) struct FakeHarness {
+    pub(crate) struct FakeCli {
         id: &'static str,
         binary: &'static str,
         tested: &'static [&'static str],
@@ -333,7 +335,7 @@ pub(crate) mod tests {
         update: Option<&'static [&'static str]>,
     }
 
-    impl FakeHarness {
+    impl FakeCli {
         /// Not installed.
         pub(crate) fn named(id: &'static str) -> Self {
             Self {
@@ -386,7 +388,7 @@ pub(crate) mod tests {
         }
     }
 
-    impl Adapter for FakeHarness {
+    impl Adapter for FakeCli {
         fn id(&self) -> &'static str {
             self.id
         }
@@ -445,11 +447,11 @@ pub(crate) mod tests {
     }
 
     /// A Codex-like CLI whose `--version` and `--help` come from the test.
-    fn codex_like(dir: &Path, version: &str, help: &str) -> FakeHarness {
+    fn codex_like(dir: &Path, version: &str, help: &str) -> FakeCli {
         let body = format!(
             "case \"$*\" in\n  --version) echo 'codex-cli {version}' ;;\n  --help) echo 'Commands: exec' ;;\n  'exec --help') printf '%s\\n' '{help}' ;;\nesac"
         );
-        FakeHarness::script("codex", dir, &body, &["0.158.0", "0.158.3"])
+        FakeCli::script("codex", dir, &body, &["0.158.0", "0.158.3"])
     }
 
     #[tokio::test]
@@ -474,7 +476,7 @@ pub(crate) mod tests {
         assert_eq!(check.status, AgentStatus::Untested);
         assert_eq!(
             check.problem.as_deref(),
-            Some("--help lacks flags Argonauts passes: --output-schema")
+            Some("--help lacks flags Argonauts Code passes: --output-schema")
         );
 
         for (version, why) in [
@@ -492,9 +494,9 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let configured = codex_like(dir.path(), "0.158.0", &all_flags);
         let path = PathBuf::from(configured.binary);
-        let named = FakeHarness {
+        let named = FakeCli {
             tested: &["0.158.0"],
-            ..FakeHarness::named("codex")
+            ..FakeCli::named("codex")
         };
         let check = check_agent_at(&named, Some(&path), VERSION_TIMEOUT).await;
         assert_eq!(check.status, AgentStatus::Tested, "{check:?}");

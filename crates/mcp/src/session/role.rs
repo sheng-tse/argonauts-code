@@ -1,5 +1,5 @@
-//! `argonauts_ask_reviewers` and `argonauts_ask_judge`: a session asks a role of the crew, and
-//! Argonauts runs that role's model on the change in the session's folder and returns its
+//! `argonauts_ask_reviewer` and `argonauts_ask_judge`: a session asks a role of the crew, and
+//! Argonauts Code runs that role's model on the change in the session's folder and returns its
 //! answer. Claude Code's own workflow calls them at each review step when the
 //! reviewers or the judge are on another CLI, and nothing merges that didn't go through them.
 //! The main session has them too, for when you ask a role yourself.
@@ -64,10 +64,10 @@ fn description(role: CrewRole) -> String {
         _ => "the crew's reviewers to review",
     };
     format!(
-        "Asks {who} the change now in your folder. Argonauts runs that role's own model on the \
-         change and returns its answer. In a workflow of your own, call it at each review step \
-         and once more for the final change: nothing merges that didn't go through it. \
-         Otherwise call it only when the user asks for it."
+        "Asks {who} the change now in your folder. Argonauts Code runs that role's own model on \
+         the change and returns its answer. In a workflow of your own, call it at each review step \
+         and once more for the final change: nothing merges that didn't go through it. Otherwise \
+         call it only when the user asks for it."
     )
 }
 
@@ -88,7 +88,7 @@ pub(super) async fn call(
         what: string(arguments, "what"),
     };
     let reply = send(asking, ask).await.unwrap_or_else(|err| AskReply {
-        text: format!("Argonauts couldn't be reached, so nobody reviewed it: {err}"),
+        text: format!("Argonauts Code couldn't be reached, so nobody reviewed it: {err}"),
         is_error: true,
     });
     let content = vec![ContentBlock::text(reply.text)];
@@ -114,10 +114,10 @@ mod tests {
             token: "secret".into(),
             approve: false,
             tools: Vec::new(),
-            roles: vec![CrewRole::Reviewers, CrewRole::Judge],
+            roles: vec![CrewRole::Reviewer, CrewRole::Judge],
         };
         let names: Vec<String> = tools(&asking).iter().map(|t| t.name.to_string()).collect();
-        assert_eq!(names, ["argonauts_ask_reviewers", "argonauts_ask_judge"]);
+        assert_eq!(names, ["argonauts_ask_reviewer", "argonauts_ask_judge"]);
         let app = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let (read, mut write) = stream.into_split();
@@ -132,7 +132,7 @@ mod tests {
             asked
         });
         let arguments = json!({"label": "review:store", "what": "due dates in the store"});
-        let result = call(&asking, "argonauts_ask_reviewers", &arguments)
+        let result = call(&asking, "argonauts_ask_reviewer", &arguments)
             .await
             .unwrap();
         assert_eq!(result.is_error, Some(false));
@@ -140,13 +140,13 @@ mod tests {
         assert_eq!(
             asked.ask,
             Ask::Role {
-                role: CrewRole::Reviewers,
+                role: CrewRole::Reviewer,
                 label: "review:store".into(),
                 what: "due dates in the store".into(),
             }
         );
         assert!(
-            call(&asking, "argonauts_ask_workers", &arguments)
+            call(&asking, "argonauts_ask_worker", &arguments)
                 .await
                 .is_none()
         );
@@ -159,7 +159,7 @@ mod tests {
             token: "secret".into(),
             approve: false,
             tools: Vec::new(),
-            roles: vec![CrewRole::Reviewers, CrewRole::Judge],
+            roles: vec![CrewRole::Reviewer, CrewRole::Judge],
         };
         let hints: Vec<String> = tools(&asking)
             .iter()

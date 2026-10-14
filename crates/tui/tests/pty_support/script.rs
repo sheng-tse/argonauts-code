@@ -1,9 +1,9 @@
-//! A harness script: app events at their times, and waits for commands or for the test.
+//! A driver script: app events at their times, and waits for commands or for the test.
 
 use argonauts_core::app::AppEvent;
 use serde_json::{Value, json};
 
-use super::chat::{mode_idle, status_line, welcome};
+use super::conversation::{bottom_line, mode_idle, welcome};
 
 #[derive(Debug, Clone, Default)]
 pub struct Script {
@@ -15,11 +15,11 @@ impl Script {
         Self::default()
     }
 
-    /// The screen at rest: the header, the status line, and idle mode.
+    /// The screen at rest: the header, the bottom line, and idle mode.
     pub fn idle() -> Self {
         Self::new()
             .at(0, welcome())
-            .at(0, status_line())
+            .at(0, bottom_line())
             .at(0, mode_idle())
     }
 
@@ -50,13 +50,13 @@ impl Script {
         self
     }
 
-    /// Holds the rest until the test calls `Harness::signal(name)`.
+    /// Holds the rest until the test calls `TestDriver::signal(name)`.
     pub fn await_signal(mut self, name: &str) -> Self {
         self.lines.push(json!({ "await_signal": name }));
         self
     }
 
-    /// The harness panics here, as a crash in the app would.
+    /// The driver panics here, as a crash in the app would.
     pub fn panic(mut self, message: &str) -> Self {
         self.lines.push(json!({ "panic": message }));
         self

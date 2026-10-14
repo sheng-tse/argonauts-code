@@ -1,11 +1,11 @@
-//! `models.toml`: `[[model]]`, `[[effort]]`, and `[[harness]]` entries.
+//! `models.toml`: `[[model]]`, `[[effort]]`, and `[[cli]]` entries.
 
 use std::io::ErrorKind;
 use std::path::Path;
 
 use argonauts_core::model_catalog::{CatalogEntry, EffortNote, ModelCatalog};
-use argonauts_core::names::WorkerRef;
-use argonauts_core::registry::{HarnessManifest, ModelEntry, RegistryFile};
+use argonauts_core::names::ModelRef;
+use argonauts_core::registry::{CliManifest, ModelEntry, RegistryFile};
 use serde::Deserialize;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
@@ -23,7 +23,7 @@ const TIERS: std::ops::RangeInclusive<u8> = 1..=5;
 pub struct ModelsFile {
     pub models: Vec<ModelEntry>,
     pub tiers: Vec<ModelTier>,
-    pub harnesses: Vec<HarnessManifest>,
+    pub clis: Vec<CliManifest>,
     pub catalog: ModelCatalog,
 }
 
@@ -43,7 +43,7 @@ const CATALOG_KEYS: &[&str] = &[
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelTier {
-    pub id: WorkerRef,
+    pub id: ModelRef,
     pub tier: u8,
 }
 
@@ -82,7 +82,7 @@ fn parse_registry(text: &str) -> Result<ModelsFile, String> {
         .try_into()
         .map_err(|e: toml::de::Error| e.message().to_owned())?;
     let mut file = ModelsFile {
-        harnesses: rest.harnesses,
+        clis: rest.clis,
         catalog: ModelCatalog {
             efforts,
             ..ModelCatalog::default()
@@ -278,7 +278,7 @@ fn io_error(path: &Path, e: &std::io::Error) -> SettingsError {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::registry::{CostUnit, HarnessManifest, ModelAccess, RegistryKind};
+    use argonauts_core::registry::{CliManifest, CostUnit, ModelAccess, RegistryKind};
 
     use super::*;
     use crate::models::{FileRegistry, ProjectModels};
@@ -299,20 +299,17 @@ mod tests {
             panic!("{:#?}", file.models);
         };
         assert_eq!(opus.id.to_string(), "claude-code/opus");
-        assert_eq!(opus.family, "claude");
-        assert_eq!(opus.kind, RegistryKind::Harness);
+        assert_eq!(opus.provider, "anthropic");
+        assert_eq!(opus.kind, RegistryKind::Cli);
         assert_eq!(opus.access, ModelAccess::Subscription);
         assert!(opus.tools);
-        assert_eq!(opus.cost.unit, CostUnit::Quota);
+        assert_eq!(opus.cost.unit, CostUnit::PlanUsage);
         assert_eq!(opus.strengths, ["refactor"]);
         assert_eq!(opus.efforts, ["low", "medium", "high", "xhigh", "max"]);
         assert_eq!(opus.tier, Some(5));
         assert!(!opus.discovered);
 
-        assert_eq!(
-            codex.id,
-            WorkerRef::new("codex", Some("<model>".to_owned()))
-        );
+        assert_eq!(codex.id, ModelRef::new("codex", Some("<model>".to_owned())));
         assert_eq!(codex.access, ModelAccess::Local);
         assert_eq!(codex.cost.unit, CostUnit::None);
         let launch = codex.launch.as_ref().unwrap();
@@ -320,10 +317,10 @@ mod tests {
         assert_eq!(launch.local_provider.as_deref(), Some("ollama"));
         assert_eq!(codex.tier, None);
 
-        let [plain, acp]: &[HarnessManifest; 2] = file.harnesses.as_slice().try_into().unwrap();
+        let [plain, acp]: &[CliManifest; 2] = file.clis.as_slice().try_into().unwrap();
         assert_eq!(plain.id, "my-agent");
         assert_eq!(plain.build_args, ["--model", "{model}"]);
-        assert_eq!(acp.family, "from-model");
+        assert_eq!(acp.provider, "from-model");
         assert!(acp.acp.is_some());
 
         assert_eq!(
@@ -335,8 +332,8 @@ mod tests {
         assert!(err.contains(&path.display().to_string()), "{err}");
         std::fs::write(
             &path,
-            "[[model]]\nid = \"codex/x\"\nfamily = \"gpt\"\nkind = \"harness\"\n\
-             access = \"subscription\"\ncost = { unit = \"quota\" }\nefforts = [\"hgih\"]\n",
+            "[[model]]\nid = \"codex/x\"\nprovider = \"openai\"\nkind = \"cli\"\n\
+             access = \"subscription\"\ncost = { unit = \"plan_usage\" }\nefforts = [\"hgih\"]\n",
         )
         .unwrap();
         let err = read_registry_file(&path).unwrap_err().to_string();
@@ -347,15 +344,15 @@ mod tests {
         let project = dir.path().join("project.toml");
         std::fs::write(
             &global,
-            "[[model]]\nid = \"claude-code/opus\"\nfamily = \"claude\"\nkind = \"harness\"\n\
-             access = \"subscription\"\ncost = { unit = \"quota\" }\nstrengths = [\"mine\"]\n\
-             [[model]]\nid = \"ollama/qwen3:8b\"\nfamily = \"qwen\"\nkind = \"endpoint\"\n\
+            "[[model]]\nid = \"claude-code/opus\"\nprovider = \"anthropic\"\nkind = \"cli\"\n\
+             access = \"subscription\"\ncost = { unit = \"plan_usage\" }\nstrengths = [\"mine\"]\n\
+             [[model]]\nid = \"ollama/qwen3:8b\"\nprovider = \"alibaba\"\nkind = \"endpoint\"\n\
              access = \"local\"\ncost = { unit = \"none\" }\n",
         )
         .unwrap();
         std::fs::write(
             &project,
-            "[[model]]\nid = \"ollama/qwen3:8b\"\nfamily = \"qwen\"\nkind = \"endpoint\"\n\
+            "[[model]]\nid = \"ollama/qwen3:8b\"\nprovider = \"alibaba\"\nkind = \"endpoint\"\n\
              access = \"local\"\ncost = { unit = \"none\" }\ngood_for = [\"reviewer\"]\n",
         )
         .unwrap();
@@ -372,7 +369,10 @@ mod tests {
         let get = |w: &str| registry.get(&w.parse().unwrap()).unwrap();
         assert_eq!(get("claude-code/opus").strengths, ["mine"]);
         assert_eq!(get("ollama/qwen3:8b").good_for.len(), 1);
-        assert_eq!(registry.family(&"ollama/qwen3:8b".parse().unwrap()), "qwen");
+        assert_eq!(
+            registry.provider(&"ollama/qwen3:8b".parse().unwrap()),
+            "alibaba"
+        );
         let ids: Vec<String> = registry.list().iter().map(|e| e.id.to_string()).collect();
         assert_eq!(ids.iter().filter(|id| *id == "claude-code/opus").count(), 1);
         assert!(ids.contains(&"ollama/qwen3:8b".to_owned()));
@@ -394,8 +394,8 @@ mod tests {
         let path = dir.path().join("models.toml");
         let entry = |tier: &str| {
             format!(
-                "# my models\n[[model]]\nid = \"codex/gpt-6-luna\" # the cheap one\nfamily = \"gpt\"\n\
-                 kind = \"harness\"\naccess = \"subscription\"\ncost = {{ unit = \"quota\" }}\n{tier}"
+                "# my models\n[[model]]\nid = \"codex/gpt-6-luna\" # the cheap one\nprovider = \"openai\"\n\
+                 kind = \"cli\"\naccess = \"subscription\"\ncost = {{ unit = \"plan_usage\" }}\n{tier}"
             )
         };
 
@@ -434,7 +434,7 @@ mod tests {
 
         // A model the file doesn't have yet, such as a discovered one, gets only its tier, so
         // the rest keeps coming from discovery.
-        let mut found = crate::models::builtin::harness_entry(
+        let mut found = crate::models::builtin::cli_entry(
             &Settings::default(),
             "antigravity-cli",
             Some("gemini-3.6-flash-low"),
@@ -490,7 +490,7 @@ mod tests {
     fn prices_must_be_real_dollars() {
         let entry = |price: &str| {
             format!(
-                "[[model]]\nid = \"openrouter/openai/gpt-5\"\nfamily = \"gpt\"\nkind = \"endpoint\"\n\
+                "[[model]]\nid = \"openrouter/openai/gpt-5\"\nprovider = \"openai\"\nkind = \"endpoint\"\n\
                  access = \"api-key\"\ncost = {{ unit = \"usd\", input_per_mtok = 1.0, {price} }}\n"
             )
         };

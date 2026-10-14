@@ -1,11 +1,13 @@
-//! A quick look at the inline terminal and the bottom region on a real terminal. Typing chats
-//! back, Ctrl+O opens the transcript overlay, Ctrl+G runs a stand-in editor, and Ctrl+C twice
-//! quits.
+//! A quick look at the inline terminal and the bottom region on a real terminal. Typing
+//! conversations back, Ctrl+O opens the transcript overlay, Ctrl+G runs a fake editor, and Ctrl+C
+//! twice quits.
 
 use std::time::{Duration, Instant};
 
 use argonauts_tui::app::{Flow, Host, StdoutWriter, Ui, UiAction, run};
-use argonauts_tui::bottom::{Activity, AgentRow, AgentState, CardOption, CardPrompt, WorkingLine};
+use argonauts_tui::bottom::{
+    Activity, AgentRow, AgentState, QuestionOption, QuestionPrompt, WorkingLine,
+};
 use argonauts_tui::cell::{Cell, HistoryCell};
 use argonauts_tui::render::RenderCtx;
 use argonauts_tui::text::{sanitize_line, wrap_text};
@@ -14,7 +16,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 const AGENTS_AT: Duration = Duration::from_millis(2500);
-const CARD_AT: Duration = Duration::from_millis(5000);
+const QUESTION_AT: Duration = Duration::from_millis(5000);
 
 #[derive(Debug, Clone)]
 struct Said {
@@ -64,8 +66,8 @@ impl HistoryCell for Said {
             Look::Dim => wrap_text(&text, theme.style(Role::Dim), width, &[], &[]),
             Look::Answered => {
                 let diamond = [Span::styled(
-                    format!("{} ", glyphs.card),
-                    theme.style(Role::Warning),
+                    format!("{} ", glyphs.question),
+                    theme.style(Role::Warn),
                 )];
                 let bold = Style::new().add_modifier(Modifier::BOLD);
                 wrap_text(&text, bold, width, &diamond, &hang)
@@ -85,7 +87,7 @@ impl Host<StdoutWriter> for Smoke {
         self.started = Some(now);
         let model = ui.model_mut();
         model.title = "UI kit smoke test".into();
-        model.bottom.composer.label = Some("solo".into());
+        model.bottom.composer.label = Some("captain".into());
         model.history.push(Said::cell(Look::User, "hi"));
         model.history.push(Said::cell(
             Look::Answer,
@@ -106,7 +108,7 @@ impl Host<StdoutWriter> for Smoke {
         let started = self.started?;
         match self.played {
             0 => Some(started + AGENTS_AT),
-            1 => Some(started + CARD_AT),
+            1 => Some(started + QUESTION_AT),
             _ => None,
         }
     }
@@ -134,19 +136,19 @@ impl Host<StdoutWriter> for Smoke {
                 }
             }
             1 => {
-                let mut card = CardPrompt::new(
+                let mut question = QuestionPrompt::new(
                     1,
                     "Merge task-002 into main?",
                     "Merge task-002?",
                     vec![
-                        CardOption::irreversible("Merge"),
-                        CardOption::new("Open a pull request"),
-                        CardOption::new("Keep the branch"),
+                        QuestionOption::irreversible("Merge"),
+                        QuestionOption::new("Open a pull request"),
+                        QuestionOption::new("Keep the branch"),
                     ],
                 );
-                card.detail = vec!["3 files · +48 -6 · tests passed".into()];
-                card.allow_note = true;
-                model.bottom.card = Some(card);
+                question.detail = vec!["3 files · +48 -6 · tests passed".into()];
+                question.allow_note = true;
+                model.bottom.question = Some(question);
             }
             _ => {}
         }

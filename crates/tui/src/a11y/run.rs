@@ -1,22 +1,22 @@
-//! What a run event says: the run's lifecycle and phases, cards, agents and their tool calls,
-//! gates, checkpoints as numbered lists, and notes. Events without wording of their own are
+//! What a run event says: the run's lifecycle and phases, tasks, agents and their tool calls,
+//! checks, approvals as numbered lists, and notes. Events without wording of their own are
 //! read from their names at full verbosity, so nothing is dropped.
 
-use argonauts_core::events::card::CardEvent;
-use argonauts_core::events::checkpoint::{CheckpointEvent, PolicyCheck};
+use argonauts_core::events::agent_status::{AgentStatusEvent, SpendEvent};
+use argonauts_core::events::approval::{ApprovalEvent, PolicyCheck};
 use argonauts_core::events::run::RunLifecycle;
 use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::vendor::{BudgetEvent, VendorEvent};
+use argonauts_core::events::task::TaskEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::{AgentEvent, NoteLevel, Verbosity};
 
-use crate::cards::with_run_owners;
+use crate::questions::with_run_workers;
 use crate::state::AppState;
 use crate::text::sanitize_line;
 
 use super::agent::{StartedCall, agent_lines};
-use super::cards::CardList;
 use super::lines::party;
+use super::questions::QuestionList;
 use super::words::{event_words, labeled, shows, speaker, word};
 
 pub fn run_lines(event: &RunEvent, state: &AppState) -> Vec<String> {
@@ -31,41 +31,44 @@ pub fn run_lines(event: &RunEvent, state: &AppState) -> Vec<String> {
             }
             vec![line]
         }
-        RunEventKind::Card(card) => card_lines(event, card, normal, full),
+        RunEventKind::Task(task) => task_lines(event, task, normal, full),
         RunEventKind::Session(session) => session_lines(event, session, state, normal, full),
         RunEventKind::Agent(agent) => agent_event_lines(event, agent, state),
-        RunEventKind::Gate(gate) => {
-            if gate.passed && !normal {
+        RunEventKind::Check(check) => {
+            if check.passed && !normal {
                 return Vec::new();
             }
-            let (label, outcome) = if gate.passed {
+            let (label, outcome) = if check.passed {
                 ("check", "passed")
             } else {
                 ("check error", "failed")
             };
-            let mut line = format!("{label}: {} {outcome}", one_line(&gate.name));
-            if !gate.summary.trim().is_empty() {
-                line.push_str(&format!(", {}", one_line(&gate.summary)));
+            let mut line = format!("{label}: {} {outcome}", one_line(&check.name));
+            if !check.summary.trim().is_empty() {
+                line.push_str(&format!(", {}", one_line(&check.summary)));
             }
             vec![line]
         }
-        RunEventKind::Checkpoint(checkpoint) => checkpoint_lines(event, checkpoint, state, full),
+        RunEventKind::Approval(approval) => approval_lines(event, approval, state, full),
         RunEventKind::Note(note) => {
             let label = match note.level {
-                NoteLevel::Info | NoteLevel::Aside if !normal => return Vec::new(),
-                NoteLevel::Info | NoteLevel::Aside => "note",
+                NoteLevel::Info | NoteLevel::Aside | NoteLevel::Quiet if !normal => {
+                    return Vec::new();
+                }
+                NoteLevel::Info | NoteLevel::Aside | NoteLevel::Quiet => "note",
                 NoteLevel::Warn => "warning",
                 NoteLevel::Error => "error",
             };
             // The plain line; its detail is for Ctrl+O on screen.
             labeled(label, note.line())
         }
-        RunEventKind::Vendor(VendorEvent::Quota(_)) | RunEventKind::Budget(BudgetEvent::Run(_))
+        RunEventKind::AgentStatus(AgentStatusEvent::PlanUsage(_))
+        | RunEventKind::Spend(SpendEvent::Run(_))
             if !full =>
         {
             Vec::new()
         }
-        RunEventKind::Blackboard(_) | RunEventKind::Retro(_) if !full => Vec::new(),
+        RunEventKind::Blackboard(_) | RunEventKind::RunReview(_) if !full => Vec::new(),
         kind if normal => vec![event_words(kind)],
         _ => Vec::new(),
     }
@@ -104,7 +107,7 @@ fn lifecycle_lines(lifecycle: &RunLifecycle, normal: bool) -> Vec<String> {
             sessions_stopped, ..
         } => format!("run: paused, {sessions_stopped} agents stopped"),
         RunLifecycle::StopRequested { .. } => "run: stopping".to_owned(),
-        RunLifecycle::Parked { reason, .. } => format!("run: waiting, {}", word(reason)),
+        RunLifecycle::Waiting { reason, .. } => format!("run: waiting, {}", word(reason)),
         RunLifecycle::ApprovalModeChanged { mode, .. } => {
             format!("run: approvals now {}", word(mode))
         }
@@ -113,27 +116,27 @@ fn lifecycle_lines(lifecycle: &RunLifecycle, normal: bool) -> Vec<String> {
     vec![line]
 }
 
-fn card_lines(event: &RunEvent, card: &CardEvent, normal: bool, full: bool) -> Vec<String> {
+fn task_lines(event: &RunEvent, task: &TaskEvent, normal: bool, full: bool) -> Vec<String> {
     let id = event
-        .card_id
+        .task_id
         .as_ref()
         .map_or_else(|| "task".to_owned(), ToString::to_string);
-    let line = match card {
-        CardEvent::Created(spec) if normal => {
+    let line = match task {
+        TaskEvent::Created(spec) if normal => {
             format!("{}: created, {}", spec.id, one_line(&spec.title))
         }
-        CardEvent::State { to, reason, .. } if normal => {
+        TaskEvent::State { to, reason, .. } if normal => {
             let mut line = format!("{id}: {}", word(to));
             if !reason.trim().is_empty() {
                 line.push_str(&format!(", {}", one_line(reason)));
             }
             line
         }
-        CardEvent::Reassigned { to, .. } if normal => format!("{id}: reassigned to {to}"),
-        CardEvent::TakenOver { .. } if normal => format!("{id}: taken over by you"),
-        CardEvent::TakeOverEnded { .. } if normal => format!("{id}: back from your take-over"),
-        CardEvent::Reverted { .. } if normal => format!("{id}: reverted"),
-        other if full => event_words(&RunEventKind::Card(other.clone())),
+        TaskEvent::Reassigned { to, .. } if normal => format!("{id}: reassigned to {to}"),
+        TaskEvent::TakenOver { .. } if normal => format!("{id}: taken over by you"),
+        TaskEvent::TakeOverEnded { .. } if normal => format!("{id}: back from your take-over"),
+        TaskEvent::Rewound { .. } if normal => format!("{id}: rewound"),
+        other if full => event_words(&RunEventKind::Task(other.clone())),
         _ => return Vec::new(),
     };
     vec![line]
@@ -164,7 +167,7 @@ fn agent_event_lines(event: &RunEvent, agent: &AgentEvent, state: &AppState) -> 
         .session
         .as_ref()
         .and_then(|key| state.session(&event.run_id, key));
-    let vendor = session.map_or(event.source.as_str(), |session| session.vendor.as_str());
+    let agent_id = session.map_or(event.source.as_str(), |session| session.agent_id.as_str());
     let call = match agent {
         AgentEvent::ToolFinished { id, .. } => session
             .and_then(|session| session.tools.iter().rev().find(|tool| tool.id == *id))
@@ -175,27 +178,27 @@ fn agent_event_lines(event: &RunEvent, agent: &AgentEvent, state: &AppState) -> 
         _ => None,
     };
     let said = session.and_then(|session| session.messages.last().map(String::as_str));
-    agent_lines(&who, vendor, agent, state, call, said)
+    agent_lines(&who, agent_id, agent, state, call, said)
 }
 
-fn checkpoint_lines(
+fn approval_lines(
     event: &RunEvent,
-    checkpoint: &CheckpointEvent,
+    approval: &ApprovalEvent,
     state: &AppState,
     full: bool,
 ) -> Vec<String> {
-    match checkpoint {
-        CheckpointEvent::Opened(opened) if opened.needs_you => {
+    match approval {
+        ApprovalEvent::Opened(opened) if opened.needs_you => {
             let run = state.runs.get(&event.run_id);
             let offset = state.clock_offset();
-            let opened = with_run_owners(opened, run, &state.names);
-            CardList::checkpoint(&event.run_id, &opened, run, offset, &state.names).lines()
+            let opened = with_run_workers(opened, run, &state.names);
+            QuestionList::approval(&event.run_id, &opened, run, offset, &state.names).lines()
         }
-        CheckpointEvent::Opened(opened) => vec![format!(
+        ApprovalEvent::Opened(opened) => vec![format!(
             "approval: {}, the approval rules are deciding",
             one_line(&opened.title)
         )],
-        CheckpointEvent::Decided(decided) => {
+        ApprovalEvent::Decided(decided) => {
             let mut line = format!(
                 "approval: {} settled, {} by {}",
                 decided.id,
@@ -207,24 +210,23 @@ fn checkpoint_lines(
             }
             vec![line]
         }
-        CheckpointEvent::Withdrawn { id, reason } => {
+        ApprovalEvent::Withdrawn { id, reason } => {
             vec![format!("approval: {id} withdrawn, {}", one_line(reason))]
         }
-        CheckpointEvent::SpotCheckQueued { id } => {
+        ApprovalEvent::SpotCheckQueued { id } => {
             vec![format!(
                 "approval: {id} decided on its own, queued for a spot check"
             )]
         }
-        CheckpointEvent::Checked(check)
+        ApprovalEvent::Checked(check)
             if full || !check.violations.is_empty() || auto_left_it(check) =>
         {
             let mut line = format!("policy: {} checked", check.id);
-            // Full auto keeps what the policy found on a card it already settled in your place.
-            let open = state.runs.get(&event.run_id).is_none_or(|run| {
-                run.checkpoints
-                    .iter()
-                    .any(|open| open.opened.id == check.id)
-            });
+            // Autopilot keeps what the policy found on a question it already settled in your place.
+            let open = state
+                .runs
+                .get(&event.run_id)
+                .is_none_or(|run| run.approvals.iter().any(|open| open.opened.id == check.id));
             if open && (!check.violations.is_empty() || auto_left_it(check)) {
                 line.push_str(", it waits for you");
             }
@@ -233,13 +235,13 @@ fn checkpoint_lines(
             }
             vec![line]
         }
-        CheckpointEvent::Checked(_) => Vec::new(),
+        ApprovalEvent::Checked(_) => Vec::new(),
     }
 }
 
-/// Auto couldn't settle a card opened in auto, and the check says why.
+/// Auto couldn't settle a question opened in auto, and the check says why.
 fn auto_left_it(check: &PolicyCheck) -> bool {
-    !check.shadow && check.verdict.is_none() && !check.reasons.is_empty()
+    !check.auto_preview && check.verdict.is_none() && !check.reasons.is_empty()
 }
 
 fn one_line(text: &str) -> String {
@@ -249,14 +251,14 @@ fn one_line(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use argonauts_core::app::AppEvent;
-    use argonauts_core::events::checkpoint::{
-        CheckpointEvent, CheckpointKind, CheckpointOpened, CheckpointPacket, FreeText, PolicyCheck,
+    use argonauts_core::events::approval::{
+        ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket, FreeText, PolicyCheck,
         QuestionPacket,
     };
     use argonauts_core::events::{RunEvent, RunEventKind};
-    use argonauts_core::names::{CheckpointId, WorkerRef};
+    use argonauts_core::names::{ApprovalId, ModelRef};
     use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
-    use argonauts_core::{CardId, RunId};
+    use argonauts_core::{RunId, TaskId};
     use time::OffsetDateTime;
 
     use super::run_lines;
@@ -267,27 +269,27 @@ mod tests {
             seq,
             ts: OffsetDateTime::UNIX_EPOCH,
             run_id: RunId::new("run-20261004-043029-d8bb").unwrap(),
-            card_id: None,
+            task_id: None,
             session: None,
             source: "engine".into(),
             kind,
         }
     }
 
-    /// What the policy found on a card full auto already settled is kept for review, and the
-    /// line for it never says the card waits for you.
+    /// What the policy found on a question autopilot already settled is kept for review, and the
+    /// line for it never says the question waits for you.
     #[test]
-    fn a_check_kept_after_autopilot_settled_the_card_doesnt_say_it_waits() {
-        let id = CheckpointId::numbered(1);
-        let card = CardId::new("task-001").unwrap();
-        let opened = CheckpointOpened {
+    fn a_check_kept_after_autopilot_settled_the_question_doesnt_say_it_waits() {
+        let id = ApprovalId::numbered(1);
+        let task = TaskId::new("task-001").unwrap();
+        let opened = ApprovalOpened {
             id: id.clone(),
-            kind: CheckpointKind::Question,
+            kind: ApprovalKind::Question,
             title: "Question from task-001".into(),
-            card: Some(card.clone()),
-            packet: CheckpointPacket::Question(QuestionPacket {
-                from: WorkerRef::new("codex", None),
-                card,
+            task: Some(task.clone()),
+            packet: ApprovalPacket::Question(QuestionPacket {
+                from: ModelRef::new("codex", None),
+                task,
                 text: "Which level?".into(),
                 options: Vec::new(),
             }),
@@ -300,20 +302,20 @@ mod tests {
         };
         let check = event(
             2,
-            RunEventKind::Checkpoint(CheckpointEvent::Checked(PolicyCheck {
+            RunEventKind::Approval(ApprovalEvent::Checked(PolicyCheck {
                 id: id.clone(),
                 violations: Vec::new(),
                 verdict: None,
                 by: None,
-                approver: None,
-                reasons: vec!["the approver needs you".into()],
-                shadow: false,
+                judge: None,
+                reasons: vec!["the judge needs you".into()],
+                auto_preview: false,
             })),
         );
         let mut state = AppState::default();
         let opened = event(
             1,
-            RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(opened))),
+            RunEventKind::Approval(ApprovalEvent::Opened(Box::new(opened))),
         );
         state.apply(&AppEvent::Run {
             event: Box::new(opened),
@@ -324,7 +326,7 @@ mod tests {
         state.apply(&AppEvent::Run {
             event: Box::new(event(
                 2,
-                RunEventKind::Checkpoint(CheckpointEvent::Withdrawn {
+                RunEventKind::Approval(ApprovalEvent::Withdrawn {
                     id,
                     reason: "settled".into(),
                 }),
@@ -332,6 +334,6 @@ mod tests {
         });
         let settled = run_lines(&check, &state).join("\n");
         assert!(!settled.contains("it waits for you"), "{settled}");
-        assert!(settled.contains("the approver needs you"), "{settled}");
+        assert!(settled.contains("the judge needs you"), "{settled}");
     }
 }

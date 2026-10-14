@@ -1,5 +1,5 @@
-//! The main session is the CLI you chose, through the real binary and a fake `claude` that
-//! takes Argonauts' tools: a question is answered and starts nothing, and real work starts the
+//! The main session is the CLI you chose, through the real binary and a fake `claude` that takes
+//! Argonauts Code's tools: a question is answered and starts nothing, and real work starts the
 //! workflow in use when the session calls `argonauts_start_workflow`.
 
 mod app_support;
@@ -47,8 +47,8 @@ fn says(rule: FakeRule, session: &str, text: &str) -> FakeRule {
 
 /// The app's fakes, with a `claude` that answers the question, and hands the work over by
 /// calling its tool before it says so.
-fn vendors(dir: &Path) -> anyhow::Result<PathBuf> {
-    let mut vendors = FakeScenario::load(&scenario_file(VENDORS))?;
+fn fakes_file(dir: &Path) -> anyhow::Result<PathBuf> {
+    let mut fakes = FakeScenario::load(&scenario_file(AGENTS))?;
     let main_session = |prompt: &str| {
         FakeRule::for_program("claude")
             .args(&["--append-system-prompt"])
@@ -59,21 +59,21 @@ fn vendors(dir: &Path) -> anyhow::Result<PathBuf> {
         name: "argonauts_start_workflow".to_owned(),
         arguments: json!({ "request": ACCOUNT }),
     });
-    vendors
+    fakes
         .rules
         .insert(0, says(hands_over, "sess-main", HANDING_OVER));
-    vendors
+    fakes
         .rules
         .insert(0, says(main_session("parse_due"), "sess-main", ANSWER));
     let path = dir.join("main-session.toml");
-    vendors.save(&path)?;
+    fakes.save(&path)?;
     Ok(path)
 }
 
 #[test]
 fn app_main_session_answers_and_hands_real_work_over() -> anyhow::Result<()> {
     let fakes = tempfile::tempdir()?;
-    let scenario = scenario_playing(&vendors(fakes.path())?)?;
+    let scenario = scenario_playing(&fakes_file(fakes.path())?)?;
     std::fs::write(scenario.repo.global_config(), config())?;
     let mut pty = start(&scenario)?;
 
@@ -111,7 +111,7 @@ fn app_main_session_answers_and_hands_real_work_over() -> anyhow::Result<()> {
         started.request,
         format!("{WORK}\n\nFrom the conversation, as the main agent put it: {ACCOUNT}")
     );
-    assert!(started.chat_turn.is_some());
+    assert!(started.conversation_turn.is_some());
     pty.wait_for("handing it to the crew", argonauts_scenarios::WAIT)?;
     scenario.shot(&pty, "app_main_session_hands_real_work_over")?;
     Ok(())

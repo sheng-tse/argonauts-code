@@ -267,10 +267,10 @@ impl DayRule {
                 let month = Month::try_from(month).ok()?;
                 let first = Date::from_calendar_date(year, month, 1).ok()?;
                 let weekday = Weekday::Sunday.nth_next(weekday);
-                let lead = (weekday.number_days_from_sunday() + 7
+                let offset = (weekday.number_days_from_sunday() + 7
                     - first.weekday().number_days_from_sunday())
                     % 7;
-                let mut day = 1 + lead + 7 * (week - 1);
+                let mut day = 1 + offset + 7 * (week - 1);
                 let last = time::util::days_in_month(month, year);
                 while day > last {
                     day -= 7;

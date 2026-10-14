@@ -18,12 +18,12 @@ use argonauts_core::settings::mods::{
 use ratatui::text::Span;
 
 use super::rows::PageGlyphs;
+use crate::kit::bars::{self, Stack};
+use crate::kit::bodies::{self, Chart, ListRow, ListSlots, MeterRow, MeterSlots};
+use crate::kit::legend::{self, Entry};
+use crate::kit::{Badge, Drawn, Frame, Header, Kit, Level, State, States, Toggle, spread};
 use crate::text::{sanitize_line, spans_width, truncate_spans};
 use crate::theme::Role;
-use crate::widgets::bars::{self, Stack};
-use crate::widgets::bodies::{self, Chart, ListRow, ListSlots, MeterRow, MeterSlots};
-use crate::widgets::legend::{self, Entry};
-use crate::widgets::{Badge, Drawn, Frame, Header, Kit, Level, State, States, Toggle, spread};
 
 /// The legend's columns at most, as the context card has them.
 const LEGEND_COLUMNS: usize = 3;
@@ -45,8 +45,8 @@ const PALETTE: [Role; 6] = [
 pub fn role_of(color: ModColor) -> Role {
     match color {
         ModColor::Green => Role::Success,
-        ModColor::Amber => Role::Warning,
-        ModColor::Red => Role::Error,
+        ModColor::Amber => Role::Warn,
+        ModColor::Red => Role::Danger,
         ModColor::Blue => Role::AgentBlue,
         ModColor::Purple => Role::AgentPurple,
         ModColor::Cyan => Role::AgentCyan,
@@ -372,7 +372,7 @@ pub fn line(
     let mut left = vec![
         Span::raw(" "),
         kit.dim(format!("{} ", kit.glyphs.folded)),
-        kit.span(kit.glyphs.widget, Role::Accent),
+        kit.span(kit.glyphs.the_mod, Role::Accent),
         Span::raw(" "),
         kit.strong(clean(&file.title)),
     ];
@@ -483,7 +483,7 @@ pub fn preview(kit: &Kit<'_>, file: &ModFile, reading: &ModReading, width: usize
     }
 }
 
-/// The mod as a card on an Overview tab.
+/// The mod as a card on a tab of the usage panel.
 pub fn on_tab(kit: &Kit<'_>, file: &ModFile, reading: &ModReading, screen: usize) -> Drawn {
     let form = match file.form {
         ModForm::Line => ModForm::Compact,
@@ -594,7 +594,7 @@ mod tests {
         file.colors.insert("passed".to_owned(), ModColor::Blue);
         let reading = ModReading::sample(ModBody::Stack);
         assert_eq!(part_role(&file, &reading.parts[0], 0), Role::AgentBlue);
-        assert_eq!(part_role(&file, &reading.parts[2], 2), Role::Error);
+        assert_eq!(part_role(&file, &reading.parts[2], 2), Role::Danger);
         let plain = ModPart::new("other", 1.0);
         assert_eq!(part_role(&file, &plain, 1), Role::AgentPurple);
     }

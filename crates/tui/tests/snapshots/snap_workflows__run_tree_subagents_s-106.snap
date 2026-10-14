@@ -7,32 +7,32 @@ expression: text
 
 
  ╭ worker · task-003 ───────────────────────────────────────────────────────────────────────╮
- │ ◐ Running · Gemini 3.6 on agy · 7m11s                                                    │
- │ agy/gemini-3.6 · run-01 · 77.3k tok                                                      │
+ │ ⏺ Running · Gemini 3.6 on agy                                                            │
+ │ 77.3k tok · 195 tool calls · 7m 11s                                                      │
  │                                                                                          │
- │ Prompt · 14 lines · ↵expand                                                              │
+ │ Prompt · 14 lines · ⏎ expand                                                             │
  │   Build the terminal and the whole bottom region of the UI kit.                          │
- │   Read the design notes first, then the reference screenshots.                           │
- │   …12 more lines                                                                         │
- │                                                                                          │
- │ Activity · last 3 of 195 tool calls · ↵expand                                            │
- │   ● Bash(cargo test -p argonauts-tui composer)                                           │
- │   ● Bash(cargo clippy -p argonauts-tui --all-targets -- -D warnings)                     │
- │   ● Bash(cargo test -p argonauts-tui)                                                    │
- │                                                                                          │
- │ Diff · 4 files · +120 -18 · ↵open                                                        │
- │                                                                                          │
+ │   … 13 more lines                                                                        │
+ │ Activity · last 3 of 195 tool calls · ⏎ expand                                           │
+ │   ⏺ Bash(cargo test -p argonauts-tui composer) · error                                   │
+ │   ⏺ Bash(cargo clippy -p argonauts-tui --all-targets -- -D warnings)                     │
+ │   ⏺ Bash(cargo test -p argonauts-tui) · running                                          │
+ │ Diff · 4 files · +120 -18 · d open                                                       │
  │ Subagents · 1 · structure not exposed                                                    │
  │   ◐ research  running                                                                    │
- │                                                                                          │
- │ Outcome · 11 lines · ↵expand                                                             │
+ │ Outcome · 11 lines · ⏎ expand                                                            │
  │   Report: the terminal and the bottom region are done, with no stubs left.               │
  │                                                                                          │
  │   What I built                                                                           │
  │                                                                                          │
  │   - Terminal: history above the live region, redrawing only changed cells.               │
- │   - Bottom: the working line, the composer, the mode line, and the panel.                │
- │   …5 more lines                                                                          │
+ │   - Bottom: the working line, the composer, the bottom line, and the panel.              │
+ │   … 5 more lines                                                                         │
+ │                                                                                          │
+ │                                                                                          │
+ │                                                                                          │
+ │                                                                                          │
+ │                                                                                          │
  │                                                                                          │
  │                                                                                          │
  │                                                                                          │
@@ -41,4 +41,4 @@ expression: text
  │                                                                                          │
  │                                                                                          │
  ╰──────────────────────────────────────────────────────────────────────────────────────────╯
- ↑↓ agent · j/k scroll · ⏎ expand · m message it · x stop it · p pause · esc back
+ ↑↓ agent · j/k scroll · ⏎ expand · m message · x stop · r restart · p pause · esc back

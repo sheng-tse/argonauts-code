@@ -1,8 +1,7 @@
 use argonauts_core::api::UsagePeriod;
-use argonauts_core::crew_stats::CrewRole;
-use crossterm::event::KeyCode;
+use argonauts_core::crew_stats::StatsRole;
 use time::macros::{date, datetime};
-use time::{Date, Duration, OffsetDateTime};
+use time::{Duration, OffsetDateTime};
 
 use super::golden::*;
 
@@ -42,166 +41,6 @@ fn friday() -> OffsetDateTime {
     datetime!(2026-10-09 12:00 UTC)
 }
 
-/// The Sundays the ten weeks up to `friday` start on.
-fn weeks() -> Vec<Date> {
-    (0..10)
-        .rev()
-        .map(|back| date!(2026 - 10 - 04) - Duration::weeks(back))
-        .collect()
-}
-
-/// Every model as the by-model drawing has it, over every day so far.
-fn by_model_example(now: OffsetDateTime) -> Example {
-    use CrewRole::{Judge, Orchestrator, Reviewer, Worker};
-    let mut example = Example::default();
-    example.work(OPUS, Orchestrator, None, Default::default(), (41, 0, 110));
-    example.work(
-        OPUS,
-        Worker,
-        Some("build"),
-        tokens(41_200_000, 84.0, true),
-        (312, 0, 280),
-    );
-    example.tasks(OPUS, "build", 293, 17, 2);
-    let gpt = spent(15_900_000, 6_600_000, 900_000, 31.0, false);
-    example.work(GPT, Worker, Some("build"), gpt, (152, 0, 200));
-    example.work(GPT, Worker, Some("tests"), Default::default(), (78, 0, 200));
-    example.work(GPT, Worker, Some("docs"), Default::default(), (38, 0, 200));
-    example.work(GPT, Reviewer, None, Default::default(), (118, 9, 52));
-    example.tasks(GPT, "build", 137, 13, 2);
-    example.tasks(GPT, "tests", 72, 6, 0);
-    example.tasks(GPT, "docs", 32, 5, 1);
-    example.work(
-        SONNET,
-        Worker,
-        Some("build"),
-        tokens(15_600_000, 19.0, true),
-        (141, 0, 190),
-    );
-    example.tasks(SONNET, "build", 128, 12, 1);
-    example.work(
-        PRO,
-        Reviewer,
-        None,
-        tokens(8_300_000, 6.10, true),
-        (612, 41, 44),
-    );
-    example.work(
-        LUNA,
-        Worker,
-        Some("build"),
-        tokens(7_100_000, 5.90, false),
-        (93, 0, 135),
-    );
-    example.tasks(LUNA, "build", 80, 11, 2);
-    example.work(
-        FLASH,
-        Judge,
-        None,
-        tokens(2_400_000, 0.90, true),
-        (177, 9, 30),
-    );
-    example.fallbacks(GPT, OPUS, 6);
-    example.plan(CODEX, "Plus", false, [0.01, 0.11], now);
-    // Each week of GPT 5.6's tokens on its Monday, the busiest day its own, and Opus 5.5's
-    // busiest week the scale they're drawn on.
-    let unit = 100_000;
-    let gpt_weeks = [3, 4, 1, 4, 5, 1, 3, 4, 6, 3];
-    for (sunday, n) in weeks().into_iter().zip(gpt_weeks) {
-        example.day(GPT, Worker, sunday + Duration::days(1), n * unit, 1);
-    }
-    example.day(GPT, Worker, date!(2026 - 10 - 06), 4 * unit, 1);
-    example.day(OPUS, Worker, weeks()[0] + Duration::days(1), 8 * unit, 1);
-    example
-}
-
-#[test]
-fn by_model_matches_its_drawing() {
-    let theme = theme();
-    let now = friday();
-    let usage = by_model_example(now).usage(UsagePeriod::All);
-    // The picked row stands opened under the table.
-    let keys = [KeyCode::Char('m'), KeyCode::Down];
-    let screen = screen(&theme, usage, now, &keys, SCREEN);
-    let html = include_str!("screens/by_model_after.html");
-    dump("by_model_after", &screen, AT, html);
-    assert_matches("by model", html, &theme, &screen, AT, rows(3..25));
-    assert_matches("by model", html, &theme, &screen, AT, words(html, 1));
-    assert_matches("by model", html, &theme, &screen, AT, periods(html));
-    assert_matches("by model", html, &theme, &screen, AT, words(html, 26));
-}
-
-/// Every role as the by-role drawing has it, over every day so far.
-fn by_role_example() -> Example {
-    use CrewRole::{Judge, Orchestrator, Reviewer, Worker};
-    let mut example = Example::default();
-    example.work(
-        OPUS,
-        Orchestrator,
-        None,
-        tokens(4_900_000, 11.0, true),
-        (41, 0, 110),
-    );
-    for (model, millions, cost, did, fared) in [
-        (OPUS, 37_100_000, 80.0, 312, (293, 17, 2)),
-        (SONNET, 15_600_000, 19.0, 141, (128, 12, 1)),
-        (GPT, 19_800_000, 23.0, 268, (241, 24, 3)),
-        (LUNA, 7_100_000, 6.0, 93, (80, 11, 2)),
-    ] {
-        example.work(
-            model,
-            Worker,
-            Some("build"),
-            tokens(millions, cost, true),
-            (did, 0, 220),
-        );
-        example.tasks(model, "build", fared.0, fared.1, fared.2);
-    }
-    let pro = spent(6_100_000, 1_900_000, 300_000, 6.10, true);
-    let review = &mut example.work(PRO, Reviewer, None, pro, (612, 41, 46)).review;
-    review.reasons = [
-        ("a test missing".to_owned(), 23),
-        ("a check failed".to_owned(), 15),
-        ("didn't do the task".to_owned(), 3),
-    ]
-    .into();
-    review.checks = vec!["node --test".to_owned(), "pytest".to_owned()];
-    (review.passed, review.failed, review.ran_own) = (590, 22, 15);
-    let gpt = spent(2_700_000, 800_000, 100_000, 3.30, false);
-    let review = &mut example.work(GPT, Reviewer, None, gpt, (118, 9, 46)).review;
-    review.reasons = [("didn't do the task".to_owned(), 9)].into();
-    review.checks = vec!["pytest".to_owned()];
-    (review.passed, review.failed, review.ran_own) = (98, 20, 4);
-    example.work(
-        FLASH,
-        Judge,
-        None,
-        tokens(2_400_000, 0.90, true),
-        (177, 9, 30),
-    );
-    // The reviews of each week on its Monday, the last week's on the busiest day, and the
-    // workers' busiest week the scale they're drawn on.
-    let reviews = [2, 3, 1, 3, 4, 1, 2, 3, 4, 5];
-    for (sunday, n) in weeks().into_iter().zip(reviews) {
-        example.day(PRO, Reviewer, sunday + Duration::days(1), 0, n);
-    }
-    example.day(OPUS, Worker, weeks()[0] + Duration::days(2), 0, 8);
-    example
-}
-
-#[test]
-fn by_role_matches_its_drawing() {
-    let theme = theme();
-    let usage = by_role_example().usage(UsagePeriod::All);
-    let keys = [KeyCode::Char('r'), KeyCode::Down, KeyCode::Down];
-    let screen = screen(&theme, usage, friday(), &keys, SCREEN);
-    let html = include_str!("screens/by_role_after.html");
-    dump("by_role_after", &screen, AT, html);
-    assert_matches("by role", html, &theme, &screen, AT, rows(3..31));
-    assert_matches("by role", html, &theme, &screen, AT, words(html, 1));
-    assert_matches("by role", html, &theme, &screen, AT, words(html, 32));
-}
-
 /// A Friday a week on, so the weeks so far begin on August 9th.
 fn next_friday() -> OffsetDateTime {
     datetime!(2026-10-16 12:00 UTC)
@@ -216,7 +55,7 @@ fn split(total: u64, cost: f64, estimated: bool) -> argonauts_core::Spend {
 
 /// Every CLI as the by-CLI screen has it, over every day so far.
 fn by_cli_example(now: OffsetDateTime) -> Example {
-    use CrewRole::{Judge, Orchestrator, Reviewer, Worker};
+    use StatsRole::{Judge, Orchestrator, Reviewer, Worker};
     let mut example = Example::default();
     example.work(OPUS, Orchestrator, None, Default::default(), (14, 0, 0));
     example.work(
@@ -291,51 +130,124 @@ fn by_cli_example(now: OffsetDateTime) -> Example {
 
 #[test]
 fn by_cli_matches_its_drawing() {
-    let theme = theme();
     let now = next_friday();
     let usage = by_cli_example(now).usage(UsagePeriod::All);
-    let screen = screen(&theme, usage, now, &[], SCREEN);
+    let screen = screen(&theme(), usage, now, &[], SCREEN);
+    dump(
+        "by_cli_after",
+        &screen,
+        AT,
+        include_str!("screens/by_cli_after.html"),
+    );
+    assert_by_cli(&screen);
+}
+
+/// The records spell Opus 5.5 three ways, as the alias `opus`, as `claude-opus-5-5` and with
+/// a date, and a row that spent nothing as a reviewer did no review: the screen is the one
+/// the drawing has, a row for Opus 5.5 wherever it shows and none that counts nothing.
+#[test]
+fn a_model_spelled_three_ways_draws_as_one() {
+    use argonauts_core::model_catalog::CatalogEntry;
+    use argonauts_core::names::ModelRef;
+
+    let now = next_friday();
+    let mut example = by_cli_example(now);
+    let stats = &mut example.stats;
+    let is_opus = |model: &Option<String>| model.as_deref() == Some(OPUS.1);
+    let dated = || Some("claude-opus-5-5-20261001".to_owned());
+    for row in stats.work.iter_mut().filter(|row| is_opus(&row.model)) {
+        if row.role == StatsRole::Orchestrator {
+            row.model = Some("opus".to_owned());
+        }
+    }
+    for task in stats.tasks.iter_mut().filter(|task| is_opus(&task.model)) {
+        task.model = dated();
+    }
+    let days = stats.days.iter_mut().filter(|part| is_opus(&part.model));
+    for (k, part) in days.enumerate() {
+        part.model = if k % 2 == 0 {
+            dated()
+        } else {
+            Some("opus".to_owned())
+        };
+    }
+    example.work(
+        (CLAUDE, "opus"),
+        StatsRole::Reviewer,
+        None,
+        Default::default(),
+        (0, 0, 0),
+    );
+
+    let mut names = names();
+    let mut opus = CatalogEntry::new(ModelRef::new(CLAUDE, Some(OPUS.1.to_owned())));
+    opus.name = Some("Opus 5.5".to_owned());
+    opus.aliases = Some(vec!["opus".to_owned()]);
+    names.catalog.models.push(opus);
+    let usage = example.usage(UsagePeriod::All);
+    let screen = screen_named(&theme(), usage, now, &[], (SCREEN, None), names);
+    assert_eq!(text(&screen).matches("Opus 5.5").count(), {
+        let once = by_cli_example(now).usage(UsagePeriod::All);
+        text(&screen_named(
+            &theme(),
+            once,
+            now,
+            &[],
+            (SCREEN, None),
+            self::names(),
+        ))
+        .matches("Opus 5.5")
+        .count()
+    });
+    assert_by_cli(&screen);
+}
+
+/// The By CLI screen of [`by_cli_example`] against its drawing.
+fn assert_by_cli(screen: &ratatui::buffer::Buffer) {
+    let theme = theme();
+    let screen = screen.clone();
     let html = include_str!("screens/by_cli_after.html");
-    dump("by_cli_after", &screen, AT, html);
     assert_matches("by CLI", html, &theme, &screen, AT, words(html, 1));
     assert_matches("by CLI", html, &theme, &screen, AT, periods(html));
-    // What ran through Argonauts has its card under who did what, which the drawing ends
-    // before, so its keys are read where the screen has them.
-    let keys = Offset {
-        rows: row_of(&screen, "1-4 period") as isize - 48,
-        columns: 1,
-    };
-    assert_matches("by CLI", html, &theme, &screen, keys, words(html, 48));
-    assert_matches("by CLI", html, &theme, &screen, AT, rows(3..18));
-    // The drawing leaves each card's dot without its CLI's color, which the two cards'
-    // drawing gives it, and names the plan's weekly window `7d`, where the Usage tab's name
-    // for it, which every card uses, is `week`.
-    let plans = [
-        "row 29:",
-        "  drawing |│ 5h ━━━━━━  1%   7d ━━━━━━ 56%      │  │ 5h ━━━━━━  1%   7d ━━━━━━ 11%      │  │ 5h ━━━━━━  2%   7d ━━━━━━  1%      │|",
-        "  drawn   |│ 5h ━━━━━━  1%   week ━━━━━━ 56%    │  │ 5h ━━━━━━  1%   week ━━━━━━ 11%    │  │ 5h ━━━━━━  2%   week ━━━━━━  1%    │|",
-    ]
-    .join("\n");
-    let cards = [
+    // The card's first row has its own drawing since: over every day so far it says whose
+    // work this is.
+    assert_matches("by CLI", html, &theme, &screen, AT, rows(3..4));
+    assert_matches("by CLI", html, &theme, &screen, AT, rows(5..18));
+    // The drawing leaves each card's dot without its CLI's color, which the one card's
+    // drawing gives it.
+    let dots = [
         "row 20 col 2 '●': drawing None",
         "row 20 col 42 '○': drawing None",
         "row 20 col 82 '○': drawing None",
-        &plans,
     ];
-    assert_differs_only("by CLI", html, &theme, &screen, AT, rows(19..32), &cards);
-    // The drawing gives Sonnet 5.5's 11 of the 63 tasks 18 in each hundred where they are
-    // 17, so its part of the workers' bar is a cell longer there, and GPT 5.6's starts a
-    // cell later.
-    let known = [
-        "row 38 col 72 '━': drawing Some(\"m-sonnet\")",
-        "row 38 col 104 '━': drawing Some(\"m-gpt\")",
-    ];
-    assert_differs_only("by CLI", html, &theme, &screen, AT, rows(32..47), &known);
+    assert_different_only_in("by CLI", html, &theme, &screen, AT, rows(19..27), &dots);
+    // A card has a blank row between its parts since, so what follows its tasks is a row
+    // lower for each part before it. Its plan's row is the one card's drawing's too.
+    let down = |by: isize| Offset {
+        rows: AT.rows + by,
+        columns: AT.columns,
+    };
+    assert_matches("by CLI", html, &theme, &screen, down(1), rows(27..28));
+    assert_matches("by CLI", html, &theme, &screen, down(2), rows(28..29));
+    assert_matches("by CLI", html, &theme, &screen, down(3), rows(30..32));
+    // The drawing gives Sonnet 5.5's 11 of the 63 tasks 18 of the workers' bar's 98 cells,
+    // where they come to 17.1, so its part is a cell longer there and GPT 5.6's a cell
+    // shorter.
+    let known = ["row 38 col 72 '━': drawing Some(\"m-sonnet\")"];
+    assert_different_only_in(
+        "by CLI",
+        html,
+        &theme,
+        &screen,
+        down(3),
+        rows(32..47),
+        &known,
+    );
 }
 
 /// This week's numbers, each day's tokens by CLI from Sunday up to Friday.
 fn week_example() -> Example {
-    use CrewRole::{Reviewer, Worker};
+    use StatsRole::{Reviewer, Worker};
     let mut example = Example::default();
     let unit = 10_000;
     example.work(
@@ -398,12 +310,12 @@ fn the_week_matches_its_drawing() {
         "row 12 col 115 '━': drawing Some(\"term-red\")",
     ];
     dump("week_card", &screen, at, html);
-    assert_differs_only("the week", html, &theme, &screen, at, rows(0..15), &known);
+    assert_different_only_in("the week", html, &theme, &screen, at, rows(0..15), &known);
 }
 
 #[test]
 fn the_all_together_card_up_close_matches_its_drawing() {
-    use CrewRole::{Reviewer, Worker};
+    use StatsRole::{Reviewer, Worker};
     let theme = theme();
     let mut example = Example::default();
     let claude = spent(2_610_000, 520_000, 114_000, 0.17, false);
@@ -423,67 +335,89 @@ fn the_all_together_card_up_close_matches_its_drawing() {
     assert_matches("up close", html, &theme, &screen, at, rows(0..11));
 }
 
-/// Claude Code and Codex this week, with the numbers of a run where Claude Code built two
-/// tasks and reviewed nine, and Codex only reviewed.
-fn two_cards_example(now: OffsetDateTime) -> Example {
-    use CrewRole::{Reviewer, Worker};
+/// A Saturday, so each of its week's seven days has its bar.
+fn saturday() -> OffsetDateTime {
+    datetime!(2026-10-10 12:00 UTC)
+}
+
+/// Claude Code this week, with the numbers of a run where Haiku 5.5 built three tasks, each
+/// sent back once, and gave thirteen reviews.
+fn one_card_example(now: OffsetDateTime) -> Example {
+    use StatsRole::{Reviewer, Worker};
     let mut example = Example::default();
     example.work(
         HAIKU,
         Worker,
         Some("build"),
-        tokens(3_240_000, 0.17, false),
-        (2, 0, 173),
+        tokens(3_430_000, 0.19, false),
+        (3, 0, 175),
     );
-    example.tasks(HAIKU, "build", 0, 2, 0);
-    example.work(HAIKU, Reviewer, None, Default::default(), (9, 2, 0));
-    example.work(
-        LUNA,
-        Reviewer,
-        None,
-        tokens(120_000, 0.02, true),
-        (3, 1, 12),
-    );
-    example.plan(CLAUDE, "Max", true, [0.06, 0.37], now);
-    example.plan(CODEX, "Plus", false, [0.0, 0.01], now);
-    let claude = [1, 1, 1, 1, 3, 8];
-    let codex = [1, 1, 1, 1, 2, 8];
-    for (k, (claude, codex)) in claude.into_iter().zip(codex).enumerate() {
+    example.tasks(HAIKU, "build", 0, 3, 0);
+    example.work(HAIKU, Reviewer, None, Default::default(), (13, 6, 0));
+    example.plan(CLAUDE, "Max", true, [0.07, 0.55], now);
+    for (k, work) in [1, 1, 1, 1, 2, 3, 8].into_iter().enumerate() {
         let day = date!(2026 - 10 - 04) + Duration::days(k as i64);
-        example.day(HAIKU, Worker, day, 0, claude);
-        example.day(LUNA, Reviewer, day, 0, codex);
+        example.day(HAIKU, Worker, day, 0, work);
     }
     example
 }
 
 #[test]
-fn two_cards_match_their_drawing() {
+fn a_clis_card_matches_its_drawing() {
     let theme = theme();
-    let now = friday();
-    let usage = two_cards_example(now).usage(UsagePeriod::Week);
-    // Two cards of 56 cells and the two between them.
-    let screen = screen(&theme, usage, now, &[], 116);
-    let html = include_str!("screens/cards_after.html");
+    let now = saturday();
+    let usage = one_card_example(now).usage(UsagePeriod::Week);
+    // The one card takes the row: 56 cells, a column in from each side of the screen.
+    let screen = screen(&theme, usage, now, &[], 58);
+    let html = include_str!("screens/cli_card.html");
     let at = Offset {
         rows: row_of(&screen, "● Claude Code") as isize - 1,
         columns: 1,
     };
-    // The drawing colours GPT 5.6 Luna in the shade it has beside GPT 5.6 on the all-together
-    // drawing, though it is Codex's only model here; every card gives its first model its
-    // CLI's first shade, as the drawing itself does for Haiku 5.5 on Claude Code's card.
-    let luna: Vec<String> =
-        std::iter::once("row 4 col 60 '■': drawing Some(\"m-luna\")".to_owned())
-            .chain((76..=90).map(|col| format!("row 4 col {col} '━': drawing Some(\"m-luna\")")))
-            .collect();
-    let known: Vec<&str> = luna.iter().map(String::as_str).collect();
-    dump("cards_after", &screen, at, html);
-    assert_differs_only("two cards", html, &theme, &screen, at, rows(0..11), &known);
+    dump("cli_card", &screen, at, html);
+    let compared = Compared {
+        theme: &theme,
+        screen: &screen,
+        at,
+        named: Some(one_claude_model),
+    };
+    compared.assert_matches("a CLI's card", html, rows(0..15));
+}
+
+#[test]
+fn the_all_together_title_matches_its_drawing() {
+    use StatsRole::Worker;
+    let theme = theme();
+    let now = next_friday();
+    let mut example = Example::default();
+    example.work(
+        HAIKU,
+        Worker,
+        Some("build"),
+        tokens(3_570_000, 0.19, false),
+        (3, 0, 175),
+    );
+    let usage = example.usage(UsagePeriod::All);
+    let screen = screen_beside(&theme, usage, now, &[], (SCREEN, Some(69_100_000_000)));
+    let html = include_str!("screens/stats_header.html");
+    let row = row_of(&screen, "◆ all together") as isize;
+    let text: String = drawing(html)[0].iter().map(|cell| cell.ch).collect();
+    let words = text.find("   ").expect("the gap between its two sides");
+    let numbers = text.rfind("   ").expect("the gap between its two sides") + 3;
+    // The drawing is the row by itself, the screen's width. Inside its card the words start
+    // two cells in and the numbers end two cells from the end, the gap between them four
+    // cells shorter.
+    let inside = |columns: isize| Offset { rows: row, columns };
+    let words = cells(0, 0..text[..words].chars().count());
+    let numbers = cells(0, text[..numbers].chars().count()..WIDTH);
+    assert_matches("the title", html, &theme, &screen, inside(3), words);
+    assert_matches("the title", html, &theme, &screen, inside(-1), numbers);
 }
 
 #[test]
 fn the_rows_of_how_work_fared_match_their_drawing() {
     let theme = theme();
-    let kit = crate::widgets::Kit::new(&theme);
+    let kit = crate::kit::Kit::new(&theme);
     let fared = |first, once, more| super::draw::Fared { first, once, more };
     let lines = vec![
         super::cli::outcome_row(&kit, "tasks", fared(0, 2, 0), "first pass"),
@@ -510,7 +444,7 @@ fn a_long_model_name_leaves_every_card_its_bars() {
         let mut example = by_cli_example(now);
         example.work(
             long,
-            CrewRole::Worker,
+            StatsRole::Worker,
             Some("build"),
             tokens(900_000, 1.0, false),
             (3, 0, 60),
@@ -521,49 +455,11 @@ fn a_long_model_name_leaves_every_card_its_bars() {
         assert!(rows.len() >= 3, "{width}:\n{shown}");
         for row in rows {
             assert!(row.contains("━━━━"), "{width}: a bar on {row}");
-            assert_eq!(
-                crate::widgets::bars::touching_bar(row),
-                None,
-                "{width}: {row}"
-            );
+            assert_eq!(crate::kit::bars::touching_bar(row), None, "{width}: {row}");
         }
         assert!(
             shown.contains("… ━"),
             "{width}: the long name is cut:\n{shown}"
         );
     }
-}
-
-/// Opened, a model's counts each keep a blank before the words after them, however wide the
-/// count, and its tokens split stays on one row.
-#[test]
-fn an_opened_model_keeps_a_blank_after_each_count() {
-    let theme = theme();
-    let now = friday();
-    for width in [80u16, 100, 120, 140] {
-        let usage = by_model_example(now).usage(UsagePeriod::All);
-        let screen = screen(&theme, usage, now, &[KeyCode::Char('m')], width);
-        let shown = text(&screen);
-        let row = shown
-            .lines()
-            .find(|line| line.contains("│ orchestrator"))
-            .unwrap_or_else(|| panic!("{width}: Opus 5.5 opened:\n{shown}"));
-        assert!(row.contains("41 workflows "), "{width}: {row}");
-        assert!(!row.contains("workflows1"), "{width}: {row}");
-        for line in shown.lines() {
-            assert_eq!(
-                crate::widgets::bars::touching_bar(line),
-                None,
-                "{width}: {line}"
-            );
-        }
-    }
-    let usage = by_model_example(now).usage(UsagePeriod::All);
-    let screen = screen(&theme, usage, now, &[KeyCode::Char('m')], SCREEN);
-    let shown = text(&screen);
-    let split = shown
-        .lines()
-        .find(|line| line.contains("■ from cache"))
-        .expect("the tokens split");
-    assert!(split.contains("■ output"), "one row: {split}");
 }

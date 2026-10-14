@@ -6,8 +6,8 @@
 use std::path::Path;
 
 use argonauts_core::hash::sha256_hex;
-use argonauts_core::limits::{QuotaAnswer, QuotaReading, QuotaSource, QuotaStatus};
-use argonauts_core::names::VendorId;
+use argonauts_core::limits::{PlanUsageAnswer, PlanUsageReading, PlanUsageSource, PlanUsageStatus};
+use argonauts_core::names::AgentId;
 use argonauts_core::plan_usage::{LiveUsage, LiveWindow, plan_name};
 use argonauts_core::{CommandSpec, env_remove_except};
 use serde::Deserialize;
@@ -44,7 +44,7 @@ fn request_lines() -> String {
             "params": {
                 "clientInfo": {
                     "name": "argonauts",
-                    "title": "Argonauts",
+                    "title": "Argonauts Code",
                     "version": env!("CARGO_PKG_VERSION"),
                 },
             },
@@ -66,7 +66,7 @@ fn request_lines() -> String {
 
 /// The answer to the rate-limit request, as the most constraining window. An error answer
 /// reads as unknown, with the error kept for `doctor`. `None` until the answer arrives.
-pub fn parse(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaReading> {
+pub fn parse(stdout: &str, observed_at: OffsetDateTime) -> Option<PlanUsageReading> {
     let answer = answer_at_end(stdout, observed_at)?;
     // Only the binding window carries the payload.
     answer
@@ -76,7 +76,7 @@ pub fn parse(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaReading> 
 }
 
 /// The answer once both the account and the rate limits have replied. `None` until then.
-pub fn answer(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaAnswer> {
+pub fn answer(stdout: &str, observed_at: OffsetDateTime) -> Option<PlanUsageAnswer> {
     reply(stdout, ACCOUNT_REQUEST_ID)?;
     answer_at_end(stdout, observed_at)
 }
@@ -84,15 +84,15 @@ pub fn answer(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaAnswer> 
 /// The answer to the rate-limit request, one reading for each window, the plan, and the whole
 /// reading with the account it is for. The binding window carries the payload. `None` until
 /// the rate limits reply.
-pub fn answer_at_end(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaAnswer> {
+pub fn answer_at_end(stdout: &str, observed_at: OffsetDateTime) -> Option<PlanUsageAnswer> {
     let answer = reply(stdout, RATE_LIMITS_REQUEST_ID)?;
-    let unknown = QuotaReading {
-        vendor: VendorId(ID.to_owned()),
-        status: QuotaStatus::Unknown,
+    let unknown = PlanUsageReading {
+        agent_id: AgentId(ID.to_owned()),
+        status: PlanUsageStatus::Unknown,
         used: None,
         resets_at: None,
         window: None,
-        source: QuotaSource::AppServer,
+        source: PlanUsageSource::AppServer,
         observed_at,
         detail: None,
         wrap_up: false,
@@ -106,12 +106,12 @@ pub fn answer_at_end(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaA
             .filter(|message| !message.is_empty())
             .unwrap_or("it answered with an error")
             .to_owned();
-        return Some(QuotaAnswer {
-            windows: vec![QuotaReading {
+        return Some(PlanUsageAnswer {
+            windows: vec![PlanUsageReading {
                 detail: Some(json!({ "error": error })),
                 ..unknown
             }],
-            ..QuotaAnswer::failed(message)
+            ..PlanUsageAnswer::failed(message)
         });
     };
     let account_id = result
@@ -138,7 +138,7 @@ pub fn answer_at_end(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaA
     let blocked = limits.ordinary_usage_allowed == Some(false) || snapshot.reached.is_some();
     let binding = &mut windows[binding_at];
     if blocked {
-        binding.status = QuotaStatus::Rejected;
+        binding.status = PlanUsageStatus::Rejected;
     }
     binding.detail = Some(result);
     let account_reply = reply(stdout, ACCOUNT_REQUEST_ID);
@@ -150,7 +150,11 @@ pub fn answer_at_end(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaA
         .as_deref()
         .or_else(|| account.and_then(|account| account.get("planType")?.as_str()))
         .and_then(plan_name);
-    let mut live = LiveUsage::new(VendorId(ID.to_owned()), QuotaSource::AppServer, observed_at);
+    let mut live = LiveUsage::new(
+        AgentId(ID.to_owned()),
+        PlanUsageSource::AppServer,
+        observed_at,
+    );
     live.account = account
         .and_then(|account| account.get("email")?.as_str())
         .map(str::trim)
@@ -168,7 +172,7 @@ pub fn answer_at_end(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaA
                 .extend(bucket.live_windows(bucket.name.as_deref()));
         }
     }
-    Some(QuotaAnswer {
+    Some(PlanUsageAnswer {
         windows,
         plan,
         live: Some(live),
@@ -294,16 +298,16 @@ impl Window {
     }
 
     /// The window on its own, named by its length: a full one refuses work until its reset.
-    fn reading(&self, blank: &QuotaReading) -> QuotaReading {
+    fn reading(&self, blank: &PlanUsageReading) -> PlanUsageReading {
         let used = (f64::from(self.used_percent) / 100.0).clamp(0.0, 1.0);
         let status = if used >= 1.0 {
-            QuotaStatus::Rejected
+            PlanUsageStatus::Rejected
         } else if used >= WARNING_FROM {
-            QuotaStatus::Warning
+            PlanUsageStatus::Warning
         } else {
-            QuotaStatus::Allowed
+            PlanUsageStatus::Allowed
         };
-        QuotaReading {
+        PlanUsageReading {
             status,
             used: Some(used),
             resets_at: self.reset_time(),
@@ -366,7 +370,7 @@ mod tests {
             "accountId": "acct-private",
         }));
         let reading = parse(&stdout, NOW).unwrap();
-        assert_eq!(reading.status, QuotaStatus::Rejected);
+        assert_eq!(reading.status, PlanUsageStatus::Rejected);
         assert_eq!(reading.used, Some(1.0));
         assert_eq!(reading.window.as_deref(), Some("five_hour"));
         assert_eq!(reading.resets_at, Some(datetime!(2026-09-30 14:00 UTC)));
@@ -391,8 +395,8 @@ mod tests {
         assert_eq!(
             windows,
             [
-                ("five_hour", 0.92, QuotaStatus::Warning),
-                ("weekly", 0.41, QuotaStatus::Allowed)
+                ("five_hour", 0.92, PlanUsageStatus::Warning),
+                ("weekly", 0.41, PlanUsageStatus::Allowed)
             ]
         );
         assert_eq!(answer.plan.as_deref(), Some("Team"));
@@ -410,22 +414,25 @@ mod tests {
             "primary": {"usedPercent": 85, "windowDurationMins": 90, "resetsAt": null}
         }}));
         let reading = parse(&warning, NOW).unwrap();
-        assert_eq!(reading.status, QuotaStatus::Warning);
+        assert_eq!(reading.status, PlanUsageStatus::Warning);
         assert_eq!(reading.window.as_deref(), Some("90_minutes"));
 
         let blocked = answer_lines(json!({
             "rateLimits": {"primary": {"usedPercent": 10}, "rateLimitReachedType": "workspace_owner_credits_depleted"},
         }));
-        assert_eq!(parse(&blocked, NOW).unwrap().status, QuotaStatus::Rejected);
+        assert_eq!(
+            parse(&blocked, NOW).unwrap().status,
+            PlanUsageStatus::Rejected
+        );
         let not_allowed = answer_lines(json!({"rateLimits": {}, "ordinaryUsageAllowed": false}));
         assert_eq!(
             parse(&not_allowed, NOW).unwrap().status,
-            QuotaStatus::Rejected
+            PlanUsageStatus::Rejected
         );
 
         let error = json!({"id": 2, "error": {"code": -32600, "message": "not logged in"}});
         let reading = parse(&error.to_string(), NOW).unwrap();
-        assert_eq!(reading.status, QuotaStatus::Unknown);
+        assert_eq!(reading.status, PlanUsageStatus::Unknown);
         assert!(
             reading
                 .detail
@@ -440,8 +447,8 @@ mod tests {
     }
 
     fn recording(name: &str) -> String {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(format!("fixtures/0.160.0/{name}.app-server.jsonl"));
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("fixtures/{name}.app-server.jsonl"));
         std::fs::read_to_string(path).unwrap()
     }
 
@@ -455,7 +462,7 @@ mod tests {
         // No account, so no reading of whoever was signed in before is replaced.
         assert!(answer.live.is_none() && answer.plan.is_none());
         let kept = &answer.windows[0];
-        assert_eq!(kept.status, QuotaStatus::Unknown);
+        assert_eq!(kept.status, PlanUsageStatus::Unknown);
         assert!(
             kept.detail
                 .as_ref()

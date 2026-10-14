@@ -27,7 +27,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use time::OffsetDateTime;
 
-use crate::bridge::{tools, vendor_workflow};
+use crate::bridge::{cli_workflow_run, tools};
 use crate::cell::{AssistantMessage, DiffCell, DiffView, HistoryCell};
 use crate::format::{self, WallClock};
 use crate::render::{Clock, RenderCtx};
@@ -35,7 +35,7 @@ use crate::state::{AppState, SessionState};
 use crate::text::{sanitize_line, spans_width, str_width, wrap_text};
 use crate::theme::{Role, Theme};
 
-use super::crew::CrewView;
+use super::crew::AgentPanelView;
 use super::follow::{Follower, Shown};
 use super::goal_keys;
 use super::goal_panel;
@@ -85,7 +85,7 @@ pub struct SessionView {
     pub offset: usize,
     /// For the elapsed time; tests pin it.
     pub clock: WallClock,
-    /// Opened from the crew view, so ← goes back to it rather than opening another.
+    /// Opened from the agent panel, so ← goes back to it rather than opening another.
     from_crew: bool,
     /// Opened from the run's row, so it moves on with the run.
     for_run: bool,
@@ -178,9 +178,9 @@ impl SessionView {
         }
     }
 
-    /// Opened from the run's row: once its agent is done and the run has moved on, to the lead's
-    /// next design or to its declared workflow, so does the view, though never while you type
-    /// a message. A view opened for one agent follows only that agent, into the session that
+    /// Opened from the run's row: once its agent is done and the run has moved on, to the main
+    /// agent's next design or to its declared workflow, so does the view, though never while you
+    /// type a message. A view opened for one agent follows only that agent, into the session that
     /// carries on its work.
     pub fn for_run(run: RunId, session: SessionKey) -> Self {
         Self {
@@ -189,7 +189,7 @@ impl SessionView {
         }
     }
 
-    /// Opened from the crew view, where ← returns.
+    /// Opened from the agent panel, where ← returns.
     pub fn from_crew(run: RunId, session: SessionKey) -> Self {
         Self {
             from_crew: true,
@@ -484,7 +484,7 @@ impl SessionView {
         if self.from_crew {
             ViewOutcome::Close
         } else {
-            ViewOutcome::Replace(Box::new(CrewView::new(state)))
+            ViewOutcome::Replace(Box::new(AgentPanelView::new(state)))
         }
     }
     /// `● build:cli · GPT 5.6 on Codex`, the tabs, and the time and tokens at the right end.
@@ -499,7 +499,7 @@ impl SessionView {
     ) -> Line<'static> {
         let marks = Marks::for_theme(theme);
         let (glyph, role) = states::mark(states::of_session(session.status), theme);
-        // Headed as the chat heads its block: the label, then the agent, as `fix:slugify ·
+        // Headed as the conversation heads its block: the label, then the agent, as `fix:slugify ·
         // Haiku 4.5 on Claude Code`. A log from before labels names the role and the task.
         let mut name = match &session.label {
             Some(label) => vec![clean(label), clean(&state.names.worker(&session.worker))],
@@ -508,34 +508,34 @@ impl SessionView {
                 clean(session.role.as_str()),
             ],
         };
-        if let Some(card) = session.card.as_ref().filter(|_| session.label.is_none()) {
+        if let Some(task) = session.task.as_ref().filter(|_| session.label.is_none()) {
             let title = state
                 .runs
                 .get(&self.run)
-                .and_then(|run| run.cards.get(card))
+                .and_then(|run| run.tasks.get(task))
                 .map(|row| clean(&row.title))
                 .filter(|title| !title.is_empty());
             name.push(match title {
-                Some(title) => format!("{} ({title})", clean(card.as_str())),
-                None => clean(card.as_str()),
+                Some(title) => format!("{} ({title})", clean(task.as_str())),
+                None => clean(task.as_str()),
             });
         }
-        if let Some(worker) = &session.standing_in_for {
+        if let Some(worker) = &session.fallback_for {
             name.push(format!(
                 "{} for {}",
-                marks.stands_in,
+                marks.fallback,
                 clean(&state.names.worker(worker))
             ));
         }
         let end = session.ended.unwrap_or_else(|| self.clock.now());
         let elapsed = (end - session.started).whole_milliseconds().max(0);
         let mut numbers = Vec::new();
-        if let Some(attempt) = self
+        if let Some(try_number) = self
             .goal(state)
             .map(AgentGoal::current_try)
             .filter(|n| *n > 0)
         {
-            numbers.push(format!("try {attempt}"));
+            numbers.push(format!("try {try_number}"));
         }
         numbers.push(panes::elapsed(u64::try_from(elapsed).unwrap_or(u64::MAX)));
         if session.tokens() > 0 {
@@ -547,7 +547,7 @@ impl SessionView {
         }
         let mut numbers = numbers.join(" · ");
         let tabs = self.tab_spans(state, theme);
-        let lead = format!("{glyph} ");
+        let opening = format!("{glyph} ");
         // Two cells apart at the least, on each side of the tabs. On a narrow screen the time
         // and tokens go before the name is cut to nothing.
         let room_beside = |numbers: &str| {
@@ -555,7 +555,7 @@ impl SessionView {
                 0 => 0,
                 cells => 2 + cells,
             };
-            width.saturating_sub(str_width(&lead) + 2 + spans_width(&tabs) + numbers)
+            width.saturating_sub(str_width(&opening) + 2 + spans_width(&tabs) + numbers)
         };
         let least = name.first().map_or(0, |own| str_width(own).min(MIN_NAME));
         if room_beside(&numbers) < least {
@@ -574,7 +574,7 @@ impl SessionView {
             cut(&rest, name_room.saturating_sub(str_width(&own)))
         };
         let mut spans = vec![
-            Span::styled(lead, theme.style(role)),
+            Span::styled(opening, theme.style(role)),
             Span::styled(own, theme.style(Role::Bright).add_modifier(Modifier::BOLD)),
             Span::styled(rest, theme.style(Role::Dim)),
         ];
@@ -597,7 +597,7 @@ impl SessionView {
     /// `Output  Input  Raw`, the open one as a chip, or in brackets where there's no color.
     fn tab_spans(&self, state: &AppState, theme: &Theme) -> Vec<Span<'static>> {
         let chip = theme
-            .style(Role::Card)
+            .style(Role::Question)
             .add_modifier(Modifier::REVERSED | Modifier::BOLD);
         let names = self
             .tabs(state)
@@ -619,10 +619,10 @@ impl SessionView {
 
     fn footer(&self, width: usize, state: &AppState, theme: &Theme, more: bool) -> Footer {
         if let Some(line) = &self.steer {
-            let lead = format!("message {} ", theme.glyphs.prompt);
-            let room = width.saturating_sub(str_width(&lead) + 1);
+            let opening = format!("message {} ", theme.glyphs.prompt);
+            let room = width.saturating_sub(str_width(&opening) + 1);
             return Footer::Line(Line::from(vec![
-                Span::styled(lead, theme.style(Role::Label)),
+                Span::styled(opening, theme.style(Role::Label)),
                 Span::styled(
                     list::tail(&sanitize_line(line), room),
                     theme.style(Role::Text),
@@ -631,9 +631,9 @@ impl SessionView {
             ]));
         }
         if let Some(line) = &self.lines_edit {
-            let lead = format!("its lines, with ; between {} ", theme.glyphs.prompt);
-            let mut spans = vec![Span::styled(lead.clone(), theme.style(Role::Label))];
-            spans.extend(line.spans(width.saturating_sub(str_width(&lead)), theme));
+            let opening = format!("its lines, with ; between {} ", theme.glyphs.prompt);
+            let mut spans = vec![Span::styled(opening.clone(), theme.style(Role::Label))];
+            spans.extend(line.spans(width.saturating_sub(str_width(&opening)), theme));
             return Footer::Line(Line::from(spans));
         }
         if self.confirm_stop {
@@ -642,8 +642,8 @@ impl SessionView {
         // Only keys that can act now are offered.
         let session = state.session(&self.run, &self.session);
         let message = super::steer_refusal(state, &self.run, &self.session).is_none();
-        let has_card = session.is_some_and(|session| session.card.is_some());
-        let take_over = has_card && super::run_going(state, &self.run);
+        let has_task = session.is_some_and(|session| session.task.is_some());
+        let take_over = has_task && super::run_going(state, &self.run);
         let stop = self.can_stop(state);
         // The tab after Output is named, as the first thing to learn; past it, Tab goes on.
         let tab = match self.tab {
@@ -721,7 +721,7 @@ impl SessionView {
                     parts.push(("x stop it", 4));
                 }
                 parts.push(("r raw", 6));
-                if has_card {
+                if has_task {
                     parts.push(("d diff", 5));
                 }
                 if self.following {
@@ -823,10 +823,10 @@ struct OutputDraw<'a> {
     results_open: bool,
 }
 
-/// Every tool call with its result, diff, message, and subagent, as the chat draws them, and
-/// under them what waits to be delivered. A structured result, whether the agent reported it
-/// through Argonauts' own tool or wrote it out at the end of a message, is drawn as what it
-/// means; the rest of its talk with Argonauts is left to the raw log. Also says whether `→`
+/// Every tool call with its result, diff, message, and subagent, as the conversation draws them,
+/// and under them what waits to be delivered. A structured result, whether the agent reported it
+/// through Argonauts Code's own tool or wrote it out at the end of a message, is drawn as what it
+/// means; the rest of its talk with Argonauts Code is left to the raw log. Also says whether `→`
 /// has more of a result to show.
 fn output_lines(
     session: &SessionState,
@@ -874,30 +874,35 @@ fn output_lines(
             }
             continue;
         }
-        if vendor_workflow::is_call(&session.vendor, &tool.name) {
+        if cli_workflow_run::is_call(&session.agent_id, &tool.name) {
             let reported = session
                 .workflows
                 .iter()
                 .find(|workflow| workflow.call.as_deref() == Some(tool.id.as_str()));
+            // Until its script exists and reports, there is no workflow to draw. A call that
+            // failed before that says why.
             let call = match reported {
-                Some(workflow) => vendor_workflow::row(workflow),
-                None => {
-                    vendor_workflow::before_report(&tool.input, tool.ok, tool.output.as_deref())
-                }
+                Some(workflow) => Some(cli_workflow_run::row(workflow)),
+                None if tool.ok == Some(false) => Some(cli_workflow_run::failed_start(
+                    &tool.input,
+                    tool.output.as_deref(),
+                )),
+                None => None,
             };
-            blocks.push(call.lines(&ctx));
+            blocks.extend(call.map(|call| call.lines(&ctx)));
             continue;
         }
-        // A call its model is still writing shows by its name alone, as the chat shows it.
+        // A call its model is still writing shows by its name alone, as the conversation shows it.
         let mut call = if tool.is_pending() {
-            tools::writing_call(&session.vendor, &tool.name)
+            tools::writing_call(&session.agent_id, &tool.name)
         } else {
-            tools::start_call(&session.vendor, &tool.name, &tool.input)
+            tools::start_call(&session.agent_id, &tool.name, &tool.input)
         };
         for (_, path, hunks) in session.patches.iter().filter(|(id, ..)| *id == tool.id) {
             tools::take_patch(&mut call, path, hunks);
         }
-        // A CLI whose edit reports no patch, as Codex's doesn't, gets the change Argonauts saw.
+        // A CLI whose edit reports no patch, as Codex's doesn't, gets the change Argonauts Code
+        // saw.
         for at in attached.iter().filter(|(id, _)| *id == tool.id.as_str()) {
             let diff = &session.diffs[at.1];
             tools::take_patch(&mut call, &diff.path, &diff.hunk);
@@ -909,7 +914,7 @@ fn output_lines(
         folded |= !shown.results_open && lines.len() < call.lines(&ctx).len();
         blocks.push(lines);
     }
-    // What Argonauts saw change after the calls, for a file no call's own patch drew, such as
+    // What Argonauts Code saw change after the calls, for a file no call's own patch drew, such as
     // one a shell command changed.
     for (at, diff) in session.diffs.iter().enumerate() {
         let drawn = session
@@ -953,7 +958,7 @@ fn output_lines(
         .filter(|sub| {
             sub.kind != SubagentKind::Workflow
                 || !session.tools.iter().any(|tool| {
-                    tool.id == sub.id && vendor_workflow::is_call(&session.vendor, &tool.name)
+                    tool.id == sub.id && cli_workflow_run::is_call(&session.agent_id, &tool.name)
                 })
         })
         .cloned()
@@ -978,12 +983,12 @@ fn output_lines(
     (lines, more || folded)
 }
 
-/// Each change Argonauts saw that no call's own patch drew, with the last edit call that
+/// Each change Argonauts Code saw that no call's own patch drew, with the last edit call that
 /// names its file: (the call's id, the change's place in `session.diffs`).
 fn diffs_of_calls(session: &SessionState) -> Vec<(&str, usize)> {
     let edits = |tool: &&crate::state::ToolRecord| {
         matches!(
-            tools::kind_of(&session.vendor, &tool.name),
+            tools::kind_of(&session.agent_id, &tool.name),
             crate::cell::ToolKind::Edit | crate::cell::ToolKind::Write
         ) && tool.ok == Some(true)
     };
@@ -1218,7 +1223,7 @@ impl View for SessionView {
             let pad = " ".repeat(width.saturating_sub(str_width(paused)));
             let line = Line::from(vec![
                 Span::raw(pad),
-                Span::styled(paused, theme.style(Role::Warning)),
+                Span::styled(paused, theme.style(Role::Warn)),
             ]);
             panes::put(buf, under.x, under.y, under.width, &line);
         }
@@ -1333,11 +1338,11 @@ impl View for SessionView {
             KeyCode::Char('e') if plain && self.tab == Tab::Goal => return self.edit_lines(state),
             KeyCode::Char('r') if plain => return self.raw(),
             KeyCode::Char('d') if plain => {
-                return match session.and_then(|session| session.card.clone()) {
-                    Some(card) => ViewOutcome::Request(ViewRequest::Diff {
+                return match session.and_then(|session| session.task.clone()) {
+                    Some(task) => ViewOutcome::Request(ViewRequest::Diff {
                         run: self.run.clone(),
-                        card,
-                        scope: DiffScope::Card,
+                        task,
+                        scope: DiffScope::Task,
                     }),
                     None => ViewOutcome::Notice("This agent has no task, so no diff".into()),
                 };
@@ -1478,7 +1483,7 @@ mod scroll_and_keys {
         assert!(view.steer.is_none());
     }
 
-    /// A steer typed as its session ended never reached it, such as the lead's design session
+    /// A steer typed as its session ended never reached it, such as the main agent's design session
     /// that ends when code sends its brief back, so the view stops saying it was sent. The
     /// controller's answer says why in the transcript.
     #[test]
@@ -1583,7 +1588,7 @@ mod scroll_and_keys {
         assert_eq!(view.top(100, 20), 0);
         press(&mut view, 'G', true);
         assert!(view.following);
-        // `h` is ←, back to the crew view this one replaced.
+        // `h` is ←, back to the agent panel this one replaced.
         assert!(matches!(
             press(&mut view, 'h', true),
             ViewOutcome::Replace(_)

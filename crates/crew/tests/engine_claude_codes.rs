@@ -1,6 +1,6 @@
 //! A crew whose orchestrator and workers are on Claude Code runs its workflow as Claude Code's
 //! own: one session plans and runs it with its own subagents, asks the
-//! reviewers on another CLI through Argonauts' tool, and nothing merges unreviewed.
+//! reviewers on another CLI through Argonauts Code's tool, and nothing merges unreviewed.
 
 mod support;
 
@@ -14,19 +14,19 @@ use tokio::net::TcpStream;
 use argonauts_core::asking::{Ask, AskLine, AskReply};
 use argonauts_core::engine::EngineExit;
 use argonauts_core::event::AgentEvent;
-use argonauts_core::events::card::{CardEvent, CardState, ReviewEvent};
-use argonauts_core::events::run::{RunLifecycle, RunMode, RunOutcome};
+use argonauts_core::events::run::{RunLifecycle, RunMode, RunOutcome, handed_over};
 use argonauts_core::events::session::InputPartKind;
 use argonauts_core::events::session::{
-    SessionEvent, SubagentStatus, VendorAgent, VendorAgentState, VendorPhase, VendorWorkflow,
+    CliAgent, CliAgentState, CliPhase, CliWorkflowRun, SessionEvent, SubagentStatus,
 };
+use argonauts_core::events::task::{ReviewEvent, TaskEvent, TaskState};
 use argonauts_core::events::workflow::WorkflowEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::session_runner::{Access, RunnerEvent, SessionSpec};
 use argonauts_core::settings::crew::{CrewRole, CrewSettings, Orchestrator};
 use argonauts_core::settings::workflows::AdaptWith;
 use argonauts_core::steps::StepName;
-use argonauts_core::worker::{Access, SessionSpec, WorkerEvent};
-use argonauts_testkit::worker::{FakeSession, FakeWorker};
+use argonauts_testkit::runner::{FakeRunner, FakeSession};
 
 use support::{Crew, Outcome};
 
@@ -52,32 +52,32 @@ fn report(summary: &str, file: &str) -> Value {
 /// Fable orchestrates and Opus works, both on Claude Code; Antigravity CLI reviews. The
 /// orchestrator's build session writes `due.rs`, slowly enough to be asked something. Its
 /// workflow's agents write in the background, so no edit of theirs reaches the stream.
-fn crew(delay: Duration) -> anyhow::Result<(Crew, Arc<FakeWorker>, Arc<FakeWorker>)> {
+fn crew(delay: Duration) -> anyhow::Result<(Crew, Arc<FakeRunner>, Arc<FakeRunner>)> {
     let mut crew = Crew::new()?;
     crew.settings.evolution.propose_every = 0;
-    let main = FakeWorker::harness(MAIN, "claude").respond_with(|_| {
+    let main = FakeRunner::cli(MAIN, "anthropic").respond_with(|_| {
         FakeSession::structured(json!({
             "summary": "One task",
             "tasks": [{"title": "Due dates", "done_when": ["a task has a due date"]}],
         }))
     });
     crew.services.workers.add(main);
-    let orchestrator = FakeWorker::harness(ORCHESTRATOR, "claude").respond_with(move |spec| {
+    let orchestrator = FakeRunner::cli(ORCHESTRATOR, "anthropic").respond_with(move |spec| {
         if spec.access == Access::Build {
             std::fs::write(spec.workdir.join("due.rs"), "pub struct Due;\n").expect("writes");
         }
         FakeSession::structured(report("Added due dates", "due.rs")).with_delay(delay)
     });
     let orchestrator = crew.services.workers.add(orchestrator);
-    let reviewer = FakeWorker::harness(REVIEWER, "gemini").respond_with(|_| {
+    let reviewer = FakeRunner::cli(REVIEWER, "google").respond_with(|_| {
         FakeSession::structured(json!({"accept": true, "summary": "Does what was asked"}))
     });
     let reviewer = crew.services.workers.add(reviewer);
-    crew.settings.main_agent = MAIN.parse()?;
     crew.settings.crew = CrewSettings {
+        main: MAIN.parse()?,
         orchestrator: Orchestrator::Models(vec![ORCHESTRATOR.parse()?]),
-        workers: vec![MAIN.parse()?],
-        reviewers: vec![REVIEWER.parse()?],
+        worker: vec![MAIN.parse()?],
+        reviewer: vec![REVIEWER.parse()?],
         judge: Vec::new(),
         worker_workflows: false,
         merger: Vec::new(),
@@ -87,7 +87,7 @@ fn crew(delay: Duration) -> anyhow::Result<(Crew, Arc<FakeWorker>, Arc<FakeWorke
     Ok((crew, orchestrator, reviewer))
 }
 
-fn build_spec(worker: &FakeWorker) -> Option<SessionSpec> {
+fn build_spec(worker: &FakeRunner) -> Option<SessionSpec> {
     worker
         .specs()
         .into_iter()
@@ -95,7 +95,7 @@ fn build_spec(worker: &FakeWorker) -> Option<SessionSpec> {
 }
 
 /// Asks the reviewers once, as a workflow agent's tool call does once it has written its file.
-async fn ask_the_reviewers(orchestrator: Arc<FakeWorker>) -> AskReply {
+async fn ask_the_reviewers(orchestrator: Arc<FakeRunner>) -> AskReply {
     let spec = loop {
         if let Some(spec) = build_spec(&orchestrator)
             && spec.workdir.join("due.rs").exists()
@@ -109,7 +109,7 @@ async fn ask_the_reviewers(orchestrator: Arc<FakeWorker>) -> AskReply {
     let line = AskLine {
         token: asking.token.clone(),
         ask: Ask::Role {
-            role: CrewRole::Reviewers,
+            role: CrewRole::Reviewer,
             label: "review:due".into(),
             what: "a due date on each task".into(),
         },
@@ -162,7 +162,7 @@ async fn claude_codes_workflow_asks_the_reviewers_through_argonauts() -> anyhow:
         spec.cli_workflow.ultracode,
         "Claude Code's own workflow for this request"
     );
-    assert_eq!(spec.asking.as_ref().unwrap().roles, [CrewRole::Reviewers]);
+    assert_eq!(spec.asking.as_ref().unwrap().roles, [CrewRole::Reviewer]);
     assert!(
         spec.env
             .iter()
@@ -188,7 +188,7 @@ async fn a_change_that_never_went_through_the_tool_is_reviewed_before_it_merges(
     let _env = crew.repo.env_guard();
     let outcomes = crew.run_to_end(RunMode::Crew, REQUEST, 4).await?;
     let asked = reviewer.specs();
-    assert_eq!(asked.len(), 1, "Argonauts asks the reviewers itself");
+    assert_eq!(asked.len(), 1, "Argonauts Code asks the reviewers itself");
     assert!(asked[0].step != Some(StepName::Build));
     assert_eq!(reviews(events(&outcomes)), 1);
     assert!(merged(&outcomes));
@@ -200,7 +200,7 @@ async fn a_change_that_never_went_through_the_tool_is_reviewed_before_it_merges(
 #[tokio::test]
 async fn the_reviewers_get_the_checks_run_just_before_they_are_asked() -> anyhow::Result<()> {
     let (mut crew, _orchestrator, reviewer) = crew(Duration::ZERO)?;
-    crew.settings.checks.run = vec![argonauts_core::settings::protocol::GateCommand {
+    crew.settings.checks.run = vec![argonauts_core::settings::protocol::CheckCommand {
         name: "tests".into(),
         command: vec![
             "python3".into(),
@@ -219,8 +219,27 @@ async fn the_reviewers_get_the_checks_run_just_before_they_are_asked() -> anyhow
         .iter()
         .find(|part| part.label == "the checks")
         .expect("the reviewer reads the checks");
-    assert_eq!(checks.kind, InputPartKind::GateOutput);
+    assert_eq!(checks.kind, InputPartKind::CheckOutput);
     assert_eq!(checks.text.trim(), "tests (python3 -m unittest -q) passed");
+    let label = reviewer_labels(events(&outcomes));
+    assert_eq!(label, ["review:add-due-dates"]);
+    assert!(merged(&outcomes));
+    Ok(())
+}
+
+/// A request the main session handed over opens with your words, which may say how to run it.
+/// The task and its agents' labels are named for the work, from the session's account of it,
+/// as the run is.
+#[tokio::test]
+async fn a_handed_over_requests_task_is_named_for_the_work() -> anyhow::Result<()> {
+    let (crew, _orchestrator, reviewer) = crew(Duration::ZERO)?;
+    let _env = crew.repo.env_guard();
+    let request = handed_over(
+        "Use a workflow for this, with agy as the reviewer.",
+        REQUEST,
+    );
+    let outcomes = crew.run_to_end(RunMode::Crew, &request, 4).await?;
+    assert_eq!(reviewer.specs().len(), 1);
     let label = reviewer_labels(events(&outcomes));
     assert_eq!(label, ["review:add-due-dates"]);
     assert!(merged(&outcomes));
@@ -232,7 +251,7 @@ async fn the_reviewers_get_the_checks_run_just_before_they_are_asked() -> anyhow
 #[tokio::test]
 async fn the_checks_before_an_ask_run_on_a_clean_copy() -> anyhow::Result<()> {
     let (mut crew, orchestrator, _reviewer) = crew(Duration::from_millis(800))?;
-    crew.settings.checks.run = vec![argonauts_core::settings::protocol::GateCommand {
+    crew.settings.checks.run = vec![argonauts_core::settings::protocol::CheckCommand {
         name: "tests".into(),
         command: vec!["python3".into(), "-m".into(), "unittest".into()],
     }];
@@ -246,7 +265,7 @@ async fn the_checks_before_an_ask_run_on_a_clean_copy() -> anyhow::Result<()> {
     assert!(!reply.is_error, "{}", reply.text);
     let workdirs: Vec<String> = crew
         .services
-        .gates
+        .checks
         .requests()
         .iter()
         .map(|request| request.workdir.to_string_lossy().into_owned())
@@ -261,7 +280,7 @@ async fn the_checks_before_an_ask_run_on_a_clean_copy() -> anyhow::Result<()> {
     );
     let before_the_merge: Vec<&String> = workdirs
         .iter()
-        .filter(|dir| !dir.ends_with("integration"))
+        .filter(|dir| !dir.ends_with("merge"))
         .collect();
     assert!(
         before_the_merge.iter().all(|dir| dir.ends_with("-checks")),
@@ -332,17 +351,17 @@ async fn with_no_rounds_left_it_comes_to_you_with_the_reviewers_reasons() -> any
     let _env = crew.repo.env_guard();
     let outcomes = crew.run_to_end(RunMode::Crew, REQUEST, 4).await?;
 
-    let escalated = events(&outcomes)
+    let needs_you = events(&outcomes)
         .iter()
         .find_map(|event| match &event.kind {
-            RunEventKind::Card(CardEvent::State { to, reason, .. })
-                if *to == CardState::Escalated =>
+            RunEventKind::Task(TaskEvent::State { to, reason, .. })
+                if *to == TaskState::NeedsYou =>
             {
                 Some(reason.clone())
             }
             _ => None,
         });
-    let reason = escalated.expect("it came to you");
+    let reason = needs_you.expect("it came to you");
     assert!(
         reason.contains("asks for changes: Past dates pass"),
         "{reason}"
@@ -366,31 +385,32 @@ fn reviewer_labels(events: &[RunEvent]) -> Vec<String> {
 }
 
 /// Claude Code's workflow as its stream reports it: three phases and the one task's builder.
-fn reported() -> VendorWorkflow {
-    let phase = |index: u32, title: &str| VendorPhase {
+fn reported() -> CliWorkflowRun {
+    let phase = |index: u32, title: &str| CliPhase {
         index,
         title: title.to_owned(),
         detail: String::new(),
     };
-    VendorWorkflow {
+    CliWorkflowRun {
         id: "wf-1".to_owned(),
         call: None,
         name: "due-dates".to_owned(),
         description: "Add due dates".to_owned(),
         phases: vec![phase(1, "Plan"), phase(2, "Build"), phase(3, "Review")],
-        agents: vec![VendorAgent {
+        agents: vec![CliAgent {
             index: 1,
             label: "build:due".to_owned(),
             phase: Some(2),
             model: None,
-            state: VendorAgentState::Done,
+            state: CliAgentState::Done,
             tokens: 0,
             tool_calls: 0,
             duration_ms: 0,
             started_at_ms: None,
-            attempt: 1,
+            try_number: 1,
             prompt: None,
             result: None,
+            ..CliAgent::default()
         }],
         status: SubagentStatus::Done,
         tokens: 0,
@@ -401,14 +421,14 @@ fn reported() -> VendorWorkflow {
     }
 }
 
-/// A step `always.toml` requires goes with the request. Argonauts can't change Claude Code's
+/// A step `always.toml` requires goes with the request. Argonauts Code can't change Claude Code's
 /// workflow, so what it reported is checked, and a step it left out is said.
 #[tokio::test]
 async fn a_required_step_claude_codes_workflow_left_out_is_said() -> anyhow::Result<()> {
     let (crew, orchestrator, _reviewer) = crew(Duration::ZERO)?;
     crew.repo.write(
         ".argonauts/workflows/always.toml",
-        "[[step]]\nname = \"Benchmark\"\nrole = \"workers\"\ndoes = \"Run the benchmarks.\"\n",
+        "[[step]]\nname = \"Benchmark\"\nrole = \"worker\"\ndoes = \"Run the benchmarks.\"\n",
     )?;
     crew.repo
         .commit_all("the steps every workflow must contain")?;
@@ -416,7 +436,7 @@ async fn a_required_step_claude_codes_workflow_left_out_is_said() -> anyhow::Res
         if spec.access == Access::Build {
             std::fs::write(spec.workdir.join("due.rs"), "pub struct Due;\n").expect("writes");
         }
-        FakeSession::structured(report("Added due dates", "due.rs")).with_event(WorkerEvent::Agent(
+        FakeSession::structured(report("Added due dates", "due.rs")).with_event(RunnerEvent::Agent(
             AgentEvent::Workflow {
                 workflow: Box::new(reported()),
             },
@@ -482,8 +502,8 @@ async fn a_file_the_workflow_made_lands_though_the_report_leaves_it_out() -> any
         .expect("the reviewer reads the change");
     assert!(change.contains("due_test.rs"), "{change}");
     assert!(merged(&outcomes), "{:?}", outcomes.last().map(|o| &o.exit));
-    let landed = crew.repo.git(&["show", "HEAD:due_test.rs"])?;
-    assert!(landed.contains("a_task_has_a_due_date"), "{landed}");
+    let merged = crew.repo.git(&["show", "HEAD:due_test.rs"])?;
+    assert!(merged.contains("a_task_has_a_due_date"), "{merged}");
     Ok(())
 }
 

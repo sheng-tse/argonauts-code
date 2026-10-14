@@ -1,43 +1,26 @@
 //! The `[crew]` table as people write it: `main` beside the four other roles, or one list for
 //! everyone.
 
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::crew::{CrewRole, Orchestrator};
 use toml::{Table, Value};
 
-use super::roles::{Workers, off, unknown};
+use super::roles::{AgentIds, off, unknown};
 use super::set_by::SetBy;
 
 const CREW: &str = "crew";
-const MAIN: &str = "main";
-const MAIN_AGENT: &str = "main_agent";
-const LISTS: [&str; 3] = ["workers", "reviewers", "judge"];
+const LISTS: [CrewRole; 3] = [CrewRole::Worker, CrewRole::Reviewer, CrewRole::Judge];
 
-/// Rewrites one layer into the keys the settings hold. `crew.main` is `main_agent`, the key
-/// `/model` saves, so both spellings mean the same thing in whichever file they sit. A bare
-/// list, `crew = ["codex", "claude-code"]`, seats everyone in it as worker, reviewer and judge.
+/// Rewrites one layer into the keys the settings hold: a bare list,
+/// `crew = ["codex", "claude-code"]`, puts everyone in it in the worker, reviewer and judge lists.
 pub(crate) fn spell_out(layer: &mut Table) {
-    match layer.remove(CREW) {
-        Some(Value::Array(everyone)) => {
-            let seats = LISTS
-                .into_iter()
-                .map(|list| (list.to_owned(), Value::Array(everyone.clone())))
-                .collect();
-            layer.insert(CREW.to_owned(), Value::Table(seats));
-        }
-        Some(Value::Table(mut crew)) => {
-            if let Some(main) = crew.remove(MAIN) {
-                layer.entry(MAIN_AGENT).or_insert(main);
-            }
-            if !crew.is_empty() {
-                layer.insert(CREW.to_owned(), Value::Table(crew));
-            }
-        }
-        Some(other) => {
-            layer.insert(CREW.to_owned(), other);
-        }
-        None => {}
+    if let Some(Value::Array(everyone)) = layer.get(CREW) {
+        let lists = LISTS
+            .into_iter()
+            .map(|role| (role.as_str().to_owned(), Value::Array(everyone.clone())))
+            .collect();
+        layer.insert(CREW.to_owned(), Value::Table(lists));
     }
 }
 
@@ -49,24 +32,28 @@ pub(crate) fn follow_what_is_set(merged: &mut Table, set_by: &SetBy) {
     let Some(Value::Table(crew)) = merged.get_mut(CREW) else {
         return;
     };
-    let said = |role: &str| set_by.layer(&format!("{CREW}.{role}")).is_some();
-    for (leader, follower) in [("orchestrator", "workers"), ("reviewers", "judge")] {
-        if said(leader) && !said(follower) {
-            crew.insert(follower.to_owned(), Value::Array(Vec::new()));
+    let said = |role: CrewRole| set_by.layer(&format!("{CREW}.{role}")).is_some();
+    let follows = [
+        (CrewRole::Orchestrator, CrewRole::Worker),
+        (CrewRole::Reviewer, CrewRole::Judge),
+    ];
+    for (followed, follower) in follows {
+        if said(followed) && !said(follower) {
+            crew.insert(follower.as_str().to_owned(), Value::Array(Vec::new()));
         }
     }
 }
 
-fn seats(settings: &Settings) -> Vec<(String, &[WorkerRef])> {
+fn crew_lists(settings: &Settings) -> Vec<(String, &[ModelRef])> {
     let crew = &settings.crew;
-    let orchestrators: &[WorkerRef] = match &crew.orchestrator {
+    let orchestrators: &[ModelRef] = match &crew.orchestrator {
         Orchestrator::Main => &[],
         Orchestrator::Models(models) => models,
     };
     [
         (CrewRole::Orchestrator, orchestrators),
-        (CrewRole::Workers, crew.workers.as_slice()),
-        (CrewRole::Reviewers, crew.reviewers.as_slice()),
+        (CrewRole::Worker, crew.worker.as_slice()),
+        (CrewRole::Reviewer, crew.reviewer.as_slice()),
         (CrewRole::Judge, crew.judge.as_slice()),
     ]
     .into_iter()
@@ -74,14 +61,14 @@ fn seats(settings: &Settings) -> Vec<(String, &[WorkerRef])> {
     .collect()
 }
 
-/// Seats that name an agent nobody knows, or one that's off.
-pub(crate) fn warnings(settings: &Settings, workers: &Workers<'_>) -> Vec<String> {
+/// Crew lists that name an agent nobody knows, or one that's off.
+pub(crate) fn warnings(settings: &Settings, agents: &AgentIds<'_>) -> Vec<String> {
     let mut warnings = Vec::new();
-    for (key, list) in seats(settings) {
+    for (key, list) in crew_lists(settings) {
         for worker in list {
-            if workers.is_off(&worker.worker) {
+            if agents.is_off(&worker.agent) {
                 warnings.push(off(&key, worker));
-            } else if !workers.is_known(&worker.worker) {
+            } else if !agents.is_known(&worker.agent) {
                 warnings.push(unknown(&key, worker));
             }
         }
@@ -89,23 +76,23 @@ pub(crate) fn warnings(settings: &Settings, workers: &Workers<'_>) -> Vec<String
     warnings
 }
 
-/// What's wrong with the seats a setup proposes for `key`: an agent nobody knows, or one
+/// What's wrong with the agents a setup proposes for `key`: an agent nobody knows, or one
 /// that is off. In a file you wrote these are warnings, since you may install the agent
-/// later; a setup Argonauts writes for you names only agents that can take the seat.
-pub fn seat_problems(settings: &Settings, key: &str, seats: &[WorkerRef]) -> Vec<String> {
+/// later; a setup Argonauts Code writes for you names only agents that can take part.
+pub fn crew_list_problems(settings: &Settings, key: &str, models: &[ModelRef]) -> Vec<String> {
     let turned_on: Vec<String> = settings
         .agents
         .iter()
         .filter(|(_, agent)| agent.enabled)
         .map(|(id, _)| id.clone())
         .collect();
-    let workers = Workers::new(settings).resolving(&[], turned_on);
-    seats
+    let agents = AgentIds::new(settings).resolving(&[], turned_on);
+    models
         .iter()
         .filter_map(|worker| {
-            if !workers.is_known(&worker.worker) {
+            if !agents.is_known(&worker.agent) {
                 Some(unknown(key, worker))
-            } else if workers.is_off(&worker.worker) {
+            } else if agents.is_off(&worker.agent) {
                 Some(off(key, worker))
             } else {
                 None
@@ -119,14 +106,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_proposed_seat_nobody_knows_is_a_problem() {
+    fn a_proposed_agent_nobody_knows_is_a_problem() {
         let settings = Settings::default();
-        let gemini: WorkerRef = "gemini".parse().unwrap();
-        let problems = seat_problems(&settings, "crew.reviewers", &[gemini]);
+        let gemini: ModelRef = "gemini".parse().unwrap();
+        let problems = crew_list_problems(&settings, "crew.reviewer", &[gemini]);
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].contains("gemini"), "{problems:?}");
-        let codex: WorkerRef = "codex/gpt-5.6".parse().unwrap();
-        assert!(seat_problems(&settings, "crew.reviewers", &[codex]).is_empty());
+        let codex: ModelRef = "codex/gpt-5.6".parse().unwrap();
+        assert!(crew_list_problems(&settings, "crew.reviewer", &[codex]).is_empty());
     }
 
     fn spelled(text: &str) -> String {
@@ -136,23 +123,14 @@ mod tests {
     }
 
     #[test]
-    fn main_is_the_main_agent_and_the_rest_stays() {
+    fn a_crew_table_stays_as_written() {
         let out = spelled("[crew]\nmain = \"codex/gpt-5.6\"\njudge = \"claude-code\"\n");
-        assert!(out.contains("main_agent = \"codex/gpt-5.6\""), "{out}");
+        assert!(out.contains("main = \"codex/gpt-5.6\""), "{out}");
         assert!(out.contains("judge = \"claude-code\""), "{out}");
-        assert!(!out.contains("main = "), "{out}");
-        let only_main = spelled("[crew]\nmain = \"codex\"\n");
-        assert_eq!(only_main.trim(), "main_agent = \"codex\"");
     }
 
     #[test]
-    fn a_main_agent_in_the_same_file_wins_over_crew_main() {
-        let out = spelled("main_agent = \"claude-code\"\n[crew]\nmain = \"codex\"\n");
-        assert!(out.contains("main_agent = \"claude-code\""), "{out}");
-    }
-
-    #[test]
-    fn one_list_seats_everyone_in_every_role_but_the_orchestrator() {
+    fn one_list_puts_everyone_in_every_role_but_the_orchestrator() {
         let out = spelled("crew = [\"codex\", \"claude-code\"]\n");
         for list in LISTS {
             assert!(

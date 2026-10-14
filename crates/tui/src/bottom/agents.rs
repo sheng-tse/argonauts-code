@@ -1,11 +1,11 @@
-//! The list under the mode line, as Claude Code draws its own: your conversation
+//! The list under the bottom line, as Claude Code draws its own: your conversation
 //! as `main`, then each agent by its label, what it's doing now in one line, and how long and
 //! how many tokens so far. The filled dot is who your typing goes to: `main`, or with the list
 //! focused, the agent selected.
 
 use std::time::{Duration, Instant};
 
-use argonauts_core::settings::ui::VendorInternals;
+use argonauts_core::settings::ui::CliInternals;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -43,7 +43,7 @@ const MIN_DOING: usize = 12;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum AgentState {
     Working,
-    /// Waiting on other work, such as a card it depends on.
+    /// Waiting on other work, such as a task it depends on.
     #[default]
     Waiting,
     /// Waiting on a timer, such as a usage reset.
@@ -55,7 +55,7 @@ pub enum AgentState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentRow {
-    /// The harness, which also names the row in a [`PanelEvent`] when it has no key.
+    /// The CLI, which also names the row in a [`PanelEvent`] when it has no key.
     pub name: String,
     pub model: Option<String>,
     /// What the row calls its agent. Without one it shows the ids.
@@ -75,7 +75,7 @@ pub struct AgentRow {
     pub note: Option<String>,
     /// The name's color for the whole run. Without one the name is in normal text.
     pub color: Option<AgentColor>,
-    /// The session key a [`PanelEvent`] reports, when it differs from `name`.
+    /// The session key a [`PanelEvent`] reports, when it is different from `name`.
     pub key: Option<String>,
     /// The run whose row it sits under in the workflow panel.
     pub run: Option<String>,
@@ -104,18 +104,18 @@ pub struct AgentLabel {
     pub cli: String,
 }
 
-/// What a row adds after its stats: context against its cap, who it stands in for after a
-/// handoff, review debt, and the vendor's own subagents.
+/// What a row adds after its stats: context against its cap, who it is the fallback
+/// for, review debt, and the CLI's own subagents.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RowMarkers {
     /// Used and cap, in tokens.
     pub context: Option<(u64, u64)>,
     /// The agent it replaced by name, for `↺ for Opus 5.5 on Claude Code`.
-    pub stands_in_for: Option<String>,
-    /// Work a weaker replacement did that still waits for a review.
+    pub fallback_for: Option<String>,
+    /// Work a weaker fallback did that still waits for a review.
     pub needs_review: bool,
     pub subagents: u32,
-    /// Its CLI is out of quota and finishing on a small allowance.
+    /// Its CLI is out of plan usage and finishing on a small allowance.
     pub wrapping_up: bool,
     /// The artifact it published last, by name, shown as Claude Code marks one: `⧉ name`.
     pub artifact: Option<String>,
@@ -160,7 +160,7 @@ impl AgentRow {
         Some(format!("Message @{name}…"))
     }
 
-    /// Its session key, or the harness.
+    /// Its session key, or the CLI.
     pub fn id(&self) -> &str {
         self.key.as_deref().unwrap_or(&self.name)
     }
@@ -240,12 +240,12 @@ pub struct AgentPanel {
     pub max_rows: usize,
     /// `Some` while the panel has focus.
     pub selected: Option<usize>,
-    /// `ui.panel.vendor_internals`; hidden leaves out the `+N subagents` marker.
-    pub vendor_internals: VendorInternals,
+    /// `ui.panel.subagents`; hidden leaves out the `+N subagents` marker.
+    pub cli_internals: CliInternals,
 }
 
 /// An agent row's identity: its run, when the row knows it, and its session key, or the
-/// harness for a row without one.
+/// CLI for a row without one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AgentRef {
     pub run: Option<String>,
@@ -264,7 +264,7 @@ pub enum PanelEvent {
     StopRun(String),
     /// `p` once a stop was asked on a run's row pauses the run instead, with its run id.
     PauseRun(String),
-    /// A first `x`: the mode line asks for a second on the same row.
+    /// A first `x`: the bottom line asks for a second on the same row.
     StopAsked,
     /// Enter or → on a run's row, with its run id.
     OpenWorkflow(String),
@@ -282,7 +282,7 @@ impl Default for AgentPanel {
             rows: Vec::new(),
             max_rows: 4,
             selected: None,
-            vendor_internals: VendorInternals::Discovered,
+            cli_internals: CliInternals::Discovered,
         }
     }
 }
@@ -430,7 +430,7 @@ impl AgentPanel {
             });
         let widest = |cell: &dyn Fn(&Cells) -> usize| cells.iter().map(cell).max().unwrap_or(0);
         // The two cells before a row, the dot and its space, and the cell kept free at the end.
-        let lead = |row: &ListRow| 2 + row.indent + 2;
+        let margin = |row: &ListRow| 2 + row.indent + 2;
         let stats_width = widest(&|cells| spans_width(&cells.stats));
         let stats_room = if stats_width > 0 {
             GAP + stats_width + 1
@@ -456,7 +456,7 @@ impl AgentPanel {
                 };
                 let (dot, dot_style) = dot(agent, chosen, selected.is_some(), ctx);
                 let name_style = if chosen && selected.is_some() {
-                    ctx.theme.style(Role::Card)
+                    ctx.theme.style(Role::Question)
                 } else {
                     ctx.theme.agent_style(agent.color)
                 };
@@ -466,7 +466,7 @@ impl AgentPanel {
                     Span::raw(" "),
                 ];
                 let name_cells = name_width.saturating_sub(row.indent);
-                let mut used = lead(row) + name_cells;
+                let mut used = margin(row) + name_cells;
                 spans.push(Span::styled(left(&cells.name, name_cells), name_style));
                 if doing_shows {
                     let doing_width = width
@@ -522,8 +522,8 @@ impl AgentPanel {
         window(self.rows.len(), self.max_rows + main, self.selected)
     }
 
-    /// `1h 7m · ↓ 490.9k tokens`, as Claude Code ends its rows, after what Argonauts notes of
-    /// the agent: its to-do count, review debt, who it stands in for, and its context. A note
+    /// `1h 7m · ↓ 490.9k tokens`, as Claude Code ends its rows, after what Argonauts Code notes of
+    /// the agent: its to-do count, review debt, who it is the fallback for, and its context. A note
     /// such as `waiting` takes the place of the time and tokens.
     fn stats(&self, index: usize, notes: Notes, ctx: &RenderCtx<'_>) -> Vec<Span<'static>> {
         let row = &self.rows[index];
@@ -542,7 +542,7 @@ impl AgentPanel {
             },
             Notes::None => RowMarkers::default(),
         };
-        parts.extend(markers(&shown, self.vendor_internals, ctx));
+        parts.extend(markers(&shown, self.cli_internals, ctx));
         match &row.note {
             Some(note) => parts.push(plain(sanitize_line(note).trim().to_owned())),
             None => {
@@ -573,7 +573,7 @@ fn dot(row: &AgentRow, chosen: bool, focused: bool, ctx: &RenderCtx<'_>) -> (&'s
     let glyphs = &theme.glyphs;
     let dim = theme.style(Role::Dim);
     if chosen {
-        let role = if focused { Role::Card } else { Role::Text };
+        let role = if focused { Role::Question } else { Role::Text };
         return (glyphs.bullet, theme.style(role));
     }
     match row.state {
@@ -589,10 +589,10 @@ fn dot(row: &AgentRow, chosen: bool, focused: bool, ctx: &RenderCtx<'_>) -> (&'s
             (glyph, dim)
         }
         AgentState::Waiting => (glyphs.agent_waiting, dim),
-        AgentState::Timer => (glyphs.agent_timer, theme.style(Role::Warning)),
-        AgentState::NeedsYou => (glyphs.agent_needs_you, theme.style(Role::Warning)),
+        AgentState::Timer => (glyphs.agent_timer, theme.style(Role::Warn)),
+        AgentState::NeedsYou => (glyphs.agent_needs_you, theme.style(Role::Warn)),
         AgentState::Done => (glyphs.agent_done, theme.style(Role::Success)),
-        AgentState::Failed => (glyphs.agent_failed, theme.style(Role::Error)),
+        AgentState::Failed => (glyphs.agent_failed, theme.style(Role::Danger)),
     }
 }
 
@@ -612,7 +612,7 @@ pub(super) fn message_rule(agent: &AgentRow, ctx: &RenderCtx<'_>) -> Line<'stati
     Line::from(vec![
         Span::styled(rule.repeat(left), dim),
         Span::raw(" "),
-        Span::styled(name, theme.style(Role::Card)),
+        Span::styled(name, theme.style(Role::Question)),
         Span::raw(" "),
         Span::styled(rule.to_owned(), dim),
     ])
@@ -631,7 +631,7 @@ struct Cells {
     stats: Vec<Span<'static>>,
 }
 
-/// How much Argonauts notes of an agent before its time and tokens.
+/// How much Argonauts Code notes of an agent before its time and tokens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Notes {
     All,
@@ -719,10 +719,10 @@ pub(super) fn window(
     count - (lines - 1)..count
 }
 
-/// What a row notes after its stats, the debt and the handoff first, so a cut row keeps them.
+/// What a row notes after its stats, the debt and the fallback first, so a cut row keeps them.
 fn markers(
     markers: &RowMarkers,
-    internals: VendorInternals,
+    internals: CliInternals,
     ctx: &RenderCtx<'_>,
 ) -> Vec<Vec<Span<'static>>> {
     let theme = ctx.theme;
@@ -732,23 +732,19 @@ fn markers(
     if markers.needs_review {
         notes.push(vec![Span::styled(
             format!("{} needs review", marks.debt),
-            theme.style(Role::Warning),
+            theme.style(Role::Warn),
         )]);
     }
-    if let Some(worker) = &markers.stands_in_for {
+    if let Some(worker) = &markers.fallback_for {
         notes.push(vec![Span::styled(
-            format!("{} for {}", marks.stands_in, sanitize_line(worker).trim()),
+            format!("{} for {}", marks.fallback, sanitize_line(worker).trim()),
             dim,
         )]);
     }
     if let Some((used, cap)) = markers.context {
         // Past nine tenths of the cap the session is about to rotate.
         let near = cap > 0 && used.saturating_mul(10) >= cap.saturating_mul(9);
-        let style = if near {
-            theme.style(Role::Warning)
-        } else {
-            dim
-        };
+        let style = if near { theme.style(Role::Warn) } else { dim };
         notes.push(vec![Span::styled(
             format!("ctx {}/{}", format::tokens(used), format::tokens(cap)),
             style,
@@ -763,7 +759,7 @@ fn markers(
             dim,
         )]);
     }
-    if markers.subagents > 0 && internals != VendorInternals::Hidden {
+    if markers.subagents > 0 && internals != CliInternals::Hidden {
         let noun = if markers.subagents == 1 {
             "subagent"
         } else {
@@ -851,7 +847,7 @@ mod tests {
         );
         // The selected agent's dot and name take the chosen option's color, lavender, what
         // each agent does reads as text, and the stats are dim.
-        let chosen = theme.style(Role::Card);
+        let chosen = theme.style(Role::Question);
         assert_eq!(lines[1].spans[1].style, chosen);
         assert_eq!(lines[1].spans[3].style, chosen);
         assert_eq!(lines[2].spans[1].style, theme.style(Role::Dim));
@@ -884,7 +880,7 @@ mod tests {
         assert_eq!(secs(2 * 3_600), "2h 0m");
     }
 
-    /// What Argonauts notes of an agent comes before the time and tokens: its to-do count, and
+    /// What Argonauts Code notes of an agent comes before the time and tokens: its to-do count, and
     /// that it's wrapping up on a small allowance. A note such as `waiting` takes their place.
     #[test]
     fn notes_come_before_the_time_and_a_wait_takes_its_place() {
@@ -915,7 +911,7 @@ mod tests {
             rows[2].trim_end().ends_with("resumes at 11:20 AM"),
             "{text}"
         );
-        assert_eq!(lines[2].spans[1].style, theme.style(Role::Warning));
+        assert_eq!(lines[2].spans[1].style, theme.style(Role::Warn));
         // The stats share a column, whatever each row's are.
         let column =
             |row: &str, part: &str| crate::text::str_width(&row[..row.find(part).unwrap()]);
@@ -949,7 +945,7 @@ mod tests {
         panel.rows[1].color = Some(AgentColor::Blue);
         panel.rows[2].state = AgentState::NeedsYou;
         panel.rows[3].state = AgentState::Failed;
-        panel.rows.push(agent("tests:all", "", AgentState::Done));
+        panel.rows.push(agent("checks:all", "", AgentState::Done));
         let ctx = RenderCtx::new(80, &theme, clock);
         let lines = panel.lines(&ctx);
         let dots: Vec<String> = lines
@@ -957,8 +953,8 @@ mod tests {
             .map(|line| line.spans[1].content.to_string())
             .collect();
         assert_eq!(dots, ["●", "○", "◆", "●", "●"]);
-        assert_eq!(lines[2].spans[1].style, theme.style(Role::Warning));
-        assert_eq!(lines[3].spans[1].style, theme.style(Role::Error));
+        assert_eq!(lines[2].spans[1].style, theme.style(Role::Warn));
+        assert_eq!(lines[3].spans[1].style, theme.style(Role::Danger));
         assert_eq!(lines[4].spans[1].style, theme.style(Role::Success));
         // An agent keeps its color all run, as Claude Code colors its subagents.
         assert_eq!(lines[1].spans[3].style, theme.style(Role::AgentBlue));
@@ -1142,17 +1138,17 @@ mod tests {
     #[test]
     fn the_window_always_holds_the_selection() {
         for max_rows in 0..=3 {
-            let budget = max_rows.max(1) + 1;
+            let limit = max_rows.max(1) + 1;
             for count in 1..=8 {
                 for selected in 0..count {
                     let shown = window(count, max_rows, Some(selected));
                     let case = format!("max_rows {max_rows}, {count} rows, row {selected}");
                     assert!(shown.contains(&selected), "{case}: {shown:?}");
                     let markers = usize::from(shown.start > 0) + usize::from(shown.end < count);
-                    // A lone row between two markers is the one way over a budget of two.
-                    assert!(shown.len() + markers <= budget.max(3), "{case}: {shown:?}");
-                    if budget >= 3 {
-                        assert!(shown.len() + markers <= budget, "{case}: {shown:?}");
+                    // A lone row between two markers is the one way over a limit of two.
+                    assert!(shown.len() + markers <= limit.max(3), "{case}: {shown:?}");
+                    if limit >= 3 {
+                        assert!(shown.len() + markers <= limit, "{case}: {shown:?}");
                     }
                 }
             }

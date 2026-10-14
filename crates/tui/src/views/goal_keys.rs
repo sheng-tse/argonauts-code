@@ -79,7 +79,7 @@ pub fn edit(run: &RunId, goal: &AgentGoal, typed: &str) -> Result<UiCommand, Str
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::CardId;
+    use argonauts_core::TaskId;
 
     use super::*;
     use crate::views::goal_panel::fixture::build_cli;
@@ -90,7 +90,7 @@ mod tests {
 
     fn goal(state: GoalState) -> AgentGoal {
         let mut goal = build_cli("s-002");
-        goal.task = Some(CardId::new("task-002").unwrap());
+        goal.task = Some(TaskId::new("task-002").unwrap());
         goal.state = state;
         goal
     }
@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn p_pauses_a_goal_that_is_going_and_resumes_a_held_one() {
-        let task = Some(CardId::new("task-002").unwrap());
+        let task = Some(TaskId::new("task-002").unwrap());
         assert_eq!(
             action(hold(&run(), &goal(GoalState::Running))),
             Some(("p pause the goal", GoalAction::Pause { task: task.clone() }))
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn c_runs_the_checks_of_a_goal_that_is_going_and_not_twice_at_once() {
-        let task = Some(CardId::new("task-002").unwrap());
+        let task = Some(TaskId::new("task-002").unwrap());
         assert_eq!(
             action(check_now(&run(), &goal(GoalState::Running))),
             Some(("c run the checks now", GoalAction::CheckNow { task }))

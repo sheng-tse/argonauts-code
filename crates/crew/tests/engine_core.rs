@@ -1,4 +1,4 @@
-//! The engine as a whole: what sessions get from the settings, and a parked run that waits
+//! The engine as a whole: what sessions get from the settings, and a waiting run that waits
 //! however long you take.
 
 mod support;
@@ -8,20 +8,20 @@ use std::time::Duration;
 
 use argonauts_core::engine::EngineExit;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::checkpoint::CheckpointEvent;
-use argonauts_core::events::run::{ParkReason, RunMode};
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::events::approval::ApprovalEvent;
+use argonauts_core::events::run::{RunMode, WaitReason};
+use argonauts_core::names::{ModelRef, RoleName};
 use argonauts_core::settings::agents::AgentSettings;
 use argonauts_core::settings::roles::RoleSettings;
-use argonauts_core::steps::goal::{Restate, RestateInput};
+use argonauts_core::steps::understand::{Read, ReadInput};
 use argonauts_crew::engine::host::Ask;
 use argonauts_crew::roles;
 
-use argonauts_testkit::worker::FakeSession;
+use argonauts_testkit::runner::FakeSession;
 
 use support::{Crew, names, script};
 
-fn restatement() -> serde_json::Value {
+fn reading() -> serde_json::Value {
     json!({
         "summary": "Add a --verbose flag",
         "success_criteria": ["--verbose prints each step"],
@@ -32,13 +32,13 @@ fn restatement() -> serde_json::Value {
     })
 }
 
-fn restate(role: RoleName, worker: &WorkerRef, slot: u32) -> Ask<RestateInput> {
-    let input = RestateInput {
+fn read_ask(role: RoleName, worker: &ModelRef, slot: u32) -> Ask<ReadInput> {
+    let input = ReadInput {
         request: "add a --verbose flag".to_owned(),
         notes: Vec::new(),
         decisions: Vec::new(),
     };
-    let mut ask = Ask::new(None, role, worker.clone(), "Restate the request.", input);
+    let mut ask = Ask::new(None, role, worker.clone(), "Read the request back.", input);
     ask.slot = slot;
     ask
 }
@@ -46,21 +46,21 @@ fn restate(role: RoleName, worker: &WorkerRef, slot: u32) -> Ask<RestateInput> {
 #[tokio::test]
 async fn role_workers_and_effort_reach_sessions() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
-    let claude = crew.worker("claude-code/opus", "claude");
-    let codex = crew.worker("codex/gpt-x", "gpt");
-    let claude_ref: WorkerRef = "claude-code/opus".parse()?;
-    let codex_ref: WorkerRef = "codex/gpt-x".parse()?;
+    let claude = crew.worker("claude-code/opus", "anthropic");
+    let codex = crew.worker("codex/gpt-x", "openai");
+    let claude_ref: ModelRef = "claude-code/opus".parse()?;
+    let codex_ref: ModelRef = "codex/gpt-x".parse()?;
     let everyone = crew.settings.crew.members();
     assert_eq!(
         roles::candidates(&crew.settings, RoleName::Reviewer),
         everyone,
-        "with roles.reviewer.workers unset, the crew is the candidates"
+        "with roles.reviewer.models unset, the crew is the candidates"
     );
 
     crew.settings.roles.insert(
         RoleName::Reviewer,
         RoleSettings {
-            workers: vec![claude_ref.clone()],
+            models: vec![claude_ref.clone()],
             ..RoleSettings::default()
         },
     );
@@ -87,14 +87,14 @@ async fn role_workers_and_effort_reach_sessions() -> anyhow::Result<()> {
         everyone
     );
 
-    script(&codex, vec![restatement(), restatement()]);
-    script(&claude, vec![restatement()]);
+    script(&codex, vec![reading(), reading()]);
+    script(&claude, vec![reading()]);
     let (host, _) = crew.host(RunMode::Crew)?;
-    host.ask::<Restate>(restate(RoleName::Worker, &codex_ref, 0))
+    host.ask::<Read>(read_ask(RoleName::Worker, &codex_ref, 0))
         .await?;
-    host.ask::<Restate>(restate(RoleName::Reviewer, &codex_ref, 0))
+    host.ask::<Read>(read_ask(RoleName::Reviewer, &codex_ref, 0))
         .await?;
-    host.ask::<Restate>(restate(RoleName::Reviewer, &claude_ref, 0))
+    host.ask::<Read>(read_ask(RoleName::Reviewer, &claude_ref, 0))
         .await?;
 
     let codex_efforts: Vec<_> = codex.specs().into_iter().map(|spec| spec.effort).collect();
@@ -109,19 +109,19 @@ async fn role_workers_and_effort_reach_sessions() -> anyhow::Result<()> {
         claude_specs[0].effort, None,
         "neither is set, so the CLI decides"
     );
-    assert_eq!(claude_specs[0].worker, claude_ref, "its own model stays");
+    assert_eq!(claude_specs[0].model, claude_ref, "its own model stays");
     Ok(())
 }
 
 #[tokio::test]
-async fn parked_run_never_expires() -> anyhow::Result<()> {
+async fn waiting_run_never_expires() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
-    crew.answering_worker("claude-code/opus", "claude");
-    crew.answering_worker("codex/gpt-x", "gpt");
+    crew.answering_worker("claude-code/opus", "anthropic");
+    crew.answering_worker("codex/gpt-x", "openai");
     let first = crew.start(RunMode::Crew, "add a --verbose flag").await?;
     assert_eq!(
         first.exit,
-        EngineExit::Parked(ParkReason::Checkpoint),
+        EngineExit::Waiting(WaitReason::Approval),
         "{:?}, ending {:?}",
         names(&first.events),
         first.events.last().map(|event| &event.kind)
@@ -132,18 +132,18 @@ async fn parked_run_never_expires() -> anyhow::Result<()> {
             .clock
             .advance(Duration::from_secs(days * 86_400));
         let again = crew.resume(first.events.clone(), Vec::new()).await?;
-        assert_eq!(again.exit, EngineExit::Parked(ParkReason::Checkpoint));
+        assert_eq!(again.exit, EngineExit::Waiting(WaitReason::Approval));
         let later = &again.events[first.events.len()..];
         let decided = later.iter().any(|event| {
             matches!(
                 event.kind,
-                RunEventKind::Checkpoint(CheckpointEvent::Decided(_))
+                RunEventKind::Approval(ApprovalEvent::Decided(_))
             )
         });
         assert!(!decided, "nothing is approved because time passed");
         let later = names(later);
         assert!(later.contains(&"run/resumed".to_owned()), "{later:?}");
-        assert_eq!(later.last().map(String::as_str), Some("run/parked"));
+        assert_eq!(later.last().map(String::as_str), Some("run/waiting"));
     }
     Ok(())
 }
@@ -151,7 +151,7 @@ async fn parked_run_never_expires() -> anyhow::Result<()> {
 #[tokio::test]
 async fn a_finished_run_is_left_alone() -> anyhow::Result<()> {
     let crew = Crew::new()?;
-    let started = crew.run_started(RunMode::Solo, "done already")?;
+    let started = crew.run_started(RunMode::Captain, "done already")?;
     let mut finished = started.clone();
     finished.seq = 1;
     finished.kind = RunEventKind::Run(argonauts_core::events::run::RunLifecycle::Finished {
@@ -168,10 +168,10 @@ async fn a_finished_run_is_left_alone() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn shutdown_pauses_then_parks() -> anyhow::Result<()> {
+async fn shutdown_pauses_then_waits() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
-    for (name, family) in [("claude-code/opus", "claude"), ("codex/gpt-x", "gpt")] {
-        let worker = crew.worker(name, family);
+    for (name, provider) in [("claude-code/opus", "anthropic"), ("codex/gpt-x", "openai")] {
+        let worker = crew.worker(name, provider);
         worker.push(FakeSession::until_stopped(Vec::new()));
         worker.push(FakeSession::until_stopped(Vec::new()));
     }
@@ -188,7 +188,7 @@ async fn shutdown_pauses_then_parks() -> anyhow::Result<()> {
     assert!(started, "{:?}", names(&run.sink.events()));
     run.shutdown.cancel();
     let exit = run.exit.await?;
-    assert_eq!(exit, EngineExit::Parked(ParkReason::Paused));
+    assert_eq!(exit, EngineExit::Waiting(WaitReason::Paused));
     let kinds = names(&run.sink.events());
     let tail: Vec<&str> = kinds
         .iter()
@@ -197,21 +197,21 @@ async fn shutdown_pauses_then_parks() -> anyhow::Result<()> {
         .rev()
         .map(String::as_str)
         .collect();
-    assert_eq!(tail, ["run/paused", "run/parked"], "{kinds:?}");
+    assert_eq!(tail, ["run/paused", "run/waiting"], "{kinds:?}");
     assert!(kinds.contains(&"run/pause_requested".to_owned()));
     Ok(())
 }
 
 /// A repository that ignores `.argonauts/` never stops a run: the run's own files live under
-/// Argonauts' home, so nothing of theirs is written into the repository, committed, or said.
+/// Argonauts Code's home, so nothing of theirs is written into the repository, committed, or said.
 #[tokio::test]
 async fn an_ignored_argonauts_folder_never_stops_a_run() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
     crew.repo.write(".gitignore", ".argonauts/\n")?;
     crew.repo.commit_all("ignore .argonauts/")?;
-    crew.answering_worker("claude-code/opus", "claude");
-    crew.answering_worker("codex/gpt-x", "gpt");
-    let outcome = crew.start(RunMode::Solo, "add a --verbose flag").await?;
+    crew.answering_worker("claude-code/opus", "anthropic");
+    crew.answering_worker("codex/gpt-x", "openai");
+    let outcome = crew.start(RunMode::Captain, "add a --verbose flag").await?;
     let failed = matches!(
         outcome.exit,
         EngineExit::Finished(argonauts_core::events::run::RunOutcome::Failed)
@@ -219,7 +219,7 @@ async fn an_ignored_argonauts_folder_never_stops_a_run() -> anyhow::Result<()> {
     assert!(!failed, "{:?}", names(&outcome.events));
     let said = outcome.events.iter().any(|event| {
         matches!(&event.kind, RunEventKind::Note(note)
-            if note.text == argonauts_crew::integrate::conductor::IGNORED_LINE)
+            if note.text == argonauts_crew::merge::conductor::IGNORED_LINE)
     });
     assert!(!said, "{:?}", names(&outcome.events));
     let touched = crew.repo.git(&[

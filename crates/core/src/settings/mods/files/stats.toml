@@ -1,7 +1,0 @@
-# What the crew did, per CLI and model and all together. /stats opens it.
-name    = "stats"
-period  = "today"                 # today · 7d · 30d · all
-group   = "cli"                   # cli · model · role
-measure = "tokens"                # what the bars measure: tokens · tasks · spend
-columns = ["work", "review", "tokens", "plan"]   # also: spend, pace, fallbacks
-total   = true                    # the "all together" bar and line

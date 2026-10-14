@@ -76,7 +76,7 @@ impl CodexParser {
         }])
     }
 
-    /// The error, preceded by a quota reading when it is the usage limit.
+    /// The error, preceded by a plan usage reading when it is the usage limit.
     fn failure(&mut self, error: AgentEvent) -> Vec<AgentEvent> {
         let AgentEvent::Error {
             category: ErrorCategory::UsageLimit,
@@ -88,7 +88,7 @@ impl CodexParser {
         };
         let zone = self.zone.get_or_insert_with(LocalZone::system);
         let reading = usage_limit_reading(message, OffsetDateTime::now_utc(), zone);
-        vec![AgentEvent::Quota { reading }, error]
+        vec![AgentEvent::PlanUsage { reading }, error]
     }
 
     fn on_turn_completed(&mut self, value: &Value) -> Vec<AgentEvent> {
@@ -655,7 +655,7 @@ impl WireTodo {
 mod tests {
     use super::*;
     use argonauts_core::events::session::SubagentStatus;
-    use argonauts_core::limits::{QuotaSource, QuotaStatus};
+    use argonauts_core::limits::{PlanUsageSource, PlanUsageStatus};
     use argonauts_core::{Report, ReportStatus, RetryReason};
     use time::macros::datetime;
 
@@ -1048,7 +1048,7 @@ mod tests {
         let failed = format!(r#"{{"type":"turn.failed","error":{{"message":"{limit}"}}}}"#);
         let (mut parser, mut events) = parse(&[THREAD, TURN, &error, &failed]);
         events.extend(parser.finish(Some(1)));
-        assert_eq!(types(&events), ["init", "quota", "error", "result"]);
+        assert_eq!(types(&events), ["init", "plan_usage", "error", "result"]);
         assert_eq!(
             events[2],
             AgentEvent::Error {
@@ -1083,13 +1083,13 @@ mod tests {
             events.extend(parser.parse_stdout_line(&line));
         }
         events.extend(parser.finish(Some(1)));
-        assert_eq!(types(&events), ["init", "quota", "error", "result"]);
-        let AgentEvent::Quota { reading } = &events[1] else {
+        assert_eq!(types(&events), ["init", "plan_usage", "error", "result"]);
+        let AgentEvent::PlanUsage { reading } = &events[1] else {
             unreachable!()
         };
-        assert_eq!(reading.vendor.0, "codex");
-        assert_eq!(reading.status, QuotaStatus::Rejected);
-        assert_eq!(reading.source, QuotaSource::ErrorMessage);
+        assert_eq!(reading.agent_id.0, "codex");
+        assert_eq!(reading.status, PlanUsageStatus::Rejected);
+        assert_eq!(reading.source, PlanUsageSource::ErrorMessage);
         assert_eq!(reading.used, Some(1.0));
         // 9:15 AM at UTC-4.
         assert_eq!(reading.resets_at, Some(datetime!(2026-10-03 13:15 UTC)));
@@ -1105,11 +1105,11 @@ mod tests {
         let mut events =
             parser.parse_stderr_line("Error: You've hit your usage limit. Try again later.");
         events.extend(parser.finish(Some(1)));
-        assert_eq!(types(&events), ["quota", "error", "result"]);
+        assert_eq!(types(&events), ["plan_usage", "error", "result"]);
         assert!(matches!(
             &events[0],
-            AgentEvent::Quota { reading } if reading.resets_at.is_none()
-                && reading.status == QuotaStatus::Rejected
+            AgentEvent::PlanUsage { reading } if reading.resets_at.is_none()
+                && reading.status == PlanUsageStatus::Rejected
         ));
     }
 

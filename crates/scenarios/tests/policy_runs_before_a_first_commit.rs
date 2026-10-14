@@ -6,13 +6,13 @@
 
 mod policy_support;
 
-use argonauts_core::events::card::IntegrationEvent;
 use argonauts_core::events::run::{RunLifecycle, RunOutcome};
+use argonauts_core::events::task::MergeEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_scenarios::WAIT;
 use policy_support::{
-    AUTO_MERGE_RULES, RUN_WAIT, launch_ready, run_finished, scenario, solo_config, start_solo,
-    wait_for_events, write_global_config,
+    AUTO_MERGE_RULES, RUN_WAIT, captain_config, launch_ready, run_finished, scenario,
+    start_captain, wait_for_events, write_global_config,
 };
 
 fn outcome(events: &[RunEvent]) -> Option<RunOutcome> {
@@ -34,8 +34,8 @@ fn notes(events: &[RunEvent]) -> Vec<&str> {
 
 #[test]
 fn a_run_starts_from_your_files_and_writes_its_work_back_uncommitted() -> anyhow::Result<()> {
-    let scenario = scenario("owner-writes-hello.toml")?;
-    write_global_config(&scenario, &solo_config(AUTO_MERGE_RULES))?;
+    let scenario = scenario("worker-writes-hello.toml")?;
+    write_global_config(&scenario, &captain_config(AUTO_MERGE_RULES))?;
     let repo = &scenario.repo;
     let root = repo.root().to_path_buf();
     std::fs::remove_dir_all(root.join(".git"))?;
@@ -45,7 +45,7 @@ fn a_run_starts_from_your_files_and_writes_its_work_back_uncommitted() -> anyhow
     let staged = repo.git(&["diff", "--cached", "--name-only"])?;
 
     let mut pty = launch_ready(&scenario, &[])?;
-    start_solo(&mut pty)?;
+    start_captain(&mut pty)?;
     pty.wait_for("This repository has no commits yet", WAIT)?;
 
     let events = wait_for_events(&scenario, "the run to finish", RUN_WAIT, run_finished)?;
@@ -77,11 +77,11 @@ fn a_run_starts_from_your_files_and_writes_its_work_back_uncommitted() -> anyhow
         "{notes:?}"
     );
     // No branch moved, and the run says what its work went into.
-    let landed_on = events.iter().find_map(|event| match &event.kind {
-        RunEventKind::Integration(IntegrationEvent::Landed { target, .. }) => Some(target.as_str()),
+    let merged_into = events.iter().find_map(|event| match &event.kind {
+        RunEventKind::Merge(MergeEvent::RunMerged { target, .. }) => Some(target.as_str()),
         _ => None,
     });
-    assert_eq!(landed_on, Some("your files"));
+    assert_eq!(merged_into, Some("your files"));
     scenario.shot(&pty, "policy_runs_before_a_first_commit")
 }
 
@@ -90,9 +90,9 @@ fn a_run_starts_from_your_files_and_writes_its_work_back_uncommitted() -> anyhow
 /// shows nothing of them as a change.
 #[test]
 fn a_run_makes_your_first_commit_when_your_settings_ask() -> anyhow::Result<()> {
-    let scenario = scenario("owner-writes-hello.toml")?;
+    let scenario = scenario("worker-writes-hello.toml")?;
     let config = format!("{AUTO_MERGE_RULES}\n[merge]\nunborn = \"first_commit\"\n");
-    write_global_config(&scenario, &solo_config(&config))?;
+    write_global_config(&scenario, &captain_config(&config))?;
     let repo = &scenario.repo;
     let root = repo.root().to_path_buf();
     std::fs::remove_dir_all(root.join(".git"))?;
@@ -102,20 +102,24 @@ fn a_run_makes_your_first_commit_when_your_settings_ask() -> anyhow::Result<()> 
     let branch = repo.git(&["symbolic-ref", "--short", "HEAD"])?;
 
     let mut pty = launch_ready(&scenario, &[])?;
-    start_solo(&mut pty)?;
+    start_captain(&mut pty)?;
     pty.wait_for("becomes your branch's first commit", WAIT)?;
 
     let events = wait_for_events(&scenario, "the run to finish", RUN_WAIT, run_finished)?;
     let notes = notes(&events);
     assert_eq!(outcome(&events), Some(RunOutcome::Merged), "{notes:?}");
-    let landed = events.iter().find_map(|event| match &event.kind {
-        RunEventKind::Integration(IntegrationEvent::Landed { target, sha, .. }) => {
+    let run_merged = events.iter().find_map(|event| match &event.kind {
+        RunEventKind::Merge(MergeEvent::RunMerged { target, sha, .. }) => {
             Some((target.as_str(), sha.as_str()))
         }
         _ => None,
     });
     let first = repo.git(&["rev-list", "--max-parents=0", "HEAD"])?;
-    assert_eq!(landed, Some((branch.as_str(), first.as_str())), "{notes:?}");
+    assert_eq!(
+        run_merged,
+        Some((branch.as_str(), first.as_str())),
+        "{notes:?}"
+    );
     let held = repo.git(&["ls-tree", "-r", "--name-only", &first])?;
     for file in ["hello.txt", "notes.md"] {
         assert!(held.lines().any(|path| path == file), "{file}: {held}");

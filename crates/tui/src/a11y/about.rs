@@ -1,28 +1,28 @@
-//! What a card is about, read from the item the screen draws above it rather than from the
+//! What a question is about, read from the item the screen draws above it rather than from the
 //! drawn text: a table reads a row at a time as `header: value` pairs, so a blank cell or a
 //! column with no header never moves a value under the wrong header.
 
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::checkpoint::CheckpointOpened;
+use argonauts_core::events::approval::ApprovalOpened;
 use time::UtcOffset;
 
-use crate::cards::{AboutCell, Block, Table, about_item, details};
+use crate::questions::{AboutCell, Block, Table, about_item, details};
 
 use super::decisions::Decision;
 
 /// Clock times in these read at `offset`, the terminal's zone.
 pub fn about_lines(
-    opened: &CheckpointOpened,
+    opened: &ApprovalOpened,
     offset: UtcOffset,
     names: &DisplayNames,
 ) -> Vec<String> {
-    // By card id, which is what Request changes takes typed here.
+    // By task id, which is what Request changes takes typed here.
     about_item(opened, None, offset, names).map_or_else(Vec::new, |item| item_lines(&item))
 }
 
-/// Everything the card is about, as Show the details reads it.
+/// Everything the question is about, as Show the details reads it.
 pub fn details_lines(
-    opened: &CheckpointOpened,
+    opened: &ApprovalOpened,
     offset: UtcOffset,
     names: &DisplayNames,
 ) -> Vec<String> {

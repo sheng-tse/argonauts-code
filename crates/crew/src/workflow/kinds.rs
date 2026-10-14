@@ -1,40 +1,40 @@
 //! Which executor runs each step kind, plus the kinds that belong to the runner itself:
-//! `fan_out`, `for_each`, `loop_until`, `gate`, a generic `checkpoint`, and `workflow`.
+//! `fan_out`, `for_each`, `loop_until`, `check`, a generic `approval`, and `workflow`.
 
 use futures::future::join_all;
 use serde_json::Value;
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::checkpoint::CheckpointKind;
+use argonauts_core::events::approval::ApprovalKind;
 use argonauts_core::events::run::RunOutcome;
 use argonauts_core::events::workflow::{RunNote, StepEnd, WorkflowEvent};
 use argonauts_core::future::BoxFuture;
 use argonauts_core::names::{RoleName, WorkflowId};
 use argonauts_core::workflow::{StandardPhase, Step, StepKind, StepRef, Workflow};
 
-use crate::card::gates::GateVerdict;
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
 use crate::plan::context;
 use crate::state::RunState;
+use crate::task::checks::CheckVerdict;
 use crate::workflow::runner::{self, run_step};
 use crate::workflow::{Flow, StepAt, StepCall, StepDone, conditions, describe, params};
-use crate::{card, divide, goal, integrate, plan, review};
+use crate::{divide, goal, merge, plan, review, task, understand};
 
 /// Runs one step with its kind's executor. The runner records `StepStarted` and
 /// `StepFinished` around it.
 pub fn execute<'a>(host: &'a Host, call: &'a StepCall) -> BoxFuture<'a, EngineResult<StepDone>> {
     Box::pin(async move {
         // The validator refuses it elsewhere too; this holds for a workflow that skipped it.
-        if call.step.different_family_from.is_some()
+        if call.step.different_provider_from.is_some()
             && !matches!(
                 call.step.kind,
                 StepKind::Review | StepKind::FanOut | StepKind::Build
             )
         {
             return Err(EngineError::Refused(format!(
-                "{}: only reviewers, and the solo task's review, pick their workers by `different_family_from`; a `{}` step picks its own",
+                "{}: only reviewers, and the Captain task's review, pick their workers by `different_provider_from`; a `{}` step picks its own",
                 describe(&call.at.step),
                 crate::workflow::validate::kind_name(call.step.kind)
             )));
@@ -43,60 +43,59 @@ pub fn execute<'a>(host: &'a Host, call: &'a StepCall) -> BoxFuture<'a, EngineRe
             host.read(context::require_approved_goal)?;
         }
         match call.step.kind {
-            StepKind::Restate => goal::restate_step(host, call).await,
-            StepKind::Differ => goal::differ_step(host, call).await,
+            StepKind::Read => understand::read_step(host, call).await,
+            StepKind::Compare => understand::compare_step(host, call).await,
             StepKind::Draft => plan::draft_step(host, call).await,
             StepKind::Map => plan::map_step(host, call).await,
-            StepKind::Refute => plan::refute_step(host, call).await,
+            StepKind::Critique => plan::critique_step(host, call).await,
             StepKind::Synthesize => plan::synthesize_step(host, call).await,
             StepKind::Judge => plan::judge_step(host, call).await,
             StepKind::Review => review::review_step(host, call).await,
-            StepKind::Build => card::build_step(host, call).await,
-            StepKind::Merge => integrate::merge::merge_step(host, call).await,
-            StepKind::Checkpoint => checkpoint(host, call).await,
+            StepKind::Build => task::build_step(host, call).await,
+            StepKind::Merge => merge::step::merge_step(host, call).await,
+            StepKind::Approval => approval(host, call).await,
             StepKind::FanOut => fan_out(host, call).await,
             StepKind::ForEach => for_each(host, call).await,
             StepKind::LoopUntil => loop_until(host, call).await,
-            StepKind::Gate => gate(host, call).await,
+            StepKind::Checks => check(host, call).await,
             StepKind::Workflow => nested(host, call).await,
-            StepKind::Check => goal::pursue::check_step(host, call).await,
+            StepKind::GoalCheck => goal::pursue::check_step(host, call).await,
             StepKind::Script => crate::script::script_step(host, call).await,
         }
     })
 }
 
-/// Steps that plan against the goal. Outside a plan phase `refute`, `synthesize`, and `judge`
-/// work on their input instead, and an adjudicator rules on reviews.
+/// Steps that plan against the goal. Outside a plan phase `critique` and `synthesize` work on their
+/// input instead, and `judge` settles reviewers who disagree.
 fn plans(call: &StepCall) -> bool {
     let in_plan = call.standard == StandardPhase::Plan;
     match call.step.kind {
         StepKind::Draft | StepKind::Map => true,
-        StepKind::Refute | StepKind::Synthesize => in_plan,
-        StepKind::Judge => in_plan && call.step.role != Some(RoleName::Adjudicator),
+        StepKind::Critique | StepKind::Synthesize | StepKind::Judge => in_plan,
         _ => false,
     }
 }
 
-/// Goal and plan checkpoints belong to their modules; the rest are opened here.
-async fn checkpoint(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
-    match call.step.checkpoint {
-        Some(CheckpointKind::Goal) => goal::goal_checkpoint_step(host, call).await,
-        Some(CheckpointKind::Plan) => divide::plan_checkpoint_step(host, call).await,
-        _ => generic_checkpoint(host, call).await,
+/// Understand and plan approvals belong to their modules; the rest are opened here.
+async fn approval(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
+    match call.step.approval {
+        Some(ApprovalKind::Understand) => understand::approval_step(host, call).await,
+        Some(ApprovalKind::Plan) => divide::plan_approval_step(host, call).await,
+        _ => generic_approval(host, call).await,
     }
 }
 
-/// A `checkpoint` step opens the goal or plan checkpoint. The validator refuses every other
+/// An `approval` step opens the Understand or plan approval. The validator refuses every other
 /// kind, since those open by themselves when their event happens, and this refuses it again for
 /// a workflow that skipped validation.
-async fn generic_checkpoint(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
+async fn generic_approval(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     let _ = host;
     let kind = call
         .step
-        .checkpoint
+        .approval
         .map_or_else(|| "no".to_owned(), |kind| format!("a {kind:?}"));
     Err(EngineError::Refused(format!(
-        "{} opens {kind} approval; a `checkpoint` step opens only the goal or plan approval",
+        "{} opens {kind} approval; an `approval` step opens only the Understand or plan approval",
         describe(&call.at.step)
     )))
 }
@@ -104,21 +103,21 @@ async fn generic_checkpoint(host: &Host, call: &StepCall) -> EngineResult<StepDo
 /// The step kind that does a role's work.
 pub fn kind_for_role(role: RoleName) -> Option<StepKind> {
     Some(match role {
-        RoleName::Restater => StepKind::Restate,
-        RoleName::Differ => StepKind::Differ,
-        RoleName::Drafter | RoleName::Orchestrator => StepKind::Draft,
-        RoleName::Mapper => StepKind::Map,
-        RoleName::Critic => StepKind::Refute,
-        RoleName::Judge | RoleName::Adjudicator => StepKind::Judge,
+        RoleName::Reader => StepKind::Read,
+        RoleName::Comparer => StepKind::Compare,
+        RoleName::Draft | RoleName::Orchestrator => StepKind::Draft,
+        RoleName::Map => StepKind::Map,
+        RoleName::Critic => StepKind::Critique,
+        RoleName::Judge => StepKind::Judge,
         RoleName::Reviewer => StepKind::Review,
-        RoleName::Worker | RoleName::Spike => StepKind::Build,
-        RoleName::Main | RoleName::Consultant | RoleName::PhaseLead => StepKind::Synthesize,
-        RoleName::Retro | RoleName::Approver | RoleName::Narrator => return None,
+        RoleName::Worker | RoleName::Experiment => StepKind::Build,
+        RoleName::Main | RoleName::Consultant | RoleName::TieBreaker => StepKind::Synthesize,
+        RoleName::RunReview | RoleName::Narrator => return None,
     })
 }
 
 /// The same task to several workers or roles at once: each role's own step kind runs with the
-/// step's `count`, `workers`, `blind`, and `different_family_from`.
+/// step's `count`, `models`, `blind`, and `different_provider_from`.
 async fn fan_out(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     let roles: Vec<RoleName> = if call.step.roles.is_empty() {
         call.step.role.into_iter().collect()
@@ -143,7 +142,7 @@ async fn fan_out(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
             steps: Vec::new(),
             until: None,
             max: None,
-            checkpoint: None,
+            approval: None,
             workflow: None,
             params: Default::default(),
             ..call.step.clone()
@@ -296,7 +295,7 @@ async fn loop_until(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     if held {
         return Ok(StepDone::done(format!("{until} after {max} rounds")));
     }
-    if until == conditions::GOAL_APPROVED {
+    if until == conditions::UNDERSTOOD {
         // Everything after the goal needs it approved, so the run can't go on.
         let text = match max {
             1 => "The goal wasn't approved, so the run stopped".to_owned(),
@@ -377,14 +376,14 @@ fn rounds_left(state: &RunState, at: &StepRef) -> Option<bool> {
     Some(rounds < max)
 }
 
-/// Runs the configured `gates.run` commands on the step's target. A workflow can't add any.
-/// The target is the current item's card inside `for_each`, else every card with a worktree.
-async fn gate(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
-    let cards: Vec<CardId> = match call.item.as_ref().and_then(item_card) {
-        Some(card) => vec![card],
+/// Runs the configured `checks.run` commands on the step's target. A workflow can't add any.
+/// The target is the current item's task inside `for_each`, else every task with a worktree.
+async fn check(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
+    let tasks: Vec<TaskId> = match call.item.as_ref().and_then(item_task) {
+        Some(task) => vec![task],
         None => host.read(|state| {
             state
-                .cards
+                .tasks
                 .by_id
                 .values()
                 .filter(|record| record.worktree.is_some())
@@ -392,21 +391,21 @@ async fn gate(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
                 .collect()
         }),
     };
-    if cards.is_empty() {
+    if tasks.is_empty() {
         return Ok(StepDone::skipped("no task to run the checks on"));
     }
     let mut failed = Vec::new();
-    for card in &cards {
-        match card::gates::run(host, card).await? {
-            GateVerdict::Passed => {}
-            GateVerdict::Failed { .. } | GateVerdict::Stopped { .. } => {
-                failed.push(card.to_string())
+    for task in &tasks {
+        match task::checks::run(host, task).await? {
+            CheckVerdict::Passed => {}
+            CheckVerdict::Failed { .. } | CheckVerdict::Stopped { .. } => {
+                failed.push(task.to_string())
             }
         }
     }
     Ok(if failed.is_empty() {
-        StepDone::done(match cards.len() {
-            1 => format!("checks passed on {}", cards[0]),
+        StepDone::done(match tasks.len() {
+            1 => format!("checks passed on {}", tasks[0]),
             count => format!("checks passed on {count} tasks"),
         })
     } else {
@@ -582,25 +581,25 @@ fn round_for(host: &Host, call: &StepCall, index: usize) -> u32 {
     })
 }
 
-/// A card id from a `for_each` item: a card spec, or the id itself.
-pub(crate) fn item_card(item: &Value) -> Option<CardId> {
+/// A task id from a `for_each` item: a task spec, or the id itself.
+pub(crate) fn item_task(item: &Value) -> Option<TaskId> {
     let text = item.get("id").unwrap_or(item).as_str()?;
-    CardId::new(text).ok()
+    TaskId::new(text).ok()
 }
 
-/// The items a `for_each` goes over: the plan's cards, the goal's criteria, the merged cards
+/// The items a `for_each` goes over: the plan's tasks, the goal's criteria, the merged tasks
 /// for `diff`, or each structured answer an earlier step's sessions gave, flattening lists.
 fn items(host: &Host, call: &StepCall, input: &str) -> EngineResult<Vec<Value>> {
     match input {
         "plan" => host
             .read(|state| {
-                let cards = state
+                let tasks = state
                     .divide
                     .graph
                     .as_ref()
-                    .map(|graph| graph.cards.clone())
+                    .map(|graph| graph.tasks.clone())
                     .unwrap_or_default();
-                cards
+                tasks
                     .iter()
                     .map(serde_json::to_value)
                     .collect::<Result<Vec<_>, _>>()
@@ -622,13 +621,13 @@ fn items(host: &Host, call: &StepCall, input: &str) -> EngineResult<Vec<Value>> 
             .map_err(Into::into),
         "diff" => Ok(host.read(|state| {
             state
-                .integration
+                .merge
                 .merged
                 .iter()
-                .map(|(card, _)| Value::String(card.to_string()))
+                .map(|(task, _)| Value::String(task.to_string()))
                 .collect()
         })),
-        "spikes" => Ok(Vec::new()),
+        "experiments" => Ok(Vec::new()),
         named => {
             let Some(step) = host.read(|state| {
                 let record = state.workflows.by_id.get(call.workflow())?;
@@ -721,14 +720,14 @@ mod tests {
         }
     }
 
-    /// A peer crew run in its goal loop, with `rounds` rounds of restating started.
-    fn goal_loop(name: &str, rounds: u32) -> RunState {
+    /// A crew run in its Understand loop, with `rounds` rounds of reading started.
+    fn understand_loop(name: &str, rounds: u32) -> RunState {
         let workflow = builtin::load(name).unwrap();
         let mut steps = vec![started(&[0], StepKind::LoopUntil, 1, 1)];
         for round in 1..=rounds {
             let since = u64::from(round) * 10;
-            steps.push(started(&[0, 0], StepKind::Restate, round, since));
-            steps.push(started(&[0, 2], StepKind::Checkpoint, round, since + 1));
+            steps.push(started(&[0, 0], StepKind::Read, round, since));
+            steps.push(started(&[0, 2], StepKind::Approval, round, since + 1));
         }
         let mut state = RunState::default();
         state.workflows.by_id.insert(
@@ -755,19 +754,19 @@ mod tests {
     }
 
     #[test]
-    fn the_goal_loop_has_a_round_left_only_before_its_last() {
-        let first = goal_loop("council", 1);
+    fn the_understand_loop_has_a_round_left_only_before_its_last() {
+        let first = understand_loop("council", 1);
         assert!(another_round(&first, &at(&[0, 2])));
-        let last = goal_loop("council", 2);
+        let last = understand_loop("council", 2);
         assert!(!another_round(&last, &at(&[0, 2])));
-        let last = goal_loop("orchestrator", 2);
+        let last = understand_loop("orchestrator", 2);
         assert!(!another_round(&last, &at(&[0, 2])));
     }
 
     #[test]
     fn a_step_in_no_loop_has_no_round_left() {
-        let solo = goal_loop("solo", 0);
-        assert!(!another_round(&solo, &at(&[1])));
+        let captain = understand_loop("captain", 0);
+        assert!(!another_round(&captain, &at(&[1])));
         assert!(!another_round(&RunState::default(), &at(&[0, 2])));
     }
 
@@ -787,17 +786,16 @@ mod tests {
     #[test]
     fn planning_steps_are_the_ones_that_need_an_approved_goal() {
         use serde_json::json;
-        let draft = json!({ "kind": "draft", "role": "drafter" });
+        let draft = json!({ "kind": "draft", "role": "draft" });
         assert!(plans(&call(draft.clone(), StandardPhase::Plan)));
         assert!(plans(&call(draft, StandardPhase::Do)));
-        let refute = json!({ "kind": "refute", "role": "critic" });
-        assert!(plans(&call(refute.clone(), StandardPhase::Plan)));
-        assert!(!plans(&call(refute, StandardPhase::Check)));
+        let critique = json!({ "kind": "critique", "role": "critic" });
+        assert!(plans(&call(critique.clone(), StandardPhase::Plan)));
+        assert!(!plans(&call(critique, StandardPhase::Check)));
         let judge = json!({ "kind": "judge", "role": "judge" });
-        assert!(plans(&call(judge, StandardPhase::Plan)));
-        let adjudicate = json!({ "kind": "judge", "role": "adjudicator" });
-        assert!(!plans(&call(adjudicate, StandardPhase::Plan)));
-        let restate = json!({ "kind": "restate", "role": "restater" });
-        assert!(!plans(&call(restate, StandardPhase::Understand)));
+        assert!(plans(&call(judge.clone(), StandardPhase::Plan)));
+        assert!(!plans(&call(judge, StandardPhase::Decide)));
+        let read_step = json!({ "kind": "read", "role": "reader" });
+        assert!(!plans(&call(read_step, StandardPhase::Understand)));
     }
 }

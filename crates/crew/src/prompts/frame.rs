@@ -1,11 +1,11 @@
 //! The frame each crew role reads first: who it is, what it may touch, and the shape of its
 //! answer. A frame stays short, because the instructions that follow say what to do.
 
-pub const MAIN: &str = include_str!("frames/main.md");
-pub const ORCHESTRATOR: &str = include_str!("frames/orchestrator.md");
-pub const WORKERS: &str = include_str!("frames/workers.md");
-pub const REVIEWERS: &str = include_str!("frames/reviewers.md");
-pub const JUDGE: &str = include_str!("frames/judge.md");
+pub const MAIN: &str = argonauts_core::template!("prompts/frames/main.md");
+pub const ORCHESTRATOR: &str = argonauts_core::template!("prompts/frames/orchestrator.md");
+pub const WORKER: &str = argonauts_core::template!("prompts/frames/worker.md");
+pub const REVIEWER: &str = argonauts_core::template!("prompts/frames/reviewer.md");
+pub const JUDGE: &str = argonauts_core::template!("prompts/frames/judge.md");
 
 /// Where a frame of yours may name whoever wrote the work. The built-in reviewers' and judge's
 /// frames say "You aren't told who wrote it" instead, and leave this out.

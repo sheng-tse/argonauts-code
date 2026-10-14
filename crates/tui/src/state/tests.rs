@@ -1,42 +1,42 @@
-use argonauts_core::api::{CardBrief, RunSummary, StatusSummary};
-use argonauts_core::app::{AppChoice, ChatEvent, ChoiceKind, QuotaChip, TurnReply};
-use argonauts_core::events::card::{
-    AttemptCause, CardBudget, CardEvent, CardKind, CardSpec, CardState, GateKind, GateOutcome,
-};
-use argonauts_core::events::checkpoint::{
-    AnswerAction, CheckpointDecided, CheckpointEvent, CheckpointKind, CheckpointOpened,
-    CheckpointPacket, FreeText, PolicyCheck, QuestionPacket,
+use argonauts_core::api::{RunSummary, StatusSummary, TaskBrief};
+use argonauts_core::app::{AppChoice, ChoiceKind, ConversationEvent, PlanUsageChip, TurnReply};
+use argonauts_core::events::agent_status::{AgentStatusEvent, FallbackEvent, RunSpend, SpendEvent};
+use argonauts_core::events::approval::{
+    AnswerAction, ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
+    FreeText, PolicyCheck, QuestionPacket,
 };
 use argonauts_core::events::goal::GoalEvent;
 use argonauts_core::events::plan::{DivideEvent, PlanEvent, TaskGraph};
 use argonauts_core::events::run::{
-    ParkReason, Party, PhaseChange, RunLifecycle, RunMode, RunOutcome, RunPhase, RunSnapshot,
-    RunStarted,
+    Party, PhaseChange, RunLifecycle, RunMode, RunOutcome, RunPhase, RunSnapshot, RunStarted,
+    WaitReason,
 };
 use argonauts_core::events::session::{
     Delivery, EndReason, FileDiff, QueuedMessage, SessionEnd, SessionEvent, SessionStarted,
     SubagentKind, SubagentStatus, SubagentUpdate,
 };
-use argonauts_core::events::shared::{BlackboardEvent, RetroEvent};
-use argonauts_core::events::vendor::{BudgetEvent, HandoffEvent, RunBudget, VendorEvent};
+use argonauts_core::events::shared::{BlackboardEvent, RunReviewEvent};
+use argonauts_core::events::task::{
+    CheckKind, CheckOutcome, TaskEvent, TaskKind, TaskLimit, TaskSpec, TaskState, TryCause,
+};
 use argonauts_core::events::workflow::{
     StepEnd, StepFinished, StepStarted, WorkflowEvent, WorkflowStarted,
 };
-use argonauts_core::events::{IntegrationEvent, ReviewEvent, RunEvent, RunEventKind};
-use argonauts_core::handoff::QualityDebt;
+use argonauts_core::events::{MergeEvent, ReviewEvent, RunEvent, RunEventKind};
+use argonauts_core::fallback::QualityDebt;
 use argonauts_core::input::MentionTarget;
-use argonauts_core::limits::{HealthState, QuotaReading, QuotaSource, QuotaStatus, VendorHealth};
-use argonauts_core::names::{
-    ChoiceId, MessageId, RoleName, TurnId, VendorId, WorkerRef, WorkflowId,
+use argonauts_core::limits::{
+    AgentHealth, HealthState, PlanUsageReading, PlanUsageSource, PlanUsageStatus,
 };
+use argonauts_core::names::{AgentId, ChoiceId, MessageId, ModelRef, RoleName, TurnId, WorkflowId};
 use argonauts_core::policy::{NarratorLineKind, NarratorStatus};
+use argonauts_core::session_runner::{Access, RunnerKind};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
-use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
+use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::settings::ui::NarratorMode;
-use argonauts_core::worker::{Access, WorkerKind};
 use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow};
-use argonauts_core::{AgentEvent, CardId, DiffStat, Note, NoteLevel, PhaseStatus, Spend};
+use argonauts_core::{AgentEvent, DiffStat, Note, NoteLevel, PhaseStatus, Spend, TaskId};
 use crossterm::event::{KeyCode, KeyEvent};
 use time::macros::datetime;
 use time::{Duration, OffsetDateTime};
@@ -44,8 +44,8 @@ use time::{Duration, OffsetDateTime};
 use super::*;
 use crate::app::UiAction;
 use crate::bridge::{Cx, Effects};
-use crate::cards::{CardTarget, Cards};
 use crate::model::ViewModel;
+use crate::questions::{QuestionTarget, Questions};
 use crate::theme::Theme;
 use crate::views::settings::approvals::ApprovalsView;
 use crate::views::{View, ViewCtx, ViewOutcome};
@@ -56,16 +56,16 @@ fn run_id() -> RunId {
     RunId::new("run-20260930-100000-a1b2").unwrap()
 }
 
-fn card_id(n: u32) -> CardId {
-    CardId::new(format!("task-{n:03}")).unwrap()
+fn task_id(n: u32) -> TaskId {
+    TaskId::new(format!("task-{n:03}")).unwrap()
 }
 
 fn key(n: u32) -> SessionKey {
     SessionKey::numbered(n)
 }
 
-fn worker(name: &str, model: &str) -> WorkerRef {
-    WorkerRef::new(name, Some(model.to_owned()))
+fn worker(name: &str, model: &str) -> ModelRef {
+    ModelRef::new(name, Some(model.to_owned()))
 }
 
 /// Events of the one test run, numbered as they're made.
@@ -84,7 +84,7 @@ impl Log {
 
     fn at(
         &mut self,
-        card: Option<CardId>,
+        task: Option<TaskId>,
         session: Option<SessionKey>,
         kind: RunEventKind,
     ) -> AppEvent {
@@ -95,9 +95,9 @@ impl Log {
                 seq,
                 ts: T0 + Duration::seconds(seq as i64),
                 run_id: run_id(),
-                card_id: card,
+                task_id: task,
                 session,
-                source: "conductor".into(),
+                source: "argonauts-code".into(),
                 kind,
             }),
         }
@@ -107,16 +107,16 @@ impl Log {
         self.at(None, Some(key(session)), RunEventKind::Agent(event))
     }
 
-    fn session(&mut self, session: u32, card: Option<u32>, event: SessionEvent) -> AppEvent {
+    fn session(&mut self, session: u32, task: Option<u32>, event: SessionEvent) -> AppEvent {
         self.at(
-            card.map(card_id),
+            task.map(task_id),
             Some(key(session)),
             RunEventKind::Session(event),
         )
     }
 
-    fn card(&mut self, card: u32, event: CardEvent) -> AppEvent {
-        self.at(Some(card_id(card)), None, RunEventKind::Card(event))
+    fn task(&mut self, task: u32, event: TaskEvent) -> AppEvent {
+        self.at(Some(task_id(task)), None, RunEventKind::Task(event))
     }
 }
 
@@ -128,8 +128,8 @@ fn started(title: &str, mode: RunMode) -> RunEventKind {
         forced: false,
         workflow: "council".into(),
         estimate: None,
-        triage: None,
-        chat_turn: None,
+        captain_or_crew: None,
+        conversation_turn: None,
         continues: None,
         repo_root: "/repo".into(),
         base_branch: Some("main".into()),
@@ -139,20 +139,20 @@ fn started(title: &str, mode: RunMode) -> RunEventKind {
         settings_sha256: String::new(),
         settings: serde_json::Value::Null,
         overrides: Vec::new(),
-        harness_versions: Default::default(),
+        cli_versions: Default::default(),
         version: "0.1.0".into(),
-        front_end: Some("slack".into()),
+        outside_agent: Some("slack".into()),
         instructions: Vec::new(),
         required_steps: Vec::new(),
     })))
 }
 
-fn session_started(who: WorkerRef, follow: u8) -> SessionEvent {
+fn session_started(who: ModelRef, follow: u8) -> SessionEvent {
     SessionEvent::Started(Box::new(SessionStarted {
-        vendor: VendorId(who.worker.clone()),
+        agent_id: AgentId(who.agent.clone()),
         worker: who,
-        family: "claude".into(),
-        kind: WorkerKind::Harness,
+        provider: "anthropic".into(),
+        kind: RunnerKind::Cli,
         role: RoleName::Worker,
         step: None,
         access: Access::Build,
@@ -165,21 +165,21 @@ fn session_started(who: WorkerRef, follow: u8) -> SessionEvent {
     }))
 }
 
-fn spec(n: u32, title: &str) -> CardSpec {
-    CardSpec {
-        id: card_id(n),
+fn spec(n: u32, title: &str) -> TaskSpec {
+    TaskSpec {
+        id: task_id(n),
         title: title.into(),
         task: title.into(),
-        kind: CardKind::Build,
+        kind: TaskKind::Build,
         owned_paths: Vec::new(),
         read_only_paths: Vec::new(),
         forbidden_paths: Vec::new(),
         hidden_paths: Vec::new(),
         depends_on: Vec::new(),
         criteria: Vec::new(),
-        owner: Some(worker("claude-code", "opus")),
+        worker: Some(worker("claude-code", "opus")),
         reviewers: Vec::new(),
-        budget: CardBudget {
+        limit: TaskLimit {
             limit: None,
             max_minutes: None,
             max_tool_calls: None,
@@ -190,15 +190,15 @@ fn spec(n: u32, title: &str) -> CardSpec {
     }
 }
 
-fn question(id: u32, title: &str, needs_you: bool) -> CheckpointOpened {
-    CheckpointOpened {
-        id: CheckpointId::numbered(id),
-        kind: CheckpointKind::Question,
+fn question(id: u32, title: &str, needs_you: bool) -> ApprovalOpened {
+    ApprovalOpened {
+        id: ApprovalId::numbered(id),
+        kind: ApprovalKind::Question,
         title: title.into(),
-        card: Some(card_id(1)),
-        packet: CheckpointPacket::Question(QuestionPacket {
+        task: Some(task_id(1)),
+        packet: ApprovalPacket::Question(QuestionPacket {
             from: worker("codex", "gpt-5.6"),
-            card: card_id(1),
+            task: task_id(1),
             text: title.into(),
             options: Vec::new(),
         }),
@@ -223,14 +223,14 @@ fn choice(n: u32, title: &str) -> AppChoice {
     }
 }
 
-fn reading(vendor: &str, window: &str, used: f64, status: QuotaStatus) -> QuotaReading {
-    QuotaReading {
-        vendor: VendorId(vendor.into()),
+fn reading(agent_id: &str, window: &str, used: f64, status: PlanUsageStatus) -> PlanUsageReading {
+    PlanUsageReading {
+        agent_id: AgentId(agent_id.into()),
         status,
         used: Some(used),
         resets_at: None,
         window: Some(window.into()),
-        source: QuotaSource::RateLimitEvent,
+        source: PlanUsageSource::RateLimitEvent,
         observed_at: T0,
         detail: None,
         wrap_up: false,
@@ -263,11 +263,11 @@ fn fold(events: &[AppEvent]) -> AppState {
     state
 }
 
-/// A crew run with one Claude Code session on card-001.
+/// A crew run with one Claude Code session on task-001.
 fn crew(log: &mut Log) -> Vec<AppEvent> {
     vec![
         log.event(started("Fix the export race", RunMode::Crew)),
-        log.card(1, CardEvent::Created(Box::new(spec(1, "Middleware")))),
+        log.task(1, TaskEvent::Created(Box::new(spec(1, "Middleware")))),
         log.session(
             1,
             Some(1),
@@ -291,7 +291,7 @@ fn state_folds_run() {
     let folded = run(&state);
     assert_eq!(folded.title, "Fix the export race");
     assert_eq!(folded.mode, Some(RunMode::Crew));
-    assert_eq!(folded.front_end.as_deref(), Some("slack"));
+    assert_eq!(folded.outside_agent.as_deref(), Some("slack"));
     assert_eq!(folded.workflow.as_deref(), Some("council"));
     assert_eq!(folded.started, Some(T0));
 
@@ -307,13 +307,13 @@ fn state_folds_run() {
     };
     state.apply(&log.event(RunEventKind::Run(approval)));
     assert_eq!(run(&state).approval, Some(ApprovalMode::Auto));
-    let parked = RunLifecycle::Parked {
-        reason: ParkReason::Paused,
+    let waiting = RunLifecycle::Waiting {
+        reason: WaitReason::Paused,
         waiting_on: Vec::new(),
     };
-    state.apply(&log.event(RunEventKind::Run(parked)));
+    state.apply(&log.event(RunEventKind::Run(waiting)));
     assert!(!run(&state).pausing);
-    assert_eq!(run(&state).parked, Some(ParkReason::Paused));
+    assert_eq!(run(&state).waiting, Some(WaitReason::Paused));
     assert!(!run(&state).is_active());
 
     let finished = RunLifecycle::Finished {
@@ -349,12 +349,12 @@ fn state_folds_phase() {
 fn folds_as_progress(kind: RunEventKind) {
     let mut log = Log::new();
     let mut state = fold(&crew(&mut log));
-    let cards = run(&state).cards.clone();
+    let tasks = run(&state).tasks.clone();
     state.apply(&log.at(None, Some(key(1)), kind));
     assert_eq!(run(&state).seq, 3);
     assert_eq!(run(&state).updated, Some(T0 + Duration::seconds(3)));
     assert_eq!(session(&state).last_event, T0 + Duration::seconds(3));
-    assert_eq!(run(&state).cards, cards);
+    assert_eq!(run(&state).tasks, tasks);
 }
 
 #[test]
@@ -373,8 +373,8 @@ fn state_folds_plan() {
 }
 
 #[test]
-fn state_folds_retro() {
-    folds_as_progress(RunEventKind::Retro(RetroEvent::Committed {
+fn state_folds_run_review() {
+    folds_as_progress(RunEventKind::RunReview(RunReviewEvent::Committed {
         sha: "def456".into(),
         paths: Vec::new(),
     }));
@@ -393,64 +393,64 @@ fn state_folds_divide() {
     let mut log = Log::new();
     let mut state = fold(&crew(&mut log));
     let graph = TaskGraph {
-        cards: vec![spec(2, "Tests"), spec(3, "Docs")],
+        tasks: vec![spec(2, "Tests"), spec(3, "Docs")],
         critical_path: Vec::new(),
     };
     state.apply(&log.event(RunEventKind::Divide(DivideEvent::Graph(graph))));
-    assert_eq!(run(&state).cards.len(), 3);
-    assert_eq!(run(&state).cards[&card_id(3)].title, "Docs");
-    let owner = DivideEvent::Owner {
-        card: card_id(2),
+    assert_eq!(run(&state).tasks.len(), 3);
+    assert_eq!(run(&state).tasks[&task_id(3)].title, "Docs");
+    let picked = DivideEvent::Worker {
+        task: task_id(2),
         worker: worker("codex", "gpt-5.6"),
         algorithm: argonauts_core::settings::protocol::RoutingAlgorithm::RoundRobin,
         explored: false,
         reason: String::new(),
     };
-    state.apply(&log.event(RunEventKind::Divide(owner)));
+    state.apply(&log.event(RunEventKind::Divide(picked)));
     assert_eq!(
-        run(&state).cards[&card_id(2)].owner,
+        run(&state).tasks[&task_id(2)].worker,
         Some(worker("codex", "gpt-5.6"))
     );
 }
 
 #[test]
-fn state_folds_card() {
+fn state_folds_task() {
     let mut log = Log::new();
     let mut state = fold(&crew(&mut log));
-    state.apply(&log.card(
+    state.apply(&log.task(
         1,
-        CardEvent::State {
+        TaskEvent::State {
             from: None,
-            to: CardState::Running,
+            to: TaskState::Running,
             reason: String::new(),
         },
     ));
-    state.apply(&log.card(
+    state.apply(&log.task(
         1,
-        CardEvent::Attempt {
-            attempt: 2,
+        TaskEvent::Try {
+            try_number: 2,
             worker: worker("claude-code", "opus"),
-            cause: AttemptCause::Rotation,
+            cause: TryCause::Rotation,
         },
     ));
-    let card = &run(&state).cards[&card_id(1)];
-    assert_eq!(card.state, Some(CardState::Running));
-    assert_eq!((card.attempt, card.rotations), (2, 1));
+    let task = &run(&state).tasks[&task_id(1)];
+    assert_eq!(task.state, Some(TaskState::Running));
+    assert_eq!((task.try_number, task.rotations), (2, 1));
     assert_eq!(session(&state).rotations, 1);
 
-    // A replacement stands in for the first owner until work goes back to it.
-    state.apply(&log.card(
+    // A fallback stays the first worker's fallback until work goes back to it.
+    state.apply(&log.task(
         1,
-        CardEvent::Reassigned {
+        TaskEvent::Reassigned {
             from: Some(worker("claude-code", "opus")),
             to: worker("codex", "gpt-5.6"),
             by: Party::Rules,
             rule_override: None,
         },
     ));
-    state.apply(&log.card(
+    state.apply(&log.task(
         1,
-        CardEvent::CheckpointTagged {
+        TaskEvent::CheckpointTagged {
             n: 1,
             commit: "abc".into(),
             from: worker("claude-code", "opus"),
@@ -463,44 +463,44 @@ fn state_folds_card() {
         by: worker("codex", "gpt-5.6"),
         needs: worker("claude-code", "opus"),
     };
-    state.apply(&log.card(1, CardEvent::QualityDebt(debt.clone())));
+    state.apply(&log.task(1, TaskEvent::QualityDebt(debt.clone())));
     let stat = DiffStat {
         files_changed: 2,
         insertions: 10,
         deletions: 3,
     };
-    state.apply(&log.card(
+    state.apply(&log.task(
         1,
-        CardEvent::Diff {
+        TaskEvent::Diff {
             stat,
             path: "d.patch".into(),
         },
     ));
-    let card = &run(&state).cards[&card_id(1)];
-    assert_eq!(card.standing_in_for, Some(worker("claude-code", "opus")));
-    assert_eq!(card.owner, Some(worker("codex", "gpt-5.6")));
-    assert_eq!(card.checkpoints, 1);
-    assert_eq!(card.debt, vec![debt]);
-    assert_eq!(card.diff, Some(stat));
+    let task = &run(&state).tasks[&task_id(1)];
+    assert_eq!(task.fallback_for, Some(worker("claude-code", "opus")));
+    assert_eq!(task.worker, Some(worker("codex", "gpt-5.6")));
+    assert_eq!(task.checkpoints, 1);
+    assert_eq!(task.debt, vec![debt]);
+    assert_eq!(task.diff, Some(stat));
 
-    state.apply(&log.card(
+    state.apply(&log.task(
         1,
-        CardEvent::DebtCleared {
+        TaskEvent::DebtCleared {
             by: worker("claude-code", "opus"),
         },
     ));
-    state.apply(&log.card(
+    state.apply(&log.task(
         1,
-        CardEvent::Reassigned {
+        TaskEvent::Reassigned {
             from: Some(worker("codex", "gpt-5.6")),
             to: worker("claude-code", "opus"),
             by: Party::Rules,
             rule_override: None,
         },
     ));
-    let card = &run(&state).cards[&card_id(1)];
-    assert!(card.debt.is_empty());
-    assert_eq!(card.standing_in_for, None);
+    let task = &run(&state).tasks[&task_id(1)];
+    assert!(task.debt.is_empty());
+    assert_eq!(task.fallback_for, None);
 }
 
 #[test]
@@ -509,8 +509,8 @@ fn state_folds_session() {
     let mut state = fold(&crew(&mut log));
     let folded = session(&state);
     assert_eq!(folded.follow, Some(1));
-    assert_eq!(folded.vendor, "claude-code");
-    assert_eq!(folded.card, Some(card_id(1)));
+    assert_eq!(folded.agent_id, "claude-code");
+    assert_eq!(folded.task, Some(task_id(1)));
     assert_eq!(folded.status, SessionStatus::Starting);
 
     let message = QueuedMessage {
@@ -546,7 +546,7 @@ fn state_folds_session() {
     assert!(session(&state).queued.is_empty());
 
     let end = SessionEnd {
-        vendor_session: None,
+        cli_session: None,
         exit_code: Some(0),
         signal: None,
         duration_ms: 1_000,
@@ -609,7 +609,10 @@ fn state_folds_agent() {
         state.apply(&log.agent(1, event));
     }
     assert_eq!(session(&state).doing, Doing::Thinking);
-    assert_eq!(session(&state).retry.as_ref().map(|r| r.attempt), Some(2));
+    assert_eq!(
+        session(&state).retry.as_ref().map(|r| r.try_number),
+        Some(2)
+    );
 
     let events = [
         AgentEvent::ToolStarted {
@@ -719,12 +722,12 @@ fn state_folds_agent() {
 }
 
 #[test]
-fn state_folds_gate() {
+fn state_folds_check() {
     let mut log = Log::new();
     let mut state = fold(&crew(&mut log));
-    let gate = GateOutcome {
+    let check = CheckOutcome {
         name: "tests".into(),
-        kind: GateKind::Command,
+        kind: CheckKind::Command,
         passed: false,
         command: None,
         exit_code: Some(1),
@@ -735,10 +738,10 @@ fn state_folds_gate() {
         sandboxed: true,
         skipped: false,
     };
-    state.apply(&log.at(Some(card_id(1)), None, RunEventKind::Gate(gate)));
+    state.apply(&log.at(Some(task_id(1)), None, RunEventKind::Check(check)));
     assert_eq!(
-        run(&state).cards[&card_id(1)].last_gate,
-        Some(GateBrief {
+        run(&state).tasks[&task_id(1)].last_check,
+        Some(CheckBrief {
             name: "tests".into(),
             passed: false
         })
@@ -751,36 +754,36 @@ fn state_folds_review() {
     let mut state = fold(&crew(&mut log));
     let tests = ReviewEvent::TestsWritten {
         reviewer: worker("codex", "gpt-5.6"),
-        for_card: card_id(1),
+        for_task: task_id(1),
         files: Vec::new(),
     };
-    state.apply(&log.at(Some(card_id(1)), None, RunEventKind::Review(tests)));
-    assert_eq!(run(&state).cards[&card_id(1)].reviews, 0);
+    state.apply(&log.at(Some(task_id(1)), None, RunEventKind::Review(tests)));
+    assert_eq!(run(&state).tasks[&task_id(1)].reviews, 0);
     assert_eq!(run(&state).seq, 3);
 }
 
 #[test]
-fn state_folds_integration() {
+fn state_folds_merge() {
     let mut log = Log::new();
     let mut state = fold(&crew(&mut log));
-    let merged = IntegrationEvent::Merged {
-        card: card_id(1),
+    let merged = MergeEvent::Merged {
+        task: task_id(1),
         sha: "abc".into(),
     };
-    state.apply(&log.event(RunEventKind::Integration(merged)));
+    state.apply(&log.event(RunEventKind::Merge(merged)));
     assert_eq!(
-        run(&state).cards[&card_id(1)].state,
-        Some(CardState::Integrated)
+        run(&state).tasks[&task_id(1)].state,
+        Some(TaskState::Merged)
     );
-    assert_eq!(run(&state).cards_done(), (1, 1));
+    assert_eq!(run(&state).tasks_done(), (1, 1));
 }
 
 #[test]
-fn state_folds_checkpoint() {
+fn state_folds_approval() {
     let mut log = Log::new();
     let mut state = fold(&crew(&mut log));
     let open = |n, needs| {
-        RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(question(
+        RunEventKind::Approval(ApprovalEvent::Opened(Box::new(question(
             n,
             "Which cache?",
             needs,
@@ -789,119 +792,131 @@ fn state_folds_checkpoint() {
     state.apply(&log.event(open(1, true)));
     state.apply(&log.event(open(2, false)));
     state.apply(
-        &log.event(RunEventKind::Checkpoint(CheckpointEvent::SpotCheckQueued {
-            id: CheckpointId::numbered(2),
+        &log.event(RunEventKind::Approval(ApprovalEvent::SpotCheckQueued {
+            id: ApprovalId::numbered(2),
         })),
     );
-    assert_eq!(run(&state).checkpoints.len(), 2);
-    assert!(!run(&state).checkpoints[0].replayed);
-    assert_eq!(run(&state).spot_checks, vec![CheckpointId::numbered(2)]);
-    // Only a checkpoint that waits on you is listed.
+    assert_eq!(run(&state).approvals.len(), 2);
+    assert!(!run(&state).approvals[0].replayed);
+    assert_eq!(run(&state).spot_checks, vec![ApprovalId::numbered(2)]);
+    // Only an approval that waits on you is listed.
     assert_eq!(state.needs_you().len(), 1);
 
-    state.apply(
-        &log.event(RunEventKind::Checkpoint(CheckpointEvent::Withdrawn {
-            id: CheckpointId::numbered(1),
-            reason: "answered elsewhere".into(),
-        })),
-    );
-    assert_eq!(run(&state).checkpoints.len(), 1);
+    state.apply(&log.event(RunEventKind::Approval(ApprovalEvent::Withdrawn {
+        id: ApprovalId::numbered(1),
+        reason: "answered elsewhere".into(),
+    })));
+    assert_eq!(run(&state).approvals.len(), 1);
     assert!(state.needs_you().is_empty());
 }
 
 #[test]
-fn state_folds_handoff() {
+fn state_folds_fallback() {
     let mut log = Log::new();
     let mut state = fold(&crew(&mut log));
-    state.apply(&log.event(RunEventKind::Handoff(HandoffEvent::Waiting {
-        card: card_id(1),
-        vendor: VendorId("claude-code".into()),
+    state.apply(&log.event(RunEventKind::Fallback(FallbackEvent::Waiting {
+        task: task_id(1),
+        agent_id: AgentId("claude-code".into()),
         until: Some(T0 + Duration::hours(2)),
+        kept_off: None,
     })));
     assert_eq!(
-        run(&state).cards[&card_id(1)]
-            .waiting_on_vendor
+        run(&state).tasks[&task_id(1)]
+            .waiting_on_agent
             .as_ref()
-            .map(|wait| wait.vendor.as_str()),
+            .map(|wait| wait.agent_id.as_str()),
         Some("claude-code")
     );
-    state.apply(&log.event(RunEventKind::Handoff(HandoffEvent::HandedOff {
-        card: card_id(1),
+    state.apply(&log.event(RunEventKind::Fallback(FallbackEvent::FellBack {
+        task: task_id(1),
         to: worker("codex", "gpt-5.6"),
-        mode: argonauts_core::settings::handoff::HandoffMode::Auto,
+        mode: argonauts_core::settings::fallback::FallbackMode::Auto,
         by: Party::Rules,
         context: None,
     })));
-    let card = &run(&state).cards[&card_id(1)];
-    assert_eq!(card.standing_in_for, Some(worker("claude-code", "opus")));
-    assert_eq!(card.owner, Some(worker("codex", "gpt-5.6")));
-    assert_eq!(card.waiting_on_vendor, None);
+    let task = &run(&state).tasks[&task_id(1)];
+    assert_eq!(task.fallback_for, Some(worker("claude-code", "opus")));
+    assert_eq!(task.worker, Some(worker("codex", "gpt-5.6")));
+    assert_eq!(task.waiting_on_agent, None);
 
-    // A session that starts on the card afterwards stands in too.
+    // A session that starts on the task afterwards is a fallback too.
     state.apply(&log.session(2, Some(1), session_started(worker("codex", "gpt-5.6"), 2)));
     assert_eq!(
-        run(&state).sessions[&key(2)].standing_in_for,
+        run(&state).sessions[&key(2)].fallback_for,
         Some(worker("claude-code", "opus"))
     );
 }
 
 #[test]
-fn state_folds_vendor() {
+fn state_folds_agent_status() {
     let mut log = Log::new();
     let mut state = fold(&crew(&mut log));
-    let five = reading("claude-code", "five_hour", 0.71, QuotaStatus::Allowed);
-    let week = reading("claude-code", "seven_day", 0.40, QuotaStatus::Allowed);
-    state.apply(&log.event(RunEventKind::Vendor(VendorEvent::Quota(five.clone()))));
-    state.apply(&log.event(RunEventKind::Vendor(VendorEvent::Quota(week))));
-    let newer = QuotaReading {
+    let five = reading("claude-code", "five_hour", 0.71, PlanUsageStatus::Allowed);
+    let week = reading("claude-code", "seven_day", 0.40, PlanUsageStatus::Allowed);
+    state.apply(
+        &log.event(RunEventKind::AgentStatus(AgentStatusEvent::PlanUsage(
+            five.clone(),
+        ))),
+    );
+    state.apply(&log.event(RunEventKind::AgentStatus(AgentStatusEvent::PlanUsage(week))));
+    let newer = PlanUsageReading {
         used: Some(0.75),
         observed_at: T0 + Duration::minutes(1),
         ..five
     };
-    state.apply(&log.event(RunEventKind::Vendor(VendorEvent::Quota(newer.clone()))));
-    assert_eq!(state.quotas["claude-code"].len(), 2);
-    assert_eq!(binding_reading(&state.quotas["claude-code"]), Some(&newer));
+    state.apply(
+        &log.event(RunEventKind::AgentStatus(AgentStatusEvent::PlanUsage(
+            newer.clone(),
+        ))),
+    );
+    assert_eq!(state.plan_windows["claude-code"].len(), 2);
+    assert_eq!(
+        binding_reading(&state.plan_windows["claude-code"]),
+        Some(&newer)
+    );
 
-    let health = VendorHealth {
-        vendor: VendorId("codex".into()),
+    let health = AgentHealth {
+        agent_id: AgentId("codex".into()),
         state: HealthState::Down,
         since: T0,
         reason: None,
         next_test_at: None,
         disabled: None,
     };
-    state.apply(&log.event(RunEventKind::Vendor(VendorEvent::Health(health))));
-    state.apply(&log.event(RunEventKind::Vendor(VendorEvent::Disabled {
-        vendor: VendorId("antigravity-cli".into()),
-        reason: "untested version".into(),
-    })));
+    state.apply(&log.event(RunEventKind::AgentStatus(AgentStatusEvent::Health(health))));
+    state.apply(
+        &log.event(RunEventKind::AgentStatus(AgentStatusEvent::Disabled {
+            agent_id: AgentId("antigravity-cli".into()),
+            reason: "untested version".into(),
+        })),
+    );
     assert_eq!(state.health["codex"].state, HealthState::Down);
     assert_eq!(state.disabled["antigravity-cli"], "untested version");
 }
 
 #[test]
-fn state_folds_budget() {
+fn state_folds_limit() {
     let mut log = Log::new();
     let mut state = fold(&crew(&mut log));
-    let budget = RunBudget {
+    let limit = RunSpend {
         spent: Spend {
             cost_usd: 0.21,
             ..Spend::default()
         },
-        limit: Some(BudgetAmount {
-            unit: BudgetUnit::Usd,
+        limit: Some(LimitAmount {
+            unit: LimitUnit::Usd,
             amount: 5.0,
         }),
         lines: Vec::new(),
         reserve_left: None,
     };
-    state.apply(&log.event(RunEventKind::Budget(BudgetEvent::Run(budget.clone()))));
-    assert_eq!(run(&state).budget, Some(budget));
+    state.apply(&log.event(RunEventKind::Spend(SpendEvent::Run(limit.clone()))));
+    assert_eq!(run(&state).spend, Some(limit));
     assert!((run(&state).cost_usd() - 0.21).abs() < 1e-9);
 }
 
-/// A refused brief resumes the lead's vendor session as s-002. Claude Code's totals for it
-/// include what s-001 spent, so a log from before the conductor took that off reports $0.152
+/// A refused brief resumes the main agent's CLI session as s-002. Claude Code's totals for it
+/// include what s-001 spent, so a log from before Argonauts Code took that off reports $0.152
 /// for s-002, though it spent $0.086. Its row and the run show what each session spent.
 #[test]
 fn a_resumed_session_counts_only_what_it_spent() {
@@ -916,7 +931,7 @@ fn a_resumed_session_counts_only_what_it_spent() {
     };
     let ended = |tokens_in: u64, tokens_out: u64, cost: f64| {
         SessionEvent::Ended(Box::new(SessionEnd {
-            vendor_session: Some("vendor-7".into()),
+            cli_session: Some("cli-7".into()),
             exit_code: Some(0),
             signal: None,
             duration_ms: 1_000,
@@ -940,11 +955,11 @@ fn a_resumed_session_counts_only_what_it_spent() {
     else {
         unreachable!()
     };
-    resumed.resumed_from = Some("vendor-7".into());
+    resumed.resumed_from = Some("cli-7".into());
     state.apply(&log.session(2, Some(1), SessionEvent::Started(resumed)));
     state.apply(&log.agent(2, usage(15_000, 9_000, 0.152)));
     state.apply(&log.session(2, None, ended(2_389, 858, 0.086)));
-    let budget = RunBudget {
+    let limit = RunSpend {
         spent: Spend {
             cost_usd: 0.152,
             ..Spend::default()
@@ -953,7 +968,7 @@ fn a_resumed_session_counts_only_what_it_spent() {
         lines: Vec::new(),
         reserve_left: None,
     };
-    state.apply(&log.event(RunEventKind::Budget(BudgetEvent::Run(budget))));
+    state.apply(&log.event(RunEventKind::Spend(SpendEvent::Run(limit))));
     let fixed = &run(&state).sessions[&key(2)];
     assert_eq!(fixed.cost_usd, Some(0.086));
     assert_eq!((fixed.tokens_in, fixed.tokens_out), (2_389, 858));
@@ -1060,14 +1075,14 @@ fn state_folds_welcome_status_and_mode() {
         Some("council")
     );
 
-    let status = argonauts_core::app::StatusLine {
+    let status = argonauts_core::app::HeaderAndBottomLine {
         title: "export race".into(),
         repo: "~/argonauts".into(),
         workflow: "council".into(),
         ultracode: false,
         run: None,
         main_agent: worker("claude-code", "opus"),
-        quotas: vec![QuotaChip {
+        plan_chips: vec![PlanUsageChip {
             label: "Claude".into(),
             reading: None,
             health: HealthState::Healthy,
@@ -1088,7 +1103,7 @@ fn state_folds_welcome_status_and_mode() {
     let header_agent = |state: &AppState| state.welcome.as_ref()?.main_agent.clone();
     assert_eq!(header_agent(&state), Some(worker("claude-code", "opus")));
     state.apply(&AppEvent::Status {
-        status: argonauts_core::app::StatusLine {
+        status: argonauts_core::app::HeaderAndBottomLine {
             main_agent: worker("codex", "gpt-5.6"),
             ..status
         },
@@ -1100,28 +1115,29 @@ fn state_folds_welcome_status_and_mode() {
     });
     assert!(run(&state).pausing);
     state.apply(&AppEvent::Mode {
-        mode: AppMode::Parked {
+        mode: AppMode::Waiting {
             run: run_id(),
-            reason: ParkReason::Checkpoint,
+            reason: WaitReason::Approval,
         },
     });
     assert!(!run(&state).pausing);
-    assert_eq!(run(&state).parked, Some(ParkReason::Checkpoint));
+    assert_eq!(run(&state).waiting, Some(WaitReason::Approval));
     state.apply(&AppEvent::Mode {
         mode: AppMode::Working { run: run_id() },
     });
-    assert_eq!(run(&state).parked, None);
+    assert_eq!(run(&state).waiting, None);
 }
 
-/// The conversation's context by category stays known between turns, since there's no
-/// session to ask then, and goes when another model answers.
+/// The conversation's context as its CLI counted it stays known between turns, since there's
+/// no session to ask then, and goes when another model answers. What its turns add goes with
+/// it.
 #[test]
-fn the_chats_context_breakdown_is_kept_until_another_model_answers() {
-    use argonauts_core::events::context::{ContextCategory, ContextPart};
+fn the_conversations_context_count_is_kept_until_another_model_answers() {
+    use argonauts_core::events::context::{ContextCategory, ContextKind, ContextUsage};
 
     let mut state = AppState::default();
-    let chat = |event| AppEvent::Chat { event };
-    let started = |n: u32, model: &str| ChatEvent::TurnStarted {
+    let conversation = |event| AppEvent::Conversation { event };
+    let started = |n: u32, model: &str| ConversationEvent::TurnStarted {
         turn: TurnId::numbered(n),
         text: "why?".into(),
         worker: worker("claude-code", model),
@@ -1131,40 +1147,66 @@ fn the_chats_context_breakdown_is_kept_until_another_model_answers() {
         settings_sha256: None,
         continues: false,
     };
-    state.apply(&chat(started(1, "opus")));
-    state.apply(&chat(ChatEvent::Agent {
-        turn: TurnId::numbered(1),
-        event: AgentEvent::ContextBreakdown {
-            categories: vec![ContextCategory {
-                part: ContextPart::Messages,
-                tokens: 186_000,
-            }],
-            auto_compact_at: Some(950_000),
-            window: 1_000_000,
-            model: None,
-            memory_files: Vec::new(),
-            mcp_tools: Vec::new(),
-            agents: Vec::new(),
-            skills: Vec::new(),
+    let agent = |n: u32, event| {
+        conversation(ConversationEvent::Agent {
+            turn: TurnId::numbered(n),
+            event,
+        })
+    };
+    let fill = |used| AgentEvent::ContextFill {
+        used,
+        size: Some(1_000_000),
+        sent: None,
+    };
+    let finished = |n: u32| {
+        conversation(ConversationEvent::TurnCancelled {
+            turn: TurnId::numbered(n),
+        })
+    };
+    let usage = ContextUsage {
+        categories: vec![ContextCategory {
+            name: "Messages".into(),
+            tokens: 186_000,
+            color: "purple_FOR_SUBAGENTS_ONLY".into(),
+            kind: ContextKind::Used,
+        }],
+        total_tokens: 186_000,
+        window: 1_000_000,
+        raw_window: 1_000_000,
+        percentage: 19,
+        auto_compact: true,
+        auto_compact_threshold: Some(950_000),
+        ..ContextUsage::default()
+    };
+    state.apply(&conversation(started(1, "opus")));
+    state.apply(&agent(1, fill(186_000)));
+    state.apply(&agent(
+        1,
+        AgentEvent::ContextBreakdown {
+            usage: Box::new(usage.clone()),
         },
-    }));
-    let kept = state.chat.context.clone().expect("the breakdown");
-    assert_eq!(kept.window, 1_000_000);
-    assert_eq!(kept.auto_compact_at, Some(950_000));
-    assert_eq!(kept.categories[0].tokens, 186_000);
+    ));
+    let kept = state.conversation.context.clone().expect("the count");
+    assert_eq!(kept.usage, usage);
+    state.apply(&finished(1));
 
-    state.apply(&chat(started(2, "opus")));
-    assert_eq!(state.chat.context.as_ref(), Some(&kept));
-    state.apply(&chat(started(3, "sonnet")));
-    assert_eq!(state.chat.context, None);
+    state.apply(&conversation(started(2, "opus")));
+    assert_eq!(state.conversation.context.as_ref(), Some(&kept));
+    state.apply(&agent(2, fill(195_400)));
+    state.apply(&finished(2));
+    assert_eq!(state.conversation.growth.per_turn(), Some(9_400));
+
+    state.apply(&conversation(started(3, "sonnet")));
+    assert_eq!(state.conversation.context, None);
+    assert_eq!(state.conversation.growth.per_turn(), None);
 }
 
 #[test]
-fn state_folds_chat() {
+fn state_folds_conversation() {
     let mut state = AppState::default();
     let turn = TurnId::numbered(1);
-    let chat = |event| AppEvent::Chat { event };
-    state.apply(&chat(ChatEvent::TurnStarted {
+    let conversation = |event| AppEvent::Conversation { event };
+    state.apply(&conversation(ConversationEvent::TurnStarted {
         turn: turn.clone(),
         text: "why?".into(),
         worker: worker("claude-code", "opus"),
@@ -1174,46 +1216,46 @@ fn state_folds_chat() {
         settings_sha256: None,
         continues: false,
     }));
-    let agent = |event| ChatEvent::Agent {
+    let agent = |event| ConversationEvent::Agent {
         turn: turn.clone(),
         event,
     };
-    state.apply(&chat(agent(AgentEvent::Reasoning {
+    state.apply(&conversation(agent(AgentEvent::Reasoning {
         text: String::new(),
     })));
-    assert_eq!(state.chat.doing, Doing::Thinking);
-    state.apply(&chat(agent(AgentEvent::TextDelta {
+    assert_eq!(state.conversation.doing, Doing::Thinking);
+    state.apply(&conversation(agent(AgentEvent::TextDelta {
         text: "Because".into(),
         parent: None,
     })));
-    state.apply(&chat(agent(AgentEvent::Message {
+    state.apply(&conversation(agent(AgentEvent::Message {
         text: "Because".into(),
         parent: None,
     })));
-    state.apply(&chat(agent(AgentEvent::TextDelta {
+    state.apply(&conversation(agent(AgentEvent::TextDelta {
         text: "Also".into(),
         parent: None,
     })));
-    state.apply(&chat(agent(AgentEvent::Usage {
+    state.apply(&conversation(agent(AgentEvent::Usage {
         input_tokens: 10,
         output_tokens: 3_600,
         cached_tokens: 0,
         cost_usd: None,
         cumulative: true,
     })));
-    assert_eq!(state.chat.streamed, "Because\n\nAlso");
-    assert_eq!(state.chat.tokens_out, 3_600);
-    assert_eq!(state.chat.doing, Doing::Writing);
+    assert_eq!(state.conversation.streamed, "Because\n\nAlso");
+    assert_eq!(state.conversation.tokens_out, 3_600);
+    assert_eq!(state.conversation.doing, Doing::Writing);
     // Another turn's events don't count.
-    state.apply(&chat(ChatEvent::Agent {
+    state.apply(&conversation(ConversationEvent::Agent {
         turn: TurnId::numbered(9),
         event: AgentEvent::Reasoning {
             text: String::new(),
         },
     }));
-    assert_eq!(state.chat.doing, Doing::Writing);
+    assert_eq!(state.conversation.doing, Doing::Writing);
 
-    state.apply(&chat(ChatEvent::TurnFinished {
+    state.apply(&conversation(ConversationEvent::TurnFinished {
         turn: turn.clone(),
         reply: TurnReply::Answer {
             markdown: "Because".into(),
@@ -1221,21 +1263,21 @@ fn state_folds_chat() {
         spend: Spend::default(),
         elapsed_ms: 1_000,
     }));
-    assert_eq!(state.chat.turn, None);
-    assert!(state.chat.streamed.is_empty());
-    assert_eq!(state.chat.doing, Doing::Nothing);
+    assert_eq!(state.conversation.turn, None);
+    assert!(state.conversation.streamed.is_empty());
+    assert_eq!(state.conversation.doing, Doing::Nothing);
 }
 
 /// What Claude Code drew above the input stays across turns, since each turn's session draws
 /// it again, until a session says nothing is there or `/clear` starts a new conversation.
 #[test]
-fn the_heads_up_goes_when_nothing_is_drawn_or_the_chat_is_cleared() {
+fn the_notice_goes_when_nothing_is_drawn_or_the_conversation_is_cleared() {
     use argonauts_core::screen::{Drawn, DrawnLook, DrawnRow, DrawnSpan, ScreenChange};
 
     let mut state = AppState::default();
     let turn = |n| TurnId::numbered(n);
-    let start = |n| AppEvent::Chat {
-        event: ChatEvent::TurnStarted {
+    let start = |n| AppEvent::Conversation {
+        event: ConversationEvent::TurnStarted {
             turn: turn(n),
             text: "check release.md".into(),
             worker: worker("claude-code", "opus"),
@@ -1246,8 +1288,8 @@ fn the_heads_up_goes_when_nothing_is_drawn_or_the_chat_is_cleared() {
             continues: false,
         },
     };
-    let drawn = |n, rows: Vec<DrawnRow>| AppEvent::Chat {
-        event: ChatEvent::Agent {
+    let drawn = |n, rows: Vec<DrawnRow>| AppEvent::Conversation {
+        event: ConversationEvent::Agent {
             turn: turn(n),
             event: AgentEvent::ScreenChanged {
                 change: ScreenChange::Drawn {
@@ -1259,31 +1301,34 @@ fn the_heads_up_goes_when_nothing_is_drawn_or_the_chat_is_cleared() {
             },
         },
     };
-    let heads_up = vec![DrawnRow {
+    let notice = vec![DrawnRow {
         spans: vec![DrawnSpan {
             text: "Heads up · Dana is away until Monday.".into(),
             look: DrawnLook::Plain,
         }],
     }];
     state.apply(&start(1));
-    state.apply(&drawn(1, heads_up.clone()));
+    state.apply(&drawn(1, notice.clone()));
     state.apply(&start(2));
-    assert!(state.chat.heads_up.is_some(), "kept for the next turn");
+    assert!(
+        state.conversation.notice.is_some(),
+        "kept for the next turn"
+    );
     state.apply(&drawn(2, Vec::new()));
-    assert!(state.chat.heads_up.is_none());
+    assert!(state.conversation.notice.is_none());
 
-    state.apply(&drawn(2, heads_up));
-    assert!(state.chat.heads_up.is_some());
-    state.apply(&AppEvent::ChatCleared);
-    assert!(state.chat.heads_up.is_none());
+    state.apply(&drawn(2, notice));
+    assert!(state.conversation.notice.is_some());
+    state.apply(&AppEvent::ConversationCleared);
+    assert!(state.conversation.notice.is_none());
 }
 
 #[test]
-fn chat_queue_clears_at_turn_start() {
+fn conversation_queue_clears_at_turn_start() {
     let mut state = AppState::default();
-    state.chat.queued = vec!["first".into(), "second".into()];
-    state.apply(&AppEvent::Chat {
-        event: ChatEvent::TurnStarted {
+    state.conversation.queued = vec!["first".into(), "second".into()];
+    state.apply(&AppEvent::Conversation {
+        event: ConversationEvent::TurnStarted {
             turn: TurnId::numbered(2),
             text: "first".into(),
             worker: worker("claude-code", "opus"),
@@ -1294,8 +1339,8 @@ fn chat_queue_clears_at_turn_start() {
             continues: false,
         },
     });
-    assert_eq!(state.chat.queued, vec!["second".to_owned()]);
-    assert_eq!(state.chat.turn, Some(TurnId::numbered(2)));
+    assert_eq!(state.conversation.queued, vec!["second".to_owned()]);
+    assert_eq!(state.conversation.turn, Some(TurnId::numbered(2)));
 }
 
 #[test]
@@ -1320,7 +1365,7 @@ fn state_folds_narrator() {
         ts: T0,
         run: Some(run_id()),
         kind: NarratorLineKind::Update,
-        text: "Codex took over task-002.".into(),
+        text: "task-002 fell back to Codex.".into(),
         model: worker("claude-code", "haiku"),
         spend: Spend::default(),
     };
@@ -1382,12 +1427,12 @@ fn state_folds_detached_and_taken_back() {
         delivery: Delivery::NextTurn,
     };
     state.apply(&log.session(1, None, SessionEvent::Queued(message)));
-    state.chat.queued.push("later".into());
+    state.conversation.queued.push("later".into());
     state.apply(&AppEvent::TakenBack {
         texts: vec!["keep it small".into(), "later".into()],
     });
     assert!(run(&state).queued.is_empty());
-    assert!(state.chat.queued.is_empty());
+    assert!(state.conversation.queued.is_empty());
 
     state.apply(&AppEvent::Detached { run: run_id() });
     assert_eq!(state.attached, None);
@@ -1407,11 +1452,11 @@ fn replay_starts_at_attached_and_ends_at_replay_done() {
 
     let mut log = Log::new();
     state.apply(
-        &log.event(RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(
+        &log.event(RunEventKind::Approval(ApprovalEvent::Opened(Box::new(
             question(1, "Plan ready", true),
         )))),
     );
-    assert!(run(&state).checkpoints[0].replayed);
+    assert!(run(&state).approvals[0].replayed);
 
     state.apply(&AppEvent::ReplayDone {
         run: run_id(),
@@ -1419,11 +1464,11 @@ fn replay_starts_at_attached_and_ends_at_replay_done() {
     });
     assert!(!state.replaying());
     state.apply(
-        &log.event(RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(
+        &log.event(RunEventKind::Approval(ApprovalEvent::Opened(Box::new(
             question(2, "Merge?", true),
         )))),
     );
-    assert!(!run(&state).checkpoints[1].replayed);
+    assert!(!run(&state).approvals[1].replayed);
 }
 
 #[test]
@@ -1441,15 +1486,15 @@ fn snapshot_seeds_long_run() {
             goal: Vec::new(),
             plan: None,
             decisions: Vec::new(),
-            cards: vec![CardBrief {
-                card: card_id(4),
+            tasks: vec![TaskBrief {
+                task: task_id(4),
                 title: "Retry queue".into(),
-                state: CardState::Running,
-                owner: Some(worker("codex", "gpt-5.6")),
+                state: TaskState::Running,
+                worker: Some(worker("codex", "gpt-5.6")),
                 note: String::new(),
             }],
             recent: Vec::new(),
-            budget: Some(RunBudget {
+            spend: Some(RunSpend {
                 spent: Spend {
                     cost_usd: 3.1,
                     ..Spend::default()
@@ -1458,10 +1503,10 @@ fn snapshot_seeds_long_run() {
                 lines: Vec::new(),
                 reserve_left: None,
             }),
-            quotas: Vec::new(),
+            plan_windows: Vec::new(),
             waiting: Vec::new(),
         },
-        open_checkpoints: vec![question(3, "Merge task-004?", true)],
+        open_approvals: vec![question(3, "Merge task-004?", true)],
         running: vec![key(8)],
     };
     let mut log = Log::new();
@@ -1472,20 +1517,20 @@ fn snapshot_seeds_long_run() {
         )))),
     );
     let folded = run(&state);
-    assert_eq!(folded.cards[&card_id(4)].state, Some(CardState::Running));
+    assert_eq!(folded.tasks[&task_id(4)].state, Some(TaskState::Running));
     assert!((folded.cost_usd() - 3.1).abs() < 1e-9);
-    assert!(folded.checkpoints[0].replayed);
+    assert!(folded.approvals[0].replayed);
     assert_eq!(folded.running_sessions().count(), 1);
     assert!(folded.summary.is_some());
     assert_eq!(state.needs_you().len(), 1);
 }
 
 #[test]
-fn needs_you_lists_cards_oldest_first() {
+fn needs_you_lists_questions_oldest_first() {
     let mut log = Log::new();
     let mut state = fold(&crew(&mut log));
     state.apply(
-        &log.event(RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(
+        &log.event(RunEventKind::Approval(ApprovalEvent::Opened(Box::new(
             question(1, "Which cache?", true),
         )))),
     );
@@ -1493,16 +1538,16 @@ fn needs_you_lists_cards_oldest_first() {
         choice: choice(1, "Start work?"),
     });
     state.apply(
-        &log.event(RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(
+        &log.event(RunEventKind::Approval(ApprovalEvent::Opened(Box::new(
             question(2, "Merge?", true),
         )))),
     );
-    state.set_aside(&run_id(), &CheckpointId::numbered(1), true);
+    state.set_aside(&run_id(), &ApprovalId::numbered(1), true);
     let titles: Vec<(String, bool)> = state
         .needs_you()
         .into_iter()
         .map(|needs| match needs {
-            NeedsYou::Checkpoint {
+            NeedsYou::Approval {
                 title, set_aside, ..
             } => (title, set_aside),
             NeedsYou::Choice { title, .. } => (title, false),
@@ -1533,59 +1578,56 @@ fn follow_finds_the_attached_runs_agent() {
 #[test]
 fn binding_ignores_a_windows_older_reading() {
     // The window reset since the older reading; the fresh one binds even though it's lower.
-    let old = reading("claude-code", "five_hour", 0.95, QuotaStatus::Allowed);
-    let fresh = QuotaReading {
+    let old = reading("claude-code", "five_hour", 0.95, PlanUsageStatus::Allowed);
+    let fresh = PlanUsageReading {
         used: Some(0.10),
         observed_at: T0 + Duration::hours(5),
         ..old.clone()
     };
-    let week = reading("claude-code", "seven_day", 0.40, QuotaStatus::Allowed);
+    let week = reading("claude-code", "seven_day", 0.40, PlanUsageStatus::Allowed);
     let readings = [old, fresh, week.clone()];
     assert_eq!(binding_reading(&readings), Some(&week));
 }
 
-fn checkpoint_event(log: &mut Log, event: CheckpointEvent) -> AppEvent {
-    log.event(RunEventKind::Checkpoint(event))
+fn approval_event(log: &mut Log, event: ApprovalEvent) -> AppEvent {
+    log.event(RunEventKind::Approval(event))
 }
 
-/// An auto call your rules made on checkpoint `n`, queued for a spot check.
+/// An auto call your rules made on approval `n`, queued for a spot check.
 fn auto_call(log: &mut Log, n: u32, title: &str, spot_check: bool) -> Vec<AppEvent> {
-    let id = CheckpointId::numbered(n);
+    let id = ApprovalId::numbered(n);
     let mut events = vec![
-        checkpoint_event(
+        approval_event(
             log,
-            CheckpointEvent::Opened(Box::new(question(n, title, false))),
+            ApprovalEvent::Opened(Box::new(question(n, title, false))),
         ),
-        checkpoint_event(
+        approval_event(
             log,
-            CheckpointEvent::Checked(PolicyCheck {
+            ApprovalEvent::Checked(PolicyCheck {
                 id: id.clone(),
                 violations: Vec::new(),
                 verdict: None,
                 by: Some(DecideWith::Rules),
-                approver: None,
+                judge: None,
                 reasons: vec!["It matches your rules".into()],
-                shadow: false,
+                auto_preview: false,
             }),
         ),
-        checkpoint_event(
+        approval_event(
             log,
-            CheckpointEvent::Decided(CheckpointDecided {
+            ApprovalEvent::Decided(ApprovalDecided {
                 id: id.clone(),
                 action: AnswerAction::Approve,
                 text: None,
                 by: Party::Rules,
                 evidence_sha256: String::new(),
-                shadow: None,
-                cards: Vec::new(),
+                auto_preview: None,
+                tasks: Vec::new(),
             }),
         ),
     ];
     if spot_check {
-        events.push(checkpoint_event(
-            log,
-            CheckpointEvent::SpotCheckQueued { id },
-        ));
+        events.push(approval_event(log, ApprovalEvent::SpotCheckQueued { id }));
     }
     events
 }
@@ -1597,8 +1639,8 @@ fn spot_check_keeps_its_call_until_you_mark_it() {
     for event in auto_call(&mut log, 4, "Which cache?", true) {
         state.apply(&event);
     }
-    let id = CheckpointId::numbered(4);
-    assert!(run(&state).checkpoints.is_empty());
+    let id = ApprovalId::numbered(4);
+    assert!(run(&state).approvals.is_empty());
     assert_eq!(run(&state).spot_checks, vec![id.clone()]);
     let record = run(&state).decision(&id).expect("the call it asks about");
     assert_eq!(record.opened.title, "Which cache?");
@@ -1629,14 +1671,19 @@ fn a_waiting_spot_check_outlasts_newer_decisions() {
             state.apply(&event);
         }
     }
-    let kept = |n| run(&state).decision(&CheckpointId::numbered(n)).is_some();
+    let kept = |n| run(&state).decision(&ApprovalId::numbered(n)).is_some();
     assert!(kept(1), "it waits for you");
     assert!(!kept(2), "an old call nobody asked about is dropped");
     assert!(kept(50));
 }
 
-/// The bridge folds an event into the state and then hands it to the cards.
-fn cards_see(cards: &mut Cards, model: &mut ViewModel, state: &AppState, event: &AppEvent) {
+/// The bridge folds an event into the state and then hands it to the questions.
+fn questions_see(
+    questions: &mut Questions,
+    model: &mut ViewModel,
+    state: &AppState,
+    event: &AppEvent,
+) {
     let settings = UiSettings::default();
     let mut out = Effects::default();
     let mut cx = Cx {
@@ -1646,12 +1693,12 @@ fn cards_see(cards: &mut Cards, model: &mut ViewModel, state: &AppState, event: 
         now: std::time::Instant::now(),
         out: &mut out,
     };
-    cards.on_event(event, &mut cx);
+    questions.on_event(event, &mut cx);
 }
 
 /// Then, as the bridge does, the state learns what went out.
-fn cards_act(
-    cards: &mut Cards,
+fn questions_act(
+    questions: &mut Questions,
     model: &mut ViewModel,
     state: &mut AppState,
     action: &UiAction,
@@ -1666,7 +1713,7 @@ fn cards_act(
             now: std::time::Instant::now(),
             out: &mut out,
         };
-        cards.on_action(action, &mut cx);
+        questions.on_action(action, &mut cx);
     }
     if let UiAction::Command(command) = action {
         out.send(command.clone());
@@ -1700,11 +1747,11 @@ fn approvals_key(view: &mut ApprovalsView, state: &AppState, key: char) -> ViewO
     view.handle_key(KeyEvent::from(KeyCode::Char(key)), &ctx)
 }
 
-fn spot_cards(cards: &Cards) -> Vec<u64> {
-    cards
+fn spot_questions(questions: &Questions) -> Vec<u64> {
+    questions
         .open
         .iter()
-        .filter(|(_, card)| matches!(card.target, CardTarget::SpotCheck { .. }))
+        .filter(|(_, question)| matches!(question.target, QuestionTarget::SpotCheck { .. }))
         .map(|(id, _)| *id)
         .collect()
 }
@@ -1713,15 +1760,15 @@ fn spot_cards(cards: &Cards) -> Vec<u64> {
 fn a_spot_check_goes_out_once() {
     let mut log = Log::new();
     let mut state = fold(&crew(&mut log));
-    let mut cards = Cards::default();
+    let mut questions = Questions::default();
     let mut model = ViewModel::default();
     let mut events = auto_call(&mut log, 5, "Which cache?", true);
     events.extend(auto_call(&mut log, 6, "Which queue?", true));
     for event in &events {
         state.apply(event);
-        cards_see(&mut cards, &mut model, &state, event);
+        questions_see(&mut questions, &mut model, &state, event);
     }
-    assert_eq!(spot_cards(&cards).len(), 2);
+    assert_eq!(spot_questions(&questions).len(), 2);
 
     let mut approvals = ApprovalsView::new(Default::default());
     let shown = approvals_text(&mut approvals, &state);
@@ -1731,12 +1778,12 @@ fn a_spot_check_goes_out_once() {
         "each row shows its call: {shown}"
     );
 
-    // Marked in `/approvals`: its card closes and the state lets it go.
+    // Marked in `/approvals`: its question closes and the state lets it go.
     let ViewOutcome::Send(command) = approvals_key(&mut approvals, &state, 'y') else {
         panic!("y sends the mark");
     };
-    let sent = cards_act(
-        &mut cards,
+    let sent = questions_act(
+        &mut questions,
         &mut model,
         &mut state,
         &UiAction::Command(command),
@@ -1745,25 +1792,25 @@ fn a_spot_check_goes_out_once() {
         sent,
         vec![UiCommand::SpotCheck {
             run: run_id(),
-            id: CheckpointId::numbered(5),
+            id: ApprovalId::numbered(5),
             correct: true,
         }]
     );
-    assert_eq!(spot_cards(&cards).len(), 1);
-    assert_eq!(run(&state).spot_checks, vec![CheckpointId::numbered(6)]);
+    assert_eq!(spot_questions(&questions).len(), 1);
+    assert_eq!(run(&state).spot_checks, vec![ApprovalId::numbered(6)]);
     assert!(matches!(
         approvals_key(&mut approvals, &state, 'n'),
         ViewOutcome::Notice(_)
     ));
 
-    // Answered on its card: the open view drops the row, and a new one lists nothing.
-    let card = spot_cards(&cards)[0];
-    let sent = cards_act(
-        &mut cards,
+    // Answered on its question: the open view drops the row, and a new one lists nothing.
+    let question = spot_questions(&questions)[0];
+    let sent = questions_act(
+        &mut questions,
         &mut model,
         &mut state,
         &UiAction::Answer {
-            card,
+            question,
             option: 0,
             note: None,
             checked: Vec::new(),
@@ -1791,7 +1838,7 @@ fn a_session_is_named_by_the_model_it_runs() {
         }),
     });
     state.apply(&log.event(started("Fix the export race", RunMode::Crew)));
-    let bare = |name: &str| WorkerRef::new(name, None);
+    let bare = |name: &str| ModelRef::new(name, None);
     state.apply(&log.session(1, None, session_started(bare("codex"), 1)));
     state.apply(&log.session(2, None, session_started(bare("claude-code"), 2)));
     let init = |model: &str| AgentEvent::Init {
@@ -1822,7 +1869,7 @@ fn a_session_is_named_by_its_clis_default_until_it_reports() {
         }),
     });
     state.apply(&log.event(started("Fix the export race", RunMode::Crew)));
-    let bare = |name: &str| WorkerRef::new(name, None);
+    let bare = |name: &str| ModelRef::new(name, None);
     state.apply(&log.session(1, None, session_started(bare("claude-code"), 1)));
     state.apply(&log.session(2, None, session_started(bare("claude-code"), 2)));
     let worker = |state: &AppState, n: u32| run(state).sessions[&key(n)].worker.to_string();
@@ -1842,7 +1889,7 @@ fn a_session_is_named_by_its_clis_default_until_it_reports() {
     assert_eq!(worker(&state, 2), "claude-code/claude-haiku-4-5");
 }
 
-/// The run keeps when it ended and what its merge card put up, for the lines that come after.
+/// The run keeps when it ended and what its merge question put up, for the lines that come after.
 #[test]
 fn a_run_keeps_its_end_and_its_merge_totals() {
     let mut log = Log::new();
@@ -1858,35 +1905,36 @@ fn a_run_keeps_its_end_and_its_merge_totals() {
 }
 
 /// A workflow an agent's own CLI runs, still going, with one agent that started at `T0`.
-fn vendor_workflow(duration_ms: u64) -> AgentEvent {
+fn cli_workflow_run(duration_ms: u64) -> AgentEvent {
     use argonauts_core::events::session::{
-        SubagentStatus, VendorAgent, VendorAgentState, VendorPhase, VendorWorkflow,
+        CliAgent, CliAgentState, CliPhase, CliWorkflowRun, SubagentStatus,
     };
     let started = u64::try_from((T0 - OffsetDateTime::UNIX_EPOCH).whole_milliseconds()).unwrap();
     AgentEvent::Workflow {
-        workflow: Box::new(VendorWorkflow {
+        workflow: Box::new(CliWorkflowRun {
             id: "w1".into(),
             call: None,
             name: "probe".into(),
             description: "Two phases".into(),
-            phases: vec![VendorPhase {
+            phases: vec![CliPhase {
                 index: 1,
                 title: "Ask".into(),
                 detail: String::new(),
             }],
-            agents: vec![VendorAgent {
+            agents: vec![CliAgent {
                 index: 1,
                 label: "ask:one".into(),
                 phase: Some(1),
                 model: None,
-                state: VendorAgentState::Running,
+                state: CliAgentState::Running,
                 tokens: 0,
                 tool_calls: 0,
                 duration_ms: 0,
                 started_at_ms: Some(started),
-                attempt: 1,
+                try_number: 1,
                 prompt: None,
                 result: None,
+                ..CliAgent::default()
             }],
             status: SubagentStatus::Running,
             tokens: 10,
@@ -1899,12 +1947,12 @@ fn vendor_workflow(duration_ms: u64) -> AgentEvent {
 }
 
 #[test]
-fn a_vendor_workflow_leaves_the_panel_when_its_session_ends() {
+fn a_cli_workflow_run_leaves_the_panel_when_its_session_ends() {
     let mut log = Log::new();
     let mut state = fold(&crew(&mut log));
-    state.apply(&log.agent(1, vendor_workflow(27)));
+    state.apply(&log.agent(1, cli_workflow_run(27)));
     // A second task, so the workflow is one agent's part of the run and not the run itself.
-    state.apply(&log.card(2, CardEvent::Created(Box::new(spec(2, "Exporter")))));
+    state.apply(&log.task(2, TaskEvent::Created(Box::new(spec(2, "Exporter")))));
     state.apply(&log.session(2, Some(2), session_started(worker("codex", "gpt-5.6"), 2)));
     let wall = T0 + Duration::seconds(90);
     let now = std::time::Instant::now();
@@ -1917,14 +1965,14 @@ fn a_vendor_workflow_leaves_the_panel_when_its_session_ends() {
     // report's 27 ms.
     assert_eq!(probe.elapsed_ms, 87_000);
     // A later report of its totals never sets the time back.
-    state.apply(&log.agent(1, vendor_workflow(3_300)));
+    state.apply(&log.agent(1, cli_workflow_run(3_300)));
     let rows = crate::bridge::panel::run_rows(&state, wall, now);
     let probe = rows.iter().find(|row| row.name == "probe").unwrap();
     assert_eq!(probe.elapsed_ms, 87_000);
 
     // Stopped before the workflow said it ended: the row goes, and so does its agent.
     let end = SessionEnd {
-        vendor_session: None,
+        cli_session: None,
         exit_code: None,
         signal: None,
         duration_ms: 1_000,
@@ -1945,18 +1993,18 @@ fn a_vendor_workflow_leaves_the_panel_when_its_session_ends() {
         workflow
             .agents
             .iter()
-            .all(|agent| agent.state != argonauts_core::events::session::VendorAgentState::Running)
+            .all(|agent| agent.state != argonauts_core::events::session::CliAgentState::Running)
     );
 }
 
 /// The conversation's own turn keeps the latest state of each subagent its CLI started, for
 /// the list under the input. A workflow has a row of its own, and the turn's end clears them.
 #[test]
-fn a_chat_turn_keeps_its_subagents_until_it_ends() {
-    let chat = |event| AppEvent::Chat { event };
+fn a_conversation_turn_keeps_its_subagents_until_it_ends() {
+    let conversation = |event| AppEvent::Conversation { event };
     let turn = TurnId::numbered(1);
     let mut state = AppState::default();
-    state.apply(&chat(ChatEvent::TurnStarted {
+    state.apply(&conversation(ConversationEvent::TurnStarted {
         turn: turn.clone(),
         text: "split the checks".into(),
         worker: worker("claude-code", "opus"),
@@ -1967,7 +2015,7 @@ fn a_chat_turn_keeps_its_subagents_until_it_ends() {
         continues: false,
     }));
     let update = |id: &str, kind, status, said: Option<&str>| {
-        chat(ChatEvent::Agent {
+        conversation(ConversationEvent::Agent {
             turn: turn.clone(),
             event: AgentEvent::Subagent {
                 update: SubagentUpdate {
@@ -2001,7 +2049,7 @@ fn a_chat_turn_keeps_its_subagents_until_it_ends() {
         Some("DONE-A"),
     ));
     let seen: Vec<(&str, SubagentStatus, Option<&str>)> = state
-        .chat
+        .conversation
         .subagents
         .iter()
         .map(|known| {
@@ -2019,18 +2067,18 @@ fn a_chat_turn_keeps_its_subagents_until_it_ends() {
             ("toolu_b", SubagentStatus::Running, None),
         ]
     );
-    state.apply(&chat(ChatEvent::TurnCancelled { turn }));
-    assert!(state.chat.subagents.is_empty());
+    state.apply(&conversation(ConversationEvent::TurnCancelled { turn }));
+    assert!(state.conversation.subagents.is_empty());
 }
 
 /// A turn waits on the background once its main agent has a result while its CLI still runs
 /// something, whether the turn ended by itself or Esc stopped it. The main
 /// agent starting again, the last task ending, and the turn's end each end the wait.
 #[test]
-fn a_chat_turn_waits_on_the_background_while_its_main_agent_rests() {
+fn a_conversation_turn_waits_on_the_background_while_its_main_agent_rests() {
     let turn = TurnId::numbered(1);
-    let said = |event| AppEvent::Chat {
-        event: ChatEvent::Agent {
+    let said = |event| AppEvent::Conversation {
+        event: ConversationEvent::Agent {
             turn: TurnId::numbered(1),
             event,
         },
@@ -2055,8 +2103,8 @@ fn a_chat_turn_waits_on_the_background_while_its_main_agent_rests() {
         })
     };
     let mut state = AppState::default();
-    state.apply(&AppEvent::Chat {
-        event: ChatEvent::TurnStarted {
+    state.apply(&AppEvent::Conversation {
+        event: ConversationEvent::TurnStarted {
             turn: turn.clone(),
             text: "count in the background".into(),
             worker: worker("claude-code", "opus"),
@@ -2087,38 +2135,47 @@ fn a_chat_turn_waits_on_the_background_while_its_main_agent_rests() {
     state.apply(&running(&["task-a"]));
     state.apply(&result());
     assert!(
-        !state.chat.waits_on_background(),
+        !state.conversation.waits_on_background(),
         "a command left running is no agent, and Esc still stops the turn"
     );
     state.apply(&writes());
     state.apply(&agent(SubagentStatus::Running));
-    assert!(!state.chat.waits_on_background(), "the main agent works");
+    assert!(
+        !state.conversation.waits_on_background(),
+        "the main agent works"
+    );
     state.apply(&result());
-    assert!(state.chat.waits_on_background());
+    assert!(state.conversation.waits_on_background());
     // A subagent's own text doesn't wake the main agent.
     state.apply(&said(AgentEvent::TextDelta {
         text: "three hundred".into(),
         parent: Some("toolu_a".into()),
     }));
-    assert!(state.chat.waits_on_background());
+    assert!(state.conversation.waits_on_background());
     state.apply(&writes());
-    assert!(!state.chat.waits_on_background(), "it started again");
+    assert!(
+        !state.conversation.waits_on_background(),
+        "it started again"
+    );
     state.apply(&result());
     state.apply(&running(&[]));
-    assert!(!state.chat.waits_on_background(), "nothing runs now");
+    assert!(
+        !state.conversation.waits_on_background(),
+        "nothing runs now"
+    );
     state.apply(&running(&["task-b"]));
-    assert!(state.chat.waits_on_background());
+    assert!(state.conversation.waits_on_background());
     state.apply(&agent(SubagentStatus::Done));
     assert!(
-        !state.chat.waits_on_background(),
+        !state.conversation.waits_on_background(),
         "its agent is done, and only a command runs"
     );
     state.apply(&agent(SubagentStatus::Running));
-    state.apply(&AppEvent::Chat {
-        event: ChatEvent::TurnCancelled { turn },
+    state.apply(&AppEvent::Conversation {
+        event: ConversationEvent::TurnCancelled { turn },
     });
-    assert!(!state.chat.waits_on_background());
-    assert_eq!(state.chat.background, 0);
+    assert!(!state.conversation.waits_on_background());
+    assert_eq!(state.conversation.background, 0);
 }
 
 /// A page published with Claude Code's Artifact tool is recorded when its call finishes, by
@@ -2142,8 +2199,8 @@ fn published_artifacts_are_kept_with_who_published_them() {
     };
     let published = |file: &str, url: &str| format!("Published {file} at {url} (Version 1)");
 
-    let chat = |event| AppEvent::Chat { event };
-    let turn = |n: u32| ChatEvent::TurnStarted {
+    let conversation = |event| AppEvent::Conversation { event };
+    let turn = |n: u32| ConversationEvent::TurnStarted {
         turn: TurnId::numbered(n),
         text: "write it up".into(),
         worker: worker("claude-code", "opus"),
@@ -2154,14 +2211,14 @@ fn published_artifacts_are_kept_with_who_published_them() {
         continues: false,
     };
     let said = |n: u32, event| {
-        chat(ChatEvent::Agent {
+        conversation(ConversationEvent::Agent {
             turn: TurnId::numbered(n),
             event,
         })
     };
     let mut state = AppState::default();
     assert_eq!(state.artifacts.line_part(), None);
-    state.apply(&chat(turn(1)));
+    state.apply(&conversation(turn(1)));
     state.apply(&said(1, started("t1", "out/weekly-usage-chart.html")));
     assert!(state.artifacts.is_empty(), "nothing until it's published");
     let refused = finished(
@@ -2183,7 +2240,7 @@ fn published_artifacts_are_kept_with_who_published_them() {
     state.apply(&said(1, done));
     assert_eq!(state.artifacts.line_part(), Some(("weekly-usage-chart", 0)));
     // The next turn forgets the last one's calls, and the page stays.
-    state.apply(&chat(turn(2)));
+    state.apply(&conversation(turn(2)));
     assert_eq!(state.artifacts.all().len(), 1);
     assert_eq!(state.artifacts.all()[0].by, None);
 
@@ -2224,15 +2281,15 @@ fn published_artifacts_are_kept_with_who_published_them() {
         .collect();
     assert_eq!(names, ["test-report", "weekly-usage-chart"]);
 
-    state.apply(&AppEvent::ChatCleared);
+    state.apply(&AppEvent::ConversationCleared);
     assert!(state.artifacts.is_empty(), "a new conversation has none");
 
     // A conversation carried on brings its own pages back, in place of what was held.
     state.apply(&said(3, started("t4", "out/test-report.html")));
     let done = finished("t4", true, published("out/test-report.html", report));
     state.apply(&said(3, done));
-    state.apply(&AppEvent::ChatResumed {
-        chat: argonauts_core::names::ChatId::numbered(1),
+    state.apply(&AppEvent::ConversationResumed {
+        conversation: argonauts_core::names::ConversationId::numbered(1),
         title: "write it up".into(),
         worker: None,
         earlier: Vec::new(),
@@ -2253,14 +2310,14 @@ fn published_artifacts_are_kept_with_who_published_them() {
 fn the_conversation_counts_the_lines_its_edits_changed_once() {
     let mut state = AppState::default();
     let turn = TurnId::numbered(1);
-    let chat = |event| AppEvent::Chat { event };
+    let conversation = |event| AppEvent::Conversation { event };
     let agent = |event| {
-        chat(ChatEvent::Agent {
+        conversation(ConversationEvent::Agent {
             turn: turn.clone(),
             event,
         })
     };
-    state.apply(&chat(ChatEvent::TurnStarted {
+    state.apply(&conversation(ConversationEvent::TurnStarted {
         turn: turn.clone(),
         text: "tidy it".into(),
         worker: worker("claude-code", "opus"),

@@ -90,7 +90,7 @@ pub(crate) enum Event {
     },
     Phase(String),
     Log(String),
-    /// A judge kept one of several attempts.
+    /// A judge kept one of several tries.
     Keep(Value),
     Ended(Result<Value, ScriptEnd>),
 }
@@ -124,12 +124,12 @@ pub(crate) struct Sandbox {
 }
 
 impl Sandbox {
-    /// Starts the script. `spent` is the token count `budget.spent()` reads.
+    /// Starts the script. `spent` is the token count `limit.spent()` reads.
     pub fn start(
         script: &Script,
         args: Value,
         limits: &Limits,
-        budget: Option<u64>,
+        limit: Option<u64>,
         spent: Arc<AtomicU64>,
     ) -> Result<Self, ScriptEnd> {
         let (events_out, events) = unbounded_channel();
@@ -140,7 +140,7 @@ impl Sandbox {
             steps: script.runs_steps(),
             args,
             limits: limits.clone(),
-            budget,
+            limit,
             spent,
             stop: Arc::clone(&stop),
             events: events_out,
@@ -176,7 +176,7 @@ struct Job {
     steps: bool,
     args: Value,
     limits: Limits,
-    budget: Option<u64>,
+    limit: Option<u64>,
     spent: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     events: UnboundedSender<Event>,
@@ -299,7 +299,7 @@ impl Job {
         limits.set("items", self.limits.items).map_err(said)?;
         // Tokens as a JavaScript number, which holds every count a run could reach.
         limits
-            .set("budget", self.budget.map(|tokens| tokens as f64))
+            .set("limit", self.limit.map(|tokens| tokens as f64))
             .map_err(said)?;
         let prelude: Function = ctx.eval(PRELUDE).map_err(said)?;
         let doors: Object = prelude
@@ -366,7 +366,7 @@ impl Job {
                     "workflow" => return call(CallKind::Workflow, payload),
                     "spent" => return spent.load(Ordering::Relaxed).to_string(),
                     "phase" => {
-                        let _ = events.send(Event::Phase(text("title")));
+                        let _ = events.send(Event::Phase(text("name")));
                     }
                     "log" => {
                         let _ = events.send(Event::Log(text("message")));

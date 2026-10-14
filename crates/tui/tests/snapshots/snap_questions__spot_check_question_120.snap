@@ -1,0 +1,14 @@
+---
+source: crates/tui/tests/snap_questions.rs
+expression: text(&lines)
+---
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Spot check · Merge this run into main?
+  Approved merging run-01 into main · decided by your rules
+
+  Was this the right call?
+    1. Agree
+    2. Overrule
+    3. Show the evidence
+
+  ↑ to answer

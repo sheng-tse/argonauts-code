@@ -1,4 +1,4 @@
-//! The settings reloader the approval policy calls at each checkpoint: the three files as they
+//! The settings reloader the approval policy calls at each approval: the three files as they
 //! are now, with the trust `trusted.json` holds now, plus exactly the overrides `start.json`
 //! recorded, resolved with the `interactive` flag recorded beside them.
 
@@ -83,17 +83,17 @@ mod tests {
             run: RunId::new("run-20260930-010000-0001").unwrap(),
             request: StartRun {
                 request: "tidy the readme".to_owned(),
-                mode: RunMode::Solo,
+                mode: RunMode::Captain,
                 forced: true,
                 estimate: None,
-                triage: None,
-                chat_turn: None,
+                captain_or_crew: None,
+                conversation_turn: None,
                 continues: None,
                 overrides: Vec::new(),
                 include_uncommitted: false,
                 main_agent: None,
                 approval_mode: None,
-                front_end: None,
+                outside_agent: None,
                 instructions: Vec::new(),
                 request_settings: Vec::new(),
                 required_steps: Vec::new(),
@@ -106,7 +106,7 @@ mod tests {
         }
     }
 
-    /// A replay's goal and plan checkpoints follow your rules at every reload, whatever your
+    /// A replay's goal and plan approvals follow your rules at every reload, whatever your
     /// files say, so the stricter of the two never puts them back in your hands. Your other
     /// approval settings reload as they are.
     #[test]
@@ -117,17 +117,20 @@ mod tests {
         let mut recorded = record(&env, &[], false);
         let sink = Arc::new(MemorySink::new(recorded.run.clone()));
         let yours = reloader(&env, &recorded, sink.clone())().unwrap();
-        // Your goal checkpoint also asks a reviewer model; a replay's uses rules only.
+        // Your Understand approval also asks a reviewer model; a replay's uses rules only.
         assert_eq!(
-            (yours.approvals.goal.mode, yours.approvals.goal.decide_with),
+            (
+                yours.approvals.understand.mode,
+                yours.approvals.understand.decide_with
+            ),
             (ApprovalMode::Auto, DecideWith::RulesAndModel)
         );
         recorded.replay = true;
         let replay = reloader(&env, &recorded, sink)().unwrap();
         for (mode, with) in [
             (
-                replay.approvals.goal.mode,
-                replay.approvals.goal.decide_with,
+                replay.approvals.understand.mode,
+                replay.approvals.understand.decide_with,
             ),
             (
                 replay.approvals.plan.mode,
@@ -137,7 +140,7 @@ mod tests {
             assert_eq!((mode, with), (ApprovalMode::Auto, DecideWith::Rules));
         }
         assert_eq!(replay.approvals.merge, yours.approvals.merge);
-        assert_eq!(replay.approvals.escalation, yours.approvals.escalation);
+        assert_eq!(replay.approvals.stuck, yours.approvals.stuck);
     }
 
     #[test]
@@ -153,28 +156,28 @@ mod tests {
         let reload = reloader(&env, &recorded, sink.clone());
 
         let first = reload().unwrap();
-        assert_eq!(first.runs.remind_parked_days, 3);
+        assert_eq!(first.runs.remind_waiting_days, 3);
         assert_eq!(
-            first.limits.budget.spend_per_run,
+            first.limits.spend.spend_per_run,
             Some(5.0),
             "a safety override recorded as vetted still resolves"
         );
 
         std::fs::write(
             env.global_config(),
-            "[supervisor]\nwait_grace = \"45s\"\n\n[runs]\nremind_waiting_days = 9\n",
+            "[run_host]\nwait_grace = \"45s\"\n\n[runs]\nremind_waiting_days = 9\n",
         )
         .unwrap();
         let second = reload().unwrap();
         assert_eq!(
-            second.supervisor.park_grace.0, "45s",
+            second.run_host.wait_grace.0, "45s",
             "a file change shows up"
         );
         assert_eq!(
-            second.runs.remind_parked_days, 3,
+            second.runs.remind_waiting_days, 3,
             "the recorded override still wins over the file"
         );
-        assert_eq!(second.limits.budget.spend_per_run, Some(5.0));
+        assert_eq!(second.limits.spend.spend_per_run, Some(5.0));
 
         assert!(sink.events().is_empty());
 

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{RecipeRef, ReplayResult};
+use crate::types::{LearnedWorkflowRef, ReplayResult};
 
 /// The one-sided p-value a sign test must beat for the replay to stop at an interim look.
 const INTERIM_P: f64 = 0.001;
@@ -54,8 +54,8 @@ impl StoppingRule {
         &self,
         tasks: &[String],
         results: &[ReplayResult],
-        parent: &RecipeRef,
-        child: &RecipeRef,
+        parent: &LearnedWorkflowRef,
+        child: &LearnedWorkflowRef,
     ) -> Verdict {
         let pairs = self.pairs(tasks, results, parent, child);
         if self.gain(&pairs, Outlook::SoFar) >= self.margin {
@@ -70,8 +70,8 @@ impl StoppingRule {
         &self,
         tasks: &[String],
         results: &[ReplayResult],
-        parent: &RecipeRef,
-        child: &RecipeRef,
+        parent: &LearnedWorkflowRef,
+        child: &LearnedWorkflowRef,
     ) -> Option<Verdict> {
         let pairs = self.pairs(tasks, results, parent, child);
         let best = self.gain(&pairs, Outlook::Best);
@@ -98,17 +98,17 @@ impl StoppingRule {
     pub fn dropped(
         task: &str,
         results: &[ReplayResult],
-        parent: &RecipeRef,
-        child: &RecipeRef,
+        parent: &LearnedWorkflowRef,
+        child: &LearnedWorkflowRef,
     ) -> bool {
-        let first = |recipe: &RecipeRef| {
+        let first = |learned_workflow: &LearnedWorkflowRef| {
             results
                 .iter()
                 .find(|result| {
                     !result.holdout
                         && result.task == task
-                        && result.attempt == 1
-                        && &result.recipe == recipe
+                        && result.try_number == 1
+                        && &result.learned_workflow == learned_workflow
                 })
                 .map(|result| result.passed)
         };
@@ -119,8 +119,8 @@ impl StoppingRule {
         &self,
         tasks: &[String],
         results: &[ReplayResult],
-        parent: &RecipeRef,
-        child: &RecipeRef,
+        parent: &LearnedWorkflowRef,
+        child: &LearnedWorkflowRef,
     ) -> Vec<Pairs> {
         let runs = self.runs_per_task.max(1);
         tasks
@@ -134,15 +134,15 @@ impl StoppingRule {
                     },
                     ..Pairs::default()
                 };
-                for attempt in 1..=runs {
-                    let passed = |recipe: &RecipeRef| {
+                for try_number in 1..=runs {
+                    let passed = |learned_workflow: &LearnedWorkflowRef| {
                         results
                             .iter()
                             .find(|result| {
                                 !result.holdout
                                     && &result.task == task
-                                    && result.attempt == attempt
-                                    && &result.recipe == recipe
+                                    && result.try_number == try_number
+                                    && &result.learned_workflow == learned_workflow
                             })
                             .map(|result| result.passed)
                     };

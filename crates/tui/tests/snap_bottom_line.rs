@@ -8,7 +8,7 @@ use argonauts_core::settings::bottom_line::{BottomLineSettings, LineForm};
 use argonauts_tui::bottom::ModeState;
 use argonauts_tui::bridge::bottom_line::{Sample, SampleCli, preview};
 use argonauts_tui::model::{
-    ApprovalMode, BottomLine, CliState, CliUse, LinePart, ModeLine, WindowUse,
+    ApprovalMode, BottomLine, BottomRow, CliState, CliUse, LinePart, WindowUse,
 };
 use argonauts_tui::theme::{ColorLevel, Role};
 use common::{row_text, still, styled, theme, theme_at};
@@ -61,9 +61,9 @@ fn line(form: LineForm, mut clis: Vec<CliUse>) -> BottomLine {
 }
 
 fn row(line: &BottomLine, theme: &argonauts_tui::theme::Theme, width: u16) -> Line<'static> {
-    let mode = ModeLine {
+    let mode = BottomRow {
         approval: ApprovalMode::Auto,
-        ..ModeLine::default()
+        ..BottomRow::default()
     };
     let state = ModeState {
         line: Some(line),

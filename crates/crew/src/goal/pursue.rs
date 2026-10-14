@@ -8,41 +8,42 @@
 //! the same failure `goal.stuck_after` rounds running changes approach once, and stuck again
 //! the goal stops and says why. On autopilot it never asks.
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::card::{CardKind, CardSpec};
-use argonauts_core::events::checkpoint::{
-    AnswerAction, AnswerOption, CheckpointKind, CheckpointPacket, FreeText, GoalPacket,
+use argonauts_core::events::approval::{
+    AnswerAction, AnswerOption, ApprovalKind, ApprovalPacket, FreeText, GoalPacket,
 };
 use argonauts_core::events::goal::{
-    Attempt, ChoiceOption, Criterion, Decider, GoalAction, GoalChecked, GoalEvent, GoalFile,
-    GoalQuestion, GoalRun, GoalStatus, GoalVerdict,
+    ChoiceOption, Criterion, Decider, GoalAction, GoalChecked, GoalEvent, GoalFile, GoalQuestion,
+    GoalRun, GoalStatus, GoalVerdict, Try,
 };
-use argonauts_core::events::run::{ParkReason, Party, RunMode, RunOutcome};
+use argonauts_core::events::run::{Party, RunMode, RunOutcome, WaitReason};
+use argonauts_core::events::task::{TaskKind, TaskSpec};
 use argonauts_core::events::workflow::{RunNote, StepEnd, WorkflowEvent};
 use argonauts_core::goal::keep::{self, Limits, Next};
 use argonauts_core::goal::{
     CheckMeans, CheckWith, GoalDefault, GoalFrom, GoalScope, GoalSpec, KeptBy,
 };
-use argonauts_core::names::{RoleName, WorkerRef, WorkflowId};
+use argonauts_core::names::{ModelRef, RoleName, WorkflowId};
 use argonauts_core::policy::EvidenceFacts;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::AtHardLimit;
-use argonauts_core::settings::budget::BudgetUnit;
-use argonauts_core::steps::goal::DiffTag;
-use argonauts_core::steps::pursue::{AttemptPlan, PlanAttempt, PlanAttemptInput};
+use argonauts_core::settings::limit::LimitUnit;
+use argonauts_core::steps::pursue::{PlanTry, PlanTryInput, TryPlan};
+use argonauts_core::steps::understand::DiffTag;
 use argonauts_core::workflow::{Phase, StandardPhase, StepKind, Workflow};
 
-use crate::checkpoints::{self, CheckpointRequest};
+use crate::approvals::{self, ApprovalRequest};
+use crate::captain;
 use crate::engine::host::{Ask, Host};
 use crate::error::{EngineError, EngineResult};
-use crate::prompts::goal::ATTEMPT;
+use crate::prompts::goal::NEXT_TRY;
 use crate::roles;
-use crate::solo;
 use crate::state::RunState;
+use crate::understand::{draft, file};
 use crate::workflow::{Flow, StepCall, StepDone, change, runner, shape, yaml};
 
-use super::{check, draft, file};
+use super::check;
 
 pub const KEEP_GOING: &str = "Keep going as a goal?";
 pub const KEEP: &str = "Keep going as a goal";
@@ -52,11 +53,11 @@ pub const KEEP_TRYING: &str = "Keep trying";
 pub const DELIVER: &str = "Deliver what holds";
 pub const STOP: &str = "Stop and keep the branch";
 pub const TURN_INTO_GOAL: &str = "Turn this run into a goal?";
-pub const OVER_BUDGET: &str = "The goal is over its limit. What now?";
+pub const OVER_LIMIT: &str = "The goal is over its limit. What now?";
 pub const CHECK_WHEN_IT_ENDS: &str = "Yes, and check it when this workflow ends";
 
 /// Whether a goal goes round the run's workflow: one it started with (`goal.until`, or
-/// `goal.default = "from-request"`), or one it took on the way. A solo run's goal is its one
+/// `goal.default = "from-request"`), or one it took on the way. A Captain run's goal is its one
 /// task's instead, kept in `task`.
 pub fn pursuing(state: &RunState, settings: &Settings) -> bool {
     state.goal.pursuit.is_some()
@@ -86,11 +87,11 @@ pub fn configured(settings: &Settings) -> Option<GoalSpec> {
 /// Whether the run's later phases are its goal's rounds, which the orchestrator plans from each
 /// check rather than at phase ends: true once a round has been checked.
 pub fn plans_its_rounds(state: &RunState) -> bool {
-    state.goal.pursuit.as_ref().is_some_and(|goal| {
-        goal.attempts
-            .iter()
-            .any(|attempt| attempt.verdict.is_some())
-    })
+    state
+        .goal
+        .pursuit
+        .as_ref()
+        .is_some_and(|goal| goal.tries.iter().any(|a_try| a_try.verdict.is_some()))
 }
 
 /// The goal's lines: its own once it's set, else the ones the settings give, else the
@@ -99,7 +100,7 @@ pub fn criteria(state: &RunState, settings: &Settings) -> Vec<Criterion> {
     spec(state, settings).lines
 }
 
-/// The done-when list before a goal pursues it: the lead's, else the approved goal file's.
+/// The done-when list before a goal pursues it: the main agent's, else the approved goal file's.
 pub fn planned_criteria(state: &RunState) -> Vec<Criterion> {
     let brief = state
         .run
@@ -186,7 +187,7 @@ pub(super) fn limits(state: &RunState, settings: &Settings) -> Limits {
 /// Whatever shaped the workflow, a goal nothing has checked gets its check before Merge.
 /// Returns true when that changed the phases ahead, this one maybe among them, so the runner
 /// looks at them again.
-pub fn begin_attempt(host: &Host, id: &WorkflowId, phase: u32) -> EngineResult<bool> {
+pub fn begin_try(host: &Host, id: &WorkflowId, phase: u32) -> EngineResult<bool> {
     let root = host.read(|state| {
         state
             .workflows
@@ -211,18 +212,18 @@ pub fn begin_attempt(host: &Host, id: &WorkflowId, phase: u32) -> EngineResult<b
             return None;
         }
         let definition = state.workflows.by_id.get(id)?.phase_definition(phase)?;
-        if !shape::is_attempt(definition) {
+        if !shape::is_try(definition) {
             return None;
         }
-        if goal.attempts.iter().any(|attempt| attempt.phase == phase) {
+        if goal.tries.iter().any(|a_try| a_try.phase == phase) {
             return None;
         }
-        let n = u32::try_from(goal.attempts.len()).unwrap_or(u32::MAX) + 1;
+        let n = u32::try_from(goal.tries.len()).unwrap_or(u32::MAX) + 1;
         Some((definition.name.clone(), n))
     }) else {
         return Ok(false);
     };
-    attempt_started(host, n, title, phase)?;
+    try_started(host, n, title, phase)?;
     Ok(false)
 }
 
@@ -235,14 +236,14 @@ const TURNED_INTO_GOAL: &str =
 fn owes_a_check(state: &RunState) -> Option<&'static str> {
     let judged = |round: Option<u32>| {
         state.goal.checks.iter().any(|checked| {
-            checked.task.is_none() && round.is_none_or(|round| checked.attempt == round)
+            checked.task.is_none() && round.is_none_or(|round| checked.try_number == round)
         })
     };
     let Some(goal) = &state.goal.pursuit else {
         return (turned_into_goal(state) && !judged(None)).then_some(TURNED_INTO_GOAL);
     };
     let kept = matches!(goal.status, GoalStatus::Pursuing | GoalStatus::Paused);
-    let newest = goal.attempts.last().map_or(1, |attempt| attempt.n);
+    let newest = goal.tries.last().map_or(1, |a_try| a_try.n);
     (kept && !judged(Some(newest))).then_some(CHECKED_BEFORE_MERGE)
 }
 
@@ -264,7 +265,7 @@ fn check_before_merge(host: &Host, id: &WorkflowId, phase: u32) -> EngineResult<
     let ahead = workflow.phases.iter().skip(phase as usize);
     if ahead
         .clone()
-        .any(|phase| shape::has_kind(&phase.steps, StepKind::Check))
+        .any(|phase| shape::has_kind(&phase.steps, StepKind::GoalCheck))
     {
         return Ok(false);
     }
@@ -306,11 +307,11 @@ pub(super) fn take_goal(host: &Host, phase: u32) -> EngineResult<bool> {
 /// A workflow file's `goal =`, with its `check = [...]` in `spec.commands`: the run takes
 /// `spec` as its goal whatever the settings say, and the workflow is round 1 from `phase`. For
 /// the workflow runner, before the workflow's first step. Returns false, and changes nothing,
-/// for a run that already has a goal and for a solo run, whose goal is its one task's.
+/// for a run that already has a goal and for a Captain run, whose goal is its one task's.
 pub fn around(host: &Host, spec: &GoalSpec, phase: u32) -> EngineResult<bool> {
     let Some(title) = host.read(|state| {
         let takes = state.goal.pursuit.is_none()
-            && runner::run_mode(state) != Some(RunMode::Solo)
+            && runner::run_mode(state) != Some(RunMode::Captain)
             && !spec.lines.is_empty();
         takes.then(|| workflow_title(state))
     }) else {
@@ -334,14 +335,14 @@ fn set(host: &Host, goal: GoalRun, title: String, phase: u32) -> EngineResult<()
         RunEventKind::Goal(GoalEvent::Set(Box::new(goal))),
     )?;
     note(host, format!("Goal set · {stated}"))?;
-    attempt_started(host, 1, title, phase)
+    try_started(host, 1, title, phase)
 }
 
-pub(super) fn attempt_started(host: &Host, n: u32, title: String, phase: u32) -> EngineResult<()> {
+pub(super) fn try_started(host: &Host, n: u32, title: String, phase: u32) -> EngineResult<()> {
     host.record(
         None,
         None,
-        RunEventKind::Goal(GoalEvent::AttemptStarted {
+        RunEventKind::Goal(GoalEvent::TryStarted {
             n,
             title,
             phase,
@@ -365,8 +366,8 @@ fn workflow_title(state: &RunState) -> String {
 /// whether to keep going.
 pub async fn check_step(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     let settings = host.settings();
-    if host.read(runner::run_mode) == Some(RunMode::Solo) {
-        return Ok(StepDone::skipped("a solo run's checks are its check"));
+    if host.read(runner::run_mode) == Some(RunMode::Captain) {
+        return Ok(StepDone::skipped("a Captain run's checks are its check"));
     }
     let goal_run = host.read(|state| pursuing(state, settings));
     if !goal_run && !settings.workflows.final_check && !host.read(turned_into_goal) {
@@ -376,14 +377,14 @@ pub async fn check_step(host: &Host, call: &StepCall) -> EngineResult<StepDone> 
     if goal_run {
         take_goal(host, call.at.step.phase)?;
     }
-    let (goal, attempt) = host.read(|state| {
-        let attempt = state
+    let (goal, try_number) = host.read(|state| {
+        let try_number = state
             .goal
             .pursuit
             .as_ref()
-            .and_then(|goal| goal.attempts.last())
-            .map_or(1, |attempt| attempt.n);
-        (spec(state, settings), attempt)
+            .and_then(|goal| goal.tries.last())
+            .map_or(1, |a_try| a_try.n);
+        (spec(state, settings), try_number)
     });
     if goal.lines.is_empty() {
         return Ok(StepDone::skipped("there's no done-when list to check"));
@@ -395,30 +396,26 @@ pub async fn check_step(host: &Host, call: &StepCall) -> EngineResult<StepDone> 
             .checks
             .iter()
             .rev()
-            .find(|checked| checked.attempt == attempt && checked.task.is_none())
+            .find(|checked| checked.try_number == try_number && checked.task.is_none())
             .cloned()
     });
     let checked = match recorded {
         Some(checked) => checked,
-        None => check::judge(host, call, attempt, &goal).await?,
+        None => check::judge(host, call, try_number, &goal).await?,
     };
     if host.read(|state| state.goal.pursuit.is_some()) {
-        after_attempt(host, call, &checked).await
+        after_try(host, call, &checked).await
     } else {
         after_final_check(host, call, &checked).await
     }
 }
 
 /// A round was checked: the goal holds, the next round, a change of approach, or it stops.
-async fn after_attempt(
-    host: &Host,
-    call: &StepCall,
-    checked: &GoalChecked,
-) -> EngineResult<StepDone> {
+async fn after_try(host: &Host, call: &StepCall, checked: &GoalChecked) -> EngineResult<StepDone> {
     let (rounds, status, next) = host.read(|state| {
         let goal = state.goal.pursuit.as_ref();
         (
-            goal.map_or(1, |goal| goal.attempts.len()),
+            goal.map_or(1, |goal| goal.tries.len()),
             goal.map(|goal| goal.status),
             keep::next(
                 &state.goal.checks_of(None),
@@ -430,7 +427,7 @@ async fn after_attempt(
     let total = checked.verdicts.len();
     let met = check::met_count(&checked.verdicts);
     if checked.overall == GoalVerdict::Met {
-        status_changed(host, GoalStatus::Met, Party::Conductor, None)?;
+        status_changed(host, GoalStatus::Met, Party::ArgonautsCode, None)?;
         let rounds = match rounds {
             1 => "1 round".to_owned(),
             n => format!("{n} rounds"),
@@ -449,8 +446,8 @@ async fn after_attempt(
             "Goal paused · {met} of {total} met · Merge takes what holds if every check passes"
         )));
     }
-    if let Some(spent) = host.read(over_budget) {
-        return when_over_budget(host, call, checked, &spent).await;
+    if let Some(spent) = host.read(over_limit) {
+        return when_over_limit(host, call, checked, &spent).await;
     }
     match next {
         Next::Stop { why } => return when_stuck(host, call, checked, &why).await,
@@ -459,7 +456,7 @@ async fn after_attempt(
                 None,
                 None,
                 RunEventKind::Goal(GoalEvent::ApproachChanged {
-                    after: checked.attempt,
+                    after: checked.try_number,
                     why: why.clone(),
                     task: None,
                 }),
@@ -471,25 +468,22 @@ async fn after_attempt(
         }
         Next::Again | Next::Met => {}
     }
-    next_attempt(host, call, checked).await?;
+    next_try(host, call, checked).await?;
     Ok(StepDone::done(format!("Not yet met · {met} of {total}")))
 }
 
-/// The run's budget is spent: `$0.61 of $0.50`. Only a budget in dollars is checked here; the
-/// cards' own limits stop them as they go.
-fn over_budget(state: &RunState) -> Option<String> {
-    let budget = state.run.budget.as_ref()?;
-    let limit = budget.limit.as_ref()?;
-    (limit.unit == BudgetUnit::Usd && budget.spent.cost_usd >= limit.amount).then(|| {
-        format!(
-            "${:.2} of ${:.2} spent",
-            budget.spent.cost_usd, limit.amount
-        )
-    })
+/// The run's limit is spent: `$0.61 of $0.50`. Only a limit in dollars is checked here; the
+/// tasks' own limits stop them as they go.
+fn over_limit(state: &RunState) -> Option<String> {
+    let spend = state.run.spend.as_ref()?;
+    let limit = spend.limit.as_ref()?;
+    (limit.unit == LimitUnit::Usd && spend.spent.cost_usd >= limit.amount)
+        .then(|| format!("${:.2} of ${:.2} spent", spend.spent.cost_usd, limit.amount))
 }
 
-/// Over budget is a hard limit: it asks you whatever the mode, to deliver what holds or stop.
-async fn when_over_budget(
+/// A goal over its limit is a hard limit: it asks you whatever the mode, to deliver what holds or
+/// stop.
+async fn when_over_limit(
     host: &Host,
     call: &StepCall,
     checked: &GoalChecked,
@@ -497,8 +491,8 @@ async fn when_over_budget(
 ) -> EngineResult<StepDone> {
     status_changed(
         host,
-        GoalStatus::OverBudget,
-        Party::Conductor,
+        GoalStatus::OverLimit,
+        Party::ArgonautsCode,
         Some(spent.to_owned()),
     )?;
     let met = check::met_count(&checked.verdicts);
@@ -508,8 +502,8 @@ async fn when_over_budget(
     let answer = choose(
         host,
         call,
-        OVER_BUDGET,
-        Topic::HardLimit("budget"),
+        OVER_LIMIT,
+        Topic::HardLimit("limit"),
         &[DELIVER, STOP],
         &why,
     )
@@ -539,7 +533,7 @@ async fn when_stuck(
     status_changed(
         host,
         GoalStatus::Stuck,
-        Party::Conductor,
+        Party::ArgonautsCode,
         Some(why.to_owned()),
     )?;
     note(host, format!("The goal is stuck: {why}"))?;
@@ -550,7 +544,7 @@ async fn when_stuck(
     match answer.as_str() {
         KEEP_TRYING => {
             status_changed(host, GoalStatus::Pursuing, Party::User, None)?;
-            next_attempt(host, call, checked).await?;
+            next_try(host, call, checked).await?;
             Ok(StepDone::done(format!(
                 "Goal stuck · {met} of {total} met · one more round"
             )))
@@ -606,7 +600,7 @@ async fn after_final_check(
     match answer.as_str() {
         KEEP => {
             keep_going(host, call, checked)?;
-            next_attempt(host, call, checked).await?;
+            next_try(host, call, checked).await?;
             Ok(StepDone::done(format!(
                 "{met} of {total} met · keeps going as a goal"
             )))
@@ -620,7 +614,7 @@ async fn after_final_check(
     }
 }
 
-/// The workflow becomes attempt 1 of a goal with its done-when list, on the same branch.
+/// The workflow becomes try 1 of a goal with its done-when list, on the same branch.
 fn keep_going(host: &Host, call: &StepCall, checked: &GoalChecked) -> EngineResult<()> {
     if host.read(|state| state.goal.pursuit.is_some()) {
         return Ok(());
@@ -629,8 +623,8 @@ fn keep_going(host: &Host, call: &StepCall, checked: &GoalChecked) -> EngineResu
         let spec = spec(state, host.settings());
         let mut goal = GoalRun::new(&spec, GoalScope::Workflow, KeptBy::Argonauts);
         goal.max_rounds = goal.max_rounds.or(host.settings().goal.max_rounds);
-        goal.attempts = vec![Attempt {
-            n: checked.attempt,
+        goal.tries = vec![Try {
+            n: checked.try_number,
             title: workflow_title(state),
             phase: call.at.step.phase,
             verdict: Some(checked.overall),
@@ -654,12 +648,12 @@ fn keep_going(host: &Host, call: &StepCall, checked: &GoalChecked) -> EngineResu
 /// The orchestrator plans the next round from what the check found failing, and it's added
 /// before Merge. An answer that doesn't make a valid phase gives way to the usual round, with a
 /// note.
-async fn next_attempt(host: &Host, call: &StepCall, checked: &GoalChecked) -> EngineResult<()> {
+async fn next_try(host: &Host, call: &StepCall, checked: &GoalChecked) -> EngineResult<()> {
     let id = call.at.step.workflow.clone();
     let Some((workflow, from, input)) = host.read(|state| {
         let record = state.workflows.by_id.get(&id)?;
         let goal = state.goal.pursuit.as_ref()?;
-        let input = PlanAttemptInput {
+        let input = PlanTryInput {
             goal: goal.objective.clone(),
             criteria: goal.criteria.clone(),
             last_check: Some(argonauts_core::steps::pursue::GoalCheck {
@@ -667,20 +661,20 @@ async fn next_attempt(host: &Host, call: &StepCall, checked: &GoalChecked) -> En
                 overall: checked.overall,
                 reason: checked.reason.clone(),
             }),
-            attempts: goal
-                .attempts
+            tries: goal
+                .tries
                 .iter()
-                .map(|attempt| {
-                    let verdict = match attempt.verdict {
+                .map(|a_try| {
+                    let verdict = match a_try.verdict {
                         Some(GoalVerdict::Met) => "met",
                         Some(GoalVerdict::Impossible) => "can't be met",
                         Some(GoalVerdict::NotYet) => "not yet",
                         None => "not checked",
                     };
-                    format!("{}. {}: {verdict}", attempt.n, attempt.title)
+                    format!("{}. {}: {verdict}", a_try.n, a_try.title)
                 })
                 .collect(),
-            change_approach: state.goal.stuck_at.contains(&checked.attempt).then(|| {
+            change_approach: state.goal.stuck_at.contains(&checked.try_number).then(|| {
                 "The same failure came back round after round. Plan this round another \
                      way: a different fix, or a different worker."
                     .to_owned()
@@ -689,39 +683,39 @@ async fn next_attempt(host: &Host, call: &StepCall, checked: &GoalChecked) -> En
         Some((record.workflow.clone(), record.change_from(), input))
     }) else {
         return Err(EngineError::Refused(
-            "there's no goal to plan an attempt for".to_owned(),
+            "there's no goal to plan a try for".to_owned(),
         ));
     };
-    let n = u32::try_from(input.attempts.len()).unwrap_or(u32::MAX) + 1;
+    let n = u32::try_from(input.tries.len()).unwrap_or(u32::MAX) + 1;
     let planned = host
-        .ask::<PlanAttempt>(Ask {
+        .ask::<PlanTry>(Ask {
             slot: n,
             ..Ask::new(
                 Some(call.at.clone()),
-                RoleName::PhaseLead,
-                change::lead(host),
-                ATTEMPT,
+                RoleName::TieBreaker,
+                change::tie_breaker(host),
+                NEXT_TRY,
                 input,
             )
         })
         .await;
     let mut problem = None;
     let phase = match planned {
-        Ok(answered) => match attempt_from_plan(&answered.output, n) {
+        Ok(answered) => match try_from_plan(&answered.output, n) {
             Ok(phase) => phase,
             Err(why) => {
                 problem = Some(why);
-                shape::attempt_phase(n, title_of(&answered.output))
+                shape::try_phase(n, name_of(&answered.output))
             }
         },
         Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
         Err(err) => {
             problem = Some(err.to_string());
-            shape::attempt_phase(n, None)
+            shape::try_phase(n, None)
         }
     };
-    let phase = unique_title(&workflow, phase);
-    let mut proposed = with_attempt(&workflow, from, phase.clone());
+    let phase = unique_name(&workflow, phase);
+    let mut proposed = with_try(&workflow, from, phase.clone());
     if let Err(errors) = runner::check(host, &proposed, 0) {
         problem = Some(
             errors
@@ -730,10 +724,10 @@ async fn next_attempt(host: &Host, call: &StepCall, checked: &GoalChecked) -> En
                 .collect::<Vec<_>>()
                 .join("; "),
         );
-        proposed = with_attempt(
+        proposed = with_try(
             &workflow,
             from,
-            unique_title(&workflow, shape::attempt_phase(n, Some(&phase.name))),
+            unique_name(&workflow, shape::try_phase(n, Some(&phase.name))),
         );
     }
     if let Some(problem) = problem {
@@ -748,7 +742,7 @@ async fn next_attempt(host: &Host, call: &StepCall, checked: &GoalChecked) -> En
     let unmet: Vec<&str> = check::unmet(&checked.verdicts).collect();
     let reason = format!(
         "check:{} found {} met, so round {n} aims at {}",
-        checked.attempt,
+        checked.try_number,
         check::met_count(&checked.verdicts),
         if unmet.is_empty() {
             "what the check said is missing".to_owned()
@@ -759,37 +753,37 @@ async fn next_attempt(host: &Host, call: &StepCall, checked: &GoalChecked) -> En
     change::record(host, &id, proposed, None, reason)
 }
 
-/// The workflow with `attempt` added at `at`, before Merge.
-fn with_attempt(workflow: &Workflow, at: u32, attempt: Phase) -> Workflow {
+/// The workflow with the try's `phase` added at `at`, before Merge.
+fn with_try(workflow: &Workflow, at: u32, phase: Phase) -> Workflow {
     let mut proposed = workflow.clone();
     let at = (at as usize).min(proposed.phases.len());
-    proposed.phases.insert(at, attempt);
+    proposed.phases.insert(at, phase);
     proposed
 }
 
-/// The first attempt the lead planned with the goal, in its brief.
-pub fn first_attempt(plan: &AttemptPlan) -> Result<Phase, String> {
-    attempt_from_plan(plan, 1)
+/// The first try the main agent planned with the goal, in its brief.
+pub fn first_try(plan: &TryPlan) -> Result<Phase, String> {
+    try_from_plan(plan, 1)
 }
 
-/// The lead's attempt as a phase that ends with its check.
-fn attempt_from_plan(plan: &AttemptPlan, n: u32) -> Result<Phase, String> {
+/// The main agent's try as a phase that ends with its check.
+fn try_from_plan(plan: &TryPlan, n: u32) -> Result<Phase, String> {
     let steps = if plan.steps.trim().is_empty() {
         Vec::new()
     } else {
         yaml::parse_steps(&plan.steps)?
     };
-    let usual = shape::attempt_phase(n, None);
+    let usual = shape::try_phase(n, None);
     let steps = if steps
         .iter()
-        .any(|step| !matches!(step.kind, StepKind::Merge | StepKind::Check))
+        .any(|step| !matches!(step.kind, StepKind::Merge | StepKind::GoalCheck))
     {
         steps
     } else {
         usual.steps
     };
     Ok(shape::with_check(Phase {
-        name: title_of(plan).map_or(usual.name, str::to_owned),
+        name: name_of(plan).map_or(usual.name, str::to_owned),
         detail: match plan.detail.trim() {
             "" => usual.detail,
             detail => detail.to_owned(),
@@ -799,12 +793,12 @@ fn attempt_from_plan(plan: &AttemptPlan, n: u32) -> Result<Phase, String> {
     }))
 }
 
-fn title_of(plan: &AttemptPlan) -> Option<&str> {
-    Some(plan.title.trim()).filter(|title| !title.is_empty() && title.len() <= 40)
+fn name_of(plan: &TryPlan) -> Option<&str> {
+    Some(plan.name.trim()).filter(|name| !name.is_empty() && name.len() <= 40)
 }
 
-/// A title no earlier phase has, so each attempt is its own row.
-fn unique_title(workflow: &Workflow, mut phase: Phase) -> Phase {
+/// A name no earlier phase has, so each try is its own row.
+fn unique_name(workflow: &Workflow, mut phase: Phase) -> Phase {
     let taken = |name: &str| workflow.phases.iter().any(|phase| phase.name == name);
     if taken(&phase.name) {
         let base = phase.name.clone();
@@ -820,12 +814,12 @@ fn unique_title(workflow: &Workflow, mut phase: Phase) -> Phase {
 /// The task round `n` builds when the orchestrator planned no tasks of its own: the whole goal,
 /// aimed at what the last check found failing, on top of what earlier rounds merged. After a
 /// change of approach, another provider's model takes it.
-pub fn attempt_card(state: &RunState, host: &Host) -> EngineResult<CardSpec> {
-    let mut spec = solo::card(state, host)?;
+pub fn try_task(state: &RunState, host: &Host) -> EngineResult<TaskSpec> {
+    let mut spec = captain::task(state, host)?;
     let Some(goal) = &state.goal.pursuit else {
         return Ok(spec);
     };
-    let Some(attempt) = goal.attempts.last() else {
+    let Some(last_try) = goal.tries.last() else {
         return Ok(spec);
     };
     let last = state.goal.checks_of(None).last().copied();
@@ -838,7 +832,7 @@ pub fn attempt_card(state: &RunState, host: &Host) -> EngineResult<CardSpec> {
         .collect();
     let mut task = format!(
         "{}\n\nThe goal: {}\n\nThis is round {}. Make these hold:\n",
-        spec.task, goal.objective, attempt.n
+        spec.task, goal.objective, last_try.n
     );
     for criterion in &unmet {
         task.push_str(&format!("- {}: {}\n", criterion.id, criterion.text));
@@ -846,42 +840,42 @@ pub fn attempt_card(state: &RunState, host: &Host) -> EngineResult<CardSpec> {
     if let Some(checked) = last {
         task.push_str(&format!("\nThe last check said: {}\n", checked.reason));
     }
-    let changed = state.goal.stuck_at.contains(&attempt.n.saturating_sub(1));
+    let changed = state.goal.stuck_at.contains(&last_try.n.saturating_sub(1));
     if changed {
         task.push_str(
             "\nThe same failure came back round after round. Take a different approach this \
              time.\n",
         );
     }
-    spec.id = attempt_card_id(attempt.n);
-    spec.title = attempt.title.clone();
+    spec.id = try_task_id(last_try.n);
+    spec.title = last_try.title.clone();
     spec.task = task;
-    spec.kind = CardKind::Solo;
+    spec.kind = TaskKind::Captain;
     spec.criteria = unmet.iter().map(|criterion| criterion.id.clone()).collect();
-    if changed && let Some(other) = other_provider(host, spec.owner.as_ref()) {
-        spec.owner = Some(other);
+    if changed && let Some(other) = other_provider(host, spec.worker.as_ref()) {
+        spec.worker = Some(other);
         spec.reviewers.clear();
     }
     Ok(spec)
 }
 
-pub fn attempt_card_id(n: u32) -> CardId {
-    CardId::new(format!("attempt-{n}")).unwrap_or_else(|_| CardId::numbered(n))
+pub fn try_task_id(n: u32) -> TaskId {
+    TaskId::new(format!("try-{n}")).unwrap_or_else(|_| TaskId::numbered(n))
 }
 
-/// The first crew member from another company than `owner`.
-fn other_provider(host: &Host, owner: Option<&WorkerRef>) -> Option<WorkerRef> {
-    let owner = owner?;
-    let family = roles::family(host, owner);
+/// The first crew member from another provider than `worker`.
+fn other_provider(host: &Host, worker: Option<&ModelRef>) -> Option<ModelRef> {
+    let worker = worker?;
+    let provider = roles::provider(host, worker);
     host.settings()
         .crew
         .members()
         .into_iter()
-        .find(|worker| worker != owner && roles::family(host, worker) != family)
+        .find(|model| model != worker && roles::provider(host, model) != provider)
 }
 
 /// What a question is about: one the crew's answerer takes, or a hard limit, which comes to you
-/// in every mode but full auto.
+/// in every mode but autopilot.
 #[derive(Debug, Clone, Copy)]
 enum Topic<'a> {
     Crew(&'a str),
@@ -896,11 +890,11 @@ fn topic_of(topic: &str, hard_limit: bool) -> Topic<'_> {
     }
 }
 
-/// Asks whoever answers the crew's questions to pick one of `options`, the recommended first.
-/// The lead takes the recommended one and says so; you get a choose-only card, unless the topic
-/// is one `approvals.ask_you_about` keeps yours. In full auto nothing waits for you: the lead
-/// answers, and a hard limit does what `approvals.goal.at_hard_limit` says, which stops it
-/// unless that's `park`.
+/// Asks whoever answers the crew's questions to pick one of `options`, the recommended first. The
+/// main agent takes the recommended one and says so; you get a choose-only question, unless the
+/// topic is one `approvals.ask_you_about` keeps yours. In autopilot nothing waits for you: the main
+/// agent answers, and a hard limit does what `approvals.understand.at_hard_limit` says, which stops
+/// it unless that's `wait`.
 async fn choose(
     host: &Host,
     call: &StepCall,
@@ -914,11 +908,11 @@ async fn choose(
         Topic::Crew(topic) => (topic, false),
         Topic::HardLimit(topic) => (topic, true),
     };
-    let autopilot = checkpoints::autopilot::applies_now(host, CheckpointKind::Goal);
+    let autopilot = approvals::autopilot::applies_now(host, ApprovalKind::Understand);
     if autopilot
         && hard_limit
-        && checkpoints::configured(host.settings(), CheckpointKind::Goal).at_hard_limit
-            != AtHardLimit::Park
+        && approvals::configured(host.settings(), ApprovalKind::Understand).at_hard_limit
+            != AtHardLimit::Wait
         && let Some(stop) = options.iter().find(|option| **option == STOP)
     {
         answered(host, question, stop, Decider::Rules)?;
@@ -926,14 +920,14 @@ async fn choose(
             host,
             format!(
                 "Autopilot stopped at the goal's {topic}, a hard limit, and kept the branch, as \
-                 approvals.goal.at_hard_limit says"
+                 approvals.understand.at_hard_limit says"
             ),
         )?;
         return Ok((*stop).to_owned());
     }
-    let yours = hard_limit || checkpoints::keeps_yours(host, CheckpointKind::Goal, &[topic]);
-    if !yours && checkpoints::answerer(host, CheckpointKind::Goal).answers_for_you() {
-        answered(host, question, &recommended, Decider::Lead)?;
+    let yours = hard_limit || approvals::keeps_yours(host, ApprovalKind::Understand, &[topic]);
+    if !yours && approvals::answerer(host, ApprovalKind::Understand).answers_for_you() {
+        answered(host, question, &recommended, Decider::MainAgent)?;
         note(
             host,
             format!(
@@ -980,12 +974,12 @@ async fn choose(
         recommended: false,
         detail: None,
     });
-    let request = CheckpointRequest {
+    let request = ApprovalRequest {
         at: Some(call.at.clone()),
-        kind: CheckpointKind::Goal,
+        kind: ApprovalKind::Understand,
         title: question.to_owned(),
-        card: None,
-        packet: CheckpointPacket::Goal(GoalPacket {
+        task: None,
+        packet: ApprovalPacket::Understand(GoalPacket {
             goal,
             agreements: Vec::new(),
             assumptions: Vec::new(),
@@ -1010,18 +1004,18 @@ async fn choose(
     };
     let opening = if hard_limit {
         let because = format!("the {topic} is a hard limit, so it comes to you in every mode");
-        checkpoints::open_yours(host, request, because)?
+        approvals::open_yours(host, request, because)?
     } else if yours {
-        let because = checkpoints::yours_because(&format!("{topic} questions"));
-        checkpoints::open_yours(host, request, because)?
+        let because = approvals::yours_because(&format!("{topic} questions"));
+        approvals::open_yours(host, request, because)?
     } else {
         let because = "you answer the crew's questions".to_owned();
-        checkpoints::open_because(host, request, Some(because))?
+        approvals::open_because(host, request, Some(because))?
     };
     let decided = match opening.decided_or_withdrawn(host).await? {
         Ok(decided) => decided,
-        // Full auto came on while it waited for you, so it's answered as full auto answers it.
-        Err(left) if left == checkpoints::autopilot::LEFT_TO_THE_LEAD => {
+        // Autopilot came on while it waited for you, so it's answered as autopilot answers it.
+        Err(left) if left == approvals::autopilot::LEFT_TO_THE_MAIN_AGENT => {
             return Box::pin(choose(
                 host,
                 call,
@@ -1047,7 +1041,7 @@ async fn choose(
         host,
         question,
         &answer,
-        super::checkpoint::decider(&decided.by),
+        crate::understand::approval::decider(&decided.by),
     )?;
     Ok(answer)
 }
@@ -1179,7 +1173,7 @@ pub async fn act(host: &Host, action: GoalAction) -> Result<(), String> {
                 }),
             )
             .map_err(refused)?;
-            // Working agents hear it now; the next attempt or phase end plans with it.
+            // Working agents hear it now; the next try or phase end plans with it.
             crate::blackboard::commands::guidance(
                 host,
                 format!("You changed an assumption. It was: {was}. It is now: {to}."),
@@ -1192,7 +1186,7 @@ pub async fn act(host: &Host, action: GoalAction) -> Result<(), String> {
 
 /// `e` on a goal: its lines as you rewrote them, each with the check `goal.check` gives it.
 /// The tries so far stay, and the next check reads the new lines.
-fn edit_lines(host: &Host, task: Option<&CardId>, lines: &[String]) -> Result<(), String> {
+fn edit_lines(host: &Host, task: Option<&TaskId>, lines: &[String]) -> Result<(), String> {
     let Some(mut goal) = host.read(|state| state.goal.goal_of(task).cloned()) else {
         return Err("there's no goal here to change".to_owned());
     };
@@ -1213,14 +1207,14 @@ fn edit_lines(host: &Host, task: Option<&CardId>, lines: &[String]) -> Result<()
     Ok(())
 }
 
-/// The run parks: a goal being pursued is paused, by you or by a usage limit, until it goes on.
-pub fn on_park(host: &Host, reason: &ParkReason) -> EngineResult<()> {
+/// The run waits: a goal being pursued is paused, by you or by a usage limit, until it goes on.
+pub fn on_wait(host: &Host, reason: &WaitReason) -> EngineResult<()> {
     let by = match reason {
-        ParkReason::Checkpoint => return Ok(()),
-        ParkReason::Paused => Party::User,
-        ParkReason::AllVendorsOut { .. }
-        | ParkReason::WaitingForVendor { .. }
-        | ParkReason::NoStandIn { .. } => Party::Conductor,
+        WaitReason::Approval => return Ok(()),
+        WaitReason::Paused => Party::User,
+        WaitReason::AllAgentsOut { .. }
+        | WaitReason::WaitingForAgent { .. }
+        | WaitReason::NoFallback { .. } => Party::ArgonautsCode,
     };
     let pursuing = host.read(|state| {
         state
@@ -1235,10 +1229,10 @@ pub fn on_park(host: &Host, reason: &ParkReason) -> EngineResult<()> {
     Ok(())
 }
 
-/// The run goes on after a park: a goal the park paused is pursued again. One you paused
+/// The run goes on after a wait: a goal the wait paused is pursued again. One you paused
 /// yourself waits for `/goal resume`.
 pub fn on_resume(host: &Host) -> EngineResult<()> {
-    let parked = host.read(|state| {
+    let waiting = host.read(|state| {
         state
             .goal
             .pursuit
@@ -1246,13 +1240,13 @@ pub fn on_resume(host: &Host) -> EngineResult<()> {
             .is_some_and(|goal| goal.status == GoalStatus::Paused)
             && !paused_by_you(state)
     });
-    if parked {
+    if waiting {
         status_changed(host, GoalStatus::Pursuing, Party::User, None)?;
     }
     Ok(())
 }
 
-/// Why a goal you paused is paused, which tells it from one a parked run paused.
+/// Why a goal you paused is paused, which tells it from one a waiting run paused.
 pub const YOU_PAUSED: &str = "you paused it";
 
 fn paused_by_you(state: &RunState) -> bool {
@@ -1306,70 +1300,70 @@ pub(super) fn note(host: &Host, text: String) -> EngineResult<()> {
 mod tests {
     use super::*;
 
-    fn plan(title: &str, steps: &str) -> AttemptPlan {
-        AttemptPlan {
-            title: title.to_owned(),
+    fn plan(name: &str, steps: &str) -> TryPlan {
+        TryPlan {
+            name: name.to_owned(),
             detail: "one worker fixes it".to_owned(),
             steps: steps.to_owned(),
         }
     }
 
     #[test]
-    fn the_leads_attempt_ends_with_its_check_and_never_merges() {
+    fn the_main_agents_try_ends_with_its_check_and_never_merges() {
         let steps = "- { kind: build, input: goal, label: \"fix:empty\" }\n- { kind: merge }\n";
-        let phase = attempt_from_plan(&plan("Empty List", steps), 2).unwrap();
+        let phase = try_from_plan(&plan("Empty List", steps), 2).unwrap();
         assert_eq!(phase.name, "Empty List");
         let kinds: Vec<StepKind> = phase.steps.iter().map(|step| step.kind).collect();
-        assert_eq!(kinds, [StepKind::Build, StepKind::Check]);
-        assert!(shape::is_attempt(&phase));
+        assert_eq!(kinds, [StepKind::Build, StepKind::GoalCheck]);
+        assert!(shape::is_try(&phase));
     }
 
     #[test]
-    fn an_empty_plan_runs_the_usual_attempt() {
-        let phase = attempt_from_plan(&plan("", ""), 3).unwrap();
-        assert_eq!(phase.name, "Attempt 3");
-        assert_eq!(phase.steps[0].input.as_deref(), Some(crate::card::GOAL));
-        assert!(attempt_from_plan(&plan("Fix", "- { kind: nonsense }"), 3).is_err());
+    fn an_empty_plan_runs_the_usual_try() {
+        let phase = try_from_plan(&plan("", ""), 3).unwrap();
+        assert_eq!(phase.name, "Try 3");
+        assert_eq!(phase.steps[0].input.as_deref(), Some(crate::task::GOAL));
+        assert!(try_from_plan(&plan("Fix", "- { kind: nonsense }"), 3).is_err());
     }
 
     #[test]
-    fn a_goal_is_over_budget_once_its_dollars_are_spent() {
-        use argonauts_core::budget::Spend;
-        use argonauts_core::events::vendor::RunBudget;
-        use argonauts_core::settings::budget::BudgetAmount;
-        let budget = |spent: f64| RunBudget {
+    fn a_goal_is_over_limit_once_its_dollars_are_spent() {
+        use argonauts_core::events::agent_status::RunSpend;
+        use argonauts_core::meter::Spend;
+        use argonauts_core::settings::limit::LimitAmount;
+        let spend = |spent: f64| RunSpend {
             spent: Spend {
                 cost_usd: spent,
                 ..Spend::default()
             },
-            limit: Some(BudgetAmount {
-                unit: BudgetUnit::Usd,
+            limit: Some(LimitAmount {
+                unit: LimitUnit::Usd,
                 amount: 0.5,
             }),
             lines: Vec::new(),
             reserve_left: None,
         };
         let mut state = RunState::default();
-        assert_eq!(over_budget(&state), None);
-        state.run.budget = Some(budget(0.61));
-        assert_eq!(over_budget(&state).as_deref(), Some("$0.61 of $0.50 spent"));
-        state.run.budget = Some(budget(0.2));
-        assert_eq!(over_budget(&state), None);
+        assert_eq!(over_limit(&state), None);
+        state.run.spend = Some(spend(0.61));
+        assert_eq!(over_limit(&state).as_deref(), Some("$0.61 of $0.50 spent"));
+        state.run.spend = Some(spend(0.2));
+        assert_eq!(over_limit(&state), None);
     }
 
     #[test]
-    fn each_attempt_has_its_own_title() {
+    fn each_try_has_its_own_title() {
         let workflow = Workflow {
             name: "w".to_owned(),
             description: String::new(),
             based_on: None,
             params: Default::default(),
             phases: vec![
-                shape::attempt_phase(1, Some("Fix")),
-                shape::attempt_phase(2, Some("Fix 2")),
+                shape::try_phase(1, Some("Fix")),
+                shape::try_phase(2, Some("Fix 2")),
             ],
         };
-        let phase = unique_title(&workflow, shape::attempt_phase(3, Some("Fix")));
+        let phase = unique_name(&workflow, shape::try_phase(3, Some("Fix")));
         assert_eq!(phase.name, "Fix 3");
     }
 }

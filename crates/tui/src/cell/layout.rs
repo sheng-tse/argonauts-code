@@ -54,18 +54,18 @@ pub(crate) const EXPAND_HINT: &str = " (ctrl+o to expand)";
 
 /// A narrow row drops the expand hint rather than cut it.
 pub(crate) fn more_row(
-    lead: Vec<Span<'static>>,
+    opening: Vec<Span<'static>>,
     theme: &Theme,
     hidden: usize,
     expandable: bool,
     width: usize,
 ) -> Line<'static> {
     let mut text = more_lines(theme, hidden);
-    let used = lead.iter().map(Span::width).sum::<usize>();
+    let used = opening.iter().map(Span::width).sum::<usize>();
     if expandable && used + str_width(&text) + str_width(EXPAND_HINT) <= width {
         text.push_str(EXPAND_HINT);
     }
-    let mut row = lead;
+    let mut row = opening;
     row.push(Span::styled(text, theme.style(Role::Dim)));
     Line::from(row)
 }

@@ -1,7 +1,7 @@
 //! What a script asks the host for, and what the host answers.
 
 use argonauts_core::canonical_json;
-use argonauts_core::events::session::VendorWorkflow;
+use argonauts_core::events::session::CliWorkflowRun;
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::sha256_hex;
 use futures::future::BoxFuture;
@@ -19,15 +19,16 @@ pub struct AgentCall {
     /// ran as a step.
     pub index: u32,
     /// Its row in the workflow's report, from 1. Rows fill in the order agents queue, which
-    /// can differ between two runs of the same script, so nothing is kept by it.
+    /// can be different between two runs of the same script, so nothing is kept by it.
     pub row: u32,
     /// What its row is called, such as `build:add-due`.
     pub label: String,
     pub phase: Option<String>,
     /// The role whose CLI and model run it.
     pub role: CrewRole,
-    /// Which of the role's seats, from 0, when a step starts several at once.
-    pub seat: u32,
+    /// Which of the role's models takes it, from 0, when a step starts several at once and
+    /// the call names no model of its own.
+    pub model_index: u32,
     pub prompt: String,
     /// The JSON Schema its answer must fit. Without one the answer is its final text.
     pub schema: Option<Value>,
@@ -43,10 +44,10 @@ pub struct AgentCall {
     pub writes: bool,
     /// It mustn't be the agent that built the task.
     pub not_the_author: bool,
-    /// It doesn't see what its peers made.
+    /// It doesn't see what the others made.
     pub independent: bool,
     /// 1 the first time. Counts up when the work is sent back or a goal doesn't hold yet.
-    pub attempt: u32,
+    pub try_number: u32,
     /// The goal its step keeps it to, and who keeps it (`cli` or `argonauts`).
     pub until: Option<String>,
     pub kept_by: Option<String>,
@@ -64,9 +65,9 @@ struct Asked {
     label: Option<String>,
     phase: Option<String>,
     role: Option<String>,
-    seat: Option<u32>,
     schema: Option<Value>,
-    model: Option<String>,
+    /// Which of the role's models, as a number from 0, or one of its own as `cli/model`.
+    model: Option<Value>,
     effort: Option<String>,
     task: Option<String>,
     isolation: Option<String>,
@@ -75,7 +76,7 @@ struct Asked {
     not_the_author: bool,
     #[serde(default)]
     independent: bool,
-    attempt: Option<u32>,
+    try_number: Option<u32>,
     until: Option<String>,
     kept_by: Option<String>,
     #[serde(default)]
@@ -96,11 +97,12 @@ impl AgentCall {
         let role = match named.map(str::parse::<CrewRole>) {
             Some(Ok(role)) => role,
             Some(Err(err)) if asked.role.is_some() => return Err(format!("agent(): {err}")),
-            _ => CrewRole::Workers,
+            _ => CrewRole::Worker,
         };
         if let Some(schema) = &asked.schema {
             check_schema(schema)?;
         }
+        let (model_index, model) = model_asked(asked.model)?;
         let label = asked.label.unwrap_or_else(|| match &asked.phase {
             Some(phase) => format!("{}:{index}", phase.to_lowercase().replace(' ', "-")),
             None => format!("{role}:{index}"),
@@ -111,23 +113,40 @@ impl AgentCall {
             label,
             phase: asked.phase,
             role,
-            seat: asked.seat.unwrap_or(0),
+            model_index,
             prompt: asked.prompt,
             schema: asked.schema,
-            model: asked.model,
+            model,
             effort: asked.effort,
             task: asked.task,
             worktree: asked.isolation.as_deref() == Some("worktree"),
             writes: role.writes() && asked.access.as_deref() != Some("read"),
             not_the_author: asked.not_the_author,
             independent: asked.independent,
-            attempt: asked.attempt.unwrap_or(1).max(1),
+            try_number: asked.try_number.unwrap_or(1).max(1),
             until: asked.until,
             kept_by: asked.kept_by,
             required: asked.required,
             own_workflow: asked.own_workflow,
             agent_type: asked.agent_type,
         })
+    }
+}
+
+/// A call's `model`: a number picks one of its role's models, and a name is a model of its own.
+fn model_asked(model: Option<Value>) -> Result<(u32, Option<String>), String> {
+    match model {
+        None | Some(Value::Null) => Ok((0, None)),
+        Some(Value::String(name)) => Ok((0, Some(name))),
+        Some(Value::Number(number)) => match number.as_u64().map(u32::try_from) {
+            Some(Ok(index)) => Ok((index, None)),
+            _ => Err(format!(
+                "agent(): model {number} isn't one of the role's models, counted from 0"
+            )),
+        },
+        Some(other) => Err(format!(
+            "agent(): model is a number counted from 0 or a name such as 'codex/gpt-5.6', not {other}"
+        )),
     }
 }
 
@@ -203,7 +222,7 @@ pub struct Check {
     pub label: Option<String>,
     pub kept_by: Option<String>,
     /// Which try of the step this follows, from 1.
-    pub attempt: Option<u32>,
+    pub try_number: Option<u32>,
     /// Which round of the whole file this follows, from 1.
     pub round: Option<u32>,
     /// Its place among the script's calls, from 0, which is the same when a run picks the
@@ -223,13 +242,13 @@ pub struct Checked {
     pub stop: bool,
 }
 
-/// One attempt a judge kept of several.
+/// One try a judge kept of several.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Kept {
-    /// The step whose attempts were compared.
+    /// The step whose tries were compared.
     pub step: String,
-    /// The seat kept, from 0.
-    pub seat: u32,
+    /// Which of the step's models made the one kept, from 0.
+    pub model_index: u32,
     /// The label of the agent that made it.
     pub label: String,
     #[serde(default)]
@@ -282,18 +301,18 @@ pub trait Host: Sync {
     fn replayed(&self, _call: &AgentCall) {}
 
     /// The whole state of the workflow, on every change.
-    fn report(&self, _workflow: &VendorWorkflow) {}
+    fn report(&self, _workflow: &CliWorkflowRun) {}
 
     /// A line the script logged.
     fn log(&self, _message: &str) {}
 
-    /// A judge kept one attempt of several.
+    /// A judge kept one try of several.
     fn keep(&self, _kept: &Kept) {}
 
     /// A call that just finished, to save for a later resume.
     fn journal(&self, _entry: &JournalEntry) {}
 
-    /// Tokens the run has used so far, which `budget.spent()` reads.
+    /// Tokens the run has used so far, which `limit.spent()` reads.
     fn tokens_spent(&self) -> u64 {
         0
     }
@@ -315,35 +334,54 @@ mod tests {
     fn an_agent_call_reads_its_role_and_gets_a_label() {
         let call = AgentCall::read(
             3,
-            &json!({"prompt": "review it", "role": "reviewers", "phase": "Sign Off", "task": "add-due",
+            &json!({"prompt": "review it", "role": "reviewer", "phase": "Sign Off", "task": "add-due",
                     "notTheAuthor": true, "isolation": "worktree"}),
         )
         .expect("reads");
-        assert_eq!(call.role, CrewRole::Reviewers);
+        assert_eq!(call.role, CrewRole::Reviewer);
         assert_eq!(call.label, "sign-off:3");
         assert!(call.not_the_author && call.worktree);
         assert!(!call.writes, "a reviewer reads");
-        assert_eq!(call.attempt, 1);
+        assert_eq!(call.try_number, 1);
         let plain = AgentCall::read(1, &json!({"prompt": "do it"})).expect("reads");
         assert_eq!(
             (plain.role, plain.label.as_str()),
-            (CrewRole::Workers, "workers:1")
+            (CrewRole::Worker, "worker:1")
         );
         assert!(plain.writes);
-        let planning = json!({"prompt": "propose a plan", "role": "workers", "access": "read"});
+        let planning = json!({"prompt": "propose a plan", "role": "worker", "access": "read"});
         assert!(!AgentCall::read(1, &planning).expect("reads").writes);
     }
 
     #[test]
     fn a_role_nobody_has_or_a_schema_nothing_fits_is_refused() {
-        let role = AgentCall::read(1, &json!({"prompt": "x", "role": "owner"})).unwrap_err();
+        let role = AgentCall::read(1, &json!({"prompt": "x", "role": "builder"})).unwrap_err();
         assert!(role.contains("unknown role"), "{role}");
-        // A kind of agent Claude Code knows and Argonauts doesn't is a worker.
+        // A kind of agent Claude Code knows and Argonauts Code doesn't is a worker.
         let typed = AgentCall::read(1, &json!({"prompt": "x", "agentType": "code-reviewer"}));
-        assert_eq!(typed.expect("reads").role, CrewRole::Workers);
+        assert_eq!(typed.expect("reads").role, CrewRole::Worker);
         let schema = json!({"type": "object", "properties": {"a": {}}, "required": ["b"]});
         let refused = AgentCall::read(1, &json!({"prompt": "x", "schema": schema})).unwrap_err();
         assert!(refused.contains("requires b"), "{refused}");
+    }
+
+    #[test]
+    fn a_call_picks_one_of_its_roles_models_by_number_or_names_its_own() {
+        let call = |model: Value| AgentCall::read(1, &json!({"prompt": "x", "model": model}));
+        let second = call(json!(1)).expect("reads");
+        assert_eq!((second.model_index, second.model), (1, None));
+        let named = call(json!("codex/gpt-5.6")).expect("reads");
+        assert_eq!(
+            (named.model_index, named.model.as_deref()),
+            (0, Some("codex/gpt-5.6"))
+        );
+        let negative = call(json!(-1)).unwrap_err();
+        assert!(negative.contains("counted from 0"), "{negative}");
+        let listed = call(json!(["codex"])).unwrap_err();
+        assert!(
+            listed.contains("a number counted from 0 or a name"),
+            "{listed}"
+        );
     }
 
     #[test]

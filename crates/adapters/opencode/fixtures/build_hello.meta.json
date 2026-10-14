@@ -1,0 +1,17 @@
+{
+  "adapter": "opencode",
+  "synthetic": false,
+  "cli_version": "1.18.34",
+  "also_matches": [],
+  "program": "opencode",
+  "args": ["run", "--format", "json", "--model", "ollama/llama3.2", "--thinking"],
+  "stdin": "<prompt>",
+  "env_set": ["OPENCODE_DISABLE_AUTOUPDATE"],
+  "role": "build",
+  "model": "ollama/llama3.2",
+  "prompt": "Create a file named hello.txt containing the word hi. Then reply with: done",
+  "exit_code": 0,
+  "note": "llama3.2 wrote hello.txt into OpenCode's temp folder instead of the repo, and OpenCode let it: one reason sessions run in Argonauts' sandbox",
+  "how": "npm i opencode-ai into a scratch folder, a temp HOME whose opencode.json declares the ollama provider with llama3.2 at http://localhost:11434/v1, a throwaway git repo, and Ollama 0.20.3 serving llama3.2. No sandbox and no Argonauts: the command the adapter builds, run by hand",
+  "recorded": "2026-10-02"
+}

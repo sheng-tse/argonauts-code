@@ -1,4 +1,4 @@
-//! Antigravity CLI (`agy`) adapter for Argonauts.
+//! Antigravity CLI (`agy`) adapter for Argonauts Code.
 
 mod agents_file;
 mod banner;
@@ -12,7 +12,7 @@ mod tweaks;
 use std::path::Path;
 
 use argonauts_core::keywords::Keyword;
-use argonauts_core::limits::{QuotaAnswer, QuotaReading};
+use argonauts_core::limits::{PlanUsageAnswer, PlanUsageReading};
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
 use argonauts_core::{
     Adapter, Capabilities, CommandSpec, LaunchTweak, SessionRequest, SetupHints, StopPlan,
@@ -26,11 +26,14 @@ pub use parser::AgyStreamParser;
 
 pub const ADAPTER_ID: &str = "antigravity-cli";
 
-pub const CHEAPEST_MODEL: &str = "gemini-3.6-flash-low";
+/// agy 1.3.5 no longer knows the Gemini 3.6 levels its earlier releases ran.
+pub const CHEAPEST_MODEL: &str = "gemini-3.8-flash-low";
 
 pub const CHEAPEST_EFFORT: &str = "low";
 
-pub const TESTED_VERSIONS: &[&str] = &["1.2.13", "1.3.1"];
+/// The versions the recordings in `fixtures/` were made with or also match, oldest first,
+/// read from the `.meta.json` beside each recording when the crate is built.
+pub const TESTED_VERSIONS: &[&str] = include!(concat!(env!("OUT_DIR"), "/tested_versions.rs"));
 
 /// Words Antigravity CLI treats specially in a prompt: none in 1.2.16. Its rainbow belongs to
 /// the effort menu's max level, not to anything you type.
@@ -50,6 +53,25 @@ impl AntigravityCli {
         Self
     }
 }
+
+/// The `init` event, with what the parser takes from it.
+const STARTUP_MESSAGE: argonauts_core::adapter::StartupMessage =
+    argonauts_core::adapter::StartupMessage {
+        marker: r#""event":"init""#,
+        is: &[("/event", "init")],
+        fields: &[
+            argonauts_core::adapter::StartupField {
+                pointer: "/conversation_id",
+                what: "its session",
+                without: "its conversations can't be resumed",
+            },
+            argonauts_core::adapter::StartupField {
+                pointer: "/init/model",
+                what: "its model",
+                without: "the model it really ran can't be told from the one asked for",
+            },
+        ],
+    };
 
 impl Adapter for AntigravityCli {
     fn id(&self) -> &'static str {
@@ -92,7 +114,8 @@ impl Adapter for AntigravityCli {
         (CHEAPEST_MODEL, Some(CHEAPEST_EFFORT))
     }
 
-    /// agy ends a headless turn on SIGINT with status `INTERRUPTED`, then stops its background tasks.
+    /// agy ends a headless turn on SIGINT with status `INTERRUPTED`, then stops its background
+    /// tasks.
     fn stop_plan(&self) -> StopPlan {
         StopPlan::default()
     }
@@ -110,15 +133,19 @@ impl Adapter for AntigravityCli {
         Some(user_message_line(message))
     }
 
-    fn quota_probe(&self, workdir: &Path, model: Option<&str>) -> Option<CommandSpec> {
-        Some(probe::quota_probe_command(self.binary(), workdir, model))
+    fn plan_usage_probe(&self, workdir: &Path, model: Option<&str>) -> Option<CommandSpec> {
+        Some(probe::plan_usage_probe_command(
+            self.binary(),
+            workdir,
+            model,
+        ))
     }
 
-    fn parse_quota_probe(&self, stdout: &str) -> Option<QuotaReading> {
+    fn parse_plan_usage_probe(&self, stdout: &str) -> Option<PlanUsageReading> {
         probe::parse_usage(self.id(), stdout)
     }
 
-    fn parse_quota_probe_answer(&self, stdout: &str) -> Option<QuotaAnswer> {
+    fn parse_plan_usage_probe_answer(&self, stdout: &str) -> Option<PlanUsageAnswer> {
         probe::usage_answer(self.id(), stdout)
     }
 
@@ -149,9 +176,9 @@ impl Adapter for AntigravityCli {
     }
 
     /// agy also runs Claude and GPT-OSS models. The registry maps those model ids to their
-    /// own family.
-    fn default_family(&self) -> &'static str {
-        "gemini"
+    /// own provider.
+    fn default_provider(&self) -> &'static str {
+        "google"
     }
 
     /// agy has no command that reports login state without a model call.
@@ -173,6 +200,14 @@ impl Adapter for AntigravityCli {
 
     fn banner_account(&self, screen: &str) -> Option<argonauts_core::adapter::BannerAccount> {
         banner::account(screen)
+    }
+
+    fn updater_off_env(&self) -> &'static [(&'static str, &'static str)] {
+        &[(AUTO_UPDATE_ENV, AUTO_UPDATE_VALUE)]
+    }
+
+    fn startup_message(&self) -> Option<&'static argonauts_core::adapter::StartupMessage> {
+        Some(&STARTUP_MESSAGE)
     }
 }
 
@@ -196,7 +231,7 @@ mod tests {
     fn cheapest_model_is_flash_low() {
         assert_eq!(
             AntigravityCli.cheapest_model(),
-            ("gemini-3.6-flash-low", Some("low"))
+            ("gemini-3.8-flash-low", Some("low"))
         );
     }
 
@@ -206,7 +241,7 @@ mod tests {
         assert_eq!(adapter.version_args(), ["--version"]);
         assert_eq!(adapter.parse_version("1.2.13\n").as_deref(), Some("1.2.13"));
         assert_eq!(adapter.parse_version("garbage"), None);
-        assert!(adapter.tested_versions().contains(&"1.2.13"));
+        assert_eq!(adapter.tested_versions(), TESTED_VERSIONS);
     }
 
     #[test]
@@ -229,8 +264,8 @@ mod tests {
     }
 
     #[test]
-    fn no_gemini_cli_adapter_ids() {
-        // Gemini CLI is no longer an adapter; Google's harness is agy.
+    fn no_adapter_id_says_gemini() {
+        // Google's CLI is agy, and no id names the one before it.
         let adapter = AntigravityCli;
         for id in [adapter.id(), adapter.binary(), adapter.display_name()] {
             let lower = id.to_ascii_lowercase();
@@ -250,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn compaction_flags_per_harness() {
+    fn compaction_flags_per_cli() {
         let adapter = AntigravityCli;
         assert_eq!(
             adapter.compaction(Compaction::Inherit),
@@ -279,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn native_fanout_flags_per_harness() {
+    fn native_fanout_flags_per_cli() {
         let adapter = AntigravityCli;
         assert_eq!(
             adapter.native_fanout(NativeFanout::Limit { max: 3 }).effect,
@@ -352,9 +387,9 @@ mod tests {
     }
 
     #[test]
-    fn family_setup_and_probe() {
+    fn provider_setup_and_probe() {
         let adapter = AntigravityCli;
-        assert_eq!(adapter.default_family(), "gemini");
+        assert_eq!(adapter.default_provider(), "google");
         let hints = adapter.setup_hints();
         assert!(
             hints
@@ -364,9 +399,9 @@ mod tests {
         );
         assert_eq!(hints.login.as_deref(), Some("agy"));
         assert_eq!(hints.login_check, None);
-        let probe = adapter.quota_probe(Path::new("/w"), None).unwrap();
+        let probe = adapter.plan_usage_probe(Path::new("/w"), None).unwrap();
         assert_eq!(probe.args, ["-p", "/usage", "--output-format", "json"]);
-        assert!(adapter.parse_quota_probe("not json").is_none());
+        assert!(adapter.parse_plan_usage_probe("not json").is_none());
     }
 
     #[test]

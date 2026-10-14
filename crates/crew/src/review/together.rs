@@ -1,30 +1,30 @@
-//! Several fallbacks in one reviewer's seat (`[fallback.reviewers]` with `together` of 2 or
+//! Several fallbacks in one reviewer's place (`[fallback.reviewer]` with `together` of 2 or
 //! more). When the reviewer is out as its review starts, that many fallbacks review at once
-//! in its place. When it stops midway and one fallback takes its seat, the rest join once
+//! in its place. When it stops midway and one fallback takes its place, the rest join once
 //! that one has answered. `pick` says how their reviews count: `merge` folds them into one
-//! review that keeps every finding, and `judge` leaves them apart, so the adjudicator
-//! settles them when they disagree. A review passes no checks, so `first_passing` keeps
+//! review that keeps every finding, and `judge` leaves them apart, so the judge settles
+//! them when they disagree. A review passes no checks, so `first_passing` keeps
 //! every finding too.
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::card::ReviewEvent;
-use argonauts_core::names::{RoleName, WorkerRef};
-use argonauts_core::settings::handoff::Pick;
+use argonauts_core::events::task::ReviewEvent;
+use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::settings::fallback::Pick;
 use argonauts_core::steps::judgment::{ReviewComment, ReviewOutput, ReviewVerdict};
 use argonauts_core::{Note, NoteLevel};
 
 use crate::engine::host::Host;
-use crate::engine::stand_in::{self, Seat};
+use crate::engine::job_fallback::{self, Job};
 use crate::error::EngineResult;
-use crate::handoff::rules;
+use crate::fallback::rules;
 use crate::labels;
 use crate::roles::display_name;
 
-/// How many fallbacks take `reviewer`'s seat at once, and how their reviews count. `None`
-/// when its seat goes to one fallback at a time.
-pub(super) fn rules_for(host: &Host, reviewer: &WorkerRef) -> Option<(usize, Pick)> {
-    let applied = rules::applied(host, RoleName::Reviewer, &reviewer.vendor());
+/// How many fallbacks take `reviewer`'s place at once, and how their reviews count. `None`
+/// when its place goes to one fallback at a time.
+pub(super) fn rules_for(host: &Host, reviewer: &ModelRef) -> Option<(usize, Pick)> {
+    let applied = rules::applied(host, RoleName::Reviewer, &reviewer.agent_id());
     let together = usize::try_from(applied.together).unwrap_or(usize::MAX);
     let pick = applied
         .pick
@@ -33,43 +33,34 @@ pub(super) fn rules_for(host: &Host, reviewer: &WorkerRef) -> Option<(usize, Pic
 }
 
 /// The fallbacks that review in `reviewer`'s place from the start, when it's out already and
-/// its rules put several in its seat. Empty when its own review is asked as ever.
-pub(super) async fn from_the_start(
-    host: &Host,
-    seat: &Seat,
-    reviewer: &WorkerRef,
-) -> Vec<WorkerRef> {
+/// its rules put several in its place. Empty when its own review is asked as ever.
+pub(super) async fn from_the_start(host: &Host, job: &Job, reviewer: &ModelRef) -> Vec<ModelRef> {
     let Some((together, _)) = rules_for(host, reviewer) else {
         return Vec::new();
     };
-    if !stand_in::is_out(host, reviewer).await {
+    if !job_fallback::is_out(host, reviewer).await {
         return Vec::new();
     }
-    stand_in::together(host, seat, reviewer, &[], together)
+    job_fallback::together(host, job, reviewer, &[], together)
 }
 
-/// The fallbacks that join `first`, which took `reviewer`'s seat when it stopped midway.
+/// The fallbacks that join `first`, which took `reviewer`'s place when it stopped midway.
 pub(super) fn joining(
     host: &Host,
-    seat: &Seat,
-    reviewer: &WorkerRef,
-    first: &WorkerRef,
-) -> Vec<WorkerRef> {
+    job: &Job,
+    reviewer: &ModelRef,
+    first: &ModelRef,
+) -> Vec<ModelRef> {
     match rules_for(host, reviewer) {
-        Some((together, _)) => stand_in::together(host, seat, reviewer, &[first], together - 1),
+        Some((together, _)) => job_fallback::together(host, job, reviewer, &[first], together - 1),
         None => Vec::new(),
     }
 }
 
 /// The review `by` already gave in this round, found when the step is entered again.
-pub(super) fn given(
-    host: &Host,
-    card: &CardId,
-    round: u32,
-    by: &WorkerRef,
-) -> Option<ReviewOutput> {
+pub(super) fn given(host: &Host, task: &TaskId, round: u32, by: &ModelRef) -> Option<ReviewOutput> {
     host.read(|state| {
-        let reviews = &state.cards.get(card)?.reviews;
+        let reviews = &state.tasks.get(task)?.reviews;
         reviews.iter().find_map(|event| match event {
             ReviewEvent::Reviewed {
                 reviewer,
@@ -84,20 +75,20 @@ pub(super) fn given(
 
 /// `Sonnet 5.5 on Claude Code and GPT 5.6 on Codex both review build:add-due in place of
 /// Gemini 3.6 Pro on Antigravity CLI`, and how their reviews count. `more` are about to be
-/// asked beside `already`, who have the seat. Says nothing when the log has the review of
+/// asked beside `already`, who have the job. Says nothing when the log has the review of
 /// each of `more`, since it was said then.
 pub(super) fn say_who_reviews(
     host: &Host,
-    card: &CardId,
+    task: &TaskId,
     round: u32,
-    reviewer: &WorkerRef,
-    more: &[WorkerRef],
-    already: &[&WorkerRef],
+    reviewer: &ModelRef,
+    more: &[ModelRef],
+    already: &[&ModelRef],
 ) -> EngineResult<()> {
-    if more.iter().all(|by| given(host, card, round, by).is_some()) {
+    if more.iter().all(|by| given(host, task, round, by).is_some()) {
         return Ok(());
     }
-    let label = host.read(|state| labels::card_label(state, card));
+    let label = host.read(|state| labels::task_label(state, task));
     let names: Vec<String> = already
         .iter()
         .copied()
@@ -111,7 +102,7 @@ pub(super) fn say_who_reviews(
     };
     let pick = rules_for(host, reviewer).map_or(Pick::Merge, |(_, pick)| pick);
     let how = match pick {
-        Pick::Judge => "the adjudicator settles them if they disagree",
+        Pick::Judge => "the judge settles them if they disagree",
         Pick::Merge | Pick::FirstPassing => "every finding from each is kept",
     };
     let text = format!(
@@ -119,34 +110,34 @@ pub(super) fn say_who_reviews(
         display_name(reviewer)
     );
     let level = NoteLevel::Info;
-    host.record(Some(card), None, RunEventKind::Note(Note { level, text }))?;
+    host.record(Some(task), None, RunEventKind::Note(Note { level, text }))?;
     Ok(())
 }
 
-/// Every seat's reviews as they count toward the verdict, seat by seat in the order each
-/// was first reviewed.
-pub(super) fn counted_by_seat(
+/// Every reviewer's reviews as they count toward the verdict, reviewer by reviewer in the
+/// order each was first reviewed, those of the fallbacks that took a reviewer's place with it.
+pub(super) fn counted_by_reviewer(
     host: &Host,
-    reviews: Vec<(WorkerRef, WorkerRef, ReviewOutput)>,
+    reviews: Vec<(ModelRef, ModelRef, ReviewOutput)>,
 ) -> Vec<ReviewOutput> {
-    let mut seats: Vec<(WorkerRef, Vec<ReviewOutput>)> = Vec::new();
-    for (seat, _, review) in reviews {
-        match seats.iter_mut().find(|(known, _)| *known == seat) {
-            Some((_, of_seat)) => of_seat.push(review),
-            None => seats.push((seat, vec![review])),
+    let mut by_reviewer: Vec<(ModelRef, Vec<ReviewOutput>)> = Vec::new();
+    for (asked, _, review) in reviews {
+        match by_reviewer.iter_mut().find(|(known, _)| *known == asked) {
+            Some((_, theirs)) => theirs.push(review),
+            None => by_reviewer.push((asked, vec![review])),
         }
     }
-    seats
+    by_reviewer
         .into_iter()
-        .flat_map(|(seat, of_seat)| match rules_for(host, &seat) {
-            Some((_, pick)) => counted(of_seat, pick),
-            None => of_seat,
+        .flat_map(|(asked, theirs)| match rules_for(host, &asked) {
+            Some((_, pick)) => counted(theirs, pick),
+            None => theirs,
         })
         .collect()
 }
 
-/// What a seat's reviews count as: one review with every finding, or each as it is for the
-/// adjudicator to settle.
+/// What one reviewer's reviews count as: one review with every finding, or each as it is for the
+/// judge to settle.
 pub(super) fn counted(reviews: Vec<ReviewOutput>, pick: Pick) -> Vec<ReviewOutput> {
     match pick {
         Pick::Judge => reviews,
@@ -256,7 +247,7 @@ mod tests {
         );
         // A review passes no checks, so none is first.
         assert_eq!(counted(reviews.clone(), Pick::FirstPassing), counted_as);
-        // The judge's pick leaves them apart, for the adjudicator.
+        // The judge's pick leaves them apart, for the judge to settle.
         assert_eq!(counted(reviews.clone(), Pick::Judge), reviews);
     }
 }

@@ -4,7 +4,7 @@
 
 use argonauts_core::overview::{
     CliSource, ImportStatus, ModelDay, OverviewData, OverviewDay, OverviewModel, OverviewPeriod,
-    Tokens,
+    OwnCount, Tokens,
 };
 use time::macros::date;
 use time::{Date, Duration};
@@ -132,6 +132,50 @@ pub fn overview() -> OverviewData {
     ];
     data.subagent_tokens = data.total.total() * 64 / 100;
     data.longest_session_secs = 57 * 86_400 + 3 * 3600 + 20 * 60;
+    data
+}
+
+/// The numbers picture's example under the Overview picture's year of days: Claude Code's own
+/// count of 60.6b beside the 69.1b counted here, 147 days of history, and tokens that are
+/// nearly all read from cache, most of them Claude Code's.
+pub fn numbers() -> OverviewData {
+    let mut data = overview();
+    let ran = |agent: &str, model: &str, tokens: u64| OverviewModel {
+        agent: agent.to_owned(),
+        model: Some(model.to_owned()),
+        tokens: Tokens {
+            cache_read: tokens,
+            ..Tokens::default()
+        },
+        api_value: None,
+        sessions: 0,
+    };
+    data.models = vec![
+        ran("claude-code", "claude-opus-5-5", 42_151_000_000),
+        ran("claude-code", "claude-sonnet-5-5", 18_657_000_000),
+        ran("codex", "gpt-5.6", 8_015_600_000),
+        ran("antigravity-cli", "gemini-3.6-pro", 276_400_000),
+    ];
+    data.total = Tokens {
+        input: 69_100_000,
+        output: 207_300_000,
+        cache_read: 67_165_200_000,
+        cache_write: 1_658_400_000,
+    };
+    data.claude_stats = Some(OwnCount {
+        tokens: 60_600_000_000,
+        through: data.today - Duration::days(1),
+    });
+    data.api_value = 32_540.0;
+    data.active_days = 122;
+    data.span_days = 147;
+    data.streak = 20;
+    data.longest_streak = 41;
+    for (source, sessions) in data.sources.iter_mut().zip([300, 70, 14]) {
+        source.sessions = sessions;
+    }
+    data.subagent_tokens = data.total.total() * 64 / 100;
+    data.longest_session_secs = 57 * 86_400 + 23 * 3600 + 47 * 60;
     data
 }
 

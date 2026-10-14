@@ -4,10 +4,10 @@
 
 pub use crate::bottom::verbs::{VerbPicker, VerbStyle};
 pub use crate::bottom::{
-    Activity, AddedPart, AgentPanel, AgentRow, AgentState, ApprovalMode, BottomLine, BottomState,
-    CardAgent, CardChip, CardNote, CardOption, CardPrompt, Checklist, CliState, CliUse, Composer,
-    Hint, LinePart, MenuItem, Menus, ModeLine, ModeNotice, OptionKind, PartBody, VimMode,
-    WindowUse, WorkingLine,
+    Activity, AddedPart, AgentPanel, AgentRow, AgentState, ApprovalMode, BottomLine, BottomRow,
+    BottomState, Checklist, CliState, CliUse, Composer, Hint, LinePart, MenuItem, Menus,
+    ModeNotice, OptionKind, PartBody, QuestionAgent, QuestionChip, QuestionNote, QuestionOption,
+    QuestionPrompt, VimMode, WindowUse, WorkingLine,
 };
 pub use crate::cell::{
     AgentReady, AgentsStarted, AssistantMessage, Cell, CollapsedGroup, DiffCell, DiffHunk,
@@ -32,7 +32,7 @@ pub struct ViewModel {
     pub agent_colors: AgentColors,
     /// Each mod's own chord, from the mods the controller last sent.
     pub mod_chords: crate::mods::keys::Chords,
-    /// The text behind the newest failure in the chat, for `r` until something is typed.
+    /// The text behind the newest failure in the conversation, for `r` until something is typed.
     pub raw_failure: Option<crate::bridge::failure::RawFailure>,
 }
 

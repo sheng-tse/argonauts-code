@@ -1,0 +1,20 @@
+{
+  "run": "run-20261004-072329-63c3",
+  "request": {
+    "request": "hi",
+    "mode": "solo",
+    "forced": true,
+    "estimate": null,
+    "triage": null,
+    "chat_turn": null,
+    "continues": null,
+    "overrides": [],
+    "include_uncommitted": false,
+    "default_agent": "claude-code",
+    "approval_mode": null
+  },
+  "overrides": [],
+  "interactive": true,
+  "repo_root": "/Users/you/github/argonauts-code",
+  "created": "2026-10-04T07:23:29.882277Z"
+}

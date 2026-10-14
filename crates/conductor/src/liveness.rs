@@ -1,6 +1,6 @@
 //! Whether a recorded process is still the same one: its pid is alive and its start time
 //! matches, so a reused pid is never taken for it. Shared files keyed by process (the agent
-//! registry, `vendors.json`, slots) and the reaper all ask this.
+//! registry, `agents.json`, slots) and the reaper all ask this.
 
 use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
 

@@ -1,22 +1,22 @@
-//! JSON lines between a client and a run's supervisor, on `runs/<run>/control.sock` (mode 0600).
+//! JSON lines between a client and a run's run host, on `runs/<run>/control.sock` (mode 0600).
 //!
 //! Agent sandboxes can't read the state directory, so they can't reach the socket. Approval
 //! requests (`Answer`, `ApprovalMode`, `TakeOver`, `TakeOverEnded`, and a rule-overriding
 //! `Reassign`) also carry the token from `runs/<run>/approve.token`, and are refused when the
-//! peer descends from an agent process or has `ARGONAUTS_SESSION` set.
+//! caller descends from an agent process or has `ARGONAUTS_SESSION` set.
 
 use serde::{Deserialize, Serialize};
 
 use crate::api::{
-    CheckpointAnswer, DiffScope, DiffView, RawView, StatusSummary, SteerAck, TakeOverTicket,
+    ApprovalAnswer, DiffScope, DiffView, RawView, StatusSummary, SteerAck, TakeOverTicket,
 };
 use crate::events::RunEvent;
 use crate::events::goal::GoalAction;
 use crate::events::session::QueuedMessage;
 use crate::input::MentionTarget;
-use crate::names::{CheckpointId, MessageId, SessionKey, WorkerRef};
+use crate::names::{ApprovalId, MessageId, ModelRef, SessionKey};
 use crate::settings::approvals::ApprovalMode;
-use crate::{CardId, RunId};
+use crate::{RunId, TaskId};
 
 /// Replies echo the request's `id`; a `Subscribe` reply streams `Event` frames with that id.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -61,21 +61,24 @@ pub enum ControlRequest {
     /// For every working agent.
     Guidance {
         text: String,
-        /// The MCP client's own name, logged as `Party::FrontEnd`. `None` is you.
+        /// The MCP client's own name, logged as `Party::OutsideAgent`. `None` is you.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        front_end: Option<String>,
+        outside_agent: Option<String>,
     },
     /// Pause at the next safe point, or stop the agents now.
     Pause {
         now: bool,
         /// As for `Guidance`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        front_end: Option<String>,
+        outside_agent: Option<String>,
     },
     CancelPause,
     Stop,
     StopSession {
         session: SessionKey,
+        /// Starts it over with the prompt it had once it has stopped.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        again: bool,
     },
     /// Take undelivered messages back.
     TakeBack {
@@ -87,9 +90,9 @@ pub enum ControlRequest {
         token: String,
     },
     Reassign {
-        card: CardId,
-        to: WorkerRef,
-        /// A role rule to override for this card only. Needs the token.
+        task: TaskId,
+        to: ModelRef,
+        /// A role rule to override for this task only. Needs the token.
         #[serde(default)]
         rule_override: Option<String>,
         #[serde(default)]
@@ -97,36 +100,36 @@ pub enum ControlRequest {
     },
     /// App clients only.
     TakeOver {
-        card: CardId,
+        task: TaskId,
         token: String,
     },
     /// App clients only.
     TakeOverEnded {
-        card: CardId,
+        task: TaskId,
         token: String,
     },
     /// App clients only.
     Answer {
-        answer: CheckpointAnswer,
+        answer: ApprovalAnswer,
         token: String,
     },
     Status,
     Diff {
-        card: CardId,
+        task: TaskId,
         scope: DiffScope,
     },
     Raw {
         session: SessionKey,
     },
-    /// Reset a card to checkpoint `handoff-<checkpoint>`. The work after it stays on a side
+    /// Reset a task to checkpoint `fallback-<checkpoint>`. The work after it stays on a side
     /// branch.
-    Revert {
-        card: CardId,
+    Rewind {
+        task: TaskId,
         checkpoint: u32,
     },
     /// Your verdict on an auto-approval from the spot-check queue.
     SpotCheck {
-        id: CheckpointId,
+        id: ApprovalId,
         correct: bool,
     },
     /// Clear the goal, turn the workflow into one, or change an assumption.
@@ -140,7 +143,7 @@ pub enum ControlRequest {
 pub enum ControlReply {
     Welcome {
         run: RunId,
-        /// The supervisor's process id.
+        /// The run host's process id.
         pid: u32,
         version: String,
     },

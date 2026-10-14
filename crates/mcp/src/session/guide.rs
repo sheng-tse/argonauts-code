@@ -1,4 +1,4 @@
-//! `argonauts_guide`: the main session opens one page of Argonauts' guide when a setup needs
+//! `argonauts_guide`: the main session opens one page of Argonauts Code's guide when a setup needs
 //! more than the form says, so the detail isn't carried in every message. A page is the README
 //! `/setup` writes for that folder, with the topic's settings as the catalog lists them.
 
@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 pub const NAME: &str = "argonauts_guide";
 
-pub const DESCRIPTION: &str = "Opens one page of Argonauts' guide: how its files work and \
+pub const DESCRIPTION: &str = "Opens one page of Argonauts Code's guide: how its files work and \
     every setting of one topic, with the values each takes. Open the page a setup needs before \
     you fill argonauts_setup, such as the fields of a workflow file or how a role's \
     instructions reach it. It changes nothing.";
@@ -30,7 +30,7 @@ pub const TOPICS: [(&str, &str); 8] = [
     ),
     ("goals", "a condition the work keeps going until it holds"),
     ("limits", "spend and plan-usage limits"),
-    ("fallbacks", "who takes over when a model can't go on"),
+    ("fallbacks", "which model goes on when another can't"),
     ("mods", "mod files, their bodies and data"),
 ];
 

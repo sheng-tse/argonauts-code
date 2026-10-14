@@ -1,4 +1,4 @@
-//! When a quota window resets, as Claude Code's /usage says it: today's clock, a weekday this
+//! When a plan usage window resets, as Claude Code's /usage says it: today's clock, a weekday this
 //! week, a date after that.
 
 use time::{Duration, OffsetDateTime};

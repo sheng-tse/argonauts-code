@@ -1,9 +1,9 @@
 //! The secret scan: core's `redact` patterns, the same ones the journal hides, run on added lines
 //! only. It covers private key headers, common token formats, and long strings assigned to names
-//! like `password`, `secret`, or `token`. A hit stops the card.
+//! like `password`, `secret`, or `token`. A hit stops the task.
 //!
-//! A binary file the diff doesn't show can't be scanned, so adding or changing one stops the card
-//! too, unless it's an image, audio, video, or font file. The gates diff build output such as
+//! A binary file the diff doesn't show can't be scanned, so adding or changing one stops the task
+//! too, unless it's an image, audio, video, or font file. The checks diff build output such as
 //! `.pyc` files as text (`argonauts_core::build_output`), so its bytes are scanned instead.
 
 use std::collections::BTreeSet;

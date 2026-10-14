@@ -15,6 +15,8 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
 
+use argonauts_core::cli_commands::CliCommandSet;
+use argonauts_core::input::{DraftCommand, draft_command};
 use argonauts_core::keywords::Keyword;
 use argonauts_core::sanitize::sanitize_for_terminal;
 
@@ -55,6 +57,10 @@ pub struct Composer {
     pub example: Option<String>,
     /// The main agent CLI's keywords, drawn as that CLI draws them.
     pub keywords: Vec<Keyword>,
+    /// The main agent CLI's own commands, which are real commands beside Argonauts Code's.
+    pub cli_commands: Option<CliCommandSet>,
+    /// The names of your own mods, each of which runs as a command.
+    pub mod_commands: Vec<String>,
     /// Set by the first prompt. An example is a way to start a fresh session, so it goes then.
     started: bool,
     history: Vec<String>,
@@ -80,7 +86,7 @@ pub struct Composer {
     vim_pending: vim::Pending,
     visual: Option<vim::Visual>,
     burst: PasteBurst,
-    /// A field inside a card, such as a question's answer: `!` is a letter there, and nothing
+    /// A field inside a question, such as a question's answer: `!` is a letter there, and nothing
     /// typed in it joins the input's history.
     field: bool,
     /// Opt+W ignored the workflow word in this draft. Reading it settles it, since the word
@@ -108,7 +114,7 @@ struct Saved {
     shell: bool,
 }
 
-/// A draft out of the input while a card holds the keys, to come back as it was.
+/// A draft out of the input while a question holds the keys, to come back as it was.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DraftAside {
     saved: Saved,
@@ -170,13 +176,20 @@ pub struct ComposerView {
     pub cursor: (u16, u16),
 }
 
+/// Whether `typed`, a `/name` that is no command, is something on this computer, such as
+/// `/tmp`. A prompt may start with one: Claude Code 2.1.296 looks for the path before it calls
+/// the name an unknown command, and sends the prompt to the model as text.
+pub fn is_on_disk(typed: &str) -> bool {
+    std::path::Path::new(typed).exists()
+}
+
 impl Composer {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// The input's editor for a field inside a card: new lines, pastes, and the cursor keys work
-    /// as in the input, with no shell mode and no history.
+    /// The input's editor for a field inside a question: new lines, pastes, and the cursor keys
+    /// work as in the input, with no shell mode and no history.
     pub fn field() -> Self {
         Self {
             field: true,
@@ -185,6 +198,58 @@ impl Composer {
     }
 
     /// With pasted blocks as their labels.
+    /// What the draft is as a command: a real one, with the arguments still to come, or none
+    /// at all, with the nearest real one. `None` for anything else, and in shell mode.
+    pub fn command(&self) -> Option<DraftCommand> {
+        if self.shell || self.field {
+            return None;
+        }
+        let command = draft_command(
+            &self.draft.text,
+            self.cli_commands.as_ref(),
+            &self.mod_commands,
+        )?;
+        // Until the CLI's own commands have arrived, a name Argonauts Code doesn't know may
+        // still be one of them.
+        let judged = self.cli_commands.is_some() || matches!(command, DraftCommand::Known { .. });
+        let a_path = matches!(&command, DraftCommand::Unknown { typed, .. } if is_on_disk(typed));
+        (judged && !a_path).then_some(command)
+    }
+
+    /// What the bottom line says Enter does with a draft that is a command. Where the draft's
+    /// row, on a screen `width` cells wide, has no room for how to fix a mistyped one, the fix
+    /// follows here.
+    pub fn enter_does(&self, width: usize) -> Option<String> {
+        let command = self.command()?;
+        Some(if view::fix_goes_below(&command, &self.draft.text, width) {
+            command.enter_does_and_fix()
+        } else {
+            command.enter_does()
+        })
+    }
+
+    /// Tab on a mistyped command puts the nearest real one in its place, and leaves the
+    /// cursor where it was in the words after it.
+    fn fix_command(&mut self) -> Option<ComposerEvent> {
+        let Some(DraftCommand::Unknown {
+            typed,
+            nearest: Some(nearest),
+        }) = self.command()
+        else {
+            return None;
+        };
+        let cursor = self.draft.cursor;
+        self.draft.delete(0..typed.len());
+        self.draft.cursor = 0;
+        self.draft.insert(&nearest);
+        self.draft.cursor = if cursor <= typed.len() {
+            nearest.len()
+        } else {
+            cursor - typed.len() + nearest.len()
+        };
+        Some(self.edited())
+    }
+
     pub fn text(&self) -> &str {
         &self.draft.text
     }
@@ -411,6 +476,12 @@ impl Composer {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let word = ctrl || alt;
+        if key.code == KeyCode::Tab
+            && !(ctrl || alt || shift)
+            && let Some(event) = self.fix_command()
+        {
+            return event;
+        }
         let draft = &self.draft;
         let at = draft.cursor;
         match key.code {
@@ -534,6 +605,11 @@ impl Composer {
         let text = expanded.trim_end_matches('\n');
         if text.trim().is_empty() {
             return ComposerEvent::Unhandled;
+        }
+        // What isn't a command goes nowhere, so the draft and its pictures stay as they are
+        // for you to fix.
+        if matches!(self.command(), Some(DraftCommand::Unknown { .. })) {
+            return ComposerEvent::Moved;
         }
         let text = text.to_owned();
         if self.shell {

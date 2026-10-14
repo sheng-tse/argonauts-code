@@ -24,7 +24,7 @@ const AGE_MIN: usize = 7;
 /// After the age, before the prompt.
 const AGE_GAP: &str = "  ";
 
-/// The marks beyond the theme's glyph set, with ASCII stand-ins.
+/// The marks beyond the theme's glyph set, with ASCII forms.
 struct Marks {
     above: &'static str,
     below: &'static str,
@@ -83,16 +83,16 @@ impl HistorySearch {
         let theme = ctx.theme;
         let marks = Marks::for_theme(theme);
         let width = usize::from(ctx.width);
-        let card = theme.style(Role::Card);
+        let question = theme.style(Role::Question);
         let height = self.rows.min(max_rows.saturating_sub(FIXED_ROWS)).max(1);
 
         let mut lines = vec![
-            Line::from(Span::styled(theme.glyphs.rule.repeat(width), card)),
+            Line::from(Span::styled(theme.glyphs.rule.repeat(width), question)),
             fit_line(
                 vec![
                     margin(),
-                    Span::styled("Search prompts", card),
-                    Span::styled(format!(" · {}", self.scope.label()), card),
+                    Span::styled("Search prompts", question),
+                    Span::styled(format!(" · {}", self.scope.label()), question),
                 ],
                 width,
             ),
@@ -132,7 +132,7 @@ impl HistorySearch {
         height: usize,
     ) -> Vec<Vec<Span<'static>>> {
         let dim = theme.style(Role::Dim);
-        let card = theme.style(Role::Card);
+        let question = theme.style(Role::Question);
         let mut rows: Vec<Vec<Span<'static>>> = Vec::with_capacity(height);
         if self.shown.is_empty() {
             let empty = if self.prompts().is_empty() {
@@ -163,7 +163,7 @@ impl HistorySearch {
             let prompt = &prompts[shown.prompt];
             let selected = index == self.selected;
             let mark = if selected {
-                Span::styled(theme.glyphs.prompt, card)
+                Span::styled(theme.glyphs.prompt, question)
             } else if n == 0 && window.start > 0 {
                 Span::styled(marks.above, dim)
             } else if index + 1 == window.end && window.end < self.shown.len() {
@@ -171,9 +171,9 @@ impl HistorySearch {
             } else {
                 Span::raw(" ")
             };
-            let text_style = if selected { card } else { Style::new() };
+            let text_style = if selected { question } else { Style::new() };
             let letter_style = if selected {
-                card.add_modifier(Modifier::BOLD)
+                question.add_modifier(Modifier::BOLD)
             } else {
                 theme.style(Role::Bright).add_modifier(Modifier::BOLD)
             };
@@ -281,14 +281,14 @@ impl HistorySearch {
         marks: &Marks,
         width: usize,
     ) -> (Vec<Line<'static>>, usize) {
-        let border = theme.style(Role::Card);
+        let border = theme.style(Role::Question);
         // The magnifier takes the text color, as in Claude Code, not the border's.
-        let lead = format!(" {} ", marks.search);
-        let room = width.saturating_sub(str_width(&lead) + 3);
+        let opening = format!(" {} ", marks.search);
+        let room = width.saturating_sub(str_width(&opening) + 3);
         let mut row = vec![
             margin(),
             Span::styled(marks.down, border),
-            Span::styled(lead, theme.style(Role::Text)),
+            Span::styled(opening, theme.style(Role::Text)),
         ];
         let column;
         if self.filter.is_empty() {

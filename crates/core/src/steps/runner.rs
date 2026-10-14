@@ -1,6 +1,6 @@
 //! The core [`StepRunner`]: checks each session's output against the schema and, on a
-//! mismatch, asks the same session once more with the errors. A worker that can't resume gets
-//! the prompt again with the errors.
+//! mismatch, asks the same session once more with the errors. A session runner that can't resume
+//! gets the prompt again with the errors.
 
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -10,7 +10,7 @@ use super::{StepError, StepObserver, StepOutcome, StepRequest, StepRunner, askin
 use crate::Spend;
 use crate::events::session::{EndReason, InputPart, InputPartKind, SessionEnd};
 use crate::future::BoxFuture;
-use crate::worker::{SessionControl, SessionSpec, Worker};
+use crate::session_runner::{SessionControl, SessionRunner, SessionSpec};
 
 /// Holds no state, so one runner can be shared by every run.
 #[derive(Debug, Clone, Copy, Default)]
@@ -43,11 +43,11 @@ impl StepRunner for SchemaStepRunner {
                 None => None,
             };
             let first_prompt = spec.prompt.clone();
-            let mut attempts: u8 = 0;
+            let mut tries: u8 = 0;
             let mut mismatches: u8 = 0;
             let mut asks: u8 = 0;
             loop {
-                attempts = attempts.saturating_add(1);
+                tries = tries.saturating_add(1);
                 let end = run_session(
                     worker.as_ref(),
                     spec.clone(),
@@ -72,11 +72,7 @@ impl StepRunner for SchemaStepRunner {
                 if let Some(value) = filled
                     && errors.is_empty()
                 {
-                    return Ok(StepOutcome {
-                        value,
-                        end,
-                        attempts,
-                    });
+                    return Ok(StepOutcome { value, end, tries });
                 }
                 // A session that stopped early can't take a retry; its end says why.
                 if end.reason != EndReason::Completed || cancel.is_cancelled() {
@@ -95,7 +91,7 @@ impl StepRunner for SchemaStepRunner {
                         return Err(mismatch(&end, output, errors));
                     }
                     mismatches += 1;
-                    let resumes = end.vendor_session.is_some() && worker.capabilities().resume;
+                    let resumes = end.cli_session.is_some() && worker.capabilities().resume;
                     retry_part(
                         &errors,
                         if resumes {
@@ -106,12 +102,12 @@ impl StepRunner for SchemaStepRunner {
                     )
                 };
                 let resumable = end
-                    .vendor_session
+                    .cli_session
                     .clone()
                     .filter(|_| worker.capabilities().resume);
                 match resumable {
-                    Some(vendor_session) => {
-                        spec.resume = Some(vendor_session);
+                    Some(cli_session) => {
+                        spec.resume = Some(cli_session);
                         spec.prompt = vec![reply];
                     }
                     // An endpoint keeps no session, so it gets the whole prompt again.
@@ -128,7 +124,7 @@ impl StepRunner for SchemaStepRunner {
 
 /// The handle's `control` stays alive until the end, because dropping it stops the session.
 async fn run_session(
-    worker: &dyn Worker,
+    worker: &dyn SessionRunner,
     spec: SessionSpec,
     observer: &mut StepObserver,
     mut steering: Option<&mut mpsc::Receiver<SessionControl>>,
@@ -156,12 +152,12 @@ async fn run_session(
         }
     }
     Ok(handle.ended.await.unwrap_or_else(|_| SessionEnd {
-        vendor_session: None,
+        cli_session: None,
         exit_code: None,
         signal: None,
         duration_ms: 0,
         reason: EndReason::Crashed {
-            message: "the worker ended the session without saying how".to_owned(),
+            message: "the session runner ended the session without saying how".to_owned(),
         },
         spend: Spend::default(),
         tool_calls: 0,
@@ -291,18 +287,18 @@ mod tests {
 
     use crate::AgentEvent;
     use crate::CommandSpec;
-    use crate::names::{RoleName, SessionKey, VendorId, WorkerRef};
-    use crate::settings::sessions::{Compaction, NativeFanout, SessionLifetime};
-    use crate::steps::intake::{IntakeReply, ReplyKind, TriageEstimate};
-    use crate::steps::{decode, output_schema};
-    use crate::worker::{
-        Access, SandboxProfile, SessionControl, SessionHandle, SessionLimits, SteerSupport,
-        SubagentVisibility, WorkerCapabilities, WorkerError, WorkerEvent, WorkerKind,
+    use crate::names::{AgentId, ModelRef, RoleName, SessionKey};
+    use crate::session_runner::{
+        Access, RunnerCapabilities, RunnerError, RunnerEvent, RunnerKind, SandboxProfile,
+        SessionControl, SessionHandle, SessionLimits, SteerSupport, SubagentVisibility,
     };
+    use crate::settings::sessions::{Compaction, NativeFanout, SessionLifetime};
+    use crate::steps::intake::{Estimate, IntakeReply, ReplyKind};
+    use crate::steps::{decode, output_schema};
 
     /// Plays one scripted ending per session start and remembers every spec.
     struct Scripted {
-        worker: WorkerRef,
+        worker: ModelRef,
         endings: Mutex<Vec<SessionEnd>>,
         specs: Mutex<Vec<SessionSpec>>,
         resume: bool,
@@ -311,7 +307,7 @@ mod tests {
     impl Scripted {
         fn new(endings: Vec<SessionEnd>) -> Arc<Self> {
             Arc::new(Self {
-                worker: WorkerRef::new("fake", None),
+                worker: ModelRef::new("fake", None),
                 endings: Mutex::new(endings),
                 specs: Mutex::new(Vec::new()),
                 resume: true,
@@ -321,7 +317,7 @@ mod tests {
         /// Like an endpoint, which keeps no session to resume.
         fn without_resume(endings: Vec<SessionEnd>) -> Arc<Self> {
             Arc::new(Self {
-                worker: WorkerRef::new("fake", None),
+                worker: ModelRef::new("fake", None),
                 endings: Mutex::new(endings),
                 specs: Mutex::new(Vec::new()),
                 resume: false,
@@ -329,33 +325,34 @@ mod tests {
         }
     }
 
-    impl Worker for Scripted {
-        fn worker_ref(&self) -> &WorkerRef {
+    impl SessionRunner for Scripted {
+        fn model_ref(&self) -> &ModelRef {
             &self.worker
         }
-        fn kind(&self) -> WorkerKind {
-            WorkerKind::Harness
+        fn kind(&self) -> RunnerKind {
+            RunnerKind::Cli
         }
-        fn vendor(&self) -> VendorId {
-            self.worker.vendor()
+        fn agent_id(&self) -> AgentId {
+            self.worker.agent_id()
         }
-        fn family(&self) -> String {
+        fn provider(&self) -> String {
             "fake".to_owned()
         }
-        fn capabilities(&self) -> WorkerCapabilities {
-            WorkerCapabilities {
+        fn capabilities(&self) -> RunnerCapabilities {
+            RunnerCapabilities {
                 streams_text: true,
                 steer: SteerSupport::NextTurnOnly,
                 resume: self.resume,
+                fork: false,
                 structured_output: false,
                 subagents: SubagentVisibility::None,
-                native_budget_cap: false,
-                takeover: false,
+                native_limit_cap: false,
+                take_over: false,
                 can_build: false,
                 status_tool: false,
             }
         }
-        fn start(&self, spec: SessionSpec) -> BoxFuture<'_, Result<SessionHandle, WorkerError>> {
+        fn start(&self, spec: SessionSpec) -> BoxFuture<'_, Result<SessionHandle, RunnerError>> {
             let key = spec.key.clone();
             self.specs.lock().unwrap().push(spec);
             let next = {
@@ -364,14 +361,14 @@ mod tests {
             };
             Box::pin(async move {
                 let Some(end) = next else {
-                    return Err(WorkerError::Refused("no more scripted sessions".into()));
+                    return Err(RunnerError::Refused("no more scripted sessions".into()));
                 };
                 let (events_tx, events) = mpsc::channel(8);
                 let (control, _control_rx) = mpsc::channel::<SessionControl>(1);
                 let (ended_tx, ended) = oneshot::channel();
                 let text = end.result_text.clone().unwrap_or_default();
                 events_tx
-                    .send(WorkerEvent::Agent(AgentEvent::TextDelta {
+                    .send(RunnerEvent::Agent(AgentEvent::TextDelta {
                         text,
                         parent: None,
                     }))
@@ -387,14 +384,14 @@ mod tests {
                 })
             })
         }
-        fn takeover_command(&self, _vendor_session: &str, _workdir: &Path) -> Option<CommandSpec> {
+        fn take_over_command(&self, _cli_session: &str, _workdir: &Path) -> Option<CommandSpec> {
             None
         }
     }
 
     fn ending(reason: EndReason, text: Option<&str>, structured: Option<Value>) -> SessionEnd {
         SessionEnd {
-            vendor_session: Some("vendor-1".into()),
+            cli_session: Some("cli-1".into()),
             exit_code: Some(0),
             signal: None,
             duration_ms: 5,
@@ -411,11 +408,11 @@ mod tests {
     fn spec() -> SessionSpec {
         SessionSpec {
             run: None,
-            card: None,
+            task: None,
             key: SessionKey::numbered(1),
             role: RoleName::Main,
-            step: Some(super::super::StepName::TriageEstimate),
-            worker: WorkerRef::new("fake", None),
+            step: Some(super::super::StepName::Estimate),
+            model: ModelRef::new("fake", None),
             effort: None,
             access: Access::ReadOnly,
             workdir: PathBuf::from("/repo"),
@@ -427,8 +424,9 @@ mod tests {
                 approx_tokens: 1,
                 source: None,
             }],
-            json_schema: Some(output_schema::<TriageEstimate>()),
+            json_schema: Some(output_schema::<Estimate>()),
             resume: None,
+            fork: false,
             lifetime: SessionLifetime::Task,
             keep_input_open: false,
             limits: SessionLimits::default(),
@@ -441,8 +439,8 @@ mod tests {
             status_file: None,
             env: Vec::new(),
             asking: None,
-            cli_workflow: crate::worker::CliWorkflow::default(),
-            shell: crate::worker::SessionShell::None,
+            cli_workflow: crate::session_runner::CliWorkflow::default(),
+            shell: crate::session_runner::SessionShell::None,
         }
     }
 
@@ -465,9 +463,9 @@ mod tests {
         let worker = Scripted::new(vec![ending(EndReason::Completed, None, Some(answer()))]);
         let (result, seen) = run(worker).await;
         let outcome = result.unwrap();
-        assert_eq!(outcome.attempts, 1);
+        assert_eq!(outcome.tries, 1);
         assert_eq!(seen, 1, "every event reaches the observer");
-        let reply: IntakeReply = decode::<TriageEstimate>(&outcome).unwrap();
+        let reply: IntakeReply = decode::<Estimate>(&outcome).unwrap();
         assert_eq!(reply.kind, ReplyKind::Answer);
     }
 
@@ -487,7 +485,7 @@ mod tests {
         let worker = Scripted::new(vec![ending(EndReason::Completed, None, Some(answer()))]);
         let (result, _) = run(worker).await;
         let outcome = result.unwrap();
-        assert_eq!(outcome.attempts, 1);
+        assert_eq!(outcome.tries, 1);
         assert_eq!(outcome.value["how_to_run"], json!([]));
         let listed = json!({"kind": "answer", "answer_markdown": "Hi.", "estimate": null,
             "how_to_run": [{"says": "codex reviews", "kind": "review", "who": "codex",
@@ -509,10 +507,10 @@ mod tests {
             ending(EndReason::Completed, None, Some(answer())),
         ]);
         let (result, _) = run(worker.clone()).await;
-        assert_eq!(result.unwrap().attempts, 2);
+        assert_eq!(result.unwrap().tries, 2);
         let specs = worker.specs.lock().unwrap();
         assert_eq!(specs.len(), 2);
-        assert_eq!(specs[1].resume.as_deref(), Some("vendor-1"));
+        assert_eq!(specs[1].resume.as_deref(), Some("cli-1"));
         assert_eq!(specs[1].prompt.len(), 1);
         assert!(
             specs[1].prompt[0].text.contains("kind"),
@@ -545,9 +543,9 @@ mod tests {
             ending(EndReason::Completed, None, Some(answer())),
         ]);
         let outcome = run_asking(worker.clone(), Some(2)).await.unwrap();
-        assert_eq!(outcome.attempts, 3);
+        assert_eq!(outcome.tries, 3);
         let specs = worker.specs.lock().unwrap();
-        assert_eq!(specs[1].resume.as_deref(), Some("vendor-1"));
+        assert_eq!(specs[1].resume.as_deref(), Some("cli-1"));
         assert_eq!(specs[1].prompt.len(), 1);
         assert_eq!(specs[1].prompt[0].label, "decide and carry on");
         assert!(
@@ -602,13 +600,13 @@ mod tests {
     async fn a_worker_that_cannot_resume_gets_the_prompt_again_with_the_errors() {
         let wrong = json!({"kind": "maybe", "answer_markdown": "?", "estimate": null});
         let mut first = ending(EndReason::Completed, None, Some(wrong));
-        first.vendor_session = None;
+        first.cli_session = None;
         let worker = Scripted::without_resume(vec![
             first,
             ending(EndReason::Completed, None, Some(answer())),
         ]);
         let (result, _) = run(worker.clone()).await;
-        assert_eq!(result.unwrap().attempts, 2);
+        assert_eq!(result.unwrap().tries, 2);
         let specs = worker.specs.lock().unwrap();
         assert_eq!(specs[1].resume, None);
         assert_eq!(specs[1].prompt.len(), 2);
@@ -654,40 +652,40 @@ mod tests {
         let (result, _) = run(worker).await;
         assert!(matches!(
             result,
-            Err(StepError::Worker(WorkerError::Refused(_)))
+            Err(StepError::Runner(RunnerError::Refused(_)))
         ));
     }
 
     /// A session that runs until it's told to stop, and remembers what it was sent.
     struct Waiting {
-        worker: WorkerRef,
+        worker: ModelRef,
         received: Arc<Mutex<Vec<SessionControl>>>,
     }
 
-    impl Worker for Waiting {
-        fn worker_ref(&self) -> &WorkerRef {
+    impl SessionRunner for Waiting {
+        fn model_ref(&self) -> &ModelRef {
             &self.worker
         }
-        fn kind(&self) -> WorkerKind {
-            WorkerKind::Harness
+        fn kind(&self) -> RunnerKind {
+            RunnerKind::Cli
         }
-        fn vendor(&self) -> VendorId {
-            self.worker.vendor()
+        fn agent_id(&self) -> AgentId {
+            self.worker.agent_id()
         }
-        fn family(&self) -> String {
+        fn provider(&self) -> String {
             "fake".to_owned()
         }
-        fn capabilities(&self) -> WorkerCapabilities {
+        fn capabilities(&self) -> RunnerCapabilities {
             Scripted::new(Vec::new()).capabilities()
         }
-        fn start(&self, spec: SessionSpec) -> BoxFuture<'_, Result<SessionHandle, WorkerError>> {
+        fn start(&self, spec: SessionSpec) -> BoxFuture<'_, Result<SessionHandle, RunnerError>> {
             let received = self.received.clone();
             Box::pin(async move {
                 let (events_tx, events) = mpsc::channel(8);
                 let (control, mut control_rx) = mpsc::channel::<SessionControl>(4);
                 let (ended_tx, ended) = oneshot::channel();
                 tokio::spawn(async move {
-                    // A closed control channel counts as Stop, as the worker contract says.
+                    // A closed control channel counts as Stop, as the session runner contract says.
                     while let Some(message) = control_rx.recv().await {
                         let stop = message == SessionControl::Stop;
                         received.lock().unwrap().push(message);
@@ -706,14 +704,14 @@ mod tests {
                 })
             })
         }
-        fn takeover_command(&self, _vendor_session: &str, _workdir: &Path) -> Option<CommandSpec> {
+        fn take_over_command(&self, _cli_session: &str, _workdir: &Path) -> Option<CommandSpec> {
             None
         }
     }
 
     fn waiting() -> Arc<Waiting> {
         Arc::new(Waiting {
-            worker: WorkerRef::new("fake", None),
+            worker: ModelRef::new("fake", None),
             received: Arc::new(Mutex::new(Vec::new())),
         })
     }
@@ -725,7 +723,7 @@ mod tests {
         let cancel = request.cancel.clone();
         let step = tokio::spawn(async move {
             SchemaStepRunner
-                .run(request, Box::new(|_event: &WorkerEvent| {}))
+                .run(request, Box::new(|_event: &RunnerEvent| {}))
                 .await
         });
         cancel.cancel();
@@ -744,7 +742,7 @@ mod tests {
         request.control = Some(steering);
         let step = tokio::spawn(async move {
             SchemaStepRunner
-                .run(request, Box::new(|_event: &WorkerEvent| {}))
+                .run(request, Box::new(|_event: &RunnerEvent| {}))
                 .await
         });
         steer.send(SessionControl::WrapUp).await.unwrap();

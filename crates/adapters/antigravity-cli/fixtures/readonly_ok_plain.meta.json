@@ -1,0 +1,53 @@
+{
+  "adapter": "antigravity-cli",
+  "args": [
+    "-p",
+    "Reply with exactly the word: ok",
+    "--output-format",
+    "stream-json",
+    "--mode",
+    "plan",
+    "--sandbox",
+    "--disable-slash-commands",
+    "--model",
+    "gemini-3.6-flash-low",
+    "--effort",
+    "low",
+    "--log-file",
+    "<live>/readonly_ok.agy.log"
+  ],
+  "cli_version": "1.2.13",
+  "also_matches": [],
+  "variant_of": "readonly_ok",
+  "shows": "The result is the plain answer, and a line that isn't JSON follows it.",
+  "date": "2026-09-29T08:31:12.079507Z",
+  "duration_ms": 14687,
+  "env_removed": [
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "XAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GH_TOKEN",
+    "GITHUB_TOKEN"
+  ],
+  "env_set": [
+    [
+      "AGY_CLI_DISABLE_AUTO_UPDATE",
+      "1"
+    ]
+  ],
+  "exit_code": 0,
+  "files_after": [
+    "README.md",
+    "notes.txt"
+  ],
+  "name": "readonly_ok_plain",
+  "program": "agy",
+  "prompt": "Reply with exactly the word: ok",
+  "role": "read-only",
+  "sanitized": "absolute paths replaced with <workdir> and <live>, the home directory with ~, and email addresses with <email>",
+  "note": "Recorded with AGY_CLI_DISABLE_AUTO_UPDATE=1, which agy ignored (its log showed the updater starting), and with --disable-slash-commands, which made --mode plan a no-op (see stderr). The adapter now sets the variable to true and leaves slash commands on for read-only runs."
+}

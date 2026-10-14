@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-app"
-description = "Argonauts app controller and run host: the chat app, routing, triage, and the per-run supervisor."
+description = "Argonauts Code's app controller and run host: the conversation, routing, choosing Captain or crew, and the run host each run has."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

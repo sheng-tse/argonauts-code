@@ -14,14 +14,14 @@ use argonauts_core::driver::{
     DriverControl, DriverEnd, DriverIo, DriverStart, DriverStop, McpServerSpec, PermissionScope,
 };
 use argonauts_core::events::session::Delivery;
-use argonauts_core::registry::HarnessManifest;
+use argonauts_core::registry::CliManifest;
 use argonauts_core::registry::acp::{AcpProfile, ModelRoute, ReportRoute, ResumeRoute, SteerRoute};
-use argonauts_core::registry::harness::{ErrorPattern, HomeKeep, HomeTemplate};
-use argonauts_core::worker::Access;
+use argonauts_core::registry::cli::{ErrorPattern, HomeKeep, HomeTemplate};
+use argonauts_core::session_runner::Access;
 use argonauts_core::{AgentEvent, ErrorCategory, SessionRequest, SessionRole};
 use argonauts_testkit::acp::WRONG_PICK_EXIT;
 use argonauts_testkit::scenario::LogLine;
-use argonauts_testkit::{FakeVendors, TempRepo};
+use argonauts_testkit::{FakeClis, TempRepo};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
@@ -138,7 +138,7 @@ exit = 3
 
 struct Bench {
     repo: TempRepo,
-    vendors: FakeVendors,
+    clis: FakeClis,
 }
 
 struct Live {
@@ -155,14 +155,14 @@ struct Ended {
 }
 
 impl Bench {
-    fn manifest(&self, row: &str, acp: AcpProfile, home: Option<HomeTemplate>) -> HarnessManifest {
-        HarnessManifest {
+    fn manifest(&self, row: &str, acp: AcpProfile, home: Option<HomeTemplate>) -> CliManifest {
+        CliManifest {
             id: "hermes".into(),
             display_name: "Hermes Agent".into(),
-            binary: self.vendors.bin_dir().join("hermes").display().to_string(),
+            binary: self.clis.bin_dir().join("hermes").display().to_string(),
             read_only_args: vec!["acp".into(), row.into()],
             build_args: vec!["acp".into(), row.into()],
-            family: "from-model".into(),
+            provider: "from-model".into(),
             transport: Transport::Acp,
             env_set: BTreeMap::from([("HERMES_ACP_SKIP_CONFIGURED_MCP".into(), "1".into())]),
             errors: vec![ErrorPattern {
@@ -172,7 +172,7 @@ impl Bench {
             }],
             home,
             acp: Some(acp),
-            ..HarnessManifest::default()
+            ..CliManifest::default()
         }
     }
 
@@ -204,8 +204,8 @@ impl Bench {
     }
 
     /// Launches the fake from the adapter's command and hands its pipes to the driver, as the
-    /// harness worker does.
-    fn launch(&self, row: &str, manifest: HarnessManifest, start: DriverStart) -> Live {
+    /// CLI runner does.
+    fn launch(&self, row: &str, manifest: CliManifest, start: DriverStart) -> Live {
         let adapter = acp_adapter(manifest);
         let request = SessionRequest {
             workdir: self.repo.root().to_owned(),
@@ -221,7 +221,7 @@ impl Bench {
         let mut child = tokio::process::Command::new(&spec.program)
             .args(&spec.args)
             .current_dir(&spec.cwd)
-            .envs(self.vendors.envs())
+            .envs(self.clis.envs())
             .envs(spec.env_set.iter().cloned())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -269,7 +269,7 @@ impl Bench {
     }
 
     fn client_frames(&self, method: &str) -> Vec<Value> {
-        self.vendors
+        self.clis
             .log()
             .unwrap()
             .into_iter()
@@ -363,7 +363,7 @@ fn structured(events: &[AgentEvent]) -> Option<&Value> {
 #[tokio::test]
 async fn acp_driver_against_fake_agent() {
     let argonauts_home = tempfile::tempdir().unwrap();
-    let template = argonauts_home.path().join("harnesses/hermes");
+    let template = argonauts_home.path().join("clis/hermes");
     std::fs::create_dir_all(&template).unwrap();
     std::fs::write(
         template.join("config.yaml"),
@@ -376,8 +376,8 @@ async fn acp_driver_against_fake_agent() {
     let repo = TempRepo::new().unwrap();
     let scenario = repo.scratch().join("acp-scenario.toml");
     std::fs::write(&scenario, SCENARIO).unwrap();
-    let vendors = FakeVendors::install(repo.scratch(), &scenario).unwrap();
-    let bench = Bench { repo, vendors };
+    let clis = FakeClis::install(repo.scratch(), &scenario).unwrap();
+    let bench = Bench { repo, clis };
     let schema = json!({ "type": "object", "required": ["status"] });
 
     // The report through the report tool, which writes the report file.
@@ -485,19 +485,19 @@ async fn acp_driver_against_fake_agent() {
     );
     assert_eq!(ended.exit, Some(0));
 
-    // Resume after a restart: a new process picks up the vendor session with `session/resume`,
+    // Resume after a restart: a new process picks up the CLI session with `session/resume`,
     // with the working folder and MCP servers sent again.
     let resume = AcpProfile {
         resume: ResumeRoute::Resume,
         ..AcpProfile::default()
     };
     let first = bench.run("resume", resume.clone(), bench.start()).await;
-    assert_eq!(first.end.vendor_session.as_deref(), Some("hermes-7"));
+    assert_eq!(first.end.cli_session.as_deref(), Some("hermes-7"));
     let mut start = bench.start();
-    start.resume = first.end.vendor_session.clone();
+    start.resume = first.end.cli_session.clone();
     let second = bench.run("resume", resume, start).await;
     assert_eq!(second.end.stop, DriverStop::EndTurn);
-    assert_eq!(second.end.vendor_session.as_deref(), Some("hermes-7"));
+    assert_eq!(second.end.cli_session.as_deref(), Some("hermes-7"));
     let resumed = bench.client_frames("session/resume");
     assert_eq!(resumed.len(), 1);
     assert_eq!(resumed[0]["params"]["sessionId"], "hermes-7");
@@ -511,7 +511,7 @@ async fn acp_driver_against_fake_agent() {
     let home = HomeTemplate {
         env: "HERMES_HOME".into(),
         template: "hermes".into(),
-        keep: HomeKeep::Card,
+        keep: HomeKeep::Task,
     };
     let manifest = bench.manifest("isolation", AcpProfile::default(), Some(home));
     let ended = bench
@@ -532,7 +532,7 @@ async fn acp_driver_against_fake_agent() {
         "{home_config}"
     );
     let invocation = bench
-        .vendors
+        .clis
         .invocations()
         .unwrap()
         .into_iter()

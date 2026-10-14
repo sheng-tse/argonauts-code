@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-testkit"
-description = "Test support for Argonauts: fake vendor CLIs, a pty driver, temp repos, fake workers and services, and a fake OpenAI-compatible server."
+description = "Test support for Argonauts Code: fake agent CLIs, a pty driver, temp repos, fake session runners and services, and a fake OpenAI-compatible server."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,8 +8,8 @@ license.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "argonauts-fake-vendor"
-path = "src/bin/argonauts-fake-vendor/main.rs"
+name = "argonauts-fake-cli"
+path = "src/bin/argonauts-fake-cli/main.rs"
 
 [dependencies]
 anyhow.workspace = true

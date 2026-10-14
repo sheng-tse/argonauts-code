@@ -190,7 +190,7 @@ impl DiffView {
         self.render_with(ctx, indent, render::Fill::ShortOfEdge)
     }
 
-    /// For a diff inside a card or a full-screen view.
+    /// For a diff inside a question or a full-screen view.
     pub fn render_to_edge(&self, ctx: &RenderCtx<'_>, indent: u16) -> Vec<Line<'static>> {
         self.render_with(ctx, indent, render::Fill::ToEdge)
     }

@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::names::SessionKey;
-use crate::{CardId, DiffStat};
+use crate::{DiffStat, TaskId};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentGoal {
@@ -16,18 +16,18 @@ pub struct AgentGoal {
     pub session: SessionKey,
     /// The agent's label in its workflow, such as `build:cli`.
     pub label: String,
-    /// The role it fills, in the plural as the settings name it, such as `workers`.
+    /// The role it fills, as the settings name it, such as `worker`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     /// The task it is the goal of, when it is one task's. A key that holds the goal names it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task: Option<CardId>,
+    pub task: Option<TaskId>,
     pub kept_by: GoalKeeper,
-    /// Why Argonauts keeps a goal that was asked of the CLI, such as "Claude Code has no goal
+    /// Why Argonauts Code keeps a goal that was asked of the CLI, such as "Claude Code has no goal
     /// of its own".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept_note: Option<String>,
-    /// Who runs the checks, such as `Argonauts`.
+    /// Who runs the checks, such as `Argonauts Code`.
     pub checked_by: String,
     pub state: GoalState,
     /// Why it stopped short of holding, such as "the same failure 3 rounds running".
@@ -71,7 +71,7 @@ pub enum GoalKeeper {
         /// As the screen names the CLI, such as `Codex`.
         name: String,
     },
-    /// Argonauts runs the check after each turn and sends back what still fails.
+    /// Argonauts Code runs the check after each turn and sends back what still fails.
     Argonauts,
 }
 
@@ -139,7 +139,7 @@ pub struct GoalCheck {
     pub detail: Vec<String>,
 }
 
-/// The CLI's own account of its goal, which Argonauts shows and never takes as the check.
+/// The CLI's own account of its goal, which Argonauts Code shows and never takes as the check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliGoal {
     /// As the screen names the CLI, such as `Codex`.
@@ -185,11 +185,11 @@ impl AgentGoal {
 }
 
 impl GoalKeeper {
-    /// `Codex's own goal`, or `Argonauts`, as it reads after "kept by".
+    /// `Codex's own goal`, or `Argonauts Code`, as it reads after "kept by".
     pub fn words(&self) -> String {
         match self {
             Self::Cli { name } => format!("{name}'s own goal"),
-            Self::Argonauts => "Argonauts".to_owned(),
+            Self::Argonauts => "Argonauts Code".to_owned(),
         }
     }
 }
@@ -227,7 +227,7 @@ mod tests {
                 name: "Codex".into(),
             },
             kept_note: None,
-            checked_by: "Argonauts".into(),
+            checked_by: "Argonauts Code".into(),
             state: GoalState::Running,
             stopped_because: None,
             set_ms_ago: None,
@@ -268,12 +268,12 @@ mod tests {
             "session": "s-002",
             "label": "build:docs",
             "kept_by": {"by": "argonauts"},
-            "checked_by": "Argonauts",
+            "checked_by": "Argonauts Code",
             "state": "running",
             "lines": [{"text": "the README names the command"}]
         });
         let goal: AgentGoal = serde_json::from_value(json).unwrap();
-        assert_eq!(goal.kept_by.words(), "Argonauts");
+        assert_eq!(goal.kept_by.words(), "Argonauts Code");
         assert_eq!(goal.current_try(), 0);
         assert_eq!(goal.lines[0].met, None);
     }

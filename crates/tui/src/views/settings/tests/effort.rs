@@ -29,7 +29,7 @@ fn vim_screen() -> Screen {
     screen
 }
 
-fn picked(out: &Effects) -> (Option<RoleName>, Option<WorkerRef>, Option<String>) {
+fn picked(out: &Effects) -> (Option<RoleName>, Option<ModelRef>, Option<String>) {
     match out.commands.as_slice() {
         [
             UiCommand::Slash {
@@ -188,8 +188,8 @@ fn esc_from_a_roles_models_goes_back_to_the_roles() {
     screen.answer(settings(
         "model",
         vec![
-            row("main_agent", "\"claude-code/opus\"", "built-in", &[]),
-            row("roles.reviewer.workers", "[\"codex\"]", "project", &[]),
+            row("crew.main", "\"claude-code/opus\"", "built-in", &[]),
+            row("roles.reviewer.models", "[\"codex\"]", "project", &[]),
         ],
     ));
     assert_eq!(screen.title(), "Main agent");
@@ -246,7 +246,7 @@ fn esc_from_a_roles_models_goes_back_to_the_roles() {
     );
 }
 
-fn budget_rows() -> Vec<SettingRow> {
+fn limit_rows() -> Vec<SettingRow> {
     vec![
         row("limits.run", "5", "built-in", &["5", "10", "20"]),
         row("limits.day", "20", "built-in", &["20", "50"]),
@@ -256,7 +256,7 @@ fn budget_rows() -> Vec<SettingRow> {
 #[test]
 fn left_goes_back_a_level_and_right_opens_one() {
     let mut screen = Screen::new();
-    screen.answer(settings("limits", budget_rows()));
+    screen.answer(settings("limits", limit_rows()));
     let keys = screen.labels();
     assert_eq!(keys.len(), 2);
     screen.press(KeyCode::Down);
@@ -291,7 +291,7 @@ fn left_goes_back_a_level_and_right_opens_one() {
 #[test]
 fn with_vim_keys_h_goes_back_and_closes_from_the_first_level() {
     let mut screen = vim_screen();
-    screen.answer(settings("limits", budget_rows()));
+    screen.answer(settings("limits", limit_rows()));
     screen.press(KeyCode::Char('l'));
     assert_eq!(screen.title(), "limits.run");
     screen.press(KeyCode::Char('h'));
@@ -440,7 +440,7 @@ fn with_no_level_set_the_slider_says_the_cli_picks_and_esc_keeps_that() {
     assert!(shown(&screen, 80).contains("What high means"));
 }
 
-/// Tab flips All hands on the default agent's slider, and Esc leaves it as it was. A role's
+/// Tab flips Ultracode on the main agent's slider, and Esc leaves it as it was. A role's
 /// slider doesn't offer it, since it's about every task rather than how one role thinks.
 #[test]
 fn tab_flips_ultracode_on_the_main_agents_slider_only() {
@@ -644,7 +644,7 @@ fn a_fixed_level_fits_every_width() {
     }
 }
 
-/// The default agent on a model fixed at one level still offers All hands: Tab flips it, Enter
+/// The main agent on a model fixed at one level still offers Ultracode: Tab flips it, Enter
 /// saves only it, and with the toggle back as it was Enter closes as Esc does.
 #[test]
 fn tab_then_enter_on_a_fixed_slider_saves_ultracode_alone() {
@@ -694,7 +694,7 @@ fn no_levels() -> EffortSlider {
     EffortSlider::without_levels(None, "claude-code/haiku".parse().unwrap(), "Haiku 4.5")
 }
 
-/// Haiku takes no effort setting, so the default agent's `/effort` holds All hands alone:
+/// Haiku takes no effort setting, so the main agent's `/effort` holds Ultracode alone:
 /// the arrows do nothing, Tab flips it, and Enter saves it.
 #[test]
 fn a_model_without_levels_still_offers_ultracode() {

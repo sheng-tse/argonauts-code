@@ -4,6 +4,7 @@ use std::time::Instant;
 use argonauts_core::api::{UsagePeriod, UsageSummary};
 use argonauts_core::app::{UiCommand, ViewRequest};
 use argonauts_core::crew_stats::CrewStats;
+use argonauts_core::crew_stats::StatsRole;
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::settings::mods::ModOrigin;
 use argonauts_core::settings::mods::view::ModChange;
@@ -15,13 +16,13 @@ use ratatui::layout::{Rect, Size};
 use super::Level;
 use super::cli::{millions, millions_short, took};
 use super::pinned::StatsCard;
+use crate::kit::{Form, Frame, Kit};
 use crate::overview::{OverviewView, Tab, UsageWatch, sample};
 use crate::stability;
 use crate::state::AppState;
 use crate::text::str_width;
 use crate::theme::{ColorLevel, Glyphs, Theme};
 use crate::views::{View, ViewCtx, ViewOutcome};
-use crate::widgets::{Form, Frame, Kit};
 
 fn plain() -> Theme {
     let mut theme = Theme::dark().with_level(ColorLevel::None);
@@ -83,6 +84,20 @@ fn at(rows: &[String], text: &str) -> usize {
 
 fn has(rows: &[String], text: &str) -> bool {
     rows.iter().any(|row| row.contains(text))
+}
+
+/// Along the sub-tabs to By role, as Tab or the arrows get there, and into its cards.
+fn by_role(view: &mut OverviewView, state: &AppState) {
+    while view.level() != Level::SubTabs {
+        let towards = if view.level() == Level::Tabs {
+            KeyCode::Down
+        } else {
+            KeyCode::Up
+        };
+        key(view, state, towards);
+    }
+    key(view, state, KeyCode::Left);
+    into_the_cards(view, state);
 }
 
 /// ↓ from wherever the keys are, through the sub-tabs, into the cards. A letter that regroups
@@ -188,12 +203,12 @@ fn by_cli_puts_every_cli_together_then_each_by_itself_then_who_did_what() {
     let keys = rows.iter().rev().find(|row| !row.is_empty()).unwrap();
     assert_eq!(
         keys.trim(),
-        "tab · ←→ tabs · ↓ sub-tabs, then cards · 1-4 period · u tokens, tasks or spend · enter open · p pin · esc closes"
+        "r to cycle dates · tab · ←→ tabs · ↓ sub-tabs, then cards · u tokens, tasks or spend · enter open · p pin · esc closes"
     );
 }
 
 #[test]
-fn m_lists_every_model_across_the_clis_and_enter_opens_one_a_level_deeper() {
+fn m_shows_every_model_as_a_card_and_enter_opens_one_a_level_deeper() {
     let state = state(sample::usage_with_stats());
     let mut tab = stats_tab();
     assert!(matches!(
@@ -202,101 +217,108 @@ fn m_lists_every_model_across_the_clis_and_enter_opens_one_a_level_deeper() {
     ));
     let rows = rows(&mut tab, &state, 120);
     assert!(
-        rows[2].starts_with(" This week, one row per model, whichever CLI runs it"),
+        rows[2].starts_with(" Every model the crew used: all together, then each one by itself"),
         "{rows:#?}"
     );
+    // A letter that regroups puts the keys in the cards, where Tab moves the sub-tabs, so the
+    // chosen one stays marked.
     assert!(
-        rows[2].ends_with("By CLI    By model    By role"),
+        rows[2].ends_with("By CLI   [By model]   By role"),
         "{rows:#?}"
     );
-    let head = at(&rows, "│ model");
-    for title in ["on", "as", "did", "in review", "tokens", "spend", "each"] {
-        assert!(rows[head].contains(title), "{title}: {rows:#?}");
-    }
-    // Sorted by tokens, whichever CLI runs the model.
-    let order = [
-        at(&rows, "■ Opus 5.5"),
-        at(&rows, "■ GPT 5.6   "),
-        at(&rows, "■ Sonnet 5.5"),
-        at(&rows, "■ Gemini 3.6 Pro"),
-        at(&rows, "■ GPT 5.6 Luna"),
-        at(&rows, "■ Gemini 3.6 Flash"),
+    // Built as By CLI is: all together, a card each, then the same job side by side.
+    let parts = [
+        at(&rows, "◆ all models  this week"),
+        at(&rows, "│ ■ Opus 5.5"),
+        at(&rows, "◆ the same job, side by side"),
     ];
-    assert!(order.is_sorted(), "{order:?}: {rows:#?}");
-    let opus = &rows[order[0]];
-    for text in [
-        "orchestrator, worker",
-        "24 tasks",
-        "96%",
-        "2.1M",
-        "~$6.40",
-        "4m 40s",
-    ] {
-        assert!(opus.contains(text), "{text}: {opus}");
+    assert!(parts.is_sorted(), "{parts:?}: {rows:#?}");
+    for bar in ["tokens by model", "spend by model", "agent time by model"] {
+        assert!(has(&rows, bar), "{bar}: {rows:#?}");
     }
-    assert!(rows[order[3]].contains("sent back 4"), "{rows:#?}");
-    assert!(
-        rows[order[0]].contains("❯ "),
-        "the first row is picked: {rows:#?}"
-    );
-
-    // The picked row stands opened under the table: Opus says its roles whole, the
-    // orchestrator's too.
-    let opened = at(&rows, "Opus 5.5 on Claude Code · opened with enter");
-    assert!(
-        rows[opened..]
-            .iter()
-            .any(|row| row.contains("orchestrator ") && !row.contains("orchestrat…")),
-        "{rows:#?}"
-    );
-    // Enter closes it, and again opens it.
-    into_the_cards(&mut tab, &state);
-    key(&mut tab, &state, KeyCode::Enter);
-    assert!(!has(
-        &self::rows(&mut tab, &state, 120),
-        "opened with enter"
-    ));
-    key(&mut tab, &state, KeyCode::Enter);
-    assert!(has(&self::rows(&mut tab, &state, 120), "opened with enter"));
-
-    // ↓ moves the opened row with the keys.
-    key(&mut tab, &state, KeyCode::Down);
-    let rows = self::rows(&mut tab, &state, 120);
-    assert!(!has(&rows, "Opus 5.5 on Claude Code · opened"), "{rows:#?}");
-    let opened = at(&rows, "GPT 5.6 on Codex · opened with enter");
-    assert!(
-        rows[opened].contains("21 tasks · 14 reviews · 1.2M tokens · $2.30"),
-        "{rows:#?}"
-    );
+    // A card for each model, each CLI's models together, three to a row.
+    let cards = at(&rows, "│ ■ Opus 5.5");
+    let order = ["■ Opus 5.5", "■ Sonnet 5.5", "■ GPT 5.6 "].map(|name| {
+        rows[cards]
+            .find(name)
+            .unwrap_or_else(|| panic!("{name}: {rows:#?}"))
+    });
+    assert!(order.is_sorted(), "{order:?}: {rows:#?}");
     for text in [
-        "by role",
-        "90% first pass",
-        "sent back 2 · 52s each",
-        "by kind of work, as a worker",
-        "its tokens · 1.2M",
-        "from cache 0.8M",
-        "tokens a day",
-        "fallbacks took over 2 tasks from Opus 5.5",
-        "when Claude's 5-hour window ran out",
-        "Codex's plan  5h",
+        "■ orchestrator",
+        "■ workers",
+        "96% first pass",
+        "this week · 4m 40s a task",
+        "cache hit",
     ] {
         assert!(has(&rows, text), "{text}: {rows:#?}");
     }
-    for kind in ["build", "tests", "docs"] {
+    // Side by side: the workers' four models, and the reviewers' two.
+    let same = at(&rows, "◆ the same job, side by side");
+    for text in [
+        "first pass",
+        "time each",
+        "cost each",
+        "tokens each",
+        "accepted",
+    ] {
         assert!(
-            rows.iter().any(|row| row.contains(&format!("│ {kind} "))),
-            "{kind}: {rows:#?}"
+            rows[same..].iter().any(|row| row.contains(text)),
+            "{text}: {rows:#?}"
         );
+    }
+
+    // Nothing stands opened until Enter opens the card the keys are on, and Enter again
+    // closes it.
+    assert!(!has(&rows, "Opus 5.5 on Claude Code"), "{rows:#?}");
+    key(&mut tab, &state, KeyCode::Enter);
+    let rows = self::rows(&mut tab, &state, 120);
+    let opened = at(&rows, "■ Opus 5.5 on Claude Code · as orchestrator, worker");
+    assert!(
+        at(&rows, "│ ■ GPT 5.6 Luna") < opened,
+        "under the cards: {rows:#?}"
+    );
+    key(&mut tab, &state, KeyCode::Enter);
+    assert!(!has(
+        &self::rows(&mut tab, &state, 120),
+        "Opus 5.5 on Claude Code"
+    ));
+
+    // ↓ moves to the next card, which Enter opens in the first one's place.
+    key(&mut tab, &state, KeyCode::Down);
+    key(&mut tab, &state, KeyCode::Down);
+    key(&mut tab, &state, KeyCode::Enter);
+    let rows = self::rows(&mut tab, &state, 120);
+    assert!(!has(&rows, "Opus 5.5 on Claude Code"), "{rows:#?}");
+    let opened = at(&rows, "■ GPT 5.6 on Codex · as worker, reviewer");
+    assert!(rows[opened].ends_with("1.2M tokens · $2.30 │"), "{rows:#?}");
+    // At the left its work, at the right what it used and how it stands beside the others.
+    for text in [
+        "│ work ",
+        "90% first pass · 2 sent back once",
+        "86% accepted · 2 sent back",
+        "a task · 52s a review",
+        "│ cost ",
+        "tokens a task",
+        "■ cache 0.8M",
+        "cache hit",
+        "a day, this week",
+        "beside the other models",
+        "as a reviewer: 52s each vs",
+        "fallbacks 2 tasks fell back from Opus 5.5",
+        "when Claude's 5-hour window ran out",
+    ] {
+        assert!(has(&rows[opened..], text), "{text}: {rows:#?}");
     }
     assert!(
         has(
             &rows,
-            "↑↓ model · enter opens or closes it · tab By CLI, By model, By role · u tokens, tasks or spend · s sort"
+            "r to cycle dates · ↓ more · ↑↓ model · enter opens or closes it · tab By CLI, By model, By role"
         ),
         "{rows:#?}"
     );
 
-    // Esc closes the panel at once, with a row open too.
+    // Esc closes the panel at once, with a card open too.
     assert!(matches!(
         key(&mut tab, &state, KeyCode::Esc),
         ViewOutcome::Close
@@ -325,41 +347,77 @@ fn enter_on_a_clis_card_opens_it_and_enter_again_closes_it() {
 }
 
 #[test]
-fn r_lists_the_roles_with_every_model_that_filled_each() {
+fn by_role_shows_every_role_as_a_card_with_the_models_that_filled_it() {
     let state = state(sample::usage_with_stats());
     let mut tab = stats_tab();
-    key(&mut tab, &state, KeyCode::Char('r'));
+    by_role(&mut tab, &state);
     let rows = rows(&mut tab, &state, 120);
     assert!(
-        rows[2].starts_with(" This week, one row per role, every model that filled it"),
+        rows[2].starts_with(" Every role in the crew: all together, then each one by itself"),
         "{rows:#?}"
     );
-    let order = [
-        at(&rows, "orchestrator"),
-        at(&rows, "workers"),
-        at(&rows, "reviewers"),
-        at(&rows, "judge"),
+    let parts = [
+        at(&rows, "◆ all roles  this week"),
+        at(&rows, "│ ■ orchestrator"),
+        at(&rows, "◆ what each role caught or changed"),
     ];
+    assert!(parts.is_sorted(), "{parts:?}: {rows:#?}");
+    for bar in ["tokens by role", "spend by role", "agent time by role"] {
+        assert!(has(&rows, bar), "{bar}: {rows:#?}");
+    }
+    // A card for each role, in the order the work goes round the crew.
+    let cards = at(&rows, "│ ■ orchestrator");
+    let order = ["■ orchestrator", "■ workers", "■ reviewers"].map(|name| {
+        rows[cards]
+            .find(name)
+            .unwrap_or_else(|| panic!("{name}: {rows:#?}"))
+    });
     assert!(order.is_sorted(), "{order:?}: {rows:#?}");
-    let workers = &rows[order[1]];
-    for text in ["63 tasks", "92%"] {
-        assert!(workers.contains(text), "{text}: {workers}");
-    }
-    // Under the role's bar, each model that filled it and what it did.
-    let legend = &rows[order[1] + 1];
+    assert!(has(&rows, "│ ■ judge"), "{rows:#?}");
+    // Under a role's name what it did and who filled it, then a bar for each model.
     for text in [
-        "Opus 5.5 24",
-        "Sonnet 5.5 11",
-        "GPT 5.6 21",
-        "GPT 5.6 Luna 7",
+        "63 tasks · 4 models",
+        "63 reviews · 2 models",
+        "■ GPT 5.6 Luna",
+        "92% first pass",
+        "best first pass: Opus 5.5, 96%",
     ] {
-        assert!(legend.contains(text), "{text}: {legend}");
+        assert!(has(&rows, text), "{text}: {rows:#?}");
     }
-    assert!(rows[order[2]].contains("63 reviews"), "{rows:#?}");
-    into_the_cards(&mut tab, &state);
+    // What the roles beside the workers settled, a bar and a legend each.
+    let caught = at(&rows, "◆ what each role caught or changed");
+    assert!(
+        rows[caught..]
+            .iter()
+            .any(|row| row.contains("■ ran as planned 13   ■ replanned 1   of 14 runs")),
+        "{rows:#?}"
+    );
+    // Enter opens the role the keys are on, under the cards.
     key(&mut tab, &state, KeyCode::Down);
+    key(&mut tab, &state, KeyCode::Enter);
     let rows = self::rows(&mut tab, &state, 120);
-    assert!(has(&rows, "workers · opened with enter"), "{rows:#?}");
+    let opened = at(&rows, "workers · opened with enter");
+    assert!(at(&rows, "│ ■ judge") < opened, "{rows:#?}");
+}
+
+#[test]
+fn runs_filed_before_their_endings_were_kept_say_nothing_of_how_they_ended() {
+    let mut usage = sample::usage_with_stats();
+    let stats = usage.stats.as_mut().expect("the sample has stats");
+    stats.outcomes = Default::default();
+    let state = state(usage);
+    let mut tab = stats_tab();
+    by_role(&mut tab, &state);
+    let rows = rows(&mut tab, &state, 120);
+    assert!(has(&rows, "│ runs     none"), "{rows:#?}");
+    for unknown in ["0% merged", "ran as planned", "never replanned"] {
+        assert!(!has(&rows, unknown), "{unknown}: {rows:#?}");
+    }
+    // The reviewers' send-backs came with no reasons, which the row says for all six.
+    assert!(
+        has(&rows, "■ no reason kept 6   of 6 sent back"),
+        "{rows:#?}"
+    );
 }
 
 #[test]
@@ -422,7 +480,7 @@ fn the_group_and_measure_of_the_stats_file_are_where_the_tab_opens() {
     let state = state(usage);
     let mut tab = stats_tab();
     let rows = rows(&mut tab, &state, 120);
-    assert!(rows[2].contains("one row per model"), "{rows:#?}");
+    assert!(rows[2].contains("Every model the crew used"), "{rows:#?}");
     // A key changes the view, and the file doesn't take it back.
     key(&mut tab, &state, KeyCode::Char('c'));
     let rows = self::rows(&mut tab, &state, 120);
@@ -526,6 +584,7 @@ fn an_unreviewed_unmerged_task_changes_no_count_of_how_tasks_fared() {
             model: Some("gpt-5.6-luna".to_owned()),
             kind: Some("docs".to_owned()),
             sent_back: 0,
+            reasons: Vec::new(),
             merged: false,
             reviewed: false,
         });
@@ -553,6 +612,7 @@ fn a_task_sent_back_and_never_merged_still_counts_in_how_tasks_fared() {
         model: Some("gpt-5.6-luna".to_owned()),
         kind: Some("build".to_owned()),
         sent_back: 1,
+        reasons: Vec::new(),
         merged: false,
         reviewed: true,
     });
@@ -564,13 +624,13 @@ fn a_task_sent_back_and_never_merged_still_counts_in_how_tasks_fared() {
 }
 
 #[test]
-fn the_main_sessions_turns_are_not_the_crews_work() {
+fn the_main_agents_conversations_are_a_roles_work_like_any_other() {
     let mut usage = sample::usage_with_stats();
     let stats = usage.stats.as_mut().expect("the sample has stats");
     stats.work.push(argonauts_core::crew_stats::WorkRow {
         agent: "claude-code".to_owned(),
         model: Some("claude-haiku-4-5".to_owned()),
-        role: argonauts_core::crew_stats::CrewRole::Main,
+        role: StatsRole::Main,
         kind: None,
         spent: argonauts_core::Spend {
             input_tokens: 900_000,
@@ -579,18 +639,40 @@ fn the_main_sessions_turns_are_not_the_crews_work() {
         done: 3,
         sent_back: 0,
         took_secs: 0,
+        sessions: 0,
+        tool_calls: 0,
+        turns: 12,
         review: Default::default(),
     });
     let state = state(usage);
     let mut tab = stats_tab();
     key(&mut tab, &state, KeyCode::Char('m'));
     let rows = rows(&mut tab, &state, 120);
-    assert!(!has(&rows, "Haiku 4.5"), "{rows:#?}");
-    assert!(!has(&rows, "main"), "{rows:#?}");
+    let haiku = at(&rows, "■ Haiku 4.5");
+    assert!(
+        rows[haiku..].iter().any(|row| row.contains("■ main")),
+        "{rows:#?}"
+    );
     let mut tab = stats_tab();
-    key(&mut tab, &state, KeyCode::Char('r'));
+    by_role(&mut tab, &state);
     let rows = self::rows(&mut tab, &state, 120);
-    assert!(!has(&rows, "main"), "{rows:#?}");
+    for text in [
+        "│ ■ main",
+        "3 conversations · 1 model",
+        "turns    12 in 3 · 4 each",
+    ] {
+        assert!(has(&rows, text), "{text}: {rows:#?}");
+    }
+    // A conversation is no task, so the bars that count tasks leave it out.
+    let tasks = |usage: UsageSummary| {
+        let state = self::state(usage);
+        let mut tab = stats_tab();
+        key(&mut tab, &state, KeyCode::Char('u'));
+        let rows = self::rows(&mut tab, &state, 120);
+        rows[at(&rows, "tasks by CLI")].clone()
+    };
+    let with_main = tasks(state.usage.as_deref().cloned().expect("the numbers"));
+    assert_eq!(with_main, tasks(sample::usage_with_stats()));
 }
 
 #[test]
@@ -630,7 +712,13 @@ fn stats_opens_on_every_day_so_far_whichever_period_the_tab_before_showed() {
     key(&mut tab, &state, KeyCode::Right);
     assert_eq!(tab.tab(), Tab::Stats);
     let rows = rows(&mut tab, &state, 120);
-    assert!(has(&rows, "◆ all together  every day so far"), "{rows:#?}");
+    assert!(
+        has(
+            &rows,
+            "◆ all together  the crew's work through Argonauts Code"
+        ),
+        "{rows:#?}"
+    );
 }
 
 #[test]
@@ -650,6 +738,26 @@ fn one_to_four_pick_the_period_from_any_row() {
             "{code}: {asked:?}"
         );
     }
+}
+
+#[test]
+fn a_week_on_a_clis_card_is_seven_bars_over_the_letters_of_their_days() {
+    let state = state(sample::usage_with_stats());
+    let mut tab = stats_tab();
+    // Three cards to a row: the letters say it's a week, and the pace follows the bars.
+    let rows = rows(&mut tab, &state, 120);
+    let letters = at(&rows, "│ S M T W T F S ");
+    let bars = &rows[letters - 1];
+    assert!(bars.contains("▁ ▁"), "a cell between the bars: {rows:#?}");
+    assert!(bars.contains(" a task"), "{rows:#?}");
+    assert!(!bars.contains("this week"), "{rows:#?}");
+    // A blank row between a card's parts, the plan's windows last.
+    assert_eq!(rows[letters + 1].trim_matches(['│', ' ']), "", "{rows:#?}");
+    assert!(rows[letters + 2].contains("│ 5h "), "{rows:#?}");
+    // A card to a row has room to name the period too.
+    let rows = self::rows(&mut tab, &state, 60);
+    let letters = at(&rows, "│ S M T W T F S ");
+    assert!(rows[letters - 1].contains("  this week · "), "{rows:#?}");
 }
 
 #[test]
@@ -887,7 +995,7 @@ fn the_tab_behind_the_page_takes_its_period_grouping_and_measure() {
     );
     key(&mut tab, &state, KeyCode::Esc);
     let rows = self::rows(&mut tab, &state, 120);
-    assert!(rows[2].contains("one row per model"), "{rows:#?}");
+    assert!(rows[2].contains("Every model the crew used"), "{rows:#?}");
 }
 
 #[test]
@@ -1041,7 +1149,7 @@ fn down_goes_from_the_tabs_to_the_sub_tabs_where_the_arrows_regroup_at_once() {
         "{rows:#?}"
     );
     assert!(
-        has(&rows, "│ model "),
+        has(&rows, "◆ all models"),
         "the cards changed at once: {rows:#?}"
     );
     // Left of the first sub-tab is the last.
@@ -1052,12 +1160,117 @@ fn down_goes_from_the_tabs_to_the_sub_tabs_where_the_arrows_regroup_at_once() {
         rows[2].ends_with(" By CLI    By model   [By role]"),
         "{rows:#?}"
     );
-    // Into the rows, and ↑ on the first goes back to the sub-tabs, then the tabs.
+    // Into the cards, and ↑ on the first goes back to the sub-tabs, then the tabs.
     key(&mut tab, &state, KeyCode::Down);
-    assert!(has(&self::rows(&mut tab, &state, 120), "❯"));
+    assert_eq!(tab.level(), Level::Cards);
     key(&mut tab, &state, KeyCode::Up);
-    assert!(!has(&self::rows(&mut tab, &state, 120), "❯"));
+    assert_eq!(tab.level(), Level::SubTabs);
     key(&mut tab, &state, KeyCode::Up);
     key(&mut tab, &state, KeyCode::Left);
     assert_eq!(tab.tab(), Tab::Limits, "← on the tabs changes the tab");
+}
+
+/// A model that spent in a role and did none of its work isn't on that role's row of who did
+/// what, and a role nobody did any of says so.
+#[test]
+fn who_did_what_names_only_the_models_that_did_the_work() {
+    use argonauts_core::crew_stats::WorkRow;
+    let mut usage = sample::usage_with_stats();
+    let stats = usage.stats.as_mut().unwrap();
+    let spent = stats.work[0].spent;
+    let idle = [
+        ("claude-sonnet-5-5", StatsRole::Judge),
+        ("claude-opus-5-5", StatsRole::Merger),
+    ];
+    for (model, role) in idle {
+        stats.work.push(WorkRow {
+            agent: "claude-code".to_owned(),
+            model: Some(model.to_owned()),
+            role,
+            kind: None,
+            spent,
+            done: 0,
+            sent_back: 0,
+            took_secs: 0,
+            sessions: 1,
+            tool_calls: 0,
+            turns: 0,
+            review: Default::default(),
+        });
+    }
+    let state = state(usage);
+    let shown = rows(&mut stats_tab(), &state, 120);
+    let who = &shown[at(&shown, "who did what")..];
+    let judge = at(who, "■ Gemini 3.6 Flash 14 sign-offs");
+    assert!(!who[judge].contains("Sonnet 5.5"), "{who:#?}");
+    let merger = at(who, " merger ");
+    assert!(who[merger + 1].contains("no merges recorded"), "{who:#?}");
+    assert!(!who.iter().any(|row| row.contains(" 0 ")), "{who:#?}");
+}
+
+/// Records that spell one model three ways, as the alias `opus`, as `claude-opus-5-5` and with
+/// a date, draw By CLI, By model, a model opened and By role just as records that spell it one
+/// way do.
+#[test]
+fn a_model_spelled_three_ways_is_one_model_in_every_grouping() {
+    use argonauts_core::model_catalog::CatalogEntry;
+    use argonauts_core::names::ModelRef;
+
+    let mut names = sample::names();
+    let mut opus = CatalogEntry::new(ModelRef::new("claude-code", Some("claude-opus-5-5".into())));
+    opus.name = Some("Opus 5.5".to_owned());
+    opus.aliases = Some(vec!["opus".to_owned()]);
+    names.catalog.models.push(opus);
+    let once = sample::usage_with_stats();
+    let mut spelled = once.clone();
+    let stats = spelled.stats.as_mut().unwrap();
+    let mut ways = ["opus", "claude-opus-5-5-20261001", "claude-opus-5-5"]
+        .into_iter()
+        .cycle();
+    let mut respell = |model: &mut Option<String>| {
+        if model.as_deref() == Some("claude-opus-5-5") {
+            *model = ways.next().map(str::to_owned);
+        }
+    };
+    stats
+        .work
+        .iter_mut()
+        .for_each(|row| respell(&mut row.model));
+    stats
+        .tasks
+        .iter_mut()
+        .for_each(|task| respell(&mut task.model));
+    stats
+        .days
+        .iter_mut()
+        .for_each(|part| respell(&mut part.model));
+    assert!(
+        stats
+            .work
+            .iter()
+            .any(|row| row.model.as_deref() == Some("opus"))
+    );
+
+    let screens = |usage: UsageSummary| -> Vec<Vec<String>> {
+        let mut state = state(usage);
+        state.names = names.clone();
+        let mut tab = stats_tab();
+        let by_cli = rows(&mut tab, &state, 120);
+        key(&mut tab, &state, KeyCode::Char('m'));
+        let by_model = rows(&mut tab, &state, 120);
+        key(&mut tab, &state, KeyCode::Enter);
+        let opened = rows(&mut tab, &state, 120);
+        while tab.level() != Level::SubTabs {
+            key(&mut tab, &state, KeyCode::Up);
+        }
+        key(&mut tab, &state, KeyCode::Right);
+        into_the_cards(&mut tab, &state);
+        let by_role = rows(&mut tab, &state, 120);
+        assert!(has(&by_role, "◆ all roles"), "{by_role:#?}");
+        vec![by_cli, by_model, opened, by_role]
+    };
+    let (want, got) = (screens(once), screens(spelled));
+    for (want, got) in want.iter().zip(&got) {
+        assert_eq!(got, want);
+    }
 }

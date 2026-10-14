@@ -1,4 +1,4 @@
-//! Settings screens: the pickers under the input for `/model`, `/effort`, `/preset`, and the
+//! Settings screens: the pickers under the input for `/model`, `/effort`, `/workflow`, and the
 //! other settings commands, the scope question, `/config`, and `/approvals`.
 //!
 //! Keys reach a picker through the runtime: while `bottom.picker` is open it gets every key
@@ -6,8 +6,8 @@
 
 pub mod approvals;
 pub mod config;
+mod fallback;
 pub mod flow;
-mod handoff;
 mod models;
 mod panel;
 pub mod permissions;

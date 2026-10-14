@@ -1,4 +1,4 @@
-//! `{{name}}` placeholders, which the lead fills from a workflow's `params`.
+//! `{{name}}` placeholders, which the main agent fills from a workflow's `params`.
 
 use serde_json::Value;
 
@@ -21,7 +21,7 @@ pub(super) fn names_in(text: &str) -> Vec<&str> {
     names
 }
 
-/// The name when `text` is one placeholder and nothing else, as `count` and `workers` must be
+/// The name when `text` is one placeholder and nothing else, as `count` and `models` must be
 /// when they aren't a number or a list.
 pub(super) fn sole(text: &str) -> Option<&str> {
     let inner = text.trim().strip_prefix("{{")?.strip_suffix("}}")?.trim();

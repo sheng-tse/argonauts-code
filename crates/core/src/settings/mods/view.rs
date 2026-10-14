@@ -71,8 +71,8 @@ pub enum ModRowKind {
         /// The project's, with a command you haven't trusted yet, so it hasn't run.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         needs_trust: bool,
-        /// Its file names `mode-line` among its places and the bottom line's file doesn't
-        /// list it. `file.places` holds `mode-line` only for a mod the line lists.
+        /// Its file names `bottom-line` among its places and the bottom line's file doesn't
+        /// list it. `file.places` holds `bottom-line` only for a mod the line lists.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         asks_for_line: bool,
         /// It asks for the bottom line by the name of a part the line draws itself, so the
@@ -140,8 +140,8 @@ pub enum ModChange {
 }
 
 impl ModFile {
-    /// The keys that differ from `from`, each with its value as TOML text, as a page saves
-    /// them.
+    /// The keys whose values are different from `from`, each with its value as TOML text, as a page
+    /// saves them.
     pub fn changes_from(&self, from: &ModFile) -> Vec<(String, String)> {
         let word = |text: &str| Value::String(text.to_owned()).to_string();
         let words = |list: Vec<String>| {

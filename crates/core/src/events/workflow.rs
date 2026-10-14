@@ -3,8 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::events::session::VendorWorkflow;
-use crate::names::{CheckpointId, SessionKey, WorkflowId};
+use crate::events::session::CliWorkflowRun;
+use crate::names::{ApprovalId, SessionKey, WorkflowId};
 use crate::workflow::{StandardPhase, StepKind, StepRef, Workflow, WorkflowRef};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -28,7 +28,7 @@ pub enum WorkflowEvent {
         phase: PhaseMark,
         end: StepEnd,
     },
-    /// The lead added a phase that hadn't started, at a phase end or between attempts.
+    /// The main agent added a phase that hadn't started, at a phase end or between tries.
     PhaseAdded {
         id: WorkflowId,
         phase: DeclaredPhase,
@@ -40,7 +40,7 @@ pub enum WorkflowEvent {
         phase: PhaseMark,
         why: String,
     },
-    /// One line on why the plan moved, by the lead or by code, such as "review:median found
+    /// One line on why the plan moved, by the main agent or by code, such as "review:median found
     /// median([]) returns None, so a second round".
     Note(RunNote),
     /// What the runner says a workflow is doing now: its name, its phases in the order it
@@ -54,7 +54,7 @@ pub enum WorkflowEvent {
 pub struct WorkflowReport {
     /// The workflow step that runs it.
     pub step: StepRef,
-    pub workflow: VendorWorkflow,
+    pub workflow: CliWorkflowRun,
     /// The session behind each agent that has one yet, in the agents' order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sessions: Vec<AgentSession>,
@@ -88,8 +88,8 @@ pub struct WorkflowDeclared {
     pub name: String,
     pub description: String,
     pub phases: Vec<DeclaredPhase>,
-    /// The titles of the steps you require, of every workflow or of this request, so the chat
-    /// and the view can mark them as yours where a phase has one of them as its title.
+    /// The names of the steps you require, of every workflow or of this request, so the
+    /// conversation and the view can mark them as yours where a phase has one of them as its name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required: Vec<String>,
 }
@@ -99,20 +99,20 @@ pub struct WorkflowDeclared {
 pub struct DeclaredPhase {
     /// From 0, its place in the workflow.
     pub index: u32,
-    pub title: String,
+    pub name: String,
     /// One line on who does what.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub detail: String,
     pub standard: StandardPhase,
 }
 
-/// A declared phase, by place and title.
+/// A declared phase, by place and name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhaseMark {
     pub id: WorkflowId,
     /// From 0.
     pub index: u32,
-    pub title: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,7 +139,7 @@ impl WorkflowDeclared {
                 .enumerate()
                 .map(|(index, phase)| DeclaredPhase {
                     index: u32::try_from(index).unwrap_or(u32::MAX),
-                    title: phase.name.clone(),
+                    name: phase.name.clone(),
                     detail: phase.detail.clone(),
                     standard: phase.standard,
                 })
@@ -148,25 +148,25 @@ impl WorkflowDeclared {
         }
     }
 
-    /// Whether you require the step `phase` is, whatever case its title is written in.
+    /// Whether you require the step `phase` is, whatever case its name is written in.
     pub fn requires(&self, phase: &DeclaredPhase) -> bool {
-        self.requires_step(&phase.title)
+        self.requires_step(&phase.name)
     }
 
-    /// Whether a step of this title is one you require, in a phase of this workflow or of the
+    /// Whether a step of this name is one you require, in a phase of this workflow or of the
     /// workflow one of its steps runs.
-    pub fn requires_step(&self, title: &str) -> bool {
-        let title = title.trim();
+    pub fn requires_step(&self, name: &str) -> bool {
+        let name = name.trim();
         self.required
             .iter()
-            .any(|required| required.trim().eq_ignore_ascii_case(title))
+            .any(|required| required.trim().eq_ignore_ascii_case(name))
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowStarted {
     pub id: WorkflowId,
-    /// The template it came from, or `None` when the lead composed it.
+    /// The template it came from, or `None` when the main agent composed it.
     pub from: Option<WorkflowRef>,
     /// SHA-256 of the definition's canonical JSON, so every record names exactly what ran.
     pub version: String,
@@ -212,9 +212,9 @@ pub struct WorkflowChanged {
     pub id: WorkflowId,
     pub version: String,
     pub workflow: Workflow,
-    /// The `change_request` checkpoint that approved it. `None` for a change that needs no
-    /// approval: the lead's design moving before anything writes, or a goal's next attempt.
+    /// The `change_request` approval that approved it. `None` for a change that needs no
+    /// approval: the main agent's design moving before anything writes, or a goal's next try.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checkpoint: Option<CheckpointId>,
+    pub approval: Option<ApprovalId>,
     pub reason: String,
 }

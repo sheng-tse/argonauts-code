@@ -7,23 +7,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use crate::names::{CheckpointId, SessionKey, TurnId, VendorId, WorkerRef};
+use crate::names::{AgentId, ApprovalId, ModelRef, SessionKey, TurnId};
 use crate::required::RequiredStep;
 use crate::settings::approvals::ApprovalMode;
-use crate::settings::protocol::SoloStyle;
+use crate::settings::protocol::CaptainKind;
 use crate::settings::workflows::RunStyle;
 use crate::steps::intake::{ChangeEstimate, InstructionKind};
-use crate::{CardId, PhaseStatus, RunId};
+use crate::{PhaseStatus, RunId, TaskId};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum RunLifecycle {
     /// The first event of every run.
     Started(Box<RunStarted>),
-    /// The run's name and description, from the lead's brief, or from intake for a solo run
-    /// or a template that runs as written. Every view shows these, never a template's name.
+    /// The run's name and description, from the main agent's brief, or from intake for a Captain
+    /// run or a template that runs as written. Every view shows these, never a template's name.
     Named(RunNamed),
-    /// A new supervisor rebuilt the run from the log and carried on.
+    /// A new run host rebuilt the run from the log and carried on.
     Resumed(RunResumed),
     /// Esc at the top level. Cancelled by Enter until the safe point is reached. A second Esc
     /// sends `now`: sessions stop at once and their work is committed.
@@ -41,21 +41,21 @@ pub enum RunLifecycle {
     /// You pressed Enter before the safe point.
     PauseCancelled,
     /// The safe point was reached: no new sessions, running ones stopped after their tool call,
-    /// worktrees committed. A `Parked` event follows.
+    /// worktrees committed. A `Waiting` event follows.
     Paused {
         sessions_stopped: u32,
-        committed: Vec<CardId>,
+        committed: Vec<TaskId>,
     },
     /// `/stop`: agents wrap up and report, work is committed, the run ends as stopped.
     StopRequested { by: Party },
-    /// The supervisor exited with nothing running and nothing spending.
-    Parked {
-        reason: ParkReason,
-        /// Checkpoints waiting for you, if that's the reason.
-        waiting_on: Vec<CheckpointId>,
+    /// The run host exited with nothing running and nothing spending.
+    Waiting {
+        reason: WaitReason,
+        /// Approvals waiting for you, if that's the reason.
+        waiting_on: Vec<ApprovalId>,
     },
     /// Everything a resume or a reattach needs, so it can start here instead of at `seq` 0.
-    /// The engine writes one every `supervisor.snapshot_every` events.
+    /// The engine writes one every `run_host.snapshot_every` events.
     Snapshot(Box<RunSnapshot>),
     /// How the run ends in the conversation, as an agent's own CLI ends a task: what changed,
     /// how it was checked, and what's left. Just before `Finished`.
@@ -79,8 +79,8 @@ pub struct RunNamed {
     /// The example the workflow started from, shown once at the end of the start item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub based_on: Option<String>,
-    /// The lead's done-when list, which the final check judges. Empty when the lead wrote
-    /// none, and then the approved goal's criteria are judged.
+    /// The main agent's done-when list, which the final check judges. Empty when the main agent
+    /// wrote none, and then the approved goal's criteria are judged.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub done_when: Vec<crate::events::goal::Criterion>,
 }
@@ -94,23 +94,47 @@ pub struct RunSnapshot {
     pub engine: Value,
     /// For views that redraw without replaying.
     pub summary: crate::api::StatusSummary,
-    pub open_checkpoints: Vec<crate::events::checkpoint::CheckpointOpened>,
+    pub open_approvals: Vec<crate::events::approval::ApprovalOpened>,
     pub running: Vec<SessionKey>,
+}
+
+/// What comes between your message and the main session's own account of the work, in a
+/// request the session handed over.
+const ACCOUNT_FOLLOWS: &str = "\n\nFrom the conversation, as the main agent put it: ";
+
+/// A request the main session hands over: your message as you typed it, and after it the
+/// session's own account of the work when it adds something, marked as the session's. Your
+/// last message may be no more than "yes, do that", and the agents that take the work haven't
+/// read the conversation.
+pub fn handed_over(typed: &str, account: &str) -> String {
+    let (typed, account) = (typed.trim(), account.trim());
+    if account.is_empty() || account == typed {
+        return typed.to_owned();
+    }
+    format!("{typed}{ACCOUNT_FOLLOWS}{account}")
+}
+
+/// The session's account of the work in a request that [`handed_over`] wrote. It says what
+/// the work is where your own words say how to run it, or only agree to it.
+pub fn account_in(request: &str) -> Option<&str> {
+    let (_, account) = request.split_once(ACCOUNT_FOLLOWS)?;
+    Some(account.trim()).filter(|account| !account.is_empty())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunStarted {
-    /// Exactly what you typed.
+    /// What you typed, and after it the main session's account of the work when it handed
+    /// the request over ([`handed_over`]).
     pub request: String,
     pub title: String,
     pub mode: RunMode,
-    /// Whether `/solo`, `/crew`, `--solo`, or `--crew` forced the mode.
+    /// Whether `/captain`, `/crew`, `--captain`, or `--crew` forced the mode.
     pub forced: bool,
     pub workflow: String,
-    /// The default agent's estimate, unless the mode was forced.
+    /// The main agent's estimate, unless the mode was forced.
     pub estimate: Option<ChangeEstimate>,
-    pub triage: Option<TriageDecision>,
-    pub chat_turn: Option<TurnId>,
+    pub captain_or_crew: Option<CaptainOrCrewDecision>,
+    pub conversation_turn: Option<TurnId>,
     /// The merged run this one continues (`/follow-up`).
     pub continues: Option<RunId>,
     /// Absolute path of the repository.
@@ -125,12 +149,12 @@ pub struct RunStarted {
     /// Every `--set` and where each key came from, for the ablation record.
     pub overrides: Vec<OverrideRecord>,
     /// Keyed by adapter id.
-    pub harness_versions: BTreeMap<String, String>,
-    /// Argonauts version.
+    pub cli_versions: BTreeMap<String, String>,
+    /// Argonauts Code version.
     pub version: String,
     /// The MCP client that asked for the run, by the name it reported for itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub front_end: Option<String>,
+    pub outside_agent: Option<String>,
     /// What the request said about how to run it, and what came of each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub instructions: Vec<CheckedInstruction>,
@@ -158,14 +182,14 @@ impl CheckedInstruction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum InstructionOutcome {
-    /// Applied, as the Triage line says it: "Codex coordinates". `note` says what of it couldn't
+    /// Applied, as the start line says it: "Codex orchestrates". `note` says what of it couldn't
     /// be, such as "Codex has no model named opus".
     Followed {
         said: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
-    /// Not followed, and why, as the Triage line says it.
+    /// Not followed, and why, as the start line says it.
     NotFollowed { why: String },
     /// Its words aren't in your message, so the model wrote it, not you. Only Ctrl+O lists it.
     Dropped,
@@ -174,16 +198,16 @@ pub enum InstructionOutcome {
 /// A run's last word to you, in the main agent's voice.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClosingAnswer {
-    /// The agent's own words: a solo owner's answer, or the lead's from the cards' reports.
+    /// The agent's own words: Captain's answer, or the main agent's from the tasks' reports.
     /// Code writes it when no agent could.
     pub text: String,
     /// Who wrote `text`. `None` when code did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub by: Option<WorkerRef>,
+    pub by: Option<ModelRef>,
     /// What changed, with lines added and removed. The run's own records are left out.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<ChangedFile>,
-    /// How it was checked: the gates Argonauts ran, each with its result.
+    /// How it was checked: the checks Argonauts Code ran, each with its result.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<CheckLine>,
     /// The tests the agents say they ran, in their words.
@@ -192,6 +216,28 @@ pub struct ClosingAnswer {
     /// Anything left or worth knowing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub left: Vec<String>,
+    /// What the run decided in your place on autopilot, for you to review.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decided: Vec<DecidedAlone>,
+}
+
+/// One thing a run on autopilot decided where it would have asked you.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecidedAlone {
+    /// What was decided, in one line.
+    pub what: String,
+    /// Whose call it was, such as "the worker's call".
+    pub whose: String,
+}
+
+impl DecidedAlone {
+    /// The line that follows what was decided: whose call it was, and what you can do.
+    pub fn review_note(&self) -> String {
+        format!(
+            "({}; ask for a change if you want otherwise)",
+            self.whose.trim()
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,7 +249,7 @@ pub struct ChangedFile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckLine {
-    /// The gate's name.
+    /// The check's name.
     pub what: String,
     pub passed: bool,
     /// Such as "6 passed". Empty when there's nothing more to say.
@@ -211,43 +257,43 @@ pub struct CheckLine {
     pub result: String,
 }
 
-/// One setting that differs from the built-in default, and the layer that set it.
+/// One setting that is different from the built-in default, and the layer that set it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OverrideRecord {
     /// Dotted key.
     pub key: String,
     /// Value as TOML text.
     pub value: String,
-    /// `global`, `project`, `preset`, or `flag`.
+    /// `global`, `project`, `workflow`, or `flag`.
     pub from: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunMode {
-    /// One card for the default agent.
-    Solo,
-    /// Goal check, planning, dividing, card pipelines.
+    /// One task for the main agent.
+    Captain,
+    /// Goal check, planning, dividing, task pipelines.
     Crew,
 }
 
-/// The triage rules' answer, computed by code from the estimate.
+/// The Captain-or-crew rules' answer, computed by code from the estimate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TriageDecision {
+pub struct CaptainOrCrewDecision {
     pub mode: RunMode,
-    /// Solo first, then crew if the solo card escalates.
-    pub escalate_to_crew: bool,
-    /// The rule that fired, such as `solo_max_files` or `learned:api-feature`.
+    /// Captain first, then crew if Captain's task needs you.
+    pub move_to_crew: bool,
+    /// The rule that fired, such as `captain_max_files` or `learned:api-feature`.
     pub rule: String,
     /// One line for you, such as "at most 3 files, and tests exist". Empty when your words
     /// chose the mode.
     pub reason: String,
-    /// Where a solo run works: in your checkout, or checked in a copy. `None` for the crew.
+    /// Where a Captain run works: in your checkout, or checked in a worktree. `None` for the crew.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub solo: Option<SoloStyle>,
+    pub captain: Option<CaptainKind>,
 }
 
-impl TriageDecision {
+impl CaptainOrCrewDecision {
     /// The rule that fires when your words chose the mode.
     pub const AS_YOU_ASKED: &'static str = "request";
 
@@ -261,7 +307,7 @@ impl TriageDecision {
 pub struct RunResumed {
     pub cause: ResumeCause,
     pub settings_changed: bool,
-    pub harness_versions_changed: Vec<String>,
+    pub cli_versions_changed: Vec<String>,
     /// Commits `main` moved by, if it moved. The final check runs again before the merge.
     pub main_moved_by: Option<u32>,
     pub sessions: Vec<ResumedSession>,
@@ -272,11 +318,11 @@ pub struct RunResumed {
 pub enum ResumeCause {
     /// Enter or `/resume`.
     User,
-    /// Your answer to a checkpoint.
+    /// Your answer to an approval.
     Answer,
-    /// A vendor came back, or the time a parked run waited for passed.
-    VendorBack,
-    /// A handoff checkpoint's `ask_timeout` passed, so the role's fallback applies.
+    /// An agent came back, or the time a waiting run waited for passed.
+    AgentBack,
+    /// A fallback approval's `ask_timeout` passed, so the role's fallback applies.
     AskTimeout,
     Crash,
 }
@@ -285,34 +331,34 @@ pub enum ResumeCause {
 pub struct ResumedSession {
     /// The new session key.
     pub session: SessionKey,
-    pub card: Option<CardId>,
-    /// The vendor session id, when resumed by id.
-    pub vendor_session: Option<String>,
-    /// Resumed with every launch flag passed again, or restarted fresh with a handoff packet.
+    pub task: Option<TaskId>,
+    /// The CLI session id, when resumed by id.
+    pub cli_session: Option<String>,
+    /// Resumed with every launch flag passed again, or restarted fresh with a fallback note.
     pub resumed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "why", rename_all = "snake_case")]
-pub enum ParkReason {
-    /// A checkpoint waits for you and no session is running.
-    Checkpoint,
+pub enum WaitReason {
+    /// An approval waits for you and no session is running.
+    Approval,
     Paused,
-    /// Every vendor is down or out of quota. It resumes when one returns.
-    AllVendorsOut {
+    /// Every agent is down or out of plan usage. It resumes when one returns.
+    AllAgentsOut {
         /// The earliest known reset.
         #[serde(with = "time::serde::rfc3339::option")]
         until: Option<OffsetDateTime>,
     },
-    /// Its remaining cards wait for one vendor (handoff mode `wait`).
-    WaitingForVendor {
-        vendor: VendorId,
+    /// Its remaining tasks wait for one agent (fallback mode `wait`).
+    WaitingForAgent {
+        agent_id: AgentId,
         #[serde(with = "time::serde::rfc3339::option")]
         until: Option<OffsetDateTime>,
     },
-    /// A step's agent stopped for a vendor reason, and no other agent could take its role.
-    NoStandIn {
-        /// Which role, in words: `nobody could take over as the lead`.
+    /// A step's agent stopped for an agent reason, and no other agent could take its role.
+    NoFallback {
+        /// Which role nobody could fill, in words, as the run's row says it.
         detail: String,
         /// When it tries again: the agent's reset, else a retry after a wait that grows with
         /// each try. `None` once it stopped trying on its own.
@@ -329,7 +375,7 @@ pub enum RunOutcome {
     PullRequest,
     /// Branches kept for later.
     BranchLeft,
-    /// You abandoned it at the merge checkpoint.
+    /// You abandoned it at the merge approval.
     Abandoned,
     Stopped,
     Failed,
@@ -342,56 +388,87 @@ pub enum Party {
     User,
     /// Your approval rules.
     Rules,
-    Approver {
-        model: WorkerRef,
-    },
+    /// The judge of approvals, a model that decides in your place.
+    Judge { model: ModelRef },
     /// A setting, such as `merge.mode = "leave"`.
     Config,
-    /// Full auto, in your place: nothing waits for you there, so what your rules and the
-    /// approver couldn't settle takes its safe option.
+    /// Autopilot, in your place: nothing waits for you there, so what your rules and the
+    /// judge couldn't settle takes its safe option.
     Autopilot,
     /// You pressed Esc on it, which means "carry on without me": the option was
     /// taken in your place, as `approvals.when_declined` says.
     Declined,
-    /// By a fixed rule.
-    Conductor,
+    /// Argonauts Code itself, by a fixed rule.
+    ArgonautsCode,
     Agent {
         session: SessionKey,
-        worker: WorkerRef,
+        worker: ModelRef,
     },
-    /// An MCP client such as a chat front end, by the name it reported for itself. It can guide
+    /// An MCP client such as an outside agent, by the name it reported for itself. It can guide
     /// and pause, never approve.
-    FrontEnd {
-        client: String,
-    },
+    OutsideAgent { client: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PhaseChange {
     pub phase: RunPhase,
     pub status: PhaseStatus,
-    /// The one-line summary the collapsed step shows, such as "3 agents restated the goal".
+    /// The one-line summary the collapsed step shows, such as "3 agents read the request back".
     pub summary: Option<String>,
 }
 
-/// Phases of a run. Solo runs use Goal, Build, FinalCheck, Merge, Retro.
+/// Phases of a run. Captain runs use Understand, Build, FinalCheck, Merge, Run review.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunPhase {
-    /// Restatements, differs, questions, the goal checkpoint.
-    Goal,
-    /// Drafts, map, critique, revision, spikes, judging.
+    /// Readings, comparisons, questions, the Understand approval.
+    Understand,
+    /// Drafts, map, critique, revision, experiments, judging.
     Planning,
-    /// Task graph, owners, review ring, predictions, budget lines, plan checkpoint.
+    /// Task graph, workers, review ring, predictions, limit lines, plan approval.
     Dividing,
-    /// Interface card and acceptance-test cards.
+    /// Interface task and acceptance-test tasks.
     Contracts,
-    /// Card pipelines.
+    /// Task pipelines.
     Build,
     /// Bring in main, full suite, end-to-end checks.
     FinalCheck,
-    /// The merge checkpoint and landing.
+    /// The merge approval and the merge.
     Merge,
-    /// Predictions scored, memory, recipe candidate.
-    Retro,
+    /// Predictions scored, memory, learned workflow candidate.
+    RunReview,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_handed_over_request_is_your_words_first_then_the_sessions_account() {
+        assert_eq!(handed_over(" yes, do that ", ""), "yes, do that");
+        assert_eq!(
+            handed_over("add due dates", "add due dates"),
+            "add due dates"
+        );
+        assert_eq!(
+            handed_over(
+                "yes, do that",
+                "Add due dates to tasks, in the cli and the store."
+            ),
+            "yes, do that\n\nFrom the conversation, as the main agent put it: Add due dates to \
+             tasks, in the cli and the store."
+        );
+    }
+
+    #[test]
+    fn the_sessions_account_is_read_back_from_a_handed_over_request() {
+        let account = "Add due dates to tasks, in the cli and the store.";
+        assert_eq!(
+            account_in(&handed_over("yes, do that", account)),
+            Some(account)
+        );
+        // Your words alone carry no account, whatever they quote.
+        assert_eq!(account_in("add due dates"), None);
+        assert_eq!(account_in("as the main agent put it: add due dates"), None);
+    }
 }

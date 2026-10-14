@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use argonauts_core::workflow::{Count, StepWorkers, WorkflowRef};
+use argonauts_core::workflow::{Count, StepModels, WorkflowRef};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -148,7 +148,7 @@ fn workflow_lookup_project_then_global_then_builtin() {
 }
 
 #[test]
-fn workflow_yaml_reads_counts_workers_and_params() {
+fn workflow_yaml_reads_counts_models_and_params() {
     let text = "\
 name: review-panel
 description: Two reviewers from other providers
@@ -160,24 +160,24 @@ phases:
       - kind: fan_out
         role: reviewer
         count: \"{{reviewers}}\"
-        workers: \"{{picked}}\"
+        models: \"{{picked}}\"
         blind: true
-        different_family_from: author
+        different_provider_from: author
         task: Review the {{target}}
       - kind: draft
         count: 3
-        workers: [codex, claude-code/opus]
+        models: [codex, claude-code/opus]
 ";
     let workflow = parse_workflow(text, "review-panel.yaml").unwrap();
     let steps = &workflow.phases[0].steps;
     assert_eq!(steps[0].count, Some(Count::Param("{{reviewers}}".into())));
-    assert_eq!(steps[0].workers, StepWorkers::Param("{{picked}}".into()));
+    assert_eq!(steps[0].models, StepModels::Param("{{picked}}".into()));
     assert_eq!(steps[1].count, Some(Count::Fixed(3)));
-    let StepWorkers::Named(workers) = &steps[1].workers else {
-        panic!("expected named workers");
+    let StepModels::Named(models) = &steps[1].models else {
+        panic!("expected named models");
     };
-    assert_eq!(workers.len(), 2);
-    assert_eq!(workers[1].model.as_deref(), Some("opus"));
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[1].model.as_deref(), Some("opus"));
     assert_eq!(
         serde_json::to_value(&workflow.params).unwrap(),
         json!({ "target": "diff", "reviewers": 2, "focus": ["tests", "docs"], "limits": { "rounds": 1.5 } })
@@ -257,7 +257,7 @@ phases:
     steps:
       - kind: fan_out
         count: \"{{reviewers}}\"
-        workers: \"{{picked}}\"
+        models: \"{{picked}}\"
         task: Review {{target}} against {{target}}
       - kind: loop_until
         until: clean
@@ -270,7 +270,7 @@ phases:
     assert_eq!(
         problems_of(find("placeholders", &dirs)),
         [
-            "phase \"Review\", step 1 (fan_out): {{picked}} in workers isn't declared in params",
+            "phase \"Review\", step 1 (fan_out): {{picked}} in models isn't declared in params",
             "phase \"Review\", step 1 (fan_out): {{target}} in task isn't declared in params",
             "phase \"Review\", step 2.1 (draft): count \"many\" must be a number or one {{name}} placeholder",
         ]
@@ -363,13 +363,13 @@ phases:
 
     // Built-ins are checked like files.
     let bad_builtin = simple("other-name", "");
-    let builtins = [("solo", bad_builtin.as_str())];
-    match find("solo", &folders.dirs(&builtins)) {
+    let builtins = [("captain", bad_builtin.as_str())];
+    match find("captain", &folders.dirs(&builtins)) {
         Err(WorkflowError::Invalid { file, problems }) => {
-            assert_eq!(file, "built-in solo");
+            assert_eq!(file, "built-in captain");
             assert_eq!(
                 problems,
-                ["the name \"other-name\" doesn't match the file name \"solo\""]
+                ["the name \"other-name\" doesn't match the file name \"captain\""]
             );
         }
         other => panic!("expected problems, got {other:?}"),
@@ -379,9 +379,12 @@ phases:
 #[test]
 fn workflows_listed_for_the_picker() {
     let folders = Folders::new();
-    let solo = simple("solo", "One agent, gated and reviewed");
+    let captain = simple("captain", "One agent, checked and reviewed");
     let panel = simple("review-panel", "Two reviewers from other providers");
-    let builtins = [("solo", solo.as_str()), ("review-panel", panel.as_str())];
+    let builtins = [
+        ("captain", captain.as_str()),
+        ("review-panel", panel.as_str()),
+    ];
     let dirs = folders.dirs(&builtins);
     write(
         &folders.global,
@@ -412,7 +415,7 @@ fn workflows_listed_for_the_picker() {
         .map(|row| (row.name.as_str(), row.description.as_str()))
         .collect();
     assert_eq!(summary.len(), 5, "{summary:?}");
-    assert_eq!(summary[0], ("solo", "One agent, gated and reviewed"));
+    assert_eq!(summary[0], ("captain", "One agent, checked and reviewed"));
     assert_eq!(summary[1], ("review-panel", "The team's panel"));
     assert_eq!(summary[2].0, "broken");
     assert!(summary[2].1.contains("line 3"), "{}", summary[2].1);
@@ -443,7 +446,7 @@ fn workflows_listed_for_the_picker() {
         .into_iter()
         .map(|row| row.name)
         .collect();
-    assert_eq!(names, ["solo", "review-panel"]);
+    assert_eq!(names, ["captain", "review-panel"]);
 }
 
 #[test]

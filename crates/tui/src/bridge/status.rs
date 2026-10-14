@@ -1,32 +1,33 @@
 //! The live region's own rows from the app state: the working line, the narrator's live line,
-//! queued messages, the input rule's label, the mode line, and the title. The bottom line's
+//! queued messages, the input rule's label, the bottom line, and the title. The bottom line's
 //! parts are [`bottom_line`]'s.
 
 use std::time::{Duration, Instant};
 
-use argonauts_core::KeyScheme;
 use argonauts_core::app::{AppMode, AwakeHold, ChoiceKind};
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::card::CardState;
 use argonauts_core::events::run::{Party, RunPhase};
 use argonauts_core::events::session::{Delivery, QueuedMessage};
+use argonauts_core::events::task::TaskState;
 use argonauts_core::input::MentionTarget;
 use argonauts_core::settings::approvals::ApprovalMode as CoreApproval;
 use argonauts_core::settings::bottom_line::AWAKE;
-use argonauts_core::settings::ui::{
-    HeadsUp as HeadsUpSetting, NarratorMode, UiSettings, VerbTheme,
-};
+use argonauts_core::settings::ui::{NarratorMode, Notices, UiSettings, VerbTheme};
+use argonauts_core::{KeyScheme, TodoStatus};
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::bottom::line::PartBody;
 use crate::bottom::verbs::VerbStyle;
-use crate::bottom::{Activity, ApprovalMode, BottomState, HeadsUp, ModeLine, VimMode, WorkingLine};
+use crate::bottom::{Activity, ApprovalMode, BottomRow, BottomState, Notice, VimMode, WorkingLine};
 use crate::cell::Tone;
 use crate::format;
 use crate::keymap::{Action, Keymap};
-use crate::state::{AppState, ChatState, Doing, RunState};
+use crate::state::{AppState, ConversationState, Doing, RunState};
 
 use super::{Cx, bottom_line};
+
+#[cfg(test)]
+mod workflow_tests;
 
 /// Brings every row under the transcript in line with the state. Runs after every event and
 /// action, so it must be cheap and idempotent.
@@ -36,7 +37,7 @@ pub fn sync(cx: &mut Cx<'_>) {
         if on {
             KeyScheme::Vim
         } else {
-            KeyScheme::Standard
+            KeyScheme::Default
         }
     });
     let verbs = verb_style(cx.settings.verbs);
@@ -58,6 +59,14 @@ pub fn sync(cx: &mut Cx<'_>) {
         bottom.composer.label = Some(label);
     }
     bottom.composer.ultracode = state.status.as_ref().is_some_and(|status| status.ultracode);
+    // What counts as a real command beside Argonauts Code's own, copied only when it changes.
+    if bottom.composer.cli_commands.as_ref() != state.cli_commands.as_ref() {
+        bottom.composer.cli_commands = state.cli_commands.clone();
+    }
+    let mod_commands = crate::mods::own_command_names(state.mods.as_ref());
+    if bottom.composer.mod_commands != mod_commands {
+        bottom.composer.mod_commands = mod_commands;
+    }
     bottom.workflow_key = workflow_key(cx.settings);
 
     apply_keys(&mut bottom.mode, keys);
@@ -68,13 +77,13 @@ pub fn sync(cx: &mut Cx<'_>) {
         bottom.synced.approval = Some(approval);
     }
     bottom.mode.background_agents = state.agents_running();
-    let on_screen = usize::from(bottom.card.is_some());
+    let on_screen = usize::from(bottom.question.is_some());
     bottom.mode.needs_you =
         state.needs_you().len().saturating_sub(on_screen) + state.background_waiting();
 
-    bottom.send_now = state.chat.send_now && state.chat.turn.is_some();
+    bottom.send_now = state.conversation.send_now && state.conversation.turn.is_some();
     bottom.send_now_hint = send_now_hint(state, cx.settings);
-    sync_heads_up(state, cx.settings, bottom);
+    sync_notice(state, cx.settings, bottom);
 
     let now = OffsetDateTime::now_utc();
     let clock = bottom_line::Clock {
@@ -104,7 +113,9 @@ pub fn sync(cx: &mut Cx<'_>) {
 /// `ctrl+enter to send now` under your messages while the session takes them now, or the
 /// chord where the terminal can't tell Ctrl+Enter from a new line.
 fn send_now_hint(state: &AppState, settings: &UiSettings) -> Option<String> {
-    let waiting = state.chat.send_now && state.chat.turn.is_some() && !state.chat.queued.is_empty();
+    let waiting = state.conversation.send_now
+        && state.conversation.turn.is_some()
+        && !state.conversation.queued.is_empty();
     if !waiting {
         return None;
     }
@@ -120,26 +131,25 @@ fn send_now_hint(state: &AppState, settings: &UiSettings) -> Option<String> {
 
 /// What Claude Code draws above the input, kept while the drawing is the same so your keys
 /// stay on their button.
-fn sync_heads_up(state: &AppState, settings: &UiSettings, bottom: &mut BottomState) {
+fn sync_notice(state: &AppState, settings: &UiSettings, bottom: &mut BottomState) {
     let drawn = state
-        .chat
-        .heads_up
+        .conversation
+        .notice
         .as_ref()
-        .filter(|_| settings.heads_up == HeadsUpSetting::WhenEnabled);
+        .filter(|_| settings.notices == Notices::WhenEnabled);
     match drawn {
-        Some(drawn) if bottom.heads_up.drawn != *drawn => bottom.heads_up.redraw(drawn.clone()),
+        Some(drawn) if bottom.notice.drawn != *drawn => bottom.notice.redraw(drawn.clone()),
         Some(_) => {}
-        None => bottom.heads_up = HeadsUp::default(),
+        None => bottom.notice = Notice::default(),
     }
 }
 
-/// Vim keys show `-- INSERT --` or `-- NORMAL --` always, and the screen switches between
-/// the two itself.
-pub fn apply_keys(mode: &mut ModeLine, keys: KeyScheme) {
+/// Vim keys start in INSERT, and the screen switches modes itself.
+pub fn apply_keys(mode: &mut BottomRow, keys: KeyScheme) {
     match keys {
         KeyScheme::Vim if mode.vim.is_none() => mode.vim = Some(VimMode::Insert),
         KeyScheme::Vim => {}
-        KeyScheme::Standard => mode.vim = None,
+        KeyScheme::Default => mode.vim = None,
     }
 }
 
@@ -152,18 +162,47 @@ pub fn verb_style(theme: VerbTheme) -> VerbStyle {
 
 /// What the working line is about.
 enum Work<'a> {
-    Chat(&'a ChatState),
+    Conversation(&'a ConversationState),
     Run(&'a RunState),
     Pausing(&'a RunState),
 }
 
 impl Work<'_> {
+    /// Whether the agent this work follows is writing a workflow's script. Nothing of the
+    /// workflow shows until the script exists, so the working line is where that's said. A
+    /// crew counts only while one agent runs, as its words do.
+    fn writes_a_workflow(&self) -> bool {
+        match self {
+            Work::Conversation(conversation) => {
+                let cli = conversation
+                    .worker
+                    .as_ref()
+                    .map_or("", |worker| worker.agent.as_str());
+                conversation
+                    .being_written
+                    .iter()
+                    .any(|(_, tool)| super::cli_workflow_run::is_call(cli, tool))
+            }
+            Work::Run(run) => {
+                let mut running = run.running_sessions();
+                match (running.next(), running.next()) {
+                    (Some(only), None) => only.tools.iter().any(|tool| {
+                        tool.is_pending()
+                            && super::cli_workflow_run::is_call(&only.worker.agent, &tool.name)
+                    }),
+                    _ => false,
+                }
+            }
+            Work::Pausing(_) => false,
+        }
+    }
+
     fn key(&self) -> String {
         match self {
-            Work::Chat(chat) => {
+            Work::Conversation(conversation) => {
                 format!(
                     "turn:{}",
-                    chat.turn.as_ref().map_or("", |turn| turn.as_str())
+                    conversation.turn.as_ref().map_or("", |turn| turn.as_str())
                 )
             }
             Work::Run(run) => format!("run:{}", run.id),
@@ -171,17 +210,53 @@ impl Work<'_> {
         }
     }
 
-    /// Whether the conductor said the stream stalled. A crew's run stalls only once every agent
+    /// Whether Argonauts Code said the stream stalled. A crew's run stalls only once every agent
     /// still running has, since one at work keeps the run going.
     fn stalled(&self) -> bool {
         match self {
-            Work::Chat(chat) => chat.stalled,
+            Work::Conversation(conversation) => conversation.stalled,
             Work::Run(run) => {
                 let mut running = run.running_sessions().peekable();
                 running.peek().is_some() && running.all(|session| session.stalled)
             }
             Work::Pausing(_) => false,
         }
+    }
+
+    /// A number that changes whenever the agents this work follows send anything, so the line
+    /// can tell how long they've been quiet. A crew counts as heard from when any agent is.
+    fn pulse(&self) -> Option<u64> {
+        match self {
+            Work::Conversation(conversation) => Some(conversation.heard),
+            Work::Run(run) => run
+                .running_sessions()
+                .map(|session| session.last_event.unix_timestamp_nanos() as u64)
+                .max(),
+            Work::Pausing(_) => None,
+        }
+    }
+
+    /// The task in hand and the one after it, from the CLI's own task list. A crew's agents
+    /// each keep a list, so only a lone agent's shows.
+    fn tasks(&self) -> (Option<String>, Option<String>) {
+        let todos = match self {
+            Work::Conversation(conversation) => conversation.todos.as_slice(),
+            Work::Run(run) => {
+                let mut running = run.running_sessions();
+                match (running.next(), running.next()) {
+                    (Some(only), None) => only.todos.as_slice(),
+                    _ => &[],
+                }
+            }
+            Work::Pausing(_) => &[],
+        };
+        let first = |status: TodoStatus| {
+            todos
+                .iter()
+                .find(|todo| todo.status == status && !todo.text.trim().is_empty())
+                .map(|todo| todo.text.clone())
+        };
+        (first(TodoStatus::InProgress), first(TodoStatus::Pending))
     }
 }
 
@@ -207,12 +282,12 @@ fn current_work(state: &AppState) -> Option<Work<'_>> {
         Some(AppMode::Answering { .. }) if asks_you => None,
         // Only what the main agent's CLI runs in the background works now. Its rows show
         // that, and there is no turn for Esc to stop.
-        Some(AppMode::Answering { .. }) if state.chat.waits_on_background() => None,
-        Some(AppMode::Answering { .. }) => Some(Work::Chat(&state.chat)),
+        Some(AppMode::Answering { .. }) if state.conversation.waits_on_background() => None,
+        Some(AppMode::Answering { .. }) => Some(Work::Conversation(&state.conversation)),
         Some(AppMode::Working { run }) => run_work(run),
         Some(AppMode::Pausing { run }) => state.runs.get(run).map(Work::Pausing),
-        Some(AppMode::Idle | AppMode::Parked { .. }) => None,
-        None if state.chat.turn.is_some() => Some(Work::Chat(&state.chat)),
+        Some(AppMode::Idle | AppMode::Waiting { .. }) => None,
+        None if state.conversation.turn.is_some() => Some(Work::Conversation(&state.conversation)),
         None => {
             let run = state.attached_run().filter(|run| run.is_active())?;
             run_work(&run.id)
@@ -220,25 +295,22 @@ fn current_work(state: &AppState) -> Option<Work<'_>> {
     }
 }
 
-/// A card waits on your answer, and neither an agent nor the conductor's gates or merges are at
-/// work on the run, so nothing is going on but the wait. The line steps aside, as Claude Code's
-/// spinner does while a permission prompt is up, and comes back with the run's own clock once
-/// you answer.
+/// A question waits on your answer, and neither an agent nor Argonauts Code's checks or merges are
+/// at work on the run, so nothing is going on but the wait. The line steps aside, as Claude Code's
+/// spinner does while a permission prompt is up, and comes back with the run's own clock once you
+/// answer.
 fn waits_on_you(run: &RunState) -> bool {
-    let card_at_work = run.cards.values().any(|card| {
+    let task_at_work = run.tasks.values().any(|task| {
         matches!(
-            card.state,
+            task.state,
             Some(
-                CardState::Running
-                    | CardState::Gating
-                    | CardState::InReview
-                    | CardState::Integrating
+                TaskState::Running | TaskState::Checking | TaskState::InReview | TaskState::Merging
             )
         )
     });
-    run.checkpoints.iter().any(|open| open.opened.needs_you)
+    run.approvals.iter().any(|open| open.opened.needs_you)
         && run.running_sessions().next().is_none()
-        && !card_at_work
+        && !task_at_work
 }
 
 fn sync_working(
@@ -260,27 +332,43 @@ fn sync_working(
         Some(line) => line.clone(),
         None => WorkingLine::new(verb_for(&work, pick), started_at(&work, now)),
     };
+    (line.task, line.next) = work.tasks();
+    match work.pulse() {
+        // Anything new from the agent counts as hearing from it.
+        Some(pulse) if previous.is_none() || line.pulse != pulse => {
+            line.pulse = pulse;
+            line.heard_at = Some(now);
+        }
+        Some(_) => {}
+        None => line.heard_at = None,
+    }
     match &work {
-        Work::Chat(chat) => {
-            line.tokens_down = chat.tokens_out;
-            line.activity = activity(previous.as_ref().map(|l| &l.activity), chat.doing, now);
+        Work::Conversation(conversation) => {
+            line.tokens_down = conversation.tokens_out;
+            line.activity = activity(
+                previous.as_ref().map(|l| &l.activity),
+                conversation.doing,
+                now,
+            );
+            line.effort = state
+                .status
+                .as_ref()
+                .and_then(|status| status.line.main_effort.clone());
             line.details.clear();
             line.hide_while_text_streams = true;
             line.esc_stops = true;
         }
         Work::Run(run) => {
             line.tokens_down = run.tokens_out();
-            // A lone agent's words read like a chat turn's; a crew's would jump between agents.
-            let mut running = run.running_sessions();
-            line.activity = match (running.next(), running.next()) {
-                (Some(only), None) => {
-                    activity(previous.as_ref().map(|l| &l.activity), only.doing, now)
-                }
-                _ => Activity::None,
-            };
+            let doing = doing_between(run.running_sessions().map(|session| session.doing));
+            line.activity = activity(previous.as_ref().map(|l| &l.activity), doing, now);
+            // A lone agent's words read like a conversation turn's; a crew's would jump between
+            // agents.
+            line.says_activity = run.running_sessions().nth(1).is_none();
             line.details = run_details(run);
-            // Esc leaves a run's agents going. It still stops a chat turn answered meanwhile.
-            line.esc_stops = state.chat.turn.is_some();
+            // Esc leaves a run's agents going. It still stops a conversation turn answered
+            // meanwhile.
+            line.esc_stops = state.conversation.turn.is_some();
         }
         Work::Pausing(_) => {
             line.tokens_down = 0;
@@ -290,22 +378,36 @@ fn sync_working(
             line.esc_stops = true;
         }
     }
-    // The fade runs from the stall the conductor reported, never from a quiet spell, since a
-    // model can think for minutes without a word.
+    // A stall Argonauts Code reported turns the line red whatever the agent seemed to be doing.
     line.stalled_since = if work.stalled() {
         line.stalled_since.or(Some(now))
     } else {
         None
     };
+    say_what_is_written(&mut line, work.writes_a_workflow());
     bottom.working = Some(line);
     bottom.synced.work = Some(key);
+}
+
+/// While the agent writes a workflow's script the line says so in its word's place, and the
+/// word comes back once the script exists.
+fn say_what_is_written(line: &mut WorkingLine, workflow: bool) {
+    match (workflow, line.usual_verb.take()) {
+        (true, Some(usual)) => line.usual_verb = Some(usual),
+        (true, None) => {
+            let writing = super::cli_workflow_run::WRITING.to_owned();
+            line.usual_verb = Some(std::mem::replace(&mut line.verb, writing));
+        }
+        (false, Some(usual)) => line.verb = usual,
+        (false, None) => {}
+    }
 }
 
 /// A new word for each stretch of work; the same turn or run keeps its word.
 fn verb_for(work: &Work<'_>, pick: impl FnOnce() -> &'static str) -> String {
     match work {
         Work::Pausing(_) => "Pausing".to_owned(),
-        Work::Chat(_) | Work::Run(_) => pick().to_owned(),
+        Work::Conversation(_) | Work::Run(_) => pick().to_owned(),
     }
 }
 
@@ -319,6 +421,28 @@ fn started_at(work: &Work<'_>, now: Instant) -> Instant {
     };
     let ran = Duration::try_from(updated - started).unwrap_or_default();
     now.checked_sub(ran).unwrap_or(now)
+}
+
+/// What the agents running at once are doing between them, for the line's color. One inside a
+/// tool call is work going on, however quiet the rest are, and so is one that thinks beside
+/// another that doesn't. They are thinking only when every one of them is. Their silence is
+/// all there is to go by only when none of them works a tool or thinks.
+fn doing_between(running: impl Iterator<Item = Doing>) -> Doing {
+    let (mut some_think, mut some_dont) = (false, false);
+    for doing in running {
+        match doing {
+            Doing::RunningTool => return Doing::RunningTool,
+            Doing::Thinking => some_think = true,
+            Doing::Nothing | Doing::Writing => some_dont = true,
+        }
+    }
+    match (some_think, some_dont) {
+        (true, false) => Doing::Thinking,
+        // Only a crew gets here, and its line never says what one agent does, so this holds
+        // the color the way a running tool does and adds no words.
+        (true, true) => Doing::RunningTool,
+        (false, _) => Doing::Nothing,
+    }
 }
 
 /// The screen times each spell itself, since the stream says only what's happening now.
@@ -344,7 +468,7 @@ fn activity(previous: Option<&Activity>, doing: Doing, now: Instant) -> Activity
     }
 }
 
-/// Phase, cards, agents, and spend, as in `Build · 2/5 cards · 3 agents · $0.21`. The phase is
+/// Phase, tasks, agents, and spend, as in `Build · 2/5 tasks · 3 agents · $0.21`. The phase is
 /// one the workflow view lists; only a run with no workflow names its own stage.
 fn run_details(run: &RunState) -> Vec<String> {
     let mut details = Vec::new();
@@ -353,7 +477,7 @@ fn run_details(run: &RunState) -> Vec<String> {
         None => run.phase.map(|phase| phase_name(phase).to_owned()),
     };
     details.extend(phase.filter(|phase| !phase.trim().is_empty()));
-    let (done, total) = run.cards_done();
+    let (done, total) = run.tasks_done();
     if total > 0 {
         details.push(format!("{done}/{total} tasks"));
     }
@@ -371,14 +495,14 @@ fn run_details(run: &RunState) -> Vec<String> {
 
 pub fn phase_name(phase: RunPhase) -> &'static str {
     match phase {
-        RunPhase::Goal => "Goal",
+        RunPhase::Understand => "Understand",
         RunPhase::Planning => "Planning",
         RunPhase::Dividing => "Dividing",
         RunPhase::Contracts => "Contracts",
         RunPhase::Build => "Build",
         RunPhase::FinalCheck => "Final check",
         RunPhase::Merge => "Merge",
-        RunPhase::Retro => "Run review",
+        RunPhase::RunReview => "Run review",
     }
 }
 
@@ -392,8 +516,8 @@ fn live_narration(state: &AppState) -> Option<String> {
     current.then(|| line.text.clone())
 }
 
-/// Your undelivered guidance and mentions in the attached run, then chat text waiting for its
-/// turn, each with where it goes when that's one agent.
+/// Your undelivered guidance and mentions in the attached run, then conversation text waiting for
+/// its turn, each with where it goes when that's one agent.
 fn queued(state: &AppState) -> (Vec<String>, Vec<Option<String>>) {
     let mut texts = Vec::new();
     let mut places = Vec::new();
@@ -407,7 +531,7 @@ fn queued(state: &AppState) -> (Vec<String>, Vec<Option<String>>) {
             places.push(destination(run, message, &state.names));
         }
     }
-    for text in &state.chat.queued {
+    for text in &state.conversation.queued {
         texts.push(text.clone());
         places.push(None);
     }
@@ -415,7 +539,7 @@ fn queued(state: &AppState) -> (Vec<String>, Vec<Option<String>>) {
 }
 
 /// What you typed, without the line the engine frames it with for the agents, such as
-/// `Guidance m-001 from you:`, which would stand in for your words on the screen.
+/// `Guidance m-001 from you:`, which would take the place of your words on the screen.
 fn own_words(text: &str) -> &str {
     match text.split_once('\n') {
         Some((frame, words)) if frame.ends_with(':') && frame.contains(" from you") => words,
@@ -429,7 +553,7 @@ fn destination(run: &RunState, message: &QueuedMessage, names: &DisplayNames) ->
     let to = match &message.to {
         MentionTarget::All => return None,
         MentionTarget::Worker(worker) => names.worker(worker),
-        MentionTarget::Card(card) => card.to_string(),
+        MentionTarget::Task(task) => task.to_string(),
         MentionTarget::Role(role) => role.as_str().to_owned(),
         MentionTarget::Number(key) => run
             .sessions_in_order()
@@ -449,10 +573,10 @@ fn destination(run: &RunState, message: &QueuedMessage, names: &DisplayNames) ->
 }
 
 /// The input rule's label: the main session's model by name alone, such as `Opus 5.5`, with
-/// the workflow's name first when it isn't solo. Which CLI the model runs on is
+/// the workflow's name first when it isn't Captain. Which CLI the model runs on is
 /// the marked chip on the bottom line. A run's own workflow shows on its panel row, never here.
 fn composer_label(state: &AppState) -> Option<String> {
-    let workflow = workflow_label(state).filter(|workflow| workflow != SOLO);
+    let workflow = workflow_label(state).filter(|workflow| workflow != CAPTAIN);
     match (workflow, main_model(state)) {
         (Some(workflow), Some(model)) => Some(format!(
             "{} · {model}",
@@ -465,7 +589,7 @@ fn composer_label(state: &AppState) -> Option<String> {
 }
 
 /// The workflow in which the main session's CLI does everything itself.
-const SOLO: &str = "solo";
+const CAPTAIN: &str = "captain";
 
 /// The model the main session runs, or its CLI's name while nobody knows the model.
 fn main_model(state: &AppState) -> Option<String> {
@@ -475,12 +599,12 @@ fn main_model(state: &AppState) -> Option<String> {
         .map(|status| &status.main_agent)
         .or_else(|| state.welcome.as_ref()?.main_agent.as_ref())?;
     let agent = state.names.running(agent);
-    let cli = agent.worker.as_str();
+    let cli = agent.agent.as_str();
     Some(
         state
             .names
             .model(cli, agent.model.as_deref())
-            .unwrap_or_else(|| state.names.harness(cli)),
+            .unwrap_or_else(|| state.names.cli(cli)),
     )
 }
 
@@ -505,23 +629,23 @@ fn workflow_label(state: &AppState) -> Option<String> {
         .status
         .as_ref()
         .map(|status| status.workflow.clone())
-        .filter(|preset| !preset.is_empty())
+        .filter(|chosen| !chosen.is_empty())
         .or_else(|| {
             state
                 .welcome
                 .as_ref()
                 .map(|welcome| welcome.workflow.clone())
         })
-        .filter(|preset| !preset.is_empty())
+        .filter(|chosen| !chosen.is_empty())
 }
 
 /// The run plain text and the spend part are about: the one the app mode names, else the
 /// attached one.
 pub(super) fn focus_run(state: &AppState) -> Option<&RunState> {
     let named = match &state.mode {
-        Some(AppMode::Working { run } | AppMode::Pausing { run } | AppMode::Parked { run, .. }) => {
-            state.runs.get(run)
-        }
+        Some(
+            AppMode::Working { run } | AppMode::Pausing { run } | AppMode::Waiting { run, .. },
+        ) => state.runs.get(run),
         _ => None,
     };
     named.or_else(|| state.attached_run())
@@ -573,7 +697,7 @@ fn awake_part(state: &AppState, clock: &bottom_line::Clock) -> Option<PartBody> 
 }
 
 /// The adapter id behind a chip's short name.
-pub(super) fn vendor_for_label(label: &str) -> Option<&'static str> {
+pub(super) fn agent_for_label(label: &str) -> Option<&'static str> {
     Some(match label.trim() {
         "Claude" => "claude-code",
         "Codex" => "codex",
@@ -584,9 +708,9 @@ pub(super) fn vendor_for_label(label: &str) -> Option<&'static str> {
     })
 }
 
-/// The short names chips use for vendors.
-pub fn label_for_vendor(vendor: &str) -> String {
-    match vendor {
+/// The short names chips use for agents.
+pub fn label_for_agent(agent_id: &str) -> String {
+    match agent_id {
         "claude-code" => "Claude",
         "codex" => "Codex",
         "antigravity-cli" => "agy",
@@ -598,12 +722,12 @@ pub fn label_for_vendor(vendor: &str) -> String {
     .to_owned()
 }
 
-/// Where Enter sends a draft now, while a run works or a card waits.
+/// Where Enter sends a draft now, while a run works or a question waits.
 fn enter_sends(state: &AppState) -> Option<String> {
     match &state.mode {
         Some(AppMode::Working { .. }) => Some("Enter sends guidance to the run".to_owned()),
         Some(AppMode::Pausing { .. }) => Some("Enter cancels the pause".to_owned()),
-        Some(AppMode::Parked { .. }) => Some("Enter resumes the run".to_owned()),
+        Some(AppMode::Waiting { .. }) => Some("Enter resumes the run".to_owned()),
         Some(AppMode::Answering { .. }) => Some("Enter sends it after this answer".to_owned()),
         Some(AppMode::Idle) | None => state
             .status
@@ -612,16 +736,16 @@ fn enter_sends(state: &AppState) -> Option<String> {
     }
 }
 
-/// Whether Enter sends a draft to a run rather than to the default agent.
+/// Whether Enter sends a draft to a run rather than to the main agent.
 fn run_takes_text(state: &AppState) -> bool {
     match &state.mode {
-        Some(AppMode::Working { .. } | AppMode::Pausing { .. } | AppMode::Parked { .. }) => true,
+        Some(AppMode::Working { .. } | AppMode::Pausing { .. } | AppMode::Waiting { .. }) => true,
         Some(AppMode::Answering { .. } | AppMode::Idle) => false,
         None => state.attached_run().is_some_and(|run| run.is_active()),
     }
 }
 
-/// Added to the exit hint: runs keep going under their supervisor after the app leaves.
+/// Added to the exit hint: runs keep going under their run host after the app leaves.
 fn exit_note(state: &AppState) -> Option<String> {
     match state.runs.values().filter(|run| run.is_active()).count() {
         0 => None,
@@ -632,11 +756,11 @@ fn exit_note(state: &AppState) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::app::{AppEvent, ChatEvent};
-    use argonauts_core::events::run::{ParkReason, RunMode, RunPhase};
+    use argonauts_core::app::{AppEvent, ConversationEvent};
+    use argonauts_core::events::run::{RunMode, RunPhase, WaitReason};
     use argonauts_core::events::workflow::StepEnd;
-    use argonauts_core::limits::{QuotaReading, QuotaSource, QuotaStatus};
-    use argonauts_core::names::{TurnId, VendorId, WorkflowId};
+    use argonauts_core::limits::{PlanUsageReading, PlanUsageSource, PlanUsageStatus};
+    use argonauts_core::names::{AgentId, TurnId, WorkflowId};
     use argonauts_core::workflow::{StandardPhase, StepKind, StepRef};
     use argonauts_core::{AgentEvent, RunId};
 
@@ -659,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_parked_at_a_card_still_takes_text() {
+    fn a_run_waiting_at_a_question_still_takes_text() {
         let run = RunId::new("run-20260930-100000-a1b2").unwrap();
         let mut state = AppState::default();
         assert!(!run_takes_text(&state));
@@ -674,9 +798,9 @@ mod tests {
             (AppMode::Working { run: run.clone() }, true),
             (AppMode::Pausing { run: run.clone() }, true),
             (
-                AppMode::Parked {
+                AppMode::Waiting {
                     run: run.clone(),
-                    reason: ParkReason::Checkpoint,
+                    reason: WaitReason::Approval,
                 },
                 true,
             ),
@@ -686,20 +810,20 @@ mod tests {
         }
     }
 
-    /// The input's rule names your preset, what your next message would use, so it keeps
-    /// its name while a run follows a workflow the lead picked, or runs solo.
+    /// The input's rule names your workflow, what your next message would use, so it keeps
+    /// its name while a run follows a workflow the main agent picked, or runs as Captain.
     #[test]
-    fn the_input_rule_keeps_your_preset_whatever_the_run_follows() {
+    fn the_input_rule_keeps_your_workflow_whatever_the_run_follows() {
         let id = RunId::new("run-20260930-100000-a1b2").unwrap();
         let mut state = AppState::default();
-        state.status = Some(argonauts_core::app::StatusLine {
+        state.status = Some(argonauts_core::app::HeaderAndBottomLine {
             title: String::new(),
             repo: "~/code".into(),
             workflow: "council".into(),
             ultracode: true,
             run: None,
             main_agent: "claude-code".parse().unwrap(),
-            quotas: Vec::new(),
+            plan_chips: Vec::new(),
             line: Default::default(),
             spent: None,
             limit: None,
@@ -719,26 +843,26 @@ mod tests {
             Some("Council · Claude Code")
         );
 
-        state.runs.get_mut(&id).unwrap().mode = Some(RunMode::Solo);
+        state.runs.get_mut(&id).unwrap().mode = Some(RunMode::Captain);
         assert_eq!(
             composer_label(&state).as_deref(),
             Some("Council · Claude Code")
         );
     }
 
-    /// The rule's label: the model by name alone, the workflow first when it isn't solo, and
+    /// The rule's label: the model by name alone, the workflow first when it isn't Captain, and
     /// ultracode as the rule's own tag, never a word in the label.
     #[test]
     fn the_input_rule_names_the_main_model_with_the_workflow_first() {
         let mut state = AppState::default();
-        let status = |workflow: &str, agent: &str| argonauts_core::app::StatusLine {
+        let status = |workflow: &str, agent: &str| argonauts_core::app::HeaderAndBottomLine {
             title: String::new(),
             repo: "~/code".into(),
             workflow: workflow.into(),
             ultracode: true,
             run: None,
             main_agent: agent.parse().unwrap(),
-            quotas: Vec::new(),
+            plan_chips: Vec::new(),
             line: Default::default(),
             spent: None,
             limit: None,
@@ -746,7 +870,7 @@ mod tests {
             approval_mode: CoreApproval::Supervised,
             awake: None,
         };
-        state.status = Some(status("solo", "claude-code/claude-opus-5-5"));
+        state.status = Some(status("captain", "claude-code/claude-opus-5-5"));
         assert_eq!(composer_label(&state).as_deref(), Some("Opus 5.5"));
         state.status = Some(status("council", "claude-code/claude-opus-5-5"));
         assert_eq!(
@@ -754,14 +878,14 @@ mod tests {
             Some("Council · Opus 5.5")
         );
         // After /model the rule names the new model, and nothing else says which CLI.
-        state.status = Some(status("solo", "codex/gpt-6.1-sol"));
+        state.status = Some(status("captain", "codex/gpt-6.1-sol"));
         let label = composer_label(&state).unwrap();
         assert!(
-            !label.contains("Codex") && !label.contains("solo"),
+            !label.contains("Codex") && !label.contains("captain"),
             "{label}"
         );
         // While nobody knows the model, the CLI's name stands in for it.
-        state.status = Some(status("solo", "codex"));
+        state.status = Some(status("captain", "codex"));
         assert_eq!(composer_label(&state).as_deref(), Some("Codex"));
     }
 
@@ -784,7 +908,7 @@ mod tests {
                 phase,
                 path: vec![0],
             },
-            kind: StepKind::Restate,
+            kind: StepKind::Read,
             standard: StandardPhase::Understand,
             round: 1,
             end: done.then_some(StepEnd::Done),
@@ -799,21 +923,26 @@ mod tests {
         // No workflow yet: the run's own stage is all there is to name.
         assert_eq!(run_details(&run), ["Contracts"]);
 
-        // The goal's alignment runs nested under the workflow to come.
+        // Understand runs nested under the workflow to come.
         let under_own = StepRef {
             workflow: WorkflowId::numbered(1),
             phase: 0,
             path: vec![0],
         };
-        let mut alignment = workflow(2, "goal", &["Goal"], Some(under_own));
-        alignment.steps.push(step(2, 0, false));
-        run.workflows.push(alignment);
+        let mut understand = workflow(2, "understanding", &["Understand"], Some(under_own));
+        understand.steps.push(step(2, 0, false));
+        run.workflows.push(understand);
         run.last_step = Some(step(2, 0, false).step);
-        assert_eq!(run_details(&run), ["Goal"]);
+        assert_eq!(run_details(&run), ["Understand"]);
 
         // Once the run's own workflow runs, its phases name the line, with a nested
         // workflow's steps counted in the phase they run in.
-        let mut own = workflow(1, "council", &["Goal", "Plan", "Build", "Merge"], None);
+        let mut own = workflow(
+            1,
+            "council",
+            &["Understand", "Plan", "Build", "Merge"],
+            None,
+        );
         own.steps.push(step(1, 0, true));
         own.steps.push(step(1, 1, false));
         run.workflows.insert(0, own);
@@ -831,10 +960,10 @@ mod tests {
         let turn = TurnId::numbered(1);
         let mut state = AppState::default();
         state.mode = Some(AppMode::Answering { turn: turn.clone() });
-        state.chat.turn = Some(turn.clone());
+        state.conversation.turn = Some(turn.clone());
         let agent = |state: &mut AppState, event: AgentEvent| {
-            state.apply(&AppEvent::Chat {
-                event: ChatEvent::Agent {
+            state.apply(&AppEvent::Conversation {
+                event: ConversationEvent::Agent {
                     turn: turn.clone(),
                     event,
                 },
@@ -879,7 +1008,180 @@ mod tests {
         assert_eq!(stalled_since(&state, 651), None);
     }
 
-    /// The working line offers Esc only for what Esc stops: a chat turn, a turn
+    #[test]
+    fn the_working_line_names_the_task_in_hand_and_notes_when_the_agent_was_heard() {
+        use argonauts_core::TodoItem;
+        let turn = TurnId::numbered(1);
+        let mut state = AppState::default();
+        state.mode = Some(AppMode::Answering { turn: turn.clone() });
+        state.conversation.turn = Some(turn.clone());
+        let agent = |state: &mut AppState, event: AgentEvent| {
+            state.apply(&AppEvent::Conversation {
+                event: ConversationEvent::Agent {
+                    turn: turn.clone(),
+                    event,
+                },
+            });
+        };
+        let t0 = Instant::now();
+        let mut bottom = crate::bottom::BottomState::new();
+        let mut synced = |state: &AppState, secs: u64| {
+            sync_working(
+                state,
+                &mut bottom,
+                || "Rowing",
+                t0 + Duration::from_secs(secs),
+            );
+            bottom.working.clone().expect("a working line")
+        };
+        let todo = |text: &str, status| TodoItem {
+            text: text.to_owned(),
+            status,
+        };
+
+        // With no list the verb stands, and the turn's start counts as hearing from it.
+        let line = synced(&state, 0);
+        assert_eq!((line.task.as_deref(), line.next.as_deref()), (None, None));
+        assert_eq!(line.heard_at, Some(t0));
+
+        agent(
+            &mut state,
+            AgentEvent::Todo {
+                items: vec![
+                    todo("Read the parser", TodoStatus::Completed),
+                    todo("Add the due date column", TodoStatus::InProgress),
+                    todo("Run the tests", TodoStatus::Pending),
+                    todo("Write the notes", TodoStatus::Pending),
+                ],
+            },
+        );
+        let line = synced(&state, 5);
+        assert_eq!(line.task.as_deref(), Some("Add the due date column"));
+        assert_eq!(line.next.as_deref(), Some("Run the tests"));
+        assert_eq!(line.verb, "Rowing", "the verb waits behind the task");
+        assert_eq!(line.heard_at, Some(t0 + Duration::from_secs(5)));
+
+        // A sync that brings nothing new leaves the clock where it was.
+        assert_eq!(
+            synced(&state, 18).heard_at,
+            Some(t0 + Duration::from_secs(5))
+        );
+        agent(
+            &mut state,
+            AgentEvent::TextDelta {
+                text: "On it.".into(),
+                parent: None,
+            },
+        );
+        assert_eq!(
+            synced(&state, 19).heard_at,
+            Some(t0 + Duration::from_secs(19))
+        );
+
+        // With every task done the verb is back.
+        agent(
+            &mut state,
+            AgentEvent::Todo {
+                items: vec![todo("Read the parser", TodoStatus::Completed)],
+            },
+        );
+        let line = synced(&state, 20);
+        assert_eq!((line.task.as_deref(), line.next.as_deref()), (None, None));
+    }
+
+    /// A crew's line takes its color from every running agent. While one of them is inside a
+    /// tool call, or thinks beside one that doesn't, the line stays as it is through any
+    /// silence. With all of them thinking it goes toward amber, and it goes red only when none
+    /// works a tool or thinks.
+    #[test]
+    fn a_crews_working_line_stays_its_color_while_an_agent_runs_a_tool() {
+        use argonauts_core::names::{RoleName, SessionKey};
+        use ratatui::style::Color;
+        use time::macros::datetime;
+
+        use crate::render::{Clock, RenderCtx};
+        use crate::state::{SessionState, SessionStatus};
+        use crate::theme::{Role, Theme};
+
+        let run_id = RunId::new("run-01").unwrap();
+        let state_with = |doing: &[Doing]| {
+            let mut run = RunState::new(run_id.clone());
+            for (at, doing) in doing.iter().enumerate() {
+                let mut session = SessionState::new(
+                    SessionKey::numbered(at as u32 + 1),
+                    "claude-code".parse().unwrap(),
+                    "claude-code",
+                    RoleName::Worker,
+                    datetime!(2026-09-30 10:00 UTC),
+                );
+                session.status = SessionStatus::Working;
+                session.doing = *doing;
+                run.session_order.push(session.key.clone());
+                run.sessions.insert(session.key.clone(), session);
+            }
+            let mut state = AppState::default();
+            state.runs.insert(run_id.clone(), run);
+            state.mode = Some(AppMode::Working {
+                run: run_id.clone(),
+            });
+            state
+        };
+        let theme = Theme::dark();
+        let t0 = Instant::now();
+        // The glyph's color and the line's words after `secs` with nothing new from any agent.
+        let after = |doing: &[Doing], secs: u64| {
+            let state = state_with(doing);
+            let mut bottom = crate::bottom::BottomState::new();
+            sync_working(&state, &mut bottom, || "Rowing", t0);
+            let now = t0 + Duration::from_secs(secs);
+            sync_working(&state, &mut bottom, || "Rowing", now);
+            let line = bottom.working.expect("a working line");
+            let drawn = line.line(&RenderCtx::new(100, &theme, Clock::new(t0, now)));
+            let words: String = drawn.spans.iter().map(|span| &*span.content).collect();
+            (drawn.spans[0].style.fg, words)
+        };
+        let color = |role| theme.style(role).fg;
+        assert!(matches!(color(Role::Accent), Some(Color::Rgb(..))));
+
+        let tool = Doing::RunningTool;
+        for agents in [
+            &[tool, tool][..],
+            &[tool, tool, tool],
+            &[tool, Doing::Nothing],
+            &[tool, Doing::Thinking],
+            // One in a long think while another waits for its next token is an ordinary crew.
+            &[Doing::Thinking, Doing::Nothing],
+            &[Doing::Thinking, Doing::Writing],
+            &[Doing::Nothing, Doing::Writing, Doing::Thinking],
+        ] {
+            for secs in [9, 15, 20, 60] {
+                let (glyph, words) = after(agents, secs);
+                assert_eq!(glyph, color(Role::Accent), "{agents:?} at {secs}s");
+                assert!(!words.contains("running tool"), "{words}");
+                assert!(!words.contains("think"), "{words}");
+            }
+        }
+        let (glyph, words) = after(&[Doing::Thinking, Doing::Thinking], 60);
+        assert_eq!(glyph, color(Role::Warn), "a long think is amber");
+        assert!(!words.contains("thought"), "{words}");
+        for nobody_works in [
+            &[Doing::Nothing, Doing::Nothing][..],
+            &[Doing::Nothing, Doing::Writing],
+            &[Doing::Writing, Doing::Writing, Doing::Nothing],
+        ] {
+            assert_eq!(
+                after(nobody_works, 60).0,
+                color(Role::Danger),
+                "{nobody_works:?}: none of them thinks or runs a tool"
+            );
+        }
+        // A lone agent still says what it does.
+        let (glyph, words) = after(&[tool], 60);
+        assert_eq!(glyph, color(Role::Accent));
+        assert!(words.contains("running tool for 1m"), "{words}");
+    }
+
+    /// The working line offers Esc only for what Esc stops: a conversation turn, a turn
     /// answered while a run works, and a run that's pausing. A run's own agents keep going.
     /// While the main agent rests and only its CLI's subagents work, there is no line at all.
     #[test]
@@ -896,18 +1198,18 @@ mod tests {
         state.runs.insert(run.clone(), RunState::new(run.clone()));
         state.mode = Some(AppMode::Working { run: run.clone() });
         assert_eq!(synced(&state), Some(false), "a run alone");
-        state.chat.turn = Some(turn.clone());
+        state.conversation.turn = Some(turn.clone());
         assert_eq!(synced(&state), Some(true), "a turn answered meanwhile");
-        state.chat.turn = None;
+        state.conversation.turn = None;
         state.mode = Some(AppMode::Pausing { run });
         assert_eq!(synced(&state), Some(true), "a pausing run stops now");
 
         let mut state = AppState::default();
         state.mode = Some(AppMode::Answering { turn: turn.clone() });
-        state.chat.turn = Some(turn.clone());
-        assert_eq!(synced(&state), Some(true), "a chat turn");
-        let agent = |event| AppEvent::Chat {
-            event: ChatEvent::Agent {
+        state.conversation.turn = Some(turn.clone());
+        assert_eq!(synced(&state), Some(true), "a conversation turn");
+        let agent = |event| AppEvent::Conversation {
+            event: ConversationEvent::Agent {
                 turn: turn.clone(),
                 event,
             },
@@ -939,41 +1241,41 @@ mod tests {
     }
 
     #[test]
-    fn a_chat_turns_quota_reading_is_kept_for_the_bottom_line() {
+    fn a_conversation_turns_plan_usage_reading_is_kept_for_the_bottom_line() {
         let wall = OffsetDateTime::now_utc();
         let mut state = AppState::default();
-        assert!(state.quotas.is_empty());
-        let reading = QuotaReading {
-            vendor: VendorId("claude-code".into()),
-            status: QuotaStatus::Allowed,
+        assert!(state.plan_windows.is_empty());
+        let reading = PlanUsageReading {
+            agent_id: AgentId("claude-code".into()),
+            status: PlanUsageStatus::Allowed,
             used: Some(0.71),
             resets_at: None,
             window: Some("five_hour".into()),
-            source: QuotaSource::RateLimitEvent,
+            source: PlanUsageSource::RateLimitEvent,
             observed_at: wall,
             detail: None,
             wrap_up: false,
         };
-        state.apply(&AppEvent::Chat {
-            event: ChatEvent::Agent {
+        state.apply(&AppEvent::Conversation {
+            event: ConversationEvent::Agent {
                 turn: TurnId::numbered(1),
-                event: AgentEvent::Quota {
+                event: AgentEvent::PlanUsage {
                     reading: reading.clone(),
                 },
             },
         });
-        assert_eq!(state.quotas["claude-code"], [reading]);
+        assert_eq!(state.plan_windows["claude-code"], [reading]);
     }
 
-    fn status_with(awake: Option<AwakeHold>) -> argonauts_core::app::StatusLine {
-        argonauts_core::app::StatusLine {
+    fn status_with(awake: Option<AwakeHold>) -> argonauts_core::app::HeaderAndBottomLine {
+        argonauts_core::app::HeaderAndBottomLine {
             title: String::new(),
             repo: "~/code".into(),
             workflow: "council".into(),
             ultracode: false,
             run: None,
             main_agent: "claude-code".parse().unwrap(),
-            quotas: Vec::new(),
+            plan_chips: Vec::new(),
             line: Default::default(),
             spent: None,
             limit: None,

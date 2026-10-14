@@ -8,8 +8,8 @@ use argonauts_core::app::{AppEvent, UiCommand, ViewData};
 use argonauts_core::names::SessionKey;
 use argonauts_core::session::CommandSpec;
 use argonauts_core::settings::approvals::ApprovalMode;
-use argonauts_core::settings::ui::{ScreenMode, TakeoverWhere};
-use argonauts_core::{CardId, RunId};
+use argonauts_core::settings::ui::{ScreenMode, TakeOverWhere};
+use argonauts_core::{RunId, TaskId};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use ratatui::layout::{Position, Size};
@@ -141,7 +141,7 @@ fn raw_view() -> AppEvent {
         lines: vec!["raw line".into()],
         truncated: false,
         path: PathBuf::from("raw.jsonl"),
-        vendor_transcript: None,
+        cli_transcript: None,
     };
     AppEvent::View {
         data: Box::new(ViewData::Raw { raw }),
@@ -174,18 +174,18 @@ async fn a_scripted_session_runs_end_to_end() {
         script.settle().await;
         assert!(!script.screen.alternate());
 
-        // An endpoint has nothing to hand over, and the card resumes.
+        // An endpoint has nothing to hand over, and the task resumes.
         let run = RunId::new("run-01").unwrap();
-        let card = CardId::new("task-001").unwrap();
+        let task = TaskId::new("task-001").unwrap();
         script
             .event(AppEvent::TakeOver {
                 ticket: TakeOverTicket {
-                    card: card.clone(),
+                    task: task.clone(),
                     command: None,
                     worktree: PathBuf::from("."),
-                    vendor: "ollama".into(),
+                    agent_id: "ollama".into(),
                 },
-                place: TakeoverWhere::Here,
+                place: TakeOverWhere::Here,
                 run: run.clone(),
             })
             .await;
@@ -193,7 +193,7 @@ async fn a_scripted_session_runs_end_to_end() {
             script.command().await,
             UiCommand::TakeOverEnded {
                 run: run.clone(),
-                card: card.clone(),
+                task: task.clone(),
                 exit_code: None
             }
         );
@@ -212,12 +212,12 @@ async fn a_scripted_session_runs_end_to_end() {
         script
             .event(AppEvent::TakeOver {
                 ticket: TakeOverTicket {
-                    card: card.clone(),
+                    task: task.clone(),
                     command: Some(spec),
                     worktree: dir.path().to_owned(),
-                    vendor: "codex".into(),
+                    agent_id: "codex".into(),
                 },
-                place: TakeoverWhere::Here,
+                place: TakeOverWhere::Here,
                 run: run.clone(),
             })
             .await;
@@ -225,7 +225,7 @@ async fn a_scripted_session_runs_end_to_end() {
             script.command().await,
             UiCommand::TakeOverEnded {
                 run,
-                card,
+                task,
                 exit_code: Some(3)
             }
         );
@@ -285,16 +285,16 @@ async fn fullscreen_keeps_the_alternate_screen_through_views_and_handovers() {
         let dir = tempfile::tempdir().unwrap();
         let spec = CommandSpec::new("sh", dir.path()).args(["-c", "exit 0"]);
         let run = RunId::new("run-01").unwrap();
-        let card = CardId::new("task-001").unwrap();
+        let task = TaskId::new("task-001").unwrap();
         script
             .event(AppEvent::TakeOver {
                 ticket: TakeOverTicket {
-                    card: card.clone(),
+                    task: task.clone(),
                     command: Some(spec),
                     worktree: dir.path().to_owned(),
-                    vendor: "codex".into(),
+                    agent_id: "codex".into(),
                 },
-                place: TakeoverWhere::Here,
+                place: TakeOverWhere::Here,
                 run: run.clone(),
             })
             .await;

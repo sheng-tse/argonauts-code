@@ -1,11 +1,12 @@
 //! The engine's one error type. Step kinds return it, and the runner turns it into a failed step,
-//! a parked run, or a crash the next supervisor recovers from.
+//! a waiting run, or a crash the next run host recovers from.
 
 use std::fmt;
 
+use argonauts_core::events::agent_status::JobWait;
 use argonauts_core::journal::JournalError;
+use argonauts_core::session_runner::RunnerError;
 use argonauts_core::steps::StepError;
-use argonauts_core::worker::WorkerError;
 use time::OffsetDateTime;
 
 use crate::git::GitError;
@@ -24,7 +25,7 @@ pub enum EngineError {
     #[error("git: {0}")]
     Git(#[from] GitError),
     #[error("worker: {0}")]
-    Worker(#[from] WorkerError),
+    Runner(#[from] RunnerError),
     #[error("step: {0}")]
     Step(#[from] StepError),
     #[error("io: {0}")]
@@ -34,8 +35,8 @@ pub enum EngineError {
     /// A rule refused something, such as an invalid workflow or task graph. One line.
     #[error("{0}")]
     Refused(String),
-    /// A step's session ended for a vendor reason and no agent can take its role, so the run
-    /// parks until one can, saying why and what fixes it.
+    /// A step's session ended for an agent reason and no agent can take its role, so the run
+    /// waits until one can, saying why and what fixes it.
     #[error("{0}")]
     Stalled(Box<Stall>),
 }
@@ -51,7 +52,7 @@ impl EngineError {
                 "an agent ended without an answer"
             }
             Self::Step(StepError::SchemaMismatch { .. }) => {
-                "an agent's answer didn't match the format Argonauts asked for"
+                "an agent's answer didn't match the format Argonauts Code asked for"
             }
             _ => return self.to_string(),
         };
@@ -59,17 +60,20 @@ impl EngineError {
     }
 }
 
-/// Why nobody could take a seat over, for the run's park.
+/// Why a job had nobody to fall back to, for the run's wait.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stall {
-    /// `nobody could take over as the lead`, for the park line and the panel.
+    /// `nobody to fall back to as the main agent`, for the wait line and the panel.
     pub detail: String,
-    /// Who stopped, why, and that nobody else may take the seat.
+    /// Who stopped, why, and that nobody else may take the job.
     pub line: String,
     /// The agents whose CLI says they're logged out, so logging in is the fix.
     pub logged_out: Vec<String>,
     /// When the stopped agent's plan resets, when a usage limit stopped it.
     pub resets_at: Option<OffsetDateTime>,
+    /// The job's wait, when `fallback.same_cli` is all that keeps it from an agent of another
+    /// CLI: the question about a CLI that is down then lists it.
+    pub kept: Option<Box<JobWait>>,
 }
 
 impl fmt::Display for Stall {
@@ -110,7 +114,7 @@ mod tests {
         let mut lines = detail.lines();
         assert_eq!(
             lines.next(),
-            Some("an agent's answer didn't match the format Argonauts asked for")
+            Some("an agent's answer didn't match the format Argonauts Code asked for")
         );
         assert_eq!(
             lines.next(),

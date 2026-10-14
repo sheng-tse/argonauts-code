@@ -2,18 +2,14 @@
 
 use argonauts_core::names::RoleName;
 use argonauts_core::settings::approvals::{
-    ApprovalMode, CheckpointSettings, DecideWith, Otherwise, RoleSandbox, SandboxChoice,
+    ApprovalMode, ApprovalPointSettings, DecideWith, Otherwise, RoleSandbox, SandboxChoice,
 };
-use argonauts_core::settings::handoff::HandoffMode;
+use argonauts_core::settings::fallback::FallbackMode;
 use argonauts_core::settings::{SAFETY_KEYS, Settings};
 use serde_json::json;
 
-fn rule(checkpoint: &CheckpointSettings) -> (ApprovalMode, DecideWith, Otherwise) {
-    (
-        checkpoint.mode,
-        checkpoint.decide_with,
-        checkpoint.otherwise,
-    )
+fn rule(approval: &ApprovalPointSettings) -> (ApprovalMode, DecideWith, Otherwise) {
+    (approval.mode, approval.decide_with, approval.otherwise)
 }
 
 #[test]
@@ -27,7 +23,7 @@ fn agents_work_on_their_own_by_default_and_ask_when_a_rule_fails() {
     assert!(!sandbox.agents_see_other_worktrees);
     assert!(settings.roles.is_empty());
 
-    assert_eq!(settings.fallback.mode, HandoffMode::Auto);
+    assert_eq!(settings.fallback.mode, FallbackMode::Auto);
     assert!(settings.fallback.order.is_empty() && settings.fallback.replace.is_empty());
 
     let approvals = &settings.approvals;
@@ -36,10 +32,10 @@ fn agents_work_on_their_own_by_default_and_ask_when_a_rule_fails() {
         DecideWith::RulesAndModel,
         Otherwise::Ask,
     );
-    assert_eq!(rule(&approvals.goal), reviewed);
+    assert_eq!(rule(&approvals.understand), reviewed);
     assert_eq!(rule(&approvals.plan), reviewed);
-    assert_eq!(rule(&approvals.escalation), reviewed);
-    assert_eq!(rule(&approvals.budget), reviewed);
+    assert_eq!(rule(&approvals.stuck), reviewed);
+    assert_eq!(rule(&approvals.limit), reviewed);
     assert_eq!(rule(&approvals.change_request), reviewed);
     assert_eq!(
         rule(&approvals.merge),
@@ -47,30 +43,30 @@ fn agents_work_on_their_own_by_default_and_ask_when_a_rule_fails() {
     );
     // Nothing caps automatic merges until you set a cap.
     assert_eq!(settings.limits.auto_merges_per_day, None);
-    // Promoting a recipe change is automatic too: its replays pass first, and a canary watches it.
+    // Promoting a learned workflow change is automatic too: its replays pass first, and a canary
+    // watches it.
     assert_eq!(
-        rule(&approvals.workflow_promotion.as_checkpoint()),
+        rule(&approvals.workflow_promotion.as_approval()),
         (ApprovalMode::Auto, DecideWith::Rules, Otherwise::Ask)
     );
-    // Unset, so the policy builder picks the cheapest model from another company.
-    assert_eq!(approvals.approver_model(), None);
-    assert!(approvals.approver.different_provider);
+    // Unset, so the policy builder picks the cheapest model from another provider.
+    assert_eq!(approvals.judge_model(), None);
+    assert!(approvals.judge.different_provider);
 }
 
 #[test]
-fn sandbox_modes_keep_their_words_and_off_reads_as_the_tools_own() {
+fn sandbox_modes_keep_their_words() {
     let cases = [
         ("os", SandboxChoice::Os),
         ("container", SandboxChoice::Container),
         ("tool", SandboxChoice::Tool),
         ("none", SandboxChoice::None),
-        ("off", SandboxChoice::Tool),
     ];
     for (word, mode) in cases {
         let settings: Settings = toml::from_str(&format!("[sandbox]\nmode = {word:?}\n")).unwrap();
         assert_eq!(settings.sandbox.mode, mode, "{word}");
         assert_eq!(serde_json::to_value(mode).unwrap(), json!(mode.as_str()));
-        assert_eq!(mode.ours_off(), matches!(word, "tool" | "none" | "off"));
+        assert_eq!(mode.ours_off(), matches!(word, "tool" | "none"));
     }
     let mut settings = Settings::default();
     settings.sandbox.mode = SandboxChoice::Tool;
@@ -95,7 +91,7 @@ network = true
 agents_commit = false
 agents_see_other_worktrees = true
 
-[roles.adjudicator]
+[roles.judge]
 effort = "low"
 "#,
     )
@@ -107,16 +103,13 @@ effort = "low"
     assert!(reviewer.agents_commit && !reviewer.agents_see_other_worktrees);
     assert_eq!(reviewer.extra_writable, ["../shared"]);
 
-    let owner = settings.sandbox_for(&RoleName::Worker);
-    assert_eq!(owner.mode, SandboxChoice::Os);
-    assert!(!owner.network);
-    assert!(!owner.agents_commit && owner.agents_see_other_worktrees);
+    let worker = settings.sandbox_for(&RoleName::Worker);
+    assert_eq!(worker.mode, SandboxChoice::Os);
+    assert!(!worker.network);
+    assert!(!worker.agents_commit && worker.agents_see_other_worktrees);
 
     // A role table without sandbox keys, and a role with no table, get the top level as is.
-    assert_eq!(
-        settings.sandbox_for(&RoleName::Adjudicator),
-        settings.sandbox
-    );
+    assert_eq!(settings.sandbox_for(&RoleName::Judge), settings.sandbox);
     assert_eq!(
         settings.sandbox_for(&RoleName::Orchestrator),
         settings.sandbox
@@ -128,7 +121,7 @@ effort = "low"
 
     // Only the keys a role sets are written back.
     let table = toml::Table::try_from(&settings).unwrap();
-    assert!(table["roles"]["adjudicator"].get("sandbox").is_none());
+    assert!(table["roles"]["judge"].get("sandbox").is_none());
     let reviewer = table["roles"]["reviewer"]["sandbox"].as_table().unwrap();
     assert_eq!(reviewer.len(), 2);
     let back: Settings = toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();

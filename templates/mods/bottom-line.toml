@@ -1,0 +1,13 @@
+# The line under the input. Each name is a mod.
+form  = "fit"                   # fit: the fullest layout the terminal has room for · or pin bars, compact, gauges, text
+left  = ["mode", "artifact"]    # "mode" always stays: it tells you whether Argonauts Code will ask
+right = ["plan-usage"]          # more for either side: branch · spend · context · tokens · awake · stats · checks, or a mod of yours
+
+[plan-usage]                    # how that mod draws when it sits on this line
+show    = "all"                 # all: every CLI in the crew · main: only the one in use · near-limit
+windows = "both"                # both (for the one in use) · fullest · 5h · 7d
+as      = "used"                # used · left
+resets  = "near-limit"          # near-limit · always · never
+
+[narrow]
+drop = ["spend", "branch"]      # what goes first; then bars step down to compact, then gauges

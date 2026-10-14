@@ -1,21 +1,21 @@
 //! The frame the workflow and agent views draw in the bottom region, under the conversation,
-//! where the input, the mode line, and the panel were, as Claude Code's open
-//! workflow view sits: a white rule, the name, the description with its totals, at most two
-//! status lines, a blank row, one rounded white box with two panes, and the footer.
+//! where the input, the bottom line, and the panel were, as Claude Code's workflow detail
+//! view sits: a rule, the name in bold, the description with its totals, one status line, a
+//! blank row, one rounded box with two panes and plain titles, and the keys.
 //!
 //! The rule stops six columns short of the right edge, and everything under it sits one column
 //! inside it on each side, as in Claude Code's captures.
 
-use argonauts_core::views::{StatusKind, StatusLine};
+use argonauts_core::views::{StatusKind, StatusLine, Tone};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Widget};
 
+use crate::kit::State;
 use crate::text::{marks, sanitize_line, spans_width, str_width, truncate_spans};
 use crate::theme::{Role, Theme};
-use crate::widgets::State;
 
 use super::layout::{cut, cut_at_word};
 use super::panes::{self, Footer, Panes};
@@ -28,7 +28,21 @@ pub const MIN_ROWS: u16 = 12;
 const RIGHT_MARGIN: u16 = 6;
 
 /// Status lines under the description, at most.
-pub const MAX_STATUS: usize = 2;
+pub const MAX_STATUS: usize = 1;
+
+/// The least the frame takes over a question that draws under it: the rule, the name, the
+/// description, a status line, a blank row, the box around one row, and the keys' row, which
+/// the question's rule takes. With less room than this the question shows alone.
+pub const MIN_OVER_QUESTION: u16 = 9;
+
+/// How wide the frame's rule is on a screen `width` wide.
+pub fn rule_width(width: u16) -> u16 {
+    if width > RIGHT_MARGIN * 4 {
+        width - RIGHT_MARGIN
+    } else {
+        width
+    }
+}
 
 /// Rows from the rule to the footer on a screen `rows` tall: about half of it, as Claude
 /// Code's takes (29 of 64 rows), at least [`MIN_ROWS`], and every row left when that doesn't
@@ -53,11 +67,7 @@ pub struct Dock {
 /// Splits `area` for a frame with `status_rows` status lines. `left_width` is the left pane's
 /// contents in cells, and 0 leaves one pane.
 pub fn split(area: Rect, left_width: u16, status_rows: u16) -> Dock {
-    let rule_width = if area.width > RIGHT_MARGIN * 4 {
-        area.width - RIGHT_MARGIN
-    } else {
-        area.width
-    };
+    let rule_width = rule_width(area.width);
     let rule = Rect::new(area.x, area.y, rule_width, area.height.min(1));
     // One column in from each end of the rule.
     let inner = Rect {
@@ -122,15 +132,16 @@ pub fn draw_rule(buf: &mut Buffer, dock: &Dock, theme: &Theme) {
 pub struct Heading {
     /// From the run's workflow down to the one shown; the last is its own name.
     pub names: Vec<String>,
-    /// What kind of workflow it is, dim after the name: such as `orchestrator workflow`.
+    /// What kind of workflow it is, before the description: such as `orchestrator workflow`.
     pub notes: Vec<String>,
     pub description: String,
     /// Such as `6/8 agents · 4m31s`, ending under the box's right border.
     pub totals: String,
 }
 
-/// The name in the accent color, with a nested workflow's parents dim before it, and under it
-/// the dim description cut with `…`, one space, and the totals.
+/// The name in bold in the accent color, with a nested workflow's parents dim before it, and
+/// under it, dim, what kind of workflow it is and its description cut with `…`, then the
+/// totals at the right.
 pub fn draw_heading(buf: &mut Buffer, dock: &Dock, heading: &Heading, theme: &Theme) {
     let area = dock.panes.header;
     if area.height == 0 || area.width == 0 {
@@ -150,13 +161,10 @@ pub fn draw_heading(buf: &mut Buffer, dock: &Dock, heading: &Heading, theme: &Th
             spans.push(Span::styled(parent.clone(), dim));
             spans.push(Span::styled(format!(" {} ", marks.crumb), dim));
         }
-        spans.push(Span::styled(own.clone(), theme.style(Role::Card)));
-    }
-    for note in &heading.notes {
-        let note = sanitize_line(note);
-        if !note.trim().is_empty() {
-            spans.push(Span::styled(format!(" · {}", note.trim()), dim));
-        }
+        spans.push(Span::styled(
+            own.clone(),
+            theme.style(Role::Question).add_modifier(Modifier::BOLD),
+        ));
     }
     let spans = truncate_spans(&spans, usize::from(area.width));
     panes::put(buf, area.x, area.y, area.width, &Line::from(spans));
@@ -169,8 +177,14 @@ pub fn draw_heading(buf: &mut Buffer, dock: &Dock, heading: &Heading, theme: &Th
     // Two spaces at least between the description and the counts, as Claude Code keeps.
     let gap = if totals_width > 0 { 2 } else { 0 };
     let room = width.saturating_sub(totals_width + gap);
-    let description = sanitize_line(&heading.description);
-    let mut text = cut_at_word(description.trim(), room);
+    let said: Vec<String> = heading
+        .notes
+        .iter()
+        .chain([&heading.description])
+        .map(|part| sanitize_line(part).trim().to_owned())
+        .filter(|part| !part.is_empty())
+        .collect();
+    let mut text = cut_at_word(&said.join(" · "), room);
     let used = str_width(&text);
     text.push_str(&" ".repeat(width.saturating_sub(used + totals_width)));
     text.push_str(&totals);
@@ -183,32 +197,45 @@ pub fn draw_heading(buf: &mut Buffer, dock: &Dock, heading: &Heading, theme: &Th
     );
 }
 
-/// The status lines, dim, each with its mark: `◎` for the goal, `◆` in the needs-you color for
-/// what needs you, as every view draws that state, and `›` for a note. How the run ended reads
-/// alone.
+/// The status line with its mark: `◆` and the headline in the needs-you color for what needs
+/// you, as every view draws that state, `›` for a note, `◎` for the goal, and for a run that
+/// ended `✔` or `✘` with the headline in that color. What follows the headline's ` · ` is dim.
 pub fn draw_status(buf: &mut Buffer, dock: &Dock, lines: &[StatusLine], theme: &Theme) {
     let area = dock.status;
     let dim = theme.style(Role::Dim);
     let ascii = theme.glyphs.prompt.is_ascii();
     for (row, status) in lines.iter().take(usize::from(area.height)).enumerate() {
-        let (mark, role) = match status.kind {
-            StatusKind::Goal => (Some(if ascii { "@" } else { "◎" }), Role::Card),
-            StatusKind::NeedsYou => {
+        let (mark, role, headline) = match (status.kind, status.tone) {
+            (StatusKind::Goal, _) => (Some(if ascii { "@" } else { "◎" }), Role::Question, None),
+            (StatusKind::NeedsYou, _) => {
                 let (glyph, role) = states::mark(State::NeedsYou, theme);
-                (Some(glyph), role)
+                (Some(glyph), role, Some(role))
             }
-            StatusKind::Note => (Some(if ascii { ">" } else { "›" }), Role::Dim),
-            StatusKind::Ended => (None, Role::Dim),
+            (StatusKind::Note, _) => (Some(if ascii { ">" } else { "›" }), Role::Dim, None),
+            (StatusKind::Ended, Tone::Good) => {
+                let mark = if ascii { "*" } else { "✔" };
+                (Some(mark), Role::StateDone, Some(Role::StateDone))
+            }
+            (StatusKind::Ended, Tone::Bad) => {
+                let mark = if ascii { "x" } else { "✘" };
+                (Some(mark), Role::StateFailed, Some(Role::StateFailed))
+            }
+            (StatusKind::Ended, _) => (None, Role::Dim, None),
         };
         let mut spans = Vec::new();
         if let Some(mark) = mark {
-            spans.push(Span::styled(mark.to_owned(), theme.style(role)));
-            spans.push(Span::raw(" "));
+            spans.push(Span::styled(format!("{mark} "), theme.style(role)));
         }
-        spans.push(Span::styled(
-            sanitize_line(&status.text).trim().to_owned(),
-            dim,
-        ));
+        let text = sanitize_line(&status.text);
+        let text = text.trim();
+        match (headline, text.split_once(" · ")) {
+            (Some(role), Some((first, rest))) => {
+                spans.push(Span::styled(first.to_owned(), theme.style(role)));
+                spans.push(Span::styled(format!(" · {rest}"), dim));
+            }
+            (Some(role), None) => spans.push(Span::styled(text.to_owned(), theme.style(role))),
+            (None, _) => spans.push(Span::styled(text.to_owned(), dim)),
+        }
         panes::put(
             buf,
             area.x,
@@ -219,14 +246,14 @@ pub fn draw_status(buf: &mut Buffer, dock: &Dock, lines: &[StatusLine], theme: &
     }
 }
 
-/// The box in white with both pane titles bold white on its top edge, whichever pane has the
-/// keys, and `mark`, such as `1–24 of 34 ↓`, on its bottom edge at the right.
+/// The box in a faint line with both pane titles plain on its top edge, whichever pane has
+/// the keys, and `mark`, such as `↑ 2–6 of 9 ↓`, on its bottom edge at the right.
 pub fn draw_box(buf: &mut Buffer, dock: &Dock, titles: [&str; 2], mark: &str, theme: &Theme) {
     let body = dock.panes.body;
     if body.width < 2 || body.height < 2 {
         return;
     }
-    let border = marks::decoration(theme.style(Role::Bright));
+    let border = marks::decoration(theme.style(Role::Faint));
     let ascii = theme.glyphs.prompt.is_ascii();
     let set = if ascii {
         ratatui::symbols::border::Set {
@@ -251,9 +278,7 @@ pub fn draw_box(buf: &mut Buffer, dock: &Dock, titles: [&str; 2], mark: &str, th
     } else {
         ("┬", "│", "┴")
     };
-    let title = Style::new()
-        .patch(theme.style(Role::Bright))
-        .add_modifier(Modifier::BOLD);
+    let title = theme.style(Role::Text);
     let top = body.y;
     let bottom = body.bottom().saturating_sub(1);
     let right_title_x = if dock.panes.left.width > 0 {
@@ -282,7 +307,7 @@ pub fn draw_box(buf: &mut Buffer, dock: &Dock, titles: [&str; 2], mark: &str, th
         let width = str_width(&text) as u16;
         if width + 4 < body.width {
             let x = body.right() - 2 - width;
-            let line = Line::from(Span::styled(text, theme.style(Role::Dim)));
+            let line = Line::from(Span::styled(text, theme.style(Role::Faint)));
             panes::put(buf, x, bottom, width, &line);
         }
     }
@@ -322,7 +347,7 @@ pub fn draw_panel(
     if area.width < 4 || area.height < 2 {
         return Rect::default();
     }
-    let border = marks::decoration(theme.style(Role::Bright));
+    let border = marks::decoration(theme.style(Role::Faint));
     let set = if theme.glyphs.prompt.is_ascii() {
         ASCII_BORDER
     } else {
@@ -376,48 +401,6 @@ const ASCII_BORDER: ratatui::symbols::border::Set = ratatui::symbols::border::Se
     horizontal_bottom: "-",
 };
 
-/// A dim note at the right end of the box's top edge, such as who does a phase's work. It is
-/// left out when the right pane's title, `title_width` cells of it, leaves it no room.
-pub fn draw_title_note(
-    buf: &mut Buffer,
-    dock: &Dock,
-    note: &str,
-    title_width: usize,
-    theme: &Theme,
-) {
-    let body = dock.panes.body;
-    let note = sanitize_line(note);
-    let note = note.trim();
-    if note.is_empty() || body.width < 4 || body.height == 0 {
-        return;
-    }
-    let text = format!(" {note} ");
-    let width = str_width(&text);
-    let pane_start = if dock.panes.left.width > 0 {
-        usize::from(dock.panes.left.right()) + 2
-    } else {
-        usize::from(body.x) + 1
-    };
-    // The title's two spaces, and at least three cells of border between the two.
-    let free_from = pane_start + title_width + 2 + 3;
-    let Some(x) = usize::from(body.right()).checked_sub(2 + width) else {
-        return;
-    };
-    if x < free_from {
-        return;
-    }
-    let Ok(x) = u16::try_from(x) else {
-        return;
-    };
-    for cell_x in x..x.saturating_add(width as u16) {
-        if let Some(cell) = buf.cell_mut((cell_x, body.y)) {
-            cell.reset();
-        }
-    }
-    let line = Line::from(Span::styled(text, theme.style(Role::Dim)));
-    panes::put(buf, x, body.y, width as u16, &line);
-}
-
 /// A title on the top edge, ` Phases `, in its own style rather than the border's, so the
 /// border's decoration mark doesn't carry into it.
 fn put_title(buf: &mut Buffer, x: u16, y: u16, title: &str, room: u16, style: Style) {
@@ -442,32 +425,11 @@ pub fn draw_footer(buf: &mut Buffer, dock: &Dock, footer: Footer, theme: &Theme)
     panes::draw_footer(buf, dock.panes.footer, footer, "", theme);
 }
 
-/// `1–24 of 34 ↓` for a list `total` long showing `shown` rows from `first`, or nothing when
-/// it all fits.
-pub fn position(first: usize, shown: usize, total: usize, theme: &Theme) -> String {
-    if total <= shown || shown == 0 {
-        return String::new();
-    }
-    let marks = panes::Marks::for_theme(theme);
-    let dash = if theme.glyphs.prompt.is_ascii() {
-        "-"
-    } else {
-        "–"
-    };
-    let end = (first + shown).min(total);
-    let more = if end < total {
-        format!(" {}", marks.down)
-    } else {
-        String::new()
-    };
-    format!("{}{dash}{end} of {total}{more}", first + 1)
-}
-
 /// What the last row of a panel says while the answer goes on above it.
 pub const PANEL_HINT: &str = "esc closes this · the answer keeps running";
 
 /// A view made for the whole screen, drawn as a panel under the working line because an
-/// answer was running when it opened: Claude Code's dialog rule in the card
+/// answer was running when it opened: Claude Code's dialog rule in the question
 /// color, the view in the rows under it, and while the answer still runs a last row saying
 /// Esc closes the panel and not the answer.
 pub fn render_in_panel(
@@ -483,7 +445,7 @@ pub fn render_in_panel(
     let theme = ctx.theme;
     let rule = Line::from(marks::decorative(
         theme.glyphs.rule.repeat(usize::from(area.width)),
-        theme.style(Role::Card),
+        theme.style(Role::Question),
     ));
     buf.set_line(area.x, area.y, &rule, area.width);
     let hint_rows = u16::from(answer_running && area.height > 3);
@@ -650,10 +612,7 @@ mod tests {
         let area = Rect::new(0, 0, 60, 14);
         let mut buf = Buffer::empty(area);
         let dock = split(area, 10, 1);
-        let line = StatusLine {
-            kind: StatusKind::NeedsYou,
-            text: "the plan approval".to_owned(),
-        };
+        let line = StatusLine::new(StatusKind::NeedsYou, "the plan approval");
         draw_status(&mut buf, &dock, &[line], &theme);
         let mark = &buf[(dock.status.x, dock.status.y)];
         assert_eq!(mark.symbol(), "◆");

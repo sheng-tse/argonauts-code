@@ -19,7 +19,7 @@ pub struct Cli {
 
     /// Carry on the newest conversation in this repo.
     #[arg(short = 'c', long = "continue")]
-    pub continue_chat: bool,
+    pub continue_conversation: bool,
 
     /// What to do. With none, a new conversation opens.
     #[command(subcommand)]
@@ -34,8 +34,8 @@ pub enum Command {
     /// Open the app on an earlier conversation, a run, an agent's session in a run, or the main
     /// agent CLI's own session to carry it on, or on the list of them to pick one.
     Resume {
-        /// A conversation such as `chat-002`, a run such as `run-03`, an agent's session in a
-        /// run such as `run-03/s-002`, or the main agent CLI's own session such as
+        /// A conversation such as `conversation-002`, a run such as `run-03`, an agent's session in
+        /// a run such as `run-03/s-002`, or the main agent CLI's own session such as
         /// `codex:019a2f`. With none, you pick from the list, which lists each run's agents.
         id: Option<String>,
     },
@@ -45,21 +45,21 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Walk through the guided setup again: your agents, who you chat with, how the crew
+    /// Walk through the guided setup again: your agents, who you talk to, how the crew
     /// works, approvals, and this folder. It opens by itself the first time you start.
-    Init,
+    Setup,
     /// Check which agent CLIs are installed, and remind you of runs waiting a long time.
     Doctor(DoctorArgs),
-    /// Update each installed agent CLI with its own updater, such as `claude update`, then run
-    /// the doctor.
+    /// Update each installed agent CLI the way it was installed, such as `claude update` or
+    /// `brew upgrade codex`, then run the doctor. It waits while a run is going.
     Update,
     /// Show, explain, or change your settings.
     #[command(subcommand)]
     Config(ConfigCommand),
-    /// The one anonymous event a day about how you use Argonauts, off until you turn it on.
+    /// The one anonymous event a day about how you use Argonauts Code, off until you turn it on.
     #[command(subcommand)]
     Telemetry(TelemetryCommand),
-    /// The models Argonauts knows about.
+    /// The models Argonauts Code knows about.
     Models {
         /// Ask each CLI and local server which models it has first. Never calls a model.
         #[arg(long)]
@@ -70,17 +70,16 @@ pub enum Command {
     Approve {
         /// Such as `run-03`.
         run: String,
-        /// Such as `cp-002`. `argonauts inbox` lists what waits.
+        /// Such as `approval-002`. `argonauts approvals` lists what waits.
         #[arg(value_name = "APPROVAL")]
-        checkpoint: String,
+        approval: String,
     },
-    /// How each approval is decided, and how often your rules agreed with you.
+    /// What waits for you across this repo's runs and the proposals learning keeps for you,
+    /// then how each approval is decided and how often your rules agreed with you.
     Approvals,
     /// Turn auto approval off.
     #[command(subcommand)]
     Auto(AutoCommand),
-    /// What waits for you, across this repo's runs, and the proposals learning keeps for you.
-    Inbox,
     /// Who is good at what: track records and prediction scores, or a rebuild from the outcome
     /// log as of a date.
     Records {
@@ -95,9 +94,9 @@ pub enum Command {
     },
     /// Workflows learned from your runs, their candidates, and their replays.
     #[command(name = "learned")]
-    Recipes {
+    LearnedWorkflows {
         #[command(subcommand)]
-        action: Option<RecipesAction>,
+        action: Option<LearnedWorkflowsAction>,
         /// Print it as JSON.
         #[arg(long, global = true)]
         json: bool,
@@ -125,7 +124,7 @@ pub enum Command {
     /// A run's review: its outcome, predictions against results, memory, routing, and the
     /// change it proposed.
     #[command(name = "run-review")]
-    Retro {
+    RunReview {
         /// Such as `run-03`.
         run: String,
         /// Print it as JSON.
@@ -134,13 +133,13 @@ pub enum Command {
     },
     /// Host one run. The app starts these; you don't need to.
     #[command(hide = true)]
-    Supervise {
+    Host {
         #[arg(long)]
         repo: PathBuf,
         #[arg(long)]
         run: String,
     },
-    /// Talk to Argonauts over MCP.
+    /// Talk to Argonauts Code over MCP.
     #[command(subcommand)]
     Mcp(McpCommand),
 }
@@ -153,7 +152,7 @@ pub struct RunArgs {
 
     /// One agent on one task.
     #[arg(long, conflicts_with = "crew")]
-    pub solo: bool,
+    pub captain: bool,
 
     /// The whole crew: goal, plan, tasks, reviews.
     #[arg(long)]
@@ -167,7 +166,7 @@ pub struct RunArgs {
     #[arg(long)]
     pub detach: bool,
 
-    /// The agent to use. Defaults to `main_agent` from your settings.
+    /// The agent to use. Defaults to `crew.main` from your settings.
     #[arg(long, value_name = "ID")]
     pub agent: Option<String>,
 
@@ -186,13 +185,13 @@ pub struct RunArgs {
 
     /// Spend limit for each task in US dollars.
     #[arg(long = "limit-usd", value_name = "USD", value_parser = parse_usd)]
-    pub budget_usd: Option<f64>,
+    pub limit_usd: Option<f64>,
 
     /// A command that must pass before merging, run in the worktree. Repeat for more. Replaces
     /// your configured checks, so it needs you at a terminal. In scripts and CI, set `checks.run`
     /// in a settings file.
     #[arg(long = "check", value_name = "CMD")]
-    pub gates: Vec<String>,
+    pub checks: Vec<String>,
 
     /// Whether to ask at the merge approval or leave the branch without asking. It needs you
     /// at a terminal. In scripts and CI, set `merge.mode` in a settings file.
@@ -262,7 +261,7 @@ pub enum RecordsAction {
 }
 
 #[derive(Debug, Clone, Subcommand)]
-pub enum RecipesAction {
+pub enum LearnedWorkflowsAction {
     /// Every learned workflow and its current version.
     List,
     /// A learned workflow's current version.
@@ -290,7 +289,7 @@ pub enum SkillsAction {
     /// Propose a learned workflow as a skill, on a branch for you.
     Export {
         #[arg(value_name = "WORKFLOW")]
-        recipe: String,
+        learned_workflow: String,
     },
     /// Propose a skill from a folder or a git URL, on a branch for you. Nothing in it runs.
     Import {
@@ -302,7 +301,7 @@ pub enum SkillsAction {
 #[derive(Debug, Clone, Subcommand)]
 pub enum McpCommand {
     /// Serve your runs to an MCP client on stdin and stdout. The repo must be set up with
-    /// `argonauts init` and its settings trusted.
+    /// `argonauts setup` and its settings trusted.
     Serve {
         /// The repo to serve. Defaults to the one holding the current directory.
         #[arg(long, value_name = "PATH")]
@@ -314,7 +313,7 @@ pub enum McpCommand {
         file: PathBuf,
     },
     /// Serve one agent session's tools: its status, and the report tool when its step has an
-    /// output schema. The conductor starts it for the agent.
+    /// output schema. Argonauts Code starts it for the agent.
     #[command(hide = true)]
     Session {
         #[arg(long, value_name = "PATH")]
@@ -336,11 +335,11 @@ pub enum McpCommand {
         /// it once for each tool.
         #[arg(long = "tool", value_name = "NAME", requires = "ask")]
         tools: Vec<String>,
-        /// Offer a tool that asks this crew role, such as `reviewers`. Repeatable.
+        /// Offer a tool that asks this crew role, such as `reviewer`. Repeatable.
         #[arg(long = "ask-role", value_name = "ROLE", requires = "ask")]
         ask_roles: Vec<String>,
     },
-    /// Write the delegation package other agents install: an MCP entry that runs this binary,
+    /// Write the outside agent package other agents install: an MCP entry that runs this binary,
     /// the delegate-to-argonauts skill, and the plugin layouts.
     Package {
         dir: PathBuf,
@@ -359,7 +358,7 @@ impl RunArgs {
         self.model.is_some() || self.effort.is_some() || self.cheapest
     }
 
-    /// `--set` first, so the flags win. `agent` is `--agent` or your default agent, and
+    /// `--set` first, so the flags win. `agent` is `--agent` or your main agent, and
     /// `cheapest` is its cheapest model and effort.
     pub fn overrides(
         &self,
@@ -371,7 +370,7 @@ impl RunArgs {
             |key: &str, value: &str| format!("agents.{agent}.{key}={}", toml_string(value));
         let mut overrides = global_set.to_vec();
         if self.agent.is_some() {
-            overrides.push(format!("main_agent={}", toml_string(agent)));
+            overrides.push(format!("crew.main={}", toml_string(agent)));
         }
         if self.cheapest {
             let (model, effort) = cheapest;
@@ -386,11 +385,11 @@ impl RunArgs {
         if let Some(effort) = &self.effort {
             overrides.push(agent_setting("effort", effort));
         }
-        if let Some(usd) = self.budget_usd {
+        if let Some(usd) = self.limit_usd {
             overrides.push(format!("limits.per_task_usd={}", toml::Value::Float(usd)));
         }
-        if !self.gates.is_empty() {
-            overrides.push(format!("checks.run={}", gate_commands(&self.gates)?));
+        if !self.checks.is_empty() {
+            overrides.push(format!("checks.run={}", check_commands(&self.checks)?));
         }
         if let Some(merge) = self.merge {
             overrides.push(format!("merge.mode=\"{}\"", merge.setting()));
@@ -413,17 +412,17 @@ fn toml_string(text: &str) -> String {
     toml::Value::String(text.to_owned()).to_string()
 }
 
-/// The `--gate` commands as TOML gates, each named by what you typed and run as an argument
+/// The `--check` commands as TOML checks, each named by what you typed and run as an argument
 /// vector.
-fn gate_commands(gates: &[String]) -> anyhow::Result<String> {
-    let mut commands = Vec::with_capacity(gates.len());
-    for gate in gates {
-        let argv = shell_words::split(gate).with_context(|| format!("--check {gate:?}"))?;
+fn check_commands(checks: &[String]) -> anyhow::Result<String> {
+    let mut commands = Vec::with_capacity(checks.len());
+    for check in checks {
+        let argv = shell_words::split(check).with_context(|| format!("--check {check:?}"))?;
         if argv.is_empty() {
-            bail!("--check {gate:?} has no command");
+            bail!("--check {check:?} has no command");
         }
         let mut table = toml::Table::new();
-        table.insert("name".to_owned(), toml::Value::String(gate.clone()));
+        table.insert("name".to_owned(), toml::Value::String(check.clone()));
         table.insert(
             "command".to_owned(),
             toml::Value::Array(argv.into_iter().map(toml::Value::String).collect()),
@@ -487,13 +486,13 @@ mod tests {
         assert!(cli.command.is_none());
         assert!(cli.screen_reader);
         assert_eq!(cli.set, vec!["ui.bell=false"]);
-        assert!(matches!(parse(&["init"]).command, Some(Command::Init)));
+        assert!(matches!(parse(&["setup"]).command, Some(Command::Setup)));
     }
 
     #[test]
-    fn run_keeps_the_solo_flags() {
+    fn run_keeps_the_captain_flags() {
         let args = run_args(&[
-            "--solo",
+            "--captain",
             "--agent",
             "codex",
             "--model",
@@ -513,10 +512,10 @@ mod tests {
             "Create",
             "hello.txt",
         ]);
-        assert!(args.solo && args.plain && args.cheapest && !args.crew);
+        assert!(args.captain && args.plain && args.cheapest && !args.crew);
         assert_eq!(args.agent.as_deref(), Some("codex"));
         assert_eq!(args.task_text(), "Create hello.txt");
-        assert_eq!(args.gates.len(), 2);
+        assert_eq!(args.checks.len(), 2);
         assert_eq!(args.merge, Some(MergeArg::Leave));
     }
 
@@ -541,7 +540,7 @@ mod tests {
             overrides,
             vec![
                 "ui.bell=false".to_owned(),
-                "main_agent=\"codex\"".to_owned(),
+                "crew.main=\"codex\"".to_owned(),
                 "agents.codex.model=\"1.5\"".to_owned(),
                 "limits.per_task_usd=2.0".to_owned(),
                 "checks.run=[{ command = [\"test\", \"-f\", \"hello world.txt\"], name = \"test -f 'hello world.txt'\" }]".to_owned(),
@@ -568,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn bad_gates_are_rejected() {
+    fn bad_checks_are_rejected() {
         let unbalanced = run_args(&["--check", "test -f 'hello", "task"]);
         assert!(unbalanced.overrides(&[], "codex", CHEAPEST).is_err());
         let empty = run_args(&["--check", "  ", "task"]);
@@ -581,7 +580,7 @@ mod tests {
         assert!(fails(&["run", "--limit-usd", "0", "task"]));
         assert!(fails(&["run", "--limit-usd", "lots", "task"]));
         assert!(fails(&["run", "--merge", "maybe", "task"]));
-        assert!(fails(&["run", "--solo", "--crew", "task"]));
+        assert!(fails(&["run", "--captain", "--crew", "task"]));
         assert!(fails(&["run"]));
         assert!(fails(&[
             "config", "set", "ui.bell", "false", "--local", "--global"
@@ -595,17 +594,17 @@ mod tests {
             Some(Command::Resume { id: Some(id) }) if id == "run-03"
         ));
         assert!(matches!(
-            parse(&["resume", "chat-002"]).command,
-            Some(Command::Resume { id: Some(id) }) if id == "chat-002"
+            parse(&["resume", "conversation-002"]).command,
+            Some(Command::Resume { id: Some(id) }) if id == "conversation-002"
         ));
         assert!(matches!(
             parse(&["resume"]).command,
             Some(Command::Resume { id: None })
         ));
         let continued = parse(&["-c"]);
-        assert!(continued.continue_chat && continued.command.is_none());
-        assert!(parse(&["--continue"]).continue_chat);
-        assert!(!parse(&[]).continue_chat);
+        assert!(continued.continue_conversation && continued.command.is_none());
+        assert!(parse(&["--continue"]).continue_conversation);
+        assert!(!parse(&[]).continue_conversation);
         assert!(matches!(
             parse(&["status", "--json"]).command,
             Some(Command::Status { json: true })
@@ -643,10 +642,9 @@ mod tests {
             parse(&["auto", "off"]).command,
             Some(Command::Auto(AutoCommand::Off))
         ));
-        assert!(matches!(parse(&["inbox"]).command, Some(Command::Inbox)));
         assert!(matches!(
-            parse(&["supervise", "--repo", "/r", "--run", "run-01"]).command,
-            Some(Command::Supervise { .. })
+            parse(&["host", "--repo", "/r", "--run", "run-01"]).command,
+            Some(Command::Host { .. })
         ));
         assert!(matches!(
             parse(&["mcp", "serve"]).command,
@@ -657,14 +655,14 @@ mod tests {
             Some(Command::Mcp(McpCommand::Serve { repo: Some(_) }))
         ));
         assert!(matches!(
-            parse(&["approve", "run-03", "cp-002"]).command,
+            parse(&["approve", "run-03", "approval-002"]).command,
             Some(Command::Approve { .. })
         ));
         assert!(matches!(
             parse(&["mcp", "status", "--file", "/s.json"]).command,
             Some(Command::Mcp(McpCommand::Status { .. }))
         ));
-        // As the conductor writes it into each session's MCP config: the status file, the
+        // As Argonauts Code writes it into each session's MCP config: the status file, the
         // report tool's two files, or both.
         assert!(matches!(
             parse(&[

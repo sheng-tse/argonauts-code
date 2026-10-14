@@ -2,25 +2,25 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use argonauts_core::api::StatusSummary;
-use argonauts_core::events::card::{AttemptCause, CardEvent, CardSpec, CardState, GateOutcome};
-use argonauts_core::events::checkpoint::{
-    CheckpointEvent, CheckpointOpened, CheckpointPacket, MergePacket,
+use argonauts_core::events::agent_status::{FallbackEvent, RunSpend, SpendEvent};
+use argonauts_core::events::approval::{
+    ApprovalEvent, ApprovalOpened, ApprovalPacket, MergePacket,
 };
 use argonauts_core::events::run::{
-    ParkReason, PhaseChange, RunLifecycle, RunMode, RunNamed, RunOutcome, RunPhase, RunSnapshot,
+    PhaseChange, RunLifecycle, RunMode, RunNamed, RunOutcome, RunPhase, RunSnapshot, WaitReason,
 };
-use argonauts_core::events::session::{QueuedMessage, SessionEvent, VendorWorkflow};
+use argonauts_core::events::session::{CliWorkflowRun, QueuedMessage, SessionEvent};
 use argonauts_core::events::shared::BlackboardEvent;
-use argonauts_core::events::vendor::{BudgetEvent, HandoffEvent, RunBudget};
+use argonauts_core::events::task::{CheckOutcome, TaskEvent, TaskSpec, TaskState, TryCause};
 use argonauts_core::events::workflow::{StepEnd, WorkflowEvent};
-use argonauts_core::events::{DivideEvent, IntegrationEvent, ReviewEvent, RunEvent, RunEventKind};
-use argonauts_core::handoff::QualityDebt;
-use argonauts_core::names::{CheckpointId, MessageId, RoleName, SessionKey, WorkerRef, WorkflowId};
+use argonauts_core::events::{DivideEvent, MergeEvent, ReviewEvent, RunEvent, RunEventKind};
+use argonauts_core::fallback::QualityDebt;
+use argonauts_core::names::{ApprovalId, MessageId, ModelRef, RoleName, SessionKey, WorkflowId};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::steps::StepName;
 use argonauts_core::views::is_workflow_agent;
 use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow};
-use argonauts_core::{CardId, DiffStat, PhaseStatus, RunId, Spend};
+use argonauts_core::{DiffStat, PhaseStatus, RunId, Spend, TaskId};
 use time::OffsetDateTime;
 
 use super::decisions::{DecisionRecord, Decisions};
@@ -32,26 +32,29 @@ pub struct RunState {
     pub id: RunId,
     pub title: String,
     pub mode: Option<RunMode>,
-    /// The chat front end that started it (`Run::Started.front_end`), shown on its row.
-    pub front_end: Option<String>,
+    /// The outside agent that started it (`Run::Started.outside_agent`), shown on its row.
+    pub outside_agent: Option<String>,
     pub started: Option<OffsetDateTime>,
     pub phase: Option<RunPhase>,
     pub pausing: bool,
-    pub parked: Option<ParkReason>,
+    pub waiting: Option<WaitReason>,
     pub finished: Option<RunOutcome>,
     /// When it finished, so its time stops there everywhere it shows.
     pub ended: Option<OffsetDateTime>,
-    /// What the latest merge card put up for the merge, so the line after the merge says the same.
+    /// What the latest merge question put up for the merge, so the line after the merge says the
+    /// same.
     pub merge_totals: Option<MergeTotals>,
+    /// The branch the run's work merged onto, once it did.
+    pub merged_onto: Option<String>,
     /// In the order they started.
     pub sessions: BTreeMap<SessionKey, SessionState>,
     pub session_order: Vec<SessionKey>,
-    pub cards: BTreeMap<CardId, CardRow>,
-    /// Checkpoints still open, oldest first.
-    pub checkpoints: Vec<OpenCheckpoint>,
-    /// Auto decisions queued for a spot check (`Checkpoint::SpotCheckQueued`) and not yet
+    pub tasks: BTreeMap<TaskId, TaskRow>,
+    /// Approvals still open, oldest first.
+    pub approvals: Vec<OpenApproval>,
+    /// Auto decisions queued for a spot check (`Approval::SpotCheckQueued`) and not yet
     /// marked, oldest first.
-    pub spot_checks: Vec<CheckpointId>,
+    pub spot_checks: Vec<ApprovalId>,
     /// What the screen saw of recent decisions, for the spot checks that follow them.
     decisions: Decisions,
     /// The run's own workflow first, nested ones after.
@@ -65,16 +68,16 @@ pub struct RunState {
     pub queued: Vec<QueuedMessage>,
     /// The last event folded in.
     pub seq: u64,
-    /// The run's own name and description, from the lead's brief or intake, which the panel
+    /// The run's own name and description, from the main agent's brief or intake, which the panel
     /// row and the views show rather than a template's.
     pub named: Option<RunNamed>,
     pub workflow: Option<String>,
-    /// Set by `Run::ApprovalModeChanged`; the status line's mode until then.
+    /// Set by `Run::ApprovalModeChanged`; the bottom line's mode until then.
     pub approval: Option<ApprovalMode>,
     /// A stop was asked for and the run is winding down.
     pub stopping: bool,
-    /// The latest `Budget::Run`: spend against the run's limit.
-    pub budget: Option<RunBudget>,
+    /// The latest `Limit::Run`: spend against the run's limit.
+    pub spend: Option<RunSpend>,
     /// What `Run::Snapshot` said about the run, for a long run seeded without its history.
     pub summary: Option<StatusSummary>,
     /// When its last event happened.
@@ -87,18 +90,19 @@ impl RunState {
             id,
             title: String::new(),
             mode: None,
-            front_end: None,
+            outside_agent: None,
             started: None,
             phase: None,
             pausing: false,
-            parked: None,
+            waiting: None,
             finished: None,
             ended: None,
             merge_totals: None,
+            merged_onto: None,
             sessions: BTreeMap::new(),
             session_order: Vec::new(),
-            cards: BTreeMap::new(),
-            checkpoints: Vec::new(),
+            tasks: BTreeMap::new(),
+            approvals: Vec::new(),
             spot_checks: Vec::new(),
             decisions: Decisions::default(),
             workflows: Vec::new(),
@@ -111,7 +115,7 @@ impl RunState {
             named: None,
             approval: None,
             stopping: false,
-            budget: None,
+            spend: None,
             summary: None,
             updated: None,
         }
@@ -124,9 +128,9 @@ impl RunState {
             .filter_map(|key| self.sessions.get(key))
     }
 
-    /// The session that carried on `key`'s work once it ended, such as the lead's design that
+    /// The session that carried on `key`'s work once it ended, such as the main agent's design that
     /// code sent back to it: the newest later one with its label and step, or one that resumed
-    /// its vendor session.
+    /// its CLI session.
     pub fn carried_on(&self, key: &SessionKey) -> Option<&SessionState> {
         let ended = self
             .sessions
@@ -138,8 +142,7 @@ impl RunState {
             .filter(|later| {
                 let same_work =
                     later.label.is_some() && later.label == ended.label && later.step == ended.step;
-                let resumed =
-                    later.vendor_session.is_some() && later.vendor_session == ended.vendor_session;
+                let resumed = later.cli_session.is_some() && later.cli_session == ended.cli_session;
                 same_work || resumed
             })
             .last()
@@ -150,19 +153,16 @@ impl RunState {
             .filter(|session| session.is_running())
     }
 
-    /// Still going: not finished and not parked.
+    /// Still going: not finished and not waiting.
     pub fn is_active(&self) -> bool {
-        self.finished.is_none() && self.parked.is_none()
+        self.finished.is_none() && self.waiting.is_none()
     }
 
     /// What it has spent so far, the one count every line that shows the run's spend reads:
-    /// the budget's, with its sessions' cost when they report more, since the budget's count
+    /// the limit's, with its sessions' cost when they report more, since the limit's count
     /// can lag behind the sessions' own reports.
     pub fn spend(&self) -> Spend {
-        let mut spent = self
-            .budget
-            .as_ref()
-            .map_or(self.spent, |budget| budget.spent);
+        let mut spent = self.spend.as_ref().map_or(self.spent, |limit| limit.spent);
         let sessions: f64 = self
             .sessions
             .values()
@@ -176,12 +176,32 @@ impl RunState {
         self.spend().cost_usd
     }
 
-    /// Agents done out of all of them, its time, and its spend: what the panel row and the
-    /// workflow view's header both show. `wall` is now, for a run that still goes.
+    /// Agents done out of all of them, its time, its tokens and its spend: the one count its
+    /// panel row, its workflow view's header and its closing row in the conversation all show.
+    /// `wall` is now, for a run that still goes.
     pub fn totals(&self, wall: OffsetDateTime) -> RunTotals {
-        // The agents its workflow ran, as the workflow view counts them. The agents of a
-        // workflow one of its steps runs count as that workflow reports them, so one tried
-        // again is one agent, and those still to start are counted before they do.
+        let (agents_done, agents_total) = self.agents();
+        let spent = self.spend();
+        // Whichever is ahead: the sessions' own counts while they work, or the run's spend
+        // once it is told.
+        let by_session: u64 = self
+            .sessions
+            .values()
+            .map(|session| session.tokens_out)
+            .sum();
+        RunTotals {
+            agents_done,
+            agents_total,
+            elapsed: self.elapsed(wall),
+            tokens: by_session.max(spent.output_tokens),
+            spent,
+        }
+    }
+
+    /// The agents its workflow ran, done and in all, as the workflow view counts them. The
+    /// agents of a workflow one of its steps runs count as that workflow reports them, so one
+    /// tried again is one agent, and those still to start are counted before they do.
+    fn agents(&self) -> (u32, u32) {
         let agents: Vec<&SessionState> = self
             .sessions_in_order()
             .filter(|session| is_workflow_agent(session.step, session.workflow_step.as_ref()))
@@ -190,6 +210,7 @@ impl RunState {
                     .reported
                     .names(session.label.as_deref().unwrap_or_default())
             })
+            .filter(|session| !self.wrote_the_steps(session))
             .collect();
         let agents = steps(agents);
         let (reported_done, reported) = self.reported.agents();
@@ -198,12 +219,21 @@ impl RunState {
                 .iter()
                 .filter(|session| session.status == SessionStatus::Done)
                 .count();
-        RunTotals {
-            agents_done: u32::try_from(done).unwrap_or(u32::MAX),
-            agents_total: u32::try_from(agents.len() + reported).unwrap_or(u32::MAX),
-            elapsed: self.elapsed(wall),
-            spent: self.spend(),
-        }
+        (
+            u32::try_from(done).unwrap_or(u32::MAX),
+            u32::try_from(agents.len() + reported).unwrap_or(u32::MAX),
+        )
+    }
+
+    /// Whether `session` wrote the steps a workflow then ran: it worked in the phase that
+    /// workflow's phases took the place of, and is none of the workflow's own agents. The view
+    /// shows the workflow that runs, so the session that wrote it is none of its rows.
+    fn wrote_the_steps(&self, session: &SessionState) -> bool {
+        session.workflow_step.as_ref().is_some_and(|step| {
+            self.reported
+                .in_phase(&step.workflow, step.phase)
+                .is_some_and(|reported| !reported.phases.is_empty())
+        })
     }
 
     /// From its start to its end, or to `wall` while it goes. A run seeded without its end
@@ -223,8 +253,8 @@ impl RunState {
         Some(Duration::try_from(end - started).unwrap_or_default())
     }
 
-    /// The workflow the run's views open on: its own, or before the lead picks it, the one that
-    /// runs first, such as the goal's alignment.
+    /// The workflow the run's views open on: its own, or before the main agent picks it, the one
+    /// that runs first, such as Understand.
     pub fn shown_workflow(&self) -> Option<&WorkflowState> {
         self.workflows
             .iter()
@@ -278,7 +308,7 @@ impl RunState {
     }
 
     /// Takes in what the runner reports of the workflow `step` runs.
-    pub fn workflow_reported(&mut self, step: &StepRef, workflow: &VendorWorkflow) {
+    pub fn workflow_reported(&mut self, step: &StepRef, workflow: &CliWorkflowRun) {
         self.reported.report(step, workflow);
     }
 
@@ -289,36 +319,36 @@ impl RunState {
             .sum()
     }
 
-    /// Cards done out of all of them, skipping cancelled ones.
-    pub fn cards_done(&self) -> (usize, usize) {
+    /// Tasks done out of all of them, skipping cancelled ones.
+    pub fn tasks_done(&self) -> (usize, usize) {
         let counted = self
-            .cards
+            .tasks
             .values()
-            .filter(|card| card.state != Some(CardState::Cancelled));
-        let (done, total) = counted.fold((0, 0), |(done, total), card| {
-            let integrated = card.state == Some(CardState::Integrated);
-            (done + usize::from(integrated), total + 1)
+            .filter(|task| task.state != Some(TaskState::Cancelled));
+        let (done, total) = counted.fold((0, 0), |(done, total), task| {
+            let merged = task.state == Some(TaskState::Merged);
+            (done + usize::from(merged), total + 1)
         });
         (done, total)
     }
 
-    pub fn checkpoint(&self, id: &CheckpointId) -> Option<&OpenCheckpoint> {
-        self.checkpoints.iter().find(|open| open.opened.id == *id)
+    pub fn approval(&self, id: &ApprovalId) -> Option<&OpenApproval> {
+        self.approvals.iter().find(|open| open.opened.id == *id)
     }
 
     /// The call a spot check asks about, when this screen saw it made.
-    pub fn decision(&self, id: &CheckpointId) -> Option<&DecisionRecord> {
+    pub fn decision(&self, id: &ApprovalId) -> Option<&DecisionRecord> {
         self.decisions.get(id)
     }
 
-    /// You marked this spot check, from its card or `/approvals`, so it no longer waits.
-    pub fn spot_checked(&mut self, id: &CheckpointId) {
+    /// You marked this spot check, from its question or `/approvals`, so it no longer waits.
+    pub fn spot_checked(&mut self, id: &ApprovalId) {
         self.spot_checks.retain(|waiting| waiting != id);
         self.decisions.forget(id);
     }
 
-    /// Folds one event of this run in. Returns a checkpoint that just opened.
-    pub(super) fn apply(&mut self, event: &RunEvent, replaying: bool) -> Option<CheckpointId> {
+    /// Folds one event of this run in. Returns an approval that just opened.
+    pub(super) fn apply(&mut self, event: &RunEvent, replaying: bool) -> Option<ApprovalId> {
         self.seq = event.seq;
         self.updated = Some(event.ts);
         let at = event.ts;
@@ -332,22 +362,22 @@ impl RunState {
             RunEventKind::Phase(change) => self.apply_phase(change),
             RunEventKind::Goal(_)
             | RunEventKind::Plan(_)
-            | RunEventKind::Retro(_)
+            | RunEventKind::RunReview(_)
             | RunEventKind::Note(_)
-            | RunEventKind::Vendor(_) => None,
+            | RunEventKind::AgentStatus(_) => None,
             RunEventKind::Divide(divide) => {
                 self.apply_divide(divide);
                 None
             }
-            RunEventKind::Card(card) => {
-                if let Some(id) = &event.card_id {
-                    self.apply_card(id, card);
+            RunEventKind::Task(task) => {
+                if let Some(id) = &event.task_id {
+                    self.apply_task(id, task);
                 }
                 None
             }
             RunEventKind::Session(session) => {
                 if let Some(key) = &event.session {
-                    self.apply_session(key, event.card_id.as_ref(), session, at);
+                    self.apply_session(key, event.task_id.as_ref(), session, at);
                 }
                 None
             }
@@ -361,37 +391,43 @@ impl RunState {
                 }
                 None
             }
-            RunEventKind::Gate(gate) => {
-                if let Some(card) = event.card_id.as_ref().and_then(|id| self.cards.get_mut(id)) {
-                    card.last_gate = Some(GateBrief::from(gate));
+            RunEventKind::Check(check) => {
+                if let Some(task) = event.task_id.as_ref().and_then(|id| self.tasks.get_mut(id)) {
+                    task.last_check = Some(CheckBrief::from(check));
                 }
                 None
             }
             RunEventKind::Review(review) => {
                 if let ReviewEvent::Reviewed { .. } = review
-                    && let Some(card) = event.card_id.as_ref().and_then(|id| self.cards.get_mut(id))
+                    && let Some(task) = event.task_id.as_ref().and_then(|id| self.tasks.get_mut(id))
                 {
-                    card.reviews += 1;
+                    task.reviews += 1;
                 }
                 None
             }
-            RunEventKind::Integration(integration) => {
-                if let IntegrationEvent::Merged { card, .. } = integration
-                    && let Some(card) = self.cards.get_mut(card)
-                {
-                    card.state = Some(CardState::Integrated);
+            RunEventKind::Merge(merge) => {
+                match merge {
+                    MergeEvent::Merged { task, .. } => {
+                        if let Some(task) = self.tasks.get_mut(task) {
+                            task.state = Some(TaskState::Merged);
+                        }
+                    }
+                    MergeEvent::RunMerged { target, .. } => {
+                        self.merged_onto = Some(target.clone());
+                    }
+                    _ => {}
                 }
                 None
             }
-            RunEventKind::Checkpoint(checkpoint) => self.apply_checkpoint(checkpoint, replaying),
-            RunEventKind::Handoff(handoff) => {
-                self.apply_handoff(handoff);
+            RunEventKind::Approval(approval) => self.apply_approval(approval, replaying),
+            RunEventKind::Fallback(fallback) => {
+                self.apply_fallback(fallback);
                 None
             }
-            RunEventKind::Budget(budget) => {
-                if let BudgetEvent::Run(budget) = budget {
-                    self.spent = budget.spent;
-                    self.budget = Some(budget.clone());
+            RunEventKind::Spend(limit) => {
+                if let SpendEvent::Run(limit) = limit {
+                    self.spent = limit.spent;
+                    self.spend = Some(limit.clone());
                 }
                 None
             }
@@ -413,18 +449,18 @@ impl RunState {
         lifecycle: &RunLifecycle,
         at: OffsetDateTime,
         replaying: bool,
-    ) -> Option<CheckpointId> {
+    ) -> Option<ApprovalId> {
         match lifecycle {
             RunLifecycle::Started(started) => {
                 self.title.clone_from(&started.title);
                 self.mode = Some(started.mode);
-                self.front_end.clone_from(&started.front_end);
+                self.outside_agent.clone_from(&started.outside_agent);
                 self.workflow = Some(started.workflow.clone());
                 self.started = Some(at);
             }
             RunLifecycle::Named(named) => self.named = Some(named.clone()),
             RunLifecycle::Resumed(_) => {
-                self.parked = None;
+                self.waiting = None;
                 self.pausing = false;
                 self.stopping = false;
                 self.finished = None;
@@ -435,8 +471,8 @@ impl RunState {
             RunLifecycle::Paused { .. } => self.pausing = false,
             RunLifecycle::ApprovalModeChanged { mode, .. } => self.approval = Some(*mode),
             RunLifecycle::StopRequested { .. } => self.stopping = true,
-            RunLifecycle::Parked { reason, .. } => {
-                self.parked = Some(reason.clone());
+            RunLifecycle::Waiting { reason, .. } => {
+                self.waiting = Some(reason.clone());
                 self.pausing = false;
             }
             RunLifecycle::Snapshot(snapshot) => return self.seed(snapshot, at, replaying),
@@ -464,26 +500,26 @@ impl RunState {
         snapshot: &RunSnapshot,
         at: OffsetDateTime,
         replaying: bool,
-    ) -> Option<CheckpointId> {
+    ) -> Option<ApprovalId> {
         let summary = &snapshot.summary;
-        for brief in &summary.cards {
-            let card = self
-                .cards
-                .entry(brief.card.clone())
-                .or_insert_with(|| CardRow::new(brief.card.clone(), &brief.title));
-            card.state = Some(brief.state);
-            card.owner.clone_from(&brief.owner);
+        for brief in &summary.tasks {
+            let task = self
+                .tasks
+                .entry(brief.task.clone())
+                .or_insert_with(|| TaskRow::new(brief.task.clone(), &brief.title));
+            task.state = Some(brief.state);
+            task.worker.clone_from(&brief.worker);
         }
-        if let Some(budget) = &summary.budget {
-            self.spent = budget.spent;
-            self.budget = Some(budget.clone());
+        if let Some(limit) = &summary.spend {
+            self.spent = limit.spent;
+            self.spend = Some(limit.clone());
         }
         let mut opened = None;
-        for checkpoint in &snapshot.open_checkpoints {
-            if self.checkpoint(&checkpoint.id).is_none() {
-                opened = Some(checkpoint.id.clone());
-                self.checkpoints.push(OpenCheckpoint {
-                    opened: Box::new(checkpoint.clone()),
+        for approval in &snapshot.open_approvals {
+            if self.approval(&approval.id).is_none() {
+                opened = Some(approval.id.clone());
+                self.approvals.push(OpenApproval {
+                    opened: Box::new(approval.clone()),
                     set_aside: false,
                     replayed: replaying,
                 });
@@ -492,7 +528,7 @@ impl RunState {
         for key in &snapshot.running {
             if !self.sessions.contains_key(key) {
                 // Only the key survives a snapshot; its next events fill in the rest.
-                let worker = WorkerRef::new("agent", None);
+                let worker = ModelRef::new("agent", None);
                 let mut session =
                     SessionState::new(key.clone(), worker, String::new(), RoleName::Main, at);
                 session.status = SessionStatus::Working;
@@ -504,7 +540,7 @@ impl RunState {
         opened
     }
 
-    fn apply_phase(&mut self, change: &PhaseChange) -> Option<CheckpointId> {
+    fn apply_phase(&mut self, change: &PhaseChange) -> Option<ApprovalId> {
         if change.status == PhaseStatus::Started {
             self.phase = Some(change.phase);
         }
@@ -514,103 +550,107 @@ impl RunState {
     fn apply_divide(&mut self, divide: &DivideEvent) {
         match divide {
             DivideEvent::Graph(graph) => {
-                for spec in &graph.cards {
-                    self.create_card(spec);
+                for spec in &graph.tasks {
+                    self.create_task(spec);
                 }
             }
-            DivideEvent::Owner { card, worker, .. } => {
-                if let Some(card) = self.cards.get_mut(card) {
-                    card.owner = Some(worker.clone());
+            DivideEvent::Worker { task, worker, .. } => {
+                if let Some(task) = self.tasks.get_mut(task) {
+                    task.worker = Some(worker.clone());
                 }
             }
             DivideEvent::Reviewers { .. } | DivideEvent::Predicted { .. } => {}
-            DivideEvent::Budget(_) => {}
+            DivideEvent::Limit(_) => {}
         }
     }
 
-    fn create_card(&mut self, spec: &CardSpec) {
-        let card = self
-            .cards
+    fn create_task(&mut self, spec: &TaskSpec) {
+        let task = self
+            .tasks
             .entry(spec.id.clone())
-            .or_insert_with(|| CardRow::new(spec.id.clone(), &spec.title));
-        card.title.clone_from(&spec.title);
-        card.item.clone_from(&spec.item);
-        if spec.owner.is_some() {
-            card.owner.clone_from(&spec.owner);
+            .or_insert_with(|| TaskRow::new(spec.id.clone(), &spec.title));
+        task.title.clone_from(&spec.title);
+        task.item.clone_from(&spec.item);
+        if spec.worker.is_some() {
+            task.worker.clone_from(&spec.worker);
         }
     }
 
-    /// What a card goes by in the chat and the panel: its owner's label, such as `build:flag`,
-    /// else `build:` and its item. Its id is for Ctrl+O, the agent view, and commands, and
-    /// shows only for a log from before labels.
-    pub fn card_label(&self, card: &CardId) -> String {
-        let owner = self
+    /// What a task goes by in the conversation and the panel: its worker's label, such as
+    /// `build:flag`, else `build:` and its item. Its id is for Ctrl+O, the agent view, and
+    /// commands, and shows only for a log from before labels.
+    pub fn task_label(&self, task: &TaskId) -> String {
+        let worker = self
             .sessions_in_order()
-            .filter(|session| session.card.as_ref() == Some(card))
+            .filter(|session| session.task.as_ref() == Some(task))
             .find(|session| session.step == Some(StepName::Build))
             .and_then(|session| session.label.clone());
-        owner
+        worker
             .or_else(|| {
-                let item = self.cards.get(card)?.item.as_deref()?;
+                let item = self.tasks.get(task)?.item.as_deref()?;
                 Some(format!("build:{item}"))
             })
-            .unwrap_or_else(|| card.to_string())
+            .unwrap_or_else(|| task.to_string())
     }
 
-    fn apply_card(&mut self, id: &CardId, event: &CardEvent) {
-        if let CardEvent::Created(spec) = event {
-            self.create_card(spec);
+    fn apply_task(&mut self, id: &TaskId, event: &TaskEvent) {
+        if let TaskEvent::Created(spec) = event {
+            self.create_task(spec);
             return;
         }
-        let Some(card) = self.cards.get_mut(id) else {
+        let Some(task) = self.tasks.get_mut(id) else {
             return;
         };
         match event {
-            CardEvent::Created(_) => {}
-            CardEvent::State { to, .. } => card.state = Some(*to),
-            CardEvent::Attempt {
-                attempt,
+            TaskEvent::Created(_) => {}
+            TaskEvent::State { to, .. } => task.state = Some(*to),
+            TaskEvent::Try {
+                try_number,
                 worker,
                 cause,
             } => {
-                card.attempt = *attempt;
-                card.owner = Some(worker.clone());
-                if *cause == AttemptCause::Rotation {
-                    card.rotations += 1;
-                    let rotations = card.rotations;
+                task.try_number = *try_number;
+                task.worker = Some(worker.clone());
+                if *cause == TryCause::Rotation {
+                    task.rotations += 1;
+                    let rotations = task.rotations;
                     for session in self.sessions.values_mut() {
-                        if session.card.as_ref() == Some(id) && session.is_running() {
+                        if session.task.as_ref() == Some(id) && session.is_running() {
                             session.rotations = rotations;
                         }
                     }
                 }
             }
-            CardEvent::Diff { stat, .. } => card.diff = Some(*stat),
-            CardEvent::TakeOverEnded { changed, .. } => card.diff = Some(*changed),
-            CardEvent::Reassigned { from, to, .. } => card.hand_to(from.clone(), to),
-            CardEvent::CheckpointTagged { n, .. } => card.checkpoints = card.checkpoints.max(*n),
-            CardEvent::QualityDebt(debt) => card.debt.push(debt.clone()),
-            CardEvent::DebtCleared { .. } => card.debt.clear(),
-            CardEvent::Worktree { .. }
-            | CardEvent::Committed(_)
-            | CardEvent::Reported(_)
-            | CardEvent::TakenOver { .. }
-            | CardEvent::Reverted { .. } => {}
+            TaskEvent::Diff { stat, .. } => task.diff = Some(*stat),
+            TaskEvent::TakeOverEnded { changed, .. } => task.diff = Some(*changed),
+            TaskEvent::Reassigned { from, to, .. } => task.move_to(from.clone(), to),
+            TaskEvent::CheckpointTagged { n, .. } => task.checkpoints = task.checkpoints.max(*n),
+            TaskEvent::QualityDebt(debt) => task.debt.push(debt.clone()),
+            TaskEvent::DebtCleared { .. } => task.debt.clear(),
+            TaskEvent::Worktree { .. }
+            | TaskEvent::Committed(_)
+            | TaskEvent::Reported(_)
+            | TaskEvent::TakenOver { .. }
+            | TaskEvent::Rewound { .. } => {}
         }
     }
 
     fn apply_session(
         &mut self,
         key: &SessionKey,
-        card: Option<&CardId>,
+        task: Option<&TaskId>,
         event: &SessionEvent,
         at: OffsetDateTime,
     ) {
         if let SessionEvent::Started(started) = event {
-            let mut session = SessionState::started(key.clone(), started, card.cloned(), at);
-            if let Some(row) = card.and_then(|id| self.cards.get(id)) {
-                session.standing_in_for.clone_from(&row.standing_in_for);
+            let mut session = SessionState::started(key.clone(), started, task.cloned(), at);
+            if let Some(row) = task.and_then(|id| self.tasks.get(id)) {
+                session.fallback_for.clone_from(&row.fallback_for);
                 session.rotations = row.rotations;
+            }
+            // A job another model does in the asked one's place says so itself.
+            if session.fallback_for.is_none() {
+                session.fallback_for.clone_from(&started.asked);
             }
             if !self.sessions.contains_key(key) {
                 self.session_order.push(key.clone());
@@ -638,7 +678,7 @@ impl RunState {
         };
         match event {
             SessionEvent::Input(input) => session.inputs.push((**input).clone()),
-            SessionEvent::VendorSession { id, .. } => session.vendor_session = Some(id.clone()),
+            SessionEvent::CliSession { id, .. } => session.cli_session = Some(id.clone()),
             SessionEvent::FileDiff(diff) => session.apply_diff(diff),
             SessionEvent::Ended(end) => session.end(end, at),
             SessionEvent::Limit(_) => {}
@@ -654,35 +694,31 @@ impl RunState {
         }
     }
 
-    fn apply_checkpoint(
-        &mut self,
-        event: &CheckpointEvent,
-        replaying: bool,
-    ) -> Option<CheckpointId> {
+    fn apply_approval(&mut self, event: &ApprovalEvent, replaying: bool) -> Option<ApprovalId> {
         match event {
-            CheckpointEvent::Opened(opened) => {
-                if let CheckpointPacket::Merge(merge) = &opened.packet {
+            ApprovalEvent::Opened(opened) => {
+                if let ApprovalPacket::Merge(merge) = &opened.packet {
                     self.merge_totals = Some(MergeTotals::of(merge));
                 }
-                self.checkpoints.retain(|open| open.opened.id != opened.id);
-                self.checkpoints.push(OpenCheckpoint {
+                self.approvals.retain(|open| open.opened.id != opened.id);
+                self.approvals.push(OpenApproval {
                     opened: opened.clone(),
                     set_aside: false,
                     replayed: replaying,
                 });
                 return Some(opened.id.clone());
             }
-            CheckpointEvent::Checked(check) => {
-                let opened = opened_in(&self.checkpoints, &check.id);
+            ApprovalEvent::Checked(check) => {
+                let opened = opened_in(&self.approvals, &check.id);
                 self.decisions.checked(opened, check, &self.spot_checks);
             }
-            CheckpointEvent::Decided(decided) => {
-                let opened = opened_in(&self.checkpoints, &decided.id);
+            ApprovalEvent::Decided(decided) => {
+                let opened = opened_in(&self.approvals, &decided.id);
                 self.decisions.decided(opened, decided, &self.spot_checks);
-                self.close_checkpoint(&decided.id);
+                self.close_approval(&decided.id);
             }
-            CheckpointEvent::Withdrawn { id, .. } => self.close_checkpoint(id),
-            CheckpointEvent::SpotCheckQueued { id } => {
+            ApprovalEvent::Withdrawn { id, .. } => self.close_approval(id),
+            ApprovalEvent::SpotCheckQueued { id } => {
                 if !self.spot_checks.contains(id) {
                     self.spot_checks.push(id.clone());
                 }
@@ -691,37 +727,40 @@ impl RunState {
         None
     }
 
-    fn close_checkpoint(&mut self, id: &CheckpointId) {
-        self.checkpoints.retain(|open| open.opened.id != *id);
+    fn close_approval(&mut self, id: &ApprovalId) {
+        self.approvals.retain(|open| open.opened.id != *id);
     }
 
-    fn apply_handoff(&mut self, handoff: &HandoffEvent) {
-        match handoff {
-            HandoffEvent::Needed(plan) => {
-                if let Some(card) = self.cards.get_mut(&plan.card) {
-                    card.waiting_on_vendor = None;
+    fn apply_fallback(&mut self, fallback: &FallbackEvent) {
+        match fallback {
+            FallbackEvent::Needed(plan) => {
+                if let Some(task) = self.tasks.get_mut(&plan.task) {
+                    task.waiting_on_agent = None;
                 }
             }
-            HandoffEvent::HandedOff { card, to, .. } => {
-                if let Some(card) = self.cards.get_mut(card) {
-                    let from = card.owner.clone();
-                    card.hand_to(from, to);
-                    card.waiting_on_vendor = None;
+            FallbackEvent::FellBack { task, to, .. } => {
+                if let Some(task) = self.tasks.get_mut(task) {
+                    let from = task.worker.clone();
+                    task.move_to(from, to);
+                    task.waiting_on_agent = None;
                 }
             }
-            HandoffEvent::Waiting {
-                card,
-                vendor,
+            FallbackEvent::Waiting {
+                task,
+                agent_id,
                 until,
+                ..
             } => {
-                if let Some(card) = self.cards.get_mut(card) {
-                    card.waiting_on_vendor = Some(VendorWait {
-                        vendor: vendor.0.clone(),
+                if let Some(task) = self.tasks.get_mut(task) {
+                    task.waiting_on_agent = Some(AgentWait {
+                        agent_id: agent_id.0.clone(),
                         until: *until,
                     });
                 }
             }
-            HandoffEvent::Packet { .. } => {}
+            FallbackEvent::Note { .. }
+            | FallbackEvent::JobWaiting(_)
+            | FallbackEvent::JobFreed { .. } => {}
         }
     }
 
@@ -817,7 +856,7 @@ impl RunState {
 }
 
 /// One session per step, oldest first: an earlier try at a step, one that failed or one a
-/// later session took over from under the same label, counts in the newer one.
+/// later session with the same label followed, counts in the newer one.
 fn steps(sessions: Vec<&SessionState>) -> Vec<&SessionState> {
     let tried_again = |at: usize, before: &SessionState| {
         let label = before.label.as_deref().map(str::trim).unwrap_or_default();
@@ -825,7 +864,7 @@ fn steps(sessions: Vec<&SessionState>) -> Vec<&SessionState> {
             && sessions[at + 1..].iter().any(|after| {
                 after.label.as_deref().map(str::trim) == Some(label)
                     && (before.status == SessionStatus::Failed
-                        || after.standing_in_for.as_ref() == Some(&before.worker))
+                        || after.fallback_for.as_ref() == Some(&before.worker))
             })
     };
     sessions
@@ -837,93 +876,93 @@ fn steps(sessions: Vec<&SessionState>) -> Vec<&SessionState> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct CardRow {
-    pub id: CardId,
+pub struct TaskRow {
+    pub id: TaskId,
     pub title: String,
-    pub state: Option<CardState>,
-    pub owner: Option<WorkerRef>,
-    pub attempt: u32,
+    pub state: Option<TaskState>,
+    pub worker: Option<ModelRef>,
+    pub try_number: u32,
     pub diff: Option<DiffStat>,
-    /// The worker it stands in for after a handoff, for `↺ for claude-code`.
-    pub standing_in_for: Option<WorkerRef>,
-    /// Work a weaker replacement did that still needs a review, for `◌ needs review`.
+    /// The worker it is the fallback for, for `↺ for claude-code`.
+    pub fallback_for: Option<ModelRef>,
+    /// Work a weaker fallback did that still needs a review, for `◌ needs review`.
     pub debt: Vec<QualityDebt>,
-    /// Checkpoint tags so far (`Card::CheckpointTagged`).
+    /// Checkpoint tags so far (`Task::CheckpointTagged`).
     pub checkpoints: u32,
-    /// Fresh sessions its owner rotated to.
+    /// Fresh sessions its worker rotated to.
     pub rotations: u32,
-    pub last_gate: Option<GateBrief>,
+    pub last_check: Option<CheckBrief>,
     pub reviews: u32,
-    /// Its vendor is out and the card waits for it (`Handoff::Waiting`).
-    pub waiting_on_vendor: Option<VendorWait>,
+    /// Its agent is out and the task waits for it (`Fallback::Waiting`).
+    pub waiting_on_agent: Option<AgentWait>,
     /// The one-token name its labels use, such as `flag` in `build:flag`.
     pub item: Option<String>,
 }
 
-impl CardRow {
-    pub fn new(id: CardId, title: &str) -> Self {
+impl TaskRow {
+    pub fn new(id: TaskId, title: &str) -> Self {
         Self {
             item: None,
             id,
             title: title.to_owned(),
             state: None,
-            owner: None,
-            attempt: 0,
+            worker: None,
+            try_number: 0,
             diff: None,
-            standing_in_for: None,
+            fallback_for: None,
             debt: Vec::new(),
             checkpoints: 0,
             rotations: 0,
-            last_gate: None,
+            last_check: None,
             reviews: 0,
-            waiting_on_vendor: None,
+            waiting_on_agent: None,
         }
     }
 
-    /// A handoff or reassignment. The first owner stays the one it stands in for until work
-    /// goes back to that owner.
-    fn hand_to(&mut self, from: Option<WorkerRef>, to: &WorkerRef) {
-        if self.standing_in_for.as_ref() == Some(to) {
-            self.standing_in_for = None;
-        } else if self.standing_in_for.is_none() {
-            self.standing_in_for = from.filter(|from| from != to);
+    /// A fallback or reassignment. The first worker stays the one it is the fallback for until work
+    /// goes back to that worker.
+    fn move_to(&mut self, from: Option<ModelRef>, to: &ModelRef) {
+        if self.fallback_for.as_ref() == Some(to) {
+            self.fallback_for = None;
+        } else if self.fallback_for.is_none() {
+            self.fallback_for = from.filter(|from| from != to);
         }
-        self.owner = Some(to.clone());
+        self.worker = Some(to.clone());
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GateBrief {
+pub struct CheckBrief {
     pub name: String,
     pub passed: bool,
 }
 
-impl From<&GateOutcome> for GateBrief {
-    fn from(gate: &GateOutcome) -> Self {
+impl From<&CheckOutcome> for CheckBrief {
+    fn from(check: &CheckOutcome) -> Self {
         Self {
-            name: gate.name.clone(),
-            passed: gate.passed,
+            name: check.name.clone(),
+            passed: check.passed,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct VendorWait {
-    pub vendor: String,
+pub struct AgentWait {
+    pub agent_id: String,
     pub until: Option<OffsetDateTime>,
 }
 
 /// Borrows only the list, so the run's other fields can change while it's held.
-fn opened_in<'a>(open: &'a [OpenCheckpoint], id: &CheckpointId) -> Option<&'a CheckpointOpened> {
+fn opened_in<'a>(open: &'a [OpenApproval], id: &ApprovalId) -> Option<&'a ApprovalOpened> {
     open.iter()
         .find(|open| open.opened.id == *id)
         .map(|open| &*open.opened)
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct OpenCheckpoint {
-    pub opened: Box<CheckpointOpened>,
-    /// Esc handed it on; until it's settled it's listed under "needs you".
+pub struct OpenApproval {
+    pub opened: Box<ApprovalOpened>,
+    /// Esc passed it on; until it's settled it's listed under "needs you".
     pub set_aside: bool,
     /// Opened before `ReplayDone`, so it rang no bell.
     pub replayed: bool,
@@ -933,7 +972,7 @@ pub struct OpenCheckpoint {
 pub struct WorkflowState {
     pub id: WorkflowId,
     pub name: String,
-    /// The template it came from, such as the preset's workflow a goal alignment runs ahead of.
+    /// The template it came from, such as the chosen workflow Understand runs ahead of.
     pub from: Option<String>,
     pub description: String,
     /// Its phases' names, in order.
@@ -957,20 +996,22 @@ pub struct RunTotals {
     pub agents_done: u32,
     pub agents_total: u32,
     pub elapsed: Option<Duration>,
+    /// Tokens its agents wrote, as `↓ 177k tokens` counts them.
+    pub tokens: u64,
     pub spent: Spend,
 }
 
-/// What a merge card put up: its cards and the combined diff that lands.
+/// What a merge question put up: its tasks and the combined diff that lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MergeTotals {
-    pub cards: u32,
+    pub tasks: u32,
     pub combined: DiffStat,
 }
 
 impl MergeTotals {
     pub fn of(merge: &MergePacket) -> Self {
         Self {
-            cards: u32::try_from(merge.rows.len()).unwrap_or(u32::MAX),
+            tasks: u32::try_from(merge.rows.len()).unwrap_or(u32::MAX),
             combined: merge.combined,
         }
     }

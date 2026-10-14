@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use argonauts_core::events::RunEvent;
 use argonauts_core::events::workflow::{StepEnd, WorkflowEvent};
-use argonauts_core::names::{CheckpointId, WorkflowId};
+use argonauts_core::names::{ApprovalId, WorkflowId};
 use argonauts_core::workflow::{
     Phase, StandardPhase, Step, StepKind, StepRef, Workflow, WorkflowRef,
 };
@@ -37,9 +37,9 @@ pub struct WorkflowRecord {
     /// The seq of its `Workflow::Started`.
     #[serde(default)]
     pub since: u64,
-    /// The `change_request` checkpoints whose changes were recorded, oldest first.
+    /// The `change_request` approvals whose changes were recorded, oldest first.
     #[serde(default)]
-    pub changes: Vec<CheckpointId>,
+    pub changes: Vec<ApprovalId>,
     /// The version its last `Declared` described, so a change declares it again.
     #[serde(default)]
     pub declared: Option<String>,
@@ -162,7 +162,7 @@ impl Workflows {
     pub fn apply(&mut self, event: &WorkflowEvent, envelope: &RunEvent) {
         match event {
             WorkflowEvent::Started(started) => {
-                // A run that switched workflows, such as to solo at the plan checkpoint, now
+                // A run that switched workflows, such as to Captain at the plan approval, now
                 // follows the newest one.
                 if started.parent.is_none() {
                     self.root = Some(started.id.clone());
@@ -214,7 +214,7 @@ impl Workflows {
                     record.left.push(note.text.clone());
                 }
             }
-            // The lead adds a phase through a change, which redefines the workflow, so the
+            // The main agent adds a phase through a change, which redefines the workflow, so the
             // record already holds it.
             WorkflowEvent::PhaseAdded { .. }
             | WorkflowEvent::Note(_)
@@ -278,7 +278,7 @@ impl Workflows {
                     record.version = changed.version.clone();
                     record.workflow = changed.workflow.clone();
                     record.finished = false;
-                    record.changes.extend(changed.checkpoint.clone());
+                    record.changes.extend(changed.approval.clone());
                 }
             }
         }
@@ -331,7 +331,7 @@ impl Workflows {
     }
 
     /// The innermost step that was running when event `seq` was recorded, such as the
-    /// `build` step a card's attempt started in.
+    /// `build` step a task's try started in.
     pub fn step_at(&self, seq: u64) -> Option<&StepProgress> {
         self.by_id
             .values()
@@ -353,7 +353,7 @@ mod tests {
     use argonauts_core::events::workflow::{
         PhaseMark, StepFinished, StepStarted, WorkflowChanged, WorkflowStarted,
     };
-    use argonauts_core::names::CheckpointId;
+    use argonauts_core::names::ApprovalId;
 
     use super::*;
 
@@ -362,9 +362,9 @@ mod tests {
             seq,
             ts: OffsetDateTime::UNIX_EPOCH,
             run_id: RunId::new("run-01").unwrap(),
-            card_id: None,
+            task_id: None,
             session: None,
-            source: "conductor".to_owned(),
+            source: "argonauts-code".to_owned(),
             kind: RunEventKind::Workflow(event.clone()),
         }
     }
@@ -402,9 +402,9 @@ mod tests {
             "name": "loop",
             "phases": [
                 {"name": first_phase, "standard": "do", "steps": [
-                    {"kind": "loop_until", "until": "gates_pass", "max": 3, "steps": [
+                    {"kind": "loop_until", "until": "checks_pass", "max": 3, "steps": [
                         {"kind": "build", "name": "Fix"},
-                        {"kind": "gate"},
+                        {"kind": "checks"},
                     ]},
                 ]},
                 {"name": "Check", "standard": "check", "steps": [{"kind": "review"}]},
@@ -429,7 +429,7 @@ mod tests {
             started(step(&id, 0, &[0]), StepKind::LoopUntil),
             started(step(&id, 0, &[0, 0]), StepKind::Build),
             finished(step(&id, 0, &[0, 0]), StepKind::Build),
-            started(step(&id, 0, &[0, 1]), StepKind::Gate),
+            started(step(&id, 0, &[0, 1]), StepKind::Checks),
         ];
         let mut workflows = Workflows::default();
         for (seq, event) in (1..).zip(&events) {
@@ -440,7 +440,7 @@ mod tests {
         assert_eq!(kind_at(2), Some(StepKind::LoopUntil));
         assert_eq!(kind_at(3), Some(StepKind::Build));
         assert_eq!(kind_at(4), Some(StepKind::Build));
-        assert_eq!(kind_at(9), Some(StepKind::Gate));
+        assert_eq!(kind_at(9), Some(StepKind::Checks));
 
         let levels = workflows.running();
         assert_eq!(levels.len(), 1);
@@ -455,7 +455,7 @@ mod tests {
             id: id.clone(),
             version: "v2".to_owned(),
             workflow: workflow("Rebuild"),
-            checkpoint: Some(CheckpointId::numbered(1)),
+            approval: Some(ApprovalId::numbered(1)),
             reason: "one more check".to_owned(),
         }));
         workflows.apply(&change, &envelope(6, &change));
@@ -473,7 +473,7 @@ mod tests {
         let mark = PhaseMark {
             id: id.clone(),
             index: 0,
-            title: "Build".to_owned(),
+            name: "Build".to_owned(),
         };
         let events = [
             WorkflowEvent::Started(Box::new(WorkflowStarted {
@@ -489,7 +489,7 @@ mod tests {
                 id: id.clone(),
                 version: "v2".to_owned(),
                 workflow: workflow("Build"),
-                checkpoint: Some(CheckpointId::numbered(1)),
+                approval: Some(ApprovalId::numbered(1)),
                 reason: "one more check".to_owned(),
             })),
         ];

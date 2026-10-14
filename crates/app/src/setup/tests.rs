@@ -6,7 +6,7 @@ use argonauts_core::Paths;
 use argonauts_core::adapter::SetupHints;
 use argonauts_core::app::{AppChoice, AppEvent};
 use argonauts_core::clock::SystemClock;
-use argonauts_core::events::checkpoint::AnswerAction;
+use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::steps::SchemaStepRunner;
 use argonauts_testkit::{FakeDirectory, TempRepo};
@@ -40,7 +40,7 @@ impl Fixture {
         env.user_home = Some(repo.user_home().to_owned());
         let env = Arc::new(env);
         let settings = AppSettings::load(&env, Vec::new(), interactive).unwrap();
-        let (quota, health) = argonauts_conductor::boards(&paths);
+        let (plan_usage, health) = argonauts_conductor::boards(&paths);
         let services = AppServices {
             conductor: Arc::new(FakeConductor::default()),
             approvals: None,
@@ -50,7 +50,7 @@ impl Fixture {
                 settings.settings(),
                 repo.root(),
             ),
-            quota,
+            plan_usage,
             health,
             clock: Arc::new(SystemClock),
         };
@@ -97,6 +97,9 @@ fn agent(id: &str, name: &str, status: AgentStatus) -> FoundAgent {
         newest_tested: None,
         unread: Vec::new(),
         builtins: Vec::new(),
+        problem: None,
+        lacks: Vec::new(),
+        check: Default::default(),
     }
 }
 
@@ -266,7 +269,7 @@ async fn guided_setup_enter_through_writes_exactly_the_recommended_keys_each_com
         vec![
             "Welcome to Argonauts Code",
             "Your agents",
-            "Who you chat with",
+            "Who you talk to",
             "How the crew works",
             "Who does what",
             "Approvals",
@@ -275,9 +278,16 @@ async fn guided_setup_enter_through_writes_exactly_the_recommended_keys_each_com
         ]
     );
     let text = fixture.global();
-    let mut expected = vec!["crew", "main_agent", "workflow", "telemetry.enabled"];
+    let mut expected = vec![
+        "crew.main",
+        "crew.worker",
+        "crew.reviewer",
+        "crew.judge",
+        "workflow",
+        "telemetry.enabled",
+    ];
     expected.extend([
-        "approvals.goal.mode",
+        "approvals.understand.mode",
         "approvals.plan.mode",
         "approvals.merge.mode",
         "approvals.stuck.mode",
@@ -293,10 +303,10 @@ async fn guided_setup_enter_through_writes_exactly_the_recommended_keys_each_com
     assert_eq!(keys, expected, "{text}");
     assert!(each_key_commented(&text), "{text}");
     assert!(
-        text.contains(r#"crew = ["claude-code", "codex"]"#),
+        text.contains(r#"worker = ["claude-code", "codex"]"#),
         "{text}"
     );
-    assert!(text.contains(r#"main_agent = "claude-code""#), "{text}");
+    assert!(text.contains(r#"main = "claude-code""#), "{text}");
     assert!(text.contains(r#"workflow = "council""#), "{text}");
 
     let closing = notices(&seen)
@@ -329,7 +339,14 @@ async fn guided_setup_without_a_terminal_writes_no_safety_key_and_finishes_at_on
     let text = fixture.global();
     assert_eq!(
         written_keys(&text),
-        vec!["crew", "main_agent", "workflow", "limits.when_reached"],
+        vec![
+            "workflow",
+            "crew.main",
+            "crew.worker",
+            "crew.reviewer",
+            "crew.judge",
+            "limits.when_reached"
+        ],
         "{text}"
     );
     assert!(!text.contains("approvals"), "{text}");
@@ -354,8 +371,8 @@ async fn guided_setup_writes_the_starter_mods_and_a_readme_in_every_place_you_ca
         assert!(home.join(file).is_file(), "{file}");
     }
     // A built-in card draws from its own settings, so no file of its name is written.
-    for card in ["mods/context.toml", "mods/plan-usage.toml"] {
-        assert!(!home.join(card).exists(), "{card}");
+    for task in ["mods/context.toml", "mods/plan-usage.toml"] {
+        assert!(!home.join(task).exists(), "{task}");
     }
     // What it wrote loads: no starter is a file with a problem.
     let set = argonauts_core::settings::mods::ModSet::load(Some(&home.join("mods")), None);
@@ -370,12 +387,12 @@ async fn guided_setup_rerun_preselects_your_values() {
         std::fs::write(repo.home().join("terms-note-shown"), "").unwrap();
         std::fs::write(
             repo.global_config(),
-            "main_agent = \"codex/gpt-5.6-luna\"\nworkflow = \"council\"\n\n\
-             [approvals.goal]\nmode = \"auto\"\n\n[approvals.merge]\nmode = \"supervised\"\n",
+            "crew.main = \"codex/gpt-5.6-luna\"\nworkflow = \"council\"\n\n\
+             [approvals.understand]\nmode = \"auto\"\n\n[approvals.merge]\nmode = \"supervised\"\n",
         )
         .unwrap();
     });
-    // With Claude Code logged out, solo would be recommended, but your file says council.
+    // With Claude Code logged out, Captain would be recommended, but your file says council.
     let logins = vec![("claude-code".to_owned(), LoginState::LoggedOut)];
     let (mut setup, effects) = start(&mut fixture, two_ready(), logins, Vec::new()).await;
     let (asked, _) = answer_all(&mut fixture, &mut setup, effects, enter).await;
@@ -388,9 +405,13 @@ async fn guided_setup_rerun_preselects_your_values() {
 
     let text = fixture.global();
     let settings: argonauts_core::settings::Settings = toml::from_str(&text).unwrap();
-    assert_eq!(settings.main_agent.to_string(), "codex/gpt-5.6-luna");
+    assert_eq!(settings.crew.main.to_string(), "codex/gpt-5.6-luna");
     assert_eq!(settings.workflow, "council");
-    assert_eq!(settings.approvals.goal.mode, ApprovalMode::Auto, "{text}");
+    assert_eq!(
+        settings.approvals.understand.mode,
+        ApprovalMode::Auto,
+        "{text}"
+    );
     assert_eq!(
         settings.approvals.merge.mode,
         ApprovalMode::Supervised,
@@ -421,7 +442,7 @@ async fn guided_setup_esc_takes_the_recommendations_for_the_rest() {
     let outcome = outcome.expect("the task closes");
     assert!(outcome.contains("recommended answers"), "{outcome}");
     assert!(
-        outcome.contains("/setup") && outcome.contains("argonauts init"),
+        outcome.contains("/setup") && outcome.contains("argonauts setup"),
         "{outcome}"
     );
 }
@@ -429,9 +450,9 @@ async fn guided_setup_esc_takes_the_recommendations_for_the_rest() {
 /// The header printed before the setup, so it comes again with what you picked, ahead of the
 /// lines that close the setup.
 #[tokio::test]
-async fn guided_setup_prints_the_header_again_with_the_new_agent_and_preset() {
+async fn guided_setup_prints_the_header_again_with_the_new_agent_and_workflow() {
     let mut fixture = Fixture::new(true);
-    let before = fixture.ctx.settings().main_agent.worker.clone();
+    let before = fixture.ctx.settings().crew.main.agent.clone();
     let agents = vec![
         agent("claude-code", "Claude Code", AgentStatus::NotInstalled),
         agent("codex", "Codex", AgentStatus::Tested),
@@ -443,8 +464,8 @@ async fn guided_setup_prints_the_header_again_with_the_new_agent_and_preset() {
         .answer(&mut fixture.ctx, &terms.id, enter(&terms), None)
         .await
         .unwrap();
-    let card = open_choice(&fixture.drain()).unwrap();
-    setup.set_aside(&mut fixture.ctx, &card.id).await.unwrap();
+    let task = open_choice(&fixture.drain()).unwrap();
+    setup.set_aside(&mut fixture.ctx, &task.id).await.unwrap();
 
     let events = fixture.drain();
     let at = |found: &dyn Fn(&AppEvent) -> bool| events.iter().position(found).unwrap();
@@ -463,7 +484,7 @@ async fn guided_setup_prints_the_header_again_with_the_new_agent_and_preset() {
         unreachable!()
     };
     assert_ne!(before, "codex");
-    assert_eq!(main_agent.as_ref().unwrap().worker, "codex");
+    assert_eq!(main_agent.as_ref().unwrap().agent, "codex");
     assert_eq!(workflow, &fixture.ctx.settings().workflow);
     let codex = agents.iter().find(|agent| agent.id == "codex").unwrap();
     assert!(codex.ready, "{agents:?}");
@@ -487,8 +508,8 @@ async fn guided_setup_leaves_a_logged_out_agent_out_of_the_crew() {
         agents.body
     );
     let text = fixture.global();
-    assert!(text.contains(r#"crew = ["claude-code"]"#), "{text}");
-    assert!(text.contains(r#"workflow = "solo""#), "{text}");
+    assert!(text.contains(r#"worker = ["claude-code"]"#), "{text}");
+    assert!(text.contains(r#"workflow = "captain""#), "{text}");
 }
 
 #[tokio::test]
@@ -520,7 +541,7 @@ async fn guided_setup_offers_a_local_servers_models_as_reviewers() {
     assert_eq!(ollama.base_url.as_deref(), Some("http://127.0.0.1:9/v1"));
     assert!(ollama.local);
     let reviewers: Vec<String> = settings.roles[&argonauts_core::names::RoleName::Reviewer]
-        .workers
+        .models
         .iter()
         .map(ToString::to_string)
         .collect();
@@ -528,31 +549,35 @@ async fn guided_setup_offers_a_local_servers_models_as_reviewers() {
 }
 
 #[tokio::test]
-async fn guided_setup_asks_who_coordinates_a_coordinated_crew() {
+async fn guided_setup_asks_who_orchestrates_a_orchestrator() {
     let mut fixture = Fixture::new(true);
     let (mut setup, effects) = start(&mut fixture, two_ready(), Vec::new(), Vec::new()).await;
     let pick = |choice: &AppChoice| {
         if choice.title == "How the crew works" {
-            let value = |option: &argonauts_core::events::checkpoint::AnswerOption| {
+            let value = |option: &argonauts_core::events::approval::AnswerOption| {
                 questions::value_of(&option.action)
             };
-            let coordinated = choice
+            let orchestrated = choice
                 .options
                 .iter()
-                .find(|option| value(option).as_deref() == Some(steps::COORDINATED_CREW))
+                .find(|option| value(option).as_deref() == Some(steps::ORCHESTRATOR))
                 .unwrap();
-            coordinated.action.clone()
-        } else if choice.title == "Who coordinates" {
+            orchestrated.action.clone()
+        } else if choice.title == "Who orchestrates" {
             choice.options[1].action.clone()
         } else {
             enter(choice)
         }
     };
     let (asked, _) = answer_all(&mut fixture, &mut setup, effects, pick).await;
-    assert!(asked.iter().any(|choice| choice.title == "Who coordinates"));
+    assert!(
+        asked
+            .iter()
+            .any(|choice| choice.title == "Who orchestrates")
+    );
     let text = fixture.global();
     assert!(text.contains(r#"workflow = "orchestrator""#), "{text}");
-    assert!(text.contains(r#"workers = ["codex"]"#), "{text}");
+    assert!(text.contains(r#"models = ["codex"]"#), "{text}");
 }
 
 #[tokio::test]
@@ -560,7 +585,7 @@ async fn who_does_what_sets_a_role_and_comes_back_until_you_keep_them_all() {
     let mut fixture = Fixture::new(true);
     let (mut setup, effects) = start(&mut fixture, two_ready(), Vec::new(), Vec::new()).await;
     let changed = std::cell::Cell::new(false);
-    let value = |option: &argonauts_core::events::checkpoint::AnswerOption| {
+    let value = |option: &argonauts_core::events::approval::AnswerOption| {
         questions::value_of(&option.action)
     };
     let pick = |choice: &AppChoice| {
@@ -573,7 +598,7 @@ async fn who_does_what_sets_a_role_and_comes_back_until_you_keep_them_all() {
             option.action.clone()
         };
         match choice.title.as_str() {
-            "Who does what" if !changed.replace(true) => chosen("roles.reviewer.workers"),
+            "Who does what" if !changed.replace(true) => chosen("roles.reviewer.models"),
             "Who is the reviewer" => chosen("codex"),
             _ => enter(choice),
         }
@@ -601,7 +626,7 @@ async fn who_does_what_sets_a_role_and_comes_back_until_you_keep_them_all() {
         "orchestrator",
         "reviewer",
         "narrator",
-        "approver",
+        "judge",
     ] {
         assert!(labels.contains(&role), "{labels:?}");
     }
@@ -629,7 +654,7 @@ async fn who_does_what_sets_a_role_and_comes_back_until_you_keep_them_all() {
     );
     let text = fixture.global();
     assert!(text.contains("[roles.reviewer]"), "{text}");
-    assert!(text.contains(r#"workers = ["codex"#), "{text}");
+    assert!(text.contains(r#"models = ["codex"#), "{text}");
 }
 
 #[tokio::test]
@@ -641,15 +666,11 @@ async fn guided_setup_with_no_agent_ready_still_finishes_and_says_what_to_instal
     ];
     let (mut setup, effects) = start(&mut fixture, agents, Vec::new(), Vec::new()).await;
     let (asked, seen) = answer_all(&mut fixture, &mut setup, effects, enter).await;
-    assert!(
-        !asked
-            .iter()
-            .any(|choice| choice.title == "Who you chat with")
-    );
+    assert!(!asked.iter().any(|choice| choice.title == "Who you talk to"));
     let text = fixture.global();
     assert!(!text.contains("crew ="), "{text}");
-    assert!(!text.contains("main_agent"), "{text}");
-    assert!(text.contains(r#"workflow = "solo""#), "{text}");
+    assert!(!text.contains("crew.main"), "{text}");
+    assert!(text.contains(r#"workflow = "captain""#), "{text}");
     let warned = notices(&seen)
         .into_iter()
         .any(|line| line.contains("install claude-code"));
@@ -704,7 +725,7 @@ async fn guided_setup_waits_for_the_login_checks_before_listing_agents() {
         .unwrap();
     assert_eq!(
         open_choice(&fixture.drain()).unwrap().title,
-        "Who you chat with"
+        "Who you talk to"
     );
 }
 

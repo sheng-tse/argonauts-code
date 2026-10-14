@@ -19,7 +19,7 @@ use argonauts_core::driver::{
 use argonauts_core::events::session::Delivery;
 use argonauts_core::future::BoxFuture;
 use argonauts_core::registry::acp::{AcpProfile, ResumeRoute, SteerRoute, UsageSource};
-use argonauts_core::worker::Access;
+use argonauts_core::session_runner::Access;
 use argonauts_core::{AgentEvent, ErrorCategory};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -27,13 +27,13 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
 use crate::errors::{ErrorRules, failed, stop_for};
-use crate::mapping::{Mapper, end_turn_usage};
+use crate::mapping::{Mapping, end_turn_usage};
 use crate::permission::{Answer, Policy, Verdict, is_bypass_mode};
 use crate::report::ReportStep;
 use crate::rpc::{Closed, INTERNAL_ERROR, Incoming, METHOD_NOT_FOUND, RpcError, Wire};
 
 /// How long a cancelled turn may take to answer before the session ends anyway. The worker's
-/// stop plan takes over from there.
+/// stop plan goes on from there.
 const CANCEL_GRACE: Duration = Duration::from_secs(3);
 
 /// How long to wait for stderr lines the worker hasn't passed on yet once stdout closes, so a
@@ -83,7 +83,7 @@ impl SessionDriver for AcpDriver {
             };
             session.finish(&stop);
             DriverEnd {
-                vendor_session: session.session_id.take(),
+                cli_session: session.session_id.take(),
                 stop,
             }
         })
@@ -153,7 +153,7 @@ pub(crate) struct Session {
     pub(crate) opened: Value,
     /// The model the agent runs, once read back.
     pub(crate) model: Option<String>,
-    pub(crate) mapper: Mapper,
+    pub(crate) mapping: Mapping,
     policy: Policy,
     /// While `session/load` replays history, which is in the raw log and isn't emitted again.
     replaying: bool,
@@ -183,7 +183,7 @@ impl Session {
             offers: Offers::default(),
             opened: Value::Null,
             model: None,
-            mapper: Mapper::new(&start.cwd, cost_from_usage_update),
+            mapping: Mapping::new(&start.cwd, cost_from_usage_update),
             policy: Policy::new(&start, mode),
             replaying: false,
             turn: Turn::default(),
@@ -247,7 +247,7 @@ impl Session {
     /// The tools still open, the pending message, and the failure as an event so the journal
     /// shows it.
     fn finish(&mut self, stop: &DriverStop) {
-        for event in self.mapper.end_turn() {
+        for event in self.mapping.end_turn() {
             self.emit(event);
         }
         if let DriverStop::Failed { category, message } = stop {
@@ -274,7 +274,7 @@ impl Session {
                 version.map_or_else(|| "no version".to_owned(), |v| format!("version {v}"));
             return Err(failed(
                 ErrorCategory::Cli,
-                format!("the agent speaks ACP {spoken}, and Argonauts speaks version 1"),
+                format!("the agent speaks ACP {spoken}, and Argonauts Code speaks version 1"),
             ));
         }
         let capabilities = &result["agentCapabilities"];
@@ -402,7 +402,7 @@ impl Session {
                 self.on_control(control).await?;
             }
             self.pump_turn().await?;
-            for event in self.mapper.end_turn() {
+            for event in self.mapping.end_turn() {
                 self.emit(event);
             }
             self.deadline = None;
@@ -611,7 +611,7 @@ impl Session {
         }
         let update = params.get("update").cloned().unwrap_or(Value::Null);
         self.check_update(&update).await?;
-        for event in self.mapper.update(&update) {
+        for event in self.mapping.update(&update) {
             self.emit(event);
         }
         self.cancel_after_tool().await
@@ -717,7 +717,7 @@ impl Session {
             retryable: false,
         });
         if let Some(id) = call.get("toolCallId").and_then(Value::as_str) {
-            self.mapper.reject(id);
+            self.mapping.reject(id);
         }
         self.cancel_after_tool().await
     }
@@ -768,7 +768,7 @@ impl Session {
         } else {
             return Ok(());
         };
-        if self.mapper.tools_running() && !self.turn.tool_wait_over {
+        if self.mapping.tools_running() && !self.turn.tool_wait_over {
             let tool_wait = self.profile.tool_wait;
             self.turn
                 .tool_wait
@@ -870,7 +870,7 @@ fn mode_for(profile: &AcpProfile, access: Access) -> Option<String> {
     match access {
         Access::NoTools | Access::ReadOnly => profile.modes.read_only.clone(),
         Access::Build | Access::Direct => profile.modes.build.clone(),
-        Access::Spike => profile.modes.spike.clone(),
+        Access::Experiment => profile.modes.experiment.clone(),
     }
 }
 
@@ -1004,7 +1004,7 @@ mod tests {
         driven.agent.reply(&close, json!({})).await;
         let (end, _) = driven.finish().await;
         assert_eq!(end.stop, DriverStop::Cancelled);
-        assert_eq!(end.vendor_session.as_deref(), Some(testing::SESSION));
+        assert_eq!(end.cli_session.as_deref(), Some(testing::SESSION));
 
         // Cancel stops at once, and a turn that never answers ends after the grace.
         let mut driven = testing::launch(

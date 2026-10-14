@@ -1,13 +1,14 @@
 //! The Overview's numbers, summed from what's recorded: the import's records for each CLI it
-//! read, and the usage ledger for every other CLI (whose work is what ran through Argonauts),
-//! with the work ledger for what Argonauts itself did. A CLI the import read is counted from
-//! its own files only, since those already hold the sessions Argonauts ran on it.
+//! read, and the usage ledger for every other CLI (whose work is what ran through Argonauts Code),
+//! with the work ledger for what Argonauts Code itself did. A CLI the import read is counted from
+//! its own files only, since those already hold the sessions Argonauts Code ran on it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use argonauts_core::display_names::{DisplayNames, Spellings};
 use argonauts_core::overview::{
-    CliSource, ImportStatus, ModelDay, OverviewData, OverviewDay, OverviewModel, OverviewMonth,
-    OverviewPeriod, OverviewWeek, ThroughArgonauts, Tokens,
+    CliSource, ImportStatus, ModelDay, ModelTokens, OverviewData, OverviewDay, OverviewModel,
+    OverviewMonth, OverviewPeriod, OverviewWeek, ThroughArgonauts, Tokens,
 };
 use argonauts_core::pricing::PriceList;
 use argonauts_core::settings::overview::YearColors;
@@ -50,6 +51,8 @@ pub(crate) struct Sources<'a> {
     pub clock: WallClock,
     /// Every model's list price, for its API value.
     pub prices: &'a PriceList,
+    /// The names that say which spellings are one model.
+    pub names: &'a DisplayNames,
 }
 
 /// The Overview for `period` as of `today`.
@@ -61,7 +64,8 @@ pub(crate) fn overview(
     year_colors: YearColors,
     cli_name: &dyn Fn(&str) -> String,
 ) -> OverviewData {
-    let entries = entries(sources);
+    let spelled = spellings(sources);
+    let entries = entries(sources, &spelled);
     let imported: BTreeSet<&str> = sources.records.iter().map(|r| r.cli.as_str()).collect();
     let first = period.first_day(today);
     let in_period = |entry: &&Entry<'_>| first.is_none_or(|first| entry.day >= first);
@@ -185,11 +189,69 @@ pub(crate) fn overview(
         .collect();
     data.longest_session_secs = longest_session(&counted);
     data.argonauts = through_argonauts(sources.work);
+    data.all_time_models = all_time_models(sources.records, sources.lines);
     data
 }
 
-/// The records of the CLIs the import read, and the ledger's lines for every other CLI.
-fn entries<'a>(sources: &'a Sources<'_>) -> Vec<Entry<'a>> {
+/// Every model's tokens in all, the most first: the import's records for each CLI it read
+/// and the ledger's lines for every other, as the Overview counts them.
+pub(crate) fn all_time_models(records: &[Record], lines: &[LedgerLine]) -> Vec<ModelTokens> {
+    let imported: BTreeSet<&str> = records.iter().map(|r| r.cli.as_str()).collect();
+    let mut tokens: BTreeMap<ModelKey<'_>, u64> = BTreeMap::new();
+    for record in records {
+        let model = Some(record.model.as_str()).filter(|model| !model.is_empty());
+        *tokens.entry((&record.cli, model)).or_default() +=
+            record.input + record.output + record.cache_read + record.cache_write;
+    }
+    for line in lines {
+        // A line of a CLI the import read is in its records already. It still adds the name
+        // the ledger gave the model, which the records may spell another way.
+        let counted = !imported.contains(line.agent.as_str());
+        *tokens
+            .entry((&line.agent, line.model.as_deref()))
+            .or_default() += if counted { line.input + line.output } else { 0 };
+    }
+    let mut models: Vec<ModelTokens> = tokens
+        .into_iter()
+        .map(|((agent, model), tokens)| ModelTokens {
+            agent: agent.to_owned(),
+            model: model.map(str::to_owned),
+            tokens,
+        })
+        .collect();
+    models.sort_by_key(|model| std::cmp::Reverse(model.tokens));
+    models
+}
+
+/// Each model as the records and the ledger spell it, to the spelling it's summed under, so
+/// the alias `haiku`, `claude-haiku-5-5` and a dated id of it make one model.
+fn spellings<'a>(sources: &'a Sources<'_>) -> BTreeMap<ModelKey<'a>, Option<String>> {
+    let records = sources.records.iter().map(|record| {
+        let model = Some(record.model.as_str()).filter(|model| !model.is_empty());
+        (record.cli.as_str(), model)
+    });
+    let lines = (sources.lines.iter()).map(|line| (line.agent.as_str(), line.model.as_deref()));
+    let met: BTreeSet<ModelKey<'a>> = records.chain(lines).collect();
+    let mut spellings = Spellings::new(sources.names);
+    for (agent, model) in &met {
+        spellings.meet(agent, *model);
+    }
+    met.into_iter()
+        .map(|(agent, model)| ((agent, model), spellings.of(agent, model)))
+        .collect()
+}
+
+/// The records of the CLIs the import read, and the ledger's lines for every other CLI, each
+/// model under the spelling `spelled` gives it.
+fn entries<'a>(
+    sources: &'a Sources<'_>,
+    spelled: &'a BTreeMap<ModelKey<'a>, Option<String>>,
+) -> Vec<Entry<'a>> {
+    let spelled = |agent: &'a str, model: Option<&'a str>| -> Option<&'a str> {
+        spelled
+            .get(&(agent, model))
+            .map_or(model, |one| one.as_deref())
+    };
     let imported: BTreeSet<&str> = sources.records.iter().map(|r| r.cli.as_str()).collect();
     let mut entries: Vec<Entry<'a>> = sources
         .records
@@ -201,7 +263,10 @@ fn entries<'a>(sources: &'a Sources<'_>) -> Vec<Entry<'a>> {
                 hour: (!record.whole_day).then(|| local.hour()),
                 at: (!record.whole_day).then_some(record.at),
                 agent: &record.cli,
-                model: Some(record.model.as_str()).filter(|model| !model.is_empty()),
+                model: spelled(
+                    &record.cli,
+                    Some(record.model.as_str()).filter(|model| !model.is_empty()),
+                ),
                 folder: &record.folder,
                 tokens: Tokens {
                     input: record.input,
@@ -218,17 +283,17 @@ fn entries<'a>(sources: &'a Sources<'_>) -> Vec<Entry<'a>> {
         if imported.contains(line.agent.as_str()) {
             continue;
         }
-        // A chat's turns on one day count as one session; a run's agent as one of its own.
+        // A conversation's turns on one day count as one session; a run's agent as one of its own.
         let session = match &line.run {
             Some(run) => format!("{run}:{}:{:?}", line.agent, line.model),
-            None => format!("chat:{}:{}", line.day, line.agent),
+            None => format!("conversation:{}:{}", line.day, line.agent),
         };
         entries.push(Entry {
             day: line.day,
             hour: line.hour,
             at: None,
             agent: &line.agent,
-            model: line.model.as_deref(),
+            model: spelled(&line.agent, line.model.as_deref()),
             folder: &line.repo,
             tokens: Tokens {
                 input: line.input.saturating_sub(line.cached),
@@ -456,7 +521,7 @@ fn longest_session(entries: &[&Entry<'_>]) -> u64 {
         .unwrap_or(0)
 }
 
-/// What ran through Argonauts over the work ledger's `work`.
+/// What ran through Argonauts Code over the work ledger's `work`.
 pub(crate) fn through_argonauts(work: &[WorkLine]) -> Option<ThroughArgonauts> {
     let mut through = ThroughArgonauts {
         since: work.iter().map(|line| line.day).min(),
@@ -488,10 +553,10 @@ pub(crate) fn through_argonauts(work: &[WorkLine]) -> Option<ThroughArgonauts> {
                 }
             }
             Work::Session {
-                stood_in_for,
+                fallback_for,
                 window,
                 ..
-            } if stood_in_for.is_some() => {
+            } if fallback_for.is_some() => {
                 through.fallbacks += 1;
                 through.for_limit += u32::from(window.is_some());
             }

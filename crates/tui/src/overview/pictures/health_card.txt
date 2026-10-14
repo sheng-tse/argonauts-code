@@ -1,0 +1,27 @@
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ CLI health                                                                each model on its own · kept across runs │
+│                                                                                                                    │
+│ CLI                model             state          why                                     next check             │
+│                                                                                                                    │
+│ ● Claude Code      Opus 5.5          ▪ overloaded   2 overload errors in a row              2:03 PM, a test task   │
+│                    Sonnet 5.5        ▪ healthy      ↷ review:due-tests for Opus 5.5                                │
+│                    Haiku 5.5         ▪ healthy                                                                     │
+│                                                                                                                    │
+│ ○ Codex            GPT 5.6           ▪ healthy                                                                     │
+│                    GPT 5.6 Luna      ▪ degraded     reconnected twice in 2 minutes          2:01 PM, if quiet      │
+│                                                                                                                    │
+│ ○ Antigravity CLI  Gemini 3.6 Pro    ▪ healthy                                                                     │
+│                    Gemini 3.6 Flash  ▪ healthy                                                                     │
+│                                                                                                                    │
+│ ○ OpenCode         not installed                                                                                   │
+│                                                                                                                    │
+│ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│                                                                                                                    │
+│ what the states mean                 ▪ healthy      takes work as asked                                            │
+│                                      ▪ degraded     new work goes to another model first    after 2 quiet minutes  │
+│                                      ▪ overloaded   out: a fallback steps in, or it waits   a test in 5 minutes    │
+│                                      ▪ down         every model on the CLI is out           a test in 5 minutes    │
+│                                      ▪ testing      one test task decides: healthy or out   out if silent an hour  │
+│                                                                                                                    │
+│ An overload or server error counts against the model it came from; two models out at once take the CLI down.       │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

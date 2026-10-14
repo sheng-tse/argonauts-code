@@ -37,7 +37,7 @@ use crate::views::ViewCtx;
 
 pub use frames::{FrameScheduler, MIN_FRAME_INTERVAL};
 pub use fullscreen::Scrollback;
-pub use live::{LiveView, compose_docked, compose_live};
+pub use live::{DockedRows, LiveView, compose_docked, compose_live};
 pub use overlay::{OverlayEvent, OverlayView, TranscriptOverlay};
 pub use run::{Flow, Host, StdoutWriter, run};
 
@@ -60,26 +60,26 @@ pub enum UiAction {
         command: String,
     },
     /// `note` is the text typed after Tab or into a free-text option; `checked` holds a
-    /// checklist option's ticked rows. The card is already gone.
+    /// checklist option's ticked rows. The question is already gone.
     Answer {
-        card: u64,
+        question: u64,
         option: usize,
         note: Option<String>,
         checked: Vec<usize>,
     },
-    /// An option that only shows something, such as Show the diff. The card stays and nothing
+    /// An option that only shows something, such as Show the diff. The question stays and nothing
     /// is answered.
     OpenView {
-        card: u64,
+        question: u64,
         option: usize,
     },
-    /// Enter on a mod pinned above the input: open its tab of the Overview.
-    OpenTab(argonauts_core::settings::ui::WidgetName),
-    /// Esc took a card off the screen with nothing picked.
+    /// Enter on a mod pinned above the input: open its tab of the usage panel.
+    OpenTab(argonauts_core::settings::ui::ModName),
+    /// Esc took a question off the screen with nothing picked.
     Dismiss {
-        card: u64,
+        question: u64,
     },
-    /// Already shown in the mode line.
+    /// Already shown in the bottom line.
     ModeChanged(ApprovalMode),
     /// Esc while work runs. The host stops the main agent's turn, or stops a pausing run now.
     /// A run's agents keep going.
@@ -87,9 +87,9 @@ pub enum UiAction {
     /// ↑ on the first input row while messages are queued. The host puts them back in the
     /// composer once they are really taken back.
     TakeBack(Vec<String>),
-    OpenCrewView,
+    OpenAgentPanel,
     OpenAgent(crate::bottom::AgentRef),
-    /// A second `x` on an agent's panel row. The first only asked on the mode line.
+    /// A second `x` on an agent's panel row. The first only asked on the bottom line.
     StopAgent(crate::bottom::AgentRef),
     /// A second `x` on a run's panel row, with its run id.
     StopRun(String),
@@ -125,16 +125,16 @@ pub enum UiAction {
     Command(argonauts_core::app::UiCommand),
     /// A view asked the controller for data.
     Request(argonauts_core::app::ViewRequest),
-    /// Give this card the keys, such as Enter on a ◆ row in the crew view.
-    AnswerCard(argonauts_core::app::AnswerTarget),
+    /// Give this question the keys, such as Enter on a ◆ row in the agent panel.
+    AnswerQuestion(argonauts_core::app::AnswerTarget),
     /// A key the open settings picker took, for the settings flow to act on.
     Picker(crate::bottom::PickerEvent),
-    /// `t` in a view: the local confirm card before a take-over.
+    /// `t` in a view: the local confirm question before a take-over.
     ConfirmTakeOver {
         run: argonauts_core::RunId,
-        card: argonauts_core::CardId,
+        task: argonauts_core::TaskId,
     },
-    /// A short line for the mode line's notice slot.
+    /// A short line for the bottom line's notice slot.
     Notice(String),
     /// Text selected with the mouse, for the system clipboard.
     Copy(String),
@@ -164,7 +164,7 @@ pub struct Ui<W: Write> {
     started: Instant,
     dirty: bool,
     overlay: Option<TranscriptOverlay>,
-    /// The app's own views, the top one drawn. Esc pops one; an empty stack is the chat.
+    /// The app's own views, the top one drawn. Esc pops one; an empty stack is the conversation.
     views: Vec<Box<dyn crate::views::View>>,
     /// The open views draw as a panel under the working line, since a command typed while an
     /// answer ran opened the first of them, and the answer goes on above.
@@ -277,8 +277,8 @@ impl<W: Write> Ui<W> {
         self.started
     }
 
-    /// Opens `view` over the chat, on a screen of its own unless it docks or the views under
-    /// it are a panel.
+    /// Opens `view` over the conversation, on a screen of its own unless it docks or the views
+    /// under it are a panel.
     pub fn push_view(&mut self, view: Box<dyn crate::views::View>) {
         if self.views.is_empty() {
             self.views_as_panel = false;
@@ -308,7 +308,7 @@ impl<W: Write> Ui<W> {
         self.views.pop()
     }
 
-    /// Back to the chat exactly where it was.
+    /// Back to the conversation exactly where it was.
     pub fn close_views(&mut self) {
         self.dirty = true;
         self.views.clear();
@@ -327,8 +327,8 @@ impl<W: Write> Ui<W> {
         self.overlay.is_some()
     }
 
-    /// Opens `cells` full screen, such as the diff behind a card's Show the diff. Esc returns to
-    /// the inline chat exactly where it was, card and all.
+    /// Opens `cells` full screen, such as the diff behind a question's Show the diff. Esc returns
+    /// to the inline conversation exactly where it was, question and all.
     pub fn open_view(&mut self, title: impl Into<String>, cells: Vec<crate::cell::Cell>) {
         self.overlay = Some(TranscriptOverlay::view(title, cells));
         self.dirty = true;
@@ -375,8 +375,13 @@ impl<W: Write> Ui<W> {
         if self.model.bottom.agents.rows.is_empty() {
             self.model.bottom.agents.blur();
         }
+        // The row of a run that ended a while ago leaves the list.
+        let bottom = &mut self.model.bottom;
+        if bottom.workflows.let_go(&bottom.agents, now) {
+            self.dirty = true;
+        }
         self.settle_paste_burst(None, now);
-        self.settle_card_keys(now);
+        self.settle_question_keys(now);
         let mut wrote = self.update_title(now)?;
         let wanted = self.wants_alternate_screen();
         if wanted != self.on_alternate {
@@ -490,11 +495,19 @@ impl<W: Write> Ui<W> {
             .is_some_and(|view| view.docked() || self.views_as_panel)
     }
 
-    /// The docked view's rows at this screen's size, or `None` when no view docks.
-    fn dock_lines(&mut self, now: Instant, state: Option<&AppState>) -> Option<Vec<Line<'static>>> {
+    /// The docked view's rows at this screen's size, or `None` when no view docks. Over a
+    /// question that holds the keys, the view gives up its keys' row and whatever rows the
+    /// question needs, and on a screen too short for both the question shows alone.
+    fn dock_lines(&mut self, now: Instant, state: Option<&AppState>) -> Option<DockedRows> {
         let screen = self.terminal.screen_size();
         let busy = self.is_busy();
         let as_panel = self.views_as_panel;
+        let question_rows = self.question_over_view().then(|| {
+            let ctx = RenderCtx::new(screen.width, &self.theme, Clock::new(self.started, now))
+                .with_rows(screen.height);
+            let question = self.model.bottom.question_under_view(&ctx);
+            u16::try_from(question.map_or(0, |question| question.lines.len())).unwrap_or(u16::MAX)
+        });
         let view = self
             .views
             .last_mut()
@@ -512,10 +525,18 @@ impl<W: Write> Ui<W> {
             state,
             now,
         };
-        let rows = view
+        let room = screen.height.saturating_sub(2);
+        let mut rows = view
             .dock_height(screen, &ctx)
             .unwrap_or_else(|| crate::views::dock::height(screen.height))
-            .min(screen.height.saturating_sub(2));
+            .min(room);
+        if let Some(question_rows) = question_rows {
+            // The question's rule takes the row the view's keys had.
+            rows = rows.min((room + 1).saturating_sub(question_rows));
+            if rows < crate::views::dock::MIN_OVER_QUESTION {
+                return None;
+            }
+        }
         let area = Rect::new(0, 0, screen.width, rows);
         let mut buffer = Buffer::empty(area);
         if view.docked() {
@@ -523,7 +544,14 @@ impl<W: Write> Ui<W> {
         } else {
             crate::views::dock::render_in_panel(view.as_mut(), area, &mut buffer, &ctx, busy);
         }
-        Some(crate::views::dock::lines(&buffer))
+        let mut lines = crate::views::dock::lines(&buffer);
+        if question_rows.is_some() {
+            lines.pop();
+        }
+        Some(DockedRows {
+            lines,
+            over_question: question_rows.is_some(),
+        })
     }
 
     /// When [`frame`](Self::frame) next has work, or `None` while the screen is still.
@@ -661,9 +689,9 @@ impl<W: Write> Ui<W> {
         self.model.is_working() || self.model.bottom.agents.any_working()
     }
 
-    /// A card waits here or somewhere else.
+    /// A question waits here or somewhere else.
     fn needs_you(&self) -> bool {
-        self.model.bottom.card.is_some() || self.model.bottom.mode.needs_you > 0
+        self.model.bottom.question.is_some() || self.model.bottom.mode.needs_you > 0
     }
 
     fn update_title(&mut self, now: Instant) -> io::Result<bool> {
@@ -754,7 +782,7 @@ impl<W: Write> Ui<W> {
             .draw_live(rows(trailing), rows(pinned), |frame| {
                 frame.paint_trailing(trailing);
                 frame.paint_lines(pinned);
-                // The cursor sits in the composer or a card, which are always pinned.
+                // The cursor sits in the composer or a question, which are always pinned.
                 if let Some((column, row)) = view.cursor
                     && let Some(row) = row.checked_sub(rows(trailing))
                 {
@@ -813,17 +841,17 @@ impl<W: Write> Ui<W> {
 }
 
 /// Each mod's first key, as written, for the line it folds to above the input.
-fn mod_keys(keymap: &Keymap) -> Vec<(argonauts_core::settings::ui::WidgetName, String)> {
-    argonauts_core::settings::ui::WidgetName::ALL
+fn mod_keys(keymap: &Keymap) -> Vec<(argonauts_core::settings::ui::ModName, String)> {
+    argonauts_core::settings::ui::ModName::ALL
         .into_iter()
         .filter_map(|name| {
-            let key = keymap.keys(Action::Widget(name)).into_iter().next()?;
+            let key = keymap.keys(Action::Mod(name)).into_iter().next()?;
             Some((name, key))
         })
         .collect()
 }
 
-/// A view hides the mode line, so a notice from one of its keys, such as why it can't act
+/// A view hides the bottom line, so a notice from one of its keys, such as why it can't act
 /// now, takes the view's bottom rows while it lasts: the footer where its keys are named, and
 /// the row above it when the words need two.
 fn paint_notice(

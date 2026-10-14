@@ -1,8 +1,0 @@
----
-source: crates/tui/tests/snap_cards.rs
-expression: "text(&bottom_lines(&aside, width))"
----
-────────────────────────────────────────────────────────────────────────────────────────────────── council · ultracode ─
-❯ Try "review the last commit"
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts

@@ -27,7 +27,7 @@ fn notes(range: std::ops::RangeInclusive<u32>) -> Vec<AppEvent> {
         .collect()
 }
 
-/// The input's top rule, the input, its bottom rule, then the mode line ends the screen.
+/// The input's top rule, the input, its bottom rule, then the bottom line ends the screen.
 fn assert_input_at_bottom(screen: &Screen) {
     let rule = expect_row(screen, TOP_RULE);
     assert!(
@@ -48,18 +48,18 @@ fn assert_input_at_bottom(screen: &Screen) {
     );
     assert!(
         screen.visible.len() - rule == 4,
-        "only the mode line is under the input:\n{}",
+        "only the bottom line is under the input:\n{}",
         screen.visible_text()
     );
 }
 
 #[test]
 fn the_start_shows_the_header_on_top_and_the_input_at_the_bottom() {
-    let harness = Harness::launch(Script::idle())
+    let driver = TestDriver::launch(Script::idle())
         .inline()
         .after_shell_line(SHELL_LINE)
         .start();
-    let screen = harness.wait_visible(MODE_IDLE);
+    let screen = driver.wait_visible(MODE_IDLE);
     // As in Claude Code, the top row stays blank and the header starts under it.
     assert_eq!(
         expect_row(&screen, HEADER),
@@ -82,7 +82,7 @@ fn the_start_shows_the_header_on_top_and_the_input_at_the_bottom() {
         "{}",
         screen.visible_text()
     );
-    let raw = String::from_utf8_lossy(&harness.raw()).into_owned();
+    let raw = String::from_utf8_lossy(&driver.raw()).into_owned();
     assert!(!raw.contains("\x1b[3J"), "the scrollback is never erased");
     assert!(
         !raw.contains("\x1b[2J"),
@@ -96,8 +96,8 @@ fn history_fills_under_the_header_then_scrolls_into_the_scrollback() {
         .all(50, notes(1..=3))
         .await_signal("more")
         .all(0, notes(4..=40));
-    let harness = Harness::launch(script).inline().start();
-    let screen = harness.wait_visible("note 03");
+    let driver = TestDriver::launch(script).inline().start();
+    let screen = driver.wait_visible("note 03");
     let header = expect_row(&screen, HEADER);
     let first = expect_row(&screen, "note 01");
     let last = expect_row(&screen, "note 03");
@@ -117,8 +117,8 @@ fn history_fills_under_the_header_then_scrolls_into_the_scrollback() {
     );
     assert_input_at_bottom(&screen);
 
-    harness.signal("more");
-    let screen = harness.wait_visible("note 40");
+    driver.signal("more");
+    let screen = driver.wait_visible("note 40");
     assert_input_at_bottom(&screen);
     assert_eq!(expect_row(&screen, TOP_RULE), rule, "the input stays put");
     let last = expect_row(&screen, "note 40");
@@ -166,14 +166,14 @@ fn a_restart_shows_only_the_new_header() {
         .await_signal("quit")
         .at(0, exit());
     let second = Script::idle().at(0, notice("info", "second session"));
-    let harness = Harness::launch(first)
+    let driver = TestDriver::launch(first)
         .inline()
         .after_shell_line(SHELL_LINE)
         .then_restart(second)
         .start();
-    harness.wait_visible("first session");
-    harness.signal("quit");
-    let screen = harness.wait_until("the second start", |screen| {
+    driver.wait_visible("first session");
+    driver.signal("quit");
+    let screen = driver.wait_until("the second start", |screen| {
         row_of(screen, "second session").is_some() && row_of(screen, MODE_IDLE).is_some()
     });
 
@@ -207,15 +207,15 @@ fn the_frame_holds_at_every_width() {
         let script = Script::idle()
             .all(0, notes(1..=2))
             .await_command("submit")
-            .timed(chat_turn("t-001", "hi", "Short answer.", 5));
-        let mut harness = Harness::launch(script)
+            .timed(conversation_turn("t-001", "hi", "Short answer.", 5));
+        let mut driver = TestDriver::launch(script)
             .size(ROWS, cols)
             .name(&format!("frame_{cols}"))
             .start();
-        harness.wait_visible(MODE_IDLE);
-        harness.submit("hi");
-        harness.wait_visible(TURN_END);
-        let screen = harness.wait_visible(MODE_IDLE);
+        driver.wait_visible(MODE_IDLE);
+        driver.submit("hi");
+        driver.wait_visible(TURN_END);
+        let screen = driver.wait_visible(MODE_IDLE);
         assert_frames(&screen, cols);
         assert_input_at_bottom(&screen);
         assert_eq!(expect_row(&screen, HEADER), 1, "{}", screen.visible_text());
@@ -226,11 +226,11 @@ fn the_frame_holds_at_every_width() {
 
 #[test]
 fn a_resize_keeps_the_input_at_the_bottom() {
-    let mut harness = Harness::start(Script::idle().all(0, notes(1..=3)));
-    harness.wait_visible("note 03");
+    let mut driver = TestDriver::start(Script::idle().all(0, notes(1..=3)));
+    driver.wait_visible("note 03");
     for (rows, cols) in [(40, 100), (24, 80), (30, 120)] {
-        harness.resize(rows, cols);
-        let screen = harness.wait_until("the live region redrawn at the bottom", |screen| {
+        driver.resize(rows, cols);
+        let screen = driver.wait_until("the live region redrawn at the bottom", |screen| {
             screen.visible.len() == usize::from(rows)
                 && blank_rows_at_bottom(screen) == 0
                 && row_of(screen, TOP_RULE)
@@ -259,23 +259,23 @@ fn a_resize_keeps_the_input_at_the_bottom() {
 }
 
 /// Once the setup saves, the header on screen changes where it stands: the screen and the
-/// scrollback hold one header, and it names the new preset.
+/// scrollback hold one header, and it names the new workflow.
 #[test]
 fn a_saved_setup_changes_the_header_in_place() {
     let mut saved = serde_json::to_value(welcome()).expect("an AppEvent writes as JSON");
-    saved["workflow"] = serde_json::json!("solo");
+    saved["workflow"] = serde_json::json!("captain");
     let script = Script::idle()
         .all(50, notes(1..=3))
         .at(300, app(saved))
         .at(300, notice("info", "Saved to ~/config.toml."));
-    let harness = Harness::start(script);
-    let screen = harness.wait_visible("Saved to");
+    let driver = TestDriver::start(script);
+    let screen = driver.wait_visible("Saved to");
 
     assert_eq!(count_rows(&screen, HEADER), 1, "{}", screen.text());
     let header = expect_row(&screen, HEADER);
     assert_eq!(header, 1, "{}", screen.visible_text());
     assert!(
-        screen.visible[header + 1].ends_with("· Solo"),
+        screen.visible[header + 1].ends_with("· Captain"),
         "{}",
         screen.visible_text()
     );

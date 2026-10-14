@@ -3,35 +3,24 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use argonauts_adapter_claude_code::{ClaudeCodeAdapter, TESTED_VERSIONS};
-use argonauts_core::events::context::{ContextDetail, ContextPart};
+use argonauts_core::events::context::{ContextDetail, ContextKind};
 use argonauts_core::events::session::{
-    SubagentKind, SubagentStatus, SubagentUpdate, VendorAgentState, VendorWorkflow,
+    CliAgentState, CliWorkflowRun, SubagentKind, SubagentStatus, SubagentUpdate,
 };
-use argonauts_core::limits::{QuotaSource, QuotaStatus};
+use argonauts_core::limits::{PlanUsageSource, PlanUsageStatus};
 use argonauts_core::screen::ScreenChange;
 use argonauts_core::{
-    Adapter, AgentEvent, BudgetAction, BudgetLimit, BudgetMeter, ErrorCategory, MessageStage,
-    Report, ReportStatus, ReportedCommand, SessionRequest, SessionRole,
+    Adapter, AgentEvent, ErrorCategory, MessageStage, MeterAction, MeterLimit, Report,
+    ReportStatus, ReportedCommand, SessionRequest, SessionRole, SpendMeter,
 };
 use serde_json::Value;
 use time::OffsetDateTime;
 use time::macros::datetime;
 
-/// One-shot sessions with the prompt on stdin.
-const ORIGINAL: &str = "2.1.284";
-/// Sessions with stdin kept open, a chosen id, the status server, and a resume.
-const STEERED: &str = "2.1.285";
-/// A workflow Claude Code ran itself, recorded by hand without partial messages, so it stays
-/// out of `every_fixture`.
-const WORKFLOWS: &str = "2.1.289";
 const WORKFLOW_CALL: &str = "toolu_01T9VznHYcM7UjRKWHQ4QH2c";
-/// Direct solo: calls asked through the permission prompt tool, and a read-only estimate
-/// resumed with every tool.
-const DIRECT: &str = "2.1.289";
 
 /// Live calls with stream-json both ways and `initialize` first, recorded without partial
-/// messages, so they stay out of `every_fixture` too.
-const TWO_WAY: &str = "2.1.289";
+/// messages, so they stay out of `every_fixture`.
 const TWO_WAY_CALLS: &[&str] = &[
     "agents_md",
     "sync_off",
@@ -40,9 +29,6 @@ const TWO_WAY_CALLS: &[&str] = &[
     "checkup",
 ];
 
-/// A later installed version, recorded as `ORIGINAL` was.
-const INSTALLED: &str = "2.1.293";
-
 const STATUS_TOOL: &str = "mcp__argonauts_status__argonauts_status";
 const SUBAGENT_CALL: &str = "toolu_01V464aQnAvS82ukoevdYdMW";
 
@@ -50,69 +36,63 @@ fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")
 }
 
-fn read_fixture(version: &str, name: &str, ext: &str) -> String {
-    let path = fixture_dir().join(version).join(format!("{name}.{ext}"));
+fn read_fixture(name: &str, ext: &str) -> String {
+    let path = fixture_dir().join(format!("{name}.{ext}"));
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-fn meta(version: &str, name: &str) -> Value {
-    serde_json::from_str(&read_fixture(version, name, "meta.json")).unwrap()
+fn meta(name: &str) -> Value {
+    serde_json::from_str(&read_fixture(name, "meta.json")).unwrap()
 }
 
-fn exit_code(version: &str, name: &str) -> Option<i32> {
-    meta(version, name)["exit_code"]
-        .as_i64()
-        .map(|code| code as i32)
+fn exit_code(name: &str) -> Option<i32> {
+    meta(name)["exit_code"].as_i64().map(|code| code as i32)
 }
 
-fn replay_lines(version: &str, name: &str, stdout: &str) -> Vec<AgentEvent> {
+fn replay_lines(name: &str, stdout: &str) -> Vec<AgentEvent> {
     let mut parser = ClaudeCodeAdapter.parser();
     let mut events = Vec::new();
     for line in stdout.lines() {
         events.extend(parser.parse_stdout_line(line));
     }
-    for line in read_fixture(version, name, "stderr.txt").lines() {
+    for line in read_fixture(name, "stderr.txt").lines() {
         events.extend(parser.parse_stderr_line(line));
     }
-    events.extend(parser.finish(exit_code(version, name)));
+    events.extend(parser.finish(exit_code(name)));
     normalized(events)
 }
 
-fn replay_version(version: &str, name: &str) -> Vec<AgentEvent> {
-    replay_lines(version, name, &read_fixture(version, name, "stdout.jsonl"))
-}
-
 fn replay(name: &str) -> Vec<AgentEvent> {
-    replay_version(ORIGINAL, name)
+    replay_lines(name, &read_fixture(name, "stdout.jsonl"))
 }
 
-fn replay_steered(name: &str) -> Vec<AgentEvent> {
-    replay_version(STEERED, name)
-}
-
-fn every_fixture() -> Vec<(&'static str, &'static str)> {
+/// Sessions recorded with partial messages: one-shot ones with the prompt on stdin, ones with
+/// stdin kept open, a chosen id, the status server and a resume, and direct Captain's (calls
+/// asked through the permission prompt tool, and a read-only estimate resumed with every
+/// tool). A workflow Claude Code ran itself was recorded by hand without them, so it stays out.
+fn every_fixture() -> Vec<&'static str> {
     vec![
-        (ORIGINAL, "read-only"),
-        (ORIGINAL, "write"),
-        (ORIGINAL, "shell"),
-        (STEERED, "stream-input"),
-        (STEERED, "resume"),
-        (STEERED, "status-tool-error"),
-        (DIRECT, "permission_prompt_tool"),
-        (DIRECT, "readonly_estimate"),
-        (DIRECT, "direct_resume"),
+        "read-only-untitled",
+        "write",
+        "shell",
+        "stream-input",
+        "resume",
+        "status-tool-error",
+        "permission_prompt_tool",
+        "readonly_estimate",
+        "direct_resume",
     ]
 }
 
-/// A quota reading is stamped when it is parsed, so replays pin that time to compare runs.
+/// A plan usage reading is stamped when it is parsed, so replays pin that time to compare runs.
 fn normalized(events: Vec<AgentEvent>) -> Vec<AgentEvent> {
     const PARSED_AT: OffsetDateTime = datetime!(2026-09-30 00:00 UTC);
     events
         .into_iter()
         .map(|event| match event {
-            AgentEvent::Quota { mut reading } => {
+            AgentEvent::PlanUsage { mut reading } => {
                 reading.observed_at = PARSED_AT;
-                AgentEvent::Quota { reading }
+                AgentEvent::PlanUsage { reading }
             }
             other => other,
         })
@@ -225,7 +205,7 @@ fn assert_clean_session(events: &[AgentEvent]) {
                 e,
                 AgentEvent::Unknown { .. }
                     | AgentEvent::Error { .. }
-                    | AgentEvent::QuotaSignal { .. }
+                    | AgentEvent::PlanUsageSignal { .. }
             )
         })
         .collect();
@@ -240,7 +220,7 @@ fn assert_clean_session(events: &[AgentEvent]) {
 
 #[test]
 fn read_only_reply() {
-    let events = replay("read-only");
+    let events = replay("read-only-untitled");
     assert_eq!(
         shape(&events),
         [
@@ -250,7 +230,7 @@ fn read_only_reply() {
             "text_delta",
             "message",
             "usage",
-            "quota",
+            "plan_usage",
             "usage",
             "context_fill",
             "result"
@@ -284,7 +264,7 @@ fn write_creates_a_file_and_returns_a_structured_report() {
             "tool_finished",
             "file_changed",
             "usage",
-            "quota",
+            "plan_usage",
             "usage",
             "context_fill",
             "text_delta",
@@ -324,7 +304,7 @@ fn write_creates_a_file_and_returns_a_structured_report() {
     assert_eq!(report.status, ReportStatus::Done);
     assert_eq!(report.files_changed, ["hello.txt"]);
 
-    // The report also survives in the final message text, for harnesses without a schema.
+    // The report also survives in the final message text, for CLIs without a schema.
     let last_message = events.iter().rev().find_map(|e| match e {
         AgentEvent::Message { text, .. } => Some(text.clone()),
         _ => None,
@@ -333,15 +313,15 @@ fn write_creates_a_file_and_returns_a_structured_report() {
     assert_eq!(from_text.status, ReportStatus::Done);
 }
 
-/// The installed version reads as 2.1.284 did: its new `session_title_changed` line is read and
-/// set aside, and an answer and a shell call come through whole.
+/// A `session_title_changed` line is read and set aside, and an answer and a shell call come
+/// through whole.
 #[test]
-fn the_installed_version_reads_an_answer_and_a_shell_call() {
-    let answer = replay_version(INSTALLED, "read-only");
+fn a_session_that_names_itself_reads_an_answer_and_a_shell_call() {
+    let answer = replay("read-only");
     assert_clean_session(&answer);
     assert_eq!(result(&answer).0.as_deref(), Some("ok"));
 
-    let shell = replay_version(INSTALLED, "shell");
+    let shell = replay("shell");
     assert_clean_session(&shell);
     let bash = shell.iter().find_map(|e| match e {
         AgentEvent::ToolStarted { id, name, .. } if name == "Bash" => Some(id.clone()),
@@ -388,8 +368,8 @@ fn shell_runs_one_command() {
 
 #[test]
 fn claude_partial_text_streams() {
-    for (version, name) in every_fixture() {
-        let events = replay_version(version, name);
+    for name in every_fixture() {
+        let events = replay(name);
         let mut streamed = String::new();
         let mut checked = 0;
         for event in &events {
@@ -414,7 +394,7 @@ fn claude_partial_text_streams() {
         );
     }
     // Subagent text arrives whole, with no deltas before it.
-    let events = replay_steered("stream-input");
+    let events = replay("stream-input");
     assert!(events.iter().any(|e| matches!(
         e,
         AgentEvent::Message { parent: Some(p), .. } if p == SUBAGENT_CALL
@@ -422,18 +402,18 @@ fn claude_partial_text_streams() {
 }
 
 #[test]
-fn claude_rate_limit_event_to_quota() {
+fn claude_rate_limit_event_to_plan_usage() {
     // The fullest window counts, whichever one `rateLimitType` names.
     let cases = [
-        (ORIGINAL, "read-only", "five_hour", 0.17, 1790678400),
-        (STEERED, "stream-input", "seven_day", 0.62, 1790820000),
+        ("read-only-untitled", "five_hour", 0.17, 1790678400),
+        ("stream-input", "seven_day", 0.62, 1790820000),
     ];
-    for (version, name, window, used, resets_at) in cases {
-        let events = replay_version(version, name);
+    for (name, window, used, resets_at) in cases {
+        let events = replay(name);
         let readings: Vec<_> = events
             .iter()
             .filter_map(|e| match e {
-                AgentEvent::Quota { reading } => Some(reading),
+                AgentEvent::PlanUsage { reading } => Some(reading),
                 _ => None,
             })
             .collect();
@@ -444,33 +424,33 @@ fn claude_rate_limit_event_to_quota() {
         let detail = reading.detail.as_ref().unwrap();
         let windows = detail["unifiedWindows"].as_object().unwrap();
         assert_eq!(readings.len(), windows.len(), "{name}: {readings:?}");
-        assert_eq!(reading.vendor.0, "claude-code");
-        assert_eq!(reading.status, QuotaStatus::Allowed);
+        assert_eq!(reading.agent_id.0, "claude-code");
+        assert_eq!(reading.status, PlanUsageStatus::Allowed);
         assert_eq!(reading.used, Some(used), "{name}");
         assert_eq!(
             reading.resets_at.map(|at| at.unix_timestamp()),
             Some(resets_at)
         );
         assert_eq!(reading.window.as_deref(), Some(window), "{name}");
-        assert_eq!(reading.source, QuotaSource::RateLimitEvent);
+        assert_eq!(reading.source, PlanUsageSource::RateLimitEvent);
         let detail = reading.detail.as_ref().unwrap();
         assert_eq!(detail["rateLimitType"], "five_hour");
         assert_eq!(detail["unifiedWindows"][window]["utilization"], used);
         assert!(
             !events
                 .iter()
-                .any(|e| matches!(e, AgentEvent::QuotaSignal { .. }))
+                .any(|e| matches!(e, AgentEvent::PlanUsageSignal { .. }))
         );
     }
 }
 
 #[test]
 fn every_window_of_a_rate_limit_event_is_a_reading_of_its_own() {
-    let events = replay_version(TWO_WAY, "checkup");
+    let events = replay("checkup");
     let readings: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            AgentEvent::Quota { reading } => Some(reading),
+            AgentEvent::PlanUsage { reading } => Some(reading),
             _ => None,
         })
         .collect();
@@ -488,8 +468,8 @@ fn every_window_of_a_rate_limit_event_is_a_reading_of_its_own() {
     assert_eq!(
         windows,
         [
-            ("five_hour", 0.54, 1791097200, QuotaStatus::Allowed),
-            ("seven_day", 0.49, 1791424800, QuotaStatus::Allowed),
+            ("five_hour", 0.54, 1791097200, PlanUsageStatus::Allowed),
+            ("seven_day", 0.49, 1791424800, PlanUsageStatus::Allowed),
         ]
     );
     // The plan comes from the initialize reply, and nothing else about the account.
@@ -510,7 +490,7 @@ fn a_recorded_context_usage_reply_becomes_a_breakdown() {
     .unwrap();
     for name in ["context_usage_summary", "context_usage_resumed"] {
         // The request the adapter writes is the one recorded.
-        let stdin = read_fixture(TWO_WAY, name, "stdin.jsonl");
+        let stdin = read_fixture(name, "stdin.jsonl");
         let recorded: Value = stdin
             .lines()
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
@@ -518,7 +498,7 @@ fn a_recorded_context_usage_reply_becomes_a_breakdown() {
             .unwrap();
         assert_eq!(recorded["request"], asked["request"], "{name}");
 
-        let events = replay_version(TWO_WAY, name);
+        let events = replay(name);
         assert!(
             !events
                 .iter()
@@ -529,42 +509,52 @@ fn a_recorded_context_usage_reply_becomes_a_breakdown() {
             .iter()
             .position(|e| matches!(e, AgentEvent::ContextBreakdown { .. }))
             .unwrap_or_else(|| panic!("{name}: no breakdown"));
-        let AgentEvent::ContextBreakdown {
-            categories,
-            auto_compact_at,
-            window,
-            model,
-            memory_files,
-            mcp_tools,
-            skills,
-            ..
-        } = &events[at]
-        else {
+        let AgentEvent::ContextBreakdown { usage } = &events[at] else {
             unreachable!()
         };
-        let parts: Vec<(ContextPart, u64)> =
-            categories.iter().map(|c| (c.part, c.tokens)).collect();
+        let rows: Vec<(&str, u64, ContextKind)> = usage
+            .categories
+            .iter()
+            .map(|row| (row.name.as_str(), row.tokens, row.kind))
+            .collect();
         // The deferred system tools are out of the window, and the buffer is held past the
         // compaction point.
         assert_eq!(
-            parts,
+            rows,
             [
-                (ContextPart::SystemPrompt, 6888),
-                (ContextPart::Tools, 15135),
-                (ContextPart::MemoryFiles, 17),
-                (ContextPart::Skills, 1969),
-                (ContextPart::Messages, 1),
-                (ContextPart::Free, 142990),
-                (ContextPart::Buffer, 33000),
+                ("System prompt", 6888, ContextKind::Used),
+                ("System tools", 15135, ContextKind::Used),
+                ("System tools (deferred)", 25213, ContextKind::Deferred),
+                ("Memory files", 17, ContextKind::Used),
+                ("Skills", 1969, ContextKind::Used),
+                ("Messages", 1, ContextKind::Used),
+                ("Autocompact buffer", 33000, ContextKind::Buffer),
+                ("Free space", 142990, ContextKind::Free),
             ],
             "{name}"
         );
-        assert_eq!((*window, *auto_compact_at), (200_000, Some(167_000)));
-        assert_eq!(model.as_deref(), Some("claude-haiku-4-5-20251001"));
-        assert_eq!(memory_files.len(), 1);
-        assert_eq!(memory_files[0].source.as_deref(), Some("Project"));
-        assert!(mcp_tools.is_empty());
-        assert_eq!(skills.len(), 23);
+        assert_eq!(
+            (usage.total_tokens, usage.percentage, usage.window),
+            (24_010, 12, 200_000)
+        );
+        assert_eq!(usage.compacts_at(), Some(167_000));
+        assert_eq!(usage.auto_compact_source, "settings");
+        assert_eq!(usage.model.as_deref(), Some("claude-haiku-4-5-20251001"));
+        // A 200k window draws ten rows of ten cells.
+        assert_eq!(usage.grid.len(), 10);
+        assert!(usage.grid.iter().all(|row| row.len() == 10));
+        assert_eq!(usage.grid[0][0].category, "System prompt");
+        assert_eq!(usage.memory_files.len(), 1);
+        assert_eq!(usage.memory_files[0].scope, "Project");
+        assert!(usage.mcp_tools.is_empty());
+        let skills = usage.skills.as_ref().expect("skills");
+        assert_eq!((skills.total, skills.items.len()), (23, 23));
+        assert_eq!(
+            usage.slash_commands.map(|commands| commands.total),
+            Some(23)
+        );
+        // What the messages are made of and the last request come with the short count too.
+        assert!(usage.messages.is_some(), "{name}");
         // Answering costs no model call.
         assert!(
             !events[at..]
@@ -577,7 +567,7 @@ fn a_recorded_context_usage_reply_becomes_a_breakdown() {
 
 #[test]
 fn claude_status_tool_listed_in_init() {
-    let events = replay_steered("stream-input");
+    let events = replay("stream-input");
     let AgentEvent::Init { tools, .. } = &events[0] else {
         panic!("the first event should be init");
     };
@@ -599,17 +589,17 @@ fn claude_status_tool_listed_in_init() {
     });
     assert_eq!(
         output.as_deref(),
-        Some("Run r-01: card-001 is building. No messages for you.")
+        Some("Run r-01: task-001 is building. No messages for you.")
     );
 
-    let stdout = read_fixture(STEERED, "stream-input", "stdout.jsonl");
+    let stdout = read_fixture("stream-input", "stdout.jsonl");
     let init: Value = serde_json::from_str(stdout.lines().nth(1).unwrap()).unwrap();
     assert_eq!(init["subtype"], "init");
     assert_eq!(init["mcp_servers"][0]["name"], "argonauts_status");
     assert_eq!(init["mcp_servers"][0]["status"], "connected");
     assert!(init["mcp_server_errors"].is_null());
 
-    let args = &meta(STEERED, "stream-input")["args"];
+    let args = &meta("stream-input")["args"];
     let args: Vec<&str> = args
         .as_array()
         .unwrap()
@@ -622,7 +612,7 @@ fn claude_status_tool_listed_in_init() {
 
 #[test]
 fn a_rejected_mcp_config_replays_as_adapter_broken() {
-    let events = replay_steered("status-tool-error");
+    let events = replay("status-tool-error");
     assert_eq!(shape(&events)[..2], ["init", "error"]);
     let AgentEvent::Error {
         category, message, ..
@@ -635,11 +625,11 @@ fn a_rejected_mcp_config_replays_as_adapter_broken() {
     assert!(message.contains("argonauts_status"), "{message}");
     // Claude Code runs on without the server and exits cleanly, so the init decides the end:
     // the clean result turns into an error, with the broken config as the turn's last error.
-    let stdout = read_fixture(STEERED, "status-tool-error", "stdout.jsonl");
+    let stdout = read_fixture("status-tool-error", "stdout.jsonl");
     let recorded: Value = serde_json::from_str(stdout.lines().last().unwrap()).unwrap();
     assert_eq!(recorded["type"], "result");
     assert_eq!(recorded["is_error"], false);
-    assert_eq!(exit_code(STEERED, "status-tool-error"), Some(0));
+    assert_eq!(exit_code("status-tool-error"), Some(0));
     assert_eq!(result(&events), (Some("ok".into()), None, true));
     let last_error = events.iter().rev().find_map(|e| match e {
         AgentEvent::Error {
@@ -657,7 +647,7 @@ fn a_rejected_mcp_config_replays_as_adapter_broken() {
 
 #[test]
 fn claude_subagent_parent_ids() {
-    let events = replay_steered("stream-input");
+    let events = replay("stream-input");
     let spawn = events.iter().find_map(|e| match e {
         AgentEvent::ToolStarted {
             id, name, parent, ..
@@ -708,9 +698,9 @@ fn claude_subagent_parent_ids() {
 }
 
 #[test]
-fn context_fill_from_each_vendor() {
-    for (version, name) in every_fixture() {
-        let events = replay_version(version, name);
+fn context_fill_from_each_agent() {
+    for name in every_fixture() {
+        let events = replay(name);
         let fills: Vec<(u64, Option<u64>)> = events
             .iter()
             .filter_map(|e| match e {
@@ -731,21 +721,23 @@ fn context_fill_from_each_vendor() {
             first_fill < first_result,
             "{name}: the fill comes before the end"
         );
-        // The window comes from the first result's modelUsage.
-        assert_eq!(fills.last().unwrap().1, Some(200_000), "{name}");
+        // The window comes from the first result's modelUsage. The shell recording ran with
+        // the larger one.
+        let window = if name == "shell" { 1_000_000 } else { 200_000 };
+        assert_eq!(fills.last().unwrap().1, Some(window), "{name}");
         for (used, size) in &fills {
             assert!(*used > 0 && size.is_none_or(|s| *used < s), "{name}");
         }
     }
     // The context holds input plus cache tokens: 10 + 4563 + 1798 in the read-only reply.
-    let read_only = replay("read-only");
+    let read_only = replay("read-only-untitled");
     assert!(read_only.contains(&AgentEvent::ContextFill {
         used: 6371,
         size: None,
         sent: None,
     }));
     // A resumed session starts from everything before it.
-    let resumed = replay_steered("resume");
+    let resumed = replay("resume");
     let first = resumed.iter().find_map(|e| match e {
         AgentEvent::ContextFill { used, .. } => Some(*used),
         _ => None,
@@ -755,7 +747,7 @@ fn context_fill_from_each_vendor() {
 
 #[test]
 fn stream_input_takes_a_second_message_mid_run() {
-    let events = replay_steered("stream-input");
+    let events = replay("stream-input");
     assert_clean_session_but_totals(&events);
     // A subagent's messages carry the usage from their start, so its output shows in full only
     // in the result's totals, which replace the increments.
@@ -763,7 +755,7 @@ fn stream_input_takes_a_second_message_mid_run() {
     let (run_in, run_out, run_cached) = incremental_totals(&events);
     assert_eq!((run_in, run_cached), (input, cached));
     assert!(run_out < output);
-    let meta = meta(STEERED, "stream-input");
+    let meta = meta("stream-input");
     assert_eq!(meta["keep_input_open"], true);
     let sent: Vec<Value> = meta["stdin"]
         .as_str()
@@ -785,7 +777,7 @@ fn stream_input_takes_a_second_message_mid_run() {
     // Key order depends on serde_json's `preserve_order`, which another crate in the
     // workspace turns on, so compare the values.
     assert_eq!(serde_json::from_str::<Value>(&line).unwrap(), sent[1]);
-    // 2.1.285 delivered the mid-turn message with the next tool result, not as its own turn.
+    // Claude Code delivered the mid-turn message with the next tool result, not as its own turn.
     // The second turn here came from the background subagent finishing.
     let turns = results(&events);
     assert_eq!(turns.len(), 2);
@@ -800,8 +792,8 @@ fn stream_input_takes_a_second_message_mid_run() {
 
 #[test]
 fn resume_continues_the_same_session_with_every_flag() {
-    let first = replay_steered("stream-input");
-    let resumed = replay_steered("resume");
+    let first = replay("stream-input");
+    let resumed = replay("resume");
     assert_clean_session_but_totals(&resumed);
     assert_eq!(session_id(&resumed), session_id(&first));
 
@@ -820,7 +812,7 @@ fn resume_continues_the_same_session_with_every_flag() {
     assert!(cost.unwrap() > before_cost.unwrap());
 
     let flags = |name: &str| -> BTreeSet<String> {
-        meta(STEERED, name)["args"]
+        meta(name)["args"]
             .as_array()
             .unwrap()
             .iter()
@@ -835,8 +827,8 @@ fn resume_continues_the_same_session_with_every_flag() {
     assert!(resume.remove("--resume"));
     assert_eq!(resume, launch);
     assert_eq!(
-        meta(STEERED, "resume")["resume_session"],
-        meta(STEERED, "stream-input")["session_id"]
+        meta("resume")["resume_session"],
+        meta("stream-input")["session_id"]
     );
 }
 
@@ -851,22 +843,22 @@ fn assert_clean_session_but_totals(events: &[AgentEvent]) {
 }
 
 #[test]
-fn budget_meter_counts_each_recording_once() {
+fn limit_meter_counts_each_recording_once() {
     let one_session = [
-        (ORIGINAL, "read-only"),
-        (ORIGINAL, "write"),
-        (ORIGINAL, "shell"),
-        (STEERED, "stream-input"),
-        (STEERED, "status-tool-error"),
-        (DIRECT, "permission_prompt_tool"),
-        (DIRECT, "readonly_estimate"),
-        (DIRECT, "direct_resume"),
+        "read-only-untitled",
+        "write",
+        "shell",
+        "stream-input",
+        "status-tool-error",
+        "permission_prompt_tool",
+        "readonly_estimate",
+        "direct_resume",
     ];
-    for (version, name) in one_session {
-        let events = replay_version(version, name);
-        let mut meter = BudgetMeter::new(BudgetLimit::Usd(0.5), 0.85);
+    for name in one_session {
+        let events = replay(name);
+        let mut meter = SpendMeter::new(MeterLimit::Usd(0.5), 0.85);
         for event in &events {
-            assert_eq!(meter.observe(event), BudgetAction::Continue, "{name}");
+            assert_eq!(meter.observe(event), MeterAction::Continue, "{name}");
         }
         let (input, output, cached, cost) = cumulative_totals(&events);
         let spend = meter.spend();
@@ -881,22 +873,22 @@ fn budget_meter_counts_each_recording_once() {
 }
 
 #[test]
-fn a_tight_token_budget_stops_mid_stream() {
-    let mut meter = BudgetMeter::new(BudgetLimit::Tokens(300), 0.5);
-    let actions: Vec<BudgetAction> = replay("write").iter().map(|e| meter.observe(e)).collect();
-    let first_stop = actions.iter().position(|a| *a == BudgetAction::Stop);
+fn a_tight_token_limit_stops_mid_stream() {
+    let mut meter = SpendMeter::new(MeterLimit::Tokens(300), 0.5);
+    let actions: Vec<MeterAction> = replay("write").iter().map(|e| meter.observe(e)).collect();
+    let first_stop = actions.iter().position(|a| *a == MeterAction::Stop);
     let last_event = actions.len() - 1;
     assert!(first_stop.is_some_and(|i| i < last_event), "{actions:?}");
 }
 
 #[test]
 fn malformed_lines_become_unknown_without_disturbing_the_rest() {
-    let clean = replay("read-only");
-    let stdout = read_fixture(ORIGINAL, "read-only", "stdout.jsonl");
+    let clean = replay("read-only-untitled");
+    let stdout = read_fixture("read-only-untitled", "stdout.jsonl");
     let mut lines: Vec<&str> = stdout.lines().collect();
     lines.insert(3, "{this is not json");
     lines.insert(5, r#"{"type":"from_the_future","x":1}"#);
-    let events = replay_lines(ORIGINAL, "read-only", &lines.join("\n"));
+    let events = replay_lines("read-only-untitled", &lines.join("\n"));
     let unknown: Vec<_> = events
         .iter()
         .filter(|e| matches!(e, AgentEvent::Unknown { .. }))
@@ -911,7 +903,7 @@ fn malformed_lines_become_unknown_without_disturbing_the_rest() {
 
 #[test]
 fn truncated_stream_still_ends_with_a_result() {
-    let stdout = read_fixture(ORIGINAL, "write", "stdout.jsonl");
+    let stdout = read_fixture("write", "stdout.jsonl");
     let cut: Vec<&str> = stdout.lines().take(40).collect();
     let mut parser = ClaudeCodeAdapter.parser();
     for line in &cut {
@@ -935,7 +927,7 @@ fn truncated_stream_still_ends_with_a_result() {
     );
 }
 
-fn workflows(events: &[AgentEvent]) -> Vec<&VendorWorkflow> {
+fn workflows(events: &[AgentEvent]) -> Vec<&CliWorkflowRun> {
     events
         .iter()
         .filter_map(|event| match event {
@@ -945,14 +937,13 @@ fn workflows(events: &[AgentEvent]) -> Vec<&VendorWorkflow> {
         .collect()
 }
 
-/// Claude Code 2.1.289 runs a workflow script in the background and reports it through
+/// Claude Code runs a workflow script in the background and reports it through
 /// `system/task_*` events. The replay mirrors it as it goes: the script's own name,
 /// description, and phases first, then each agent under its phase, with its model, tokens, and
 /// time, whatever the names.
 #[test]
 fn claude_runs_its_own_workflow_and_the_replay_mirrors_it() {
-    let events = replay_version(WORKFLOWS, "workflow");
-    assert_eq!(meta(WORKFLOWS, "workflow")["cli_version"], WORKFLOWS);
+    let events = replay("workflow");
     let seen = workflows(&events);
     assert!(seen.len() >= 4, "{seen:#?}");
 
@@ -976,7 +967,7 @@ fn claude_runs_its_own_workflow_and_the_replay_mirrors_it() {
         .unwrap_or_else(|| panic!("no agent ever showed"));
     let ask = &asking.agents[0];
     assert_eq!((ask.label.as_str(), ask.phase), ("ask:one", Some(1)));
-    assert_eq!(ask.state, VendorAgentState::Running);
+    assert_eq!(ask.state, CliAgentState::Running);
     assert_eq!(ask.model.as_deref(), Some("claude-haiku-4-5-20251001"));
     assert_eq!(asking.count(1), Some((0, 1)));
     assert_eq!(asking.count(2), None);
@@ -992,7 +983,7 @@ fn claude_runs_its_own_workflow_and_the_replay_mirrors_it() {
         last.summary
     );
     /// Label, phase, state, tokens, and the start of its answer.
-    type Row<'a> = (&'a str, Option<u32>, VendorAgentState, u64, Option<&'a str>);
+    type Row<'a> = (&'a str, Option<u32>, CliAgentState, u64, Option<&'a str>);
     let agents: Vec<Row<'_>> = last
         .agents
         .iter()
@@ -1012,14 +1003,14 @@ fn claude_runs_its_own_workflow_and_the_replay_mirrors_it() {
             (
                 "ask:one",
                 Some(1),
-                VendorAgentState::Done,
+                CliAgentState::Done,
                 10_311,
                 Some("Ready")
             ),
             (
                 "answer:one",
                 Some(2),
-                VendorAgentState::Done,
+                CliAgentState::Done,
                 10_315,
                 Some("success")
             ),
@@ -1056,16 +1047,28 @@ fn claude_runs_its_own_workflow_and_the_replay_mirrors_it() {
 }
 
 #[test]
-fn tested_versions_match_the_recorded_fixtures() {
-    let mut recorded: Vec<String> = fs::read_dir(fixture_dir())
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    recorded.sort();
-    assert_eq!(recorded, TESTED_VERSIONS);
+fn tested_versions_are_the_ones_the_recordings_name() {
     assert_eq!(ClaudeCodeAdapter.tested_versions(), TESTED_VERSIONS);
-    for (version, name) in every_fixture() {
-        assert_eq!(meta(version, name)["cli_version"], version, "{name}");
+    assert!(!TESTED_VERSIONS.is_empty());
+    for file in fs::read_dir(fixture_dir()).unwrap() {
+        let path = file.unwrap().path();
+        if !path.to_string_lossy().ends_with(".meta.json") {
+            continue;
+        }
+        let meta: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let recorded_with = meta["cli_version"].as_str().unwrap();
+        let also_matches = meta["also_matches"].as_array().unwrap();
+        for version in also_matches
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .chain([recorded_with])
+        {
+            assert!(
+                TESTED_VERSIONS.contains(&version),
+                "{}: {version}",
+                path.display()
+            );
+        }
     }
 }
 
@@ -1082,25 +1085,23 @@ fn fixtures_hold_no_local_paths_or_keys() {
         "github_pat_",
         "AIza",
     ];
-    for version in fs::read_dir(fixture_dir()).unwrap() {
-        for file in fs::read_dir(version.unwrap().path()).unwrap() {
-            let path = file.unwrap().path();
-            let text = fs::read_to_string(&path).unwrap();
-            for leak in leaks {
-                assert!(!text.contains(leak), "{} contains {leak:?}", path.display());
-            }
+    for file in fs::read_dir(fixture_dir()).unwrap() {
+        let path = file.unwrap().path();
+        let text = fs::read_to_string(&path).unwrap();
+        for leak in leaks {
+            assert!(!text.contains(leak), "{} contains {leak:?}", path.display());
         }
     }
 }
 
 /// A stream cut mid-workflow, as when its session is stopped, paused, killed for a stall, or
-/// out of budget: the workflow ends with it, and so does every agent still going, so nothing
+/// past its limit: the workflow ends with it, and so does every agent still going, so nothing
 /// stays running in the panel or the view.
 #[test]
 fn a_workflow_cut_off_mid_stream_ends_with_its_session() {
-    let whole = read_fixture(WORKFLOWS, "workflow", "stdout.jsonl");
+    let whole = read_fixture("workflow", "stdout.jsonl");
     let cut: Vec<&str> = whole.lines().take(20).collect();
-    let events = replay_lines(WORKFLOWS, "workflow", &cut.join("\n"));
+    let events = replay_lines("workflow", &cut.join("\n"));
     let seen = workflows(&events);
     let last = seen.last().unwrap_or_else(|| panic!("no workflow showed"));
     assert_eq!(last.id, "w4d273qmn");
@@ -1112,10 +1113,9 @@ fn a_workflow_cut_off_mid_stream_ends_with_its_session() {
         "{last:#?}"
     );
     assert!(
-        last.agents.iter().all(|agent| matches!(
-            agent.state,
-            VendorAgentState::Done | VendorAgentState::Failed
-        )),
+        last.agents
+            .iter()
+            .all(|agent| matches!(agent.state, CliAgentState::Done | CliAgentState::Failed)),
         "{last:#?}"
     );
     assert!(
@@ -1130,12 +1130,12 @@ fn a_workflow_cut_off_mid_stream_ends_with_its_session() {
 /// name and phases join it when they come.
 #[test]
 fn a_report_before_its_start_still_shows_the_workflow() {
-    let whole = read_fixture(WORKFLOWS, "workflow", "stdout.jsonl");
+    let whole = read_fixture("workflow", "stdout.jsonl");
     let mut lines: Vec<&str> = whole.lines().collect();
     // Line 14 is the first progress report; line 11 its task's start.
     let started = lines.remove(10);
     lines.insert(13, started);
-    let events = replay_lines(WORKFLOWS, "workflow", &lines.join("\n"));
+    let events = replay_lines("workflow", &lines.join("\n"));
     let seen = workflows(&events);
     let first = seen.first().unwrap_or_else(|| panic!("no workflow showed"));
     assert_eq!(first.id, "w4d273qmn");
@@ -1152,13 +1152,13 @@ fn a_report_before_its_start_still_shows_the_workflow() {
     assert_eq!(last.status, SubagentStatus::Done);
 }
 
-/// 2.1.289's new lines (`command_lifecycle`, `control_response`, task events, `ui_invalidate`,
-/// `tool_progress`) are all read, and `init` and `initialize` say what the CLI is.
+/// The lines of a two-way session (`command_lifecycle`, `control_response`, task events,
+/// `ui_invalidate`, `tool_progress`) are all read, and `init` and `initialize` say what the CLI
+/// is.
 #[test]
 fn two_way_calls_parse_with_nothing_unknown() {
     for name in TWO_WAY_CALLS {
-        assert_eq!(meta(TWO_WAY, name)["cli_version"], TWO_WAY, "{name}");
-        let events = replay_version(TWO_WAY, name);
+        let events = replay(name);
         let unknown: Vec<_> = events
             .iter()
             .filter(|e| matches!(e, AgentEvent::Unknown { .. }))
@@ -1191,7 +1191,11 @@ fn two_way_calls_parse_with_nothing_unknown() {
         else {
             panic!("{name}: no init");
         };
-        assert_eq!(version.as_deref(), Some(TWO_WAY), "{name}");
+        assert_eq!(
+            version.as_deref(),
+            meta(name)["cli_version"].as_str(),
+            "{name}"
+        );
         assert!(
             capabilities.iter().any(|c| c == "interrupt_send_now_v1"),
             "{name}: {capabilities:?}"
@@ -1203,43 +1207,37 @@ fn two_way_calls_parse_with_nothing_unknown() {
         // Each turn's reading allowed, so nothing waits for the end.
         assert!(
             events.iter().all(|e| match e {
-                AgentEvent::Quota { reading } => !reading.wrap_up,
+                AgentEvent::PlanUsage { reading } => !reading.wrap_up,
                 _ => true,
             }),
             "{name}"
         );
     }
 
-    // The audit ran out of its budget before its report.
-    let checkup = replay_version(TWO_WAY, "checkup");
+    // The audit reached its limit before its report.
+    let checkup = replay("checkup");
     assert!(
         checkup.iter().any(|e| matches!(
             e,
             AgentEvent::Error {
-                category: ErrorCategory::Budget,
+                category: ErrorCategory::Limit,
                 ..
             }
         )),
         "{checkup:?}"
     );
     // Two turns in one process, each with its own result.
-    assert_eq!(
-        results(&replay_version(TWO_WAY, "setting_sources_user")).len(),
-        2
-    );
+    assert_eq!(results(&replay("setting_sources_user")).len(), 2);
 }
 
-/// The live check of the isolation keys, with a test plugin loaded by `--plugin-dir`.
-const ISOLATION: &str = "2.1.289";
-
 /// Replayed as an isolated session's, whose parser checks what the session loaded.
-fn replay_isolated(version: &str, name: &str) -> Vec<AgentEvent> {
+fn replay_isolated(name: &str) -> Vec<AgentEvent> {
     let request = SessionRequest {
         isolated: true,
         ..SessionRequest::default()
     };
     let mut parser = ClaudeCodeAdapter.session_parser(&request);
-    read_fixture(version, name, "stdout.jsonl")
+    read_fixture(name, "stdout.jsonl")
         .lines()
         .flat_map(|line| parser.parse_stdout_line(line))
         .collect()
@@ -1261,11 +1259,8 @@ fn leaks(events: &[AgentEvent]) -> Vec<(Vec<String>, Vec<String>)> {
 /// and the synced skills load, and the check names them.
 #[test]
 fn an_isolated_session_without_the_keys_reports_your_plugins_and_synced_skills() {
-    for (version, name) in [
-        (TWO_WAY, "setting_sources_user"),
-        (DIRECT, "readonly_estimate"),
-    ] {
-        let found = leaks(&replay_isolated(version, name));
+    for name in ["setting_sources_user", "readonly_estimate"] {
+        let found = leaks(&replay_isolated(name));
         let [(plugins, skills)] = found.as_slice() else {
             panic!("{name}: expected one leak, got {found:?}");
         };
@@ -1286,16 +1281,16 @@ fn an_isolated_session_without_the_keys_reports_your_plugins_and_synced_skills()
                 .all(|skill| skill.starts_with("anthropic-skills:"))
         );
         // The same stream in a session that isn't isolated is just your setup.
-        assert!(leaks(&replay_version(version, name)).is_empty(), "{name}");
+        assert!(leaks(&replay(name)).is_empty(), "{name}");
     }
 }
 
-/// With the keys, Claude Code loaded only the kept built-ins and the plugin the check passed
-/// with `--plugin-dir`, which Argonauts never does. Its mod never ran: no pushes, and the model
+/// With the keys, Claude Code loaded only the kept built-ins and the plugin the check passed with
+/// `--plugin-dir`, which Argonauts Code never does. Its plugin never ran: no pushes, and the model
 /// saw neither code word.
 #[test]
-fn the_isolation_keys_keep_your_plugins_mods_and_synced_skills_out() {
-    let events = replay_isolated(ISOLATION, "isolation_keys");
+fn the_isolation_keys_keep_your_plugins_and_synced_skills_out() {
+    let events = replay_isolated("isolation_keys");
     assert_eq!(
         leaks(&events),
         [(vec!["argo-probe".to_owned()], Vec::new())]
@@ -1303,8 +1298,8 @@ fn the_isolation_keys_keep_your_plugins_mods_and_synced_skills_out() {
     assert!(
         !events
             .iter()
-            .any(|event| matches!(event, AgentEvent::ModOutput { .. })),
-        "the probe's mod pushed something"
+            .any(|event| matches!(event, AgentEvent::PluginOutput { .. })),
+        "the probe's plugin pushed something"
     );
     // The message's lifecycle closes after the result, so it isn't the last event.
     let (text, is_error) = results(&events).pop().expect("a result");
@@ -1320,7 +1315,7 @@ fn the_isolation_keys_keep_your_plugins_mods_and_synced_skills_out() {
 /// check ran with, given the same plugins enabled in your settings.
 #[test]
 fn the_adapter_writes_the_settings_the_isolation_check_ran_with() {
-    let recorded = &meta(ISOLATION, "isolation_keys")["files"][0]["contents"];
+    let recorded = &meta("isolation_keys")["files"][0]["contents"];
     let recorded: Value = serde_json::from_str(recorded.as_str().unwrap()).unwrap();
     let yours = tempfile::tempdir().unwrap();
     let enabled: serde_json::Map<String, Value> = recorded["enabledPlugins"]
@@ -1369,13 +1364,13 @@ fn the_adapter_writes_the_settings_the_isolation_check_ran_with() {
     }
 }
 
-/// 2.1.289 doesn't flag an rm whose empty variable can't reach a top-level folder, so the
+/// Claude Code doesn't flag an rm whose empty variable can't reach a top-level folder, so the
 /// check's command ran under both a Bash allow rule and a hook that allowed it. Neither turned
 /// into an error or a denial.
 #[test]
 fn an_rm_claude_code_doesnt_flag_runs_with_no_denial() {
     for name in ["flagged_rm_allow_rule", "flagged_rm_hook"] {
-        let events = replay_version(ISOLATION, name);
+        let events = replay(name);
         assert!(
             !events.iter().any(|event| matches!(
                 event,
@@ -1400,11 +1395,11 @@ fn an_rm_claude_code_doesnt_flag_runs_with_no_denial() {
 }
 
 /// Two recorded sessions read into what the screen needs: each message's way through the
-/// queue, the mod's command in the CLI's own list, and You should know as one line and three
+/// queue, the plugin's command in the CLI's own list, and You should know as one line and three
 /// buttons with the handles a press sends back.
 #[test]
 fn messages_commands_and_the_notice_read() {
-    let events = replay_version(TWO_WAY, "you_should_know");
+    let events = replay("you_should_know");
     let states: Vec<_> = events
         .iter()
         .filter_map(|event| match event {
@@ -1432,7 +1427,7 @@ fn messages_commands_and_the_notice_read() {
             _ => None,
         })
         .collect();
-    let first = drawn.first().expect("a heads-up drew");
+    let first = drawn.first().expect("a notice drew");
     assert!(
         first.rows[0].text().contains("Heads up · Release 1.4.0"),
         "{first:?}"
@@ -1452,7 +1447,7 @@ fn messages_commands_and_the_notice_read() {
         }
     )));
 
-    let events = replay_version(TWO_WAY, "mod_command");
+    let events = replay("plugin_command");
     let lists: Vec<_> = events
         .iter()
         .filter_map(|event| match event {
@@ -1466,16 +1461,13 @@ fn messages_commands_and_the_notice_read() {
     };
     assert!(
         has(lists[0], "probe-cmd"),
-        "the initialize reply lists the mod's command"
+        "the initialize reply lists the plugin's command"
     );
     assert!(
         lists.iter().skip(1).any(|list| has(list, "probe-late")),
         "a command registered mid-session comes with commands_changed"
     );
 }
-
-/// Checked live: send now moving a command to the background, across resumes of one session.
-const SEND_NOW: &str = "2.1.289";
 
 fn background_lists(events: &[AgentEvent]) -> Vec<(Vec<String>, bool)> {
     events
@@ -1495,7 +1487,7 @@ fn position(events: &[AgentEvent], wanted: impl Fn(&AgentEvent) -> bool) -> usiz
 /// ended. Here that came only after the input closed, which killed it.
 #[test]
 fn a_command_moved_to_the_background_stays_listed_past_the_result() {
-    let events = replay_version(SEND_NOW, "send_now_resume");
+    let events = replay("send_now_resume");
     assert_eq!(
         background_lists(&events),
         [(vec!["bmvwwjv0b".to_owned()], false), (Vec::new(), true)]
@@ -1512,7 +1504,7 @@ fn a_command_moved_to_the_background_stays_listed_past_the_result() {
 /// turn of its own, with no message of yours, whose result came second.
 #[test]
 fn a_background_command_that_ends_between_turns_brings_a_turn_of_its_own() {
-    let events = replay_version(SEND_NOW, "send_now_resume_open");
+    let events = replay("send_now_resume_open");
     assert_eq!(
         background_lists(&events),
         [(vec!["bxzv2d82a".to_owned()], false), (Vec::new(), true)]
@@ -1539,7 +1531,7 @@ fn a_background_command_that_ends_between_turns_brings_a_turn_of_its_own() {
 /// nothing you sent, so only the turn's own comes through.
 #[test]
 fn a_resume_drops_the_empty_result_left_over_from_the_last_process() {
-    let events = replay_version(SEND_NOW, "send_now_resume_stale_task");
+    let events = replay("send_now_resume_stale_task");
     assert_eq!(
         results(&events),
         [(

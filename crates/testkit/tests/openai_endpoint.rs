@@ -1,32 +1,32 @@
-//! The fake OpenAI server behind the real endpoint worker, reached the way the approver and
+//! The fake OpenAI server behind the real endpoint runner, reached the way the judge and
 //! the narrator reach a model: through a worker directory, with no tools and a JSON schema.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use argonauts_core::events::session::{EndReason, InputPart, InputPartKind};
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::ModelRef;
+use argonauts_core::session_runner::{Access, RunnerDirectory};
 use argonauts_core::settings::agents::{EndpointApi, EndpointSettings};
-use argonauts_core::worker::{Access, WorkerDirectory};
-use argonauts_endpoints::EndpointWorker;
-use argonauts_testkit::services::{MemoryHealthBoard, MemoryQuotaBoard, StaticRegistry};
-use argonauts_testkit::worker::{drain, session_spec};
+use argonauts_endpoints::EndpointRunner;
+use argonauts_testkit::runner::{drain, session_spec};
+use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard, StaticRegistry};
 use argonauts_testkit::{FakeDirectory, FakeOpenAi, FakeReply};
 use serde_json::json;
 
-fn approver() -> WorkerRef {
-    WorkerRef::new("fake", Some("fake-model".to_owned()))
+fn judge() -> ModelRef {
+    ModelRef::new("fake", Some("fake-model".to_owned()))
 }
 
 fn directory(settings: &EndpointSettings) -> FakeDirectory {
     let directory = FakeDirectory::new();
-    directory.add_worker(Arc::new(EndpointWorker::new(
+    directory.add_worker(Arc::new(EndpointRunner::new(
         "fake",
         settings,
-        approver(),
+        judge(),
         "llama".to_owned(),
         Arc::new(StaticRegistry::default()),
-        Arc::new(MemoryQuotaBoard::default()),
+        Arc::new(MemoryPlanUsageBoard::default()),
         Arc::new(MemoryHealthBoard::default()),
     )));
     directory
@@ -47,7 +47,7 @@ async fn a_structured_verdict_comes_back_through_the_endpoint_worker() {
             api,
             ..server.endpoint_settings()
         };
-        let worker = directory(&settings).get(&approver()).unwrap();
+        let worker = directory(&settings).get(&judge()).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let mut spec = session_spec("fake/fake-model", Access::NoTools, dir.path());
         spec.prompt = vec![InputPart {

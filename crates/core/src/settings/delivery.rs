@@ -91,13 +91,13 @@ pub enum UnbornLanding {
     FirstCommit,
 }
 
-/// `[history]`: the history Argonauts keeps of a folder that has no git of its own, under its
+/// `[history]`: the history Argonauts Code keeps of a folder that has no git of its own, under its
 /// own home, so a workflow there has branches to work on and your folder gets no `.git`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct HistorySettings {
     /// Whether a workflow in a folder without git may keep that history. Off leaves such a
-    /// folder to chat and solo, and a workflow there says git is needed.
+    /// folder to conversation and Captain, and a workflow there says git is needed.
     pub enabled: bool,
     /// A new file bigger than this many megabytes stays out of the history, and is listed. 0
     /// turns the limit off.
@@ -110,6 +110,10 @@ pub struct HistorySettings {
     /// A record that would leave less than this many gigabytes free on the disk it goes to
     /// isn't made, the first or any later one. 0 turns the check off.
     pub min_free_gb: u64,
+    /// Changes to the list of what the history never records, which starts from secrets
+    /// (`.env`, `*.pem`), packages (`node_modules/`, `.venv/`) and the built-in build output.
+    /// A pattern adds to the list, and one after `!` takes that pattern from it.
+    pub leave_out: Vec<String>,
 }
 
 impl Default for HistorySettings {
@@ -120,6 +124,7 @@ impl Default for HistorySettings {
             max_total_mb: 2048,
             max_files: 100_000,
             min_free_gb: 5,
+            leave_out: Vec::new(),
         }
     }
 }

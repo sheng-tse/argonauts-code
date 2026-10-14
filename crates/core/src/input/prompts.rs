@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::{InputError, SlashCommand, bad};
 
 /// What `/prompts` does. A template goes by its file's name under `prompts/`, such as
-/// `frames/reviewers` or `review/review`.
+/// `frames/reviewer` or `review/review`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "do", rename_all = "snake_case")]
 pub enum PromptsAction {
@@ -122,18 +122,18 @@ mod tests {
             }
         );
         assert_eq!(
-            action("copy frames/reviewers --global"),
+            action("copy frames/reviewer --global"),
             PromptsAction::Copy {
-                name: "frames/reviewers".into(),
+                name: "frames/reviewer".into(),
                 global: true
             }
         );
         assert_eq!(action("copy all"), PromptsAction::CopyAll { global: false });
         assert_eq!(action("trust"), PromptsAction::Trust);
         assert_eq!(
-            action("role reviewers"),
+            action("role reviewer"),
             PromptsAction::Role {
-                role: "reviewers".into(),
+                role: "reviewer".into(),
                 global: false
             }
         );
@@ -144,9 +144,9 @@ mod tests {
             }
         );
         assert_eq!(
-            action("reset role reviewers"),
+            action("reset role reviewer"),
             PromptsAction::ResetRole {
-                role: "reviewers".into()
+                role: "reviewer".into()
             }
         );
         assert_eq!(

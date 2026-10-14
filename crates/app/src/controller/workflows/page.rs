@@ -13,7 +13,7 @@ use argonauts_core::workflow_page::{
 use argonauts_runner::{Change, DryRun, FILE_FIELDS, STEP_FIELDS, WorkflowFile, dry_run};
 use toml::{Table, Value};
 
-use super::{State, editor, library, seats, who_would_take};
+use super::{State, editor, library, role_models, who_would_take};
 use crate::controller::{Ctx, Effect};
 
 /// The extension of a file of steps. A script has no keys to list, so it has no page.
@@ -128,7 +128,7 @@ fn build(ctx: &Ctx, name: &str, path: &Path) -> WorkflowPage {
         Err(err) => Err(format!("can't read the file: {err}")),
     };
     let dry = match &parsed {
-        Ok(Some(file)) => Some(dry_run(file, &|role| seats(ctx, role))),
+        Ok(Some(file)) => Some(dry_run(file, &|role| role_models(ctx, role))),
         _ => None,
     };
     let check = match (&parsed, &dry) {
@@ -316,7 +316,7 @@ fn field(key: &str, table: &Table, others: &[&str], of_file: bool) -> PageField 
             "Kept by",
             &["cli", "argonauts"],
             true,
-            "Who keeps an until: the CLI's own goal where it has one, or Argonauts.",
+            "Who keeps an until: the CLI's own goal where it has one, or Argonauts Code.",
         ),
         "max_rounds" => (
             "Max rounds",

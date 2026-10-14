@@ -12,8 +12,8 @@ pub(crate) fn save_toggle(ctx: &mut Ctx, key: &str, value: &str) -> anyhow::Resu
     let env = ctx.env.clone();
     let change = Change::Set(vec![(key.to_owned(), value.to_owned())]);
     let below = ctx.settings.layer_without_session(&env, key)?;
-    let preset_from = ctx.settings.preset_from(&below);
-    if SettingScope::Global.hidden_by_value(&below, preset_from.as_deref()) {
+    let workflow_from = ctx.settings.workflow_from(&below);
+    if SettingScope::Global.hidden_by_value(&below, workflow_from.as_deref()) {
         let effects = save::apply(ctx, &change, SettingScope::Session, TrustAfter::Carry)?;
         ctx.notice(
             NoteLevel::Info,

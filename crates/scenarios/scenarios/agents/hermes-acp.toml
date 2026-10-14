@@ -1,0 +1,29 @@
+# The fake `hermes` in ACP mode owns a Captain task through the built-in Hermes profile. It takes
+# the model the client sets, writes hello.txt, reports through `argonauts_report`, and ends
+# the turn.
+
+[version]
+claude = "2.1.284 (Claude Code)"
+codex = "codex-cli 0.158.0"
+agy = "1.2.13"
+hermes = "hermes 0.21.5"
+
+[[acp]]
+argv0 = "hermes"
+session_id = "hermes-workers-1"
+
+[acp.reply."session/new"]
+result = { models = { currentModelId = "fake-local", availableModels = [{ modelId = "fake-local", name = "Fake local model" }] } }
+
+[acp.reply."session/set_model"]
+result = {}
+
+[[acp.turn]]
+stop_reason = "end_turn"
+result = { usage = { inputTokens = 900, outputTokens = 40 } }
+[[acp.turn.step]]
+update = { sessionUpdate = "agent_message_chunk", content = { type = "text", text = "Creating hello.txt." } }
+[[acp.turn.step]]
+write = { path = "hello.txt", content = "hi\n" }
+[[acp.turn.step]]
+report = { status = "done", summary = "Created hello.txt containing the word hi.", files_changed = ["hello.txt"], tests_run = [], concerns = [], questions = [], change_requests = [], memory_proposals = [], answer = "I created hello.txt with the word hi in it." }

@@ -1,6 +1,6 @@
 //! A workflow file with `adapt = true`: the orchestrator writes the steps for each request as
 //! a script, and keeps who plans, builds, reviews and signs off as the file says. A script
-//! that doesn't hold up, or throws when it is rehearsed against stand-in answers, is sent back
+//! that doesn't hold up, or throws when it is rehearsed against placeholder answers, is sent back
 //! once, and after that the file's own steps run as written.
 //! Steps you sent back at the plan approval are written again with your notes.
 //! A script that leaves out a step you require, puts one elsewhere, or changes a task list you
@@ -14,21 +14,21 @@ use argonauts_core::events::session::{EndReason, InputPartKind};
 use argonauts_core::events::workflow::{RunNote, WorkflowEvent};
 use argonauts_core::names::RoleName;
 use argonauts_core::required::{brief, check};
+use argonauts_core::session_runner::Access;
 use argonauts_core::settings::crew::CrewRole;
-use argonauts_core::worker::Access;
 use argonauts_runner::{Required, RunInput, Script, WorkflowFile};
 use serde_json::{Value, json};
 
 use super::plan::Wrote;
 use super::{journal, named};
-use crate::card::support::part;
-use crate::engine::host::{Host, SessionPlan, StandIns};
+use crate::engine::host::{Fallbacks, Host, SessionPlan};
 use crate::error::{EngineError, EngineResult};
 use crate::roles;
+use crate::task::support::part;
 use crate::workflow::StepCall;
 use crate::workflow_size;
 
-pub(crate) const WRITE_SCRIPT: &str = include_str!("write_script.md");
+pub(crate) const WRITE_SCRIPT: &str = argonauts_core::template!("prompts/workflow/write-script.md");
 
 /// How often a task may go back to its worker, as `review.max_change_rounds` says. A writer
 /// sent back more often than that gets no answer.
@@ -53,13 +53,13 @@ pub(super) async fn script_for(
     notes: &[String],
 ) -> EngineResult<(Script, Wrote)> {
     let available = host.services().workers.available();
-    let seats = roles::candidates(host.settings(), RoleName::Orchestrator);
-    let orchestrator = seats
+    let models = roles::candidates(host.settings(), RoleName::Orchestrator);
+    let orchestrator = models
         .iter()
-        .find(|seat| available.contains(seat))
-        .or(seats.first())
+        .find(|model| available.contains(model))
+        .or(models.first())
         .cloned()
-        .ok_or_else(|| EngineError::Refused("nobody is seated as orchestrator".to_owned()))?;
+        .ok_or_else(|| EngineError::Refused("no model is set for the orchestrator".to_owned()))?;
     // A run that picks up again runs what it started with: the script written after this many
     // notes of yours, or the file's own steps when no script could be used.
     match journal::written(host, call, notes.len()) {
@@ -121,7 +121,7 @@ pub(super) async fn script_for(
             at: Some(call.at.clone()),
             role: RoleName::Orchestrator,
             worker: orchestrator.clone(),
-            card: None,
+            task: None,
             access: Access::ReadOnly,
             step: None,
             workdir: host.repo().base_worktree.clone(),
@@ -139,7 +139,7 @@ pub(super) async fn script_for(
             fresh: false,
         };
         let end = host
-            .run_session_in_turn(plan, None, StandIns::Allowed, &|_| Ok(()))
+            .run_session_in_turn(plan, None, Fallbacks::Allowed, &|_| Ok(()))
             .await?
             .end;
         let source = end
@@ -239,7 +239,7 @@ impl Unusable {
     }
 }
 
-/// The script, when it also gets through a rehearsal: run against stand-in answers, with the
+/// The script, when it also gets through a rehearsal: run against placeholder answers, with the
 /// request and the file's roles as in the real run, it mustn't throw, and where you fixed the
 /// tasks it must work on those.
 async fn usable(
@@ -302,13 +302,13 @@ fn worked(required: &Required, ran: &BTreeSet<(String, CrewRole)>) -> Result<(),
 fn checked(source: &str, required: &Required) -> Result<Script, Unusable> {
     let script = Script::parse(strip_fence(source)).map_err(|err| err.to_string())?;
     let required = super::required::shared(required);
-    let titles: Vec<&str> = script
+    let phases: Vec<&str> = script
         .meta
         .phases
         .iter()
-        .map(|phase| phase.title.as_str())
+        .map(|phase| phase.name.as_str())
         .collect();
-    let found = check::steps(&required, &titles);
+    let found = check::steps(&required, &phases);
     let Some(ask) = check::ask_to_place(&required, &found) else {
         return Ok(script);
     };
@@ -396,11 +396,11 @@ mod tests {
 
     #[test]
     fn a_script_is_used_only_when_it_reads_and_has_every_required_phase() {
-        let good = "export const meta = { name: 'a', description: 'b', phases: [{ title: 'Benchmark' }] }\nreturn 1";
+        let good = "export const meta = { name: 'a', description: 'b', phases: [{ name: 'Benchmark' }] }\nreturn 1";
         let required = Required {
             steps: vec![argonauts_runner::RequiredStep {
                 name: "Benchmark".to_owned(),
-                role: argonauts_core::settings::crew::CrewRole::Workers,
+                role: argonauts_core::settings::crew::CrewRole::Worker,
                 does: None,
                 when: None,
             }],
@@ -432,18 +432,18 @@ mod tests {
         let required = Required {
             steps: vec![argonauts_runner::RequiredStep {
                 name: "Security review".to_owned(),
-                role: CrewRole::Reviewers,
+                role: CrewRole::Reviewer,
                 does: None,
                 when: None,
             }],
             tasks: Vec::new(),
         };
-        let did = BTreeSet::from([("security review".to_owned(), CrewRole::Reviewers)]);
+        let did = BTreeSet::from([("security review".to_owned(), CrewRole::Reviewer)]);
         assert!(worked(&required, &did).is_ok());
         // The phase is there, with a worker in it, and no reviewer at all.
         let named_only = BTreeSet::from([
-            ("Build".to_owned(), CrewRole::Workers),
-            ("Security review".to_owned(), CrewRole::Workers),
+            ("Build".to_owned(), CrewRole::Worker),
+            ("Security review".to_owned(), CrewRole::Worker),
         ]);
         let wrong = worked(&required, &named_only).expect_err("no reviewer ran it");
         assert_eq!(
@@ -465,26 +465,26 @@ mod tests {
         let required = Required {
             steps: vec![argonauts_runner::RequiredStep {
                 name: "Benchmark".to_owned(),
-                role: argonauts_core::settings::crew::CrewRole::Workers,
+                role: argonauts_core::settings::crew::CrewRole::Worker,
                 does: None,
                 when: Some("last".to_owned()),
             }],
             tasks: Vec::new(),
         };
-        let phases = |titles: &str| {
+        let phases = |listed: &str| {
             format!(
                 "export const meta = {{ name: 'a', description: 'b', \
-                 phases: [{titles}] }}\nreturn 1"
+                 phases: [{listed}] }}\nreturn 1"
             )
         };
-        let first = phases("{ title: 'Benchmark' }, { title: 'Build' }");
+        let first = phases("{ name: 'Benchmark' }, { name: 'Build' }");
         let wrong = checked(&first, &required).expect_err("Benchmark must come last");
         assert_eq!(
             wrong.why,
             "it has a required step where it mustn't be: Benchmark"
         );
         assert!(wrong.again().contains("(in the wrong place)"));
-        let last = phases("{ title: 'Build' }, { title: 'Benchmark' }");
+        let last = phases("{ name: 'Build' }, { name: 'Benchmark' }");
         assert!(checked(&last, &required).is_ok());
     }
 

@@ -1,4 +1,4 @@
-//! A per-session home, made from a template Argonauts owns, so the agent's own memory, skills,
+//! A per-session home, made from a template Argonauts Code owns, so the agent's own memory, skills,
 //! and logins never leak between sessions or from your own home.
 
 use std::fs;
@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context as _, bail};
 use argonauts_core::SpecFile;
-use argonauts_core::layout::user_files::HARNESSES;
+use argonauts_core::layout::user_files::CLIS;
 
 /// The template's files, placed under `home`. The worker writes them before the spawn.
 pub(crate) fn home_files(
@@ -20,9 +20,9 @@ pub(crate) fn home_files(
         (Some(Component::Normal(_)), None)
     );
     if !plain {
-        bail!("the home template {template:?} must be a folder name in ~/.argonauts/{HARNESSES}");
+        bail!("the home template {template:?} must be a folder name in ~/.argonauts/{CLIS}");
     }
-    let root = argonauts_home.join(HARNESSES).join(template);
+    let root = argonauts_home.join(CLIS).join(template);
     if !root.is_dir() {
         bail!("the home template {} is missing", root.display());
     }

@@ -1,32 +1,33 @@
-//! Turning the retro's proposal into a candidate's recipe folder: the parent's files, plus the
-//! one changed setting, prompt, or workflow, written as the next version.
+//! Turning the run review's proposal into a candidate's learned workflow folder: the parent's
+//! files, plus the one changed setting, prompt, or workflow, written as the next version.
 
 use std::path::Path;
 
 use serde_json::Value;
 
-use argonauts_core::steps::card::ProcessChange;
+use argonauts_core::steps::task::ProcessChange;
 
 use crate::error::{LearningError, Result};
-use crate::recipes::{
-    LoadedRecipe, WORKFLOW_KEY, is_workflow_file, load_file, recipe_dir, render, toml_to_json,
-    version_file,
+use crate::learned_workflows::{
+    LoadedLearnedWorkflow, WORKFLOW_KEY, is_workflow_file, learned_workflow_dir, load_file, render,
+    toml_to_json, version_file,
 };
 
-/// Writes version `version` of the parent's recipe, with `proposal` applied, into `folder`.
+/// Writes version `version` of the parent's learned workflow, with `proposal` applied, into
+/// `folder`.
 pub fn materialize(
-    parent: &LoadedRecipe,
+    parent: &LoadedLearnedWorkflow,
     version: u32,
     proposal: &ProcessChange,
     folder: &Path,
-) -> Result<LoadedRecipe> {
+) -> Result<LoadedLearnedWorkflow> {
     if folder.exists() {
         std::fs::remove_dir_all(folder)?;
     }
     std::fs::create_dir_all(folder)?;
-    let mut beside: Vec<&String> = parent.recipe.prompts.values().collect();
+    let mut beside: Vec<&String> = parent.learned_workflow.prompts.values().collect();
     if let Some(workflow) = parent
-        .recipe
+        .learned_workflow
         .phases
         .as_ref()
         .filter(|w| is_workflow_file(w))
@@ -34,12 +35,12 @@ pub fn materialize(
         beside.push(workflow);
     }
     for file in beside {
-        std::fs::copy(recipe_dir(parent).join(file), folder.join(file))?;
+        std::fs::copy(learned_workflow_dir(parent).join(file), folder.join(file))?;
     }
 
-    let mut child = parent.recipe.clone();
+    let mut child = parent.learned_workflow.clone();
     child.version = version;
-    child.parent = Some(parent.recipe.version);
+    child.parent = Some(parent.learned_workflow.version);
     let refuse = |message: String| LearningError::Refused(message);
     let value = toml_to_json(&proposal.value).map_err(refuse)?;
     let key = proposal.setting.as_str();
@@ -64,7 +65,7 @@ pub fn materialize(
     load_file(&path)
 }
 
-/// Sets `a.b.c` in a recipe's settings, making the tables on the way.
+/// Sets `a.b.c` in a learned workflow's settings, making the tables on the way.
 fn set_dotted(settings: &mut std::collections::BTreeMap<String, Value>, key: &str, value: Value) {
     let mut parts = key.split('.');
     let Some(first) = parts.next() else {

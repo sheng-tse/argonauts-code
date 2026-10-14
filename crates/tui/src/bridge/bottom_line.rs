@@ -8,25 +8,23 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use argonauts_core::Spend;
-use argonauts_core::app::{LineFacts, StatusLine};
-use argonauts_core::events::context::ContextPart;
-use argonauts_core::limits::{HealthState, QuotaReading, QuotaStatus};
+use argonauts_core::app::{HeaderAndBottomLine, LineFacts};
+use argonauts_core::limits::{HealthState, PlanUsageReading, PlanUsageStatus};
 use argonauts_core::settings::bottom_line::{
     ARTIFACT, AWAKE, BRANCH, CONTEXT, LineForm, MODE, PLAN_USAGE, PlanUsageAs, PlanUsageLine,
     PlanUsageResets, PlanUsageShow, PlanUsageWindows, SPEND, STATS, TOKENS,
 };
-use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
+use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::mods::ModPlace;
-use argonauts_core::settings::ui::{ModOutput, NarratorMode, UiSettings};
+use argonauts_core::settings::ui::{NarratorMode, PluginOutput, UiSettings};
 use argonauts_core::views::ContextUse;
 use time::{OffsetDateTime, UtcOffset};
 
-use super::status::{focus_run, label_for_vendor, vendor_for_label};
-use crate::bottom::{
-    AddedPart, BottomLine, CliState, CliUse, LinePart, NEAR_LIMIT, PartBody, WindowUse,
-};
+use super::status::{agent_for_label, focus_run, label_for_agent};
+use crate::bottom::{AddedPart, BottomLine, CliState, CliUse, LinePart, MAIN, PartBody, WindowUse};
 use crate::cell::Tone;
 use crate::format;
+use crate::kit::Levels;
 use crate::overview::stats::pinned::StatsCard;
 use crate::state::{AppState, binding_reading};
 use crate::text::sanitize_line;
@@ -68,7 +66,8 @@ pub fn build(
         now,
         utc_offset: state.terminal.utc_offset.unwrap_or(UtcOffset::UTC),
     };
-    let mods = (settings.mod_output == ModOutput::Show).then_some(&state.chat.mod_status);
+    let mods =
+        (settings.plugin_output == PluginOutput::Show).then_some(&state.conversation.plugin_status);
     let source = Source {
         state,
         status,
@@ -85,7 +84,7 @@ pub fn build(
         left: side(&set.left),
         right: side(&set.right),
         drop_first: set.narrow.drop.clone(),
-        as_left: set.plan_usage.shown_as == PlanUsageAs::Left,
+        as_left: set.plan_usage.r#as == PlanUsageAs::Left,
     };
     // A mod's status text nobody placed sits last, dim, and is the first thing to go.
     for (name, text) in mods
@@ -105,7 +104,7 @@ pub fn build(
     with_mode(line)
 }
 
-/// The mode can be moved, never left out: it says whether Argonauts will ask.
+/// The mode can be moved, never left out: it says whether Argonauts Code will ask.
 fn with_mode(mut line: BottomLine) -> BottomLine {
     let has_mode = |parts: &[LinePart]| parts.contains(&LinePart::Mode);
     if !has_mode(&line.left) && !has_mode(&line.right) {
@@ -116,7 +115,7 @@ fn with_mode(mut line: BottomLine) -> BottomLine {
 
 struct Source<'a> {
     state: &'a AppState,
-    status: Option<&'a StatusLine>,
+    status: Option<&'a HeaderAndBottomLine>,
     facts: &'a LineFacts,
     slots: &'a BTreeMap<String, PartBody>,
     /// The main session's Claude Code mods' status texts, while the settings show them.
@@ -168,7 +167,7 @@ impl Source<'_> {
                 // A mod of yours from `mods/` that the line lists, with numbers to draw.
                 let yours = || {
                     let view = self.state.mods.as_ref()?;
-                    let (file, reading) = crate::mods::placed(view, ModPlace::ModeLine)
+                    let (file, reading) = crate::mods::placed(view, ModPlace::BottomLine)
                         .find(|(file, _)| file.name == other)?;
                     Some(PartBody::Mod {
                         file: Box::new(file.clone()),
@@ -209,7 +208,7 @@ impl Source<'_> {
     /// has tasks to count: `add-due-dates ▄▄▄▖   3/5`.
     fn run(&self) -> Option<PartBody> {
         let run = focus_run(self.state).filter(|run| run.finished.is_none())?;
-        let (done, total) = run.cards_done();
+        let (done, total) = run.tasks_done();
         let named = run.named.as_ref().map(|named| named.name.trim());
         let name = named
             .filter(|name| !name.is_empty())
@@ -228,12 +227,12 @@ impl Source<'_> {
         let set = &self.facts.settings.plan_usage;
         // Gauges are one cell a window, so every CLI has room for both of its own.
         let both = self.facts.settings.form == LineForm::Gauges;
-        let main = self.status.map(|status| status.main_agent.worker.as_str());
+        let main = self.status.map(|status| status.main_agent.agent.as_str());
         crew(self.state, self.status)
             .iter()
             .map(|cli| {
-                let is_main = main.is_some() && cli.vendor.as_deref() == main;
-                let spent = vendor_spend(self.state, cli);
+                let is_main = main.is_some() && cli.agent_id.as_deref() == main;
+                let spent = agent_spend(self.state, cli);
                 let mut chip = cli_use(cli, is_main || both, set, spent, &self.clock);
                 chip.main = is_main;
                 chip
@@ -252,13 +251,11 @@ impl Source<'_> {
         };
         let status = self.status;
         let run = focus_run(self.state).map(|run| {
-            let budget = run.budget.as_ref();
-            let limit = budget
-                .and_then(|budget| budget.limit)
+            let spend = run.spend.as_ref();
+            let limit = spend
+                .and_then(|spend| spend.limit)
                 .or_else(|| status?.limit);
-            let tokens = budget.map_or(run.spent.total_tokens(), |budget| {
-                budget.spent.total_tokens()
-            });
+            let tokens = spend.map_or(run.spent.total_tokens(), |spend| spend.spent.total_tokens());
             (spend_text(&run.spend(), tokens, limit.as_ref()), limit)
         });
         if let Some((text, Some(_))) = &run {
@@ -270,7 +267,7 @@ impl Source<'_> {
             return Some(PartBody::Spark {
                 text: format!("~{}", format::usd(week)),
                 values: days.clone(),
-                role: Role::for_cli(&status.main_agent.worker),
+                role: Role::for_cli(&status.main_agent.agent),
             });
         }
         if let Some((text, _)) = run {
@@ -303,47 +300,44 @@ impl Source<'_> {
         on.then(|| LinePart::Added(AddedPart::words("narrator", text, tone)))
     }
 
-    /// The busiest live session's context against its cap, as a small bar. With no run on
-    /// screen, the conversation's own session, as its CLI counted it.
+    /// Whose context is closest to where something happens to it, by name. With a run on
+    /// screen that is its busiest live session, against where it starts afresh. The main
+    /// session's shows with no run on screen, and when it alone is close to compacting.
     fn context(&self) -> Option<PartBody> {
-        let ratio = match focus_run(self.state) {
-            Some(run) => {
-                let share = |context: &ContextUse| context.used as f64 / context.cap as f64;
-                let busiest = run
-                    .running_sessions()
-                    .filter_map(|session| session.context)
-                    .filter(|context| context.cap > 0)
-                    .max_by(|a, b| share(a).total_cmp(&share(b)))?;
-                share(&busiest)
+        let main = self.state.conversation.context.as_ref().and_then(|count| {
+            let limit = count.usage.limit();
+            (limit > 0).then(|| count.usage.total_tokens as f64 / limit as f64)
+        });
+        let share = |context: ContextUse| context.used as f64 / context.cap as f64;
+        let busiest = focus_run(self.state).and_then(|run| {
+            run.running_sessions()
+                .filter_map(|session| {
+                    let context = session.context.filter(|context| context.cap > 0)?;
+                    Some((session, share(context)))
+                })
+                .max_by(|a, b| a.1.total_cmp(&b.1))
+        });
+        let level = |ratio: f64| Levels::CONTEXT.level(ratio * 100.0);
+        let (who, ratio) = match (main, busiest) {
+            (Some(main), Some((_, crew))) if level(main) > level(crew) => (MAIN.to_owned(), main),
+            (_, Some((session, crew))) => {
+                let who = match &session.label {
+                    Some(label) => label.clone(),
+                    None => {
+                        crate::state::task_label(session.role, session.step, session.task.as_ref())
+                    }
+                };
+                (who, crew)
             }
-            None => {
-                let chat = self.state.chat.context.as_ref()?;
-                let used: u64 = chat
-                    .categories
-                    .iter()
-                    .filter(|category| {
-                        !matches!(category.part, ContextPart::Free | ContextPart::Buffer)
-                    })
-                    .map(|category| category.tokens)
-                    .sum();
-                let cap = chat.auto_compact_at.unwrap_or(chat.window);
-                if cap == 0 {
-                    return None;
-                }
-                used as f64 / cap as f64
-            }
+            (Some(main), None) => (MAIN.to_owned(), main),
+            (None, None) => return None,
         };
-        let ratio = ratio.clamp(0.0, 1.0);
-        Some(PartBody::Meter {
+        Some(PartBody::Fill {
             label: CONTEXT.to_owned(),
-            label_role: Role::Dim,
-            ratio,
-            value: format!("{}%", (ratio * 100.0).round() as u8),
-            fill: if ratio >= NEAR_LIMIT {
-                Role::Warning
-            } else {
-                Role::BarFill
-            },
+            who,
+            who_role: Role::Label,
+            percent: (ratio.max(0.0) * 100.0).round() as u32,
+            level: level(ratio),
         })
     }
 
@@ -384,77 +378,83 @@ pub struct CrewCli {
     /// The short name its chip shows.
     pub label: String,
     /// Its adapter id, where the label or a reading tells.
-    pub vendor: Option<String>,
+    pub agent_id: Option<String>,
     pub health: HealthState,
-    pub readings: Vec<QuotaReading>,
+    pub readings: Vec<PlanUsageReading>,
 }
 
 /// The crew's CLIs in the controller's order, with newer readings and health from the run's
 /// events folded in, and the main session's CLI first when the crew leaves it out. A CLI with
 /// more than one chip (agy splits by model group) keeps the controller's readings.
-fn crew(state: &AppState, status: Option<&StatusLine>) -> Vec<CrewCli> {
+fn crew(state: &AppState, status: Option<&HeaderAndBottomLine>) -> Vec<CrewCli> {
     let mut clis: Vec<CrewCli> = status
         .into_iter()
-        .flat_map(|status| &status.quotas)
+        .flat_map(|status| &status.plan_chips)
         .map(|chip| {
             let reading = chip.reading.iter().chain(&chip.windows).next();
-            let vendor = reading
-                .map(|reading| reading.vendor.0.clone())
-                .or_else(|| vendor_for_label(&chip.label).map(str::to_owned));
+            let agent_id = reading
+                .map(|reading| reading.agent_id.0.clone())
+                .or_else(|| agent_for_label(&chip.label).map(str::to_owned));
             let mut readings = chip.windows.clone();
             readings.extend(chip.reading.clone());
             CrewCli {
                 label: chip.label.trim().to_owned(),
-                vendor,
+                agent_id,
                 health: chip.health,
                 readings,
             }
         })
         .collect();
-    let chips_of = |vendor: &str, clis: &[CrewCli]| {
+    let chips_of = |agent_id: &str, clis: &[CrewCli]| {
         clis.iter()
-            .filter(|cli| cli.vendor.as_deref() == Some(vendor))
+            .filter(|cli| cli.agent_id.as_deref() == Some(agent_id))
             .count()
     };
     let counts: Vec<usize> = clis
         .iter()
         .map(|cli| {
-            cli.vendor
+            cli.agent_id
                 .as_deref()
-                .map_or(0, |vendor| chips_of(vendor, &clis))
+                .map_or(0, |agent_id| chips_of(agent_id, &clis))
         })
         .collect();
     for (cli, chips) in clis.iter_mut().zip(counts) {
-        let Some(vendor) = cli.vendor.as_deref().filter(|_| chips == 1) else {
+        let Some(agent_id) = cli.agent_id.as_deref().filter(|_| chips == 1) else {
             continue;
         };
-        cli.readings
-            .extend(state.quotas.get(vendor).into_iter().flatten().cloned());
-        if let Some(health) = state.health.get(vendor) {
+        cli.readings.extend(
+            state
+                .plan_windows
+                .get(agent_id)
+                .into_iter()
+                .flatten()
+                .cloned(),
+        );
+        if let Some(health) = state.health.get(agent_id) {
             cli.health = health.state;
         }
     }
-    for (vendor, readings) in &state.quotas {
-        if chips_of(vendor, &clis) == 0 {
+    for (agent_id, readings) in &state.plan_windows {
+        if chips_of(agent_id, &clis) == 0 {
             clis.push(CrewCli {
-                label: label_for_vendor(vendor),
-                vendor: Some(vendor.clone()),
+                label: label_for_agent(agent_id),
+                agent_id: Some(agent_id.clone()),
                 health: state
                     .health
-                    .get(vendor)
+                    .get(agent_id)
                     .map_or(HealthState::Healthy, |health| health.state),
                 readings: readings.clone(),
             });
         }
     }
-    if let Some(main) = status.map(|status| &status.main_agent.worker)
+    if let Some(main) = status.map(|status| &status.main_agent.agent)
         && chips_of(main, &clis) == 0
     {
         clis.insert(
             0,
             CrewCli {
-                label: label_for_vendor(main),
-                vendor: Some(main.clone()),
+                label: label_for_agent(main),
+                agent_id: Some(main.clone()),
                 health: state
                     .health
                     .get(main)
@@ -469,8 +469,8 @@ fn crew(state: &AppState, status: Option<&StatusLine>) -> Vec<CrewCli> {
     clis
 }
 
-fn newest_per_window(readings: Vec<QuotaReading>) -> Vec<QuotaReading> {
-    let mut newest: Vec<QuotaReading> = Vec::new();
+fn newest_per_window(readings: Vec<PlanUsageReading>) -> Vec<PlanUsageReading> {
+    let mut newest: Vec<PlanUsageReading> = Vec::new();
     for reading in readings {
         match newest
             .iter_mut()
@@ -485,13 +485,13 @@ fn newest_per_window(readings: Vec<QuotaReading>) -> Vec<QuotaReading> {
 }
 
 /// What this app's runs spent on a CLI, for one without a plan.
-fn vendor_spend(state: &AppState, cli: &CrewCli) -> Option<f64> {
-    let vendor = cli.vendor.as_deref().unwrap_or(&cli.label);
+fn agent_spend(state: &AppState, cli: &CrewCli) -> Option<f64> {
+    let agent_id = cli.agent_id.as_deref().unwrap_or(&cli.label);
     let spend: f64 = state
         .runs
         .values()
         .flat_map(|run| run.sessions.values())
-        .filter(|session| session.vendor.eq_ignore_ascii_case(vendor))
+        .filter(|session| session.agent_id.eq_ignore_ascii_case(agent_id))
         .filter_map(|session| session.cost_usd)
         .sum();
     (spend > 0.0).then_some(spend)
@@ -506,11 +506,11 @@ pub fn cli_use(
     spent_usd: Option<f64>,
     clock: &Clock,
 ) -> CliUse {
-    let key = cli.vendor.as_deref().unwrap_or(&cli.label);
+    let key = cli.agent_id.as_deref().unwrap_or(&cli.label);
     let mut chip = CliUse::new(sanitize_line(&cli.label).trim(), Role::for_cli(key));
     chip.main = main;
     // A window that has reset since it was read says nothing about the plan now.
-    let live: Vec<QuotaReading> = cli
+    let live: Vec<PlanUsageReading> = cli
         .readings
         .iter()
         .filter(|reading| reading.resets_at.is_none_or(|at| at > clock.now))
@@ -524,24 +524,24 @@ pub fn cli_use(
     };
     chip.state = match binding {
         _ if cli.health == HealthState::Down => CliState::Down,
-        Some(reading) if reading.status == QuotaStatus::Rejected && reading.wrap_up => {
+        Some(reading) if reading.status == PlanUsageStatus::Rejected && reading.wrap_up => {
             CliState::WrappingUp
         }
-        Some(reading) if reading.status == QuotaStatus::Rejected => CliState::Out {
+        Some(reading) if reading.status == PlanUsageStatus::Rejected => CliState::Out {
             until: reading
                 .resets_at
                 .filter(|_| shows_reset(true))
                 .map(|at| clock_time(at, clock)),
         },
         // Some readings say only that the CLI warned, not how much is used.
-        Some(reading) if reading.status == QuotaStatus::Warning && reading.used.is_none() => {
+        Some(reading) if reading.status == PlanUsageStatus::Warning && reading.used.is_none() => {
             CliState::NearLimit
         }
         _ => CliState::Fine,
     };
     let mut windows: Vec<WindowUse> = live
         .iter()
-        .filter(|reading| reading.status != QuotaStatus::Unknown)
+        .filter(|reading| reading.status != PlanUsageStatus::Unknown)
         .filter_map(|reading| {
             let label = window_name(reading.window.as_deref()?);
             let mut window = WindowUse::new(label, reading.used?);
@@ -656,27 +656,27 @@ fn has_plan(label: &str) -> bool {
 }
 
 /// `$0.21/$5.00`, `48.2k/2m tokens`, or the spend alone without a limit it can be read against.
-fn spend_text(spent: &Spend, tokens: u64, limit: Option<&BudgetAmount>) -> String {
+fn spend_text(spent: &Spend, tokens: u64, limit: Option<&LimitAmount>) -> String {
     let spent = format::spend(spent);
     match limit {
-        Some(BudgetAmount {
-            unit: BudgetUnit::Usd,
+        Some(LimitAmount {
+            unit: LimitUnit::Usd,
             amount,
         }) => format!("{spent}/{}", format::usd(*amount)),
-        Some(BudgetAmount {
-            unit: BudgetUnit::Tokens,
+        Some(LimitAmount {
+            unit: LimitUnit::Tokens,
             amount,
         }) => format!(
             "{}/{} tokens",
             format::tokens(tokens),
             format::tokens(amount.max(0.0) as u64)
         ),
-        Some(BudgetAmount {
-            unit: BudgetUnit::Minutes,
+        Some(LimitAmount {
+            unit: LimitUnit::Minutes,
             amount,
         }) => format!("{spent} · limit {}m", amount.max(0.0).round() as u64),
-        Some(BudgetAmount {
-            unit: BudgetUnit::Quota,
+        Some(LimitAmount {
+            unit: LimitUnit::PlanUsage,
             amount,
         }) => format!(
             "{spent} · limit {}% of plan usage",

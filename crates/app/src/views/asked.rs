@@ -1,16 +1,14 @@
-//! A step of Claude Code's own workflow that the crew answered through Argonauts: the agent
-//! that reviews calls the tool, and Argonauts runs the reviewer's model on the change. In the mirrored workflow that step's row shows the model that answered, says it was
-//! asked through Argonauts and then what it decided, with its tokens and time, and opens its
-//! session.
+//! A step of Claude Code's own workflow that the crew answered through Argonauts Code: the agent
+//! that reviews calls the tool, and Argonauts Code runs the reviewer's model on the change. In the
+//! mirrored workflow that step's row is the model that answered, with its tokens and time and,
+//! once it answered, what it decided, and it opens that model's session.
 
 use argonauts_core::names::RoleName;
-use argonauts_core::steps::judgment::ReviewVerdict;
-use argonauts_core::views::{WorkflowRow, WorkflowView};
-use argonauts_crew::claude_codes::review_of;
+use argonauts_core::views::{RowNote, Tone, WorkflowRow, WorkflowView};
 
 use super::sessions::{RunFacts, SessionFacts};
 
-/// Each agent row of a CLI's own workflow whose label a role asked through Argonauts carries,
+/// Each agent row of a CLI's own workflow whose label a role asked through Argonauts Code carries,
 /// drawn as that role's session. The latest such session wins, as a retried step's would.
 pub(super) fn answered_by_the_crew(view: &mut WorkflowView, facts: &RunFacts) {
     for phase in &mut view.phases {
@@ -26,22 +24,18 @@ pub(super) fn answered_by_the_crew(view: &mut WorkflowView, facts: &RunFacts) {
             if let Some(asked) = asked {
                 let mut answered = facts.agent_row(asked);
                 answered.label = agent.label.clone();
-                answered.answered = Some(words(asked).to_owned());
+                answered.answered = true;
+                // A role that ended without an answer says so, where its verdict would be.
+                let silent = asked
+                    .ended
+                    .as_ref()
+                    .is_some_and(|end| end.structured.is_none());
+                if silent && answered.note.is_none() {
+                    answered.note = Some(RowNote::new("no answer", Tone::Plain));
+                }
                 *agent = answered;
             }
         }
-    }
-}
-
-/// `asked through Argonauts` while the role reads the change, then what it decided.
-fn words(session: &SessionFacts) -> &'static str {
-    let Some(end) = &session.ended else {
-        return "asked through Argonauts";
-    };
-    match end.structured.as_ref().map(review_of) {
-        Some(review) if review.verdict == ReviewVerdict::Approve => "accepted",
-        Some(_) => "asked for changes",
-        None => "no answer",
     }
 }
 
@@ -49,17 +43,17 @@ fn words(session: &SessionFacts) -> &'static str {
 /// task of its own, under the label the asking agent gave.
 fn asked_for(session: &SessionFacts, label: &str) -> bool {
     matches!(session.started.role, RoleName::Reviewer | RoleName::Judge)
-        && session.card.is_none()
+        && session.task.is_none()
         && session.started.label.as_deref() == Some(label)
 }
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::CardId;
+    use argonauts_core::TaskId;
     use argonauts_core::event::AgentEvent;
     use argonauts_core::events::session::EndReason;
     use argonauts_core::events::session::{
-        SubagentStatus, VendorAgent, VendorAgentState, VendorPhase, VendorWorkflow,
+        CliAgent, CliAgentState, CliPhase, CliWorkflowRun, SubagentStatus,
     };
     use argonauts_core::events::{RunEvent, RunEventKind, SessionEvent};
     use argonauts_core::names::SessionKey;
@@ -69,20 +63,21 @@ mod tests {
     use crate::client::test_support::{event, run_id, session_ended, session_started};
     use crate::views::workflow_view;
 
-    fn agent(index: u32, label: &str) -> VendorAgent {
-        VendorAgent {
+    fn agent(index: u32, label: &str) -> CliAgent {
+        CliAgent {
             index,
             label: label.to_owned(),
             phase: Some(1),
             model: Some("claude-opus-5-5".to_owned()),
-            state: VendorAgentState::Running,
+            state: CliAgentState::Running,
             tokens: 900,
             tool_calls: 1,
             duration_ms: 1_000,
             started_at_ms: None,
-            attempt: 1,
+            try_number: 1,
             prompt: None,
             result: None,
+            ..CliAgent::default()
         }
     }
 
@@ -98,13 +93,13 @@ mod tests {
     fn asked_about_store() -> (SessionKey, SessionKey, Vec<RunEvent>) {
         let host = SessionKey::numbered(1);
         let astra = SessionKey::numbered(2);
-        let task = CardId::new("task-add-due-dates").unwrap();
-        let workflow = VendorWorkflow {
+        let task = TaskId::new("task-add-due-dates").unwrap();
+        let workflow = CliWorkflowRun {
             id: "w1".to_owned(),
             call: None,
             name: "add-due-dates".to_owned(),
             description: String::new(),
-            phases: vec![VendorPhase {
+            phases: vec![CliPhase {
                 index: 1,
                 title: "Review".to_owned(),
                 detail: String::new(),
@@ -135,9 +130,9 @@ mod tests {
         (host, astra, events)
     }
 
-    /// Each agent row's label, worker, session, and the words after its model.
+    /// Each agent row's label, worker, session, and what it decided once it answered.
     fn rows(events: &[RunEvent]) -> Vec<(String, String, SessionKey, Option<String>)> {
-        let id = argonauts_core::views::vendor_workflow_id("w1");
+        let id = argonauts_core::views::cli_workflow_run_id("w1");
         let view = workflow_view(events, &run_id(), Some(&id)).unwrap();
         view.phases[0]
             .rows
@@ -145,17 +140,17 @@ mod tests {
             .filter_map(|row| match row {
                 WorkflowRow::Agent(agent) => Some((
                     agent.label.clone(),
-                    agent.worker.worker.clone(),
+                    agent.worker.agent.clone(),
                     agent.session.clone(),
-                    agent.answered.clone(),
+                    agent.note.as_ref().map(|note| note.text.clone()),
                 )),
                 _ => None,
             })
             .collect()
     }
 
-    /// Claude Code's workflow reviews `store` by asking Astra through Argonauts, so
-    /// that row is Astra's and says how it was asked; `cli`, which nobody asked about yet, stays
+    /// Claude Code's workflow reviews `store` by asking Astra through Argonauts Code, so
+    /// that row is Astra's, with nothing decided yet; `cli`, which nobody asked about yet, stays
     /// Claude Code's.
     #[test]
     fn a_step_the_crew_answered_shows_who_answered() {
@@ -163,12 +158,7 @@ mod tests {
         assert_eq!(
             rows(&events),
             [
-                (
-                    "review:store".to_owned(),
-                    "astra".to_owned(),
-                    astra,
-                    Some("asked through Argonauts".to_owned())
-                ),
+                ("review:store".to_owned(), "astra".to_owned(), astra, None),
                 (
                     "review:cli".to_owned(),
                     "claude-code".to_owned(),
@@ -183,8 +173,12 @@ mod tests {
     #[test]
     fn an_answered_step_says_what_the_role_decided() {
         for (answer, said) in [
-            (json!({"accept": true, "summary": "Fine"}), "accepted"),
-            (json!({"accept": false}), "asked for changes"),
+            (json!({"accept": true, "summary": "Fine"}), "approved"),
+            (json!({"accept": false}), "sent it back"),
+            (
+                json!({"accept": false, "findings": ["--due with no date isn't rejected"]}),
+                "sent it back · 1 finding",
+            ),
         ] {
             let (_, astra, mut events) = asked_about_store();
             let mut ended = session_ended(3, &astra, EndReason::Completed, 58_000);

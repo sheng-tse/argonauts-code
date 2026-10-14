@@ -1,10 +1,14 @@
 //! Workflow files: your own in `.argonauts/workflows/` and `~/.argonauts/workflows/`, and the
-//! built-ins, which the crew engine ships and the app passes in. Looked up like presets:
+//! built-ins, which the crew engine ships and the app passes in. Looked up in turn:
 //! project, then global, then built-in. Simple workflows are YAML; Starlark comes later.
 
+mod builtin;
 mod check;
+mod choices;
+mod files;
 mod list;
 mod lookup;
+mod name;
 mod parse;
 mod placeholders;
 
@@ -15,9 +19,14 @@ use std::path::{Path, PathBuf};
 
 use argonauts_core::workflow::Workflow;
 
+pub(crate) use builtin::{DEFAULT_WORKFLOW, builtin};
 pub use check::{MAX_DEPTH, check_workflow};
+pub(crate) use choices::{PHASES_EXTENSIONS, SCRIPT_EXTENSIONS};
+pub use choices::{workflow_choices, workflow_choices_in};
+pub use files::{builtin_workflow, upgrade_workflows, write_workflow};
 pub use list::workflows_in;
 pub use lookup::{copy_workflow, find_workflow};
+pub(crate) use name::{is_workflow_name, not_a_workflow_name};
 pub use parse::{parse_workflow, workflow_version};
 
 /// Where to look for workflows.

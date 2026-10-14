@@ -1,16 +1,16 @@
-//! Screen-reader mode: flat labeled lines (`you:`, `claude-code, owner, card-002:`, `tool:`,
-//! `narrator:`), no boxes, spinners, or redraws, menus and cards as numbered lists, and the bell
-//! when something needs you. It grew out of the 0.0.1 plain renderer, and it suits any output
+//! Screen-reader mode: flat labeled lines (`you:`, `claude-code, worker, task-002:`, `tool:`,
+//! `narrator:`), no boxes, spinners, or redraws, menus and questions as numbered lists, and the
+//! bell when something needs you. It grew out of the 0.0.1 plain renderer, and it suits any output
 //! that isn't a terminal too.
 
 mod about;
 mod agent;
 mod answer;
-mod cards;
 mod decisions;
 mod lines;
 mod offer;
 mod pick;
+mod questions;
 mod reader;
 mod run;
 #[cfg(test)]
@@ -26,9 +26,9 @@ use crate::UiOptions;
 use crate::runtime::{AppIo, run_in_tmux};
 use crate::text::sanitize_line;
 
-pub use cards::{CardList, ListTarget};
 pub use lines::{answer_lines, lines_for, rings_for};
 pub use pick::{Pick, Typed};
+pub use questions::{ListTarget, QuestionList};
 pub use reader::{Reader, Said, TmuxTakeOver};
 pub use views::view_lines;
 

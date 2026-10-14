@@ -1,7 +1,7 @@
 //! The workflow runner. A workflow is phases of typed steps; the runner walks them, records
 //! `Workflow` events with each step's standard phase, and hands each step to its kind's
-//! executor. Gates before review, review by another family, hard limits, approvals, budgets,
-//! and handoffs stay in code, so no workflow can turn them off.
+//! executor. Checks before review, review by another provider, hard limits, approvals, limits,
+//! and fallbacks stay in code, so no workflow can turn them off.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,10 +19,10 @@ pub mod conditions;
 pub mod kinds;
 pub mod naming;
 pub mod params;
-pub mod preset;
 pub mod replay;
 pub mod runner;
 pub mod shape;
+pub mod sizing;
 pub mod validate;
 pub mod yaml;
 
@@ -96,7 +96,7 @@ pub enum Flow {
     Continue,
     /// The run ends, such as after landing, or after you abandon it.
     Finish(RunOutcome),
-    /// The rest of the run follows another workflow, such as "run it solo" at the plan
-    /// checkpoint, or `solo.escalate_to_crew` when the solo card escalates.
+    /// The rest of the run follows another workflow, such as "run it as Captain" at the plan
+    /// approval, or `captain.move_to_crew` when the Captain task needs you.
     Switch(WorkflowRef),
 }

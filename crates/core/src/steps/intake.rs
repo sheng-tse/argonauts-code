@@ -1,15 +1,15 @@
-//! Steps the app controller runs: reading a new request, and chat answers.
+//! Steps the app controller runs: reading a new request, and conversation answers.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{Step, StepName};
 
-/// Reads a new request in the default agent's read-only chat session.
-pub struct TriageEstimate;
+/// Reads a new request in the main agent's read-only conversation session.
+pub struct Estimate;
 
-impl Step for TriageEstimate {
-    const NAME: StepName = StepName::TriageEstimate;
+impl Step for Estimate {
+    const NAME: StepName = StepName::Estimate;
     type Input = IntakeInput;
     type Output = IntakeReply;
 }
@@ -42,7 +42,7 @@ pub struct Instruction {
     /// The request's own words for this instruction, copied exactly.
     pub says: String,
     pub kind: InstructionKind,
-    /// An agent, company, or model as the request names it ("codex", "gemini", "opus"), or
+    /// An agent, provider, or model as the request names it ("codex", "gemini", "opus"), or
     /// empty.
     #[serde(default)]
     pub who: String,
@@ -52,7 +52,7 @@ pub struct Instruction {
     /// An effort as the request names it, or empty.
     #[serde(default)]
     pub effort: String,
-    /// For `mode`, `solo` or `crew`. For `goal`, the condition in the request's own words,
+    /// For `mode`, `captain` or `crew`. For `goal`, the condition in the request's own words,
     /// such as "its tests pass"; or, when the request says who keeps each task's goal going,
     /// `cli` for the CLI's own goal ("codex's own goal"), `argonauts`, or `off`. For
     /// `isolation`, `checked` or `direct`. For the other kinds, what was asked, such as "$2".
@@ -65,18 +65,18 @@ pub struct Instruction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum InstructionKind {
-    /// Solo or the crew.
+    /// Captain or the crew.
     Mode,
     /// Keep going until something holds: "keep going until its tests pass", "don't stop until
     /// the README explains the flag". Or who keeps each task's goal going: "have the workers
     /// use codex's own goal for each task".
     Goal,
-    /// A checked copy, or your own checkout.
+    /// A checked worktree, or your own checkout.
     Isolation,
-    /// Who leads the run.
-    Lead,
-    /// Who coordinates the crew.
-    Coordinate,
+    /// Who is the run's main agent.
+    MainAgent,
+    /// Who orchestrates the crew.
+    Orchestrate,
     /// Who builds.
     Build,
     /// Who reviews.
@@ -89,7 +89,7 @@ pub enum InstructionKind {
     Check,
     /// Which agents make up the crew.
     Crew,
-    /// Who fills every other seat but the agent the user talks to, as in "all the other agents
+    /// The model every agent but the one the user talks to runs on, as in "all the other agents
     /// need to be Opus". A role another instruction names keeps that one.
     Others,
     /// An agent to leave out.
@@ -100,13 +100,13 @@ pub enum InstructionKind {
     Effort,
     Approvals,
     Merge,
-    Budget,
+    Limit,
     Network,
     /// The tests and checks a change must pass.
-    Gates,
+    Checks,
     Sandbox,
-    /// Anything else about how the lead should shape the run, such as "no drafting phase".
-    ForTheLead,
+    /// Anything else about how the main agent should shape the run, such as "no drafting phase".
+    ForTheMainAgent,
     /// Words for one role's agents, such as "tell the reviewers to focus on date parsing":
     /// the role in `who` ("the reviewers"), and what they are told in `value` ("focus on date
     /// parsing").
@@ -118,22 +118,22 @@ pub enum InstructionKind {
 pub enum InstructionScope {
     #[default]
     ThisRequest,
-    /// The request says to keep doing it, so a card asks where to save it.
+    /// The request says to keep doing it, so a question asks where to save it.
     FromNowOn,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplyKind {
-    /// A chat message or a question. No run starts.
+    /// Something said in conversation, or a question. No run starts.
     Answer,
     /// A change to the repo.
     Change,
-    /// It could be either; the app offers `[s] solo [c] crew [n] no`.
+    /// It could be either; the app offers `[s] Captain [c] crew [n] no`.
     Unclear,
 }
 
-/// Facts the triage rules read. The agent never picks the mode.
+/// Facts the Captain-or-crew rules read. The agent never picks the mode.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ChangeEstimate {
     /// A task type learned workflows can match, such as `docs`, `bugfix`, or `api-feature`.
@@ -150,22 +150,22 @@ pub struct ChangeEstimate {
 }
 
 /// An answer only, never a run (`/ask`, or `/ask` during a run with the narrator off).
-pub struct ChatAnswer;
+pub struct ConversationAnswer;
 
-impl Step for ChatAnswer {
-    const NAME: StepName = StepName::ChatAnswer;
-    type Input = ChatAnswerInput;
-    type Output = ChatAnswerOutput;
+impl Step for ConversationAnswer {
+    const NAME: StepName = StepName::ConversationAnswer;
+    type Input = ConversationAnswerInput;
+    type Output = ConversationAnswerOutput;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct ChatAnswerInput {
+pub struct ConversationAnswerInput {
     pub question: String,
     /// The zero-token status summary of the current run, if any.
     pub run_status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct ChatAnswerOutput {
+pub struct ConversationAnswerOutput {
     pub answer_markdown: String,
 }

@@ -1,9 +1,9 @@
 ---
-source: crates/tui/tests/cells.rs
+source: crates/tui/tests/snap_cells.rs
 assertion_line: 80
 expression: text(&lines)
 ---
 ● Search(rg --files-with-matches "fn write_json" crates/argonauts-core/src
-        crates/argonauts-tui/src crates/argonauts-cli/src --glob '!target'
+        crates/argonauts-tui/src crates/argonauts-app/src --glob '!target'
         --hidden)
   ⎿  Found 3 files · /workflows to monitor

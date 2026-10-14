@@ -1,15 +1,15 @@
-//! Full auto's settings that may not do what you meant: a model picked to answer that no agent
-//! or endpoint provides, or that the approver can't check, and a checkpoint the switch leaves
+//! Autopilot's settings that may not do what you meant: a model picked to answer that no agent
+//! or endpoint provides, or that the judge can't check, and an approval the switch leaves
 //! with you.
 
-use argonauts_core::names::WorkerRef;
-use argonauts_core::registry::company_of;
+use argonauts_core::names::ModelRef;
+use argonauts_core::registry::provider::is_known;
 use argonauts_core::settings::Settings;
 
-use super::roles::{self, Workers};
-use crate::models::resolve_family;
+use super::roles::{self, AgentIds};
+use crate::models::resolve_provider;
 
-pub(crate) fn warnings(settings: &Settings, workers: &Workers<'_>) -> Vec<String> {
+pub(crate) fn warnings(settings: &Settings, agents: &AgentIds<'_>) -> Vec<String> {
     let approvals = &settings.approvals;
     let mut warnings = Vec::new();
     let answerer = approvals
@@ -18,32 +18,32 @@ pub(crate) fn warnings(settings: &Settings, workers: &Workers<'_>) -> Vec<String
         .and_then(|answerer| answerer.model());
     if let Some(model) = answerer {
         let key = "approvals.answers";
-        if !workers.is_known(&model.worker) {
+        if !agents.is_known(&model.agent) {
             warnings.push(format!(
                 "{}. Until one does, the main agent answers in its place",
                 roles::unknown(key, model)
             ));
-        } else if workers.is_off(&model.worker) {
+        } else if agents.is_off(&model.agent) {
             warnings.push(roles::off(key, model));
         }
     }
-    if let (Some(model), Some(approver)) = (answerer, approvals.approver_model())
-        && let Some(company) = one_company(model, approver)
+    if let (Some(model), Some(judge)) = (answerer, approvals.judge_model())
+        && let Some(provider) = one_provider(model, judge)
     {
         warnings.push(format!(
-            "approvals.answers ({model}) and approvals.decides ({approver}) both come \
-             from {company}, so the approver can't check that model's answers, and on autopilot \
-             the agents are told to use their best judgment instead. Pick an approver from \
+            "approvals.answers ({model}) and approvals.decides ({judge}) both come \
+             from {provider}, so the judge can't check that model's answers, and on autopilot \
+             the agents are told to use their best judgment instead. Pick a judge from \
              another provider"
         ));
     }
     if approvals.autopilot {
         for (name, mode) in [
-            ("goal", approvals.goal.mode),
+            ("goal", approvals.understand.mode),
             ("plan", approvals.plan.mode),
             ("merge", approvals.merge.mode),
-            ("stuck", approvals.escalation.mode),
-            ("limit", approvals.budget.mode),
+            ("stuck", approvals.stuck.mode),
+            ("limit", approvals.limit.mode),
             ("change_request", approvals.change_request.mode),
         ] {
             if !mode.goes_ahead() {
@@ -59,9 +59,9 @@ pub(crate) fn warnings(settings: &Settings, workers: &Workers<'_>) -> Vec<String
     warnings
 }
 
-/// The company both workers come from, when they share one the family table knows.
-fn one_company(a: &WorkerRef, b: &WorkerRef) -> Option<String> {
-    let company = |worker: &WorkerRef| company_of(&resolve_family(worker, None, None));
-    let theirs = company(a);
-    (!theirs.is_empty() && theirs != "unknown" && theirs == company(b)).then_some(theirs)
+/// The provider both models come from, when they share one the provider table knows.
+fn one_provider(a: &ModelRef, b: &ModelRef) -> Option<String> {
+    let provider = |model: &ModelRef| resolve_provider(model, None, None);
+    let theirs = provider(a);
+    (is_known(&theirs) && theirs == provider(b)).then_some(theirs)
 }

@@ -26,17 +26,17 @@ fn a_readings_key_reads_as_words_too() {
 
 mod picture {
     use argonauts_core::api::{PlanUsage, UsageSummary};
-    use argonauts_core::limits::QuotaSource;
-    use argonauts_core::names::VendorId;
+    use argonauts_core::limits::PlanUsageSource;
+    use argonauts_core::names::AgentId;
     use argonauts_core::plan_usage::{LiveUsage, LiveWindow};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use time::OffsetDateTime;
     use time::macros::datetime;
 
+    use crate::kit::{Form, Frame, Kit};
     use crate::overview::cards::{UsageCard, UsageCards};
     use crate::overview::golden::{Picture, Region, assert_matches, differences, theme};
-    use crate::widgets::{Form, Frame, Kit};
 
     /// The picture's clock: Thursday evening, as its 5-hour and Codex and agy weeks read.
     const NOW: OffsetDateTime = datetime!(2026-10-08 20:12 UTC);
@@ -48,7 +48,7 @@ mod picture {
     }
 
     fn plan(agent: &str, name: &str, tier: &str, windows: Vec<LiveWindow>) -> PlanUsage {
-        let mut live = LiveUsage::new(VendorId(agent.into()), QuotaSource::AppServer, NOW);
+        let mut live = LiveUsage::new(AgentId(agent.into()), PlanUsageSource::AppServer, NOW);
         live.plan = Some(tier.into());
         live.windows = windows;
         PlanUsage {
@@ -119,7 +119,7 @@ mod picture {
 
     /// The Limits tab's plan usage card at the picture's width, in its colours. The picture's
     /// Claude Code weeks say `resets in 4d 1h` where its other rows put the clock a day
-    /// earlier: on that clock the same reset reads `5d 2h`, the only cells that differ.
+    /// earlier: on that clock the same reset reads `5d 2h`, the only cells that are different.
     #[test]
     fn the_limits_card_matches_its_picture() {
         let picture = Picture::load("limits_after");

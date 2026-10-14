@@ -1,4 +1,4 @@
-//! Every built-in prompt in one list: the crew's, the approver's and the narrator's, and the
+//! Every built-in prompt in one list: the crew's, the judge's and the narrator's, and the
 //! app's own. `/prompts` lists them, and `/setup` writes them out as templates.
 
 use std::io;
@@ -7,8 +7,9 @@ use std::path::Path;
 use argonauts_core::names::RoleName;
 use argonauts_core::prompt_files::{self, PromptDirs, RoleFileMode, Template, Written, YourFile};
 use argonauts_core::prompt_list::{CHANGED, INSTRUCTIONS, PromptList, PromptRow, WriterChoice};
-use argonauts_core::prompt_parts::{BUILT_IN, CrewRole, Readers, finer_roles};
+use argonauts_core::prompt_parts::{BUILT_IN, Readers, finer_roles};
 use argonauts_core::settings::Settings;
+use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::prompts::Writer;
 
 const fn own(id: &'static str, part: &'static str, text: &'static str) -> Template {
@@ -20,16 +21,30 @@ const fn own(id: &'static str, part: &'static str, text: &'static str) -> Templa
     }
 }
 
-pub(crate) const ESTIMATE: Template =
-    own("chat/estimate", "size up a request", super::TRIAGE_ESTIMATE);
-pub(crate) const ANSWER: Template = own("chat/answer", "answer in the chat", super::CHAT_ANSWER);
-pub(crate) const COMPACT: Template = own("chat/compact", "sum up for /compact", super::COMPACT);
-pub(crate) const TITLE: Template = own("chat/title", "name the conversation", super::TITLE);
-pub(crate) const REVIEW: Template = own("chat/review", "/review a change", super::REVIEW);
-pub(crate) const STANDING: Template =
-    own("chat/standing", "the main session's tools", super::STANDING);
+pub(crate) const ESTIMATE: Template = own(
+    "conversation/estimate",
+    "size up a request",
+    super::ESTIMATE,
+);
+pub(crate) const ANSWER: Template = own(
+    "conversation/answer",
+    "answer in the conversation",
+    super::CONVERSATION_ANSWER,
+);
+pub(crate) const COMPACT: Template = own(
+    "conversation/compact",
+    "sum up for /compact",
+    super::COMPACT,
+);
+pub(crate) const TITLE: Template = own("conversation/title", "name the conversation", super::TITLE);
+pub(crate) const REVIEW: Template = own("conversation/review", "/review a change", super::REVIEW);
+pub(crate) const STANDING: Template = own(
+    "conversation/standing",
+    "the main session's tools",
+    super::STANDING,
+);
 pub(crate) const CARRY_SUMMARY: Template = own(
-    "chat/carry-summary",
+    "conversation/carry-summary",
     "sum up for another model",
     super::CARRY_SUMMARY,
 );
@@ -63,7 +78,7 @@ pub(crate) fn find(id: &str) -> Option<Template> {
 }
 
 /// Your file an agent reads where the built-in would be. A finer role's frame with no file of
-/// its own is its crew role's, so your `frames/reviewers.md` is what a critic reads too.
+/// its own is its crew role's, so your `frames/reviewer.md` is what a critic reads too.
 pub(crate) fn file_in_use(dirs: &PromptDirs, template: &Template) -> Option<YourFile> {
     let own = dirs.template(template.id);
     if own.is_some() || !template.is_frame() {
@@ -109,8 +124,8 @@ pub fn write_templates(argonauts_dir: &Path) -> io::Result<Written> {
 /// The order `/prompts` lists the roles in: who builds and who judges first, since theirs are
 /// the prompts changed most, then who plans, then the main agent's own.
 const LISTED: [CrewRole; 5] = [
-    CrewRole::Workers,
-    CrewRole::Reviewers,
+    CrewRole::Worker,
+    CrewRole::Reviewer,
     CrewRole::Judge,
     CrewRole::Orchestrator,
     CrewRole::Main,
@@ -281,7 +296,7 @@ fn instructions_row(dirs: &PromptDirs, settings: &Settings, readers: Readers) ->
     }
 }
 
-/// Who may write a role's instructions: the orchestrator, Argonauts' own templates, then each
+/// Who may write a role's instructions: the orchestrator, Argonauts Code's own templates, then each
 /// agent on the crew.
 fn writers(settings: &Settings) -> Vec<WriterChoice> {
     let names = argonauts_core::display_names::DisplayNames::default();
@@ -292,8 +307,8 @@ fn writers(settings: &Settings) -> Vec<WriterChoice> {
             shown: writer.shown(),
         });
     let members = settings.crew.members();
-    let mut crew: Vec<&argonauts_core::names::WorkerRef> = Vec::new();
-    for worker in std::iter::once(&settings.main_agent).chain(&members) {
+    let mut crew: Vec<&argonauts_core::names::ModelRef> = Vec::new();
+    for worker in std::iter::once(&settings.crew.main).chain(&members) {
         if !crew.contains(&worker) {
             crew.push(worker);
         }
@@ -323,36 +338,56 @@ mod tests {
         let ids: BTreeSet<&str> = templates.iter().map(|template| template.id).collect();
         assert_eq!(ids.len(), templates.len());
         for id in [
-            "frames/reviewers",
+            "frames/reviewer",
             "review/review",
-            "approvals/approver",
-            "chat/compact",
+            "approvals/judge",
+            "conversation/compact",
         ] {
             assert!(find(id).is_some(), "{id}");
         }
     }
 
-    /// Nothing is locked: a prompt file added to the app's own must be listed in `OWN`, or it
-    /// can't be written out or replaced.
+    /// Nothing is locked: every file under `templates/prompts/` is a template at the path its
+    /// id names, so one added there can be written out and replaced. The README is the
+    /// folder's own page, and `.argonauts/approval-rules.md` already replaces the judge's
+    /// default rules.
     #[test]
-    fn every_prompt_file_of_the_app_is_in_the_catalog() {
-        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/prompts");
+    fn every_prompt_file_is_a_template_at_the_path_its_id_names() {
+        let folder =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates/prompts");
         let templates = all();
-        let mut files = 0;
-        for entry in std::fs::read_dir(folder).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().is_none_or(|ext| ext != "md") {
+        let mut files = Vec::new();
+        collect(&folder, &mut files);
+        let mut found = 0;
+        for path in files {
+            let name = path.strip_prefix(&folder).unwrap().to_str().unwrap();
+            if name == "README.md" || name == "approvals/default-rules.md" {
                 continue;
             }
-            files += 1;
-            let text = std::fs::read_to_string(&path).unwrap();
-            assert!(
-                templates.iter().any(|template| template.text == text),
-                "{} isn't in prompts::catalog::OWN: add an entry for it",
-                path.display()
+            let id = name.strip_suffix(".md").unwrap();
+            let template = templates
+                .iter()
+                .find(|template| template.id == id)
+                .unwrap_or_else(|| panic!("{name} is in no catalog: add an entry for it"));
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                template.text,
+                "{id}"
             );
+            found += 1;
         }
-        assert_eq!(files, OWN.len());
+        assert_eq!(found, templates.len(), "every template has its file");
+    }
+
+    fn collect(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                collect(&path, files);
+            } else if path.extension().is_some_and(|ext| ext == "md") {
+                files.push(path);
+            }
+        }
     }
 
     /// The table: a role's frame, its instructions with who writes them and
@@ -360,10 +395,10 @@ mod tests {
     #[test]
     fn the_list_shows_who_writes_and_what_you_changed() {
         let repo = tempfile::tempdir().unwrap();
-        write(&repo, "roles/workers.md", "Keep functions short.\n");
+        write(&repo, "roles/worker.md", "Keep functions short.\n");
         write(
             &repo,
-            "prompts/frames/reviewers.md",
+            "prompts/frames/reviewer.md",
             "You review, strictly.\n",
         );
         let dirs = PromptDirs::new(Some(repo.path()), None);
@@ -379,9 +414,9 @@ mod tests {
                 .unwrap_or_else(|| panic!("no {part} row for {role}"))
                 .clone()
         };
-        let workers = find("workers", "instructions");
+        let workers = find("worker", "instructions");
         assert_eq!(workers.written_by, "the orchestrator");
-        assert_eq!(workers.yours, "roles/workers.md");
+        assert_eq!(workers.yours, "roles/worker.md");
         assert_eq!(workers.name, None);
         assert!(
             workers
@@ -390,10 +425,10 @@ mod tests {
             "{}",
             workers.text
         );
-        let frame = find("reviewers", "frame");
+        let frame = find("reviewer", "frame");
         assert_eq!(frame.written_by, "built in");
         assert_eq!(frame.yours, "✎ changed");
-        assert_eq!(frame.name.as_deref(), Some("frames/reviewers"));
+        assert_eq!(frame.name.as_deref(), Some("frames/reviewer"));
         assert!(frame.has_file);
         assert_eq!(frame.text, "You review, strictly.\n");
         let untouched = find("judge", "frame");
@@ -417,10 +452,10 @@ mod tests {
     #[test]
     fn a_finer_role_with_something_of_its_own_is_listed_after_its_crew_role() {
         let repo = tempfile::tempdir().unwrap();
-        write(&repo, "roles/reviewers.md", "Check error handling.\n");
+        write(&repo, "roles/reviewer.md", "Check error handling.\n");
         write(
             &repo,
-            "prompts/frames/reviewers.md",
+            "prompts/frames/reviewer.md",
             "You review, strictly.\n",
         );
         let dirs = PromptDirs::new(Some(repo.path()), None);
@@ -429,22 +464,22 @@ mod tests {
             roles.dedup();
             roles
         };
-        let the_five = ["workers", "reviewers", "judge", "orchestrator", "main"];
+        let the_five = ["worker", "reviewer", "judge", "orchestrator", "main"];
         assert_eq!(roles(&list(&dirs, &Settings::default())), the_five);
 
         write(&repo, "roles/critic.md", "Argue the opposite case.\n");
         let settings: Settings =
-            toml::from_str("[prompts.drafter]\nwriter = \"built-in\"\n").unwrap();
+            toml::from_str("[prompts.draft]\nwriter = \"built-in\"\n").unwrap();
         let list = list(&dirs, &settings);
         assert_eq!(
             roles(&list),
             [
-                "workers",
-                "reviewers",
+                "worker",
+                "reviewer",
                 "critic",
                 "judge",
                 "orchestrator",
-                "drafter",
+                "draft",
                 "main"
             ]
         );
@@ -461,18 +496,19 @@ mod tests {
         assert_eq!(critic[1].part, "instructions");
         assert_eq!(critic[1].yours, "roles/critic.md");
         assert!(critic[1].text.ends_with("Argue the opposite case."));
-        // The drafter has a writer of its own and still reads the orchestrator's file, if any.
-        let drafter = of("drafter");
-        assert_eq!(drafter[1].written_by, "built in");
-        assert!(!drafter[1].has_file);
+        // The draft role has a writer of its own and still reads the orchestrator's file, if
+        // any.
+        let draft = of("draft");
+        assert_eq!(draft[1].written_by, "built in");
+        assert!(!draft[1].has_file);
 
         // A frame of its own is found by name, written, and marked once edited.
         let frame = find("frames/critic").unwrap();
-        assert_eq!(frame.role, CrewRole::Reviewers);
+        assert_eq!(frame.role, CrewRole::Reviewer);
         prompt_files::write_template(&repo.path().join(".argonauts"), &frame).unwrap();
         assert_eq!(
             file_in_use(&dirs, &frame).map(|file| file.shown).as_deref(),
-            Some("prompts/frames/reviewers.md")
+            Some("prompts/frames/reviewer.md")
         );
         write(&repo, "prompts/frames/critic.md", "You argue against.\n");
         assert_eq!(
@@ -521,11 +557,12 @@ mod tests {
 
     #[test]
     fn the_writers_are_the_orchestrator_the_templates_and_the_crew() {
-        let mut settings: Settings = toml::from_str("main_agent = \"codex\"\n").unwrap();
+        let mut settings = Settings::default();
         settings.crew = argonauts_core::settings::crew::CrewSettings::of(vec![
             "codex".parse().unwrap(),
             "claude-code/opus".parse().unwrap(),
         ]);
+        settings.crew.main = "codex".parse().unwrap();
         let shown: Vec<(String, String)> = writers(&settings)
             .into_iter()
             .map(|choice| (choice.value, choice.shown))

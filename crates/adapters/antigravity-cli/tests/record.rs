@@ -19,6 +19,9 @@ use argonauts_core::settings::sessions::NativeFanout;
 use argonauts_core::{Adapter, CommandSpec, SessionRequest, SessionRole, report_json_schema};
 use serde_json::{Value, json};
 
+#[path = "../../recorded_shape.rs"]
+mod recorded_shape;
+
 const TIMEOUT: Duration = Duration::from_secs(600);
 
 #[test]
@@ -182,14 +185,11 @@ fn record(recording: Recording) {
     // The raw output stays in the live directory. Only scrubbed copies become fixtures.
     write_output(&live_root, name, &run.stdout, &run.stderr);
     let scrub = Scrubber::new(&repo, &live_root);
-    let out_dir = fixtures_dir().join(&version);
+    let out_dir = fixtures_dir();
     fs::create_dir_all(&out_dir).unwrap();
-    write_output(
-        &out_dir,
-        name,
-        &scrub.apply(&run.stdout),
-        &scrub.apply(&run.stderr),
-    );
+    let stdout = scrub.apply(&run.stdout);
+    recorded_shape::report(&out_dir.join(format!("{name}.stdout.jsonl")), &stdout);
+    write_output(&out_dir, name, &stdout, &scrub.apply(&run.stderr));
 
     let args: Vec<String> = spec.args.iter().map(|a| scrub.apply(a)).collect();
     let files: Vec<Value> = spec
@@ -207,6 +207,7 @@ fn record(recording: Recording) {
     let meta = json!({
         "adapter": adapter.id(),
         "cli_version": version,
+        "also_matches": [],
         "name": name,
         "role": role,
         "prompt": prompt,

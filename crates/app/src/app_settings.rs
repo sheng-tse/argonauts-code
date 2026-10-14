@@ -4,8 +4,9 @@
 use std::sync::Arc;
 
 use argonauts_core::app::ConfigEntry;
+use argonauts_core::settings::layer;
 use argonauts_core::settings::{FILE_LAYERS, Settings};
-use argonauts_registry::harnesses::agents_turned_on;
+use argonauts_registry::clis::agents_turned_on;
 use argonauts_registry::{ResolvedSettings, SettingsError, SettingsSources, resolve};
 use tokio::sync::watch;
 
@@ -147,7 +148,7 @@ impl AppSettings {
     }
 
     /// Holds every pair at once and re-resolves once, so keys that only make sense together,
-    /// such as a preset and its coordinator, never apply alone. On failure nothing changes.
+    /// such as a workflow and its orchestrator, never apply alone. On failure nothing changes.
     pub(crate) fn set_session_all(
         &mut self,
         env: &AppEnv,
@@ -213,16 +214,18 @@ impl AppSettings {
     pub(crate) fn layer(&self, key: &str) -> String {
         // Session overrides reach `resolve` after the flags, so it reports them as `flag`.
         match self.entry(key) {
-            Some(entry) if entry.layer == "flag" && self.session_sets(key) => "session".to_owned(),
+            Some(entry) if entry.layer == layer::FLAG && self.session_sets(key) => {
+                layer::SESSION.to_owned()
+            }
             Some(entry) => entry.layer.clone(),
-            None => "built-in".to_owned(),
+            None => layer::BUILT_IN.to_owned(),
         }
     }
 
-    /// For a value from `layer` when that's the preset, the settings file that picked the
-    /// preset, if one did: saving there or later wins over the preset.
-    pub(crate) fn preset_from(&self, layer: &str) -> Option<String> {
-        if layer != "workflow" {
+    /// For a value from `from` when that's the workflow, the settings file that picked the
+    /// workflow, if one did: saving there or later wins over the workflow.
+    pub(crate) fn workflow_from(&self, from: &str) -> Option<String> {
+        if from != layer::WORKFLOW {
             return None;
         }
         let picked = self.layer("workflow");
@@ -282,7 +285,7 @@ fn walk_leaves(prefix: &str, table: &toml::Table, leaves: &mut Vec<String>) {
     }
 }
 
-/// The three files with their trust, plus `overrides`. The supervisor's settings reloader and
+/// The three files with their trust, plus `overrides`. The run host's settings reloader and
 /// `start` resolve from the same sources.
 pub(crate) fn sources(
     env: &AppEnv,
@@ -300,7 +303,7 @@ pub(crate) fn sources(
         project_local: Some(project_local),
         overrides,
         interactive,
-        recipe: None,
+        learned_workflow: None,
         request: Vec::new(),
         strict: false,
         waiting: argonauts_crew::prompts::trust::waiting(&env.repo_root, &env.state_dir)

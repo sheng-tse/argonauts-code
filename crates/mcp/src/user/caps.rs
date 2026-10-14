@@ -1,4 +1,4 @@
-//! What a front end may start: only in a repo you trusted, only while `mcp.start_runs` allows
+//! What an outside agent may start: only in a repo you trusted, only while `mcp.start_runs` allows
 //! it, at most `mcp.runs_per_day` a day across every repo, never with an approval mode, and
 //! never with a safety key among its settings.
 
@@ -10,26 +10,26 @@ use argonauts_core::settings::agents::StartRuns;
 use argonauts_policy::daily::DailyLedger;
 use time::OffsetDateTime;
 
-use crate::FrontEndOptions;
+use crate::OutsideAgentOptions;
 
-/// Refuses to serve in a repo you haven't set up with `argonauts init` and trusted.
-pub fn check_can_serve(options: &FrontEndOptions) -> anyhow::Result<()> {
+/// Refuses to serve in a repo you haven't set up with `argonauts setup` and trusted.
+pub fn check_can_serve(options: &OutsideAgentOptions) -> anyhow::Result<()> {
     if options.repo_trusted {
         return Ok(());
     }
     anyhow::bail!(
-        "argonauts mcp serve: this repo isn't trusted; run `argonauts init` here and trust its \
+        "argonauts mcp serve: this repo isn't trusted; run `argonauts setup` here and trust its \
          settings first"
     )
 }
 
 /// Refuses a start while `mcp.start_runs` is off.
-pub fn check_can_start(options: &FrontEndOptions) -> Result<(), String> {
+pub fn check_can_start(options: &OutsideAgentOptions) -> Result<(), String> {
     match options.mcp.start_runs {
         StartRuns::TrustedRepos => Ok(()),
         StartRuns::Off => Err(
             "starting runs from MCP is turned off here (mcp.start_runs = \"off\"); start it in \
-             the Argonauts app"
+             the Argonauts Code app"
                 .to_owned(),
         ),
     }
@@ -51,7 +51,7 @@ pub fn check_overrides(overrides: &[String]) -> Result<(), String> {
     let safety = safety_overrides(overrides);
     if !safety.is_empty() {
         return Err(format!(
-            "{} {} safety {}, which only you can change, in the Argonauts app",
+            "{} {} safety {}, which only you can change, in the Argonauts Code app",
             safety.join(", "),
             if safety.len() == 1 { "is a" } else { "are" },
             if safety.len() == 1 {
@@ -64,7 +64,7 @@ pub fn check_overrides(overrides: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The safety keys among `overrides` (`key=value` each), which a front end may never set.
+/// The safety keys among `overrides` (`key=value` each), which an outside agent may never set.
 /// A key counts when it is a safety key, lies below one, or holds one, so a table value such
 /// as `approvals={mode="auto"}` can't carry one in. A malformed key counts too.
 pub fn safety_overrides(overrides: &[String]) -> Vec<String> {
@@ -126,28 +126,28 @@ fn quoted(entry: &str) -> String {
     format!("{short:?}")
 }
 
-/// Counts the runs front ends start each day, across every repo.
-pub trait FrontEndRuns: Send + Sync {
+/// Counts the runs outside agents start each day, across every repo.
+pub trait OutsideAgentRuns: Send + Sync {
     /// Takes one of the runs of `now`'s day unless `cap` are taken. Returns that day's count.
     fn take(&self, cap: u32, now: OffsetDateTime) -> Result<u32, String>;
     /// Gives back a run taken at `taken` whose start failed.
     fn give_back(&self, taken: OffsetDateTime) -> Result<(), String>;
 }
 
-impl FrontEndRuns for DailyLedger {
+impl OutsideAgentRuns for DailyLedger {
     fn take(&self, cap: u32, now: OffsetDateTime) -> Result<u32, String> {
-        self.take_front_end_run(cap, now)
+        self.take_outside_agent_run(cap, now)
             .map_err(|err| err.to_string())
     }
 
     fn give_back(&self, taken: OffsetDateTime) -> Result<(), String> {
-        self.release_front_end_run(taken, OffsetDateTime::now_utc())
+        self.release_outside_agent_run(taken, OffsetDateTime::now_utc())
             .map_err(|err| err.to_string())
     }
 }
 
 /// The daily ledger in `home`, which is `~/.argonauts`.
-pub fn daily_ledger(home: &Path) -> Arc<dyn FrontEndRuns> {
+pub fn daily_ledger(home: &Path) -> Arc<dyn OutsideAgentRuns> {
     Arc::new(DailyLedger::open(home))
 }
 
@@ -179,9 +179,9 @@ mod tests {
             "limits.spend_per_day=1",
             "merge.mode=auto",
             "checks.test=x",
-            "notifications.chat.url=x",
+            "notifications.conversation.url=x",
             "fallback.allow_api_billing=true",
-            "fallback.workers.allow_api_billing=true",
+            "fallback.worker.allow_api_billing=true",
         ];
         for entry in refused {
             let found = safety_overrides(&entries(&[entry]));
@@ -194,7 +194,7 @@ mod tests {
     fn ordinary_keys_pass() {
         let allowed = [
             "agents.claude.model=haiku",
-            "budget.warn_at=0.5",
+            "limit.warn_at=0.5",
             "ui.theme=dark",
             "roles.worker.agent=claude",
             "notifications.bell=false",
@@ -231,11 +231,11 @@ mod tests {
 
     #[test]
     fn serving_needs_a_trusted_repo() {
-        let err = check_can_serve(&FrontEndOptions::default()).unwrap_err();
-        assert!(err.to_string().contains("argonauts init"), "{err}");
-        let trusted = FrontEndOptions {
+        let err = check_can_serve(&OutsideAgentOptions::default()).unwrap_err();
+        assert!(err.to_string().contains("argonauts setup"), "{err}");
+        let trusted = OutsideAgentOptions {
             repo_trusted: true,
-            ..FrontEndOptions::default()
+            ..OutsideAgentOptions::default()
         };
         assert!(check_can_serve(&trusted).is_ok());
     }

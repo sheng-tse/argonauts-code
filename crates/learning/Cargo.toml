@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-learning"
-description = "Argonauts learning: the outcome log and track records, routing and predictions, recipes and the evolution loop, replays, skills, and memory safety."
+description = "Argonauts Code learning: the outcome log and track records, routing and predictions, learned workflows and the evolution loop, replays, skills, and memory safety."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

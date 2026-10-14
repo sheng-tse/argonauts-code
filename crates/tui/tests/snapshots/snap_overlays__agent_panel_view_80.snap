@@ -1,0 +1,28 @@
+---
+source: crates/tui/tests/snap_overlays.rs
+expression: "screen(&mut view, width, height, &state)"
+---
+argonauts › crew                                Claude 72% · Codex 41% · agy 90%
+  Needs you 2    Working 2    Ready 2    Done 2  [ All 8 ]
+
+~/code/export
+◆ Add a --json flag to export · needs you
+  ❯ ◆ build:json-writer  asks: Keep a CSV fallback?                       2m ago
+    ● build:json-flag    Update(src/mw/limit.ts)                          5m ago
+    ○ review:json-flag   waiting on other work                            1m ago
+    ✓ build:csv-writer   Merged task-001.                                 3m ago
+Sessions
+    ◎ How does the exp…  Claude Code · enter continues                   40m ago
+    ◎ Explain the inpu…  Codex · enter continues                          1d ago
+
+~/code/api
+◆ Fix the login redirect · plan approval, waiting for you · $0.46
+✓ tidy-readme · merged 2d ago
+
+
+
+
+
+
+
+↑↓ move · → open · Space details · Tab filter · x stop · ? keys · esc back

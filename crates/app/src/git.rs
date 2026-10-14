@@ -1,7 +1,7 @@
 //! Git, always run as an argument vector. These block, and git answers these in milliseconds.
 //!
 //! A folder with no git of its own is told apart here: its history, when it keeps one, is a
-//! git folder under Argonauts' home, named on every call, so nothing in your folder ever
+//! git folder under Argonauts Code's home, named on every call, so nothing in your folder ever
 //! points at it.
 
 use std::collections::HashMap;

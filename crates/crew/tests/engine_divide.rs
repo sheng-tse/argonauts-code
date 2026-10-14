@@ -1,6 +1,6 @@
-//! Dividing the work, driven at the plan checkpoint step on a real temp repository: a run whose
-//! goal is approved and whose plan is sealed divides it, opens the plan checkpoint, and does
-//! what each answer says. The pure rules (graph, ring, router, budgets, contracts first, the
+//! Dividing the work, driven at the plan approval step on a real temp repository: a run whose
+//! goal is approved and whose plan is sealed divides it, opens the plan approval, and does
+//! what each answer says. The pure rules (graph, ring, router, limits, contracts first, the
 //! dependency block) have unit tests beside their code.
 
 use std::sync::Arc;
@@ -9,44 +9,44 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use serde_json::{Value, json};
 
-use argonauts_core::api::CheckpointAnswer;
+use argonauts_core::api::ApprovalAnswer;
 use argonauts_core::engine::RepoContext;
-use argonauts_core::events::card::{CardEvent, CardKind, CardState, IntegrationEvent};
-use argonauts_core::events::checkpoint::{
-    AnswerAction, CheckpointEvent, CheckpointKind, CheckpointOpened, CheckpointPacket, PlanPacket,
+use argonauts_core::events::approval::{
+    AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket, PlanPacket,
 };
 use argonauts_core::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
 use argonauts_core::events::plan::{DivideEvent, JudgingResult, PlanEvent, PlanTally};
 use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunStarted};
+use argonauts_core::events::task::{MergeEvent, TaskEvent, TaskKind, TaskState};
 use argonauts_core::events::workflow::StepEnd;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{DraftId, WorkflowId};
+use argonauts_core::session_runner::SessionSpec;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::protocol::JudgingMethod;
 use argonauts_core::steps::StepName;
-use argonauts_core::worker::SessionSpec;
 use argonauts_core::workflow::{StandardPhase, StepRef};
 use argonauts_core::{RepoId, RunId};
-use argonauts_crew::checkpoints;
+use argonauts_crew::approvals;
 use argonauts_crew::divide;
 use argonauts_crew::engine::host::Host;
 use argonauts_crew::engine::shared::Shared;
-use argonauts_crew::integrate::branch;
+use argonauts_crew::merge::branch;
 use argonauts_crew::state::RunState;
 use argonauts_crew::workflow::{StepAt, StepCall, StepDone, runner, yaml};
 use argonauts_testkit::repo::TempRepo;
+use argonauts_testkit::runner::{FakeRunner, FakeSession};
 use argonauts_testkit::services::{FakeServices, MemorySink, engine_context_in};
-use argonauts_testkit::worker::{FakeSession, FakeWorker};
 
 const CREW: [(&str, &str); 3] = [
-    ("claude-code/claude-opus", "claude"),
-    ("codex/gpt-5.6", "gpt"),
-    ("agy/gemini-3.6-pro", "gemini"),
+    ("claude-code/claude-opus", "anthropic"),
+    ("codex/gpt-5.6", "openai"),
+    ("agy/gemini-3.6-pro", "google"),
 ];
 
 type Step = tokio::task::JoinHandle<anyhow::Result<StepDone>>;
 
-/// The run just before the plan checkpoint: goal approved, one plan sealed and chosen.
+/// The run just before the plan approval: understand approved, one plan sealed and chosen.
 struct Stage {
     repo: TempRepo,
     host: Host,
@@ -83,13 +83,13 @@ impl Stage {
         let services = FakeServices::new();
         let mut settings = Settings::default();
         settings.crew.clear();
-        for (worker, family) in CREW {
+        for (worker, provider) in CREW {
             services
                 .workers
-                .add(FakeWorker::harness(worker, family).respond_with(answers));
+                .add(FakeRunner::cli(worker, provider).respond_with(answers));
             settings.crew.add(worker.parse()?);
         }
-        settings.main_agent = CREW[0].0.parse()?;
+        settings.crew.main = CREW[0].0.parse()?;
         configure(&mut settings);
         let run = RunId::new("run-01")?;
         let state = repo.home().join("state/repo");
@@ -114,12 +114,12 @@ impl Stage {
 
     fn start(&self) -> Step {
         let host = self.host.clone();
-        tokio::spawn(async move { Ok(divide::plan_checkpoint_step(&host, &step_call()).await?) })
+        tokio::spawn(async move { Ok(divide::plan_approval_step(&host, &step_call()).await?) })
     }
 
-    /// The plan checkpoint as a workflow runs it, so its step round is recorded.
+    /// The plan approval as a workflow runs it, so its step round is recorded.
     fn start_workflow(&self) -> anyhow::Result<Step> {
-        let workflow = yaml::parse(CHECKPOINT_ONLY).map_err(anyhow::Error::msg)?;
+        let workflow = yaml::parse(APPROVAL_ONLY).map_err(anyhow::Error::msg)?;
         let id = runner::start(&self.host, None, workflow, None)?;
         let host = self.host.clone();
         Ok(tokio::spawn(async move {
@@ -132,17 +132,17 @@ impl Stage {
         }))
     }
 
-    /// Waits for the plan checkpoint numbered `n` (from 1) and answers it.
+    /// Waits for the plan approval numbered `n` (from 1) and answers it.
     async fn answer(
         &self,
         step: &mut Step,
         n: usize,
         action: AnswerAction,
         text: Option<&str>,
-    ) -> anyhow::Result<CheckpointOpened> {
+    ) -> anyhow::Result<ApprovalOpened> {
         let opened = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
-                if let Some(opened) = plan_checkpoints(&self.sink.events()).into_iter().nth(n - 1) {
+                if let Some(opened) = plan_approvals(&self.sink.events()).into_iter().nth(n - 1) {
                     return Ok(opened);
                 }
                 if step.is_finished() {
@@ -154,14 +154,14 @@ impl Stage {
         })
         .await
         .context("the plan approval never opened")??;
-        checkpoints::answer(
+        approvals::answer(
             &self.host,
-            CheckpointAnswer {
+            ApprovalAnswer {
                 id: opened.id.clone(),
                 action,
                 text: text.map(str::to_owned),
                 evidence_sha256: opened.evidence_sha256.clone(),
-                cards: Vec::new(),
+                tasks: Vec::new(),
             },
         )
         .map_err(anyhow::Error::msg)?;
@@ -169,19 +169,19 @@ impl Stage {
     }
 }
 
-const CHECKPOINT_ONLY: &str = r#"
-name: plan-checkpoint
+const APPROVAL_ONLY: &str = r#"
+name: plan-approval
 description: The plan approval alone
 phases:
   - name: Plan
     standard: plan
     steps:
-      - kind: checkpoint
-        checkpoint: plan
+      - kind: approval
+        approval: plan
 "#;
 
 #[tokio::test]
-async fn plan_checkpoint_after_divide() -> anyhow::Result<()> {
+async fn plan_approval_after_divide() -> anyhow::Result<()> {
     let stage = Stage::new(&[], &[], |_| {})?;
     let mut step = stage.start();
     let opened = stage
@@ -193,8 +193,8 @@ async fn plan_checkpoint_after_divide() -> anyhow::Result<()> {
     let events = stage.sink.events();
     let opened_at = events
         .iter()
-        .position(|event| matches!(&event.kind, RunEventKind::Checkpoint(CheckpointEvent::Opened(o)) if o.id == opened.id))
-        .context("no Checkpoint::Opened")?;
+        .position(|event| matches!(&event.kind, RunEventKind::Approval(ApprovalEvent::Opened(o)) if o.id == opened.id))
+        .context("no Approval::Opened")?;
     let divided: Vec<&DivideEvent> = events[..opened_at]
         .iter()
         .filter_map(|event| match &event.kind {
@@ -207,47 +207,47 @@ async fn plan_checkpoint_after_divide() -> anyhow::Result<()> {
         "the graph comes last"
     );
     let count = |pick: fn(&DivideEvent) -> bool| divided.iter().filter(|e| pick(e)).count();
-    assert_eq!(count(|e| matches!(e, DivideEvent::Owner { .. })), 5);
+    assert_eq!(count(|e| matches!(e, DivideEvent::Worker { .. })), 5);
     assert_eq!(count(|e| matches!(e, DivideEvent::Reviewers { .. })), 5);
     assert_eq!(count(|e| matches!(e, DivideEvent::Predicted { .. })), 5);
-    assert_eq!(count(|e| matches!(e, DivideEvent::Budget(_))), 1);
+    assert_eq!(count(|e| matches!(e, DivideEvent::Limit(_))), 1);
     assert!(
         !events[..opened_at]
             .iter()
-            .any(|e| matches!(e.kind, RunEventKind::Card(_)))
+            .any(|e| matches!(e.kind, RunEventKind::Task(_)))
     );
 
     let packet = plan_packet(&opened)?;
-    let kinds: Vec<&CardKind> = packet.graph.cards.iter().map(|card| &card.kind).collect();
+    let kinds: Vec<&TaskKind> = packet.graph.tasks.iter().map(|task| &task.kind).collect();
     assert_eq!(kinds.len(), 5);
-    assert_eq!(kinds[0], &CardKind::Interface);
+    assert_eq!(kinds[0], &TaskKind::Interface);
     assert_eq!(packet.acceptance_tests.len(), 2);
-    for card in &packet.graph.cards {
-        let owner = card.owner.as_ref().context("a worker for every task")?;
-        assert_eq!(card.reviewers.len(), 1);
+    for task in &packet.graph.tasks {
+        let worker = task.worker.as_ref().context("a worker for every task")?;
+        assert_eq!(task.reviewers.len(), 1);
         assert_ne!(
-            family(&card.reviewers[0].to_string()),
-            family(&owner.to_string())
+            provider(&task.reviewers[0].to_string()),
+            provider(&worker.to_string())
         );
-        assert!(card.predictions.is_some());
+        assert!(task.predictions.is_some());
     }
     let sum: f64 = packet
-        .budget
+        .limit
         .lines
         .iter()
         .map(|line| line.amount.amount)
         .sum();
-    assert!((sum - packet.budget.total.amount).abs() < 1e-9);
+    assert!((sum - packet.limit.total.amount).abs() < 1e-9);
 
     let created: Vec<&RunEvent> = events[opened_at..]
         .iter()
-        .filter(|e| matches!(e.kind, RunEventKind::Card(CardEvent::Created(_))))
+        .filter(|e| matches!(e.kind, RunEventKind::Task(TaskEvent::Created(_))))
         .collect();
     assert_eq!(created.len(), 5);
     assert!(events.iter().any(|e| matches!(
         &e.kind,
-        RunEventKind::Card(CardEvent::State {
-            to: CardState::Waiting,
+        RunEventKind::Task(TaskEvent::State {
+            to: TaskState::Waiting,
             ..
         })
     )));
@@ -274,36 +274,35 @@ async fn dependencies_added_by_conductor_before_build() -> anyhow::Result<()> {
         .position(|e| {
             matches!(
                 e.kind,
-                RunEventKind::Integration(IntegrationEvent::DependenciesAdded { .. })
+                RunEventKind::Merge(MergeEvent::DependenciesAdded { .. })
             )
         })
         .context("no DependenciesAdded")?;
-    let RunEventKind::Integration(IntegrationEvent::DependenciesAdded { packages, sha }) =
-        &events[added].kind
+    let RunEventKind::Merge(MergeEvent::DependenciesAdded { packages, sha }) = &events[added].kind
     else {
         bail!("not DependenciesAdded");
     };
     assert_eq!(packages, &["redis>=5".to_owned()]);
-    // Every card exists before the dependencies land, and none has started.
+    // Every task exists before the dependencies land, and none has started.
     let created = events[..added]
         .iter()
-        .filter(|e| matches!(e.kind, RunEventKind::Card(CardEvent::Created(_))))
+        .filter(|e| matches!(e.kind, RunEventKind::Task(TaskEvent::Created(_))))
         .count();
     assert_eq!(created, 5);
     assert!(!events.iter().any(|e| matches!(
         &e.kind,
-        RunEventKind::Card(CardEvent::State {
-            to: CardState::Running,
+        RunEventKind::Task(TaskEvent::State {
+            to: TaskState::Running,
             ..
         })
     )));
 
     let message = stage.repo.git(&["log", "-1", "--format=%B", sha])?;
-    assert!(message.contains("Argonauts-Conductor: run-01"), "{message}");
+    assert!(message.contains("Argonauts-Code: run-01"), "{message}");
     let files = stage.repo.git(&["show", "--name-only", "--format=", sha])?;
     assert_eq!(files.trim(), "requirements.txt");
-    let integration = branch::integration_branch(&RunId::new("run-01")?);
-    let head = stage.repo.git(&["rev-parse", &integration])?;
+    let run_branch = branch::run_branch(&RunId::new("run-01")?);
+    let head = stage.repo.git(&["rev-parse", &run_branch])?;
     assert_eq!(head.trim(), sha);
     let requirements = stage
         .repo
@@ -313,7 +312,7 @@ async fn dependencies_added_by_conductor_before_build() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn unlisted_dependency_is_flagged_at_the_checkpoint() -> anyhow::Result<()> {
+async fn unlisted_dependency_is_flagged_at_the_approval() -> anyhow::Result<()> {
     let stage = Stage::new(&[], &["left-pad"], |settings| {
         settings.divide.predictions = false
     })?;
@@ -341,7 +340,7 @@ async fn unlisted_dependency_is_flagged_at_the_checkpoint() -> anyhow::Result<()
             .sink
             .events()
             .iter()
-            .any(|e| matches!(e.kind, RunEventKind::Card(_)))
+            .any(|e| matches!(e.kind, RunEventKind::Task(_)))
     );
     Ok(())
 }
@@ -350,7 +349,7 @@ async fn unlisted_dependency_is_flagged_at_the_checkpoint() -> anyhow::Result<()
 async fn plan_approve_with_edits_becomes_decision() -> anyhow::Result<()> {
     let stage = Stage::new(&[], &[], |settings| settings.divide.predictions = false)?;
     let mut step = stage.start_workflow()?;
-    // An edit that breaks a rule reopens the checkpoint with the reason.
+    // An edit that breaks a rule reopens the approval with the reason.
     stage
         .answer(
             &mut step,
@@ -381,7 +380,7 @@ async fn plan_approve_with_edits_becomes_decision() -> anyhow::Result<()> {
         .context("no Plan::Decided")?;
     assert_eq!(decided.title, "Your edits");
     assert_eq!(decided.choice, note);
-    // Kept under Argonauts' home, never on the run's branch.
+    // Kept under Argonauts Code's home, never on the run's branch.
     let state_dir = argonauts_crew::divide::repo_state_dir(&stage.host);
     let file = format!("decisions/{}-your-edits.md", decided.id);
     let record = std::fs::read_to_string(state_dir.join(&file))?;
@@ -399,20 +398,20 @@ async fn plan_approve_with_edits_becomes_decision() -> anyhow::Result<()> {
     let store = events
         .iter()
         .find_map(|e| match &e.kind {
-            RunEventKind::Card(CardEvent::Created(spec)) if spec.id.as_str() == "task-002" => {
+            RunEventKind::Task(TaskEvent::Created(spec)) if spec.id.as_str() == "task-002" => {
                 Some(spec.clone())
             }
             _ => None,
         })
         .context("task-002 was never created")?;
-    assert_eq!(store.budget.limit.map(|limit| limit.amount), Some(2.5));
+    assert_eq!(store.limit.limit.map(|limit| limit.amount), Some(2.5));
     Ok(())
 }
 
 #[tokio::test]
 async fn a_failed_prediction_is_left_out() -> anyhow::Result<()> {
     fn answers(spec: &SessionSpec) -> FakeSession {
-        match (spec.step, spec.card.as_ref().map(|card| card.as_str())) {
+        match (spec.step, spec.task.as_ref().map(|task| task.as_str())) {
             // Not the schema `Predict` asks for.
             (Some(StepName::Predict), Some("task-002")) => {
                 FakeSession::structured(json!({ "guess": "soon" }))
@@ -427,8 +426,8 @@ async fn a_failed_prediction_is_left_out() -> anyhow::Result<()> {
         .await?;
     step.await??;
     let packet = plan_packet(&opened)?;
-    for card in &packet.graph.cards {
-        assert_eq!(card.predictions.is_some(), card.id.as_str() != "task-002");
+    for task in &packet.graph.tasks {
+        assert_eq!(task.predictions.is_some(), task.id.as_str() != "task-002");
     }
     let events = stage.sink.events();
     let predicted = events
@@ -473,12 +472,12 @@ async fn a_dependency_the_conductor_cant_add_is_yours() -> anyhow::Result<()> {
     let events = stage.sink.events();
     assert!(!events.iter().any(|e| matches!(
         e.kind,
-        RunEventKind::Integration(IntegrationEvent::DependenciesAdded { .. })
+        RunEventKind::Merge(MergeEvent::DependenciesAdded { .. })
     )));
     assert_eq!(
         events
             .iter()
-            .filter(|e| matches!(e.kind, RunEventKind::Card(CardEvent::Created(_))))
+            .filter(|e| matches!(e.kind, RunEventKind::Task(TaskEvent::Created(_))))
             .count(),
         5
     );
@@ -487,18 +486,18 @@ async fn a_dependency_the_conductor_cant_add_is_yours() -> anyhow::Result<()> {
 
 fn answer(spec: &SessionSpec) -> FakeSession {
     match spec.step {
-        Some(StepName::PlanToCards) => FakeSession::structured(proposal()),
+        Some(StepName::PlanToTasks) => FakeSession::structured(proposal()),
         Some(StepName::Predict) => FakeSession::structured(json!({
-            "p_pass_gates_first_try": 0.7,
+            "p_pass_checks_first_try": 0.7,
             "p_within_time_cap": 0.8,
-            "p_at_most_two_attempts": 0.9,
+            "p_at_most_two_tries": 0.9,
         })),
         _ => FakeSession::completed("done"),
     }
 }
 
 fn proposal() -> Value {
-    let card = |key: &str, kind: &str, owned: &str, depends: &[&str], criteria: &[&str]| {
+    let task = |key: &str, kind: &str, owned: &str, depends: &[&str], criteria: &[&str]| {
         json!({
             "key": key,
             "title": key,
@@ -511,10 +510,10 @@ fn proposal() -> Value {
         })
     };
     json!({
-        "cards": [
-            card("api", "interface", "src/limiter/api.rs", &[], &[]),
-            card("store", "build", "src/limiter/store/**", &["api"], &["G1"]),
-            card("middleware", "build", "src/middleware/**", &["api"], &["G2"]),
+        "tasks": [
+            task("api", "interface", "src/limiter/api.rs", &[], &[]),
+            task("store", "build", "src/limiter/store/**", &["api"], &["G1"]),
+            task("middleware", "build", "src/middleware/**", &["api"], &["G2"]),
         ]
     })
 }
@@ -551,7 +550,7 @@ fn history(
         out_of_scope: Vec::new(),
         assumptions: Vec::new(),
         answers: Vec::new(),
-        source: GoalSource::Restatements,
+        source: GoalSource::Readings,
         path: context.root.join(".argonauts/goal.md"),
         sha256: "0".repeat(64),
     };
@@ -562,8 +561,8 @@ fn history(
         forced: true,
         workflow: "council".to_owned(),
         estimate: None,
-        triage: None,
-        chat_turn: None,
+        captain_or_crew: None,
+        conversation_turn: None,
         continues: None,
         repo_root: context.root.clone(),
         base_branch: None,
@@ -573,9 +572,9 @@ fn history(
         settings_sha256: String::new(),
         settings: Value::Null,
         overrides: Vec::new(),
-        harness_versions: Default::default(),
+        cli_versions: Default::default(),
         version: "0.0.1".to_owned(),
-        front_end: None,
+        outside_agent: None,
         instructions: Vec::new(),
         required_steps: Vec::new(),
     };
@@ -616,9 +615,9 @@ fn history(
             seq: seq as u64,
             ts: time::OffsetDateTime::UNIX_EPOCH,
             run_id: run.clone(),
-            card_id: None,
+            task_id: None,
             session: None,
-            source: "conductor".to_owned(),
+            source: "argonauts-code".to_owned(),
             kind,
         })
         .collect())
@@ -636,18 +635,18 @@ fn step_call() -> StepCall {
         },
         depth: 0,
         standard: StandardPhase::Decide,
-        step: serde_json::from_value(json!({"kind": "checkpoint", "checkpoint": "plan"}))
+        step: serde_json::from_value(json!({"kind": "approval", "approval": "plan"}))
             .expect("an approval step"),
         item: None,
     }
 }
 
-fn plan_checkpoints(events: &[RunEvent]) -> Vec<CheckpointOpened> {
+fn plan_approvals(events: &[RunEvent]) -> Vec<ApprovalOpened> {
     events
         .iter()
         .filter_map(|event| match &event.kind {
-            RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
-                if opened.kind == CheckpointKind::Plan =>
+            RunEventKind::Approval(ApprovalEvent::Opened(opened))
+                if opened.kind == ApprovalKind::Plan =>
             {
                 Some((**opened).clone())
             }
@@ -656,15 +655,15 @@ fn plan_checkpoints(events: &[RunEvent]) -> Vec<CheckpointOpened> {
         .collect()
 }
 
-fn plan_packet(opened: &CheckpointOpened) -> anyhow::Result<&PlanPacket> {
+fn plan_packet(opened: &ApprovalOpened) -> anyhow::Result<&PlanPacket> {
     match &opened.packet {
-        CheckpointPacket::Plan(packet) => Ok(packet),
+        ApprovalPacket::Plan(packet) => Ok(packet),
         other => bail!("not a plan packet: {other:?}"),
     }
 }
 
-fn family(worker: &str) -> &'static str {
+fn provider(worker: &str) -> &'static str {
     CREW.iter()
         .find(|(name, _)| *name == worker)
-        .map_or("unknown", |(_, family)| family)
+        .map_or("unknown", |(_, provider)| provider)
 }

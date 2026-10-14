@@ -17,9 +17,9 @@ use std::process::ExitCode;
 use argonauts_app::{FirstView, InteractiveOptions, TelemetryAction};
 use argonauts_core::RunId;
 use argonauts_core::agent_sessions::AgentSessionRef;
-use argonauts_core::names::ChatId;
+use argonauts_core::cli_sessions::CliSessionRef;
+use argonauts_core::names::ConversationId;
 use argonauts_core::sanitize::sanitize_for_terminal;
-use argonauts_core::vendor_sessions::VendorSessionRef;
 use clap::FromArgMatches as _;
 
 use crate::args::{AutoCommand, Cli, Command, McpCommand, TelemetryCommand};
@@ -59,14 +59,14 @@ async fn dispatch(cli: Cli) -> ExitCode {
         screen_reader: cli.screen_reader,
         guided_setup,
     };
-    if cli.continue_chat && cli.command.is_some() {
+    if cli.continue_conversation && cli.command.is_some() {
         eprintln!(
             "argonauts: -c opens the app on your newest conversation, so it takes no command"
         );
         return ExitCode::from(usage::USAGE_EXIT);
     }
     let result = match cli.command {
-        None if cli.continue_chat => {
+        None if cli.continue_conversation => {
             argonauts_app::run_interactive_with(app(false), FirstView::Continue)
                 .await
                 .map(|()| ExitCode::SUCCESS)
@@ -74,13 +74,12 @@ async fn dispatch(cli: Cli) -> ExitCode {
         None => argonauts_app::run_interactive(app(false))
             .await
             .map(|()| ExitCode::SUCCESS),
-        Some(Command::Init) => argonauts_app::run_interactive(app(true))
+        Some(Command::Setup) => argonauts_app::run_interactive(app(true))
             .await
             .map(|()| ExitCode::SUCCESS),
         Some(Command::Run(ref args)) => runs::run(args, &cli.set, cli.screen_reader).await,
         Some(Command::Resume { ref id }) => resume(app(false), id.as_deref()).await,
         Some(Command::Status { json }) => runs::status(json).await,
-        Some(Command::Inbox) => runs::inbox().await,
         Some(Command::Doctor(ref args)) => doctor::run(args, &cli.set).await,
         Some(Command::Update) => update::run(&cli.set).await,
         Some(Command::Config(ref command)) => config::run(command, &cli.set),
@@ -88,11 +87,11 @@ async fn dispatch(cli: Cli) -> ExitCode {
         Some(Command::Models { discover }) => config::models(discover).await,
         Some(Command::Approve {
             ref run,
-            ref checkpoint,
-        }) => approve::run(run, checkpoint, app(false)).await,
+            ref approval,
+        }) => approve::run(run, approval, app(false)).await,
         Some(Command::Approvals) => approvals::show().await,
         Some(Command::Auto(AutoCommand::Off)) => approvals::auto_off(),
-        Some(Command::Supervise { ref repo, ref run }) => supervise(repo, run).await,
+        Some(Command::Host { ref repo, ref run }) => host(repo, run).await,
         Some(Command::Mcp(McpCommand::Serve { ref repo })) => {
             mcp::serve(repo.as_deref(), &cli.set).await
         }
@@ -132,8 +131,8 @@ async fn dispatch(cli: Cli) -> ExitCode {
             ref as_of,
             json,
         }) => learning::run(learning::records(action, as_of.clone()), json, &cli.set).await,
-        Some(Command::Recipes { ref action, json }) => {
-            learning::run(learning::recipes(action.clone()), json, &cli.set).await
+        Some(Command::LearnedWorkflows { ref action, json }) => {
+            learning::run(learning::learned_workflows(action.clone()), json, &cli.set).await
         }
         Some(Command::Skills { ref action, json }) => {
             learning::run(learning::skills(action.clone()), json, &cli.set).await
@@ -142,8 +141,8 @@ async fn dispatch(cli: Cli) -> ExitCode {
             let command = argonauts_app::LearningShell::Sync { check, force };
             learning::run(command, json, &cli.set).await
         }
-        Some(Command::Retro { ref run, json }) => {
-            let command = argonauts_app::LearningShell::Retro { run: run.clone() };
+        Some(Command::RunReview { ref run, json }) => {
+            let command = argonauts_app::LearningShell::RunReview { run: run.clone() };
             learning::run(command, json, &cli.set).await
         }
     };
@@ -181,7 +180,7 @@ async fn resume(options: InteractiveOptions, id: Option<&str>) -> anyhow::Result
     Ok(ExitCode::SUCCESS)
 }
 
-/// `chat-002`, `run-03`, `run-03/s-002`, or `claude-code:0a1b2c3d`.
+/// `conversation-002`, `run-03`, `run-03/s-002`, or `claude-code:0a1b2c3d`.
 fn resume_view(id: Option<&str>) -> anyhow::Result<FirstView> {
     Ok(match id {
         Some(id) if id.contains('/') => {
@@ -191,12 +190,12 @@ fn resume_view(id: Option<&str>) -> anyhow::Result<FirstView> {
                 ))
             })?)
         }
-        Some(id) if id.starts_with("chat-") => FirstView::Conversation(
-            ChatId::parse(id)
+        Some(id) if id.starts_with("conversation-") => FirstView::PastConversation(
+            ConversationId::parse(id)
                 .ok_or_else(|| usage(anyhow::anyhow!("{id:?} isn't a conversation id")))?,
         ),
         Some(id) if id.contains(':') => {
-            FirstView::VendorSession(VendorSessionRef::parse(id).ok_or_else(|| {
+            FirstView::CliSession(CliSessionRef::parse(id).ok_or_else(|| {
                 usage(anyhow::anyhow!(
                     "{id:?} isn't a session such as codex:019a2f"
                 ))
@@ -207,10 +206,10 @@ fn resume_view(id: Option<&str>) -> anyhow::Result<FirstView> {
     })
 }
 
-/// The supervisor checks its own ancestry: only Argonauts' own agents may not host a run.
-async fn supervise(repo: &std::path::Path, run: &str) -> anyhow::Result<ExitCode> {
+/// The run host checks its own ancestry: only Argonauts Code's own agents may not host a run.
+async fn host(repo: &std::path::Path, run: &str) -> anyhow::Result<ExitCode> {
     let run = RunId::new(run).map_err(usage)?;
-    argonauts_app::supervise(repo, &run).await?;
+    argonauts_app::host(repo, &run).await?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -228,15 +227,15 @@ fn init_logging() {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::names::VendorId;
+    use argonauts_core::names::AgentId;
 
     use super::*;
 
     #[test]
     fn resume_takes_a_conversation_a_run_or_a_cli_session() {
         assert_eq!(
-            resume_view(Some("chat-002")).unwrap(),
-            FirstView::Conversation(ChatId::numbered(2))
+            resume_view(Some("conversation-002")).unwrap(),
+            FirstView::PastConversation(ConversationId::numbered(2))
         );
         assert_eq!(
             resume_view(Some("run-03")).unwrap(),
@@ -244,8 +243,8 @@ mod tests {
         );
         assert_eq!(
             resume_view(Some("codex:019a2f")).unwrap(),
-            FirstView::VendorSession(VendorSessionRef {
-                vendor: VendorId("codex".into()),
+            FirstView::CliSession(CliSessionRef {
+                agent_id: AgentId("codex".into()),
                 id: "019a2f".into(),
             })
         );

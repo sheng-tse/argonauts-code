@@ -1,5 +1,5 @@
 //! A written workflow against what you required: the steps it lacks or put elsewhere, and how
-//! its tasks differ from a list you fixed. The same check reads a workflow the orchestrator
+//! its tasks are different from a list you fixed. The same check reads a workflow the orchestrator
 //! wrote, a file of yours, and what Claude Code reports of its own, since all three come in
 //! one shape: steps in order, and the tasks, or the agents' labels, in order.
 
@@ -83,7 +83,7 @@ fn in_place(required: &Required, step: &RequiredStep, index: usize, names: &[&st
     }
 }
 
-/// How the plan's tasks, `planned` in order, differ from the list the request fixed; `None`
+/// How the plan's tasks, `planned` in order, are different from the list the request fixed; `None`
 /// when it fixed none. A planned task matches yours by its name, or by a short form of it such
 /// as its label: `build:migrate-schema` and `migrate-schema` both stand for `migrate the
 /// schema`.
@@ -147,7 +147,7 @@ fn stands_for(task: &str, yours: &str) -> bool {
 }
 
 /// What the orchestrator is told, once, when the workflow it wrote lacks a step you require or
-/// put one elsewhere. After that Argonauts places the step itself.
+/// put one elsewhere. After that Argonauts Code places the step itself.
 pub fn ask_to_place(required: &Required, found: &Steps) -> Option<String> {
     if found.is_empty() {
         return None;
@@ -155,7 +155,7 @@ pub fn ask_to_place(required: &Required, found: &Steps) -> Option<String> {
     let mut text = String::from(
         "The workflow you wrote doesn't have every step the user requires where it must be. \
          Write it again with each of these as a step of its own, by this name, where it says. \
-         If one is still missing, Argonauts adds it itself.\n",
+         If one is still missing, Argonauts Code adds it itself.\n",
     );
     for name in found.missing.iter().chain(&found.misplaced) {
         if let Some(step) = required.step(name) {
@@ -190,7 +190,7 @@ pub fn ask_to_keep_tasks(required: &Required, changes: &TaskChanges) -> Option<S
     Some(text)
 }
 
-/// Plain lines for a workflow Argonauts can't change, such as Claude Code's own: what it
+/// Plain lines for a workflow Argonauts Code can't change, such as Claude Code's own: what it
 /// lacked of what you required, for the closing answer and the workflow's notice.
 pub fn said(found: &Steps, tasks: Option<&TaskChanges>) -> Vec<String> {
     let mut lines = Vec::new();

@@ -1,11 +1,11 @@
 //! A near tie, or `judging.method: human`: you pick the plan before it's divided. Your pick is
 //! recorded as the judged result's winner, and its decision records are written as a judged
-//! winner's are. When the lead answers the crew's questions, a near tie goes to the plan the
+//! winner's are. When the main agent answers the crew's questions, a near tie goes to the plan the
 //! judges scored highest instead, and the plan approval after it checks that plan.
 
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::checkpoint::{
-    AnswerAction, CheckpointKind, CheckpointPacket, FreeText, PlanPacket,
+use argonauts_core::events::approval::{
+    AnswerAction, ApprovalKind, ApprovalPacket, FreeText, PlanPacket,
 };
 use argonauts_core::events::plan::{JudgingResult, PlanEvent, TaskGraph};
 use argonauts_core::names::PlanLabel;
@@ -14,14 +14,14 @@ use argonauts_core::settings::protocol::JudgingMethod;
 use argonauts_core::{Note, NoteLevel};
 
 use super::plan_facts;
-use crate::checkpoints::{self, CheckpointRequest, options};
+use crate::approvals::{self, ApprovalRequest, options};
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
 use crate::plan::{decisions, drafts};
 use crate::state::plan::SealedDraft;
 use crate::workflow::StepCall;
 
-/// Opens the pick card when the plans were judged without a winner, and records your pick.
+/// Opens the pick question when the plans were judged without a winner, and records your pick.
 /// Nothing to do when a plan is already chosen.
 pub async fn pick_if_tied(host: &Host, call: &StepCall) -> EngineResult<()> {
     let tied = host.read(|state| {
@@ -32,9 +32,9 @@ pub async fn pick_if_tied(host: &Host, call: &StepCall) -> EngineResult<()> {
     let Some((judged, latest)) = tied else {
         return Ok(());
     };
-    let by_lead = judged.method != JudgingMethod::Human
-        && checkpoints::answerer(host, CheckpointKind::Plan).answers_for_you();
-    if by_lead && let Some(top) = top_scored(&judged) {
+    let by_main_agent = judged.method != JudgingMethod::Human
+        && approvals::answerer(host, ApprovalKind::Plan).answers_for_you();
+    if by_main_agent && let Some(top) = top_scored(&judged) {
         let chosen = latest
             .iter()
             .find(|draft| draft.label == top)
@@ -62,7 +62,7 @@ pub async fn pick_if_tied(host: &Host, call: &StepCall) -> EngineResult<()> {
         return Ok(());
     }
     let request = request(host, call, &judged, &latest)?;
-    let decided = checkpoints::open_and_wait(host, request).await?;
+    let decided = approvals::open_and_wait(host, request).await?;
     let label = match &decided.action {
         AnswerAction::Choose { value } => value.parse::<PlanLabel>().ok(),
         _ => None,
@@ -111,7 +111,7 @@ fn request(
     call: &StepCall,
     judged: &JudgingResult,
     latest: &[SealedDraft],
-) -> EngineResult<CheckpointRequest> {
+) -> EngineResult<ApprovalRequest> {
     let review = plan_facts::review(host);
     let plans = drafts::labeled(&latest.iter().collect::<Vec<_>>())?;
     let documents = plans
@@ -147,21 +147,21 @@ fn request(
         near_tie: judged.near_tie,
         decisions: host.read(|state| state.plan.decisions.clone()),
         graph: TaskGraph {
-            cards: Vec::new(),
+            tasks: Vec::new(),
             critical_path: Vec::new(),
         },
         acceptance_tests: Vec::new(),
-        budget: super::empty_budget(),
+        limit: super::empty_limit(),
         new_dependencies: Vec::new(),
         flags: review.flags(),
         workflow: host.read(super::workflow_plan::plan_workflow),
     };
-    Ok(CheckpointRequest {
+    Ok(ApprovalRequest {
         at: Some(call.at.clone()),
-        kind: CheckpointKind::Plan,
+        kind: ApprovalKind::Plan,
         title: "Which plan should the run follow?".to_owned(),
-        card: None,
-        packet: CheckpointPacket::Plan(Box::new(packet)),
+        task: None,
+        packet: ApprovalPacket::Plan(Box::new(packet)),
         facts: review.facts(),
         agent_outputs,
         documents,
@@ -180,7 +180,7 @@ mod tests {
     fn tally(label: PlanLabel, mean: f64, counted: u32) -> PlanTally {
         PlanTally {
             label,
-            author: "codex".parse().expect("a worker"),
+            author: "codex".parse().expect("a model"),
             mean,
             spread: 0.0,
             counted,
@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn the_lead_takes_the_best_mean_and_the_earlier_label_on_a_tie() {
+    fn the_main_agent_takes_the_best_mean_and_the_earlier_label_on_a_tie() {
         let judged = |plans| JudgingResult {
             method: JudgingMethod::Cross,
             plans,

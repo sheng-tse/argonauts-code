@@ -4,26 +4,26 @@
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader};
 
-use argonauts_core::CardId;
+use argonauts_core::TaskId;
 use argonauts_core::api::{RawView, StatusSummary};
 use argonauts_core::engine::EngineCommand;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::run::{Party, RunLifecycle};
 use argonauts_core::layout::{self, session_files};
 use argonauts_core::names::SessionKey;
+use argonauts_core::session_runner::{Access, SessionControl};
 use argonauts_core::settings::approvals::ApprovalMode;
-use argonauts_core::worker::{Access, SessionControl};
 
 use crate::engine::host::Host;
 use crate::engine::shared::{Admission, lock};
 use crate::error::EngineResult;
 use crate::status::Viewer;
-use crate::{blackboard, card, checkpoints, goal, handoff, integrate, workflow};
+use crate::{approvals, blackboard, fallback, goal, merge, task, workflow};
 
 pub async fn handle(host: &Host, command: EngineCommand) -> EngineResult<()> {
     match command {
         EngineCommand::Answer { answer, reply } => {
-            let _ = reply.send(checkpoints::answer(host, answer));
+            let _ = reply.send(approvals::answer(host, answer));
         }
         EngineCommand::Steer {
             session,
@@ -49,43 +49,49 @@ pub async fn handle(host: &Host, command: EngineCommand) -> EngineResult<()> {
         EngineCommand::Pause { now } => pause(host, now).await?,
         EngineCommand::CancelPause => cancel_pause(host)?,
         EngineCommand::Stop => stop(host).await?,
-        EngineCommand::StopSession { session } => {
-            card::takeover::stop_session(host, &session).await?;
+        EngineCommand::StopSession {
+            session,
+            again: false,
+        } => {
+            task::take_over::stop_session(host, &session).await?;
+        }
+        EngineCommand::StopSession { session, .. } => {
+            task::take_over::restart_session(host, &session)?;
         }
         EngineCommand::ApprovalMode { mode } => approval_mode(host, mode)?,
         EngineCommand::Reassign {
-            card: id,
+            task: id,
             to,
             rule_override,
             reply,
         } => {
-            let _ = reply.send(card::takeover::reassign(host, &id, to, rule_override).await);
+            let _ = reply.send(task::take_over::reassign(host, &id, to, rule_override).await);
         }
-        EngineCommand::TakeOver { card: id, reply } => {
-            let _ = reply.send(card::takeover::take_over(host, &id).await);
+        EngineCommand::TakeOver { task: id, reply } => {
+            let _ = reply.send(task::take_over::take_over(host, &id).await);
         }
-        EngineCommand::TakeOverEnded { card: id } => {
-            card::takeover::take_over_ended(host, &id).await?;
+        EngineCommand::TakeOverEnded { task: id } => {
+            task::take_over::take_over_ended(host, &id).await?;
         }
         EngineCommand::Status { reply } => {
             let _ = reply.send(status(host));
         }
         EngineCommand::Diff {
-            card: id,
+            task: id,
             scope,
             reply,
         } => {
-            let _ = reply.send(integrate::diff::card_diff(host, &id, scope).await);
+            let _ = reply.send(merge::diff::task_diff(host, &id, scope).await);
         }
         EngineCommand::Raw { session, reply } => {
             let _ = reply.send(raw(host, &session));
         }
-        EngineCommand::Revert {
-            card: id,
+        EngineCommand::Rewind {
+            task: id,
             checkpoint,
             reply,
         } => {
-            let _ = reply.send(handoff::revert::revert(host, &id, checkpoint).await);
+            let _ = reply.send(fallback::rewind::rewind(host, &id, checkpoint).await);
         }
         EngineCommand::ProposeWorkflowChange {
             target,
@@ -96,7 +102,7 @@ pub async fn handle(host: &Host, command: EngineCommand) -> EngineResult<()> {
             let _ = reply.send(workflow::change::propose(host, target, *proposed, reason).await);
         }
         EngineCommand::SpotCheck { id, correct, reply } => {
-            let _ = reply.send(checkpoints::spot_check(host, &id, correct));
+            let _ = reply.send(approvals::spot_check(host, &id, correct));
         }
         EngineCommand::Goal { action, reply } => {
             let _ = reply.send(goal::pursue::act(host, action).await);
@@ -114,14 +120,14 @@ pub fn after_finish(host: &Host, command: EngineCommand) {
         EngineCommand::Answer { answer, reply } => {
             let decided = host.read(|state| {
                 state
-                    .checkpoints
+                    .approvals
                     .by_id
                     .get(&answer.id)
                     .is_some_and(|record| record.decided.is_some())
             });
-            // A decided checkpoint gets its usual answer; anything else can't be decided now.
+            // A decided approval gets its usual answer; anything else can't be decided now.
             let answered = if decided {
-                checkpoints::answer(host, answer)
+                approvals::answer(host, answer)
             } else {
                 refused()
             };
@@ -142,7 +148,7 @@ pub fn after_finish(host: &Host, command: EngineCommand) {
         EngineCommand::Mention { reply, .. } | EngineCommand::Guidance { reply, .. } => {
             let _ = reply.send(Err(FINISHED.to_owned()));
         }
-        EngineCommand::Reassign { reply, .. } | EngineCommand::Revert { reply, .. } => {
+        EngineCommand::Reassign { reply, .. } | EngineCommand::Rewind { reply, .. } => {
             let _ = reply.send(refused());
         }
         EngineCommand::TakeOver { reply, .. } => {
@@ -159,7 +165,7 @@ pub fn after_finish(host: &Host, command: EngineCommand) {
         }
         // A spot check is about an approval already given, so a finished run still takes one.
         EngineCommand::SpotCheck { id, correct, reply } => {
-            let _ = reply.send(checkpoints::spot_check(host, &id, correct));
+            let _ = reply.send(approvals::spot_check(host, &id, correct));
         }
         EngineCommand::Pause { .. }
         | EngineCommand::CancelPause
@@ -188,7 +194,7 @@ pub fn is_long(command: &EngineCommand) -> bool {
 }
 
 /// `now: false` starts no sessions and sends `StopAfterTool` to each; `now: true` stops them at
-/// once and cancels step sessions. Either way: commit, record `Paused`, and park.
+/// once and cancels step sessions. Either way: commit, record `Paused`, and wait.
 pub async fn pause(host: &Host, now: bool) -> EngineResult<()> {
     if begin_pause(host, now)? {
         finish_pause(host).await?;
@@ -203,7 +209,7 @@ pub fn begin_pause(host: &Host, now: bool) -> EngineResult<bool> {
     begin_pause_by(host, now, Party::User)
 }
 
-/// [`begin_pause`] for whoever asked, such as your rules when the run's budget is spent.
+/// [`begin_pause`] for whoever asked, such as your rules when the run's limit is spent.
 pub fn begin_pause_by(host: &Host, now: bool, by: Party) -> EngineResult<bool> {
     let settled = host.read(|state| state.run.paused || state.run.finished.is_some());
     if settled {
@@ -282,8 +288,8 @@ pub async fn stop_by(host: &Host, by: Party) -> EngineResult<()> {
     Ok(())
 }
 
-/// Records `ApprovalModeChanged`; later decision points carry it as `mode_override`. Full auto
-/// also settles the cards already waiting for you, since nothing waits there.
+/// Records `ApprovalModeChanged`; later decision points carry it as `mode_override`. Autopilot
+/// also settles the questions already waiting for you, since nothing waits there.
 pub fn approval_mode(host: &Host, mode: ApprovalMode) -> EngineResult<()> {
     host.record(
         None,
@@ -294,7 +300,7 @@ pub fn approval_mode(host: &Host, mode: ApprovalMode) -> EngineResult<()> {
         }),
     )?;
     if mode == ApprovalMode::Autopilot {
-        checkpoints::autopilot::settle_open(host)?;
+        approvals::autopilot::settle_open(host)?;
     }
     Ok(())
 }
@@ -335,12 +341,12 @@ pub fn raw(host: &Host, session: &SessionKey) -> Result<RawView, String> {
         lines,
         truncated,
         path,
-        vendor_transcript: transcript,
+        cli_transcript: transcript,
     })
 }
 
 /// Tells every live session to stop, after its tool call or now, and notes them with their
-/// cards for the commit. A pause marks them, so they end `Paused` and resume later.
+/// tasks for the commit. A pause marks them, so they end `Paused` and resume later.
 fn stop_sessions(host: &Host, now: bool, pausing: bool) {
     let live = host.shared().live.all();
     if pausing {
@@ -348,7 +354,7 @@ fn stop_sessions(host: &Host, now: bool, pausing: bool) {
     }
     lock(&host.shared().stopped).extend(
         live.iter()
-            .map(|(key, session)| (key.clone(), session.card.clone())),
+            .map(|(key, session)| (key.clone(), session.task.clone())),
     );
     let control = if now {
         SessionControl::Stop
@@ -369,33 +375,33 @@ fn stop_sessions(host: &Host, now: bool, pausing: bool) {
 
 /// The sessions a pause or stop told to stop, including the ones that went live after it
 /// began. A cancelled pause leaves its own here, and the next pause or stop commits them.
-fn take_stopped(host: &Host) -> Vec<(SessionKey, Option<CardId>)> {
+fn take_stopped(host: &Host) -> Vec<(SessionKey, Option<TaskId>)> {
     std::mem::take(&mut *lock(&host.shared().stopped))
         .into_iter()
         .collect()
 }
 
-/// Commits the worktrees of stopped building sessions, so no work is lost while parked.
+/// Commits the worktrees of stopped building sessions, so no work is lost while waiting.
 async fn commit_stopped(
     host: &Host,
-    stopped: &[(SessionKey, Option<CardId>)],
-) -> EngineResult<Vec<CardId>> {
+    stopped: &[(SessionKey, Option<TaskId>)],
+) -> EngineResult<Vec<TaskId>> {
     let mut committed = BTreeSet::new();
-    for (key, card) in stopped {
-        let Some(card) = card else {
+    for (key, task) in stopped {
+        let Some(task) = task else {
             continue;
         };
         let builds = host.read(|state| {
             state.sessions.get(key).is_some_and(|session| {
-                matches!(session.started.access, Access::Build | Access::Spike)
+                matches!(session.started.access, Access::Build | Access::Experiment)
             })
         });
         if builds
-            && crate::card::worktree::commit_after_end(host, card, key)
+            && crate::task::worktree::commit_after_end(host, task, key)
                 .await?
                 .is_some()
         {
-            committed.insert(card.clone());
+            committed.insert(task.clone());
         }
     }
     Ok(committed.into_iter().collect())
