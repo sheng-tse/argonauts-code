@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 
 use argonauts_core::events::context::ContextDetail;
 use argonauts_core::events::session::{SubagentKind, SubagentStatus};
+use argonauts_core::pictures::Picture;
 use argonauts_core::screen::{Drawn, ScreenChange, ScreenRequest};
 use argonauts_core::settings::ui::HeadsUp;
 use argonauts_core::worker::SessionControl;
@@ -50,6 +51,8 @@ struct Joining {
     uuid: String,
     /// What the session reads.
     text: String,
+    /// The pictures its chips name, which go back with it if it never went.
+    pictures: Vec<Picture>,
     /// For a message to one of the session's subagents: its name and your words. `text` adds
     /// how to pass them on, which the chat never shows.
     for_subagent: Option<(String, String)>,
@@ -68,7 +71,7 @@ impl Joining {
     fn queued(self) -> Queued {
         match self.for_subagent {
             Some((name, text)) => Queued::Subagent { name, text },
-            None => Queued::Request(self.text),
+            None => Queued::Request(self.text, self.pictures),
         }
     }
 }
@@ -153,19 +156,24 @@ impl Live {
         event
     }
 
-    /// Sends your message into the session with a uuid of its own. False when the session
-    /// can't take it, and it waits for the next turn instead.
-    pub(super) fn send(&mut self, text: String) -> bool {
-        self.send_joining(text, None)
+    /// Sends your message into the session with a uuid of its own, and the pictures its chips
+    /// name. False when the session can't take it, and it waits for the next turn instead.
+    pub(super) fn send(&mut self, text: String, pictures: Vec<Picture>) -> bool {
+        self.send_joining(text, pictures, None)
     }
 
     /// Sends `text`, your message for one of the session's subagents with how to pass it on,
     /// while the chat shows only `@name` and your words.
     pub(super) fn send_for_subagent(&mut self, text: String, name: String, words: String) -> bool {
-        self.send_joining(text, Some((name, words)))
+        self.send_joining(text, Vec::new(), Some((name, words)))
     }
 
-    fn send_joining(&mut self, text: String, for_subagent: Option<(String, String)>) -> bool {
+    fn send_joining(
+        &mut self,
+        text: String,
+        pictures: Vec<Picture>,
+        for_subagent: Option<(String, String)>,
+    ) -> bool {
         if !self.send_now {
             return false;
         }
@@ -173,11 +181,13 @@ impl Live {
         let sent = self.ask(SessionControl::Send {
             text: text.clone(),
             uuid: uuid.clone(),
+            pictures: pictures.clone(),
         });
         if sent {
             self.joining.push(Joining {
                 uuid,
                 text,
+                pictures,
                 for_subagent,
             });
         }
@@ -380,10 +390,10 @@ mod tests {
     #[test]
     fn messages_join_only_where_init_lists_send_now() {
         let (mut live, mut sent) = live();
-        assert!(!live.send("too early".into()));
+        assert!(!live.send("too early".into(), Vec::new()));
         live.on_init(&caps(&[SEND_NOW]), &[], HeadsUp::WhenEnabled);
-        assert!(live.send("also check the changelog".into()));
-        let Ok(SessionControl::Send { text, uuid }) = sent.try_recv() else {
+        assert!(live.send("also check the changelog".into(), Vec::new()));
+        let Ok(SessionControl::Send { text, uuid, .. }) = sent.try_recv() else {
             panic!("nothing sent");
         };
         assert_eq!(text, "also check the changelog");
@@ -398,6 +408,25 @@ mod tests {
         );
         // Nothing waits now.
         assert!(!live.send_now());
+    }
+
+    #[test]
+    fn a_message_goes_in_with_its_pictures_and_keeps_them_if_it_never_went() {
+        let (mut live, mut sent) = live();
+        live.on_init(&caps(&[SEND_NOW]), &[], HeadsUp::WhenEnabled);
+        let shot = Picture {
+            number: 2,
+            path: "/tmp/shot.png".into(),
+        };
+        assert!(live.send("and this [Image #2]".into(), vec![shot.clone()]));
+        let Ok(SessionControl::Send { pictures, .. }) = sent.try_recv() else {
+            panic!("nothing sent");
+        };
+        assert_eq!(pictures, std::slice::from_ref(&shot));
+        assert_eq!(
+            live.unread(),
+            [Queued::Request("and this [Image #2]".into(), vec![shot])]
+        );
     }
 
     #[test]
@@ -430,8 +459,8 @@ mod tests {
     fn taking_back_asks_for_each_unread_message() {
         let (mut live, mut sent) = live();
         live.on_init(&caps(&[SEND_NOW]), &[], HeadsUp::WhenEnabled);
-        live.send("one".into());
-        live.send("two".into());
+        live.send("one".into(), Vec::new());
+        live.send("two".into(), Vec::new());
         let uuids: Vec<String> = std::iter::from_fn(|| match sent.try_recv() {
             Ok(SessionControl::Send { uuid, .. }) => Some(uuid),
             _ => None,

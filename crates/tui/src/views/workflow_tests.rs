@@ -5,14 +5,14 @@
 use std::time::Instant;
 
 use argonauts_core::events::session::{
-    SubagentStatus, VendorAgent, VendorAgentState, VendorPhase, VendorWorkflow,
+    EndReason, SubagentStatus, VendorAgent, VendorAgentState, VendorPhase, VendorWorkflow,
 };
 use argonauts_core::names::{SessionKey, WorkflowId};
 use argonauts_core::views::{
     AgentRow, PhaseCount, PhaseRow, RowStatus, WorkflowRow, WorkflowView as WorkflowData,
 };
 use argonauts_core::workflow::StandardPhase;
-use argonauts_core::{RunId, Spend};
+use argonauts_core::{ErrorCategory, RunId, Spend};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -46,6 +46,7 @@ pub(super) fn agent(session: &str, label: &str, status: RowStatus) -> AgentRow {
         context: None,
         standing_in_for: None,
         answered: None,
+        tries: Vec::new(),
     }
 }
 
@@ -153,7 +154,7 @@ fn a_workflow_of_one_phase_shows_that_phase_by_its_own_name() {
     );
     assert!(text.contains("❯ 1 Translate the changelog 0/1"), "{text}");
     assert!(
-        text.contains("┬ Translate the changelog · 1 agent ─"),
+        text.contains("┬ Translate the changelog · 1 step ─"),
         "{text}"
     );
     assert!(text.contains("translate:fr"), "{text}");
@@ -190,7 +191,7 @@ fn twelve_phases_are_numbered_in_their_own_order_and_scroll() {
     assert!(shown[3].starts_with(" ❯ 4  Numbers  0/1"), "{text}");
     assert!(shown[9].contains("10 Index"), "{text}");
     assert!(shown[11].contains("12 Announce"), "{text}");
-    assert!(text.contains("┬ Numbers · 1 agent ─"), "{text}");
+    assert!(text.contains("┬ Numbers · 1 step ─"), "{text}");
 
     // Too short for twelve: the list moves so the selected phase stays on screen.
     for _ in 0..8 {
@@ -244,12 +245,12 @@ fn phases_that_repeat_stay_apart_and_keep_their_own_agents() {
         view: Box::new(later),
     }));
     let text = draw(&mut view, 100, 14);
-    assert!(text.contains("┬ Fix · 1 agent ─"), "{text}");
+    assert!(text.contains("┬ Fix · 1 step ─"), "{text}");
     assert!(text.contains("fix:second-pass"), "{text}");
 
     press(&mut view, KeyCode::Up);
     let text = draw(&mut view, 100, 14);
-    assert!(text.contains("┬ Review · 1 agent ─"), "{text}");
+    assert!(text.contains("┬ Review · 1 step ─"), "{text}");
     assert!(text.contains("review:first-pass"), "{text}");
 }
 
@@ -333,8 +334,8 @@ fn a_reported_workflow_is_drawn_with_its_own_words() {
     assert!(shown[0].contains("✔ Lire     1/1"), "{text}");
     assert!(shown[1].contains("❯ 2 Réécrire 0/2"), "{text}");
     assert!(shown[2].contains("3 Relire"), "{text}");
-    assert!(text.contains("┬ Réécrire · 2 agents ─"), "{text}");
-    assert!(text.contains("1/3 agents"), "{text}");
+    assert!(text.contains("┬ Réécrire · 2 steps ─"), "{text}");
+    assert!(text.contains("1/3 steps"), "{text}");
 }
 
 #[test]
@@ -369,7 +370,7 @@ fn the_kind_of_workflow_follows_its_name_and_the_tokens_its_time() {
     assert!(
         lines[2]
             .trim_end()
-            .ends_with("0/1 agents · 14m00s · ↓ 1.1M tokens"),
+            .ends_with("0/1 steps · 14m00s · ↓ 1.1M tokens"),
         "{text}"
     );
 }
@@ -409,7 +410,7 @@ fn a_step_you_require_carries_a_mark_and_the_others_keep_their_column() {
     press(&mut view, KeyCode::Down);
     let text = draw(&mut view, 100, 14);
     assert!(
-        text.contains("┬ Secrets scan · 0 agents · ★ a step you require ─"),
+        text.contains("┬ Secrets scan · 0 steps · ★ a step you require ─"),
         "{text}"
     );
 }
@@ -450,7 +451,7 @@ fn who_does_a_phase_sits_at_the_end_of_its_title_when_there_is_room() {
     // Too narrow for both: the title stays whole and the note goes.
     let text = draw(&mut view, 60, 14);
     let top = text.lines().find(|line| line.contains("╭ Phases")).unwrap();
-    assert!(top.contains("Build · 1 agent"), "{text}");
+    assert!(top.contains("Build · 1 step"), "{text}");
     assert!(!top.contains("planned"), "{text}");
 
     // A phase still to come says who will do it where its agents will be.
@@ -573,12 +574,12 @@ fn the_goal_panel_under_the_agents_shows_the_selected_agents_goal() {
     assert!(
         lines[2]
             .trim_end()
-            .ends_with("5/8 agents · 14m00s · ↓ 1.1M tokens"),
+            .ends_with("5/8 steps · 14m00s · ↓ 1.1M tokens"),
         "{text}"
     );
     let top = lines.iter().find(|line| line.contains("╭ Phases")).unwrap();
     assert!(
-        top.contains("┬ Build · 3 agents · each task worked as a goal ─"),
+        top.contains("┬ Build · 3 steps · each task worked as a goal ─"),
         "{text}"
     );
     assert!(
@@ -933,4 +934,105 @@ fn with_vim_keys_g_goes_to_the_top_so_its_goal_is_not_offered_there() {
     let mut buf = Buffer::empty(area);
     view.render(area, &mut buf, &ctx);
     assert!(buffer_text(&buf).contains("◆ Goal of build:store"));
+}
+
+fn tried(session: &str, worker: &str) -> argonauts_core::views::StepTry {
+    argonauts_core::views::StepTry {
+        session: SessionKey::parse(session).unwrap(),
+        worker: worker.parse().unwrap(),
+        status: RowStatus::Failed,
+        elapsed_ms: 2_000,
+        reason: Some(EndReason::VendorError {
+            category: ErrorCategory::InvalidRequest,
+            message: r#"{"error":{"message":"Invalid schema for response_format 'output': 'required' is required"}}"#
+                .into(),
+        }),
+    }
+}
+
+/// A try that ended for a reason the CLI gave no text for still says why, as the agent's own
+/// failed row does.
+#[test]
+fn every_failed_try_says_why_it_ended() {
+    let mut review = agent("s-002", "review:due-dates", RowStatus::Running);
+    review.worker = "claude-code/claude-haiku-4-5".parse().unwrap();
+    let mut limited = tried("s-002", "codex/gpt-5.6-luna");
+    limited.reason = Some(EndReason::RateLimited);
+    let mut signed_out = tried("s-002", "codex/gpt-5.6-luna");
+    signed_out.reason = Some(EndReason::Auth {
+        message: "Not logged in. Please run /login".into(),
+    });
+    review.tries = vec![limited, signed_out];
+    let work = phase(
+        "Work",
+        RowStatus::Running,
+        vec![
+            agent("s-001", "build:add-due-dates", RowStatus::Done),
+            review,
+        ],
+    );
+    let mut view = WorkflowView::new(workflow("add-due-dates", vec![work]));
+    press(&mut view, KeyCode::Right);
+    press(&mut view, KeyCode::Down);
+    press(&mut view, KeyCode::Right);
+    let text = draw(&mut view, 120, 16);
+    assert!(
+        text.contains("✗ GPT 5.6 Luna on Codex · 2s · rate limited"),
+        "{text}"
+    );
+    assert!(
+        text.contains("✗ GPT 5.6 Luna on Codex · 2s · Codex isn't signed in"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_step_tried_again_is_one_row_with_its_tries_folded_beneath() {
+    let mut review = agent("s-004", "review:due-dates", RowStatus::Done);
+    review.worker = "claude-code/claude-haiku-4-5".parse().unwrap();
+    review.tries = vec![
+        tried("s-002", "codex/gpt-5.6-luna"),
+        tried("s-003", "codex/gpt-5.6-luna"),
+    ];
+    let work = phase(
+        "Work",
+        RowStatus::Running,
+        vec![
+            agent("s-001", "build:add-due-dates", RowStatus::Done),
+            review,
+            agent("s-005", "judge:due-dates", RowStatus::Running),
+        ],
+    );
+    let mut view = WorkflowView::new(workflow("add-due-dates", vec![work]));
+    let text = draw(&mut view, 120, 16);
+    assert!(text.contains("┬ Work · 3 steps ─"), "{text}");
+    assert!(
+        text.contains("⎿ took over after GPT 5.6 Luna on Codex failed twice"),
+        "{text}"
+    );
+    assert!(!text.contains("→ shows the tries"), "{text}");
+
+    press(&mut view, KeyCode::Right);
+    press(&mut view, KeyCode::Down);
+    let text = draw(&mut view, 120, 16);
+    assert!(
+        text.contains("failed twice · → shows the tries"),
+        "the selected step says how to see its tries: {text}"
+    );
+    assert!(!text.contains("refused the answer format"), "{text}");
+
+    press(&mut view, KeyCode::Right);
+    let text = draw(&mut view, 120, 16);
+    let tries: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains("Codex refused the answer format Argonauts asked for"))
+        .collect();
+    assert_eq!(tries.len(), 2, "a line per try, in one plain line: {text}");
+    assert!(tries[0].contains("✗ GPT 5.6 Luna on Codex · 2s"), "{text}");
+    assert!(text.contains("· ← folds them"), "{text}");
+
+    press(&mut view, KeyCode::Left);
+    let text = draw(&mut view, 120, 16);
+    assert!(!text.contains("refused the answer format"), "{text}");
+    assert_eq!(view.depth(), 1, "← folded the tries, and stayed");
 }

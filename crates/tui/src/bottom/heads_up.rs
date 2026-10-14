@@ -1,5 +1,5 @@
-//! Claude Code's You should know, directly above the input as Claude Code draws it:
-//! a two-cell star column with `✦` in the suggestion color, the tag dim, the line wrapped
+//! Claude Code's You should know, directly above the input as Claude Code draws it: a
+//! two-cell star column with `✦` in the suggestion color, the tag dim, the line wrapped
 //! to the width, and the buttons on the row below, indented 2, three spaces apart, numbered in
 //! order with Dismiss as `0`. Argonauts draws whatever tree comes, so a button it has never
 //! seen works the same.

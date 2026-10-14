@@ -16,7 +16,11 @@ use time::OffsetDateTime;
 
 use super::sessions::{RunFacts, add_spend};
 
+#[cfg(test)]
+mod crew_tests;
+mod inner;
 mod reported;
+mod tries;
 
 use reported::StepWorkflow;
 
@@ -578,6 +582,7 @@ impl WorkflowLog {
             status: RowStatus::Waiting,
         };
         let ended = self.ended(facts);
+        let now_ms = self.sessions.last_ts.and_then(epoch_ms);
         // Once a workflow the runner runs has said what its phases are, they are the view's
         // phases, and the run's own phases around them leave it.
         let mut replaced = false;
@@ -649,6 +654,8 @@ impl WorkflowLog {
                         agents_total: nested.agents_total,
                         workers: nested.workers,
                         elapsed_ms: nested.elapsed_ms,
+                        parent: None,
+                        owner: None,
                     };
                     rows.push((child.started_at, WorkflowRow::Workflow(row)));
                 }
@@ -661,6 +668,10 @@ impl WorkflowLog {
                 built.agents_done += reported.agents_done;
                 built.agents_total += reported.agents_total;
             }
+            let (rows, folded) = tries::fold(rows, &self.sessions);
+            let rows = inner::under_agents(rows, &self.vendors, now_ms);
+            built.agents_total = built.agents_total.saturating_sub(folded.tries);
+            built.agents_done = built.agents_done.saturating_sub(folded.done);
             let steps: Vec<Option<StepProgress>> = (0..phase.steps.len())
                 .map(|step| {
                     let step = u32::try_from(step).unwrap_or(u32::MAX);
@@ -693,6 +704,21 @@ impl WorkflowLog {
                 let mut phases = reported.phases;
                 if let Some(first) = phases.first_mut() {
                     first.rows.splice(0..0, rows);
+                }
+                for phase in &mut phases {
+                    let (rows, folded) =
+                        tries::fold(std::mem::take(&mut phase.rows), &self.sessions);
+                    phase.rows = inner::under_agents(rows, &self.vendors, now_ms);
+                    if folded.tries > 0 {
+                        built.agents_total = built.agents_total.saturating_sub(folded.tries);
+                        built.agents_done = built.agents_done.saturating_sub(folded.done);
+                        phase.count = phase.count.and_then(|count| {
+                            PhaseCount::of(
+                                count.done.saturating_sub(folded.done),
+                                count.total.saturating_sub(folded.tries),
+                            )
+                        });
+                    }
                 }
                 built.phases.extend(phases);
                 continue;

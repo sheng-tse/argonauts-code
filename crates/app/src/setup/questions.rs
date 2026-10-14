@@ -54,6 +54,8 @@ pub(crate) enum Step {
     /// Which of its agent's models fills the role at this key.
     RoleModel(String),
     Approvals,
+    /// Whether to send the day's anonymous usage counts.
+    Telemetry,
     Trust,
     ProjectFolder,
 }
@@ -247,6 +249,7 @@ pub(crate) fn question(step: &Step, view: &SetupView, answers: &Answers) -> Opti
         Step::RoleAgent(key) => roles::agent_question(view, answers, key),
         Step::RoleModel(key) => roles::model_question(view, answers, key),
         Step::Approvals => Some(approvals_question(view)),
+        Step::Telemetry => Some(telemetry_question(view)),
         Step::Trust => trust_question(view),
         Step::ProjectFolder => folder_question(view),
     }
@@ -507,6 +510,37 @@ fn approvals_question(view: &SetupView) -> Question {
     }
 }
 
+/// Off until you say yes, so No comes first unless you said yes before.
+fn telemetry_question(view: &SetupView) -> Question {
+    let no = described(
+        "no",
+        "No",
+        "Nothing is sent. argonauts telemetry on turns it on later.",
+    );
+    let yes = described(
+        "yes",
+        "Yes, send it",
+        "Once a day. argonauts telemetry off or DO_NOT_TRACK=1 stops it.",
+    );
+    let on = view
+        .current_value("telemetry.enabled")
+        .and_then(toml::Value::as_bool)
+        == Some(true);
+    let answers = if on { [yes, no] } else { [no, yes] };
+    Question {
+        kind: ChoiceKind::Init,
+        title: "Usage counts".to_owned(),
+        body: vec![
+            "Argonauts can send one anonymous event a day: its version, your system, the CLIs \
+             and models you use with their tokens and value, and which features you use. Never \
+             prompts, code, or names of files, folders, repositories, accounts or keys. \
+             argonauts telemetry show prints it."
+                .to_owned(),
+        ],
+        options: init_options(&answers),
+    }
+}
+
 fn trust_question(view: &SetupView) -> Option<Question> {
     if view.untrusted.is_empty() {
         return None;
@@ -618,6 +652,14 @@ pub(crate) fn apply(step: &Step, value: &str, view: &SetupView, answers: &mut An
             match answers.approvals {
                 Some(_) => format!("Approvals: {value}."),
                 None => "Approvals: each approval keeps its mode.".to_owned(),
+            }
+        }
+        Step::Telemetry => {
+            answers.telemetry = Some(value == "yes");
+            if value == "yes" {
+                "Usage counts: one anonymous event a day.".to_owned()
+            } else {
+                "Usage counts: nothing is sent.".to_owned()
             }
         }
         Step::Trust => {
@@ -905,6 +947,17 @@ mod tests {
             ]
         );
         assert_eq!(values(&question)[1], "qwen3-coder:30b");
+    }
+
+    #[test]
+    fn usage_counts_are_off_first_unless_you_said_yes() {
+        let mut view = view(Vec::new());
+        assert_eq!(values(&telemetry_question(&view)), ["no", "yes"]);
+        view.current = toml::from_str("[telemetry]\nenabled = true\n").unwrap();
+        assert_eq!(values(&telemetry_question(&view)), ["yes", "no"]);
+        let mut answers = Answers::default();
+        apply(&Step::Telemetry, "yes", &view, &mut answers);
+        assert_eq!(answers.telemetry, Some(true));
     }
 
     #[test]

@@ -17,7 +17,7 @@ const SHADES: [f64; 4] = [0.0, 0.55, 0.3, 0.75];
 /// The color a CLI's `nth` model draws in: the CLI's own for the first, then lighter shades
 /// on a dark screen and darker ones on a light screen. Sixteen colors and none have no
 /// shades, so every model draws in the CLI's color and its name tells them apart.
-pub(super) fn shade(kit: &Kit<'_>, base: Role, nth: usize) -> Style {
+pub(in crate::overview) fn shade(kit: &Kit<'_>, base: Role, nth: usize) -> Style {
     let own = kit.fg(base);
     let mix = SHADES[nth % SHADES.len()];
     let theme = kit.theme;
@@ -46,7 +46,7 @@ pub(super) fn shade(kit: &Kit<'_>, base: Role, nth: usize) -> Style {
 
 /// Cells for each part of `total` in `cells`, largest remainder first. Every part over
 /// nothing gets a cell, taken from the largest.
-pub(super) fn cells_of(values: &[u64], total: u64, cells: usize) -> Vec<usize> {
+pub(in crate::overview) fn cells_of(values: &[u64], total: u64, cells: usize) -> Vec<usize> {
     if total == 0 || cells == 0 {
         return vec![0; values.len()];
     }
@@ -85,7 +85,7 @@ pub(super) fn cells_of(values: &[u64], total: u64, cells: usize) -> Vec<usize> {
 
 /// A bar `cells` wide of colored parts out of `total`, in the lower half of each cell, on the
 /// bar's track. Without color each part takes a fill of its own.
-pub(super) fn bar(
+pub(in crate::overview) fn bar(
     kit: &Kit<'_>,
     parts: &[(u64, Style)],
     total: u64,
@@ -123,7 +123,7 @@ pub(super) fn bar(
 }
 
 /// One part of `total`, as a meter on the track.
-pub(super) fn meter(
+pub(in crate::overview) fn meter(
     kit: &Kit<'_>,
     value: u64,
     total: u64,

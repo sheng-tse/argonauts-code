@@ -5,6 +5,8 @@ pub(crate) mod autopilot;
 pub(crate) mod budget_units;
 pub(crate) mod crew;
 pub(crate) mod handoff;
+pub(crate) mod old_names;
+pub(crate) mod passing_over;
 pub(crate) mod plain;
 pub(crate) mod preset_layer;
 pub(crate) mod roles;

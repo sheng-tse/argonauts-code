@@ -145,17 +145,52 @@ fn a_config_that_wont_parse_prints_its_escapes_written_out() {
         format!("[ui]\ntheme = \"{escapes}\"\n"),
     ] {
         repo.write(".argonauts/config.toml", &text).unwrap();
+        // The file is left out with a warning rather than stopping the command.
         let output = argonauts(&repo, repo.root(), &["config", "show"]);
-        assert!(!output.status.success(), "{}", describe(&output));
+        assert!(output.status.success(), "{}", describe(&output));
+        for written in [&output.stdout, &output.stderr] {
+            assert!(
+                !written.contains(&0x1b) && !written.contains(&0x07),
+                "{}",
+                describe(&output)
+            );
+        }
+        let shown = stdout(&output);
         assert!(
-            !output.stderr.contains(&0x1b) && !output.stderr.contains(&0x07),
-            "{:?}",
-            stderr(&output)
+            shown.contains(".argonauts/config.toml doesn't read as TOML"),
+            "{shown}"
         );
-        let err = stderr(&output);
-        assert!(err.contains(".argonauts/config.toml"), "{err}");
-        assert!(err.contains("\\u{1b}]0;owned\\u{7}"), "{err}");
+        assert!(shown.contains("\\u{1b}]0;owned\\u{7}"), "{shown}");
     }
+}
+
+/// A test build never carries the PostHog key, so even with telemetry on, nothing can be sent.
+#[test]
+fn a_test_build_has_no_key_to_send_with() {
+    let repo = TempRepo::new().unwrap();
+    fs::create_dir_all(repo.home()).unwrap();
+    fs::write(repo.global_config(), "[telemetry]\nenabled = true\n").unwrap();
+    // Git alone on PATH, so looking for the agent CLIs' versions runs none of them.
+    let bin = repo.scratch().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(real_git(), bin.join("git")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_argonauts"))
+        .args(["telemetry", "show"])
+        .current_dir(repo.root())
+        .envs(repo.envs())
+        .env("PATH", &bin)
+        .env_remove("DO_NOT_TRACK")
+        .env_remove("ARGONAUTS_SESSION")
+        .stdin(Stdio::null())
+        .output()
+        .expect("the argonauts binary runs");
+    let shown = stdout(&output);
+    assert!(output.status.success(), "{}", describe(&output));
+    assert!(shown.starts_with("Telemetry is on"), "{shown}");
+    assert!(
+        shown.contains("This build has no PostHog key, so it sends nothing."),
+        "{shown}"
+    );
 }
 
 #[test]

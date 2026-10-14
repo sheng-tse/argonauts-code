@@ -72,9 +72,21 @@ fn capitalized(label: &str) -> String {
     }
 }
 
-/// The parts of one delivery, in the order they were sent.
+/// The parts of one delivery, in the order they were sent, each without runs of blank lines.
+/// The goal's summary restates the request an earlier part already gave, so it shows once.
 pub(super) fn parts_of(input: &SessionInput) -> Vec<AskedPart> {
-    input.parts.iter().map(asked).collect()
+    let mut parts: Vec<AskedPart> = Vec::new();
+    for part in &input.parts {
+        let mut asked = asked(part);
+        if part.kind == InputPartKind::Goal {
+            asked.text = without_said_summary(&asked.text, &parts);
+        }
+        asked.text = without_blank_runs(&asked.text);
+        if !asked.text.is_empty() {
+            parts.push(asked);
+        }
+    }
+    parts
 }
 
 fn asked(part: &InputPart) -> AskedPart {
@@ -100,6 +112,15 @@ fn asked(part: &InputPart) -> AskedPart {
         "your request" | "from your request" => (Origin::YourRequest, source),
         // The role's own instructions are the frame, whatever today's templates label them.
         _ if part.kind == InputPartKind::Prompt => (Origin::Frame, source.or_else(built_in)),
+        // The task under its id would read as code, so it reads as the task, in words.
+        _ if part.kind == InputPartKind::Card => {
+            return AskedPart {
+                origin: Origin::Named("Task".to_owned()),
+                from: None,
+                text: task_text(&part.text),
+            };
+        }
+        _ if part.kind == InputPartKind::Goal => (Origin::Other("Request".to_owned()), source),
         _ => (Origin::Other(part.label.clone()), source),
     };
     AskedPart {
@@ -111,6 +132,88 @@ fn asked(part: &InputPart) -> AskedPart {
 
 fn built_in() -> Option<String> {
     Some("built in".to_owned())
+}
+
+/// A task as its title and kind in words, `add due dates · building`, then its other facts.
+/// The engine writes it as `<id> · <title>`, a blank line, then `Kind: <kind>` and the rest.
+fn task_text(text: &str) -> String {
+    let mut lines = text.lines();
+    let first = lines.next().unwrap_or_default();
+    let title = first
+        .split_once(" · ")
+        .map_or(first, |(_, title)| title)
+        .trim();
+    let mut kind = None;
+    let mut rest = Vec::new();
+    for line in lines {
+        match line.strip_prefix("Kind: ") {
+            Some(words) if kind.is_none() => kind = Some(words.trim()),
+            _ => rest.push(line),
+        }
+    }
+    // A request run whole is its task's title too, cut short there: it reads once, in full.
+    let said = |line: &&str| match title.strip_suffix('…') {
+        Some(stem) => !stem.trim().is_empty() && line.trim().starts_with(stem.trim_end()),
+        None => !title.is_empty() && line.trim() == title,
+    };
+    let title = match rest.iter().position(said) {
+        Some(at) => {
+            let words = rest.remove(at).trim();
+            // A blank line before it goes too, when another follows or nothing does.
+            let blank = |i: usize| rest.get(i).is_some_and(|line| line.trim().is_empty());
+            if at > 0 && blank(at - 1) && (blank(at) || at == rest.len()) {
+                rest.remove(at - 1);
+            }
+            words
+        }
+        None => title,
+    };
+    let mut head = title.to_owned();
+    if let Some(kind) = kind.filter(|kind| !kind.is_empty()) {
+        if !head.is_empty() {
+            head.push_str(" · ");
+        }
+        head.push_str(kind);
+    }
+    std::iter::once(head.as_str())
+        .chain(rest)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The goal file's text without its first line when an earlier part already says it.
+fn without_said_summary(text: &str, earlier: &[AskedPart]) -> String {
+    let Some(summary) = text.lines().map(str::trim).find(|line| !line.is_empty()) else {
+        return String::new();
+    };
+    if !earlier.iter().any(|part| part.text.contains(summary)) {
+        return text.to_owned();
+    }
+    let mut dropped = false;
+    text.lines()
+        .filter(|line| {
+            let first = !dropped && line.trim() == summary;
+            dropped |= first;
+            !first
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One blank line at most between rows, and none at either end.
+fn without_blank_runs(text: &str) -> String {
+    let mut rows: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        let blank = line.trim().is_empty();
+        if blank && rows.last().is_none_or(|last| last.trim().is_empty()) {
+            continue;
+        }
+        rows.push(if blank { "" } else { line });
+    }
+    while rows.last().is_some_and(|last| last.is_empty()) {
+        rows.pop();
+    }
+    rows.join("\n")
 }
 
 /// What the tab's rows are built with.
@@ -131,7 +234,7 @@ pub(super) struct Drawn {
 
 /// How many items the cursor moves over: every part, and the launch line when there is one.
 pub(super) fn items(inputs: &[SessionInput]) -> usize {
-    let parts: usize = inputs.iter().map(|input| input.parts.len()).sum();
+    let parts: usize = inputs.iter().map(|input| parts_of(input).len()).sum();
     parts + usize::from(!inputs.is_empty())
 }
 
@@ -540,5 +643,75 @@ mod tests {
         assert_eq!(line[0], "claude");
         assert_eq!(line[11], "plain");
         assert_eq!(shell_words::split(&line.join(" ")).unwrap(), args);
+    }
+
+    #[test]
+    fn the_task_reads_in_words_and_the_request_shows_once() {
+        let input = SessionInput {
+            launch: launch(),
+            parts: vec![
+                part(
+                    InputPartKind::Instructions,
+                    "From the orchestrator",
+                    Some("Haiku 4.5"),
+                    "Add due dates to tasks.\n\n\n\nKeep the CLI's flags as they are.",
+                ),
+                part(
+                    InputPartKind::Card,
+                    "task-add-due-dates-tasks",
+                    None,
+                    "task-add-due-dates-tasks · add due dates\n\nKind: building\nPaths you own:\n- src/due.js",
+                ),
+                part(
+                    InputPartKind::Goal,
+                    "goal",
+                    Some(".argonauts/goal.md"),
+                    "Add due dates to tasks.\n",
+                ),
+                part(
+                    InputPartKind::Rules,
+                    "rules",
+                    None,
+                    "\n\nStay in your paths.\n\n",
+                ),
+            ],
+            queued: Vec::new(),
+        };
+        let parts = parts_of(&input);
+        let headings: Vec<String> = parts.iter().map(AskedPart::heading).collect();
+        assert_eq!(
+            headings,
+            ["From the orchestrator · Haiku 4.5", "Task", "Rules"]
+        );
+        assert_eq!(
+            parts[0].text,
+            "Add due dates to tasks.\n\nKeep the CLI's flags as they are."
+        );
+        assert_eq!(
+            parts[1].text,
+            "add due dates · building\n\nPaths you own:\n- src/due.js"
+        );
+        assert_eq!(parts[2].text, "Stay in your paths.");
+        assert_eq!(items(std::slice::from_ref(&input)), 4);
+    }
+
+    /// A request run whole is the task's title, cut short, and its words after: once, in full.
+    #[test]
+    fn a_request_run_whole_reads_once_as_its_task() {
+        let request =
+            "the install command in README.md is wrong, it should be npm install @acme/api";
+        let card = format!(
+            "task-001 · the install command in README.md is wrong, it should be npm…\n\n\
+             Kind: the whole change\n{request}\n\nPaths you own:\n- README.md"
+        );
+        assert_eq!(
+            task_text(&card),
+            format!("{request} · the whole change\n\nPaths you own:\n- README.md")
+        );
+        // A title said again word for word goes once too.
+        assert_eq!(
+            task_text("task-002 · tidy the changelog\n\nKind: docs\ntidy the changelog"),
+            "tidy the changelog · docs"
+        );
     }
 }

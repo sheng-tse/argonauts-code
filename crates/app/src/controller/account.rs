@@ -17,11 +17,13 @@ use argonauts_core::events::card::CardState;
 use argonauts_core::limits::{HealthBoard, HealthState, QuotaBoard, QuotaReading, QuotaStatus};
 use argonauts_core::names::VendorId;
 use argonauts_core::names::WorkerRef;
+use argonauts_core::plan_usage::LiveUsage;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::budget::{BudgetAmount, BudgetSettings, BudgetUnit};
 use argonauts_core::settings::handoff::FallbackEntry;
 use argonauts_core::settings::stats::{STATS_FILE, StatsPeriod, StatsSettings};
-use argonauts_core::{NoteLevel, RunId, Spend};
+use argonauts_core::worker::WorkerDirectory;
+use argonauts_core::{AuthMode, NoteLevel, RunId, Spend};
 use time::{Duration, OffsetDateTime};
 
 use super::settings::setting_rows;
@@ -164,8 +166,15 @@ pub(crate) async fn limits_report(
     Ok(Vec::new())
 }
 
-/// A reading older than this is read again when `/usage` asks, where reading costs nothing.
-const REREAD_AFTER: Duration = Duration::minutes(1);
+/// Asks this far apart mean the panel was closed in between, so the next ask opens it again.
+const OPENED_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A read started this long ago that hasn't landed isn't coming.
+const READ_GIVES_UP: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// After a reset passes, the CLI is read again at most this often, so one whose read fails
+/// isn't asked every second.
+const RESET_REREAD_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// `/usage` and its tab of the Overview: answers with what the tab draws, and reads again
 /// any plan usage that has grown old, for the next time it's asked.
@@ -208,7 +217,8 @@ async fn usage_summary(
         };
         plan_usage(&crew, settings, &boards, &named, plan_limit, now)
     };
-    read_again(quota, &plans, now);
+    let opened = panel_opened(std::time::Instant::now());
+    let plans = read_again(ctx, &crew, plans, opened, now);
     let quotas = plans.iter().flat_map(|plan| plan.windows.clone()).collect();
     let listed = ctx.services.conductor.list().await;
     let ledger = UsageLedger::new(&ctx.env.paths);
@@ -360,9 +370,20 @@ fn plan_usage(
         if plans.iter().any(|plan| plan.agent == vendor.0) {
             continue;
         }
-        let mut windows: Vec<QuotaReading> = quota
-            .windows(&vendor)
-            .into_iter()
+        let pays_per_token =
+            settings.endpoints.contains_key(&vendor.0) || bills_api_key(settings, &vendor);
+        // Only the CLI's own live reading of the account signed in now. One a failed read or
+        // a sign-in has cast doubt on is kept apart, to be drawn as from before.
+        let kept = quota
+            .live(&vendor)
+            .filter(|live| live.shown_at(now) && !pays_per_token);
+        let (live, last) = match kept {
+            Some(kept) if kept.current_at(now, quota.doubted_at(&vendor)) => (Some(kept), None),
+            kept => (None, kept),
+        };
+        let mut windows: Vec<QuotaReading> = live
+            .iter()
+            .flat_map(LiveUsage::quota_readings)
             .filter(|reading| reading.resets_at.is_none_or(|resets| resets > now))
             .collect();
         windows.sort_by_key(|reading| window_rank(reading.window.as_deref()));
@@ -376,19 +397,31 @@ fn plan_usage(
         });
         plans.push(PlanUsage {
             name: (named.cli)(&vendor.0),
-            plan: quota.plan(&vendor),
+            plan: live.as_ref().and_then(|live| live.plan.clone()),
             in_use: plans.is_empty(),
             down,
-            pays_per_token: settings.endpoints.contains_key(&vendor.0),
+            pays_per_token,
             moved_to: (down || out || at_limit)
                 .then(|| takes_over(settings, &vendor))
                 .flatten()
                 .map(named.worker),
             windows,
+            live,
+            reading: false,
+            failed: quota.failed(&vendor),
+            last,
             agent: vendor.0,
         });
     }
     plans
+}
+
+/// The CLI bills an API key rather than a plan, so there's no plan to read.
+fn bills_api_key(settings: &Settings, vendor: &VendorId) -> bool {
+    settings
+        .agents
+        .get(&vendor.0)
+        .is_some_and(|agent| agent.auth == AuthMode::ApiKey)
 }
 
 /// Shorter windows first: the five-hour one, a day's, the week's, then anything else.
@@ -418,24 +451,144 @@ fn takes_over<'a>(settings: &'a Settings, vendor: &VendorId) -> Option<&'a Worke
         .find(|worker| worker.vendor() != *vendor)
 }
 
-/// Starts a fresh reading for each CLI whose newest one is older than [`REREAD_AFTER`], at
-/// most once in that time. A CLI that can't be read for free answers nothing, and its card
-/// goes on showing the reading's age. The answer lands on the board for the next ask.
-fn read_again(quota: &Arc<dyn QuotaBoard>, plans: &[PlanUsage], now: OffsetDateTime) {
-    static ASKED: Mutex<BTreeMap<String, OffsetDateTime>> = Mutex::new(BTreeMap::new());
-    let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
-    for plan in plans.iter().filter(|plan| !plan.pays_per_token) {
-        let newest = plan.windows.iter().map(|reading| reading.observed_at).max();
-        let fresh = |at: &OffsetDateTime| now - *at < REREAD_AFTER;
-        if newest.as_ref().is_some_and(fresh) || asked.get(&plan.agent).is_some_and(fresh) {
-            continue;
+/// The CLIs being read live now, with when each read started.
+static READING: Mutex<BTreeMap<String, std::time::Instant>> = Mutex::new(BTreeMap::new());
+
+/// Whether this ask opens the panel: the first, or the first after a pause. Each ask counts.
+fn panel_opened(now: std::time::Instant) -> bool {
+    static LAST_ASK: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+    let mut last = LAST_ASK.lock().unwrap_or_else(PoisonError::into_inner);
+    let opened = last.is_none_or(|at| now.saturating_duration_since(at) >= OPENED_AFTER);
+    *last = Some(now);
+    opened
+}
+
+/// Reads each CLI live again when the panel opens, and when a window it read has reset
+/// since, at most once a minute for that. A CLI being read already isn't asked twice. Each
+/// plan says whether a read is on its way; the answer lands on the board for the next ask.
+fn read_again(
+    ctx: &Ctx,
+    crew: &[WorkerRef],
+    mut plans: Vec<PlanUsage>,
+    opened: bool,
+    now: OffsetDateTime,
+) -> Vec<PlanUsage> {
+    static RESET_ASKED: Mutex<BTreeMap<String, std::time::Instant>> = Mutex::new(BTreeMap::new());
+    let started = std::time::Instant::now();
+    for plan in plans.iter_mut().filter(|plan| !plan.pays_per_token) {
+        let reset = plan
+            .live
+            .as_ref()
+            .is_some_and(|live| live.reset_passed(now) || live.fading_at(now));
+        let due = opened || {
+            let mut asked = RESET_ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+            let lately = asked
+                .get(&plan.agent)
+                .is_some_and(|at| started.saturating_duration_since(*at) < RESET_REREAD_EVERY);
+            let due = reset && !lately;
+            if due {
+                asked.insert(plan.agent.clone(), started);
+            }
+            due
+        };
+        let worker = crew.iter().find(|worker| worker.vendor().0 == plan.agent);
+        if let Some(worker) = worker.filter(|_| due) {
+            read_live_for(ctx, worker);
         }
-        asked.insert(plan.agent.clone(), now);
-        let (quota, vendor) = (quota.clone(), VendorId(plan.agent.clone()));
-        tokio::spawn(async move {
-            quota.probe(&vendor).await;
-        });
+        plan.reading = reading_now(&plan.agent);
     }
+    plans
+}
+
+/// `r` on the Usage tab: every CLI of the crew read live again now.
+pub(crate) fn read_plan_usage(ctx: &Ctx) {
+    let settings = ctx.settings();
+    let mut crew = vec![settings.main_agent.clone()];
+    crew.extend(settings.crew.members());
+    for worker in &crew {
+        let vendor = worker.vendor();
+        if !settings.endpoints.contains_key(&vendor.0) && !bills_api_key(settings, &vendor) {
+            read_live_for(ctx, worker);
+        }
+    }
+}
+
+/// `/login` and `/logout` commands handed to the terminal, with the CLI each signs in or out.
+static SIGNING: Mutex<Vec<(Vec<String>, WorkerRef)>> = Mutex::new(Vec::new());
+
+/// The screen is back from a command it ran in the terminal. After a CLI's `/login` or
+/// `/logout`, the account may have changed, so the reading kept from before stops standing as
+/// the CLI's own and the CLI is read again at once.
+pub(crate) fn terminal_returned(ctx: &Ctx, argv: &[String]) {
+    let worker = {
+        let mut signing = SIGNING.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(at) = signing.iter().position(|(sent, _)| sent == argv) else {
+            return;
+        };
+        signing.remove(at).1
+    };
+    ctx.services.quota.doubt(&worker.vendor());
+    let _ = ctx.internal.send(super::ctx::Internal::PlanUsageRead);
+    read_live_for(ctx, &worker);
+}
+
+/// A live read whose answer brings a new status line, so the bottom line shows it too.
+fn read_live_for(ctx: &Ctx, worker: &WorkerRef) {
+    let internal = ctx.internal.clone();
+    let read = move || {
+        let _ = internal.send(super::ctx::Internal::PlanUsageRead);
+    };
+    read_live(
+        ctx.services.workers.as_ref(),
+        &ctx.services.quota,
+        worker,
+        read,
+    );
+}
+
+/// Starts a live read of `worker`'s CLI unless one is on its way. A CLI that can't be read for
+/// free answers nothing, and its card says it has no live reading. Its probe is registered
+/// when its worker is built, which no session may have done yet, so the worker is built first.
+fn read_live(
+    workers: &dyn WorkerDirectory,
+    quota: &Arc<dyn QuotaBoard>,
+    worker: &WorkerRef,
+    read: impl FnOnce() + Send + 'static,
+) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    if workers.get(worker).is_err() {
+        return;
+    }
+    let vendor = worker.vendor();
+    let now = std::time::Instant::now();
+    {
+        let mut reading = READING.lock().unwrap_or_else(PoisonError::into_inner);
+        let busy = reading
+            .get(&vendor.0)
+            .is_some_and(|at| now.saturating_duration_since(*at) < READ_GIVES_UP);
+        if busy {
+            return;
+        }
+        reading.insert(vendor.0.clone(), now);
+    }
+    let quota = Arc::clone(quota);
+    runtime.spawn(async move {
+        quota.probe(&vendor).await;
+        READING
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&vendor.0);
+        read();
+    });
+}
+
+fn reading_now(agent: &str) -> bool {
+    let reading = READING.lock().unwrap_or_else(PoisonError::into_inner);
+    reading
+        .get(agent)
+        .is_some_and(|at| at.elapsed() < READ_GIVES_UP)
 }
 
 /// `Claude · 42% of the five_hour window · resets in 2h 10m`.
@@ -536,6 +689,14 @@ pub(crate) fn login(
         NoteLevel::Info,
         format!("Running `{shown}`. The screen comes back when it ends."),
     );
+    let worker = match ctx.settings().main_agent.clone() {
+        main if main.worker == agent => main,
+        _ => WorkerRef::new(agent, None),
+    };
+    SIGNING
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push((argv.clone(), worker));
     ctx.send(AppEvent::RunInTerminal {
         argv,
         cwd: ctx.env.repo_root.clone(),
@@ -656,6 +817,33 @@ mod tests {
         }
     }
 
+    /// A live reading of `agent` for `account`, read two minutes before the tests' now, with
+    /// windows of `(name, used, resets in)`.
+    fn live(
+        quota: &dyn QuotaBoard,
+        agent: &str,
+        account: Option<&str>,
+        windows: &[(&str, f64, Duration)],
+    ) {
+        use argonauts_core::plan_usage::LiveWindow;
+        let now = OffsetDateTime::from_unix_timestamp(1_790_000_000).unwrap();
+        let mut reading = LiveUsage::new(
+            VendorId(agent.to_owned()),
+            QuotaSource::AppServer,
+            now - Duration::minutes(2),
+        );
+        reading.account = account.map(str::to_owned);
+        reading.windows = windows
+            .iter()
+            .map(|(name, used, resets_in)| {
+                LiveWindow::new(*name, *name, *name)
+                    .used(Some(*used))
+                    .resets_at(Some(now + *resets_in))
+            })
+            .collect();
+        quota.observe_live(reading);
+    }
+
     fn plans_of(
         settings: &Settings,
         quota: &dyn QuotaBoard,
@@ -701,12 +889,28 @@ mod tests {
             ..Settings::default()
         };
         let (quota, health) = (MemoryQuotaBoard::default(), MemoryHealthBoard::default());
-        quota.observe(window("claude-code", "seven_day", 0.38, Duration::days(2)));
-        quota.observe(window("claude-code", "five_hour", 0.71, Duration::hours(3)));
-        quota.observe_plan(&VendorId("claude-code".into()), "Max".into());
+        live(
+            &quota,
+            "claude-code",
+            Some("me@example.com"),
+            &[
+                ("seven_day", 0.38, Duration::days(2)),
+                ("five_hour", 0.71, Duration::hours(3)),
+            ],
+        );
+        let mut max = quota.live(&VendorId("claude-code".into())).unwrap();
+        max.plan = Some("Max".into());
+        quota.observe_live(max);
         // Read before its window ended: it says nothing about the window open now.
-        quota.observe(window("codex", "five_hour", 0.93, -Duration::minutes(5)));
-        quota.observe(window("codex", "weekly", 0.41, Duration::days(4)));
+        live(
+            &quota,
+            "codex",
+            Some("me@example.com"),
+            &[
+                ("five_hour", 0.93, -Duration::minutes(5)),
+                ("weekly", 0.41, Duration::days(4)),
+            ],
+        );
 
         let plans = plans_of(&settings, &quota, &health);
         let [claude, codex] = plans.as_slice() else {
@@ -724,6 +928,55 @@ mod tests {
         assert!(!codex.in_use);
         assert_eq!(names(codex), ["weekly"], "the reset window is dropped");
         assert_eq!(codex.moved_to, None);
+    }
+
+    #[test]
+    fn only_a_live_reading_of_the_account_signed_in_shows() {
+        use argonauts_testkit::services::{MemoryHealthBoard, MemoryQuotaBoard};
+
+        let settings = Settings {
+            main_agent: WorkerRef::new("codex", None),
+            crew: argonauts_core::settings::crew::CrewSettings::of(vec![WorkerRef::new(
+                "antigravity-cli",
+                None,
+            )]),
+            ..Settings::default()
+        };
+        let (quota, health) = (MemoryQuotaBoard::default(), MemoryHealthBoard::default());
+        // A session's stream reading names no account, so it never stands for one.
+        quota.observe(window("codex", "five_hour", 0.5, Duration::hours(2)));
+        let plans = plans_of(&settings, &quota, &health);
+        assert!(plans[0].windows.is_empty() && plans[0].live.is_none());
+
+        live(
+            &quota,
+            "codex",
+            Some("one@example.com"),
+            &[("five_hour", 0.2, Duration::hours(2))],
+        );
+        live(
+            &quota,
+            "codex",
+            Some("two@example.com"),
+            &[("five_hour", 0.9, Duration::hours(1))],
+        );
+        let plans = plans_of(&settings, &quota, &health);
+        let shown = plans[0].live.as_ref().unwrap();
+        assert_eq!(shown.account.as_deref(), Some("two@example.com"));
+        assert_eq!(plans[0].windows[0].used, Some(0.9));
+
+        // A reading that names no account shows only while it's fresh.
+        let now = OffsetDateTime::from_unix_timestamp(1_790_000_000).unwrap();
+        let mut stale = LiveUsage::new(
+            VendorId("antigravity-cli".into()),
+            QuotaSource::UsageProbe,
+            now - Duration::minutes(30),
+        );
+        stale.windows =
+            vec![argonauts_core::plan_usage::LiveWindow::new("w", "w", "w").used(Some(0.1))];
+        quota.observe_live(stale);
+        let plans = plans_of(&settings, &quota, &health);
+        assert!(plans[1].live.is_none() && plans[1].windows.is_empty());
     }
 
     #[test]
@@ -747,11 +1000,12 @@ mod tests {
             .endpoints
             .insert("openrouter".into(), EndpointSettings::default());
         let (quota, health) = (MemoryQuotaBoard::default(), MemoryHealthBoard::default());
-        quota.observe(QuotaReading {
-            status: QuotaStatus::Rejected,
-            used: None,
-            ..window("antigravity-cli", "day", 1.0, Duration::hours(20))
-        });
+        live(
+            &quota,
+            "antigravity-cli",
+            None,
+            &[("day", 1.0, Duration::hours(20))],
+        );
 
         let plans = plans_of(&settings, &quota, &health);
         assert_eq!(plans[0].moved_to.as_deref(), Some("<codex/gpt-5.6>"));
@@ -776,9 +1030,21 @@ mod tests {
             Some("sonnet".into()),
         ))];
         let (quota, health) = (MemoryQuotaBoard::default(), MemoryHealthBoard::default());
-        quota.observe(window("codex", "five_hour", 0.8, Duration::hours(2)));
-        quota.observe(window("codex", "weekly", 0.41, Duration::days(4)));
-        quota.observe(window("claude-code", "five_hour", 0.71, Duration::hours(3)));
+        live(
+            &quota,
+            "codex",
+            Some("me@example.com"),
+            &[
+                ("five_hour", 0.8, Duration::hours(2)),
+                ("weekly", 0.41, Duration::days(4)),
+            ],
+        );
+        live(
+            &quota,
+            "claude-code",
+            Some("me@example.com"),
+            &[("five_hour", 0.71, Duration::hours(3))],
+        );
 
         let plans = plans_under(&settings, &quota, &health, Some(0.8));
         assert_eq!(plans[0].moved_to.as_deref(), Some("<claude-code/sonnet>"));
@@ -933,5 +1199,262 @@ mod tests {
         let progress = tasks_of(&run, &tasks, None);
         assert_eq!((progress.tasks_done, progress.tasks), (1, 3));
         assert_eq!(tasks_of(&run, &[], None).tasks, 0, "a solo run has none");
+    }
+
+    /// Builds only the workers it was given, and says which it was asked for.
+    #[derive(Default)]
+    struct Building {
+        built: argonauts_testkit::worker::FakeDirectory,
+        asked: Mutex<Vec<String>>,
+    }
+
+    impl WorkerDirectory for Building {
+        fn get(
+            &self,
+            worker: &WorkerRef,
+        ) -> Result<Arc<dyn argonauts_core::worker::Worker>, argonauts_core::worker::WorkerError>
+        {
+            self.asked.lock().unwrap().push(worker.to_string());
+            self.built.get(worker)
+        }
+
+        fn available(&self) -> Vec<WorkerRef> {
+            self.built.available()
+        }
+    }
+
+    /// Says which CLIs it was asked to read live, and that each read failed when `failed` is
+    /// set.
+    #[derive(Default)]
+    struct Probed {
+        board: argonauts_testkit::services::MemoryQuotaBoard,
+        probed: Mutex<Vec<String>>,
+        failed: Option<String>,
+        /// When the failed read happened.
+        failed_at: Option<OffsetDateTime>,
+    }
+
+    impl QuotaBoard for Probed {
+        fn observe(&self, reading: QuotaReading) {
+            self.board.observe(reading);
+        }
+        fn get(&self, vendor: &VendorId) -> Option<QuotaReading> {
+            self.board.get(vendor)
+        }
+        fn all(&self) -> Vec<QuotaReading> {
+            self.board.all()
+        }
+        fn windows(&self, vendor: &VendorId) -> Vec<QuotaReading> {
+            self.board.windows(vendor)
+        }
+        fn plan(&self, vendor: &VendorId) -> Option<String> {
+            self.board.plan(vendor)
+        }
+        fn observe_plan(&self, vendor: &VendorId, plan: String) {
+            self.board.observe_plan(vendor, plan);
+        }
+        fn observe_live(&self, reading: LiveUsage) {
+            self.board.observe_live(reading);
+        }
+        fn live(&self, vendor: &VendorId) -> Option<LiveUsage> {
+            self.board.live(vendor)
+        }
+        fn failed(&self, _: &VendorId) -> Option<String> {
+            self.failed.clone()
+        }
+        fn doubted_at(&self, _: &VendorId) -> Option<OffsetDateTime> {
+            self.failed_at
+        }
+        fn probe(
+            &self,
+            vendor: &VendorId,
+        ) -> argonauts_core::future::BoxFuture<'_, Option<QuotaReading>> {
+            self.probed.lock().unwrap().push(vendor.0.clone());
+            Box::pin(async { None })
+        }
+    }
+
+    #[test]
+    fn a_cli_whose_read_failed_says_why() {
+        use argonauts_testkit::services::MemoryHealthBoard;
+
+        let settings = Settings {
+            main_agent: WorkerRef::new("codex", None),
+            ..Settings::default()
+        };
+        let quota = Probed {
+            failed: Some("failed to fetch codex rate limits".into()),
+            ..Probed::default()
+        };
+        let plans = plans_of(&settings, &quota, &MemoryHealthBoard::default());
+        assert_eq!(
+            plans[0].failed.as_deref(),
+            Some("failed to fetch codex rate limits")
+        );
+        assert!(plans[0].live.is_none());
+    }
+
+    /// A read that fails after a reading means the account may have changed since, so the
+    /// reading no longer stands as the CLI's own: the card draws it as kept from before.
+    #[test]
+    fn a_reading_followed_by_a_failed_read_is_no_longer_current() {
+        use argonauts_testkit::services::MemoryHealthBoard;
+
+        let settings = Settings {
+            main_agent: WorkerRef::new("codex", None),
+            ..Settings::default()
+        };
+        let now = OffsetDateTime::from_unix_timestamp(1_790_000_000).unwrap();
+        let quota = Probed {
+            failed: Some("failed to fetch codex rate limits".into()),
+            failed_at: Some(now - Duration::minutes(1)),
+            ..Probed::default()
+        };
+        live(
+            &quota,
+            "codex",
+            Some("one@example.com"),
+            &[("five_hour", 0.95, Duration::hours(1))],
+        );
+        let plans = plans_of(&settings, &quota, &MemoryHealthBoard::default());
+        assert!(plans[0].live.is_none());
+        assert!(plans[0].windows.is_empty());
+        let last = plans[0].last.as_ref().unwrap();
+        assert_eq!(last.account.as_deref(), Some("one@example.com"));
+
+        // A reading after the failure stands again.
+        let quota = Probed {
+            failed_at: Some(now - Duration::minutes(5)),
+            ..Probed::default()
+        };
+        live(
+            &quota,
+            "codex",
+            Some("one@example.com"),
+            &[("five_hour", 0.95, Duration::hours(1))],
+        );
+        let plans = plans_of(&settings, &quota, &MemoryHealthBoard::default());
+        assert!(plans[0].live.is_some() && plans[0].last.is_none());
+    }
+
+    /// A CLI that bills an API key has no plan: its card says so and shows no windows, even
+    /// one a subscription signed in on the same machine left on the board.
+    #[test]
+    fn a_cli_that_bills_an_api_key_has_no_plan_windows() {
+        use argonauts_core::settings::agents::AgentSettings;
+        use argonauts_testkit::services::{MemoryHealthBoard, MemoryQuotaBoard};
+
+        let mut settings = Settings::default();
+        settings.agents.insert(
+            "claude-code".to_owned(),
+            AgentSettings {
+                auth: AuthMode::ApiKey,
+                ..AgentSettings::default()
+            },
+        );
+        let quota = MemoryQuotaBoard::default();
+        live(
+            &quota,
+            "claude-code",
+            Some("someone@example.com"),
+            &[("five_hour", 0.4, Duration::hours(1))],
+        );
+        let plans = plans_of(&settings, &quota, &MemoryHealthBoard::default());
+        let claude = plans
+            .iter()
+            .find(|plan| plan.agent == "claude-code")
+            .unwrap();
+        assert!(claude.pays_per_token);
+        assert!(claude.windows.is_empty() && claude.live.is_none() && claude.last.is_none());
+    }
+
+    /// A CLI's probe is registered when its worker is built, so a live read on a fresh start,
+    /// before any session, builds the worker first. One that can't be built isn't read, and
+    /// one that was says so once its answer is in.
+    #[tokio::test]
+    async fn a_live_read_builds_the_cli_worker_first() {
+        let directory = Building::default();
+        directory
+            .built
+            .add_worker(Arc::new(argonauts_testkit::FakeWorker::harness(
+                "live-built/m",
+                "m",
+            )));
+        let probed = Arc::new(Probed::default());
+        let quota: Arc<dyn QuotaBoard> = probed.clone();
+        let built: WorkerRef = "live-built/m".parse().unwrap();
+        let missing: WorkerRef = "live-missing/m".parse().unwrap();
+        let answered = Arc::new(Mutex::new(Vec::new()));
+        let said = |name: &'static str| {
+            let answered = Arc::clone(&answered);
+            move || answered.lock().unwrap().push(name)
+        };
+        read_live(&directory, &quota, &built, said("built"));
+        read_live(&directory, &quota, &missing, said("missing"));
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(
+            *directory.asked.lock().unwrap(),
+            ["live-built/m", "live-missing/m"]
+        );
+        assert_eq!(*probed.probed.lock().unwrap(), ["live-built"]);
+        // The answer that landed is said, so the bottom line is drawn again.
+        assert_eq!(*answered.lock().unwrap(), ["built"]);
+    }
+
+    /// The Usage tab's card and the bottom line read the same live reading: the account signed
+    /// in last, each window with the same share and reset, and nothing of the account before.
+    #[test]
+    fn the_usage_card_and_the_bottom_line_read_the_same_live_reading() {
+        use argonauts_core::plan_usage::LiveWindow;
+        use argonauts_testkit::services::{MemoryHealthBoard, MemoryQuotaBoard};
+
+        let settings = Settings {
+            main_agent: WorkerRef::new("codex", None),
+            ..Settings::default()
+        };
+        let (quota, health) = (MemoryQuotaBoard::default(), MemoryHealthBoard::default());
+        let now = OffsetDateTime::now_utc();
+        let resets = now + Duration::hours(2);
+        let read = |account: &str, used: f64| {
+            let mut reading =
+                LiveUsage::new(VendorId("codex".to_owned()), QuotaSource::AppServer, now);
+            reading.account = Some(account.to_owned());
+            reading.windows = vec![
+                LiveWindow::new("five_hour", "five_hour", "five_hour")
+                    .used(Some(used))
+                    .resets_at(Some(resets)),
+            ];
+            quota.observe_live(reading);
+        };
+        read("one@example.com", 0.2);
+        read("two@example.com", 0.9);
+
+        let crew = vec![settings.main_agent.clone()];
+        let named = Named {
+            cli: &|id| id.to_owned(),
+            worker: &|worker| worker.to_string(),
+        };
+        let boards = Boards {
+            quota: &quota,
+            health: &health,
+        };
+        let cards = plan_usage(&crew, &settings, &boards, &named, None, now);
+        let chips = quota_chips(&crew, &quota, &health);
+        let shares = |windows: &[QuotaReading]| -> Vec<(Option<String>, Option<f64>, Option<OffsetDateTime>)> {
+            windows
+                .iter()
+                .map(|reading| (reading.window.clone(), reading.used, reading.resets_at))
+                .collect()
+        };
+        assert_eq!(
+            shares(&cards[0].windows),
+            [(Some("five_hour".to_owned()), Some(0.9), Some(resets))],
+            "the card reads the account signed in last"
+        );
+        assert_eq!(shares(&chips[0].windows), shares(&cards[0].windows));
+        assert_eq!(
+            chips[0].reading.as_ref().and_then(|reading| reading.used),
+            Some(0.9)
+        );
     }
 }

@@ -12,6 +12,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Rect, Size};
 
+use super::Level;
 use super::cli::{millions, took};
 use super::pinned::StatsCard;
 use crate::overview::{OverviewView, Tab, UsageWatch, sample};
@@ -84,6 +85,14 @@ fn has(rows: &[String], text: &str) -> bool {
     rows.iter().any(|row| row.contains(text))
 }
 
+/// ↓ from wherever the keys are, through the sub-tabs, into the cards. A letter that regroups
+/// has put them there already.
+fn into_the_cards(view: &mut OverviewView, state: &AppState) {
+    while view.level() != Level::Cards {
+        key(view, state, KeyCode::Down);
+    }
+}
+
 #[test]
 fn by_cli_puts_every_cli_together_then_each_by_itself_then_who_did_what() {
     let state = state(sample::usage_with_stats());
@@ -99,7 +108,7 @@ fn by_cli_puts_every_cli_together_then_each_by_itself_then_who_did_what() {
         "{rows:#?}"
     );
     assert!(
-        rows[2].ends_with("by CLI · m by model · r by role · u bars measure tokens"),
+        rows[2].ends_with("By CLI   By model   By role"),
         "{rows:#?}"
     );
 
@@ -193,7 +202,7 @@ fn m_lists_every_model_across_the_clis_and_enter_opens_one_a_level_deeper() {
         "{rows:#?}"
     );
     assert!(
-        rows[2].contains("c by CLI · by model · r by role"),
+        rows[2].ends_with("By CLI   By model   By role"),
         "{rows:#?}"
     );
     let head = at(&rows, "│   model");
@@ -228,6 +237,7 @@ fn m_lists_every_model_across_the_clis_and_enter_opens_one_a_level_deeper() {
     );
 
     // Opus opened says its roles whole, the orchestrator's too.
+    into_the_cards(&mut tab, &state);
     key(&mut tab, &state, KeyCode::Enter);
     let rows = self::rows(&mut tab, &state, 120);
     assert!(
@@ -290,6 +300,7 @@ fn m_lists_every_model_across_the_clis_and_enter_opens_one_a_level_deeper() {
 fn enter_on_a_clis_card_opens_it_and_enter_again_closes_it() {
     let state = state(sample::usage_with_stats());
     let mut tab = stats_tab();
+    into_the_cards(&mut tab, &state);
     key(&mut tab, &state, KeyCode::Down);
     key(&mut tab, &state, KeyCode::Enter);
     let rows = rows(&mut tab, &state, 120);
@@ -335,6 +346,7 @@ fn r_lists_the_roles_with_every_model_that_filled_each() {
         assert!(workers.contains(text), "{text}: {workers}");
     }
     assert!(rows[order[2]].contains("63 reviews"), "{rows:#?}");
+    into_the_cards(&mut tab, &state);
     key(&mut tab, &state, KeyCode::Down);
     key(&mut tab, &state, KeyCode::Enter);
     let rows = self::rows(&mut tab, &state, 120);
@@ -347,18 +359,19 @@ fn u_turns_the_bars_to_tasks_then_spend_then_tokens() {
     let mut tab = stats_tab();
     key(&mut tab, &state, KeyCode::Char('u'));
     let rows = rows(&mut tab, &state, 120);
-    assert!(rows[2].ends_with("u bars measure tasks"), "{rows:#?}");
+    assert!(has(&rows, "tasks by CLI"), "{rows:#?}");
     assert!(
         has(&rows, "24 · 2.1M"),
         "a model's tasks, then its tokens: {rows:#?}"
     );
     key(&mut tab, &state, KeyCode::Char('u'));
     let rows = self::rows(&mut tab, &state, 120);
-    assert!(rows[2].ends_with("u bars measure spend"), "{rows:#?}");
+    assert!(has(&rows, "spend by CLI"), "{rows:#?}");
     assert!(has(&rows, "$6.40 · 24"), "{rows:#?}");
     key(&mut tab, &state, KeyCode::Char('u'));
     let rows = self::rows(&mut tab, &state, 120);
-    assert!(rows[2].ends_with("u bars measure tokens"), "{rows:#?}");
+    assert!(has(&rows, "tokens by CLI"), "{rows:#?}");
+    assert!(has(&rows, "2.1M · 24"), "tokens again: {rows:#?}");
 }
 
 #[test]
@@ -442,6 +455,37 @@ fn before_any_work_the_tab_says_so() {
         &rows(&mut tab, &empty, 120),
         "Nothing recorded in this period yet. Stats fill in as the crew works."
     ));
+}
+
+/// A CLI whose last plan read failed says so, in the Usage tab's words, rather than that it was
+/// never read.
+#[test]
+fn a_failed_plan_read_says_it_failed() {
+    let mut usage = sample::usage_with_stats();
+    for plan in &mut usage.plans {
+        plan.windows.clear();
+        plan.live = None;
+        plan.failed = (plan.agent == "codex").then(|| "no answer within 15s".to_owned());
+    }
+    // Narrow, so the cards stack and each line sits under its own CLI.
+    let mut tab = stats_tab();
+    let rows = rows(&mut tab, &state(usage), 60);
+    let (claude, codex) = (at(&rows, "● Claude Code"), at(&rows, "● Codex"));
+    let failed = at(&rows, "failed to load usage data");
+    assert!(claude < codex && codex < failed, "{rows:#?}");
+    assert!(
+        rows[claude..codex]
+            .iter()
+            .any(|row| row.contains("no plan reading yet")),
+        "{rows:#?}"
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.contains("failed to load usage data"))
+            .count(),
+        1,
+        "{rows:#?}"
+    );
 }
 
 fn card_rows(usage: &UsageSummary, width: usize) -> Vec<String> {
@@ -852,4 +896,44 @@ fn a_stats_file_that_doesnt_read_is_named_on_the_tab_and_on_its_page() {
     let page = rows(&mut tab, &state, 120);
     assert!(has(&page, "unknown variant `fortnight`"), "{page:#?}");
     assert!(has(&page, "❯ Period"), "{page:#?}");
+}
+
+#[test]
+fn down_goes_from_the_tabs_to_the_sub_tabs_where_the_arrows_regroup_at_once() {
+    let state = state(sample::usage_with_stats());
+    let mut tab = stats_tab();
+    // Opened, the keys are on the tabs: no row is picked yet.
+    let rows = self::rows(&mut tab, &state, 120);
+    assert!(!has(&rows, "❯"), "{rows:#?}");
+    key(&mut tab, &state, KeyCode::Down);
+    assert!(matches!(
+        key(&mut tab, &state, KeyCode::Right),
+        ViewOutcome::Consumed
+    ));
+    let rows = self::rows(&mut tab, &state, 120);
+    assert_eq!(tab.tab(), Tab::Stats, "→ on the sub-tabs stays on Stats");
+    assert!(
+        rows[2].ends_with(" By CLI  [By model]  By role"),
+        "{rows:#?}"
+    );
+    assert!(
+        has(&rows, "│   model"),
+        "the cards changed at once: {rows:#?}"
+    );
+    // Left of the first sub-tab is the last.
+    key(&mut tab, &state, KeyCode::Left);
+    key(&mut tab, &state, KeyCode::Left);
+    let rows = self::rows(&mut tab, &state, 120);
+    assert!(
+        rows[2].ends_with(" By CLI   By model  [By role]"),
+        "{rows:#?}"
+    );
+    // Into the rows, and ↑ on the first goes back to the sub-tabs, then the tabs.
+    key(&mut tab, &state, KeyCode::Down);
+    assert!(has(&self::rows(&mut tab, &state, 120), "❯"));
+    key(&mut tab, &state, KeyCode::Up);
+    assert!(!has(&self::rows(&mut tab, &state, 120), "❯"));
+    key(&mut tab, &state, KeyCode::Up);
+    key(&mut tab, &state, KeyCode::Left);
+    assert_eq!(tab.tab(), Tab::Limits, "← on the tabs changes the tab");
 }

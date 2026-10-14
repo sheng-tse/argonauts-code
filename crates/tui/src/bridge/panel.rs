@@ -86,12 +86,36 @@ pub fn run_rows(state: &AppState, wall: OffsetDateTime, now: Instant) -> Vec<Wor
             row.goals_running = state.goals.running(&conversation);
             row
         });
-    background
+    let mut rows: Vec<WorkflowRow> = background
         .into_iter()
         .map(background_row)
         .chain(held)
         .chain(chat)
-        .collect()
+        .collect();
+    number_alike(&mut rows);
+    rows
+}
+
+/// Two runs never share a name in the list: the second of a name reads `add-due-dates-2`,
+/// the third `-3`. A workflow under an agent is part of that agent's step, not a run, and keeps
+/// its own.
+fn number_alike(rows: &mut [WorkflowRow]) {
+    let mut seen: Vec<(String, usize)> = Vec::new();
+    for row in rows.iter_mut().filter(|row| row.parent.is_none()) {
+        let name = row.name.trim().to_owned();
+        match seen.iter_mut().find(|(known, _)| *known == name) {
+            Some((_, count)) => {
+                *count += 1;
+                let joint = if name.contains(char::is_whitespace) {
+                    " "
+                } else {
+                    "-"
+                };
+                row.name = format!("{name}{joint}{count}");
+            }
+            None => seen.push((name, 1)),
+        }
+    }
 }
 
 /// The key of a panel row for a workflow an agent's own CLI runs: its run, `#`, and the id the
@@ -104,9 +128,13 @@ pub(crate) fn vendor_key(run: &RunId, workflow: &VendorWorkflow) -> String {
 /// Its time counts from its start, so a report of its totals never sets it back.
 fn vendor_rows(run: &RunState, wall: OffsetDateTime, now: Instant) -> Vec<WorkflowRow> {
     run.sessions_in_order()
-        .flat_map(|session| &session.workflows)
-        .filter(|workflow| !workflow.ended())
-        .map(|workflow| vendor_row(&run.id, workflow, wall, now))
+        .flat_map(|session| session.workflows.iter().map(move |w| (session, w)))
+        .filter(|(_, workflow)| !workflow.ended())
+        .map(|(session, workflow)| {
+            let mut row = vendor_row(&run.id, workflow, wall, now);
+            row.parent = Some(session.key.to_string());
+            row
+        })
         .collect()
 }
 
@@ -121,6 +149,7 @@ fn vendor_row(
         .filter(|name| !name.is_empty())
         .unwrap_or("workflow");
     let mut row = WorkflowRow::new(vendor_key(run, workflow), name, WorkflowRowState::Running);
+    row.vendor = true;
     row.agents_total = u32::try_from(workflow.agents.len()).unwrap_or(u32::MAX);
     row.agents_done = u32::try_from(
         workflow
@@ -836,5 +865,35 @@ mod tests {
         // Resumed in another window, it is listed again and has its row back.
         state.apply(&listing(false));
         assert_eq!(row(&state).unwrap().state, WorkflowRowState::Paused);
+    }
+
+    #[test]
+    fn two_runs_never_share_a_name_and_an_agents_own_workflow_keeps_its_own() {
+        let row = |name: &str, parent: Option<&str>| {
+            let mut row = WorkflowRow::new(name, name, WorkflowRowState::Running);
+            row.parent = parent.map(str::to_owned);
+            row
+        };
+        let mut rows = vec![
+            row("add-due-dates-tasks", None),
+            row("add-due-dates-tasks", Some("s-002")),
+            row("add-due-dates-tasks", None),
+            row("council · add --json", None),
+            row("council · add --json", None),
+            row("add-due-dates-tasks", None),
+        ];
+        number_alike(&mut rows);
+        let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "add-due-dates-tasks",
+                "add-due-dates-tasks",
+                "add-due-dates-tasks-2",
+                "council · add --json",
+                "council · add --json 2",
+                "add-due-dates-tasks-3",
+            ]
+        );
     }
 }

@@ -1,5 +1,5 @@
-//! The main session asks a role of the crew:
-//! when you ask for it, the reviewers or the judge read the change in your folder on their
+//! The main session asks a role of the crew: when you ask for it, the reviewers or the judge
+//! read the change in your folder on their
 //! own model, and the answer goes back to the main session as the tool's result. Nothing
 //! merges from here, so it is their opinion, never a gate. What they spend goes to the usage
 //! ledger with the conversation's turns.
@@ -207,6 +207,7 @@ fn spec(
             blind: false,
             own_workflow: false,
             autopilot: false,
+            reviews: false,
         },
     )?;
     // It belongs to the conversation, not to a run.
@@ -335,6 +336,7 @@ mod tests {
             workers: Vec::new(),
             reviewers: vec![worker("astra")],
             judge: Vec::new(),
+            worker_workflows: false,
         };
         assert_eq!(roles(&settings), [CrewRole::Reviewers]);
         settings.crew.judge = vec![worker("codex")];

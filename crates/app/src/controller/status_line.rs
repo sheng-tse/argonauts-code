@@ -10,8 +10,9 @@ use std::time::{Duration, Instant, SystemTime};
 use argonauts_core::RunId;
 use argonauts_core::Spend;
 use argonauts_core::app::{LineFacts, QuotaChip, StatusLine};
-use argonauts_core::limits::{HealthBoard, QuotaBoard};
+use argonauts_core::limits::{HealthBoard, QuotaBoard, QuotaReading};
 use argonauts_core::names::{VendorId, WorkerRef};
+use argonauts_core::plan_usage::{LiveUsage, UNNAMED_SHOWN_FOR, current_live};
 use argonauts_core::registry::effort_to_run;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::bottom_line::{BRANCH, BottomLineSettings, SPEND};
@@ -220,7 +221,8 @@ fn read_stale(
     let mut asked = asked.lock().unwrap_or_else(PoisonError::into_inner);
     for worker in stale(quota.as_ref(), crew, now) {
         let vendor = worker.vendor();
-        let fresh = |at: &OffsetDateTime| now - *at < REREAD_EVERY;
+        let every = again_after(quota.live(&vendor).as_ref());
+        let fresh = |at: &OffsetDateTime| now - *at < every;
         if asked.get(&vendor).is_some_and(fresh) {
             continue;
         }
@@ -267,17 +269,27 @@ fn stale(quota: &dyn QuotaBoard, crew: &[WorkerRef], now: OffsetDateTime) -> Vec
             continue;
         }
         seen.push(vendor.clone());
-        let newest = quota
-            .windows(&vendor)
-            .into_iter()
-            .chain(quota.get(&vendor))
-            .map(|reading| reading.observed_at)
-            .max();
-        if newest.is_some_and(|at| now - at >= REREAD_EVERY) {
+        // A CLI read only from a session's stream has no live reading yet, so it's due one.
+        let live = quota.live(&vendor);
+        let read_at_all = quota.get(&vendor).is_some() || !quota.windows(&vendor).is_empty();
+        let due = match &live {
+            Some(live) => now - live.read_at >= again_after(Some(live)),
+            None => read_at_all,
+        };
+        if due {
             stale.push(worker.clone());
         }
     }
     stale
+}
+
+/// How soon a CLI's live reading is read again. One that names no account shows only while
+/// fresh, so it's read a minute before it would go.
+fn again_after(live: Option<&LiveUsage>) -> time::Duration {
+    match live {
+        Some(live) if live.account.is_none() => UNNAMED_SHOWN_FOR - time::Duration::minutes(1),
+        _ => REREAD_EVERY,
+    }
 }
 
 /// One chip per vendor, in `crew` order, so two models of one vendor share a chip.
@@ -293,11 +305,19 @@ pub(crate) fn quota_chips(
         if seen.contains(&vendor) {
             continue;
         }
+        // The CLI's own live reading of the account signed in now, as the Usage tab shows it.
+        let now = OffsetDateTime::now_utc();
+        let live = current_live(quota, &vendor, now);
+        let windows: Vec<QuotaReading> = live
+            .iter()
+            .flat_map(|live| live.quota_readings())
+            .filter(|reading| reading.resets_at.is_none_or(|resets| resets > now))
+            .collect();
         chips.push(QuotaChip {
             label: vendor_label(&vendor),
-            reading: quota.get(&vendor),
+            reading: argonauts_core::limits::binding_reading(&windows).cloned(),
             health: health.state(&vendor).state,
-            windows: quota.windows(&vendor),
+            windows,
         });
         seen.push(vendor);
     }
@@ -345,6 +365,12 @@ mod tests {
         fn observe_plan(&self, vendor: &VendorId, plan: String) {
             self.board.observe_plan(vendor, plan);
         }
+        fn observe_live(&self, reading: argonauts_core::plan_usage::LiveUsage) {
+            self.board.observe_live(reading);
+        }
+        fn live(&self, vendor: &VendorId) -> Option<argonauts_core::plan_usage::LiveUsage> {
+            self.board.live(vendor)
+        }
         fn probe(
             &self,
             vendor: &VendorId,
@@ -354,39 +380,127 @@ mod tests {
         }
     }
 
-    /// A reading old enough to show its age is read again where that's free, once in a while,
-    /// and a fresh one isn't.
+    /// A live reading old enough to show its age is read again where that's free, once in a
+    /// while, and a fresh one isn't. A CLI read only from a session's stream has no live
+    /// reading, so it's due one.
     #[tokio::test]
     async fn an_old_reading_is_read_again_and_a_fresh_one_is_left() {
         let counting = Arc::new(Counting::default());
         let now = OffsetDateTime::now_utc();
-        let mut old = reading("codex", 0.11);
-        old.observed_at = now - time::Duration::days(2);
-        counting.observe(old);
-        let mut fresh = reading("antigravity-cli", 0.2);
-        fresh.observed_at = now - time::Duration::minutes(5);
-        counting.observe(fresh);
+        let live = |vendor: &str, read_at: OffsetDateTime| {
+            let mut live = argonauts_core::plan_usage::LiveUsage::new(
+                VendorId(vendor.to_owned()),
+                argonauts_core::limits::QuotaSource::AppServer,
+                read_at,
+            );
+            live.account = Some("me@example.com".to_owned());
+            live
+        };
+        counting.observe_live(live("codex", now - time::Duration::days(2)));
+        counting.observe_live(live("antigravity-cli", now - time::Duration::minutes(5)));
+        let mut streamed = reading("opencode", 0.2);
+        streamed.observed_at = now - time::Duration::minutes(5);
+        counting.observe(streamed);
         let board: Arc<dyn QuotaBoard> = counting.clone();
-        let crew: Vec<WorkerRef> = ["codex/gpt-5.6", "codex", "antigravity-cli", "claude-code"]
-            .iter()
-            .map(|worker| worker.parse().unwrap())
-            .collect();
+        let crew: Vec<WorkerRef> = [
+            "codex/gpt-5.6",
+            "codex",
+            "antigravity-cli",
+            "claude-code",
+            "opencode",
+        ]
+        .iter()
+        .map(|worker| worker.parse().unwrap())
+        .collect();
         let asked = Mutex::new(BTreeMap::new());
         read_stale(&board, &crew, now, &asked);
         // Asked once a while, not on every line, and a CLI never read yet waits until it works.
         read_stale(&board, &crew, now + time::Duration::minutes(1), &asked);
         tokio::task::yield_now().await;
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let mut probed = counting.probed.lock().unwrap().clone();
+        probed.sort();
         assert_eq!(
-            *counting.probed.lock().unwrap(),
-            [VendorId("codex".to_owned())]
+            probed,
+            [
+                VendorId("codex".to_owned()),
+                VendorId("opencode".to_owned())
+            ]
         );
-        // What start reads again: the same CLI, named once for its two models.
+        // What start reads again: the same CLIs, each named once for all its models.
         let names: Vec<String> = stale(counting.as_ref(), &crew, now)
             .iter()
             .map(ToString::to_string)
             .collect();
-        assert_eq!(names, ["codex/gpt-5.6"]);
+        assert_eq!(names, ["codex/gpt-5.6", "opencode"]);
+    }
+
+    /// A reading that names no account shows for ten minutes, so it's read again in its tenth
+    /// minute rather than after the half hour a named one waits.
+    #[test]
+    fn a_reading_that_names_no_account_is_read_again_before_it_fades() {
+        let board = Counting::default();
+        let now = OffsetDateTime::now_utc();
+        let unnamed = argonauts_core::plan_usage::LiveUsage::new(
+            VendorId("antigravity-cli".to_owned()),
+            argonauts_core::limits::QuotaSource::AppServer,
+            now - time::Duration::minutes(9),
+        );
+        board.observe_live(unnamed);
+        let crew: Vec<WorkerRef> = vec!["antigravity-cli".parse().unwrap()];
+        assert_eq!(stale(&board, &crew, now).len(), 1);
+        assert!(stale(&board, &crew, now - time::Duration::minutes(2)).is_empty());
+    }
+
+    /// A read that fails after a reading, or a sign-in since, means the account may have
+    /// changed: the chip drops the reading kept from before.
+    #[test]
+    fn a_doubted_reading_leaves_the_chip() {
+        struct Doubted(MemoryQuotaBoard);
+        impl QuotaBoard for Doubted {
+            fn observe(&self, reading: QuotaReading) {
+                self.0.observe(reading);
+            }
+            fn get(&self, vendor: &VendorId) -> Option<QuotaReading> {
+                self.0.get(vendor)
+            }
+            fn all(&self) -> Vec<QuotaReading> {
+                self.0.all()
+            }
+            fn observe_live(&self, reading: argonauts_core::plan_usage::LiveUsage) {
+                self.0.observe_live(reading);
+            }
+            fn live(&self, vendor: &VendorId) -> Option<argonauts_core::plan_usage::LiveUsage> {
+                self.0.live(vendor)
+            }
+            fn doubted_at(&self, _: &VendorId) -> Option<OffsetDateTime> {
+                Some(OffsetDateTime::now_utc())
+            }
+            fn probe(
+                &self,
+                _: &VendorId,
+            ) -> argonauts_core::future::BoxFuture<'_, Option<QuotaReading>> {
+                Box::pin(async { None })
+            }
+        }
+        let board = Doubted(MemoryQuotaBoard::default());
+        let now = OffsetDateTime::now_utc();
+        let mut named = argonauts_core::plan_usage::LiveUsage::new(
+            VendorId("codex".to_owned()),
+            QuotaSource::AppServer,
+            now - time::Duration::minutes(3),
+        );
+        named.account = Some("one@example.com".to_owned());
+        named.windows = vec![
+            argonauts_core::plan_usage::LiveWindow::new("five_hour", "session", "Current session")
+                .used(Some(0.95))
+                .resets_at(Some(now + time::Duration::hours(1))),
+        ];
+        board.observe_live(named);
+        let crew: Vec<WorkerRef> = vec!["codex".parse().unwrap()];
+        let chips = quota_chips(&crew, &board, &MemoryHealthBoard::default());
+        assert!(chips[0].reading.is_none(), "{:?}", chips[0].reading);
+        assert!(chips[0].windows.is_empty());
     }
     use argonauts_core::limits::{HealthState, QuotaReading, QuotaSource, QuotaStatus};
     use argonauts_testkit::TempRepo;
@@ -517,7 +631,19 @@ mod tests {
     fn one_chip_per_vendor_in_crew_order() {
         let quota = MemoryQuotaBoard::default();
         let health = MemoryHealthBoard::default();
-        quota.observe(reading("codex", 0.38));
+        // A stream reading names no account, so the line waits for the live one.
+        quota.observe(reading("codex", 0.5));
+        let mut live = argonauts_core::plan_usage::LiveUsage::new(
+            VendorId("codex".to_owned()),
+            argonauts_core::limits::QuotaSource::AppServer,
+            OffsetDateTime::now_utc(),
+        );
+        live.account = Some("me@example.com".to_owned());
+        live.windows = vec![
+            argonauts_core::plan_usage::LiveWindow::new("five_hour", "5-hour", "5h limit")
+                .used(Some(0.38)),
+        ];
+        quota.observe_live(live);
         let crew: Vec<WorkerRef> = ["codex/gpt-5.6", "claude-code", "codex/gpt-5.6-luna"]
             .iter()
             .map(|worker| worker.parse().unwrap())

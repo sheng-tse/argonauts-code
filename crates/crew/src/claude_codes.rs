@@ -449,6 +449,7 @@ impl Asks<'_> {
             resume: None,
             slot: 0,
             label: Some(label.to_owned()),
+            reviews: false,
         };
         let ran = host
             .run_session_in_turn(plan, None, StandIns::Allowed, &|_| Ok(()))
@@ -540,10 +541,10 @@ pub fn verdict_schema() -> Value {
         "type": "object",
         "properties": {
             "accept": {"type": "boolean"},
-            "summary": {"type": "string"},
-            "findings": {"type": "array", "items": {"type": "string"}},
+            "summary": {"type": ["string", "null"]},
+            "findings": {"type": ["array", "null"], "items": {"type": "string"}},
         },
-        "required": ["accept"],
+        "required": ["accept", "summary", "findings"],
         "additionalProperties": false,
     })
 }

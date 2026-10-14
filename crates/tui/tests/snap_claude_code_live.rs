@@ -1,4 +1,4 @@
-//! What shows under the transcript: You should know above the input, a message
+//! What Claude Code draws under the transcript: You should know above the input, a message
 //! waiting with the send-now hint, and what a mod pushes, at 80, 100, and 120
 //! columns, with the frame check at every width.
 

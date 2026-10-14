@@ -305,6 +305,20 @@ pub struct PlanUsage {
     /// Who takes its work while it's out or down, by display name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moved_to: Option<String>,
+    /// The CLI's own live reading, for the account signed in, that `windows` come from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<crate::plan_usage::LiveUsage>,
+    /// A live reading is on its way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reading: bool,
+    /// Why the last live read got no reading, such as the CLI's own error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed: Option<String>,
+    /// The reading kept from before while it no longer stands as the CLI's own, because a
+    /// read since failed or the CLI was signed in or out since. Drawn dim, as when it was read
+    /// and for whom.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<crate::plan_usage::LiveUsage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

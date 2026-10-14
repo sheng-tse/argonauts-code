@@ -10,7 +10,7 @@
 
 mod cli;
 mod data;
-mod draw;
+pub(super) mod draw;
 mod opened;
 pub mod pinned;
 mod settings;
@@ -22,7 +22,6 @@ use argonauts_core::crew_stats::CrewStats;
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::settings::stats::{StatsGroup, StatsMeasure};
 use crossterm::event::{KeyCode, KeyEvent};
-use ratatui::text::Span;
 use time::OffsetDateTime;
 
 pub use opened::Opened;
@@ -33,6 +32,7 @@ use self::cli::Stats;
 use self::data::Crew;
 use self::pinned::StatsCard;
 use self::settings::PageKey;
+use super::subtabs::{self, Level};
 use crate::theme::Role;
 use crate::widgets::{Drawn, Form, Frame, Kit};
 
@@ -53,6 +53,12 @@ pub struct StatsState {
     page_wanted: bool,
     /// Why a stats file was left out, from the last numbers, for the page.
     left_out: Vec<String>,
+    /// The row the keys are on: the tabs, By CLI, By model and By role, or the cards.
+    pub level: Level,
+    /// A model asked for from elsewhere, such as the Overview, picked once its row is known.
+    wanted: Option<Opened>,
+    /// Why the model asked for has no row here, said above By model until the next key.
+    missing: Option<String>,
 }
 
 /// What a key on the tab asks of the panel.
@@ -178,6 +184,13 @@ impl StatsState {
         };
         // A stats file that doesn't read is named first, so a page that looks wrong says why.
         let mut blocks: Vec<Drawn> = left_out(kit, &stats.problems).into_iter().collect();
+        if let Some(missing) = self
+            .missing
+            .as_deref()
+            .filter(|_| self.group == StatsGroup::Model)
+        {
+            blocks.push(note(kit, missing));
+        }
         let crew = Crew::of(usage, stats, names, now.date());
         if crew.is_empty() {
             blocks.push(note(
@@ -192,7 +205,11 @@ impl StatsState {
             measure: self.measure,
         };
         let frame = Frame::view(width);
-        let picked = self.picked.min(self.picks(&crew).saturating_sub(1));
+        // The row the keys are on shows only while they're in the cards.
+        let picked = match self.level {
+            Level::Cards => self.picked.min(self.picks(&crew).saturating_sub(1)),
+            Level::Tabs | Level::SubTabs => usize::MAX,
+        };
         let mut focus = blocks.len();
         match self.group {
             StatsGroup::Cli => {
@@ -280,7 +297,9 @@ impl StatsState {
         }
     }
 
-    /// The tab's own keys. Anything else is the panel's.
+    /// The tab's own keys. Anything else is the panel's. ↓ goes from the tabs to the
+    /// sub-tabs and on into the cards, ↑ back out; on the sub-tabs ←→ regroup. A letter that
+    /// regroups puts the keys on the rows, where they act.
     pub fn key(
         &mut self,
         code: KeyCode,
@@ -288,22 +307,25 @@ impl StatsState {
         names: &DisplayNames,
         now: OffsetDateTime,
     ) -> Option<StatsKey> {
+        self.missing = None;
         let period = |period| Some(StatsKey::Period(period));
-        let regroup = |state: &mut Self, group| {
-            state.group = group;
-            state.picked = 0;
-            state.opened = None;
-            state.settled = true;
-            Some(StatsKey::Moved)
-        };
         match code {
             KeyCode::Char('t') => return period(UsagePeriod::Today),
             KeyCode::Char('7') => return period(UsagePeriod::Week),
             KeyCode::Char('3') => return period(UsagePeriod::Month),
             KeyCode::Char('a') => return period(UsagePeriod::All),
-            KeyCode::Char('c') => return regroup(self, StatsGroup::Cli),
-            KeyCode::Char('m') => return regroup(self, StatsGroup::Model),
-            KeyCode::Char('r') => return regroup(self, StatsGroup::Role),
+            KeyCode::Char('c') => {
+                self.regroup(StatsGroup::Cli, Level::Cards);
+                return Some(StatsKey::Moved);
+            }
+            KeyCode::Char('m') => {
+                self.regroup(StatsGroup::Model, Level::Cards);
+                return Some(StatsKey::Moved);
+            }
+            KeyCode::Char('r') => {
+                self.regroup(StatsGroup::Role, Level::Cards);
+                return Some(StatsKey::Moved);
+            }
             KeyCode::Char('u') => {
                 self.measure = self.measure.next();
                 self.settled = true;
@@ -325,7 +347,20 @@ impl StatsState {
                     _ => Some(StatsKey::Moved),
                 };
             }
+            KeyCode::Left if self.level == Level::SubTabs => return Some(self.step_group(-1)),
+            KeyCode::Right if self.level == Level::SubTabs => return Some(self.step_group(1)),
+            KeyCode::Down | KeyCode::Enter if self.level != Level::Cards => {
+                self.level = self.level.down();
+                return Some(StatsKey::Moved);
+            }
+            KeyCode::Up if self.level != Level::Cards || self.picked == 0 => {
+                self.level = self.level.up();
+                return Some(StatsKey::Moved);
+            }
             _ => {}
+        }
+        if self.level != Level::Cards {
+            return None;
         }
         let usage = usage?;
         let stats = usage.stats.as_ref()?;
@@ -333,8 +368,8 @@ impl StatsState {
         let last = self.picks(&crew).saturating_sub(1);
         self.picked = self.picked.min(last);
         match code {
-            KeyCode::Up | KeyCode::BackTab => self.picked = self.picked.saturating_sub(1),
-            KeyCode::Down | KeyCode::Tab => self.picked = (self.picked + 1).min(last),
+            KeyCode::Up => self.picked = self.picked.saturating_sub(1),
+            KeyCode::Down => self.picked = (self.picked + 1).min(last),
             KeyCode::Home => self.picked = 0,
             KeyCode::End => self.picked = last,
             KeyCode::Enter => {
@@ -368,26 +403,75 @@ impl StatsState {
         }
     }
 
-    /// `by CLI · m by model · r by role · u bars measure tokens`, the view in use in bold.
-    pub fn views(&self, kit: &Kit<'_>) -> Vec<Span<'static>> {
-        let mut spans = Vec::new();
-        for (group, key, words) in [
-            (StatsGroup::Cli, "c", "by CLI"),
-            (StatsGroup::Model, "m", "by model"),
-            (StatsGroup::Role, "r", "by role"),
-        ] {
-            if !spans.is_empty() {
-                spans.push(kit.dim(" · "));
-            }
-            if group == self.group {
-                spans.push(Span::styled(words, kit.bold(crate::theme::Role::Card)));
-            } else {
-                spans.push(kit.dim(format!("{key} {words}")));
+    /// ←→ on the sub-tabs: the next grouping, wrapping at the ends, shown at once.
+    pub fn step_group(&mut self, by: isize) -> StatsKey {
+        let at = GROUPS
+            .iter()
+            .position(|(group, _)| *group == self.group)
+            .unwrap_or(0);
+        self.regroup(
+            GROUPS[subtabs::step(at, by, GROUPS.len())].0,
+            Level::SubTabs,
+        );
+        StatsKey::Moved
+    }
+
+    fn regroup(&mut self, group: StatsGroup, level: Level) {
+        self.group = group;
+        self.picked = 0;
+        self.opened = None;
+        self.settled = true;
+        self.level = level;
+    }
+
+    /// Opens `model` of `agent` in the by-model view, its row picked once the numbers show
+    /// where it is.
+    pub fn open_model(&mut self, agent: String, model: Option<String>) {
+        self.page = None;
+        self.page_wanted = false;
+        self.regroup(StatsGroup::Model, Level::Cards);
+        let wanted = Opened::Model(agent, model);
+        self.opened = Some(wanted.clone());
+        self.wanted = Some(wanted);
+    }
+
+    /// Picks the row of the model asked for with [`open_model`](Self::open_model), now the
+    /// numbers are here. A model that did no crew work in the period stays unopened.
+    pub fn pick_wanted(&mut self, usage: &UsageSummary, names: &DisplayNames, now: OffsetDateTime) {
+        let Some(wanted) = self.wanted.take() else {
+            return;
+        };
+        let Some(stats) = usage.stats.as_ref() else {
+            self.wanted = Some(wanted);
+            return;
+        };
+        let crew = Crew::of(usage, stats, names, now.date());
+        let look = Stats {
+            crew: &crew,
+            usage,
+            measure: self.measure,
+        };
+        let at = look.sorted_models(self.sort).iter().position(|(_, model)| {
+            Opened::Model(model.agent.clone(), model.model.clone()) == wanted
+        });
+        match at {
+            Some(at) => self.picked = at,
+            None => {
+                self.opened = None;
+                if let Opened::Model(agent, model) = &wanted {
+                    let span = match usage.period {
+                        UsagePeriod::Today => "today",
+                        UsagePeriod::Week => "in the last seven days",
+                        UsagePeriod::Month => "in the last thirty days",
+                        UsagePeriod::All => "so far",
+                    };
+                    self.missing = Some(format!(
+                        "{} did no crew work {span}; its history is on the Overview",
+                        names.agent(agent, model.as_deref())
+                    ));
+                }
             }
         }
-        spans.push(kit.dim(" · u bars measure "));
-        spans.push(kit.strong(self.measure.word()));
-        spans
     }
 
     /// The keys, in display order.
@@ -420,6 +504,13 @@ impl StatsState {
         }
     }
 }
+
+/// The sub-tabs, in order.
+const GROUPS: [(StatsGroup, &str); 3] = [
+    (StatsGroup::Cli, "By CLI"),
+    (StatsGroup::Model, "By model"),
+    (StatsGroup::Role, "By role"),
+];
 
 /// The Stats tab's periods, as its row of tabs writes them.
 pub const PERIODS: [(UsagePeriod, &str); 4] = [

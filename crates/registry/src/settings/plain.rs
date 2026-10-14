@@ -73,6 +73,15 @@ pub(crate) fn syntax_message(text: &str, err: &toml::de::Error) -> String {
     format!("line {number} isn't valid TOML ({message}): {line}")
 }
 
+/// Where the parser stopped, as a line and a column counted from 1.
+pub(crate) fn syntax_place(text: &str, err: &toml::de::Error) -> Option<(usize, usize)> {
+    let start = err.span()?.start.min(text.len());
+    let before = &text[..start];
+    let line = before.matches('\n').count() + 1;
+    let line_start = before.rfind('\n').map_or(0, |at| at + 1);
+    Some((line, before[line_start..].chars().count() + 1))
+}
+
 /// The value at a dotted key, through tables only. A key inside a list of tables isn't found.
 pub(crate) fn written_at<'a>(table: &'a Table, key: &str) -> Option<&'a Value> {
     let mut segments = key.split('.');

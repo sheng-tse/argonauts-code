@@ -12,7 +12,7 @@ use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time};
 use crate::adapter::ID;
 use crate::local_zone::LocalZone;
 
-/// codex-cli 0.158.0 prints the reset in local time: `%-I:%M %p` when it's today, else
+/// codex-cli 0.158.0 to 0.160.0 print the reset in local time: `%-I:%M %p` when it's today, else
 /// `%b %-d<st|nd|rd|th>, %Y %-I:%M %p`.
 static RESET_TIME: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -54,9 +54,22 @@ pub fn reset_time(message: &str, now: OffsetDateTime, zone: &LocalZone) -> Optio
             let year = found["year"].parse().ok()?;
             Date::from_calendar_date(year, month, number("day")?).ok()?
         }
-        None => now.to_offset(zone.offset_at(now.unix_timestamp())).date(),
+        None => return Some(next_at(time, now, zone)),
     };
     Some(local_to_utc(PrimitiveDateTime::new(date, time), zone))
+}
+
+/// A bare time is the next time the clock reads it: Codex prints one only for a reset still
+/// to come, so a time already gone today is tomorrow's, as when the message is read a moment
+/// after midnight or on a clock a little behind Codex's.
+fn next_at(time: Time, now: OffsetDateTime, zone: &LocalZone) -> OffsetDateTime {
+    let today = now.to_offset(zone.offset_at(now.unix_timestamp())).date();
+    let at = local_to_utc(PrimitiveDateTime::new(today, time), zone);
+    if at + time::Duration::minutes(1) >= now {
+        return at;
+    }
+    let tomorrow = today.next_day().unwrap_or(today);
+    local_to_utc(PrimitiveDateTime::new(tomorrow, time), zone)
 }
 
 /// Uses the offset in force at that moment, which differs from today's across a DST change.
@@ -93,6 +106,27 @@ mod tests {
             &LocalZone::fixed(8 * 3600),
         );
         assert_eq!(resets, Some(datetime!(2026-10-01 07:05 UTC)));
+    }
+
+    #[test]
+    fn a_bare_time_already_gone_is_tomorrows() {
+        let utc = LocalZone::fixed(0);
+        let message = "You've hit your usage limit. Try again at 11:30 PM.";
+        // Read just past midnight: 11:30 PM has gone today, so it's tonight's.
+        let resets = reset_time(message, datetime!(2026-10-09 00:05 UTC), &utc);
+        assert_eq!(resets, Some(datetime!(2026-10-09 23:30 UTC)));
+        let early = "You've hit your usage limit. Try again at 12:15 AM.";
+        assert_eq!(
+            reset_time(early, datetime!(2026-10-08 20:12 UTC), &utc),
+            Some(datetime!(2026-10-09 00:15 UTC))
+        );
+        // Within a minute of it, the time is still today's, so a reading just at the reset
+        // isn't put off a day.
+        let now = datetime!(2026-10-08 15:05:40 UTC);
+        assert_eq!(
+            reset_time("try again at 3:05 PM", now, &utc),
+            Some(datetime!(2026-10-08 15:05 UTC))
+        );
     }
 
     #[test]

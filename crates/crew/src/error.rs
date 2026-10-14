@@ -42,6 +42,23 @@ pub enum EngineError {
 
 pub type EngineResult<T> = Result<T, EngineError>;
 
+impl EngineError {
+    /// What ended a failed run: its first line in plain words where the error itself is
+    /// plumbing, then the error as it came, which `r` shows.
+    pub fn run_detail(&self) -> String {
+        let plain = match self {
+            Self::Step(StepError::SchemaMismatch { raw: None, .. }) => {
+                "an agent ended without an answer"
+            }
+            Self::Step(StepError::SchemaMismatch { .. }) => {
+                "an agent's answer didn't match the format Argonauts asked for"
+            }
+            _ => return self.to_string(),
+        };
+        format!("{plain}\n{self}")
+    }
+}
+
 /// Why nobody could take a seat over, for the run's park.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stall {
@@ -77,4 +94,39 @@ pub fn login_fix(names: &[String]) -> String {
 /// The body of every scaffold stub.
 pub fn not_built<T>(what: &'static str) -> EngineResult<T> {
     Err(EngineError::NotBuilt(what))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_run_failed_by_an_answer_that_doesnt_fit_says_so_plainly_first() {
+        let missed = EngineError::Step(StepError::SchemaMismatch {
+            raw: Some("{}".to_owned()),
+            errors: vec!["\"based_on\" is a required property".to_owned()],
+        });
+        let detail = missed.run_detail();
+        let mut lines = detail.lines();
+        assert_eq!(
+            lines.next(),
+            Some("an agent's answer didn't match the format Argonauts asked for")
+        );
+        assert_eq!(
+            lines.next(),
+            Some("step: output didn't match the schema: \"based_on\" is a required property")
+        );
+
+        let none = EngineError::Step(StepError::SchemaMismatch {
+            raw: None,
+            errors: Vec::new(),
+        });
+        assert!(
+            none.run_detail()
+                .starts_with("an agent ended without an answer\n")
+        );
+        // Errors that already say what happened stay as they are.
+        let refused = EngineError::Refused("the workflow names no steps".to_owned());
+        assert_eq!(refused.run_detail(), "the workflow names no steps");
+    }
 }

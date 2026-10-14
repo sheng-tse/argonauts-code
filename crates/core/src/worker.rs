@@ -107,6 +107,8 @@ pub struct SessionSpec {
     pub asking: Option<Asking>,
     /// What the CLI's own workflow does in this session, where it has one.
     pub cli_workflow: CliWorkflow,
+    /// What it may run in a shell when it only reads.
+    pub shell: SessionShell,
 }
 
 /// A CLI's own workflow in one session. Only Claude Code has one.
@@ -117,6 +119,27 @@ pub struct CliWorkflow {
     /// You typed `ultracode` to ask for a workflow with this message. It goes out marked as
     /// typed by you, so the CLI's own keyword works.
     pub typed_keyword: bool,
+    /// The session starts no workflow or background agent of its CLI's own. A crew agent's
+    /// answer is taken when its turn ends, and what it left running would outlive that.
+    pub background_off: bool,
+}
+
+/// What a read-only session may run in a shell. A session that builds has its CLI's own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionShell {
+    #[default]
+    None,
+    /// These commands, each as one line, such as `node --test`, with any arguments after.
+    Only(Vec<String>),
+    /// Any command, inside the session's sandbox.
+    Any,
+}
+
+impl SessionShell {
+    pub fn is_none(&self) -> bool {
+        *self == Self::None
+    }
 }
 
 /// A direct session's questions, and the app's listener that answers them.
@@ -241,8 +264,13 @@ pub enum SessionControl {
     /// Interrupt the turn, then kill the process tree.
     Stop,
     /// A message of yours, written to the open input at once with `uuid`, for a CLI that holds
-    /// it until the model can read it. `MessageState` events say how far it got.
-    Send { text: String, uuid: String },
+    /// it until the model can read it. `MessageState` events say how far it got. `pictures`
+    /// are the ones its `[Image #N]` chips name.
+    Send {
+        text: String,
+        uuid: String,
+        pictures: Vec<crate::pictures::Picture>,
+    },
     /// What waits goes to the model now, and a running tool moves to the background.
     SendNow { uuid: String },
     /// Takes back a message the model hasn't read.

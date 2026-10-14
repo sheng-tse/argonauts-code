@@ -50,6 +50,9 @@ pub(crate) struct LedgerLine {
     /// Some usage came without a price, so `cost` is a lower bound.
     #[serde(default)]
     pub partial: bool,
+    /// The local hour it ended, 0 to 23, for the Overview's hours of the day.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hour: Option<u8>,
 }
 
 impl LedgerLine {
@@ -67,7 +70,14 @@ impl LedgerLine {
             cost: spent.cost_usd,
             estimated: spent.cost_estimated,
             partial: spent.cost_partial,
+            hour: None,
         }
+    }
+
+    /// Notes the local hour of `at`.
+    fn at_hour(mut self, at: OffsetDateTime) -> Self {
+        self.hour = Some(WallClock::default().to_local(at).hour());
+        self
     }
 
     pub fn spent(&self) -> Spend {
@@ -98,7 +108,7 @@ impl UsageLedger {
         if spent.total_tokens() == 0 && spent.cost_usd == 0.0 {
             return;
         }
-        let line = LedgerLine::new(local_day(at), repo, None, worker, spent);
+        let line = LedgerLine::new(local_day(at), repo, None, worker, spent).at_hour(at);
         if let Err(err) = self.append(&[line]) {
             tracing::warn!("couldn't add the turn to the usage ledger: {err}");
         }
@@ -126,7 +136,7 @@ impl UsageLedger {
         let lines: Vec<LedgerLine> = by_worker
             .values()
             .filter(|(_, spent)| spent.total_tokens() > 0 || spent.cost_usd > 0.0)
-            .map(|(worker, spent)| LedgerLine::new(day, repo, Some(run), worker, spent))
+            .map(|(worker, spent)| LedgerLine::new(day, repo, Some(run), worker, spent).at_hour(at))
             .collect();
         if let Err(err) = self.append(&lines) {
             tracing::warn!("couldn't add run {run} to the usage ledger: {err}");

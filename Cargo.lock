@@ -381,6 +381,7 @@ name = "argonauts-core"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "dirs",
  "jsonschema",
  "nix 0.31.3",

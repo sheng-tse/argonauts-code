@@ -140,8 +140,8 @@ pub(crate) fn picker(ctx: &Ctx, command: &SlashCommand) -> Vec<ViewData> {
 }
 
 /// A Learning picker: the area's rows from the learning files, and its settings as the
-/// Settings tab lists them (`/records` has `routing.*` and
-/// `outcomes.share`, and so on). A picker that can't be built says why instead.
+/// Settings tab lists them: `/records` has `routing.*` and `outcomes.share`, and so on. A
+/// picker that can't be built says why instead.
 fn learning(ctx: &Ctx, area: LearningArea, name: Option<String>) -> Vec<ViewData> {
     let mut settings_rows: Vec<SettingRow> = Vec::new();
     for section in area.settings() {

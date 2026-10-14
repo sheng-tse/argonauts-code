@@ -116,6 +116,10 @@ impl Adapter for CodexAdapter {
         probe::answer(stdout, OffsetDateTime::now_utc())
     }
 
+    fn parse_quota_probe_end(&self, stdout: &str) -> Option<QuotaAnswer> {
+        probe::answer_at_end(stdout, OffsetDateTime::now_utc())
+    }
+
     fn compaction(&self, setting: Compaction) -> LaunchTweak {
         tweaks::compaction(setting)
     }

@@ -8,7 +8,7 @@ Task
   You own task-002: Add the JSON writer.
   Keep the CSV path working.
 
-Goal
+Request
   Export takes --json and prints valid JSON.
 
 Notes

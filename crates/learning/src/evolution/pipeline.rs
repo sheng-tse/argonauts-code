@@ -186,8 +186,9 @@ impl Evolution {
         {
             return Ok(Vec::new());
         }
-        let limit = settings.limits.evolution_usd_per_month;
-        if limit <= 0.0 || self.spent_this_month(self.now())? >= limit {
+        if let Some(limit) = settings.limits.evolution_usd_per_month
+            && (limit <= 0.0 || self.spent_this_month(self.now())? >= limit)
+        {
             return Ok(Vec::new());
         }
         let Some(next) = candidates

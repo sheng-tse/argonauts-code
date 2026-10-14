@@ -133,6 +133,19 @@ struct Sandbox {
     fail_if_unavailable: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     allow_unsandboxed_commands: Option<bool>,
+    /// Off where only some commands may run: Claude Code otherwise runs every sandboxed
+    /// command without a rule.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_allow_bash_if_sandboxed: Option<bool>,
+}
+
+/// The shell commands a session's Bash may run: any its tool list and sandbox allow, or only
+/// those listed, each with any arguments after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Commands<'a> {
+    #[default]
+    Any,
+    Only(&'a [String]),
 }
 
 /// Which sandbox holds the shell commands the agent runs.
@@ -174,22 +187,31 @@ pub fn session_settings(
     left_out: &LeftOut,
     own: &OwnWorkflow,
     style: Style,
+    shell: Commands<'_>,
 ) -> anyhow::Result<String> {
+    let limited = matches!(shell, Commands::Only(_));
     let sandbox = match commands {
         CommandSandbox::Own => Sandbox {
             enabled: true,
             fail_if_unavailable: Some(true),
             allow_unsandboxed_commands: Some(false),
+            auto_allow_bash_if_sandboxed: limited.then_some(false),
         },
         CommandSandbox::Off => Sandbox {
             enabled: false,
             fail_if_unavailable: None,
             allow_unsandboxed_commands: None,
+            auto_allow_bash_if_sandboxed: None,
         },
     };
     let mut allow = Vec::new();
+    if let Commands::Only(lines) = shell {
+        allow.extend(lines.iter().flat_map(|line| command_rules(line)));
+    }
     match allowed {
-        Allowed::Listed if commands == CommandSandbox::Off => allow.push(BASH.to_owned()),
+        Allowed::Listed if commands == CommandSandbox::Off && !limited => {
+            allow.push(BASH.to_owned())
+        }
         Allowed::Everything => allow.extend(AUTO_RULES.iter().map(|rule| (*rule).to_owned())),
         Allowed::Listed | Allowed::AsTheCliAsks => {}
     }
@@ -229,6 +251,28 @@ pub fn session_settings(
     Ok(serde_json::to_string(&settings)?)
 }
 
+/// The rules that let Bash run `line` as it is and with arguments after it. A line a rule
+/// can't hold exactly, with parentheses or a `*` that a rule reads as a wildcard, gets none,
+/// so it can't run.
+fn command_rules(line: &str) -> Vec<String> {
+    let line = line.trim();
+    if !is_rule_line(line) {
+        return Vec::new();
+    }
+    vec![format!("{BASH}({line})"), format!("{BASH}({line}:*)")]
+}
+
+fn is_command_rule(rule: &str) -> bool {
+    rule.strip_prefix("Bash(")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .map(|line| line.strip_suffix(":*").unwrap_or(line))
+        .is_some_and(is_rule_line)
+}
+
+fn is_rule_line(line: &str) -> bool {
+    !line.trim().is_empty() && !line.contains(['(', ')', '*', '\n'])
+}
+
 /// Checks settings against the part of Claude Code's schema the adapter uses. Anything else is
 /// refused, because a key Claude Code rejects would make it drop the whole file without a word.
 pub fn validate(settings: &Value) -> anyhow::Result<()> {
@@ -248,7 +292,12 @@ pub fn validate(settings: &Value) -> anyhow::Result<()> {
             "sandbox" => check_fields(
                 key,
                 value,
-                &["enabled", "failIfUnavailable", "allowUnsandboxedCommands"],
+                &[
+                    "enabled",
+                    "failIfUnavailable",
+                    "allowUnsandboxedCommands",
+                    "autoAllowBashIfSandboxed",
+                ],
                 Value::is_boolean,
             )?,
             "permissions" => check_permissions(value)?,
@@ -325,9 +374,9 @@ fn check_permissions(value: &Value) -> anyhow::Result<()> {
                 continue;
             }
             ensure!(
-                TOOL_RULES.contains(&rule) || is_mcp_server_rule(rule),
-                "permissions.allow only takes MCP server rules, Bash, WebFetch, WebSearch, and \
-                 Workflow, not {rule}"
+                TOOL_RULES.contains(&rule) || is_mcp_server_rule(rule) || is_command_rule(rule),
+                "permissions.allow only takes MCP server rules, Bash and its command rules, \
+                 WebFetch, WebSearch, and Workflow, not {rule}"
             );
         }
     }
@@ -399,9 +448,43 @@ mod tests {
             left_out,
             &OwnWorkflow::default(),
             style,
+            Commands::Any,
         )
         .unwrap();
         serde_json::from_str(&settings).unwrap()
+    }
+
+    /// A reader that may run the checks: one rule for each command as it is and with
+    /// arguments, and no command without a rule, in Claude Code's sandbox or ours.
+    #[test]
+    fn a_reader_runs_only_the_commands_it_was_given() {
+        let lines = ["node --test".to_owned(), "make (all)".to_owned()];
+        for commands in [CommandSandbox::Own, CommandSandbox::Off] {
+            let settings = session_settings(
+                false,
+                commands,
+                Allowed::Listed,
+                &LeftOut::default(),
+                &OwnWorkflow::default(),
+                Style::Yours,
+                Commands::Only(&lines),
+            )
+            .unwrap();
+            let settings: Value = serde_json::from_str(&settings).unwrap();
+            assert_eq!(
+                settings["permissions"]["allow"],
+                json!(["Bash(node --test)", "Bash(node --test:*)"]),
+                "{commands:?}"
+            );
+            if commands == CommandSandbox::Own {
+                assert_eq!(
+                    settings["sandbox"]["autoAllowBashIfSandboxed"],
+                    json!(false)
+                );
+            }
+            validate(&settings).unwrap();
+        }
+        assert!(validate(&json!({"permissions": {"allow": ["Bash(rm (x))"]}})).is_err());
     }
 
     #[test]

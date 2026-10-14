@@ -171,7 +171,10 @@ async fn blind(host: &Host, call: &StepCall, sent_back: bool) -> EngineResult<St
                 warn(
                     host,
                     None,
-                    format!("{worker}'s draft failed and is left out: {error}"),
+                    format!(
+                        "{}'s draft failed and is left out: {error}",
+                        crate::roles::display_name(&worker)
+                    ),
                 )?;
                 failed.push(worker);
             }

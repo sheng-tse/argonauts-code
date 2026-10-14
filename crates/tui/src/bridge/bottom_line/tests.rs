@@ -460,7 +460,6 @@ fn the_settings_pick_the_parts_their_sides_and_who_shows() {
     status.line.artifact = Some(PublishedArtifact {
         name: "weekly-usage-chart".into(),
         others: 2,
-        feedback_drafts: 1,
     });
     state.status = Some(status);
     let mut slots = BTreeMap::new();
@@ -509,7 +508,6 @@ fn the_settings_pick_the_parts_their_sides_and_who_shows() {
         PartBody::Artifact {
             name: "weekly-usage-chart".into(),
             others: 2,
-            feedback_drafts: 1
         }
     );
 }
@@ -804,7 +802,6 @@ fn a_page_the_conversation_published_names_the_artifact_part() {
         Some(PartBody::Artifact {
             name: "weekly-usage-chart".into(),
             others: 1,
-            feedback_drafts: 0,
         }),
         "{line:?}"
     );

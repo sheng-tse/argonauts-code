@@ -10,12 +10,13 @@ use crate::context::ContextTracker;
 use crate::errors;
 use crate::isolation;
 use crate::json::{array_at, bool_at, str_at, string_at, strings_at, u64_at};
+use crate::patch::file_patch;
 use crate::quota::{self, LimitTracker};
 use crate::settings::STATUS_SERVER;
 use crate::subagents::SubagentTracker;
 use crate::todo::TodoTracker;
 use crate::usage::UsageTracker;
-use crate::workflows::WorkflowTracker;
+use crate::workflows::{self, WorkflowTracker};
 use crate::{control, mods};
 
 const FILE_TOOLS: &[&str] = &["Write", "Edit", "MultiEdit", "NotebookEdit"];
@@ -521,15 +522,26 @@ impl ClaudeStreamParser {
         let denial = self.denials.remove(&id);
         let ok = denial.is_none() && !bool_at(block, "is_error");
         let output = denial.or_else(|| tool_output_text(block.get("content")));
+        let starts_workflow = self
+            .open_tools
+            .get(&id)
+            .is_some_and(|tool| tool.name == workflows::TOOL);
+        let output = output
+            .filter(|text| !(ok && starts_workflow && workflows::launched(structured, Some(text))));
         let child_done = self
             .subagents
             .tool_finished(&id, ok, output.as_deref(), structured);
-        let mut events = vec![AgentEvent::ToolFinished {
+        let patch =
+            self.open_tools.get(&id).filter(|_| ok).and_then(|tool| {
+                file_patch(&id, &tool.name, &tool.input, structured, parent.clone())
+            });
+        let mut events: Vec<AgentEvent> = patch.into_iter().collect();
+        events.push(AgentEvent::ToolFinished {
             id: id.clone(),
             ok,
             output,
             parent,
-        }];
+        });
         events.extend(child_done);
         if let Some(tool) = self.open_tools.remove(&id)
             && ok
@@ -972,6 +984,45 @@ mod tests {
             panic!("expected todo");
         };
         assert_eq!(items[0].status, TodoStatus::InProgress);
+    }
+
+    #[test]
+    fn an_edit_reports_its_patch_before_it_finishes() {
+        let mut parser = ClaudeStreamParser::new();
+        parse(
+            &mut parser,
+            json!({"type": "system", "subtype": "init", "cwd": "/w", "tools": []}),
+        );
+        parse(
+            &mut parser,
+            json!({"type": "assistant", "parent_tool_use_id": null, "message": {"id": "m1", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Edit",
+                 "input": {"file_path": "/w/notes.md", "old_string": "draft", "new_string": "final"}}
+            ]}}),
+        );
+        let finished = parse(
+            &mut parser,
+            json!({"type": "user", "parent_tool_use_id": null,
+                   "message": {"content": [{"type": "tool_result", "tool_use_id": "t1",
+                               "content": "The file has been updated."}]},
+                   "tool_use_result": {"filePath": "/w/notes.md", "oldString": "draft",
+                       "newString": "final", "structuredPatch": [{"oldStart": 1, "oldLines": 1,
+                       "newStart": 1, "newLines": 1,
+                       "lines": ["-This is a draft.", "+This is a final."]}]}}),
+        );
+        assert_eq!(
+            types(&finished),
+            ["file_patch", "tool_finished", "file_changed"]
+        );
+        assert_eq!(
+            finished[0],
+            AgentEvent::FilePatch {
+                id: "t1".into(),
+                path: "/w/notes.md".into(),
+                hunks: "@@ -1,1 +1,1 @@\n-This is a draft.\n+This is a final.\n".into(),
+                parent: None,
+            }
+        );
     }
 
     #[test]

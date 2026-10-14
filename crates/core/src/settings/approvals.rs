@@ -535,10 +535,12 @@ pub struct HardLimitSettings {
     pub dependency_allowlist: Vec<String>,
     /// Dollars all runs and chats together may spend in a day. Unset, there is no limit.
     pub spend_per_day: Option<f64>,
-    pub auto_merges_per_day: u32,
+    /// Merges approved without you in a day, across every repo. Unset, there is no limit.
+    pub auto_merges_per_day: Option<u32>,
     /// Irreversible outside actions you allow, such as `publish`.
     pub irreversible_allowlist: Vec<String>,
-    pub evolution_usd_per_month: f64,
+    /// Dollars workflow evolution may spend in a calendar month. Unset, there is no limit.
+    pub evolution_usd_per_month: Option<f64>,
     /// The run and task limits. Their keys sit in this table too, such as `limits.spend_per_run`.
     #[serde(flatten)]
     pub budget: BudgetSettings,
@@ -559,9 +561,9 @@ impl Default for HardLimitSettings {
             .to_vec(),
             dependency_allowlist: Vec::new(),
             spend_per_day: None,
-            auto_merges_per_day: 3,
+            auto_merges_per_day: None,
             irreversible_allowlist: Vec::new(),
-            evolution_usd_per_month: 1000.0,
+            evolution_usd_per_month: None,
             budget: BudgetSettings::default(),
         }
     }

@@ -134,6 +134,30 @@ impl Composer {
     pub fn vim_key(&mut self, key: KeyEvent) -> Option<ComposerEvent> {
         let mode = self.vim?;
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        let normal = mode == VimMode::Normal && self.vim_pending.is_empty();
+        // `u` undoes and Ctrl+R redoes, as in vim.
+        if normal && plain && key.code == KeyCode::Char('u') {
+            return Some(self.undo());
+        }
+        if normal && key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
+            return Some(self.redo());
+        }
+        let before = self.saved();
+        let event = self.vim_command(key, mode, plain)?;
+        match (mode, self.vim) {
+            (VimMode::Insert, Some(VimMode::Normal)) => self.vim_insert_ended(),
+            (VimMode::Normal | VimMode::Visual, Some(VimMode::Insert)) => {
+                self.vim_insert_began(before)
+            }
+            (VimMode::Normal | VimMode::Visual, _) if !super::same_text(&before, &self.saved()) => {
+                self.vim_changed_from(before)
+            }
+            _ => {}
+        }
+        Some(event)
+    }
+
+    fn vim_command(&mut self, key: KeyEvent, mode: VimMode, plain: bool) -> Option<ComposerEvent> {
         let esc = key.code == KeyCode::Esc && key.modifiers.is_empty();
         match mode {
             VimMode::Insert if esc => {

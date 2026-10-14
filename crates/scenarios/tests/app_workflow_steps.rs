@@ -152,7 +152,10 @@ fn app_workflow_of_your_own_is_made_tried_and_put_in_use() -> anyhow::Result<()>
     let scenario = scenario_with(&shipped_config())?;
     let mut pty = start(&scenario)?;
     submit(&mut pty, "/workflow new spec-first")?;
-    pty.wait_for(r"Wrote \.argonauts/workflows/spec-first\.toml", WAIT)?;
+    pty.wait_for(
+        r"Wrote spec-first · \.argonauts/workflows/spec-first\.toml",
+        WAIT,
+    )?;
     let file = scenario
         .repo
         .root()
@@ -169,17 +172,13 @@ fn app_workflow_of_your_own_is_made_tried_and_put_in_use() -> anyhow::Result<()>
     );
 
     submit(&mut pty, "/workflow try spec-first add due dates")?;
-    let screen = pty.wait_for(r"Edit it", WAIT)?.text();
+    let screen = pty.wait_for(r"Run it now\? y/N", WAIT)?.text();
     let order = [
-        "spec-first for \"add due dates\" · nothing runs",
-        "who would take it",
+        "spec-first for \"add due dates\" · a preview, nothing runs yet",
         "1 Plan",
         "2 Build",
         "3 Review",
-        "✓ the file is valid",
-        "Run it",
-        "Edit it",
-        "Esc to close",
+        "Run it now? y/N",
     ];
     let found: Vec<Option<usize>> = order.iter().map(|needle| screen.find(needle)).collect();
     assert!(
@@ -191,7 +190,8 @@ fn app_workflow_of_your_own_is_made_tried_and_put_in_use() -> anyhow::Result<()>
         "app_workflow_of_your_own_is_made_tried_and_put_in_use",
     )?;
 
-    pty.press(Key::Esc)?;
+    // Only its own key answers it: n, or y to run it.
+    pty.press(Key::Char('n'))?;
     pty.wait_for(r"Nothing ran\.", WAIT)?;
     assert!(run_dirs(&scenario).is_empty(), "nothing ran");
 
@@ -217,7 +217,10 @@ fn app_workflow_page_changes_the_file_and_refuses_what_would_not_run() -> anyhow
     let scenario = scenario_with(&shipped_config())?;
     let mut pty = start(&scenario)?;
     submit(&mut pty, "/workflow new spec-first")?;
-    pty.wait_for(r"Wrote \.argonauts/workflows/spec-first\.toml", WAIT)?;
+    pty.wait_for(
+        r"Wrote spec-first · \.argonauts/workflows/spec-first\.toml",
+        WAIT,
+    )?;
     let file = scenario
         .repo
         .root()
@@ -283,7 +286,10 @@ fn app_workflow_page_changes_the_file_and_refuses_what_would_not_run() -> anyhow
     assert!(std::fs::read_to_string(&file)?.contains("count = 2"));
 
     pty.press(Key::Esc)?;
-    pty.wait_for(r"Wrote \.argonauts/workflows/spec-first\.toml", WAIT)?;
+    pty.wait_for(
+        r"Wrote spec-first · \.argonauts/workflows/spec-first\.toml",
+        WAIT,
+    )?;
     Ok(())
 }
 

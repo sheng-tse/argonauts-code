@@ -5,6 +5,8 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use argonauts_core::RunId;
+use argonauts_core::events::RunEventKind;
+use argonauts_core::log::{Note, NoteLevel};
 
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
@@ -43,6 +45,39 @@ pub async fn commit(
     commit_held(host, worktree, paths, subject).await
 }
 
+/// The line that says, once a run, that git ignores Argonauts' own files here, which then
+/// stay on disk and out of the commits while the run goes on.
+pub const IGNORED_LINE: &str =
+    ".argonauts/ is ignored by git here, so its files stay out of the commits";
+
+async fn say_if_ignored(
+    host: &Host,
+    git: &Git,
+    worktree: &Path,
+    paths: &[&str],
+) -> EngineResult<()> {
+    let said = &host.shared().said_ignored;
+    if said.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(());
+    }
+    let own: Vec<&str> = paths
+        .iter()
+        .copied()
+        .filter(|path| path.starts_with(".argonauts/"))
+        .collect();
+    if git.ignored(worktree, &own).await?.is_empty() {
+        return Ok(());
+    }
+    if !said.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        let note = Note {
+            level: NoteLevel::Info,
+            text: IGNORED_LINE.to_owned(),
+        };
+        host.record(None, None, RunEventKind::Note(note))?;
+    }
+    Ok(())
+}
+
 /// [`commit`] for a caller that already holds [`hold`], since it wrote the files under it.
 pub async fn commit_held(
     host: &Host,
@@ -52,6 +87,7 @@ pub async fn commit_held(
 ) -> EngineResult<String> {
     let git = host.git();
     let text = message(host.run_id(), subject);
+    say_if_ignored(host, git, worktree, paths).await?;
     if let Some(sha) = git.commit_paths(worktree, paths, &text).await? {
         return Ok(sha);
     }

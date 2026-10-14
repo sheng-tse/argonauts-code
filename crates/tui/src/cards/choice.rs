@@ -3,7 +3,7 @@
 //! options the controller sent, and its hint line says what Esc does for its kind.
 
 use argonauts_core::app::{AppChoice, ChoiceKind};
-use argonauts_core::events::checkpoint::FreeText;
+use argonauts_core::events::checkpoint::{AnswerAction, FreeText};
 
 use super::options::{card_options, first_recommended};
 use crate::bottom::CardPrompt;
@@ -22,6 +22,8 @@ pub fn choice_card(id: u64, choice: &AppChoice) -> CardPrompt {
     card.selected = first_recommended(&choice.options);
     card.allow_note = choice.free_text != FreeText::None;
     card.esc_hint = esc_hint(choice.kind).to_owned();
+    // A preview runs only on its own key, y.
+    card.keys_only = choice.kind == ChoiceKind::TryWorkflow;
     // Every choice asks you, so every one takes the keys. What differs is who set it off. Work
     // raised these after the main agent's or the CLI's reply, which you may rather answer by
     // typing, so Esc hands them on and gives you the input. You set off the rest, so they open
@@ -63,7 +65,16 @@ pub fn choice_card(id: u64, choice: &AppChoice) -> CardPrompt {
         | ChoiceKind::SettingScope
         | ChoiceKind::KeepInstructions
         | ChoiceKind::Git => card.detail = rows,
-        ChoiceKind::Setup => card.detail = setup_rows(&choice.body),
+        ChoiceKind::Setup => {
+            card.noted_rows = setup_rows(&choice.body);
+            // Its four choices are listed, and `d` shows what would be written.
+            if let Some(last) = choice.options.last()
+                && last.action == AnswerAction::ShowDiff
+            {
+                card.options.pop();
+                card.view_key = Some((last.key, choice.options.len() - 1));
+            }
+        }
     }
     card
 }
@@ -129,6 +140,6 @@ pub fn esc_hint(kind: ChoiceKind) -> &'static str {
         | ChoiceKind::ConfirmConnect
         | ChoiceKind::Setup => "Esc for not now",
         ChoiceKind::TermsNote | ChoiceKind::Init => "Esc to take the recommended answers",
-        ChoiceKind::TryWorkflow => "Esc to close",
+        ChoiceKind::TryWorkflow => "y runs it · n closes it",
     }
 }

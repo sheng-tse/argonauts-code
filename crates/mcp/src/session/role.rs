@@ -1,6 +1,6 @@
-//! `argonauts_ask_reviewers` and `argonauts_ask_judge`: a session asks a role
-//! of the crew, and Argonauts runs that role's model on the change in the session's folder and
-//! returns its answer. Claude Code's own workflow calls them at each review step when the
+//! `argonauts_ask_reviewers` and `argonauts_ask_judge`: a session asks a role of the crew, and
+//! Argonauts runs that role's model on the change in the session's folder and returns its
+//! answer. Claude Code's own workflow calls them at each review step when the
 //! reviewers or the judge are on another CLI, and nothing merges that didn't go through them.
 //! The main session has them too, for when you ask a role yourself.
 

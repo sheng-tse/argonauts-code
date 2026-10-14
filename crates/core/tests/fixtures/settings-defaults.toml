@@ -22,6 +22,7 @@ judge = [
     "codex",
     "antigravity-cli",
 ]
+worker_workflows = false
 
 [agents.antigravity-cli]
 enabled = true
@@ -322,9 +323,7 @@ protected_paths = [
     "**/yarn.lock",
 ]
 dependency_allowlist = []
-auto_merges_per_day = 3
 irreversible_allowlist = []
-evolution_usd_per_month = 1000.0
 soft_stop = 0.85
 when_reached = "fallback"
 from_history = true
@@ -735,3 +734,9 @@ while_working = true
 
 [main_session]
 tools = true
+
+[telemetry]
+enabled = false
+
+[overview]
+year_colors = "cli"

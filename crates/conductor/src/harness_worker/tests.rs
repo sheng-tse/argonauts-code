@@ -332,6 +332,27 @@ async fn raw_log_keeps_every_line() {
     assert_eq!(end.last_message.as_deref(), Some("hello"));
 }
 
+/// Nulls the strict format allowed in place of a field the format left optional are gone
+/// from the answer the session ends with.
+#[tokio::test]
+async fn the_answer_reads_as_its_format_was_written() {
+    let dirs = Dirs::new();
+    let answer = event_line(&AgentEvent::Result {
+        text: Some("ok".into()),
+        structured: Some(serde_json::json!({"accept": true, "summary": null})),
+        is_error: false,
+    });
+    let h = Harness::new(TestAdapter::new(&echo(&answer)));
+    let mut spec = dirs.spec("review it");
+    spec.json_schema = Some(serde_json::json!({
+        "type": "object",
+        "properties": {"accept": {"type": "boolean"}, "summary": {"type": "string"}},
+        "required": ["accept"],
+    }));
+    let (_, end) = collect(h.worker.start(spec).await.unwrap()).await;
+    assert_eq!(end.structured, Some(serde_json::json!({"accept": true})));
+}
+
 #[tokio::test]
 async fn read_only_flags_until_approved() {
     let dirs = Dirs::new();
@@ -668,6 +689,7 @@ async fn a_message_with_its_uuid_goes_in_at_once_while_a_tool_runs() {
         .send(SessionControl::Send {
             text: "also check the changelog".into(),
             uuid: "u-1".into(),
+            pictures: Vec::new(),
         })
         .await
         .unwrap();
@@ -850,8 +872,8 @@ async fn a_stopped_turn_with_nothing_after_it_ends_as_stopped() {
     assert_eq!(end.reason, EndReason::Stopped);
 }
 
-/// Stopping one subagent writes the CLI's own stop line and leaves the session running.
-/// A CLI with no such line says so, and nothing else stops.
+/// Stopping one subagent writes the CLI's own stop line and leaves the session running. A CLI
+/// with no such line says so, and nothing else stops.
 #[tokio::test]
 async fn stopping_one_subagent_writes_the_clis_stop_line_and_the_session_goes_on() {
     let dirs = Dirs::new();
@@ -923,6 +945,7 @@ async fn a_message_the_input_cant_take_says_it_never_went() {
         .send(SessionControl::Send {
             text: "too late".into(),
             uuid: "u-2".into(),
+            pictures: Vec::new(),
         })
         .await
         .unwrap();
@@ -1083,6 +1106,7 @@ async fn a_message_sent_while_the_background_runs_goes_in() {
         .send(SessionControl::Send {
             text: "and the docs?".into(),
             uuid: "u-1".into(),
+            pictures: Vec::new(),
         })
         .await
         .unwrap();
@@ -2043,6 +2067,27 @@ fn quota_prober_runs_the_binary_doctor_finds() {
         worker.worker.clone(),
         AgentSettings {
             binary: Some(PathBuf::from("bin/sh")),
+            ..AgentSettings::default()
+        },
+    );
+    super::register_quota_prober(&adapter, &worker, &settings);
+    assert!(registered_prober(&worker.vendor()).is_none());
+}
+
+#[test]
+fn a_cli_that_bills_an_api_key_gets_no_quota_prober() {
+    use argonauts_core::Adapter;
+    use argonauts_core::settings::agents::AgentSettings;
+
+    use crate::quota::registered_prober;
+
+    let adapter: Arc<dyn Adapter> = Arc::new(TestAdapter::new("true"));
+    let worker = WorkerRef::new("prober-api-key", None);
+    let mut settings = Settings::default();
+    settings.agents.insert(
+        worker.worker.clone(),
+        AgentSettings {
+            auth: argonauts_core::AuthMode::ApiKey,
             ..AgentSettings::default()
         },
     );

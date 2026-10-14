@@ -31,7 +31,7 @@ fn the_shipped_catalog_parses_and_matches_its_published_hash() {
     );
 }
 
-/// The catalog's table, as Claude Code's picker shows it.
+/// The models as Claude Code's picker lists them.
 #[test]
 fn the_shipped_catalog_reads_like_claude_codes_picker() {
     let catalog = shipped_catalog();
@@ -144,7 +144,7 @@ fn codex_and_agy_name_their_own_models_in_their_own_order() {
     let catalog = layered(None, &discovered, &[], &[]);
 
     let sol = catalog.label(&id("codex/gpt-6-sol"));
-    assert_eq!(sol.name, "GPT-6-Sol");
+    assert_eq!(sol.name, "GPT 6 Sol", "spelled as its id spells it");
     assert_eq!(
         sol.description.as_deref(),
         Some("Previous generation workhorse model.")
@@ -168,13 +168,13 @@ fn codex_and_agy_name_their_own_models_in_their_own_order() {
     assert_eq!(
         names,
         [
-            "GPT-6-Astra",
-            "GPT-6-Sol",
-            "GPT-6-Luna",
-            "GPT-5.6-Sol",
-            "GPT-5.6-Terra",
-            "GPT-5.6-Luna",
-            "GPT-5.5"
+            "GPT 6 Astra",
+            "GPT 6 Sol",
+            "GPT 6 Luna",
+            "GPT 5.6 Sol",
+            "GPT 5.6 Terra",
+            "GPT 5.6 Luna",
+            "GPT 5.5"
         ],
         "Codex's own picker order"
     );

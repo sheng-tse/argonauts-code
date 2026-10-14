@@ -9,7 +9,7 @@ use argonauts_core::events::RunEventKind;
 use argonauts_core::events::session::{EndReason, InputPartKind, VendorWorkflow};
 use argonauts_core::events::workflow::{AgentSession, RunNote, WorkflowEvent, WorkflowReport};
 use argonauts_core::log::{Note, NoteLevel};
-use argonauts_core::names::{SessionKey, WorkerRef};
+use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::worker::Access;
 use argonauts_runner::{AgentCall, AgentEnd, Check, Checked, JournalEntry, Kept, Script};
@@ -162,6 +162,7 @@ impl<'a> Bridge<'a> {
             Some((tree, change)) => (tree, Some(change)),
             None => (self.host.repo().base_worktree.clone(), None),
         };
+        let reviews = change.is_some();
         let mut parts = vec![instructions::of_call(
             self.host,
             &call.prompt,
@@ -169,6 +170,18 @@ impl<'a> Bridge<'a> {
         )];
         if let Some(change) = change {
             parts.push(part(InputPartKind::Evidence, "the change", change, None));
+        }
+        // What the checks said after the build, so a reviewer or a judge reads the results
+        // rather than guessing at them. One about no task, as a sign-off is, reads them all.
+        let checks = match call.task.as_deref() {
+            Some(task) => tasks::checks_of(self, Some(task)),
+            None if matches!(call.role.fine_role(), RoleName::Judge | RoleName::Reviewer) => {
+                tasks::all_checks(self)
+            }
+            None => None,
+        };
+        if let Some(checks) = checks {
+            parts.push(part(InputPartKind::GateOutput, "the checks", checks, None));
         }
         let plan = SessionPlan {
             at: Some(self.call.at.clone()),
@@ -183,6 +196,7 @@ impl<'a> Bridge<'a> {
             resume: None,
             slot: 0,
             label: Some(call.label.clone()),
+            reviews,
         };
         // The session this call started before the run stopped carries on.
         let known = lock(&self.sessions).get(&call.index).cloned();

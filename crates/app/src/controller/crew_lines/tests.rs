@@ -93,6 +93,7 @@ fn a_role_that_follows_says_so() {
         workers: Vec::new(),
         reviewers: vec!["antigravity-cli".parse().unwrap()],
         judge: Vec::new(),
+        worker_workflows: false,
     };
     let words = applied(
         vec![followed(InstructionKind::Review, "astra reviews")],

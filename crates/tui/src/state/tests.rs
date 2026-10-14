@@ -2119,8 +2119,8 @@ fn a_chat_turn_waits_on_the_background_while_its_main_agent_rests() {
 }
 
 /// A page published with Claude Code's Artifact tool is recorded when its call finishes, by
-/// the main agent in the conversation or by an agent inside a run, and stays past the turn.
-/// The bottom line's part names one and counts several.
+/// the main agent in the conversation or by an agent inside a run, and stays past the turn
+///. The bottom line's part names the newest and counts the others.
 #[test]
 fn published_artifacts_are_kept_with_who_published_them() {
     let overview = "https://claude.ai/code/artifact/0b1e7c9a-4f1d-4c57-9a55-2f6f0d3a8e11";
@@ -2244,4 +2244,61 @@ fn published_artifacts_are_kept_with_who_published_them() {
     });
     assert_eq!(state.artifacts.line_part(), Some(("weekly-usage-chart", 0)));
     assert_eq!(state.artifacts.latest().expect("its page").by, None);
+}
+
+#[test]
+fn the_conversation_counts_the_lines_its_edits_changed_once() {
+    let mut state = AppState::default();
+    let turn = TurnId::numbered(1);
+    let chat = |event| AppEvent::Chat { event };
+    let agent = |event| {
+        chat(ChatEvent::Agent {
+            turn: turn.clone(),
+            event,
+        })
+    };
+    state.apply(&chat(ChatEvent::TurnStarted {
+        turn: turn.clone(),
+        text: "tidy it".into(),
+        worker: worker("claude-code", "opus"),
+        read_only: false,
+        commit: "abc".into(),
+        uncommitted: Vec::new(),
+        settings_sha256: None,
+        continues: false,
+    }));
+    let call = |id: &str, name: &str, input: serde_json::Value| AgentEvent::ToolStarted {
+        id: id.into(),
+        name: name.into(),
+        input,
+        parent: None,
+    };
+    let finished = |id: &str, ok: bool| AgentEvent::ToolFinished {
+        id: id.into(),
+        ok,
+        output: None,
+        parent: None,
+    };
+    state.apply(&agent(call(
+        "edit",
+        "Edit",
+        serde_json::json!({"file_path": "a.rs", "old_string": "a\nb\nc\n", "new_string": "a\nB\n"}),
+    )));
+    state.apply(&agent(finished("edit", true)));
+    // The same finish again is still one edit.
+    state.apply(&agent(finished("edit", true)));
+    state.apply(&agent(call(
+        "write",
+        "Write",
+        serde_json::json!({"file_path": "b.rs", "content": "one\ntwo\nthree\n"}),
+    )));
+    state.apply(&agent(finished("write", true)));
+    // An edit that failed changed nothing.
+    state.apply(&agent(call(
+        "refused",
+        "Edit",
+        serde_json::json!({"file_path": "c.rs", "old_string": "x", "new_string": "y"}),
+    )));
+    state.apply(&agent(finished("refused", false)));
+    assert_eq!((state.talk.added, state.talk.removed), (4, 2));
 }

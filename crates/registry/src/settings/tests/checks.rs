@@ -619,10 +619,10 @@ fn every_kind_of_wrong_value_says_what_the_key_takes_in_plain_words() {
     }
 }
 
-/// Who decides when you don't is written as the settings template writes it. The keys it
-/// replaced are no longer settings, and say so.
+/// Who decides when you don't is written as the settings template writes it. The older names
+/// of the same keys still read, and a key that went is unknown.
 #[test]
-fn approvals_read_as_the_template_writes_them_and_the_old_keys_are_unknown() {
+fn approvals_read_as_the_template_writes_them_and_the_old_names_still_read() {
     let repo = Repo::new();
     repo.project(
         "[approvals]\nanswers = \"main\"\ndecides = \"judge\"\nwhen_declined = \"decide\"\n\
@@ -643,18 +643,20 @@ fn approvals_read_as_the_template_writes_them_and_the_old_keys_are_unknown() {
          [approvals.merge.rules]\nmax_combined_diff_lines = 400\n",
     );
     let resolved = resolve(&repo.trusted()).unwrap();
-    for old in [
-        "approvals.answered_by",
-        "approvals.approver.model",
-        "approvals.merge.rules.max_combined_diff_lines",
-    ] {
-        let warned = format!("unknown setting {old} in .argonauts/config.toml, ignored");
-        assert!(
-            resolved.warnings.contains(&warned),
-            "{old}: {:?}",
-            resolved.warnings
-        );
-    }
+    assert_eq!(
+        resolved.settings.approvals.rules.merge.max_changed_lines,
+        400
+    );
+    assert_eq!(
+        resolved.warnings,
+        [
+            ".argonauts/config.toml uses older setting names, which still read as the new \
+             ones: approvals.answered_by → approvals.answers, approvals.merge.rules → \
+             approvals.rules.merge, approvals.rules.merge.max_combined_diff_lines → \
+             approvals.rules.merge.max_changed_lines",
+            "unknown setting approvals.approver.model in .argonauts/config.toml, ignored",
+        ]
+    );
 }
 
 #[test]

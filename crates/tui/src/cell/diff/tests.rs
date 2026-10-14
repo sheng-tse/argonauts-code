@@ -323,3 +323,87 @@ fn snippets_lose_their_numbers() {
             .all(|line| line.number().is_none())
     );
 }
+
+/// Claude Code's structured patch for an edit, three lines of context on each side.
+const EDIT: &str = "\
+@@ -10,7 +10,7 @@
+ /// The sum of the items.
+ fn total(items: &[u32]) -> u32 {
+     let sum = 0;
+-    let count = 0;
++    let mut count = 0;
+     for item in items {
+         count += item;
+     }
+";
+
+#[test]
+fn an_edit_shows_the_file_numbers_and_the_lines_around_it() {
+    let theme = theme();
+    let view = DiffView::from_unified(EDIT)
+        .expect("parses")
+        .updated("src/lib.rs", 1, 1);
+    let lines = render(&view, &theme, 60, 0);
+    assert_eq!(
+        plain_text(&lines),
+        " 10  /// The sum of the items.\n 11  fn total(items: &[u32]) -> u32 {\n 12      let sum = 0;\n 13 -    let count = 0;\n 13 +    let mut count = 0;\n 14      for item in items {\n 15          count += item;\n 16      }"
+    );
+    // The context rows' numbers are dim, as Claude Code draws them.
+    assert_eq!(lines[0].spans[1].style, theme.style(Role::Dim));
+}
+
+#[test]
+fn code_takes_the_colours_of_its_language_on_the_row_fill() {
+    let theme = theme();
+    let view = DiffView::from_unified(EDIT)
+        .expect("parses")
+        .updated("src/lib.rs", 1, 1);
+    let lines = render(&view, &theme, 60, 0);
+    let span = |row: usize, text: &str| {
+        lines[row]
+            .spans
+            .iter()
+            .find(|span| span.content.trim() == text)
+            .unwrap_or_else(|| panic!("{text:?} in {:?}", lines[row].spans))
+            .style
+    };
+    let keyword = theme.style(Role::SyntaxKeyword).fg;
+    assert_eq!(
+        span(0, "/// The sum of the items.").fg,
+        theme.style(Role::SyntaxComment).fg
+    );
+    assert_eq!(span(1, "fn").fg, keyword);
+    assert_eq!(span(1, "fn").bg, None);
+    // An added row keeps its fill under the colours, and its changed word keeps its own.
+    assert_eq!(span(4, "let").fg, keyword);
+    assert_eq!(span(4, "let").bg, theme.style(Role::AddedRow).bg);
+    assert_eq!(span(4, "mut").bg, theme.style(Role::AddedWord).bg);
+    // A removed row is coloured by its language too, on its own fill.
+    assert_eq!(span(3, "let").fg, keyword);
+    assert_eq!(span(3, "let").bg, theme.style(Role::RemovedRow).bg);
+    // No caption, no file, no colours.
+    let bare = DiffView::from_unified(EDIT).expect("parses");
+    let lines = render(&bare, &theme, 60, 0);
+    assert!(lines[1].spans.iter().all(|span| span.style.fg != keyword));
+}
+
+#[test]
+fn without_fills_a_changed_row_keeps_its_marker_colour() {
+    let mut theme = theme();
+    theme.level = ColorLevel::Ansi16;
+    let view = DiffView::from_unified(EDIT)
+        .expect("parses")
+        .updated("src/lib.rs", 1, 1);
+    let lines = render(&view, &theme, 60, 0);
+    let added = theme.style(Role::AddedMarker).fg;
+    let words = lines[4].spans[4..]
+        .iter()
+        .filter(|span| !span.content.trim().is_empty());
+    assert!(words.into_iter().all(|span| span.style.fg == added));
+    assert!(
+        lines[1]
+            .spans
+            .iter()
+            .any(|span| span.style.fg == theme.style(Role::SyntaxKeyword).fg)
+    );
+}

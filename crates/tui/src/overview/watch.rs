@@ -123,6 +123,7 @@ impl UsageWatch {
             matches!(
                 (request, data),
                 (ViewRequest::Status, ViewData::Status { .. })
+                    | (ViewRequest::StatusTab, ViewData::StatusTab { .. })
                     | (ViewRequest::Context, ViewData::Context { .. })
             )
         };

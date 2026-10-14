@@ -35,6 +35,7 @@ use argonauts_crew::prompts::goal::CHECK;
 use super::super::{ChatState, Turn, direct, side};
 use crate::controller::turn::{self, DirectWords, Launch, TurnStep};
 use crate::controller::{Ctx, Effect, Internal};
+use crate::telemetry::{self, Use};
 
 /// What the judge reads of the changes in your checkout.
 const DIFF_BYTES: usize = 60_000;
@@ -111,6 +112,7 @@ fn kept_words(by: KeptBy, worker: &WorkerRef) -> String {
 
 /// The keeping for `spec`, begun now unless this goal is being kept already.
 fn keeping<'a>(
+    ctx: &Ctx,
     chat: &'a mut ChatState,
     spec: GoalSpec,
     by: KeptBy,
@@ -122,6 +124,7 @@ fn keeping<'a>(
         .as_ref()
         .is_some_and(|kept| kept.spec == spec && kept.by == by);
     if !same {
+        telemetry::used(&ctx.env.paths, Use::Goal);
         chat.goal.keeping = Some(Keeping {
             spec,
             by,
@@ -153,7 +156,7 @@ pub(in crate::controller::chat) fn brief(
     };
     let spec = applies(ctx, chat, Some(words))?;
     let by = keeper(ctx.settings(), worker);
-    let kept = keeping(chat, spec, by, request);
+    let kept = keeping(ctx, chat, spec, by, request);
     if kept.told {
         return None;
     }
@@ -206,7 +209,7 @@ pub(in crate::controller::chat) fn after_turn(
         return Vec::new();
     };
     let by = keeper(ctx.settings(), &turn.worker);
-    let kept = keeping(chat, spec, by, &turn.text);
+    let kept = keeping(ctx, chat, spec, by, &turn.text);
     // A goal the session's tool set mid-turn is in what the tool answered.
     kept.told = true;
     if kept.by == KeptBy::Cli
@@ -436,6 +439,7 @@ fn judge(ctx: &Ctx, chat: &mut ChatState, folder: &Path) -> Option<Judge> {
         turn: &turn,
         step: &step,
         text: "",
+        pictures: Vec::new(),
         worker: worker.clone(),
         handle: Arc::clone(&handle),
         resume: None,

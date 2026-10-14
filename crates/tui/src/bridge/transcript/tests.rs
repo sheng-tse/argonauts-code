@@ -1866,6 +1866,77 @@ fn a_workflow_ends_as_its_run_did() {
     }
 }
 
+/// A failed run is one block: the failure in one plain line under "The run failed", with its
+/// time and spend on the same row, and never the failure again in the run's last word.
+#[test]
+fn a_failed_run_says_what_failed_once() {
+    let mut harness = crew_workflow_harness();
+    harness.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
+        Box::new(ClosingAnswer {
+            text: "The run failed before any agent reported.".into(),
+            by: None,
+            files: Vec::new(),
+            checks: Vec::new(),
+            tests: Vec::new(),
+            left: Vec::new(),
+        }),
+    ))));
+    let git = "{\"message\":\"The following paths are ignored by one of your .gitignore files:\\n.argonauts\"}";
+    harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+        outcome: RunOutcome::Failed,
+        detail: Some(git.into()),
+    })));
+    let printed = harness.printed();
+    assert_eq!(printed.matches("The run failed").count(), 1, "{printed}");
+    assert_eq!(
+        printed.matches("are ignored by one of your").count(),
+        1,
+        "{printed}"
+    );
+    assert!(!printed.contains("Run ended"), "{printed}");
+    assert!(!printed.contains("\\n.argonauts"), "{printed}");
+    // git's whole text waits behind `r`, as the line says.
+    let words = printed.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert_eq!(words.matches("· r shows it all").count(), 1, "{printed}");
+    let raw = harness
+        .model
+        .raw_failure
+        .as_ref()
+        .expect("the raw text is kept");
+    assert_eq!(raw.text, git);
+    // The session's own line about the failure, with no message of yours, leaves `r` to it.
+    let mut told = chat_turn(1, "", "The council workflow didn't start. Want me to look?");
+    if let AppEvent::Chat {
+        event: ChatEvent::TurnStarted { continues, .. },
+    } = &mut told[0]
+    {
+        *continues = true;
+    }
+    for event in told {
+        harness.send(event);
+    }
+    assert!(harness.model.raw_failure.is_some());
+    // Once your next message starts a turn, `r` is a letter again.
+    for event in chat_turn(2, "retry with Sonnet", "Retrying.") {
+        harness.send(event);
+    }
+    assert_eq!(harness.model.raw_failure, None);
+}
+
+/// A run that failed with nothing more to say than its one line hints at no raw text.
+#[test]
+fn a_failed_run_that_said_it_all_has_no_raw_hint() {
+    let mut harness = crew_workflow_harness();
+    harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+        outcome: RunOutcome::Failed,
+        detail: Some("the merge was refused".into()),
+    })));
+    let printed = harness.printed();
+    assert!(printed.contains("the merge was refused"), "{printed}");
+    assert!(!printed.contains("r shows"), "{printed}");
+    assert_eq!(harness.model.raw_failure, None);
+}
+
 /// A crew run whose request named who coordinates and who reviews: one quiet item says what
 /// was followed, the workflow the lead declared prints under it as Claude Code prints its own,
 /// and the closing answer comes last, after `Workflow(<name>) · done` and the merge.
@@ -2568,4 +2639,154 @@ fn a_workflow_of_one_phase_or_none_reported_still_prints_its_start() {
         .expect(&printed);
     assert!(start < end, "{printed}");
     assert!(printed.contains("◐ Work · Merge"), "{printed}");
+}
+
+#[test]
+fn an_edit_in_the_chat_shows_the_file_numbers_its_result_reported() {
+    let mut harness = Harness::new();
+    harness.transcript.chat = ChatTurns::with_tool_kinds(|_, name| match name {
+        "Edit" => ToolKind::Edit,
+        _ => ToolKind::Other,
+    });
+    let turn = TurnId::numbered(1);
+    let agent = |event| AppEvent::Chat {
+        event: ChatEvent::Agent {
+            turn: turn.clone(),
+            event,
+        },
+    };
+    harness.send(AppEvent::Chat {
+        event: ChatEvent::TurnStarted {
+            turn: turn.clone(),
+            text: "fix the count".into(),
+            worker: WorkerRef::new("claude-code", Some("haiku".into())),
+            read_only: false,
+            commit: "8b41d07".into(),
+            uncommitted: vec![],
+            settings_sha256: None,
+            continues: false,
+        },
+    });
+    harness.printed();
+    harness.send(agent(AgentEvent::ToolStarted {
+        id: "edit-1".into(),
+        name: "Edit".into(),
+        input: serde_json::json!({"file_path": "src/lib.rs", "old_string": "let count = 0;",
+                                  "new_string": "let mut count = 0;"}),
+        parent: None,
+    }));
+    harness.send(agent(AgentEvent::FilePatch {
+        id: "edit-1".into(),
+        path: "src/lib.rs".into(),
+        hunks: "@@ -11,3 +11,3 @@\n fn total() -> u32 {\n-    let count = 0;\n+    let mut count = 0;\n     count\n"
+            .into(),
+        parent: None,
+    }));
+    harness.send(agent(AgentEvent::ToolFinished {
+        id: "edit-1".into(),
+        ok: true,
+        output: Some("The file src/lib.rs has been updated.".into()),
+        parent: None,
+    }));
+    assert_eq!(
+        harness.printed(),
+        "\n● Update(src/lib.rs)\n  ⎿  Added 1 line, removed 1 line\n      11  fn total() -> u32 {\n      12 -    let count = 0;\n      12 +    let mut count = 0;\n      13      count"
+    );
+}
+
+/// With a second workflow on screen, the first's events still print, and its closing answer
+/// still ends it in the chat.
+#[test]
+fn a_run_off_screen_still_ends_with_its_closing_answer() {
+    let mut harness = Harness::new();
+    harness.send(started());
+    let second = RunId::new("run-02").expect("a valid run id");
+    harness.send(AppEvent::Attached {
+        summary: RunSummary {
+            run: second.clone(),
+            title: "Fix the median".into(),
+            ..running_summary()
+        },
+        started_here: true,
+    });
+    harness.send(AppEvent::ReplayDone {
+        run: second,
+        seq: 0,
+    });
+    harness.printed();
+    harness.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
+        Box::new(closing()),
+    ))));
+    harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+        outcome: RunOutcome::Merged,
+        detail: None,
+    })));
+    let printed = harness.printed();
+    assert!(printed.contains("Merged the run"), "{printed}");
+    assert!(printed.contains("● Fixed parse()"), "{printed}");
+}
+
+/// The run brought on screen may still be replaying its history when the run beside it ends.
+/// The replay stays quiet, and the ending and its recap print as they come.
+#[test]
+fn a_run_off_screen_prints_its_ending_while_the_one_on_screen_replays() {
+    // Through the state, which tells the replay's events from the rest.
+    fn send(harness: &mut Harness, event: AppEvent) {
+        harness.state.apply(&event);
+        harness.send(event);
+    }
+    let mut harness = Harness::new();
+    send(&mut harness, started());
+    let second = RunId::new("run-02").expect("a valid run id");
+    send(
+        &mut harness,
+        AppEvent::Attached {
+            summary: RunSummary {
+                run: second.clone(),
+                title: "Fix the median".into(),
+                ..running_summary()
+            },
+            started_here: false,
+        },
+    );
+    harness.printed();
+    let replayed = |kind| match run_event(kind) {
+        AppEvent::Run { mut event } => {
+            event.run_id = second.clone();
+            AppEvent::Run { event }
+        }
+        _ => unreachable!(),
+    };
+    send(
+        &mut harness,
+        replayed(RunEventKind::Note(Note {
+            level: NoteLevel::Warn,
+            text: "An old warning".into(),
+        })),
+    );
+    send(
+        &mut harness,
+        run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(Box::new(
+            closing(),
+        )))),
+    );
+    send(
+        &mut harness,
+        run_event(RunEventKind::Run(RunLifecycle::Finished {
+            outcome: RunOutcome::Merged,
+            detail: None,
+        })),
+    );
+    send(
+        &mut harness,
+        AppEvent::Recap {
+            text: "The json flag is in.".into(),
+            model: None,
+        },
+    );
+    let printed = harness.printed();
+    assert!(printed.contains("● Fixed parse()"), "{printed}");
+    assert!(printed.contains("Merged the run"), "{printed}");
+    assert!(printed.contains("The json flag is in."), "{printed}");
+    assert!(!printed.contains("An old warning"), "{printed}");
 }

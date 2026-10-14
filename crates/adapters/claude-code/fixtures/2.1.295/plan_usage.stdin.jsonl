@@ -1,0 +1,2 @@
+{"type":"control_request","request_id":"initialize","request":{"subtype":"initialize"}}
+{"type":"control_request","request_id":"usage-windows","request":{"subtype":"get_usage","skip_behaviors":true}}

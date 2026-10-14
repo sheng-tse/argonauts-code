@@ -100,6 +100,8 @@ impl TempRepo {
                 self.git_config.clone().into_os_string(),
             ),
             ("GIT_CONFIG_NOSYSTEM".to_owned(), OsString::from("1")),
+            // Nothing a test starts ever sends usage counts.
+            ("DO_NOT_TRACK".to_owned(), OsString::from("1")),
         ]
     }
 

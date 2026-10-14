@@ -8,7 +8,7 @@ use time::OffsetDateTime;
 use crate::agent_goal::AgentGoal;
 use crate::events::goal::{Assumption, Attempt, Criterion, CriterionState, GoalStatus};
 use crate::events::session::{
-    SubagentStatus, SubagentUpdate, VendorAgent, VendorAgentState, VendorWorkflow,
+    EndReason, SubagentStatus, SubagentUpdate, VendorAgent, VendorAgentState, VendorWorkflow,
 };
 use crate::names::{SessionKey, WorkerRef, WorkflowId};
 use crate::settings::workflows::RunStyle;
@@ -149,6 +149,23 @@ pub struct AgentRow {
     /// takes the tokens' place.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered: Option<String>,
+    /// The step's earlier tries, oldest first: each one that failed, and the agent this one
+    /// took over from. The row is the step, and these fold beneath it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tries: Vec<StepTry>,
+}
+
+/// One earlier try at a step, folded under the step's row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StepTry {
+    pub session: SessionKey,
+    pub worker: WorkerRef,
+    pub status: RowStatus,
+    pub elapsed_ms: u64,
+    /// Why its session ended. The view says it in the plain line the agent's own failed row
+    /// uses, such as `Codex refused the answer format Argonauts asked for`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<EndReason>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -161,6 +178,12 @@ pub struct NestedWorkflowRow {
     /// Each distinct worker once.
     pub workers: Vec<WorkerRef>,
     pub elapsed_ms: u64,
+    /// The agent whose own CLI started it, when one did. The row sits under that agent's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<SessionKey>,
+    /// Whose workflow it is when it isn't Argonauts', such as `Claude Code's own`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 /// In tokens.
@@ -197,7 +220,7 @@ pub fn is_workflow_agent(step: Option<StepName>, workflow_step: Option<&StepRef>
 
 /// The id the views give a workflow an agent's own CLI runs, kept apart from Argonauts' own
 /// `wf-NNN` so a request for it can't name one of ours.
-/// The run the views name your conversation by, for a workflow its own CLI runs in a chat turn.
+/// The run the views name your conversation by, for a workflow its own CLI runs in a chat turn
 /// No run is ever named so: every run's id starts with `run-`.
 pub fn conversation_run() -> RunId {
     RunId::new("chat").unwrap_or_else(|_| RunId::generate())
@@ -248,6 +271,7 @@ impl WorkflowView {
             context: None,
             standing_in_for: None,
             answered: None,
+            tries: Vec::new(),
         };
         let phases: Vec<PhaseRow> = workflow
             .phases

@@ -119,9 +119,10 @@ impl HarnessWorker {
     }
 
     /// Probes quota around each session when the adapter has a free probe, since a stream
-    /// such as `codex exec` reports none before a limit stops it.
+    /// such as `codex exec` reports none before a limit stops it. A stream that reports quota
+    /// itself, as Claude Code's does, needs no probe while it runs.
     fn quota_watch(&self) -> Option<QuotaWatch> {
-        if !has_quota_probe(self.adapter.as_ref()) {
+        if !has_quota_probe(self.adapter.as_ref()) || self.adapter.stream_reports_quota() {
             return None;
         }
         match self.home() {
@@ -163,6 +164,11 @@ impl HarnessWorker {
 /// plant is refused. It names the model this worker's sessions use, as they do.
 fn register_quota_prober(adapter: &Arc<dyn Adapter>, worker: &WorkerRef, settings: &Settings) {
     let agent = settings.agents.get(&worker.worker);
+    // A CLI that bills an API key has no plan, and a probe would read whichever
+    // subscription happens to be signed in.
+    if agent.is_some_and(|agent| agent.auth == argonauts_core::AuthMode::ApiKey) {
+        return;
+    }
     let configured = agent.and_then(|agent| agent.binary.as_deref());
     let model = worker
         .model

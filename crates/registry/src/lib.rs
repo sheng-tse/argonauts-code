@@ -27,6 +27,7 @@ pub use models::{family_from_model_id, family_problems, registry};
 pub use presets::{builtin_preset, presets, presets_in, upgrade_presets, write_preset};
 pub use resolve::resolve;
 pub use settings::crew::seat_problems;
+pub use settings::old_names::{OldName, Renamed, rename_old_names};
 pub use settings::plain::gate_commands;
 pub use settings::tighten::tightens;
 pub use terms::TERMS_NOTE;
@@ -58,6 +59,10 @@ pub struct SettingsSources {
     /// `key=value` settings a request asked for, above every other layer, for one run. A
     /// safety key among them must only tighten what the other layers say.
     pub request: Vec<String>,
+    /// A key a file sets that can't be used is an error, as a check of the files wants. Off,
+    /// as when the app starts, the key is left out, its default is used and a warning names
+    /// it, so a file from an older Argonauts or with a typo never stops the app.
+    pub strict: bool,
     /// The project's files that came with the repository and wait for your trust. The
     /// workflow's settings layer passes them over, so one named after a built-in leaves it in
     /// place until you trust it.

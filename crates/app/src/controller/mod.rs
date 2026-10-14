@@ -33,6 +33,7 @@ pub(crate) mod runs;
 pub(crate) mod settings;
 mod shell;
 mod status_line;
+mod status_tab;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod triage;
@@ -199,6 +200,9 @@ impl Controller {
             if runs::attaches(&self.runs) != attaches {
                 chat::run_attached(&mut self.chat);
             }
+            if !exit {
+                self.hear_runs();
+            }
             if chat::id(&self.chat) != &conversation {
                 runs::follow_conversation(&self.ctx, &mut self.runs, chat::own_runs(&self.chat));
             }
@@ -242,6 +246,17 @@ impl Controller {
 
     /// The `/` menu, its keywords, and the `@` list follow the conversation: its CLI, and the
     /// folder it works in. Both change when it carries on an agent's session from a run.
+    /// The main session hears how the runs it started got on: its start tool's answer waits
+    /// for that, and a run that failed later is told to it once no turn runs. Nothing is told
+    /// while the guided setup is open.
+    fn hear_runs(&mut self) {
+        if self.setup.is_some() {
+            return;
+        }
+        let news = runs::take_news(&mut self.runs);
+        chat::hear_runs(&mut self.ctx, &mut self.chat, news);
+    }
+
     fn follow_chat(&mut self) {
         vendor_commands::follow(&self.ctx, &mut self.vendor, &self.chat);
         let folder = self.chat.folder(&self.ctx);
@@ -343,6 +358,9 @@ impl Controller {
                 Effect::SaveSettings { pairs, scope } => {
                     settings::save(&mut self.ctx, &mut self.settings, pairs, scope)
                 }
+                Effect::SaveConfirmedSettings { pairs, scope } => {
+                    settings::save_confirmed(&mut self.ctx, &mut self.settings, pairs, scope)
+                }
                 Effect::Status => {
                     self.send_status();
                     Ok(Vec::new())
@@ -377,7 +395,16 @@ impl Controller {
     ) -> anyhow::Result<Vec<Effect>> {
         let offered = settings::offer_gates(&mut self.ctx, &mut self.settings).await;
         let mut effects = self.settle(offered);
-        effects.extend(runs::start(&mut self.ctx, &mut self.runs, request).await?);
+        let from_chat = request.chat_turn.is_some();
+        match runs::start(&mut self.ctx, &mut self.runs, request).await {
+            Ok(started) => effects.extend(started),
+            // The main session that asked says why, so the failure is said once.
+            Err(err) if chat::run_not_started(&mut self.chat, &err) => return Ok(effects),
+            Err(err) => return Err(err),
+        }
+        if let Some(run) = runs::attached(&self.runs) {
+            chat::run_started_here(&mut self.chat, run, from_chat);
+        }
         chat::run_started(&mut self.chat);
         chat::goal_run_started(&self.ctx, &mut self.chat, runs::attached(&self.runs));
         Ok(effects)
@@ -446,6 +473,10 @@ impl Controller {
                 card,
                 exit_code,
             } => run_commands::take_over_ended(ctx, runs, run, card, exit_code).await,
+            UiCommand::TerminalReturned { argv } => {
+                account::terminal_returned(ctx, &argv);
+                Ok(Vec::new())
+            }
             UiCommand::Reassign { run, card, to } => {
                 run_commands::reassign(ctx, runs, run, card, to).await
             }
@@ -542,6 +573,10 @@ impl Controller {
 
     /// Plain text and mentions mean what the app mode says.
     async fn route(&mut self, command: UiCommand) -> anyhow::Result<Vec<Effect>> {
+        // Each message's pictures go with its own turn, and a message without any clears them.
+        if let UiCommand::Submit { pictures, .. } = &command {
+            chat::send_pictures(&mut self.chat, pictures.clone());
+        }
         let root = self.chat.folder(&self.ctx).to_path_buf();
         let ctx = &mut self.ctx;
         let runs = &mut self.runs;
@@ -623,9 +658,12 @@ impl Controller {
             SlashCommand::FollowUp { run, request } => {
                 run_commands::continue_run(ctx, runs, run, request).await
             }
-            // Printed, it is the same answer: the screen opens the tab only for `/status`.
+            // Typed, it opens the Status tab, which always draws, so it prints nothing.
             SlashCommand::Status {
-                action: ViewAction::Open | ViewAction::Print,
+                action: ViewAction::Open,
+            } => status_tab::show(ctx, runs, chat).await,
+            SlashCommand::Status {
+                action: ViewAction::Print,
             } => run_commands::status(ctx, runs).await,
             SlashCommand::Status { action } => widgets::tab(ctx, Place::Status, action),
             SlashCommand::Workflows if runs::attached(runs).is_some() => {
@@ -833,6 +871,7 @@ impl Controller {
             | ViewRequest::Settings { .. }
             | ViewRequest::Models { .. }
             | ViewRequest::Approvals => settings::view(ctx, &mut self.settings, view).await,
+            ViewRequest::StatusTab => status_tab::show(ctx, &mut self.runs, &self.chat).await,
             ViewRequest::Context => {
                 chat::ask_context(&self.chat, ContextDetail::default());
                 let row = chat::context_row(&self.chat);
@@ -845,6 +884,13 @@ impl Controller {
             ViewRequest::Usage { period } => {
                 let spent = chat::context_row(&self.chat).map(|row| row.spent);
                 account::usage_view(ctx, spent, period).await
+            }
+            ViewRequest::ReadPlanUsage => {
+                account::read_plan_usage(ctx);
+                Ok(Vec::new())
+            }
+            ViewRequest::Overview { period, import } => {
+                crate::overview::view(ctx, period, import).await
             }
             ViewRequest::Crew => crew_panel::show(ctx, &self.chat).await,
             ViewRequest::Mods { open, refresh } => {
@@ -983,6 +1029,7 @@ impl Controller {
             Internal::Goal(checked) => {
                 Ok(chat::goal_checked(&mut self.ctx, &mut self.chat, checked))
             }
+            Internal::PlanUsageRead => Ok(vec![Effect::Status]),
         }
     }
 }

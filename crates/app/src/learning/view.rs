@@ -283,11 +283,13 @@ fn recipes(
     let proposals = or_empty(replay.proposals())?;
     let spent = or_empty(evolution.spent_this_month(now))?;
     let stage = evolution::stage(settings);
-    let summary = format!(
-        "stage {} · ${spent:.2} of ${:.0}/month",
-        serde_word(&stage),
-        settings.limits.evolution_usd_per_month
-    );
+    let summary = match settings.limits.evolution_usd_per_month {
+        Some(limit) => format!(
+            "stage {} · ${spent:.2} of ${limit:.0}/month",
+            serde_word(&stage)
+        ),
+        None => format!("stage {} · ${spent:.2} this month", serde_word(&stage)),
+    };
     let recipe_rows = sets.iter().map(recipe_row).collect();
     let candidate_rows = candidates
         .iter()
@@ -802,7 +804,7 @@ mod tests {
             "{records}"
         );
         let recipes = summary(LearningArea::Recipes, &store);
-        assert!(recipes.contains(" $0.00 of $1000/month"), "{recipes}");
+        assert!(recipes.contains(" $0.00 this month"), "{recipes}");
         let skills = summary(LearningArea::Skills, &store);
         assert!(
             skills.starts_with("0 skills · 0 branches wait for you"),

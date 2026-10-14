@@ -175,7 +175,12 @@ pub(crate) async fn apply_answer(
     match &decided.action {
         AnswerAction::Candidate { worker } => {
             reassign(host, card, worker.clone(), &decided.by)?;
-            transition(host, card, to_ready, &format!("you picked {worker}"))?;
+            transition(
+                host,
+                card,
+                to_ready,
+                &format!("you picked {}", crate::roles::display_name(worker)),
+            )?;
             Ok(fresh(
                 AttemptCause::Reassigned,
                 "you picked a new worker",
@@ -187,7 +192,12 @@ pub(crate) async fn apply_answer(
             match recovery::other_provider(host, &record) {
                 Some(worker) => {
                     reassign(host, card, worker.clone(), &decided.by)?;
-                    transition(host, card, to_ready, &format!("handed to {worker}"))?;
+                    transition(
+                        host,
+                        card,
+                        to_ready,
+                        &format!("handed to {}", crate::roles::display_name(&worker)),
+                    )?;
                     Ok(fresh(AttemptCause::Handoff, "you handed it off", extra))
                 }
                 None => {

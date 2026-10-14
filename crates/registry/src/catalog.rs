@@ -31,6 +31,7 @@ const EVERYWHERE: &[&str] = &[
     "narrator.*",
     "notifications.*",
     "switch.*",
+    "telemetry.*",
     "limits.spend_per_day",
     "limits.auto_merges_per_day",
 ];
@@ -389,11 +390,11 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ("judging.rubric", "What judges score plans on"),
     (
         "limits.auto_merges_per_day",
-        "Most auto merges a day, across every repo",
+        "Most auto merges a day, across every repo. Unset, there is no limit",
     ),
     (
         "limits.evolution_usd_per_month",
-        "The most workflow evolution may spend a month, in dollars",
+        "The most workflow evolution may spend a month, in dollars. Unset, there is no limit",
     ),
     (
         "mapping.remap_after_revision",
@@ -445,6 +446,11 @@ const OWN_WORDS: &[(&str, &str)] = &[
     (
         "roles.*.native_fanout.max",
         "Most subagents this role's CLI session may start",
+    ),
+    (
+        "roles.*.shell",
+        "What a read-only session of this role may run in a shell: the checks, none, or any \
+         command (checks, none or full)",
     ),
     (
         "routing.algorithm",
@@ -722,6 +728,11 @@ fn named() -> Vec<SettingMeta> {
             &[],
         ),
         meta("crew.judge", "Who decides and signs off, in order", &[]),
+        meta(
+            "crew.worker_workflows",
+            "Crew agents may start their CLI's own workflows and background agents",
+            BOOL,
+        ),
         meta("agents.*.enabled", "Whether this CLI may work at all", BOOL),
         words(
             "agents.*.auth",
@@ -1393,8 +1404,8 @@ mod tests {
 
     use super::*;
 
-    /// The retired words, as a setting's key, value or description
-    /// might still say them.
+    /// Words the settings used before they were renamed, as a setting's key, value or
+    /// description might still say them.
     const OLD_WORDS: [&str; 23] = [
         "card",
         "owner",
@@ -1432,7 +1443,7 @@ mod tests {
         })
     }
 
-    /// Nothing you read or type about a setting uses a retired word: not its key,
+    /// Nothing you read or type about a setting uses a word that was renamed: not its key,
     /// not a value it takes, and not what `/config`, the schema and the files Argonauts writes
     /// say of it.
     #[test]

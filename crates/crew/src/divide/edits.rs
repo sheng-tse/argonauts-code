@@ -256,7 +256,8 @@ fn conflicts(
             && roles::conflict(RoleName::Reviewer, owner, Some(tested_owner), family).is_some()
         {
             broken.push(format!(
-                "{owner} can't write the acceptance tests for its own task {for_card}."
+                "{} can't write the acceptance tests for its own task {for_card}.",
+                roles::display_name(owner)
             ));
         }
     }
@@ -438,7 +439,7 @@ mod tests {
 
         let reason = try_edit("task-001 worker codex").unwrap_err();
         assert!(
-            reason.contains("codex can't review its own task"),
+            reason.contains("Codex can't review its own task"),
             "{reason}"
         );
         assert!(

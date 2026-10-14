@@ -1161,15 +1161,20 @@ impl Git {
     }
 
     /// Stages and commits only `paths`. `None` when they held no change. Paths that neither
-    /// exist nor are tracked are skipped.
+    /// exist nor are tracked are skipped, and so are the ones git ignores: they stay on disk
+    /// and out of the commit, never forced in.
     pub async fn commit_paths(
         &self,
         worktree: &Path,
         paths: &[&str],
         message: &str,
     ) -> Result<Option<String>, GitError> {
+        let ignored = self.ignored(worktree, paths).await?;
         let mut present = Vec::new();
         for path in paths {
+            if ignored.iter().any(|left| left == path) {
+                continue;
+            }
             if worktree.join(path).exists() || self.is_tracked(worktree, path).await? {
                 present.push(*path);
             }
@@ -1206,6 +1211,26 @@ impl Git {
             return Err(failed(&commit, &out));
         }
         self.resolve(worktree, "HEAD").await.map(Some)
+    }
+
+    /// Which of `paths` git ignores, as given. A tracked file is never among them, since
+    /// ignore rules don't apply to what git already tracks.
+    pub async fn ignored(&self, worktree: &Path, paths: &[&str]) -> Result<Vec<String>, GitError> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut args = vec!["check-ignore", "--"];
+        args.extend_from_slice(paths);
+        let out = self.output(worktree, &args, &[]).await?;
+        match out.status.code() {
+            Some(0) => Ok(String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(str::to_owned)
+                .collect()),
+            // None of them is ignored.
+            Some(1) => Ok(Vec::new()),
+            _ => Err(failed(&args, &out)),
+        }
     }
 
     /// A merge commit even when a fast-forward is possible. A conflicted merge is aborted and
@@ -2839,6 +2864,46 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    /// A repository that ignores `.argonauts/`: the run's own files stay on disk and out of
+    /// the commit, and nothing fails.
+    #[tokio::test]
+    async fn an_ignored_argonauts_folder_stays_out_of_the_commit() {
+        let repo = TestRepo::new();
+        let git = git();
+        repo.write(".gitignore", ".argonauts/\n");
+        repo.git(&["add", ".gitignore"]);
+        repo.git(&["commit", "-q", "-m", "ignore it"]);
+        repo.write(".argonauts/goal/run-1.md", "goal\n");
+        repo.write("notes.md", "notes\n");
+        assert_eq!(
+            git.ignored(&repo.root, &[".argonauts/goal/run-1.md", "notes.md"])
+                .await
+                .unwrap(),
+            [".argonauts/goal/run-1.md"]
+        );
+        assert_eq!(
+            git.commit_paths(&repo.root, &[".argonauts/goal/run-1.md"], "Goal")
+                .await
+                .unwrap(),
+            None,
+            "nothing to commit, and no error"
+        );
+        let sha = git
+            .commit_paths(
+                &repo.root,
+                &[".argonauts/goal/run-1.md", "notes.md"],
+                "Both",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            repo.git(&["show", "--name-only", "--format=", &sha]),
+            "notes.md"
+        );
+        assert!(repo.root.join(".argonauts/goal/run-1.md").exists());
     }
 
     #[tokio::test]

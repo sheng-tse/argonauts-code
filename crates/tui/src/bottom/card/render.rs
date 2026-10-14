@@ -76,6 +76,9 @@ impl CardPrompt {
                 lines.extend(wrap_text(&part, dim, width, &indent, &indent));
             }
         }
+        for row in &self.noted_rows {
+            lines.extend(noted_row(row, theme.style(Role::Text), dim, width));
+        }
         if self.body.is_empty() {
             lines.push(Line::default());
         } else {
@@ -555,6 +558,29 @@ fn find_block(rows: &[Line<'static>]) -> Option<(u16, u16)> {
         }
     }
     None
+}
+
+/// One row of a noted table: its parts plain and dim in turn. A row too wide for the card wraps
+/// under where its second column starts, so the section names stay alone on the left.
+fn noted_row(row: &str, plain: Style, dim: Style, width: usize) -> Vec<Line<'static>> {
+    let spans: Vec<Span<'static>> = row
+        .split('\t')
+        .enumerate()
+        .map(|(at, part)| {
+            let style = if at % 2 == 1 { dim } else { plain };
+            Span::styled(sanitize_line(part).into_owned(), style)
+        })
+        .collect();
+    let text: String = row.split('\t').collect();
+    let section = text.chars().take_while(|c| *c != ' ').count();
+    let gap = text.chars().skip(section).take_while(|c| *c == ' ').count();
+    let under = (2 + section + gap).min(width / 2);
+    wrap_spans(
+        &spans,
+        width,
+        &[Span::raw("  ")],
+        &[Span::raw(" ".repeat(under))],
+    )
 }
 
 /// A `·`-joined line broken between its parts where it must wrap, so `$0.00 spent` never

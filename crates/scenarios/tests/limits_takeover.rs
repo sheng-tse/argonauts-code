@@ -15,8 +15,8 @@ fn limits_take_over_and_return() -> anyhow::Result<()> {
     let mut pty = limits.start()?;
     limits.wait_for_call("claude", "acceptEdits", CARD_WAIT)?;
 
-    // A solo run is one agent, so its panel row opens the owner's session directly,
-    // whose `t` asks before handing the terminal over.
+    // A solo run is one agent, so its panel row opens the owner's session directly, whose
+    // `t` asks before handing the terminal over.
     pty.press(Key::Down)?;
     pty.press(Key::Enter)?;
     pty.wait_for("t take over", WAIT)?;

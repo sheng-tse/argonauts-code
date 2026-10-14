@@ -608,6 +608,7 @@ pub fn session_spec(worker: &str, access: Access, workdir: &Path) -> SessionSpec
         env: Vec::new(),
         asking: None,
         cli_workflow: argonauts_core::worker::CliWorkflow::default(),
+        shell: argonauts_core::worker::SessionShell::None,
     }
 }
 

@@ -123,6 +123,7 @@ mod tests {
                 command: UiCommand::Submit {
                     text: "hi".into(),
                     workflow_requested: false,
+                    pictures: Vec::new(),
                 },
             },
             TraceLine::Out {
@@ -139,7 +140,8 @@ mod tests {
             trace.commands().unwrap(),
             [UiCommand::Submit {
                 text: "hi".into(),
-                workflow_requested: false
+                workflow_requested: false,
+                pictures: Vec::new(),
             }]
         );
         let exit = trace

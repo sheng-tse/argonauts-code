@@ -17,7 +17,7 @@ use argonauts_scenarios::{Scenario, scenario_file};
 use argonauts_testkit::{FakeOpenAi, FakeRule, FakeScenario, FakeStep, Key, Pty};
 
 /// The keys an Enter-through setup writes, and nothing else.
-const SETUP_KEYS: [&str; 11] = [
+const SETUP_KEYS: [&str; 12] = [
     "crew",
     "main_agent",
     "workflow",
@@ -30,6 +30,7 @@ const SETUP_KEYS: [&str; 11] = [
     "approvals.autopilot",
     // The limits section ends on its default, which keeps its commented limits inside it.
     "limits.when_reached",
+    "telemetry.enabled",
 ];
 
 const CLOSING_COMMANDS: [&str; 7] = [

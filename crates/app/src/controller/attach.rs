@@ -119,13 +119,12 @@ pub(super) async fn attach(
     if let Some(old) = runs.attached.take()
         && old.run != run
     {
-        ctx.send(AppEvent::Detached {
-            run: old.run.clone(),
-        });
+        super::runs::give_way(ctx, runs, old).await;
         // The run it leaves goes on, as when you start a second workflow while the first
         // works, so its row comes now rather than at the next minute's listing.
         super::runs::refresh_background(ctx);
     }
+    super::runs::came_on_screen(runs, &run);
     let mode = mode_from_summary(&summary);
     ctx.send(AppEvent::Attached {
         summary,
@@ -296,7 +295,7 @@ fn mode_from_summary(summary: &RunSummary) -> AppMode {
 }
 
 /// Forwards the stream's events and liveness, then `Ended` once it closes.
-fn forward(
+pub(super) fn forward(
     run: RunId,
     mut stream: EventStream,
     internal: mpsc::UnboundedSender<Internal>,

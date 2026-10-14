@@ -6,10 +6,10 @@ Raw · s-002
 The agent's own lines, unparsed · the last 4 lines        /state/raw/s-002.jsonl
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ {"type":"thread.started","thread_id":"th_01"}                                │
-│ red text and a title                                                         │
-│ clearedreturned    tabbed                                                    │
-│ bidi reversed end C1                                                         │
+│ thread.started  {"type":"thread.started","thread_id":"th_01"}                │
+│                 red text and a title                                         │
+│                 clearedreturned    tabbed                                    │
+│                 bidi reversed end C1                                         │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -25,4 +25,4 @@ The agent's own lines, unparsed · the last 4 lines        /state/raw/s-002.json
 │                                                                              │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ scroll · pgup pgdn page · esc back
+↑↓ move · enter unfolds · / searches · n next · esc back

@@ -4,9 +4,9 @@ expression: "&text"
 ---
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  council
- Fix the race in the export test and add a regression test                   6/11 agents · 46m00s · ↓ 783k tokens
+ Fix the race in the export test and add a regression test                    6/11 steps · 46m00s · ↓ 783k tokens
 
- ╭ Understand · 2 agents ───────────┬ restater ─────────────────────────────────────────────────────────────────╮
+ ╭ Understand · 2 steps ────────────┬ restater ─────────────────────────────────────────────────────────────────╮
  │ ❯✔ restater  Opus on Claude Code │ ✔ Completed · Opus on Claude Code · 58s                                   │
  │  ✔ restater  GPT 5.6 on Codex    │ claude-code/opus · run-01 · 31k tok · $0.09                               │
  │                                  │                                                                           │

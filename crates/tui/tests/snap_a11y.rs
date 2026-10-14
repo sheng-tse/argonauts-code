@@ -190,7 +190,8 @@ fn screen_reader_card_as_numbered_list() {
         reader.typed("1").commands,
         vec![UiCommand::Submit {
             text: "1".into(),
-            workflow_requested: false
+            workflow_requested: false,
+            pictures: Vec::new(),
         }]
     );
 
@@ -276,7 +277,8 @@ fn screen_reader_cards_follow_one_another() {
         reader.typed("y").commands,
         vec![UiCommand::Submit {
             text: "y".into(),
-            workflow_requested: false
+            workflow_requested: false,
+            pictures: Vec::new(),
         }]
     );
     assert!(reader.typed("1").commands.is_empty());

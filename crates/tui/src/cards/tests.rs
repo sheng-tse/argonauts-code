@@ -483,29 +483,42 @@ fn a_question_asks_over_any_view() {
     }
 }
 
-/// A dry run's card is its table, so a workflow of many steps shows them all.
-#[test]
-fn a_dry_runs_card_shows_its_whole_table_and_esc_closes_it() {
-    let mut tried = choice(
+fn preview() -> AppChoice {
+    choice(
         ChoiceKind::TryWorkflow,
         vec![
-            option('y', "Run it", AnswerAction::Approve),
-            option(
-                'e',
-                "Edit it",
-                AnswerAction::Choose {
-                    value: "edit".into(),
-                },
-            ),
+            option('y', "Yes, run it", AnswerAction::Approve),
+            option('n', "No", AnswerAction::Choose { value: "no".into() }),
         ],
-    );
-    tried.title = "spec-first for \"add due dates\" · nothing runs".into();
+    )
+}
+
+/// A dry run's card is its plan, so a workflow of many steps shows them all.
+#[test]
+fn a_dry_runs_card_shows_its_whole_plan_and_answers_only_to_its_keys() {
+    let mut tried = preview();
+    tried.title = "spec-first for \"add due dates\" · a preview, nothing runs yet".into();
     tried.body = (1..=12).map(|step| format!("{step} Step {step}")).collect();
     let card = choice_card(1, &tried);
     assert_eq!(card.body.len(), 12, "{:?}", card.body);
     assert!(card.detail.is_empty());
-    assert_eq!(card.esc_hint, "Esc to close");
-    assert!(card.focused && card.esc_answers);
+    assert_eq!(card.esc_hint, "y runs it · n closes it");
+    assert!(card.focused && card.esc_answers && card.keys_only);
+
+    // A y/N question: Enter and Esc take the default, no, whichever row is lit, and only y
+    // runs it.
+    for key in [
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyCode::Esc,
+    ] {
+        let mut card = choice_card(1, &tried);
+        card.selected = 0;
+        let answered = card.handle_key(crossterm::event::KeyEvent::from(key));
+        assert!(
+            matches!(answered, CardEvent::Answered { index: 1, .. }),
+            "{key:?}: {answered:?}"
+        );
+    }
 
     // Any other card keeps to a few rows.
     let mut long = choice(ChoiceKind::ConfirmConnect, Vec::new());
@@ -2115,5 +2128,111 @@ fn a_go_ahead_autopilot_leaves_to_you_holds_the_keys() {
             .any(|row| row.contains("to answer the question") || row.starts_with('❯')),
         "{}",
         rows.join("\n")
+    );
+}
+
+/// The setup card as it was approved: the settings in plain text with only the notes dim, the
+/// four places to keep it listed, and `d` for what would be written.
+#[test]
+fn a_setup_card_shows_its_settings_plain_its_notes_dim_and_four_choices() {
+    let mut screen = Screen::new();
+    let place = |key, label: &str, value: &str| {
+        option(
+            key,
+            label,
+            AnswerAction::Choose {
+                value: value.into(),
+            },
+        )
+    };
+    let setup = AppChoice {
+        id: ChoiceId::numbered(9),
+        kind: ChoiceKind::Setup,
+        title: "Your setup".into(),
+        body: vec![
+            "limits        spend_per_day = 5.00   \twhen reached: fallback".into(),
+            "reviewers     \tadds to\t roles/reviewers.md".into(),
+            String::new(),
+            "You asked: never more than $5 a day.".into(),
+        ],
+        options: vec![
+            place('c', "This conversation", "conversation"),
+            place('p', "Save for this repository", "repository"),
+            place('e', "Save for all my repositories", "everywhere"),
+            option('n', "Not now", AnswerAction::Cancel),
+            option('d', "Show what would be written", AnswerAction::ShowDiff),
+        ],
+        free_text: FreeText::None,
+        bell: false,
+    };
+    screen.event(AppEvent::Choice { choice: setup });
+    let card = screen.card();
+    let labels: Vec<&str> = card.options.iter().map(|o| o.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        [
+            "This conversation",
+            "Save for this repository",
+            "Save for all my repositories",
+            "Not now"
+        ]
+    );
+
+    let mut theme = Theme::dark();
+    theme.glyphs = Glyphs::UNICODE;
+    let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now()));
+    let lines = card.lines(&ctx);
+    let dim = theme.style(crate::theme::Role::Dim);
+    let style_of = |text: &str| {
+        lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content.contains(text))
+            .map(|span| span.style)
+    };
+    assert_eq!(style_of("when reached: fallback"), Some(dim));
+    assert_eq!(style_of("adds to"), Some(dim));
+    assert_ne!(style_of("spend_per_day = 5.00"), Some(dim));
+    assert_ne!(style_of("roles/reviewers.md"), Some(dim));
+    let shown = plain_text(&lines);
+    assert!(
+        shown.contains("limits        spend_per_day = 5.00   when reached: fallback"),
+        "{shown}"
+    );
+    assert!(!shown.contains("You asked"), "{shown}");
+
+    let effects = screen.keys(&[KeyCode::Char('d')]);
+    assert_eq!(effects.len(), 1, "d opens what would be written");
+    assert!(!effects[0].views.is_empty(), "a view opens");
+    assert!(screen.model.bottom.card.is_some(), "the card stays");
+}
+
+/// A preview runs only on y. Enter and Esc leave it as it is, and n says no.
+#[test]
+fn a_preview_runs_only_on_its_own_key() {
+    let answers = |keys: &[KeyCode]| {
+        let mut screen = Screen::new();
+        screen.event(AppEvent::Choice { choice: preview() });
+        let effects = screen.keys(keys);
+        effects
+            .into_iter()
+            .flat_map(|out| out.commands)
+            .filter_map(|command| match command {
+                UiCommand::Answer { action, .. } => Some(action),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    // No is the default, so Enter and Esc say no; only y runs it.
+    for key in [KeyCode::Enter, KeyCode::Esc] {
+        assert_eq!(
+            answers(&[key]),
+            [AnswerAction::Choose { value: "no".into() }]
+        );
+    }
+    assert_eq!(answers(&[KeyCode::Char('y')]), [AnswerAction::Approve]);
+    assert_eq!(
+        answers(&[KeyCode::Char('n')]),
+        [AnswerAction::Choose { value: "no".into() }]
     );
 }

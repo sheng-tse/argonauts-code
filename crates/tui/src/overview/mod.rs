@@ -4,16 +4,21 @@
 
 pub mod cards;
 mod context;
+mod home;
 mod limits;
 #[cfg(test)]
 pub(crate) mod sample;
 pub mod stats;
 mod status;
+pub mod status_tab;
+mod subtabs;
+mod usage;
 mod view;
 mod watch;
 
 pub use cards::{UsageCard, UsageCards, cli_role, period_words};
 pub use context::{conversation as conversation_context, session_use as session_context};
+pub use home::spoken as spoken_overview;
 pub use status::{StatusCard, StatusCards};
 pub use view::{OverviewView, Tab};
 pub use watch::UsageWatch;

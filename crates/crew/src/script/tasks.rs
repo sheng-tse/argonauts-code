@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex};
 
 use argonauts_core::CardId;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::card::{CardBudget, CardKind, CardSpec, CardState, ReviewEvent};
+use argonauts_core::events::card::{
+    CardBudget, CardKind, CardSpec, CardState, GateOutcome, ReviewEvent,
+};
 use argonauts_core::labels;
 use argonauts_core::names::WorkerRef;
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
@@ -321,6 +323,84 @@ pub(super) async fn tree_of(
     Ok(Some(worktree::ensure(bridge.host, &entry.card).await?.path))
 }
 
+/// What the task's checks said after its last build, one line each, newest per check:
+/// `tests passed: 9 passed, 0 failed`. `None` before any ran.
+pub(super) fn checks_of(bridge: &Bridge<'_>, task: Option<&str>) -> Option<String> {
+    let card = card_of(bridge, task)?;
+    let gates = bridge
+        .host
+        .read(|state| state.cards.get(&card).map(|record| record.gates.clone()))?;
+    checks_text(&gates)
+}
+
+/// What the checks said for every task the script's writers worked on, each line under its
+/// task, for a call about no one task, such as the judge who signs off the run.
+pub(super) fn all_checks(bridge: &Bridge<'_>) -> Option<String> {
+    let tasks: Vec<(String, CardId)> = lock(&bridge.tasks.entries)
+        .iter()
+        .filter(|entry| !entry.dropped)
+        .map(|entry| (entry.name.clone(), entry.card.clone()))
+        .collect();
+    let lines: Vec<String> = tasks
+        .iter()
+        .flat_map(|(name, card)| {
+            let gates = bridge
+                .host
+                .read(|state| state.cards.get(card).map(|record| record.gates.clone()))
+                .unwrap_or_default();
+            let name = if name == THE_REQUEST {
+                "the request"
+            } else {
+                name.as_str()
+            };
+            gate_lines(&gates)
+                .into_iter()
+                .map(move |line| format!("{name}: {line}"))
+        })
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Argonauts ran these after each build, in its task's worktree:\n{}",
+        lines.join("\n")
+    ))
+}
+
+fn checks_text(gates: &[GateOutcome]) -> Option<String> {
+    let lines = gate_lines(gates);
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Argonauts ran these after the build, in the task's worktree:\n{}",
+        lines.join("\n")
+    ))
+}
+
+/// Each check's newest result in one line, such as `tests (node --test) passed: 9 pass`.
+fn gate_lines(gates: &[GateOutcome]) -> Vec<String> {
+    let mut newest: Vec<&GateOutcome> = Vec::new();
+    for gate in gates.iter().filter(|gate| !gate.skipped) {
+        match newest.iter_mut().find(|seen| seen.name == gate.name) {
+            Some(seen) => *seen = gate,
+            None => newest.push(gate),
+        }
+    }
+    newest
+        .iter()
+        .map(|gate| {
+            let result = if gate.passed { "passed" } else { "failed" };
+            let ran = gate
+                .command
+                .as_ref()
+                .map(|command| format!(" ({})", command.join(" ")))
+                .unwrap_or_default();
+            format!("{}{ran} {result}: {}", gate.name, gate.summary.trim())
+        })
+        .collect()
+}
+
 /// The card the script's `task` is worked on, once a writer took it.
 pub(super) fn card_of(bridge: &Bridge<'_>, task: Option<&str>) -> Option<CardId> {
     bridge.tasks.known(task?).map(|entry| entry.card)
@@ -443,6 +523,38 @@ pub(super) async fn finish(bridge: &Bridge<'_>, at: &StepAt) -> EngineResult<usi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gate(name: &str, passed: bool, summary: &str) -> GateOutcome {
+        GateOutcome {
+            name: name.to_owned(),
+            kind: argonauts_core::events::card::GateKind::Command,
+            passed,
+            command: Some(vec!["node".to_owned(), "--test".to_owned()]),
+            exit_code: Some(i32::from(!passed)),
+            duration_ms: 900,
+            summary: summary.to_owned(),
+            output_tail: String::new(),
+            violations: Vec::new(),
+            sandboxed: true,
+            skipped: false,
+        }
+    }
+
+    #[test]
+    fn a_reviewer_reads_the_newest_result_of_each_check() {
+        let gates = [
+            gate("tests", false, "8 pass, 1 fail"),
+            gate("tests", true, "9 pass, 0 fail"),
+        ];
+        assert_eq!(
+            checks_text(&gates).as_deref(),
+            Some(
+                "Argonauts ran these after the build, in the task's worktree:\n\
+                 tests (node --test) passed: 9 pass, 0 fail"
+            )
+        );
+        assert_eq!(checks_text(&[]), None);
+    }
 
     #[test]
     fn two_names_that_start_alike_get_tasks_of_their_own() {

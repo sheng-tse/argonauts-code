@@ -103,12 +103,14 @@ impl DailyLedger {
     pub fn take_auto_merge(
         &self,
         key: &str,
-        cap: u32,
+        cap: Option<u32>,
         now: OffsetDateTime,
     ) -> Result<u32, DailyError> {
         self.update(now, |day| {
             if !day.auto_merges.contains(key) {
-                if day.auto_merges_taken() >= cap {
+                if let Some(cap) = cap
+                    && day.auto_merges_taken() >= cap
+                {
                     return Err(DailyError::Capped(format!(
                         "today's auto-merges are used up ({cap} a day)"
                     )));
@@ -252,10 +254,10 @@ mod tests {
             let home = tempfile::tempdir().expect("temp dir");
             let ledger = DailyLedger::open(home.path());
             ledger
-                .take_auto_merge("repo/run-1/cp-001", 3, NOW)
+                .take_auto_merge("repo/run-1/cp-001", Some(3), NOW)
                 .expect("first");
             ledger
-                .take_auto_merge("repo/run-2/cp-001", 3, NOW)
+                .take_auto_merge("repo/run-2/cp-001", Some(3), NOW)
                 .expect("second");
 
             let start = Barrier::new(2);
@@ -269,7 +271,7 @@ mod tests {
                             // Each thread opens the file itself, like another supervisor.
                             let ledger = DailyLedger::open(home);
                             start.wait();
-                            ledger.take_auto_merge(&format!("repo/run-{name}/cp-003"), 3, NOW)
+                            ledger.take_auto_merge(&format!("repo/run-{name}/cp-003"), Some(3), NOW)
                         })
                     })
                     .collect();
@@ -291,20 +293,30 @@ mod tests {
     fn auto_merges_count_each_key_once_and_can_be_released() {
         let home = tempfile::tempdir().expect("temp dir");
         let ledger = DailyLedger::open(home.path());
-        assert_eq!(ledger.take_auto_merge("r/a/cp-001", 1, NOW), Ok(1));
-        assert_eq!(ledger.take_auto_merge("r/a/cp-001", 1, NOW), Ok(1));
+        assert_eq!(ledger.take_auto_merge("r/a/cp-001", Some(1), NOW), Ok(1));
+        assert_eq!(ledger.take_auto_merge("r/a/cp-001", Some(1), NOW), Ok(1));
         assert!(matches!(
-            ledger.take_auto_merge("r/b/cp-001", 1, NOW),
+            ledger.take_auto_merge("r/b/cp-001", Some(1), NOW),
             Err(DailyError::Capped(_))
         ));
         ledger
             .release_auto_merge("r/a/cp-001", NOW)
             .expect("release");
-        assert_eq!(ledger.take_auto_merge("r/b/cp-001", 1, NOW), Ok(1));
+        assert_eq!(ledger.take_auto_merge("r/b/cp-001", Some(1), NOW), Ok(1));
         assert_eq!(
-            ledger.take_auto_merge("r/c/cp-001", 1, NOW + Duration::days(1)),
+            ledger.take_auto_merge("r/c/cp-001", Some(1), NOW + Duration::days(1)),
             Ok(1)
         );
+    }
+
+    #[test]
+    fn without_a_cap_every_auto_merge_is_counted_and_none_refused() {
+        let home = tempfile::tempdir().expect("temp dir");
+        let ledger = DailyLedger::open(home.path());
+        for n in 1..=20 {
+            let key = format!("r/run-{n}/cp-001");
+            assert_eq!(ledger.take_auto_merge(&key, None, NOW), Ok(n));
+        }
     }
 
     #[test]
@@ -393,7 +405,7 @@ mod tests {
         let ledger = DailyLedger::open(home.path());
         std::fs::write(ledger.path(), "{ torn").expect("write");
         assert!(matches!(
-            ledger.take_auto_merge("r/a/cp-001", 3, NOW),
+            ledger.take_auto_merge("r/a/cp-001", Some(3), NOW),
             Err(DailyError::Io { .. })
         ));
         let refused = ledger

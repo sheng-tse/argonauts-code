@@ -949,6 +949,45 @@ async fn context_and_limits_print_as_lines_in_the_chat() {
     harness.exit().await;
 }
 
+/// Back from a CLI's login, the reading kept from before may be another account's: it stops
+/// standing as the CLI's own, and the CLI is read again at once.
+#[tokio::test]
+async fn back_from_a_login_the_cli_is_read_again() {
+    use argonauts_core::limits::QuotaBoard as _;
+    use argonauts_core::names::VendorId;
+
+    let mut harness = Harness::start().await;
+    // A live read builds the CLI's worker first, which registers its probe.
+    harness.directory.add(FakeWorker::harness("codex", "codex"));
+    slash(
+        &harness,
+        SlashCommand::Login {
+            agent: Some("codex".into()),
+        },
+    )
+    .await;
+    let event = harness
+        .until(|event| matches!(event, AppEvent::RunInTerminal { .. }))
+        .await;
+    let AppEvent::RunInTerminal { argv, .. } = event else {
+        unreachable!()
+    };
+    let codex = VendorId("codex".to_owned());
+    assert_eq!(harness.quota.doubted_at(&codex), None);
+    harness
+        .send(argonauts_core::app::UiCommand::TerminalReturned { argv })
+        .await;
+    for _ in 0..200 {
+        if !harness.quota.probed().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(harness.quota.doubted_at(&codex).is_some());
+    assert_eq!(harness.quota.probed(), [codex]);
+    harness.exit().await;
+}
+
 #[tokio::test]
 async fn login_and_logout_hand_the_terminal_to_the_agents_own_command() {
     let mut harness = Harness::start().await;

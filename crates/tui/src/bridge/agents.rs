@@ -14,7 +14,7 @@ use argonauts_core::events::card::CardState;
 use argonauts_core::events::run::RunLifecycle;
 use argonauts_core::events::session::{
     EndReason, FileDiff, SessionEnd, SessionEvent, SubagentKind, SubagentStatus, SubagentUpdate,
-    Watchdog, loaded_words,
+    VendorWorkflow, Watchdog, loaded_words,
 };
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{SessionKey, WorkerRef};
@@ -24,7 +24,7 @@ use argonauts_core::{AgentEvent, CardId, ErrorCategory, RunId, TodoItem, TodoSta
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use super::{Cx, mods, tools};
+use super::{Cx, failure, mods, tools, vendor_workflow};
 use crate::cell::{
     AgentsStarted, Cell, DiffView, StartedAgent, Todo, TodoState, Tone, ToolCall, ToolItem,
     ToolKind, ToolState, ToolStats, ToolTitle,
@@ -237,6 +237,13 @@ impl AgentBlocks {
             AgentEvent::ToolFinished { id, ok, output, .. } => {
                 live.tool_finished(id, *ok, output.as_deref(), cx)
             }
+            AgentEvent::FilePatch {
+                id, path, hunks, ..
+            } => {
+                if let Some(call) = live.whole.child_mut(id) {
+                    tools::take_patch(call, path, hunks);
+                }
+            }
             AgentEvent::Todo { items } => live.todos = items.iter().map(todo).collect(),
             AgentEvent::Retry { delay_ms, .. } => {
                 live.retries += 1;
@@ -249,20 +256,26 @@ impl AgentBlocks {
                 live.retry = Some(Retry { at, attempt });
             }
             AgentEvent::Subagent { update } => live.subagent(update, cx),
+            AgentEvent::Workflow { workflow } => live.vendor_workflow(workflow),
             AgentEvent::Error {
                 category, message, ..
             } => {
-                // A stall may yet pass, so it reads as a note.
-                let tone = if *category == ErrorCategory::Stalled {
-                    Tone::Dim
+                // A stall may yet pass, so it reads as a note. Any other error shows in the
+                // live block in words; the row the session ends with says it in scrollback, so
+                // it prints once.
+                if *category == ErrorCategory::Stalled {
+                    let item = ToolItem::Text {
+                        text: message.clone(),
+                        tone: Tone::Dim,
+                    };
+                    live.note(item, Verbosity::Normal, cx);
                 } else {
-                    Tone::Error
-                };
-                let item = ToolItem::Text {
-                    text: message.clone(),
-                    tone,
-                };
-                live.note(item, Verbosity::Normal, cx);
+                    let cli = cx.state.names.harness(&live.vendor);
+                    live.whole.push(ToolItem::Text {
+                        text: failure::plain(&cli, message),
+                        tone: Tone::Error,
+                    });
+                }
             }
             AgentEvent::Unknown { raw } => {
                 let item = ToolItem::Text {
@@ -311,7 +324,17 @@ impl AgentBlocks {
             .as_ref()
             .and_then(|card| self.gates.get(&(live.run.clone(), card.clone())).copied())
             .or_else(|| gates_from_card(live.card_state(cx)));
-        let detail = end_detail(end, gates, glyphs(cx));
+        let cli = cx.state.names.harness(&live.vendor);
+        let mut detail = end_detail(end, gates, &cli, glyphs(cx));
+        let raw = raw_error(&end.reason).and_then(|text| {
+            let title = format!("{} · the raw error", live.head.title.plain());
+            failure::RawFailure::behind(&detail, title, text)
+        });
+        // A replayed row is only kept for the overlay, where no key opens what it hints at.
+        if raw.is_some() && !cx.replaying() {
+            detail.push_str(" · ");
+            detail.push_str(failure::RAW_ERROR_HINT);
+        }
         let mut summary = live.whole.summarized(Some(&detail));
         if cx.verbosity() == Verbosity::Quiet {
             return;
@@ -319,6 +342,9 @@ impl AgentBlocks {
         if cx.replaying() {
             cx.model.history.keep(summary);
             return;
+        }
+        if raw.is_some() {
+            cx.model.raw_failure = raw;
         }
         if state != ToolState::Stopped {
             live.flush(cx);
@@ -656,6 +682,23 @@ impl Live {
         }
     }
 
+    /// A workflow the CLI runs itself, on the row of the call that started it: its name and
+    /// steps rather than the call's answer, which only the raw log keeps.
+    fn vendor_workflow(&mut self, workflow: &VendorWorkflow) {
+        let Some(call) = workflow
+            .call
+            .as_deref()
+            .and_then(|key| self.whole.child_mut(key))
+        else {
+            return;
+        };
+        let row = vendor_workflow::row(workflow);
+        call.title = row.title;
+        call.tail = row.tail;
+        call.kind = row.kind;
+        call.body = row.body;
+    }
+
     fn subagent(&mut self, update: &SubagentUpdate, cx: &mut Cx<'_>) {
         if self.whole.child_mut(&update.id).is_none() {
             let name = match update.kind {
@@ -682,7 +725,13 @@ impl Live {
         let Some(call) = self.whole.child_mut(&update.id) else {
             return;
         };
-        if update.steps_visible {
+        // Its call's row draws its steps from the workflow's own reports.
+        let drawn = update.kind == SubagentKind::Workflow
+            && matches!(&call.title, ToolTitle::Call { name, .. }
+                if vendor_workflow::is_call(&self.vendor, name));
+        if drawn {
+            self.hidden_steps = true;
+        } else if update.steps_visible {
             if let Some(message) = &update.last_message {
                 set_message(call, message);
             }
@@ -814,7 +863,12 @@ impl Live {
             .collect();
         let recent = &calls[calls.len().saturating_sub(LIVE_CALLS)..];
         block.body.extend(recent.iter().map(|item| (*item).clone()));
-        if let Some(preview) = &self.preview {
+        // A call above that drew this file's change, from its own patch, shows it already.
+        if let Some(preview) = self.preview.as_ref().filter(|preview| {
+            !recent
+                .iter()
+                .any(|item| draws_diff_of(item, preview.file()))
+        }) {
             block.body.push(ToolItem::Diff(preview.clone()));
         }
         if self.vendor == "codex" {
@@ -865,6 +919,19 @@ fn set_message(call: &mut ToolCall, text: &str) {
 }
 
 /// Into the newest edit or write of `path` that has no diff yet.
+/// A call that draws a diff of `file`, a path in the repo.
+fn draws_diff_of(item: &ToolItem, file: Option<&str>) -> bool {
+    let (ToolItem::Call(call), Some(file)) = (item, file) else {
+        return false;
+    };
+    call.body.iter().any(|item| match item {
+        ToolItem::Diff(diff) => diff
+            .file()
+            .is_some_and(|drawn| tools::same_file(drawn, file)),
+        _ => false,
+    })
+}
+
 fn attach_diff(owner: &mut ToolCall, path: &str, view: &DiffView) -> bool {
     let target = owner.body.iter_mut().rev().find_map(|item| match item {
         ToolItem::Call(call)
@@ -951,9 +1018,9 @@ fn glyphs(cx: &Cx<'_>) -> &'static Glyphs {
 }
 
 /// `report ✓ · gates ✓ · 9m 40s · 61k tokens`, or why it ended first.
-fn end_detail(end: &SessionEnd, gates: Option<bool>, glyphs: &Glyphs) -> String {
+fn end_detail(end: &SessionEnd, gates: Option<bool>, cli: &str, glyphs: &Glyphs) -> String {
     let mut parts = Vec::new();
-    if let Some(reason) = reason_words(&end.reason) {
+    if let Some(reason) = reason_words(&end.reason, cli) {
         parts.push(reason);
     }
     let reported = end.structured.is_some() || end.result_text.is_some();
@@ -976,7 +1043,9 @@ fn end_detail(end: &SessionEnd, gates: Option<bool>, glyphs: &Glyphs) -> String 
     parts.join(" · ")
 }
 
-fn reason_words(reason: &EndReason) -> Option<String> {
+/// Why it ended, in words. A failure the CLI explained is one plain line; its own text stays
+/// in the raw log.
+pub(crate) fn reason_words(reason: &EndReason, cli: &str) -> Option<String> {
     Some(match reason {
         EndReason::Completed | EndReason::Stopped => return None,
         EndReason::Paused => "paused".to_owned(),
@@ -995,12 +1064,25 @@ fn reason_words(reason: &EndReason) -> Option<String> {
         | EndReason::Auth { message }
         | EndReason::Billing { message }
         | EndReason::StartFailed { message }
-        | EndReason::Crashed { message } => first_line(message),
+        | EndReason::Crashed { message } => failure::plain(cli, message),
         EndReason::AdapterBroken { detail } => first_line(detail),
         EndReason::IsolationBroken { plugins, skills } => {
             format!("loaded {}", loaded_words(plugins, skills))
         }
     })
+}
+
+/// The CLI's own text behind a failure [`reason_words`] says in words.
+fn raw_error(reason: &EndReason) -> Option<&str> {
+    match reason {
+        EndReason::VendorError { message, .. }
+        | EndReason::Auth { message }
+        | EndReason::Billing { message }
+        | EndReason::StartFailed { message }
+        | EndReason::Crashed { message } => Some(message),
+        EndReason::AdapterBroken { detail } => Some(detail),
+        _ => None,
+    }
 }
 
 fn first_line(text: &str) -> String {

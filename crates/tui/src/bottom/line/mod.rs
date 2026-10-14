@@ -146,13 +146,9 @@ pub enum PartBody {
         values: Vec<f64>,
         role: Role,
     },
-    /// `⧉ weekly-usage-chart · 1 feedback draft`, as Claude Code names a published artifact
-    /// beside the mode. With `others` published before it, it is their count: `⧉ 3`.
-    Artifact {
-        name: String,
-        others: u32,
-        feedback_drafts: u32,
-    },
+    /// `⧉ release-notes`, as Claude Code names a published artifact beside the mode,
+    /// and `+2 more` with `others` published before it.
+    Artifact { name: String, others: u32 },
     /// What other code drew for the part, such as a mod's own chip.
     Drawn(Vec<Span<'static>>),
     /// A mod of yours from `mods/` that the line lists, drawn as its chip with the theme.
@@ -500,46 +496,26 @@ impl Drawer<'_> {
                 }
                 spans
             }
-            PartBody::Artifact {
-                name,
-                others,
-                feedback_drafts,
-            } => self.artifact(name, *others, *feedback_drafts),
+            PartBody::Artifact { name, others } => self.artifact(name, *others),
             PartBody::Drawn(spans) => spans.clone(),
             PartBody::Mod { file, reading } => crate::mods::draw::chip(&self.kit, file, reading),
         }
     }
 
-    /// Claude Code's own words for it: one artifact by name, several by their count, and
-    /// both spelled out where its mark can't be drawn.
-    fn artifact(&self, name: &str, others: u32, feedback_drafts: u32) -> Vec<Span<'static>> {
+    /// The newest artifact by name, cut where Claude Code cuts it, then `+N more` for the
+    /// others the conversation published, which /artifacts lists. Spelled out where the mark
+    /// can't be drawn.
+    fn artifact(&self, name: &str, others: u32) -> Vec<Span<'static>> {
         let kit = &self.kit;
         let name = sanitize_line(name).trim().to_owned();
         if name.is_empty() {
             return Vec::new();
         }
         let ascii = kit.theme.glyphs.is_ascii();
-        let mut spans = if others > 0 {
-            let count = others + 1;
-            vec![kit.dim(if ascii {
-                format!("{count} artifacts")
-            } else {
-                format!("⧉ {count}")
-            })]
-        } else {
-            let mut spans = vec![kit.dim(if ascii { "artifact " } else { "⧉ " })];
-            spans.extend(truncate_spans(&[kit.dim(name)], NAME_CELLS));
-            spans
-        };
-        if feedback_drafts > 0 {
-            let drafts = if feedback_drafts == 1 {
-                " feedback draft"
-            } else {
-                " feedback drafts"
-            };
-            spans.push(kit.dim(" · "));
-            spans.push(kit.span(feedback_drafts.to_string(), Role::Text));
-            spans.push(kit.dim(drafts));
+        let mut spans = vec![kit.dim(if ascii { "artifact " } else { "⧉ " })];
+        spans.extend(truncate_spans(&[kit.dim(name)], NAME_CELLS));
+        if others > 0 {
+            spans.push(kit.dim(format!(" +{others} more")));
         }
         spans
     }

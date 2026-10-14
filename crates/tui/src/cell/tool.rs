@@ -141,6 +141,8 @@ pub enum ToolItem {
     Todos(Vec<Todo>),
     /// A live block's to-do line, `☒ wire middleware  ☐ tests`, always one row.
     TodoLine(Vec<Todo>),
+    /// A workflow's steps on one row, each after its state's mark: `✓ build · ◐ review · ○ judge`.
+    Steps(Vec<StepMark>),
     /// The newest line of text an agent is writing, with a cursor after it.
     Streaming(String),
     /// `Running… (4s)` while a call waits for its first output. It goes when anything else
@@ -160,6 +162,12 @@ pub struct PhaseLine {
     pub detail: String,
     /// A step you require of the workflow.
     pub required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepMark {
+    pub label: String,
+    pub state: crate::widgets::State,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

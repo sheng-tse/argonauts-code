@@ -473,6 +473,27 @@ fn a_paste_typed_out_as_keys_never_sends() {
     harness.assert_no_command("submit");
 }
 
+/// Terminal.app types a dropped file's path out as keys in one write. The path starts with
+/// `/`, so every key also runs the commands list, which a debug build takes a while over; the
+/// keys still came together, so the path is one paste and becomes its picture's chip.
+#[test]
+fn a_dropped_picture_typed_out_as_keys_becomes_its_chip() {
+    let mut harness = Harness::launch(Script::idle()).start();
+    harness.wait_for(TOP_RULE);
+    harness.wait_visible(MODE_IDLE);
+    let picture = harness
+        .scratch()
+        .join("Screenshot 2026-10-08 at 10.07.05 PM.png");
+    std::fs::write(&picture, b"\x89PNG\r\n\x1a\n").unwrap();
+    let typed = picture.display().to_string().replace(' ', "\\ ");
+    assert!(typed.starts_with('/'), "{typed}");
+
+    harness.send_at_once(&typed);
+    let screen = wait_input(&harness, "[Image #1]");
+    assert_eq!(input_rows(&screen), ["❯ [Image #1]"]);
+    harness.assert_no_command("submit");
+}
+
 #[test]
 fn a_paste_typed_out_as_keys_never_picks_a_prompt_in_the_search() {
     let (path, history) = other_repo_history();

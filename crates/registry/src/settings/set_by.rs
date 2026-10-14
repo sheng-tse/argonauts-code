@@ -59,6 +59,20 @@ impl SetBy {
         self.keys.get(key).map(|origin| origin.layer)
     }
 
+    /// The layer that set `key`, else the latest that set a key under it or above it.
+    pub fn layer_around(&self, key: &str) -> Option<&'static str> {
+        if let Some(layer) = self.layer(key) {
+            return Some(layer);
+        }
+        let under = format!("{key}.");
+        let rank = |layer: &&'static str| LAYERS.iter().position(|each| each == layer);
+        self.keys
+            .iter()
+            .filter(|(set, _)| set.starts_with(&under) || key.starts_with(&format!("{set}.")))
+            .map(|(_, origin)| origin.layer)
+            .max_by_key(rank)
+    }
+
     /// Every key a layer set, with where it came from.
     pub fn keys(&self) -> impl Iterator<Item = (&str, &str)> {
         self.keys

@@ -88,7 +88,7 @@ async fn a_message_goes_in_at_once_and_send_now_and_take_back_name_it() {
     .await;
     harness.submit("also check the changelog").await;
     let controls = controls_after(&harness, 1).await;
-    let Some(SessionControl::Send { text, uuid }) = controls.first() else {
+    let Some(SessionControl::Send { text, uuid, .. }) = controls.first() else {
         panic!("{controls:?}");
     };
     assert_eq!(text, "also check the changelog");

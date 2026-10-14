@@ -555,7 +555,7 @@ fn main_tool(name: &str, arguments: Value) -> Ask {
 const START_WORKFLOW: &str = "argonauts_start_workflow";
 
 /// `argonauts_start_workflow` in solo: refused when your message asked for no run, and
-/// otherwise a run starts for your message as you typed it, with its checks, so the run
+/// otherwise a run starts for your message as typed, with the instruction checks, so the run
 /// says what was followed. A word picked out of your message starts nothing, and the agent's
 /// own restatement only ever follows your words, marked as its own.
 #[tokio::test]
@@ -617,9 +617,9 @@ async fn in_solo_the_main_session_starts_a_run_only_when_you_asked_for_one() {
     }
     assert!(harness.conductor.starts().is_empty());
 
-    let asked = ask(
-        &spec,
-        main_tool(
+    let asking = spec.clone();
+    let asked = tokio::spawn(async move {
+        let tool = main_tool(
             START_WORKFLOW,
             json!({
                 "request": "Fix the rounding in invoice/money.py, where the sign comes late",
@@ -629,9 +629,14 @@ async fn in_solo_the_main_session_starts_a_run_only_when_you_asked_for_one() {
                     {"says": "merge without asking me", "kind": "merge"},
                 ],
             }),
-        ),
-    )
-    .await;
+        );
+        ask(&asking, tool).await
+    });
+    // The answer waits until the run is under way.
+    let run = super::main_session_tests::followed_run(&harness).await;
+    let started = super::main_session_tests::agent_started(&run, 1);
+    harness.conductor.push(&run, started).await;
+    let asked = asked.await.unwrap();
     assert!(
         asked
             .text
@@ -1310,8 +1315,8 @@ async fn a_question_waiting_on_you_is_no_stall() {
 }
 
 /// The solo preset sends what you type to the main session, but a command that names a run
-/// still starts it: `/workflow` starts a crew run and never becomes a direct turn
-/// (commands come first). `/goal` names no run: it sets a condition, and starts nothing.
+/// still starts it: `/workflow` starts a crew run and never becomes a direct turn, since
+/// commands come first. `/goal` names no run: it sets a condition, and starts nothing.
 #[tokio::test]
 async fn under_the_solo_preset_workflow_starts_its_run_and_goal_starts_nothing() {
     let harness = Harness::start_with(solo_preset("")).await;

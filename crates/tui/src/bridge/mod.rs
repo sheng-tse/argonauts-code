@@ -6,6 +6,7 @@
 pub mod agents;
 mod band;
 pub mod bottom_line;
+pub mod failure;
 pub mod input;
 pub mod keys;
 pub mod mods;
@@ -14,6 +15,7 @@ pub mod settings;
 pub mod status;
 pub mod tools;
 pub mod transcript;
+pub mod vendor_workflow;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -197,8 +199,8 @@ impl Bridge {
         let status_view = match event {
             AppEvent::View { data } if !self.state.replaying() && !stale_tab => {
                 match data.as_ref() {
-                    ViewData::Status { summary } if std::mem::take(&mut self.input.status_view) => {
-                        Some(summary)
+                    ViewData::StatusTab { view } if std::mem::take(&mut self.input.status_view) => {
+                        Some(view)
                     }
                     _ => None,
                 }
@@ -229,9 +231,9 @@ impl Bridge {
             self.input.answers_mid_answer_command(event, &mut cx);
             match status_view {
                 // Under its tab of the Overview, beside Usage and Context.
-                Some(summary) => cx.out.open(
+                Some(view) => cx.out.open(
                     OverviewView::new(Tab::Status, cx.model.bottom.band.watch.clone())
-                        .with_status(summary.clone()),
+                        .with_status_tab((**view).clone()),
                 ),
                 None if stale_tab => {}
                 None => self.transcript.on_event(event, &mut cx),
@@ -279,6 +281,8 @@ impl Bridge {
             out.quiet_for_replay();
         }
         self.apply_local(&out);
+        // Keys pressed until the next event meet the replay as it stands.
+        self.state.beside_replay = false;
         out
     }
 
@@ -349,6 +353,15 @@ mod view_answer_tests {
         }
     }
 
+    /// The Status tab's own read, which `/status` typed opens the tab with.
+    fn status_tab() -> AppEvent {
+        AppEvent::View {
+            data: Box::new(ViewData::StatusTab {
+                view: Box::default(),
+            }),
+        }
+    }
+
     fn submit(bridge: &mut Bridge, model: &mut ViewModel, text: &str) -> Effects {
         let action = UiAction::Submit {
             text: text.to_owned(),
@@ -371,7 +384,7 @@ mod view_answer_tests {
             }]
         );
         let printed = model.history.cells().len();
-        let out = bridge.on_event(&mut model, &status(), Instant::now());
+        let out = bridge.on_event(&mut model, &status_tab(), Instant::now());
         assert_eq!(out.views.len(), 1, "/status opens the status view");
         assert_eq!(model.history.cells().len(), printed);
 
@@ -457,7 +470,7 @@ mod view_answer_tests {
 
         answering(&mut bridge, &mut model, now);
         submit(&mut bridge, &mut model, "/status");
-        let out = bridge.on_event(&mut model, &status(), now);
+        let out = bridge.on_event(&mut model, &status_tab(), now);
         assert_eq!(out.views.len(), 1);
         assert!(out.views_as_panel, "it opens under the working line");
         bridge.on_event(&mut model, &doctor_report(), now);
@@ -720,13 +733,13 @@ mod view_answer_tests {
         let t0 = Instant::now();
         let watch = model.bottom.band.watch.clone();
         let every = Duration::from_secs(1);
-        watch.drawn_tab(ViewRequest::Status, every, t0);
-        assert_eq!(watch.due(t0 + every), Some(ViewRequest::Status));
+        watch.drawn_tab(ViewRequest::StatusTab, every, t0);
+        assert_eq!(watch.due(t0 + every), Some(ViewRequest::StatusTab));
         watch.drawn_tab(ViewRequest::Context, every, t0);
         assert_eq!(watch.due(t0 + every), Some(ViewRequest::Context));
 
         let printed = model.history.cells().len();
-        let out = bridge.on_event(&mut model, &status(), t0 + every);
+        let out = bridge.on_event(&mut model, &status_tab(), t0 + every);
         assert!(out.views.is_empty());
         assert_eq!(model.history.cells().len(), printed);
         let context = AppEvent::View {
@@ -738,10 +751,52 @@ mod view_answer_tests {
         assert!(out.views.is_empty(), "no Context tab opens by itself");
 
         submit(&mut bridge, &mut model, "/status");
-        let out = bridge.on_event(&mut model, &status(), t0 + every);
+        let out = bridge.on_event(&mut model, &status_tab(), t0 + every);
         assert_eq!(out.views.len(), 1);
         let out = bridge.on_event(&mut model, &context, t0 + every);
         assert_eq!(out.views.len(), 1, "an answer you asked for opens its tab");
+    }
+
+    /// Whatever a tab of the Overview is answered with, nothing of it reaches the chat, even
+    /// with nothing to show: no run, no readings.
+    #[test]
+    fn no_tab_of_the_panel_prints_into_the_chat() {
+        let mut bridge = Bridge::new(&UiOptions::default());
+        let mut model = ViewModel::default();
+        let now = Instant::now();
+        let printed = model.history.cells().len();
+        let usage = |period| AppEvent::View {
+            data: Box::new(ViewData::Usage {
+                summary: Box::new(argonauts_core::api::UsageSummary {
+                    period,
+                    ..Default::default()
+                }),
+            }),
+        };
+        let context = AppEvent::View {
+            data: Box::new(ViewData::Context {
+                view: argonauts_core::views::ContextView { rows: Vec::new() },
+            }),
+        };
+        let mut answers = vec![status_tab(), context];
+        answers.extend(
+            [
+                argonauts_core::api::UsagePeriod::Today,
+                argonauts_core::api::UsagePeriod::Week,
+                argonauts_core::api::UsagePeriod::All,
+            ]
+            .map(usage),
+        );
+        for answer in answers.iter().chain(&answers) {
+            bridge.on_event(&mut model, answer, now);
+        }
+        assert_eq!(model.history.cells().len(), printed);
+        // `/status` typed opens the tab with the same answer, and prints nothing either.
+        submit(&mut bridge, &mut model, "/status");
+        let typed = model.history.cells().len();
+        let out = bridge.on_event(&mut model, &status_tab(), now);
+        assert_eq!(out.views.len(), 1);
+        assert_eq!(model.history.cells().len(), typed);
     }
 
     /// A view opened while nothing runs, or by anything but a command typed mid-answer,
@@ -752,7 +807,11 @@ mod view_answer_tests {
         let mut model = ViewModel::default();
         let now = Instant::now();
         submit(&mut bridge, &mut model, "/status");
-        assert!(!bridge.on_event(&mut model, &status(), now).views_as_panel);
+        assert!(
+            !bridge
+                .on_event(&mut model, &status_tab(), now)
+                .views_as_panel
+        );
 
         answering(&mut bridge, &mut model, now);
         let library = AppEvent::View {

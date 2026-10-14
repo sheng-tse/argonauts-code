@@ -58,6 +58,7 @@ impl Reader {
             _ => said.commands.push(UiCommand::Submit {
                 workflow_requested: argonauts_core::keywords::asks_for_workflow(&text),
                 text,
+                pictures: Vec::new(),
             }),
         }
     }

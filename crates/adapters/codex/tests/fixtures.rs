@@ -533,12 +533,22 @@ fn codex_rate_limits_probe_parses() {
         &std::fs::read_to_string(dir.join("rate_limits_probe.meta.json")).unwrap(),
     )
     .unwrap();
-    // The recorded exchange is the one the adapter sends.
+    // The adapter sends the recorded exchange, and asks who is signed in since 0.160.0.
     let spec = CodexAdapter.quota_probe(Path::new("<live>"), None).unwrap();
     assert_eq!(meta["args"], json!(spec.args));
+    let now: Value = serde_json::from_str(
+        &std::fs::read_to_string(fixtures_dir().join("0.160.0/plan_usage.meta.json")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(
-        requests(meta["stdin"].as_str().unwrap()),
+        requests(now["stdin"].as_str().unwrap()),
         requests(spec.stdin.as_deref().unwrap())
+    );
+    let sent = requests(spec.stdin.as_deref().unwrap());
+    assert!(
+        requests(meta["stdin"].as_str().unwrap())
+            .iter()
+            .all(|request| sent.contains(request))
     );
     assert!(spec.keep_stdin_open);
 
@@ -565,7 +575,9 @@ fn codex_rate_limits_probe_parses() {
 
     // Primary and secondary are two readings, named by their length: 300 minutes is the
     // five-hour window (`5h` on screen) and 10080 the weekly one (`7d`). The plan comes along.
-    let answer = CodexAdapter.parse_quota_probe_answer(&answer).unwrap();
+    // 0.158.0 was not asked for the account, so the answer is what came before the end.
+    assert!(CodexAdapter.parse_quota_probe_answer(&answer).is_none());
+    let answer = CodexAdapter.parse_quota_probe_end(&answer).unwrap();
     let windows: Vec<_> = answer
         .windows
         .iter()

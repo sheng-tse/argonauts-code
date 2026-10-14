@@ -97,6 +97,18 @@ pub trait Adapter: Send + Sync {
         self.input_line(message)
     }
 
+    /// Like `message_line`, for a message that holds pictures. A CLI that can't take one on
+    /// its open input gets each picture's path in the text.
+    fn picture_line(
+        &self,
+        message: &str,
+        pictures: &[crate::pictures::Picture],
+        uuid: &str,
+    ) -> Option<String> {
+        let pictures: Vec<_> = pictures.iter().collect();
+        self.message_line(&crate::pictures::with_paths(message, &pictures), uuid)
+    }
+
     /// The line that hands what waits to the model now. `None` where the CLI can't.
     fn send_now_line(&self, uuid: &str) -> Option<String> {
         let _ = uuid;
@@ -133,6 +145,26 @@ pub trait Adapter: Send + Sync {
         None
     }
 
+    /// The answer from what the probe printed before it ended or ran out of time. By default
+    /// the same as [`Adapter::parse_quota_probe_answer`].
+    fn parse_quota_probe_end(&self, stdout: &str) -> Option<QuotaAnswer> {
+        self.parse_quota_probe_answer(stdout)
+    }
+
+    /// A first part of the answer worth showing while the rest is on its way, such as Claude
+    /// Code's windows before its slower scan. It must name the same account the whole answer
+    /// will, or the two read as a change of account. `None` by default.
+    fn parse_quota_probe_early(&self, stdout: &str) -> Option<QuotaAnswer> {
+        let _ = stdout;
+        None
+    }
+
+    /// The session's own stream says when quota changes, so its probe is only for when
+    /// nothing runs, and isn't repeated while a session does.
+    fn stream_reports_quota(&self) -> bool {
+        false
+    }
+
     /// Every window the probe's answer reports, one reading each, and the plan when it names
     /// one. By default, the one reading `parse_quota_probe` gives.
     fn parse_quota_probe_answer(&self, stdout: &str) -> Option<QuotaAnswer> {
@@ -140,6 +172,8 @@ pub trait Adapter: Send + Sync {
         Some(QuotaAnswer {
             windows: vec![reading],
             plan: None,
+            live: None,
+            failed: None,
         })
     }
 

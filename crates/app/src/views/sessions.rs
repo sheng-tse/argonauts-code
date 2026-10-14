@@ -316,8 +316,10 @@ impl RunFacts {
         }
     }
 
+    /// The session as it stands: its newest start. A session that goes again after a failure
+    /// starts once more under its key, and the row that stands for its step is that start.
     pub fn session(&self, key: &SessionKey) -> Option<&SessionFacts> {
-        self.sessions.iter().find(|facts| &facts.key == key)
+        self.sessions.iter().rev().find(|facts| &facts.key == key)
     }
 
     pub fn status(&self, facts: &SessionFacts) -> RowStatus {
@@ -374,6 +376,7 @@ impl RunFacts {
             }),
             standing_in_for: facts.standing_in_for.clone(),
             answered: None,
+            tries: Vec::new(),
         }
     }
 

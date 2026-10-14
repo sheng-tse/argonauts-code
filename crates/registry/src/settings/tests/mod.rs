@@ -1,6 +1,7 @@
 //! `resolve` end to end: a home folder and a repo on disk, as the app lays them out.
 
 mod checks;
+mod passing_over;
 mod presets;
 mod roles;
 mod ui;
@@ -9,6 +10,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use tempfile::TempDir;
+
+use argonauts_core::settings::Settings;
 
 use crate::{ResolvedSettings, SettingsError, SettingsSources};
 
@@ -67,13 +70,23 @@ impl Repo {
         path
     }
 
-    /// Neither project file trusted.
+    /// Neither project file trusted. A key that can't be used is an error, so each test sees
+    /// the message.
     fn sources(&self) -> SettingsSources {
         SettingsSources {
             global: Some(self.home().join("config.toml")),
             project: Some(self.dot().join("config.toml")),
             project_local: Some(self.dot().join("config.local.toml")),
+            strict: true,
             ..SettingsSources::default()
+        }
+    }
+
+    /// As the app reads the files when it starts.
+    fn forgiving(&self) -> SettingsSources {
+        SettingsSources {
+            strict: false,
+            ..self.trusted()
         }
     }
 

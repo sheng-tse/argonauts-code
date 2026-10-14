@@ -249,6 +249,10 @@ fn app_settings_commands_picker_and_argument() -> anyhow::Result<()> {
         // three limits take an amount; the fourth, what happens when one is reached, has
         // values to pick from and needs no amount typed.
         if command == "limits" {
+            // The keys start on the tabs, and ↓ takes them into the limits.
+            pty.wait_for("↓ into the cards", WAIT)?;
+            settled(&pty)?;
+            pty.press(Key::Down)?;
             pty.wait_for("enter change", WAIT)?;
             for _ in 0..3 {
                 settled(&pty)?;

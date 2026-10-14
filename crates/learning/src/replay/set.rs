@@ -269,10 +269,14 @@ impl ReplaySet {
             .fold(0.0, |total, record| total + record.usd))
     }
 
-    /// `limits.evolution_usd_per_month` less what replays spent this month.
-    pub fn budget_left(&self, settings: &Settings, now: OffsetDateTime) -> Result<f64> {
+    /// `limits.evolution_usd_per_month` less what replays spent this month; `None` when no
+    /// monthly limit is set.
+    pub fn budget_left(&self, settings: &Settings, now: OffsetDateTime) -> Result<Option<f64>> {
+        let Some(limit) = settings.limits.evolution_usd_per_month else {
+            return Ok(None);
+        };
         let spent = self.spent_in_month(now)?;
-        Ok((settings.limits.evolution_usd_per_month - spent).max(0.0))
+        Ok(Some((limit - spent).max(0.0)))
     }
 
     /// Where each replay's fresh repository goes.

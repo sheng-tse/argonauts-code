@@ -3,8 +3,9 @@
 
 use std::path::Path;
 
-use argonauts_core::limits::{QuotaReading, QuotaSource, QuotaStatus};
+use argonauts_core::limits::{QuotaAnswer, QuotaReading, QuotaSource, QuotaStatus};
 use argonauts_core::names::VendorId;
+use argonauts_core::plan_usage::{LiveUsage, LiveWindow, plan_name};
 use argonauts_core::{CommandSpec, env_remove_except};
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -72,6 +73,147 @@ pub fn parse_usage(vendor: &str, stdout: &str) -> Option<QuotaReading> {
         detail: Some(data.cloned().unwrap_or(payload)),
         wrap_up: false,
     })
+}
+
+/// The probe's whole answer: the reading that binds, every group's windows as agy's own
+/// `/usage` lists them, and the plan where the payload names one. agy doesn't say who is
+/// signed in, so the reading names no account, and only a fresh one is shown. A payload that
+/// isn't a success answers with agy's own error.
+pub fn usage_answer(vendor: &str, stdout: &str) -> Option<QuotaAnswer> {
+    let payload = last_json_object(stdout)?;
+    let status = payload.get("status").and_then(Value::as_str);
+    if status.is_some_and(|status| status != "SUCCESS") {
+        let error = payload.get("error").and_then(Value::as_str).map(str::trim);
+        let error = error.filter(|error| !error.is_empty());
+        return Some(QuotaAnswer::failed(
+            error.unwrap_or("it answered with an error"),
+        ));
+    }
+    let binding = parse_usage(vendor, stdout)?;
+    let data = payload.pointer("/command/data");
+    let groups = data
+        .map(groups_from_data)
+        .filter(|groups| !groups.is_empty())
+        .or_else(|| {
+            payload
+                .get("response")
+                .and_then(Value::as_str)
+                .map(groups_from_text)
+        })
+        .unwrap_or_default();
+    let mut live = LiveUsage::new(
+        VendorId(vendor.to_owned()),
+        QuotaSource::UsageProbe,
+        binding.observed_at,
+    );
+    live.plan = data
+        .and_then(|data| text_field(data, "plan").or_else(|| text_field(data, "tier")))
+        .and_then(|plan| plan_name(&plan));
+    live.windows = live_windows(&groups);
+    let mut windows = live.quota_readings();
+    if windows.is_empty() {
+        windows.push(binding.clone());
+    }
+    // The binding window keeps the payload, for the raw view.
+    if let Some(found) = windows
+        .iter_mut()
+        .find(|reading| reading.used == binding.used && reading.resets_at == binding.resets_at)
+    {
+        found.detail = binding.detail.clone();
+    }
+    Some(QuotaAnswer {
+        windows,
+        plan: live.plan.clone(),
+        live: Some(live),
+        failed: None,
+    })
+}
+
+/// The default model family's group gets a row per window. Every other group gets one row on
+/// the card, its tightest window, with the window's length said beside the reset; its other
+/// windows show on the CLI's own page only.
+fn live_windows(groups: &[Group]) -> Vec<LiveWindow> {
+    let mut rows = Vec::new();
+    let is_default = |group: &Group| group.name.to_ascii_lowercase().contains("gemini");
+    let has_default = groups.iter().any(is_default);
+    for group in groups {
+        let short = short_group(&group.name);
+        let window_row = |bucket: &Bucket| {
+            let window = bucket.window.clone().unwrap_or_else(|| "limit".to_owned());
+            let (suffix, length) = window_words(&window);
+            (window, suffix, length)
+        };
+        let row = |bucket: &Bucket, label: String, note: Option<String>| {
+            let (window, _, length) = window_row(bucket);
+            // The default family's windows keep their plain names, which the bottom line
+            // shortens to `5h` and `7d`; another group's name tells its windows apart.
+            let key = if is_default(group) {
+                window
+            } else {
+                format!("{}:{window}", group.name.to_ascii_lowercase())
+            };
+            let mut row = LiveWindow::new(key, label, format!("{} · {length} limit", group.name))
+                .used(Some(1.0 - bucket.remaining.clamp(0.0, 1.0)))
+                .resets_at(bucket.resets_at);
+            if let Some(note) = note {
+                row = row.note(note);
+            }
+            row
+        };
+        if is_default(group) || !has_default {
+            let mut buckets: Vec<&Bucket> = group.buckets.iter().collect();
+            buckets.sort_by_key(|bucket| window_rank(bucket.window.as_deref()));
+            for bucket in buckets {
+                let (_, suffix, _) = window_row(bucket);
+                rows.push(row(bucket, format!("{short} {suffix}"), None));
+            }
+        } else if let Some(tightest) = group.buckets.iter().min_by(|a, b| {
+            a.remaining
+                .total_cmp(&b.remaining)
+                .then(a.resets_at.cmp(&b.resets_at))
+        }) {
+            let mut buckets: Vec<&Bucket> = group.buckets.iter().collect();
+            buckets.sort_by_key(|bucket| window_rank(bucket.window.as_deref()));
+            for bucket in buckets {
+                let (_, suffix, length) = window_row(bucket);
+                rows.push(if std::ptr::eq(bucket, tightest) {
+                    row(bucket, short.clone(), Some(length))
+                } else {
+                    row(bucket, format!("{short} {suffix}"), None).page_only()
+                });
+            }
+        }
+    }
+    rows
+}
+
+/// `Claude and GPT models` as `Claude, GPT`.
+fn short_group(name: &str) -> String {
+    let trimmed = name.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let cut = lower
+        .strip_suffix(" models")
+        .map_or(trimmed, |_| &trimmed[..trimmed.len() - 7]);
+    cut.replace(" and ", ", ")
+}
+
+/// The suffix of a row's label and the window's length in words.
+fn window_words(window: &str) -> (String, String) {
+    match window {
+        "five_hour" => ("5h".to_owned(), "5-hour".to_owned()),
+        "weekly" => ("week".to_owned(), "weekly".to_owned()),
+        "daily" => ("day".to_owned(), "daily".to_owned()),
+        other => (other.to_owned(), other.to_owned()),
+    }
+}
+
+fn window_rank(window: Option<&str>) -> u8 {
+    match window {
+        Some("five_hour") => 0,
+        Some("daily") => 1,
+        Some("weekly") => 2,
+        _ => 3,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -340,6 +482,74 @@ mod tests {
         let stdout = format!("Update available\n{body}\n");
         let reading = parse_usage("antigravity-cli", &stdout).unwrap();
         assert_eq!(reading.status, QuotaStatus::Warning);
+    }
+
+    #[test]
+    fn the_recorded_usage_reads_as_a_row_per_window_and_one_card_row_per_other_group() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/1.2.13/usage_probe.stdout.jsonl");
+        let stdout = std::fs::read_to_string(path).unwrap();
+        let answer = usage_answer("antigravity-cli", &stdout).unwrap();
+        let live = answer.live.unwrap();
+        assert_eq!(live.account, None);
+        let rows: Vec<(&str, Option<&str>, bool)> = live
+            .windows
+            .iter()
+            .map(|w| (w.label.as_str(), w.note.as_deref(), w.page_only))
+            .collect();
+        // The other group's tightest window is its card row; the rest show on the page.
+        assert_eq!(
+            rows,
+            [
+                ("Gemini 5h", None, false),
+                ("Gemini week", None, false),
+                ("Claude, GPT", Some("5-hour"), false),
+                ("Claude, GPT week", None, true),
+            ]
+        );
+        assert_eq!(
+            live.windows[0].resets_at,
+            Some(datetime!(2026-09-30 09:09:04 UTC))
+        );
+        assert!((live.windows[1].used.unwrap() - 0.001_004).abs() < 1e-5);
+        assert_eq!(
+            live.windows[2].title,
+            "Claude and GPT models · 5-hour limit"
+        );
+        assert_eq!(answer.windows.len(), 4);
+        // Gemini's windows keep the names the bottom line shortens; the other group's say whose.
+        let keys: Vec<&str> = live.windows.iter().map(|w| w.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "five_hour",
+                "weekly",
+                "claude and gpt models:five_hour",
+                "claude and gpt models:weekly"
+            ]
+        );
+        assert_eq!(
+            answer.windows.iter().filter(|r| r.detail.is_some()).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn group_names_shorten_as_the_card_shows_them() {
+        assert_eq!(short_group("Gemini Models"), "Gemini");
+        assert_eq!(short_group("Claude and GPT models"), "Claude, GPT");
+        assert_eq!(short_group("Team pool"), "Team pool");
+    }
+
+    #[test]
+    fn an_error_payload_answers_with_agys_words() {
+        let stdout = r#"{"status":"ERROR","error":"authentication required"}"#;
+        let answer = usage_answer("antigravity-cli", stdout).unwrap();
+        assert_eq!(answer.failed.as_deref(), Some("authentication required"));
+        assert!(answer.live.is_none() && answer.windows.is_empty());
+        let bare = usage_answer("antigravity-cli", r#"{"status":"ERROR"}"#).unwrap();
+        assert_eq!(bare.failed.as_deref(), Some("it answered with an error"));
+        assert!(usage_answer("antigravity-cli", "not json").is_none());
     }
 
     #[test]

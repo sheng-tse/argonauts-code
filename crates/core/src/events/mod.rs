@@ -4,6 +4,7 @@
 pub mod card;
 pub mod checkpoint;
 pub mod context;
+pub mod failure;
 pub mod goal;
 pub mod plan;
 pub mod run;

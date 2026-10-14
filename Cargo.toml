@@ -51,6 +51,7 @@ argonauts-testkit = { path = "crates/testkit", version = "0.0.1" }
 argonauts-runner = { path = "crates/runner", version = "0.0.1" }
 
 anyhow = "1.0.104"
+base64 = "0.22.1"
 clap = { version = "4.6.7", features = ["derive"] }
 crossterm = "0.29.0"
 dirs = "7.0.0"
@@ -101,6 +102,11 @@ unicode-width = "0.2.2"
 uuid = { version = "1.26.1", features = ["v4", "v7", "serde"] }
 vt100 = "0.16.2"
 which = "8.0.6"
+
+# Link-time optimisation stays at its default: thin made the binary no smaller, and fat cut
+# it by 18% but took a clean build from 2 minutes to 9.
+[profile.release]
+strip = true
 
 # Tests spend most of their time in these when they're built without optimization: syntax
 # highlighting and its packed syntax sets, regex engines, JSON schema checks, snapshot diffs,

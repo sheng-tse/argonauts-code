@@ -4,7 +4,7 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::{PhaseLine, Todo, TodoState, ToolCall, ToolItem, ToolState, ToolTitle};
+use super::{PhaseLine, StepMark, Todo, TodoState, ToolCall, ToolItem, ToolState, ToolTitle};
 use crate::cell::Tone;
 use crate::cell::layout::{BODY_COL, NEST, hook, indent, more_row};
 use crate::markdown::{Indent, render_markdown};
@@ -87,6 +87,7 @@ pub(in crate::cell) fn item_rows(
         ToolItem::Group(group) => group.render(ctx, col as u16),
         ToolItem::Todos(todos) => todo_rows(todos, ctx, col),
         ToolItem::TodoLine(todos) => vec![checklist_row(todos, ctx, col)],
+        ToolItem::Steps(steps) => steps_rows(steps, ctx, col),
         ToolItem::Streaming(text) => streaming_rows(text, ctx, col),
         ToolItem::Running { since, background } => running_rows(*since, *background, ctx, col),
     }
@@ -310,6 +311,31 @@ fn todo_rows(todos: &[Todo], ctx: &RenderCtx<'_>, col: usize) -> Vec<Line<'stati
 
 /// `☒ wire middleware  ☐ tests`. When the row is too narrow, finished items give way first so
 /// the one in progress stays in view.
+/// A step not started reads dim, mark and name; the others name themselves in the text color.
+fn steps_rows(steps: &[StepMark], ctx: &RenderCtx<'_>, col: usize) -> Vec<Line<'static>> {
+    let theme = ctx.theme;
+    let dim = theme.style(Role::Dim);
+    let mut spans = Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", dim));
+        }
+        let waiting = step.state == crate::widgets::State::Waiting;
+        let (glyph, role) = crate::views::states::mark(step.state, theme);
+        let (glyph_style, label_style) = if waiting {
+            (dim, dim)
+        } else {
+            (theme.style(role), theme.style(Role::Text))
+        };
+        spans.push(Span::styled(glyph, glyph_style));
+        spans.push(Span::raw(" "));
+        let label = sanitize_line(&step.label).trim().to_owned();
+        spans.push(Span::styled(label, label_style));
+    }
+    let lead = [indent(col)];
+    wrap_spans(&spans, usize::from(ctx.width), &lead, &lead)
+}
+
 fn checklist_row(todos: &[Todo], ctx: &RenderCtx<'_>, col: usize) -> Line<'static> {
     let theme = ctx.theme;
     let text = theme.style(Role::Text);

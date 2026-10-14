@@ -546,8 +546,8 @@ fn hints(footer: &Footer) -> Vec<String> {
     }
 }
 
-/// Enter on any agent opens its transcript, finished or running, even once its run merged,
-/// and only a working agent offers `x stop`.
+/// Enter on any agent opens its transcript, finished or running, even once its run merged
+///, and only a working agent offers `x stop`.
 #[test]
 fn enter_opens_any_agents_transcript_finished_or_running() {
     let mut state = crate::mentions::fixture::working_state();

@@ -919,7 +919,9 @@ async fn policy_stricter_of_run_start_and_reloaded_settings() {
         reload,
         ..Fakes::default()
     };
-    let supervised = merge_settings(ApprovalMode::Supervised, DecideWith::Rules, Otherwise::Ask);
+    let mut supervised =
+        merge_settings(ApprovalMode::Supervised, DecideWith::Rules, Otherwise::Ask);
+    supervised.limits.auto_merges_per_day = Some(3);
     let h = harness_with(supervised, fakes);
     let mut looser = auto_merge();
     looser
@@ -927,7 +929,7 @@ async fn policy_stricter_of_run_start_and_reloaded_settings() {
         .rules
         .merge
         .min_test_coverage_of_changed_lines = 0.1;
-    looser.limits.auto_merges_per_day = 50;
+    looser.limits.auto_merges_per_day = Some(50);
     *file.lock().unwrap() = Some(looser);
     let now = h.policy.parts().source.current();
     assert_eq!(now.approvals.merge.mode, ApprovalMode::Supervised);
@@ -935,7 +937,7 @@ async fn policy_stricter_of_run_start_and_reloaded_settings() {
         now.approvals.rules.merge.min_test_coverage_of_changed_lines,
         0.8
     );
-    assert_eq!(now.limits.auto_merges_per_day, 3);
+    assert_eq!(now.limits.auto_merges_per_day, Some(3));
     let outcome = h
         .policy
         .evaluate(&merge_point, &merge(Verdict::Approve))
@@ -1460,7 +1462,7 @@ fn stricter_takes_the_tighter_side_of_every_key() {
     b.limits.dependency_allowlist = vec!["serde".to_owned()];
     a.limits.spend_per_day = None;
     b.limits.spend_per_day = Some(10.0);
-    b.limits.auto_merges_per_day = 1;
+    b.limits.auto_merges_per_day = Some(1);
     a.limits.irreversible_allowlist = vec!["publish".to_owned()];
     a.sandbox.mode = SandboxChoice::Tool;
     b.sandbox.mode = SandboxChoice::Os;
@@ -1509,7 +1511,7 @@ fn stricter_takes_the_tighter_side_of_every_key() {
     assert!(s.limits.protected_paths.contains(&".github/**".to_owned()));
     assert_eq!(s.limits.dependency_allowlist, ["serde"]);
     assert_eq!(s.limits.spend_per_day, Some(10.0));
-    assert_eq!(s.limits.auto_merges_per_day, 1);
+    assert_eq!(s.limits.auto_merges_per_day, Some(1));
     assert!(s.limits.irreversible_allowlist.is_empty());
     assert_eq!(s.sandbox.mode, SandboxChoice::Os);
     assert!(!s.sandbox.network);

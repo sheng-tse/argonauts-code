@@ -571,6 +571,11 @@ fn say_handover(
         Why::Unusable(words) => {
             format!("{from_name} is out ({words}), so {taker_name} takes its roles meanwhile.")
         }
+        // The failure's own line said what went wrong.
+        Why::Ended(reason) if repeats(reason) => format!(
+            "{taker_name} takes over as {} · no second try, this error repeats every time",
+            seat_in_words(seat),
+        ),
         Why::Ended(reason) => format!(
             "{from_name}'s session as {} ended early ({}), so {taker_name} takes it over.",
             seat_in_words(seat),
@@ -584,6 +589,15 @@ fn say_handover(
         ),
     };
     note(host, seat.card.as_ref(), text)
+}
+
+/// An error the agent's service gave that comes back the same on a retry, such as an answer
+/// format it refuses, so its seat goes to the next agent at once.
+fn repeats(reason: &EndReason) -> bool {
+    matches!(
+        reason,
+        EndReason::VendorError { .. } | EndReason::Auth { .. } | EndReason::StartFailed { .. }
+    ) && !reason.may_pass()
 }
 
 /// The stall when nobody may take `seat`: who stopped and why, whose CLI says it's logged out,
@@ -736,7 +750,10 @@ pub(crate) fn in_words(reason: &EndReason) -> String {
         EndReason::RateLimited => "rate limited".to_owned(),
         EndReason::UsageLimit { .. } => "its usage limit".to_owned(),
         EndReason::Billing { .. } => "out of credits".to_owned(),
-        EndReason::ModelUnavailable { model } => format!("{model} isn't available"),
+        EndReason::ModelUnavailable { model } => format!(
+            "{} isn't available",
+            argonauts_core::model_catalog::display_name_from_id(model)
+        ),
         EndReason::VendorError { category, .. } if *category == ErrorCategory::Auth => {
             "a sign-in error".to_owned()
         }

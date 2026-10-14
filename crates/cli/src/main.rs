@@ -14,7 +14,7 @@ mod usage;
 use std::io::Write as _;
 use std::process::ExitCode;
 
-use argonauts_app::{FirstView, InteractiveOptions};
+use argonauts_app::{FirstView, InteractiveOptions, TelemetryAction};
 use argonauts_core::RunId;
 use argonauts_core::agent_sessions::AgentSessionRef;
 use argonauts_core::names::ChatId;
@@ -22,7 +22,7 @@ use argonauts_core::sanitize::sanitize_for_terminal;
 use argonauts_core::vendor_sessions::VendorSessionRef;
 use clap::FromArgMatches as _;
 
-use crate::args::{AutoCommand, Cli, Command, McpCommand};
+use crate::args::{AutoCommand, Cli, Command, McpCommand, TelemetryCommand};
 use crate::usage::usage;
 
 /// Turns on logging to stderr; the value is a tracing filter.
@@ -84,6 +84,7 @@ async fn dispatch(cli: Cli) -> ExitCode {
         Some(Command::Doctor(ref args)) => doctor::run(args, &cli.set).await,
         Some(Command::Update) => update::run(&cli.set).await,
         Some(Command::Config(ref command)) => config::run(command, &cli.set),
+        Some(Command::Telemetry(command)) => telemetry(command, &cli.set).await,
         Some(Command::Models { discover }) => config::models(discover).await,
         Some(Command::Approve {
             ref run,
@@ -157,6 +158,18 @@ async fn dispatch(cli: Cli) -> ExitCode {
             ExitCode::FAILURE
         }
     })
+}
+
+/// `argonauts telemetry show|on|off`.
+async fn telemetry(command: TelemetryCommand, set: &[String]) -> anyhow::Result<ExitCode> {
+    let action = match command {
+        TelemetryCommand::Show => TelemetryAction::Show,
+        TelemetryCommand::On => TelemetryAction::On,
+        TelemetryCommand::Off => TelemetryAction::Off,
+    };
+    let said = argonauts_app::telemetry(action, set.to_vec()).await?;
+    println!("{}", sanitize_for_terminal(&said));
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `argonauts resume`: a conversation, a run, a run's agent's session, or the main agent CLI's

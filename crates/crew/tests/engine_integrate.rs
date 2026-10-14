@@ -187,11 +187,12 @@ async fn conflict_goes_to_interface_owner() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A conflict resolver whose session ends on a 401 goes again on its own session, and after a
-/// second 401 the conflict goes on to another agent instead of failing the card's merge, in full
+/// A conflict resolver whose service is overloaded goes again on its own session, and after a
+/// second overload the conflict goes on to another agent instead of failing the card's merge, in full
 /// auto.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_401_on_the_conflict_resolver_goes_again_then_to_another_agent() -> anyhow::Result<()> {
+async fn an_overload_on_the_conflict_resolver_goes_again_then_to_another_agent()
+-> anyhow::Result<()> {
     for failures in [1, 2] {
         let crew = Crew::new()?;
         let tries = Arc::new(AtomicUsize::new(0));
@@ -204,9 +205,9 @@ async fn a_401_on_the_conflict_resolver_goes_again_then_to_another_agent() -> an
                             return work(spec, &[("src/api.rs", "pub trait Api {}\n")]);
                         }
                         if tries.fetch_add(1, Ordering::SeqCst) < failures {
-                            return FakeSession::ended(EndReason::Auth {
-                                message: "workspace routing discovery unauthorized (401)"
-                                    .to_owned(),
+                            return FakeSession::ended(EndReason::VendorError {
+                                category: argonauts_core::ErrorCategory::Overloaded,
+                                message: "Overloaded (529)".to_owned(),
                             });
                         }
                         work(spec, &[("shared.txt", "both sides\n")])
@@ -237,7 +238,7 @@ async fn a_401_on_the_conflict_resolver_goes_again_then_to_another_agent() -> an
         assert_eq!(
             done.summary.as_deref(),
             Some("3 tasks merged into the run"),
-            "after {failures} 401s"
+            "after {failures} overloads"
         );
         let resolving = |fake: &FakeWorker| {
             fake.specs()
@@ -245,13 +246,13 @@ async fn a_401_on_the_conflict_resolver_goes_again_then_to_another_agent() -> an
                 .filter(|spec| spec.step == Some(StepName::ResolveConflict))
                 .count()
         };
-        assert_eq!(resolving(&interface), 2, "after {failures} 401s");
+        assert_eq!(resolving(&interface), 2, "after {failures} overloads");
         let elsewhere: usize = [OWNER_B, OWNER_C, REVIEWER]
             .into_iter()
             .filter_map(|name| crew.services.workers.fake(name))
             .map(|fake| resolving(&fake))
             .sum();
-        assert_eq!(elsewhere, failures - 1, "after {failures} 401s");
+        assert_eq!(elsewhere, failures - 1, "after {failures} overloads");
     }
     Ok(())
 }

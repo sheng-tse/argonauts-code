@@ -31,7 +31,9 @@ impl BackgroundTracker {
                 self.running.extend(listed);
                 self.running.len() != before
             }
-            "task_started" if bool_at(line, "is_backgrounded") => self.insert(line),
+            "task_started" if bool_at(line, "is_backgrounded") || is_workflow(line) => {
+                self.insert(line)
+            }
             "task_updated"
                 if line
                     .get("patch")
@@ -59,6 +61,14 @@ impl BackgroundTracker {
         }
     }
 }
+
+/// A workflow always runs in the background ("Workflow launched in background"), and its
+/// `task_started` carries no `is_backgrounded` (2.1.295).
+fn is_workflow(line: &Value) -> bool {
+    str_at(line, "task_type") == Some(WORKFLOW_TASK)
+}
+
+const WORKFLOW_TASK: &str = "local_workflow";
 
 #[cfg(test)]
 mod tests {
@@ -107,6 +117,27 @@ mod tests {
         assert_eq!(
             running(tracker.observe("task_started", &agent)),
             (vec!["a1".to_owned()], false)
+        );
+    }
+
+    /// Until a workflow reports, the session's input stays open for the turn its report
+    /// starts, so the answer that counts is the one given after it.
+    #[test]
+    fn a_workflow_stays_listed_until_it_reports() {
+        let mut tracker = BackgroundTracker::default();
+        let started = json!({
+            "task_id": "w1",
+            "task_type": "local_workflow",
+            "workflow_name": "add-due-dates",
+        });
+        assert_eq!(
+            running(tracker.observe("task_started", &started)),
+            (vec!["w1".to_owned()], false)
+        );
+        let notified = json!({"task_id": "w1", "status": "completed"});
+        assert_eq!(
+            running(tracker.observe("task_notification", &notified)),
+            (Vec::new(), true)
         );
     }
 }

@@ -32,6 +32,8 @@ pub struct ViewModel {
     pub agent_colors: AgentColors,
     /// Each mod's own chord, from the mods the controller last sent.
     pub mod_chords: crate::mods::keys::Chords,
+    /// The text behind the newest failure in the chat, for `r` until something is typed.
+    pub raw_failure: Option<crate::bridge::failure::RawFailure>,
 }
 
 impl ViewModel {

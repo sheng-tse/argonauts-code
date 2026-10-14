@@ -45,7 +45,8 @@ fn agents_work_on_their_own_by_default_and_ask_when_a_rule_fails() {
         rule(&approvals.merge),
         (ApprovalMode::Auto, DecideWith::Rules, Otherwise::Ask)
     );
-    assert_eq!(settings.limits.auto_merges_per_day, 3);
+    // Nothing caps automatic merges until you set a cap.
+    assert_eq!(settings.limits.auto_merges_per_day, None);
     // Promoting a recipe change is automatic too: its replays pass first, and a canary watches it.
     assert_eq!(
         rule(&approvals.workflow_promotion.as_checkpoint()),

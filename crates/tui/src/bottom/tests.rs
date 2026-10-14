@@ -486,8 +486,8 @@ fn a_panel_of_agents_alone_asks_before_a_stop_too() {
     assert!(matches!(state.panel_key(x), PanelEvent::Stop { .. }));
 }
 
-/// The workflow word's notice sits right above the rule,
-/// at its right end, while the draft holds the word, and the cursor stays on the input row.
+/// The workflow word's notice sits right above the rule, at its right end, while the draft
+/// holds the word, and the cursor stays on the input row.
 #[test]
 fn the_workflow_word_says_so_above_the_rule_until_it_is_ignored() {
     let t0 = Instant::now();

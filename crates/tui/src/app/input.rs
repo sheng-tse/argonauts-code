@@ -184,10 +184,33 @@ impl<W: Write> Ui<W> {
             || self.vim_key(key, actions)
             || self.shell_key(key)
             || self.global_key(key, now, actions)
+            || self.raw_failure_key(&key)
         {
             return;
         }
         self.composer_key(key, now, actions);
+    }
+
+    /// `r` in an empty input opens the text behind the newest failure, once, as the failure's
+    /// hint says. After that, or after any other key for the input, `r` is a letter again until
+    /// the next failure. Typing in vim's INSERT is always letters.
+    fn raw_failure_key(&mut self, key: &KeyEvent) -> bool {
+        let raw = self.model.raw_failure.take();
+        let bottom = &self.model.bottom;
+        let opens = key.code == KeyCode::Char('r')
+            && key.modifiers.is_empty()
+            && bottom.composer_has_focus()
+            && bottom.composer.is_empty()
+            && !bottom.composer.is_shell()
+            && !bottom.composer.holds_paste()
+            && bottom.composer.vim_mode() != Some(crate::bottom::VimMode::Insert);
+        match raw {
+            Some(raw) if opens => {
+                self.open_view(raw.title.clone(), raw.cells());
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Two keys in a row, such as Ctrl+X Ctrl+S. After the first, the next key within
@@ -442,6 +465,7 @@ impl<W: Write> Ui<W> {
         } else {
             bottom.composer.end_paste_burst()
         };
+        let changed = bottom.composer.take_arrived_pictures() || changed;
         if changed {
             bottom.menus.text_changed();
             self.dirty = true;

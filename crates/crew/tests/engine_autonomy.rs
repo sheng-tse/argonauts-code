@@ -394,7 +394,7 @@ async fn with_no_agent_of_another_provider_the_goal_asks_with_a_warning() -> any
 #[tokio::test]
 async fn a_merge_past_the_daily_cap_asks() -> anyhow::Result<()> {
     let mut crew = crew()?;
-    crew.settings.limits.auto_merges_per_day = 0;
+    crew.settings.limits.auto_merges_per_day = Some(0);
     let outcome = run(&crew).await?;
     assert!(
         matches!(outcome.exit, EngineExit::Parked(_)),
@@ -412,7 +412,7 @@ async fn a_merge_past_the_daily_cap_asks() -> anyhow::Result<()> {
 #[tokio::test]
 async fn in_autopilot_a_hard_limit_does_what_you_set() -> anyhow::Result<()> {
     let mut crew = crew()?;
-    crew.settings.limits.auto_merges_per_day = 0;
+    crew.settings.limits.auto_merges_per_day = Some(0);
     crew.settings.approvals.autopilot = true;
     crew.settings.approvals.merge.at_hard_limit = AtHardLimit::OpenPullRequest;
     let outcome = run(&crew).await?;
@@ -456,7 +456,7 @@ async fn in_autopilot_a_hard_limit_does_what_you_set() -> anyhow::Result<()> {
 async fn in_autopilot_a_cap_another_round_cant_change_stops_instead_of_sending_back()
 -> anyhow::Result<()> {
     let mut crew = crew()?;
-    crew.settings.limits.auto_merges_per_day = 0;
+    crew.settings.limits.auto_merges_per_day = Some(0);
     crew.settings.approvals.autopilot = true;
     crew.settings.approvals.merge.at_hard_limit = AtHardLimit::SendBack;
     let outcome = tokio::time::timeout(std::time::Duration::from_secs(60), run(&crew))
@@ -1615,8 +1615,8 @@ fn started_from(events: &[RunEvent]) -> Vec<Option<WorkflowRef>> {
         .collect()
 }
 
-/// The sample run's case: All hands on council, and the lead would run the task
-/// as maker-checker. It may only size the preset, so the run stays council and says why.
+/// All hands on council, and the lead would run the task as maker-checker. It may only size
+/// the preset, so the run stays council and says why.
 #[tokio::test]
 async fn the_lead_never_swaps_the_preset_for_another_workflow() -> anyhow::Result<()> {
     let crew = designing_crew(support::brief(
@@ -1818,7 +1818,7 @@ fn merged(exit: &EngineExit) -> bool {
     )
 }
 
-/// A setup with All hands: a Claude Code, a Codex, and an agy agent
+/// All hands with a Claude Code, a Codex, and an agy agent
 /// leaves no approver of a company outside the crew. Full auto has a model of another company
 /// than the lead's check the goal, the lead's answers in it, and the run lands.
 #[tokio::test]

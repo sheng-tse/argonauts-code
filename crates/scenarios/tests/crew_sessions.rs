@@ -178,8 +178,8 @@ fn crew_steer_delivered_after_tool() -> anyhow::Result<()> {
     // The call shows as `Bash(npm test)`, or folded into a group naming `$ npm test`.
     pty.wait_for(r"Bash\(npm test\)|\$ npm test", WAIT)?;
 
-    // A solo run is one agent, so its panel row opens the owner's session directly,
-    // where `m` messages it.
+    // A solo run is one agent, so its panel row opens the owner's session directly, where
+    // `m` messages it.
     pty.press(Key::Down)?;
     pty.press(Key::Enter)?;
     pty.wait_for(r"m message it", WAIT)?;

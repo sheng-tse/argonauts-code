@@ -77,6 +77,7 @@ fn crew(delay: Duration) -> anyhow::Result<(Crew, Arc<FakeWorker>, Arc<FakeWorke
         workers: vec![MAIN.parse()?],
         reviewers: vec![REVIEWER.parse()?],
         judge: Vec::new(),
+        worker_workflows: false,
     };
     crew.settings.workflow = "orchestrator".to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;

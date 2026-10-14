@@ -63,6 +63,14 @@ pub(crate) struct ChatStore {
 }
 
 impl ChatStore {
+    /// When the journal was first written, which is when the conversation started. `None`
+    /// before its first words.
+    pub(crate) fn started(&self) -> Option<time::OffsetDateTime> {
+        let meta = std::fs::metadata(&self.journal).ok()?;
+        let at = meta.created().or_else(|_| meta.modified()).ok()?;
+        Some(time::OffsetDateTime::from(at))
+    }
+
     pub(crate) fn open(chat_dir: &Path, chat: &ChatId) -> Self {
         Self {
             dir: chat_dir.to_owned(),

@@ -134,6 +134,7 @@ pub(crate) async fn run(host: &Host, call: SessionCall<'_>) -> EngineResult<Ende
         resume,
         slot: 0,
         label: None,
+        reviews: false,
     };
     plan.slot = slot.unwrap_or_else(|| host.slot_for(&plan));
     // A vendor error has the owner go again once on its own session; when it fails again, the

@@ -5,11 +5,12 @@ use std::time::Duration;
 use argonauts_core::events::RunEvent;
 use argonauts_core::events::run::{ClosingAnswer, ParkReason, ResumeCause, RunOutcome, RunResumed};
 use argonauts_core::settings::ui::VerbTheme;
-use argonauts_core::{CardId, RunId, Verbosity};
+use argonauts_core::{CardId, RunId, Spend, Verbosity};
 use time::OffsetDateTime;
 
 use crate::bottom::WorkflowRowState;
 use crate::bottom::verbs::VerbStyle;
+use crate::bridge::failure;
 use crate::cell::{AssistantMessage, Notice, Tone, ToolState, TurnEnd};
 use crate::format::{self, WallClock};
 use crate::state::RunState;
@@ -204,36 +205,49 @@ pub(super) fn run_end(
         ),
         RunOutcome::Failed => (Tone::Error, None, "The run failed".to_owned(), "ended"),
     };
-    let mut notice = Notice::new(tone, title);
-    if let Some(glyph) = glyph {
-        notice = notice.with_glyph(glyph);
-    }
-    if let Some(detail) = detail.map(str::trim).filter(|detail| !detail.is_empty()) {
-        notice = notice.with_detail(detail);
-    }
-    if outcome == RunOutcome::PullRequest
-        && let Some(pr) = &story.pull_request
-    {
-        if let Some(url) = &pr.url {
-            notice = notice.with_detail(url.clone());
-        } else if let Some(command) = &pr.command {
-            notice = notice.with_detail(format!("Open it with: {}", shell_words::join(command)));
+    if outcome == RunOutcome::Failed {
+        let tasks = state.map(|run| run.cards_done());
+        failed_run(
+            story,
+            detail,
+            elapsed,
+            tasks,
+            state.map(|run| run.spend()),
+            cx,
+        );
+    } else {
+        let mut notice = Notice::new(tone, title);
+        if let Some(glyph) = glyph {
+            notice = notice.with_glyph(glyph);
         }
-    }
-    let mut finished = format!("Run {verb}");
-    if let Some(elapsed) = elapsed {
-        finished.push_str(&format!(" · {}", format::duration(elapsed)));
-    }
-    if let Some(run) = state {
-        finished.push_str(&format!(" · {}", format::spend(&run.spend())));
-    }
-    if story.retro {
-        finished.push_str(" · run review saved");
-    }
-    emit(cx, notice.with_detail(finished));
-    if let Some(answer) = &story.closing {
-        let markdown = closing_markdown(answer, cx.verbosity());
-        emit(cx, AssistantMessage::new(markdown));
+        if let Some(detail) = detail.map(str::trim).filter(|detail| !detail.is_empty()) {
+            notice = notice.with_detail(detail);
+        }
+        if outcome == RunOutcome::PullRequest
+            && let Some(pr) = &story.pull_request
+        {
+            if let Some(url) = &pr.url {
+                notice = notice.with_detail(url.clone());
+            } else if let Some(command) = &pr.command {
+                notice =
+                    notice.with_detail(format!("Open it with: {}", shell_words::join(command)));
+            }
+        }
+        let mut finished = format!("Run {verb}");
+        if let Some(elapsed) = elapsed {
+            finished.push_str(&format!(" · {}", format::duration(elapsed)));
+        }
+        if let Some(run) = state {
+            finished.push_str(&format!(" · {}", format::spend(&run.spend())));
+        }
+        if story.retro {
+            finished.push_str(" · run review saved");
+        }
+        emit(cx, notice.with_detail(finished));
+        if let Some(answer) = &story.closing {
+            let markdown = closing_markdown(answer, cx.verbosity());
+            emit(cx, AssistantMessage::new(markdown));
+        }
     }
     if let Some(elapsed) = elapsed
         && cx.settings.turn_duration
@@ -248,6 +262,56 @@ pub(super) fn run_end(
             end = end.unfinished();
         }
         emit(cx, end);
+    }
+}
+
+/// A failed run is one block: `The run failed · 0s · $0.00`, what failed in one line beneath,
+/// and the run's last word only when it says more than that it failed.
+fn failed_run(
+    story: &RunStory,
+    detail: Option<&str>,
+    elapsed: Option<Duration>,
+    tasks: Option<(usize, usize)>,
+    spend: Option<Spend>,
+    cx: &mut Cx<'_>,
+) {
+    let mut title = "The run failed".to_owned();
+    if let Some((done, total)) = tasks.filter(|(_, total)| *total > 0) {
+        let noun = if total == 1 { "task" } else { "tasks" };
+        title.push_str(&format!(" · {done} of {total} {noun} done"));
+    }
+    if let Some(elapsed) = elapsed {
+        title.push_str(&format!(" · {}", format::duration(elapsed)));
+    }
+    if let Some(spend) = &spend {
+        title.push_str(&format!(" · {}", format::spend(spend)));
+    }
+    let mut notice = Notice::new(Tone::Error, title);
+    let said = detail.map(failure::one_line).unwrap_or_default();
+    // A replayed block is only kept for the overlay, where no key opens what it hints at.
+    let raw = detail
+        .and_then(|detail| failure::RawFailure::behind(&said, "The run failed", detail))
+        .filter(|_| !cx.replaying());
+    let shown = match &raw {
+        Some(_) if said.is_empty() => failure::RAW_ALL_HINT.to_owned(),
+        Some(_) => format!("{said} · {}", failure::RAW_ALL_HINT),
+        None => said.clone(),
+    };
+    if !shown.is_empty() {
+        notice = notice.with_detail(shown);
+    }
+    emit(cx, notice);
+    if raw.is_some() {
+        cx.model.raw_failure = raw;
+    }
+    if let Some(answer) = &story.closing {
+        let text = answer.text.trim();
+        let restates =
+            text.starts_with("The run failed") || (!said.is_empty() && text.contains(&said));
+        if !restates {
+            let markdown = closing_markdown(answer, cx.verbosity());
+            emit(cx, AssistantMessage::new(markdown));
+        }
     }
 }
 

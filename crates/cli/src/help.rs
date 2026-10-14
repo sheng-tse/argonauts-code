@@ -25,6 +25,7 @@ const GROUPS: &[(&str, CommandCategory)] = &[
     ("doctor", CommandCategory::SetupAndHelp),
     ("update", CommandCategory::SetupAndHelp),
     ("config", CommandCategory::SetupAndHelp),
+    ("telemetry", CommandCategory::SetupAndHelp),
     ("mcp", CommandCategory::SetupAndHelp),
     ("help", CommandCategory::SetupAndHelp),
 ];

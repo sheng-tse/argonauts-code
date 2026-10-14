@@ -8,6 +8,8 @@ mod handoff;
 mod items;
 mod lifecycle;
 mod milestones;
+#[cfg(test)]
+mod picture_tests;
 mod replay;
 #[cfg(test)]
 mod resumed_tests;

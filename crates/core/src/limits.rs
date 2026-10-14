@@ -64,6 +64,8 @@ pub enum QuotaSource {
     AppServer,
     /// An endpoint's HTTP headers or errors.
     Http,
+    /// Claude Code's `get_usage` control request, asked before any message.
+    GetUsage,
 }
 
 /// What a quota probe read: every window the vendor reports, and its plan when it names one.
@@ -71,9 +73,23 @@ pub enum QuotaSource {
 pub struct QuotaAnswer {
     pub windows: Vec<QuotaReading>,
     pub plan: Option<String>,
+    /// The whole reading with the account it was read for, where the CLI names one.
+    pub live: Option<crate::plan_usage::LiveUsage>,
+    /// The CLI's own words when it answered with an error instead of its usage.
+    pub failed: Option<String>,
 }
 
 impl QuotaAnswer {
+    /// An error in place of a reading. It names no account, so it leaves every reading kept.
+    pub fn failed(message: impl Into<String>) -> Self {
+        Self {
+            windows: Vec::new(),
+            plan: None,
+            live: None,
+            failed: Some(message.into()),
+        }
+    }
+
     /// The window that binds soonest, which is what one number per vendor shows.
     pub fn binding(&self) -> Option<&QuotaReading> {
         binding_reading(&self.windows)
@@ -208,6 +224,35 @@ pub trait QuotaBoard: Send + Sync {
     }
     fn observe_plan(&self, vendor: &VendorId, plan: String) {
         let _ = (vendor, plan);
+    }
+    /// Keeps a live reading as its account's. A reading of another account than the last
+    /// one's means the CLI was signed in again, and only the new account's numbers show.
+    fn observe_live(&self, reading: crate::plan_usage::LiveUsage) {
+        let _ = reading;
+    }
+    /// The CLI's newest live reading, for the account it was last signed in as. What shows
+    /// it checks [`LiveUsage::shown_at`](crate::plan_usage::LiveUsage::shown_at) first.
+    fn live(&self, vendor: &VendorId) -> Option<crate::plan_usage::LiveUsage> {
+        let _ = vendor;
+        None
+    }
+    /// Why this process's last live read of the CLI got no reading, in words for the screen.
+    /// `None` once a reading lands.
+    fn failed(&self, vendor: &VendorId) -> Option<String> {
+        let _ = vendor;
+        None
+    }
+    /// When this process last had cause to doubt the CLI's live reading: a read that failed,
+    /// or a sign-in or sign-out since. A reading from before then may be another account's,
+    /// so it no longer stands as the CLI's own.
+    fn doubted_at(&self, vendor: &VendorId) -> Option<OffsetDateTime> {
+        let _ = vendor;
+        None
+    }
+    /// The CLI was signed in or out, so its live reading may be another account's until it
+    /// is read again.
+    fn doubt(&self, vendor: &VendorId) {
+        let _ = vendor;
     }
     /// Reads quota without spending any, where the vendor allows it (agy `/usage`).
     fn probe(&self, vendor: &VendorId) -> BoxFuture<'_, Option<QuotaReading>>;

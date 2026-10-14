@@ -24,8 +24,10 @@ pub(crate) fn doctor(ctx: &mut Ctx) -> anyhow::Result<Vec<Effect>> {
     let versions = ctx.env.paths.cli_versions();
     let prompt_files = super::prompt_templates::doctor_lines(ctx);
     let mods = crate::mods::doctor_lines(&ctx.env);
+    let settings_lines = settings_lines(&ctx.settings.resolved().warnings);
     tokio::spawn(async move {
         let mut lines = doctor_lines(&adapters, &settings, &versions).await;
+        lines.extend(settings_lines);
         lines.extend(prompt_files);
         lines.extend(mods);
         out.send(AppEvent::Report {
@@ -34,6 +36,15 @@ pub(crate) fn doctor(ctx: &mut Ctx) -> anyhow::Result<Vec<Effect>> {
         });
     });
     Ok(Vec::new())
+}
+
+/// Each thing reading the settings warned of, such as a key that can't be used and has its
+/// default instead.
+fn settings_lines(warnings: &[String]) -> Vec<String> {
+    warnings
+        .iter()
+        .map(|warning| format!("settings · {warning}"))
+        .collect()
 }
 
 /// `/update`: each installed CLI's own updater in turn, with its version before and after,

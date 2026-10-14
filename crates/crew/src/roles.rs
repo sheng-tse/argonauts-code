@@ -76,7 +76,7 @@ pub fn conflict(
         RoleName::Approver => "approve its own work",
         _ => return None,
     };
-    same_agent(worker, owner, families).then(|| format!("{worker} can't {what}"))
+    same_agent(worker, owner, families).then(|| format!("{} can't {what}", display_name(worker)))
 }
 
 /// Two references name the same agent when the harness matches and so does the model. A
@@ -99,6 +99,15 @@ mod tests {
 
     fn worker(text: &str) -> WorkerRef {
         text.parse().unwrap()
+    }
+
+    /// Notes such as "GPT 5.6 Luna on Codex's draft failed" name a model as people read it,
+    /// never by its id.
+    #[test]
+    fn a_worker_is_named_as_people_read_it() {
+        let name = display_name(&worker("codex/gpt-5.6-luna"));
+        assert_eq!(name, "GPT 5.6 Luna on Codex");
+        assert!(!name.contains("codex/") && !name.contains("gpt-5.6-luna"));
     }
 
     fn family_of(worker: &WorkerRef) -> String {
@@ -156,7 +165,7 @@ mod tests {
         }
         assert_eq!(
             conflict(RoleName::Reviewer, &owner, Some(&owner), &family_of).as_deref(),
-            Some("claude-code/opus can't review its own task")
+            Some("Opus on Claude Code can't review its own task")
         );
         // The harness's default model may be the owner's model, and the family says so.
         let default_model = worker("claude-code");

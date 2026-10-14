@@ -112,6 +112,9 @@ impl AppSettings {
         file: &std::path::Path,
     ) -> Result<(), SettingsError> {
         let mut sources = sources(env, &self.trust, self.run_overrides(), self.interactive);
+        // Trusting a file asks whether it reads as written, so a key in it that can't be used
+        // is the answer rather than a warning.
+        sources.strict = true;
         if *file == env.project_config() {
             sources.project_trusted = true;
         } else if *file == env.project_local_config() {
@@ -299,6 +302,7 @@ pub(crate) fn sources(
         interactive,
         recipe: None,
         request: Vec::new(),
+        strict: false,
         waiting: argonauts_crew::prompts::trust::waiting(&env.repo_root, &env.state_dir)
             .all()
             .collect(),

@@ -450,8 +450,7 @@ fn added_parts_sit_on_their_side_and_leave_in_your_order() {
         name: "artifact".into(),
         body: PartBody::Artifact {
             name: "weekly-usage-chart".into(),
-            others: 0,
-            feedback_drafts: 1,
+            others: 2,
         },
     }));
     line.left.push(LinePart::Added(AddedPart::words(
@@ -486,48 +485,46 @@ fn added_parts_sit_on_their_side_and_leave_in_your_order() {
     assert_eq!(
         sides(&line, 230),
         format!(
-            "⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts · ⧉ weekly-usage-chart · 1 feedback draft · main | context █░░░░░ 21%  {chips}  ~$1.86 ▂▃▁▅█▃▇"
+            "⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts · ⧉ weekly-usage-chart +2 more · main | context █░░░░░ 21%  {chips}  ~$1.86 ▂▃▁▅█▃▇"
         )
     );
     // Spend first, then the branch, then the rest from the last on the line back.
     let narrower = |width| sides(&line, width);
     assert_eq!(
-        narrower(166),
+        narrower(154),
         format!(
-            "⏵⏵ auto mode on · ⧉ weekly-usage-chart · 1 feedback draft · main | context █░░░░░ 21%  {chips}"
+            "⏵⏵ auto mode on · ⧉ weekly-usage-chart +2 more · main | context █░░░░░ 21%  {chips}"
         )
     );
     assert_eq!(
-        narrower(159),
-        format!(
-            "⏵⏵ auto mode on · ⧉ weekly-usage-chart · 1 feedback draft | context █░░░░░ 21%  {chips}"
-        )
+        narrower(147),
+        format!("⏵⏵ auto mode on · ⧉ weekly-usage-chart +2 more | context █░░░░░ 21%  {chips}")
     );
     assert_eq!(
-        narrower(139),
-        format!("⏵⏵ auto mode on · ⧉ weekly-usage-chart · 1 feedback draft | {chips}")
+        narrower(127),
+        format!("⏵⏵ auto mode on · ⧉ weekly-usage-chart +2 more | {chips}")
     );
     assert_eq!(narrower(97), format!("⏵⏵ auto mode on | {chips}"));
 }
 
-fn artifact_part(name: &str, others: u32, feedback_drafts: u32) -> BottomLine {
+fn artifact_part(name: &str, others: u32) -> BottomLine {
     let mut line = BottomLine::default();
     line.left.push(LinePart::Added(AddedPart {
         name: "artifact".into(),
         body: PartBody::Artifact {
             name: name.into(),
             others,
-            feedback_drafts,
         },
     }));
     line
 }
 
-/// Claude Code 2.1.292 draws `⧉` and the one artifact's name cut at 24 cells, or how many
-/// there are, and says both in words where it can't draw the mark.
+/// `⧉` and the newest artifact's name cut at 24 cells as Claude Code 2.1.292 draws it, then
+/// how many more the conversation published, and no count of comments. Both are said in words
+/// where the mark can't be drawn.
 #[test]
-fn an_artifact_reads_as_claude_code_names_it() {
-    let drawn = |name: &str, others| row(&artifact_part(name, others, 0), 100);
+fn an_artifact_reads_as_its_name_and_how_many_more() {
+    let drawn = |name: &str, others| row(&artifact_part(name, others), 100);
     let one = drawn("weekly-usage-chart", 0);
     assert!(
         one.ends_with("for shortcuts · ⧉ weekly-usage-chart"),
@@ -535,9 +532,17 @@ fn an_artifact_reads_as_claude_code_names_it() {
     );
     let long = drawn("weekly-usage-chart-with-every-picture", 0);
     assert!(long.ends_with("· ⧉ weekly-usage-chart-with…"), "{long}");
-    let three = drawn("weekly-usage-chart", 2);
-    assert!(three.ends_with("for shortcuts · ⧉ 3"), "{three}");
-    let unnamed = row(&artifact_part("  ", 0, 0), 100);
+    let three = drawn("monthly-usage-page", 2);
+    assert!(
+        three.ends_with("for shortcuts · ⧉ monthly-usage-page +2 more"),
+        "{three}"
+    );
+    let long = drawn("weekly-usage-chart-with-every-picture", 1);
+    assert!(
+        long.ends_with("· ⧉ weekly-usage-chart-with… +1 more"),
+        "{long}"
+    );
+    let unnamed = row(&artifact_part("  ", 3), 100);
     assert!(unnamed.ends_with("? for shortcuts"), "{unnamed}");
 
     let mut ascii = theme();
@@ -550,22 +555,13 @@ fn an_artifact_reads_as_claude_code_names_it() {
         };
         plain_text(&[auto().line(&ctx, state)])
     };
-    let one = spoken(&artifact_part("weekly-usage-chart", 0, 0));
+    let one = spoken(&artifact_part("weekly-usage-chart", 0));
     assert!(one.ends_with("artifact weekly-usage-chart"), "{one}");
-    let three = spoken(&artifact_part("weekly-usage-chart", 2, 0));
-    assert!(three.ends_with("3 artifacts"), "{three}");
-}
-
-#[test]
-fn an_artifact_counts_its_feedback_drafts_as_claude_code_does() {
-    let artifact = |drafts| row(&artifact_part("weekly-usage-chart", 0, drafts), 100);
+    let three = spoken(&artifact_part("monthly-usage-page", 2));
     assert!(
-        artifact(0).ends_with("· ⧉ weekly-usage-chart"),
-        "{}",
-        artifact(0)
+        three.ends_with("artifact monthly-usage-page +2 more"),
+        "{three}"
     );
-    assert!(artifact(1).ends_with("⧉ weekly-usage-chart · 1 feedback draft"));
-    assert!(artifact(3).ends_with("⧉ weekly-usage-chart · 3 feedback drafts"));
 }
 
 /// In color a bar is the lower half of its six cells, its edge to half a cell, on the

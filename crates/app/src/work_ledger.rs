@@ -13,6 +13,9 @@ use std::path::{Path, PathBuf};
 use argonauts_core::api::day_format;
 use argonauts_core::crew_stats::{CrewRole, CrewStats, Fallback, ModelDay, TaskRecord, WorkRow};
 use argonauts_core::events::card::{CardEvent, CardKind, CardState, ReviewEvent};
+use argonauts_core::events::checkpoint::CheckpointEvent;
+use argonauts_core::events::goal::GoalEvent;
+use argonauts_core::events::run::{Party, RunLifecycle};
 use argonauts_core::events::vendor::{HandoffEvent, VendorEvent};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::limits::QuotaStatus;
@@ -27,6 +30,8 @@ use crate::views::sessions::{RunFacts, add_spend};
 
 /// The days the Stats tab charts, whatever its period.
 const CHART_DAYS: i64 = 7;
+/// The triage rule that sends a request to a workflow because ultracode is on.
+const ULTRACODE_RULE: &str = "ultracode";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct WorkLine {
@@ -91,7 +96,23 @@ pub(crate) enum Work {
         by: Option<WorkerRef>,
         /// Seconds from its start to its end.
         took: u64,
+        /// The workflow it ran, such as `council`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workflow: Option<String>,
+        /// Goals it set: its own, and each of its tasks'.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        goals: u32,
+        /// Triage sent it to a workflow because ultracode is on.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        ultracode: bool,
+        /// Questions it settled on autopilot, in your place.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        answered: u32,
     },
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 pub(crate) struct WorkLedger {
@@ -198,6 +219,38 @@ fn kind_word(kind: &CardKind) -> &'static str {
 }
 
 /// The run's lines, from its log. `ended` is the local day it ended.
+/// The workflow a run's first event names.
+fn workflow_of(events: &[RunEvent]) -> Option<String> {
+    events.iter().find_map(|event| match &event.kind {
+        RunEventKind::Run(RunLifecycle::Started(started)) => Some(started.workflow.clone()),
+        _ => None,
+    })
+}
+
+/// The goals a run set, one for the run and one for each task that had one. A goal set again,
+/// as when its lines change, is still one goal.
+fn goals_of(events: &[RunEvent]) -> u32 {
+    let set: BTreeSet<Option<&CardId>> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Goal(GoalEvent::Set(goal)) => Some(goal.task.as_ref()),
+            _ => None,
+        })
+        .collect();
+    set.len() as u32
+}
+
+/// Whether triage sent the run to a workflow because ultracode is on.
+fn ultracode_of(events: &[RunEvent]) -> bool {
+    events.iter().any(|event| match &event.kind {
+        RunEventKind::Run(RunLifecycle::Started(started)) => started
+            .triage
+            .as_ref()
+            .is_some_and(|triage| triage.rule == ULTRACODE_RULE),
+        _ => false,
+    })
+}
+
 fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<WorkLine> {
     let facts = RunFacts::of(events);
     let mut kinds: BTreeMap<CardId, &'static str> = BTreeMap::new();
@@ -354,11 +407,25 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
         (Some(started), Some(finished)) => (finished - started).whole_seconds().max(0) as u64,
         _ => 0,
     };
+    let answered = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.kind,
+                RunEventKind::Checkpoint(CheckpointEvent::Decided(decided))
+                    if decided.by == Party::Autopilot
+            )
+        })
+        .count() as u32;
     lines.push(line(
         ended,
         Work::Run {
             by: orchestrator,
             took,
+            workflow: workflow_of(events).filter(|name| !name.is_empty()),
+            goals: goals_of(events),
+            ultracode: ultracode_of(events),
+            answered,
         },
     ));
     lines
@@ -458,7 +525,7 @@ pub(crate) fn stats(
                 row.done += 1;
                 row.sent_back += u32::from(*sent_back);
             }
-            Work::Run { by, took } => {
+            Work::Run { by, took, .. } => {
                 stats.workflows += 1;
                 stats.took_secs += took;
                 if let Some(by) = by {

@@ -7,6 +7,7 @@ pub use super::approvals::RoleSandbox;
 pub use super::goal::RoleGoal;
 pub use super::handoff::{BrokenWork, FallbackEntry, FallbackRules, HandoffMode, HandoffSettings};
 use super::sessions::{Compaction, NativeFanout, SessionLifetime};
+use super::shell::RoleShell;
 use crate::names::WorkerRef;
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
@@ -37,6 +38,10 @@ pub struct RoleSettings {
     /// `argonauts`, or `off`. Unset is off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub goal: Option<RoleGoal>,
+    /// What a read-only session of the role may run in a shell. Unset is
+    /// [`RoleShell::default_for`] the role.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell: Option<RoleShell>,
 }
 
 /// When a conditional role runs.

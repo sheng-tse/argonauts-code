@@ -1063,6 +1063,7 @@ keys = \"default\"
     fn resolve_alone(file: &Path) -> Result<crate::ResolvedSettings, SettingsError> {
         crate::resolve(&crate::SettingsSources {
             global: Some(file.to_owned()),
+            strict: true,
             ..Default::default()
         })
     }
@@ -1160,6 +1161,7 @@ keys = \"default\"
         let sources = crate::SettingsSources {
             project: Some(shared.clone()),
             project_trusted: true,
+            strict: true,
             ..Default::default()
         };
         assert_eq!(crate::resolve(&sources).unwrap_err(), err);

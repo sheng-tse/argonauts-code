@@ -180,6 +180,41 @@ async fn a_turns_spend_goes_to_the_usage_ledger_when_it_ends() {
     harness.exit().await;
 }
 
+/// With no model picked, the CLI runs its own default and says which it is, so the ledger, and
+/// Stats from it, name that model rather than the CLI.
+#[tokio::test]
+async fn a_turn_on_the_clis_default_model_is_recorded_under_the_model_it_named() {
+    let mut harness = Harness::start().await;
+    let spent = argonauts_core::Spend {
+        input_tokens: 900,
+        output_tokens: 40,
+        cost_usd: 0.01,
+        ..argonauts_core::Spend::default()
+    };
+    let init = WorkerEvent::Agent(AgentEvent::Init {
+        session_id: Some("s-1".into()),
+        model: Some("claude-opus-5-5".into()),
+        tools: Vec::new(),
+        plugins: Vec::new(),
+        capabilities: Vec::new(),
+        version: None,
+    });
+    harness.agent.push(
+        answer("Hi. Ask me anything about this repo.")
+            .with_event(init)
+            .with_spend(spent),
+    );
+    harness.submit("hi").await;
+    turn_done(&mut harness).await;
+    assert_eq!(harness.agent.specs()[0].worker.model, None);
+    let ledger =
+        crate::usage_ledger::UsageLedger::new(&argonauts_core::Paths::new(harness.repo.home()));
+    let lines = ledger.read_since(None);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0].model.as_deref(), Some("claude-opus-5-5"));
+    harness.exit().await;
+}
+
 #[tokio::test]
 async fn an_unclear_request_offers_start_work_and_n_starts_nothing() {
     let mut harness = Harness::start().await;

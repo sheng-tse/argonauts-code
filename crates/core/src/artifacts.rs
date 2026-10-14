@@ -1,7 +1,7 @@
 //! Claude Code's artifacts: pages a session publishes on claude.ai with its `Artifact` tool.
-//! This reads one from the tool's call and result as the stream sends them,
-//! and words it the way Claude Code 2.1.292's own screen does. Sources are byte offsets into
-//! that version's program text.
+//! This reads one from the tool's call and result as the stream sends them, and words it the
+//! way Claude Code 2.1.292's own screen does. Sources are byte offsets into that version's
+//! program text.
 //!
 //! - The result's text starts `Published <file> at <url> (Version 1…)`, or `Updated the
 //!   Artifact at <url> …` for one made from a type (@215300300).
@@ -11,7 +11,8 @@
 //!   mark in Claude Code's own colour, the rest dim, and `artifact <name>` or `<count>
 //!   artifacts` where the mark can't be drawn. The name is the published file's without its
 //!   extension, else the title, cut at 24 cells (@183773744 for the glyph, @212816978 for the
-//!   part).
+//!   part). Argonauts keeps the newest one's name in sight and adds `+N more` for the others in
+//!   place of the count.
 //! - `1 feedback draft` beside that part is another part and says nothing of the artifact:
 //!   it counts the notes about Claude Code itself that a session left for you to send
 //!   (@212867164, @223178338). No stream line carries it.

@@ -16,7 +16,13 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
-use crate::controller::test_support::{Harness, HarnessOptions, WAIT};
+use crate::client::test_support::session_started;
+use crate::controller::runs::rig;
+use crate::controller::test_support::{Call as ConductorCall, Harness, HarnessOptions, WAIT};
+use argonauts_core::RunId;
+use argonauts_core::events::run::RunOutcome;
+use argonauts_core::events::{RunEvent, RunEventKind, RunLifecycle};
+use argonauts_core::names::{RoleName, SessionKey};
 
 const START_WORKFLOW: &str = "argonauts_start_workflow";
 const QUESTION: &str = "what does parse_due do when the date has no year?";
@@ -77,6 +83,65 @@ async fn call(spec: &SessionSpec, name: &str, arguments: Value) -> AskReply {
     BufReader::new(stream).read_line(&mut answer).await.unwrap();
     serde_json::from_str(answer.trim()).unwrap()
 }
+
+/// Calls the tool on a task of its own, since its answer may wait on the run.
+fn calling(
+    spec: &SessionSpec,
+    name: &'static str,
+    arguments: Value,
+) -> tokio::task::JoinHandle<AskReply> {
+    let spec = spec.clone();
+    tokio::spawn(async move { call(&spec, name, arguments).await })
+}
+
+/// The run the app started and now follows, once its stream is open.
+pub(super) async fn followed_run(harness: &Harness) -> RunId {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let followed = harness
+            .conductor
+            .calls()
+            .into_iter()
+            .find_map(|call| match call {
+                ConductorCall::Subscribe { run, .. } => Some(run),
+                _ => None,
+            });
+        if let Some(run) = followed {
+            return run;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no run followed");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// The start tool's answer, once the run it started is under way.
+async fn handed_over(harness: &Harness, spec: &SessionSpec, arguments: Value) -> AskReply {
+    let answer = calling(spec, START_WORKFLOW, arguments);
+    let run = followed_run(harness).await;
+    harness.conductor.push(&run, agent_started(&run, 1)).await;
+    answer.await.unwrap()
+}
+
+/// The run's first agent started.
+pub(super) fn agent_started(run: &RunId, seq: u64) -> RunEvent {
+    let key = SessionKey::numbered(1);
+    RunEvent {
+        run_id: run.clone(),
+        ..session_started(seq, &key, None, RoleName::Worker, "codex")
+    }
+}
+
+fn failed(run: &RunId, seq: u64, detail: &str) -> RunEvent {
+    let finished = RunLifecycle::Finished {
+        outcome: RunOutcome::Failed,
+        detail: Some(detail.to_owned()),
+    };
+    rig::event(run, seq, RunEventKind::Run(finished))
+}
+
+const GIT_REFUSED: &str = "`git add --all -- .argonauts/goal/run-001.md` failed (exit status: \
+                           1): The following paths are ignored by one of your .gitignore \
+                           files:\n.argonauts\nhint: Use -f if you really want to add them.";
 
 fn setup_of(spec: &SessionSpec) -> Option<&str> {
     spec.prompt
@@ -157,7 +222,16 @@ async fn real_work_starts_the_workflow_in_use_when_the_session_hands_it_over() {
     );
 
     let account = "Accept dates without a year in parse_due, in the cli, the store and the tests.";
-    let started = call(&spec, START_WORKFLOW, json!({ "request": account })).await;
+    let started = calling(&spec, START_WORKFLOW, json!({ "request": account }));
+    let run = followed_run(&harness).await;
+    // The answer waits until the run is under way.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !started.is_finished(),
+        "the tool answered before the run began"
+    );
+    harness.conductor.push(&run, agent_started(&run, 1)).await;
+    let started = started.await.unwrap();
     assert!(!started.is_error, "{started:?}");
     assert!(
         started
@@ -165,11 +239,6 @@ async fn real_work_starts_the_workflow_in_use_when_the_session_hands_it_over() {
             .starts_with("The council workflow started on this."),
         "{started:?}"
     );
-    let deadline = tokio::time::Instant::now() + WAIT;
-    while harness.conductor.starts().is_empty() {
-        assert!(tokio::time::Instant::now() < deadline, "no run started");
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
     let start = harness.conductor.starts().remove(0);
     assert_eq!(start.mode, RunMode::Crew);
     assert_eq!(
@@ -184,6 +253,197 @@ async fn real_work_starts_the_workflow_in_use_when_the_session_hands_it_over() {
         "{again:?}"
     );
     assert_eq!(harness.conductor.starts().len(), 1);
+    harness.exit().await;
+}
+
+/// A run that fails before any agent starts: the tool answers with the failure, as a failure,
+/// and never says the run started. The session that heard it says so, so it isn't told again.
+#[tokio::test]
+async fn a_run_that_fails_at_start_is_answered_as_a_failure() {
+    let mut harness = claude_code("").await;
+    harness.agent.push(
+        FakeSession::completed("The council workflow didn't start: git refused its goal file.")
+            .with_delay(Duration::from_secs(2)),
+    );
+    harness.submit(WORK).await;
+    let spec = spec_number(&harness, 0).await;
+    let answer = calling(&spec, START_WORKFLOW, json!({ "request": "Add dates." }));
+    let run = followed_run(&harness).await;
+    harness
+        .conductor
+        .push(&run, failed(&run, 1, GIT_REFUSED))
+        .await;
+    let answer = answer.await.unwrap();
+    assert!(answer.is_error, "{answer:?}");
+    assert!(!answer.text.contains("started on this"), "{answer:?}");
+    assert!(
+        answer.text.starts_with(
+            "The council workflow failed before any agent started: `git add --all -- \
+             .argonauts/goal/run-001.md` failed (exit status: 1): The following paths are \
+             ignored by one of your .gitignore files. Tell the user in one line"
+        ),
+        "{answer:?}"
+    );
+    harness.until(turn_ended).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(harness.agent.specs().len(), 1, "the session was told twice");
+    harness.exit().await;
+}
+
+/// A run that fails before it began doesn't stand as this request's workflow: a second call
+/// in the same turn starts one, rather than hearing that one already started.
+#[tokio::test]
+async fn after_a_failed_start_the_session_may_start_again() {
+    let harness = claude_code("").await;
+    harness.agent.push(
+        FakeSession::completed("It failed, so I tried again.").with_delay(Duration::from_secs(3)),
+    );
+    harness.submit(WORK).await;
+    let spec = spec_number(&harness, 0).await;
+    let answer = calling(&spec, START_WORKFLOW, json!({ "request": "Add dates." }));
+    let run = followed_run(&harness).await;
+    harness
+        .conductor
+        .push(&run, failed(&run, 1, GIT_REFUSED))
+        .await;
+    assert!(answer.await.unwrap().is_error);
+
+    let again = calling(&spec, START_WORKFLOW, json!({ "request": "Add dates." }));
+    let second = tokio::time::timeout(WAIT, async {
+        loop {
+            let other = harness
+                .conductor
+                .calls()
+                .into_iter()
+                .find_map(|call| match call {
+                    ConductorCall::Subscribe { run: other, .. } if other != run => Some(other),
+                    _ => None,
+                });
+            if let Some(other) = other {
+                break other;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("a second run started");
+    harness
+        .conductor
+        .push(&second, agent_started(&second, 1))
+        .await;
+    let again = again.await.unwrap();
+    assert!(
+        !again.text.starts_with("A workflow already started"),
+        "{again:?}"
+    );
+    assert_eq!(harness.conductor.starts().len(), 2);
+    harness.exit().await;
+}
+
+/// A run that parks for its CLIs before any agent starts isn't said to have started: the tool
+/// says what it waits for and that nothing runs until then.
+#[tokio::test]
+async fn a_run_that_waits_for_its_clis_is_not_said_to_have_started() {
+    use argonauts_core::events::run::ParkReason;
+
+    let harness = claude_code("").await;
+    harness.agent.push(
+        FakeSession::completed("It waits for a CLI to come back.")
+            .with_delay(Duration::from_secs(2)),
+    );
+    harness.submit(WORK).await;
+    let spec = spec_number(&harness, 0).await;
+    let answer = calling(&spec, START_WORKFLOW, json!({ "request": "Add dates." }));
+    let run = followed_run(&harness).await;
+    let parked = RunLifecycle::Parked {
+        reason: ParkReason::AllVendorsOut { until: None },
+        waiting_on: Vec::new(),
+    };
+    harness
+        .conductor
+        .push(&run, rig::event(&run, 1, RunEventKind::Run(parked)))
+        .await;
+    let answer = answer.await.unwrap();
+    assert!(!answer.is_error, "{answer:?}");
+    assert!(!answer.text.contains("started on this"), "{answer:?}");
+    assert!(
+        answer.text.starts_with(
+            "The council workflow is waiting: every agent's CLI is out of plan usage or down \
+             until one comes back; nothing runs until then."
+        ),
+        "{answer:?}"
+    );
+    harness.exit().await;
+}
+
+/// A run that fails after it began: the session is told in a turn of its own, which shows no
+/// message of yours, reads only, and says so in one line.
+#[tokio::test]
+async fn a_run_that_fails_later_is_told_to_the_session() {
+    let mut harness = claude_code("").await;
+    harness
+        .agent
+        .push(FakeSession::completed("Handed to the crew.").with_delay(Duration::from_secs(2)));
+    let said = "The council run failed: git refused its goal file.";
+    harness
+        .agent
+        .push(FakeSession::structured(json!({ "answer_markdown": said })));
+    harness.submit(WORK).await;
+    let spec = spec_number(&harness, 0).await;
+    let answer = calling(&spec, START_WORKFLOW, json!({ "request": "Add dates." }));
+    let run = followed_run(&harness).await;
+    harness.conductor.push(&run, agent_started(&run, 1)).await;
+    assert!(!answer.await.unwrap().is_error);
+    harness.until(turn_ended).await;
+
+    harness
+        .conductor
+        .push(&run, failed(&run, 2, GIT_REFUSED))
+        .await;
+    let started = harness
+        .until(|event| {
+            matches!(
+                event,
+                AppEvent::Chat {
+                    event: ChatEvent::TurnStarted { .. }
+                }
+            )
+        })
+        .await;
+    assert!(
+        matches!(
+            &started,
+            AppEvent::Chat {
+                event: ChatEvent::TurnStarted {
+                    continues: true,
+                    read_only: true,
+                    ..
+                }
+            }
+        ),
+        "{started:?}"
+    );
+    let told = spec_number(&harness, 1).await;
+    let prompt: String = told.prompt.iter().map(|part| part.text.as_str()).collect();
+    assert!(
+        prompt.contains(
+            "run-001, the run started for the user's request, failed: `git add --all -- \
+             .argonauts/goal/run-001.md` failed (exit status: 1)"
+        ),
+        "{prompt}"
+    );
+    assert!(prompt.contains("Tell the user in one line"), "{prompt}");
+    assert!(
+        told.asking
+            .as_ref()
+            .is_none_or(|asking| asking.tools.is_empty())
+    );
+    let ended = harness.until(turn_ended).await;
+    assert!(matches!(
+        &ended,
+        AppEvent::Chat { event: ChatEvent::TurnFinished { reply: TurnReply::Answer { markdown }, .. } }
+            if markdown == said
+    ));
     harness.exit().await;
 }
 
@@ -212,12 +472,7 @@ async fn a_step_kept_for_this_request_goes_with_the_workflow_it_starts() {
     )
     .await;
     assert!(!kept.is_error, "{kept:?}");
-    let started = call(
-        &spec,
-        START_WORKFLOW,
-        json!({ "request": "Add due dates." }),
-    )
-    .await;
+    let started = handed_over(&harness, &spec, json!({ "request": "Add due dates." })).await;
     assert!(!started.is_error, "{started:?}");
     let deadline = tokio::time::Instant::now() + WAIT;
     while harness.conductor.starts().is_empty() {
@@ -291,6 +546,7 @@ async fn the_setup_is_said_once_and_again_when_it_changes() {
         .send(UiCommand::Submit {
             text: "third, with ultracode".to_owned(),
             workflow_requested: true,
+            pictures: Vec::new(),
         })
         .await;
     harness
@@ -357,7 +613,7 @@ async fn slash_plan_has_the_workflow_plan_first() {
         })
         .await;
     let spec = spec_number(&harness, 0).await;
-    let started = call(&spec, START_WORKFLOW, json!({ "request": WORK })).await;
+    let started = handed_over(&harness, &spec, json!({ "request": WORK })).await;
     assert!(!started.is_error, "{started:?}");
     let deadline = tokio::time::Instant::now() + WAIT;
     while harness.conductor.starts().is_empty() {

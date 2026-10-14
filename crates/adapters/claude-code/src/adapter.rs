@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use argonauts_core::events::context::ContextDetail;
 use argonauts_core::keywords::Keyword;
+use argonauts_core::limits::{QuotaAnswer, QuotaReading};
 use argonauts_core::screen::ScreenRequest;
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
 use argonauts_core::vendor_commands::{BuiltinCommand, VendorCommand};
@@ -11,17 +12,18 @@ use argonauts_core::{
     Adapter, Capabilities, CommandSpec, LaunchTweak, PARENT_SESSION_ENV_VARS, SessionRequest,
     SetupHints, StopPlan, StreamParser, extract_version,
 };
+use time::OffsetDateTime;
 
 use crate::command::{PARENT_SESSION_STATE, build_command, user_message_line};
 use crate::commands::{self, BUILTIN_COMMANDS};
 use crate::keywords::KEYWORDS;
 use crate::parser::ClaudeStreamParser;
-use crate::{command, control, instructions, isolation, sessions, tweaks};
+use crate::{command, control, instructions, isolation, plan_usage, sessions, tweaks};
 
 /// The first version is the original recordings, the second the steering and resume ones, the
 /// third a workflow Claude Code runs itself, the permission prompt tool, and a read-only session
-/// resumed with every tool.
-pub const TESTED_VERSIONS: &[&str] = &["2.1.284", "2.1.285", "2.1.289", "2.1.293"];
+/// resumed with every tool. The last holds the plan usage read.
+pub const TESTED_VERSIONS: &[&str] = &["2.1.284", "2.1.285", "2.1.289", "2.1.293", "2.1.295"];
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ClaudeCodeAdapter;
@@ -122,6 +124,17 @@ impl Adapter for ClaudeCodeAdapter {
         Some(command::user_message_line_with_uuid(message, uuid))
     }
 
+    fn picture_line(
+        &self,
+        message: &str,
+        pictures: &[argonauts_core::pictures::Picture],
+        uuid: &str,
+    ) -> Option<String> {
+        Some(command::picture_message_line_with_uuid(
+            message, pictures, uuid,
+        ))
+    }
+
     fn send_now_line(&self, uuid: &str) -> Option<String> {
         Some(control::send_now_line(uuid))
     }
@@ -136,6 +149,30 @@ impl Adapter for ClaudeCodeAdapter {
 
     fn context_usage_line(&self, detail: ContextDetail) -> Option<String> {
         Some(control::context_usage_line(detail))
+    }
+
+    fn quota_probe(&self, workdir: &Path, _model: Option<&str>) -> Option<CommandSpec> {
+        Some(plan_usage::probe_command(self.binary(), workdir))
+    }
+
+    fn parse_quota_probe(&self, stdout: &str) -> Option<QuotaReading> {
+        self.parse_quota_probe_end(stdout)?.binding().cloned()
+    }
+
+    fn parse_quota_probe_answer(&self, stdout: &str) -> Option<QuotaAnswer> {
+        plan_usage::answer(stdout, OffsetDateTime::now_utc())
+    }
+
+    fn parse_quota_probe_end(&self, stdout: &str) -> Option<QuotaAnswer> {
+        plan_usage::answer_at_end(stdout, OffsetDateTime::now_utc())
+    }
+
+    fn parse_quota_probe_early(&self, stdout: &str) -> Option<QuotaAnswer> {
+        plan_usage::windows_first(stdout, OffsetDateTime::now_utc())
+    }
+
+    fn stream_reports_quota(&self) -> bool {
+        true
     }
 
     fn compaction(&self, setting: Compaction) -> LaunchTweak {
@@ -340,7 +377,7 @@ mod tests {
         assert_eq!(adapter.parse_version("no version here"), None);
         assert_eq!(
             adapter.tested_versions(),
-            ["2.1.284", "2.1.285", "2.1.289", "2.1.293"]
+            ["2.1.284", "2.1.285", "2.1.289", "2.1.293", "2.1.295"]
         );
         assert_eq!(adapter.cheapest_model(), ("haiku", Some("low")));
         assert!(adapter.wrap_up_input("wrap up").is_none());
@@ -888,6 +925,72 @@ mod tests {
             ..request(SessionRole::ReadOnly)
         });
         assert_eq!(value_after(&reader, "--tools"), Some("Read,Glob,Grep"));
+    }
+
+    /// A reviewer with the checks gets Bash, held by its settings to those commands; one with
+    /// any shell gets Bash with no such rules, and one with none gets no Bash.
+    #[test]
+    fn a_reviewer_runs_the_checks_and_nothing_else() {
+        use argonauts_core::worker::SessionShell;
+        let reader = |shell: SessionShell| {
+            command(&SessionRequest {
+                shell,
+                scratch_dir: Some("/tmp/state/s-001".into()),
+                ..request(SessionRole::ReadOnly)
+            })
+        };
+        let checks = reader(SessionShell::Only(vec!["node --test".to_owned()]));
+        assert_eq!(value_after(&checks, "--tools"), Some("Read,Glob,Grep,Bash"));
+        assert_eq!(value_after(&checks, "--permission-mode"), Some("dontAsk"));
+        let settings = settings_file(&checks);
+        assert_eq!(
+            settings["permissions"]["allow"],
+            json!(["Bash(node --test)", "Bash(node --test:*)"])
+        );
+        let any = reader(SessionShell::Any);
+        assert_eq!(value_after(&any, "--tools"), Some("Read,Glob,Grep,Bash"));
+        assert!(settings_file(&any)["permissions"].is_null());
+        let none = reader(SessionShell::None);
+        assert_eq!(value_after(&none, "--tools"), Some("Read,Glob,Grep"));
+    }
+
+    /// A crew agent gets no workflow or background agent of Claude Code's own, whatever its
+    /// fan-out, and no ultracode.
+    #[test]
+    fn a_crew_agent_starts_nothing_in_the_background() {
+        let crew_agent = command(&SessionRequest {
+            native_fanout: Some(NativeFanout::Switch(FanoutSwitch::On)),
+            background_off: true,
+            ultracode: true,
+            scratch_dir: Some("/tmp/state/s-001".into()),
+            ..request(SessionRole::Build)
+        });
+        let tools = value_after(&crew_agent, "--tools").unwrap();
+        assert!(tools.ends_with(",Agent"), "{tools}");
+        assert_eq!(
+            values_after(&crew_agent, "--disallowedTools"),
+            ["SendMessage", "ListAgents", "Workflow"]
+        );
+        assert_eq!(env(&crew_agent, "CLAUDE_CODE_DISABLE_WORKFLOWS"), Some("1"));
+        assert_eq!(
+            env(&crew_agent, "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"),
+            Some("1")
+        );
+        let settings = settings_file(&crew_agent);
+        assert!(settings.get("ultracode").is_none(), "{settings}");
+
+        // Off already switches workflows off, once.
+        let off = command(&SessionRequest {
+            native_fanout: Some(NativeFanout::Switch(FanoutSwitch::Off)),
+            background_off: true,
+            ..request(SessionRole::Build)
+        });
+        let switched = off
+            .env_set
+            .iter()
+            .filter(|(name, _)| name == "CLAUDE_CODE_DISABLE_WORKFLOWS")
+            .count();
+        assert_eq!(switched, 1);
     }
 
     #[test]

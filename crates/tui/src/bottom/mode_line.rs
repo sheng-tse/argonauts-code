@@ -357,7 +357,7 @@ mod tests {
         assert_eq!(line.spans[1].style, theme.style(Role::ModeSupervised));
     }
 
-    /// The cycle: supervised, auto, full auto. Shadow is a setting, and Shift+Tab goes
+    /// Shift+Tab's cycle: supervised, auto, full auto. Shadow is a setting, and Shift+Tab goes
     /// on from it to auto.
     #[test]
     fn shift_tab_goes_from_auto_to_autopilot_and_back_round() {

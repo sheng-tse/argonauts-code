@@ -1,6 +1,5 @@
-//! Each checkpoint kind's options, in order, with their keys.
-//! The screen draws what the engine emits and nothing
-//! else, so the table lives here and only here.
+//! Each checkpoint kind's options, in order, with their keys. The screen draws what the engine
+//! emits and nothing else, so the table lives here and only here.
 
 use argonauts_core::events::checkpoint::{AnswerAction, AnswerOption, CheckpointKind};
 use argonauts_core::events::goal::{GoalQuestion, LET_THE_LEAD_ANSWER, LET_THE_LEAD_DECIDE};

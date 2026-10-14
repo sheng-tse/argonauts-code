@@ -3,6 +3,8 @@ mod history;
 mod layout;
 mod motion;
 mod paste_burst;
+mod picture;
+mod undo;
 mod view;
 mod vim;
 mod workflow_word;
@@ -86,6 +88,17 @@ pub struct Composer {
     workflow_ignored: Cell<bool>,
     /// The prompt just sent asked for a workflow.
     workflow_sent: bool,
+    /// What undo and redo step through.
+    edits: undo::EditHistory,
+    /// The pictures made in this conversation. A chip in a draft, or in a message brought back
+    /// from history or the queue, names one of them.
+    pictures: Vec<argonauts_core::pictures::Picture>,
+    /// The pictures of the prompt just sent, until the screen takes them.
+    sent_pictures: Vec<argonauts_core::pictures::Picture>,
+    /// The last chip's number. Chips count on across the conversation, as in Claude Code.
+    next_picture: u32,
+    clipboard: picture::Clipboard,
+    arriving: picture::Arriving,
 }
 
 /// A draft put aside while history shows, with the mode it was typed in.
@@ -272,7 +285,9 @@ impl Composer {
     /// expanded. Left unchanged there, the draft keeps its pastes collapsed.
     pub fn set_edited_text(&mut self, sent: &str, edited: &str) {
         if edited != sent {
+            let before = self.saved();
             self.set_text(edited);
+            self.edited_from(before, undo::EditKind::Other, false);
         }
     }
 
@@ -298,10 +313,11 @@ impl Composer {
         self.edited();
     }
 
-    /// Shell mode goes too.
+    /// Shell mode goes too, and so do the draft's steps for undo.
     pub fn clear(&mut self) {
         self.set_text("");
         self.shell = false;
+        self.forget_edits();
     }
 
     /// Takes the draft out whole, with its pastes, its mode, and where you were in history,
@@ -358,15 +374,38 @@ impl Composer {
     pub fn handle_key(&mut self, key: KeyEvent) -> ComposerEvent {
         let flushed = self.flush_burst();
         self.burst.end_run();
+        let before = self.saved();
         let event = self.dispatch(key);
+        self.note_edit(before, &key, &event);
         // Settles the ignore, so a word typed again after it left counts afresh.
         self.workflow_requested();
         if flushed { event.or_edited() } else { event }
     }
 
+    /// What a key just did to the draft, for undo. Vim's own commands keep their steps, and
+    /// sending starts a new draft with none.
+    fn note_edit(&mut self, before: Saved, key: &KeyEvent, event: &ComposerEvent) {
+        let vim_command = matches!(self.vim, Some(VimMode::Normal | VimMode::Visual));
+        if vim_command || undo::is_undo_key(key) {
+            return;
+        }
+        match event {
+            ComposerEvent::Submitted { .. } | ComposerEvent::Shell { .. } => {}
+            _ if !same_text(&before, &self.saved()) => {
+                let ends_word = matches!(key.code, KeyCode::Char(c) if c.is_whitespace());
+                self.edited_from(before, undo::EditKind::of(key), ends_word);
+            }
+            ComposerEvent::Moved => self.edit_step_ends(),
+            _ => {}
+        }
+    }
+
     fn dispatch(&mut self, key: KeyEvent) -> ComposerEvent {
         if let Some(event) = self.vim_key(key) {
             return event;
+        }
+        if undo::is_undo_key(&key) {
+            return self.undo();
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -390,6 +429,7 @@ impl Composer {
             KeyCode::Char(c) if ctrl == alt => self.insert(c.encode_utf8(&mut [0; 4])),
             KeyCode::Char('j') if ctrl => self.insert("\n"),
             KeyCode::Char('r') if ctrl => ComposerEvent::SearchHistory,
+            KeyCode::Char('v') if ctrl && !self.field => self.paste_clipboard(),
             KeyCode::Char('a') if ctrl => self.move_to(draft.line_start(at)),
             KeyCode::Char('e') if ctrl => self.move_to(draft.line_end(at)),
             KeyCode::Char('b') if ctrl => self.move_to(draft.prev_stop(at)),
@@ -426,9 +466,10 @@ impl Composer {
 
     fn insert_paste(&mut self, text: &str) {
         let mut text = clean(text);
-        if text.is_empty() {
+        if text.is_empty() || self.paste_pictures(&text) {
             return;
         }
+        let before = self.saved();
         // A pasted `!git status` reads as typed: shell mode, then the command. A paste of more
         // lines, such as a notebook cell or Markdown that opens with `![image]`, stays text.
         if self.is_empty()
@@ -453,6 +494,7 @@ impl Composer {
         } else {
             self.draft.insert(&text);
         }
+        self.edited_from(before, undo::EditKind::Other, false);
         self.edited();
     }
 
@@ -502,6 +544,7 @@ impl Composer {
         }
         // The echo keeps a long paste as its label, so it doesn't push the conversation away.
         let shown = self.draft.text.trim_end_matches('\n').to_owned();
+        self.sent_pictures = self.pictures_in(&text);
         self.workflow_sent = self.workflow_requested();
         self.remember(text.clone());
         self.clear();
@@ -674,6 +717,11 @@ fn clean(text: &str) -> String {
         .map(sanitize_for_terminal)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The same draft, wherever the cursor is.
+fn same_text(a: &Saved, b: &Saved) -> bool {
+    a.shell == b.shell && a.draft.text == b.draft.text && a.draft.elements == b.draft.elements
 }
 
 /// A history entry that starts with `!` was a shell command: its text, and true.

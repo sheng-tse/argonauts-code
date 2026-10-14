@@ -438,8 +438,8 @@ async fn replay_waits_at_the_monthly_budget() {
         2.0 * RUN_SPEND_USD
     );
     let mut limited = settings.clone();
-    limited.limits.evolution_usd_per_month = 5.0;
-    assert_eq!(fixture.set.budget_left(&limited, now).unwrap(), 3.0);
+    limited.limits.evolution_usd_per_month = Some(5.0);
+    assert_eq!(fixture.set.budget_left(&limited, now).unwrap(), Some(3.0));
 
     let rest = run(&fixture, &settings, 1000.0, &runner).await.unwrap();
     assert!(!rest.out_of_budget);

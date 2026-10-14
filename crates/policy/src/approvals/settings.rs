@@ -239,9 +239,9 @@ fn limits(a: &HardLimitSettings, b: &HardLimitSettings) -> HardLimitSettings {
         protected_paths: union(&a.protected_paths, &b.protected_paths),
         dependency_allowlist: intersection(&a.dependency_allowlist, &b.dependency_allowlist),
         spend_per_day: smaller_cap(a.spend_per_day, b.spend_per_day),
-        auto_merges_per_day: a.auto_merges_per_day.min(b.auto_merges_per_day),
+        auto_merges_per_day: smaller_cap(a.auto_merges_per_day, b.auto_merges_per_day),
         irreversible_allowlist: intersection(&a.irreversible_allowlist, &b.irreversible_allowlist),
-        evolution_usd_per_month: a.evolution_usd_per_month.min(b.evolution_usd_per_month),
+        evolution_usd_per_month: smaller_cap(a.evolution_usd_per_month, b.evolution_usd_per_month),
         // Of the run and task limits, only the run's dollars are a cap the policy reads.
         budget: BudgetSettings {
             spend_per_run: smaller_cap(a.budget.spend_per_run, b.budget.spend_per_run),
@@ -293,9 +293,9 @@ fn sandbox(a: &SandboxSettings, b: &SandboxSettings) -> SandboxSettings {
 }
 
 /// `None` means no cap, so any cap is smaller.
-fn smaller_cap(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+fn smaller_cap<T: PartialOrd>(a: Option<T>, b: Option<T>) -> Option<T> {
     match (a, b) {
-        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), Some(b)) => Some(if b < a { b } else { a }),
         (cap, None) | (None, cap) => cap,
     }
 }

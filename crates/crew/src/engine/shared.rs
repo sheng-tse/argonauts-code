@@ -84,6 +84,8 @@ pub struct Shared {
     pub own_workflows: Mutex<BTreeSet<CardId>>,
     /// Tasks Claude Code works as its own workflow, and what their session gets for it.
     pub claude_codes_own: Mutex<BTreeMap<CardId, crate::claude_codes::OwnSession>>,
+    /// The run said once that git ignores its own files here.
+    pub said_ignored: std::sync::atomic::AtomicBool,
     pub desk: Desk,
     /// The user's status summary, folded as events are recorded.
     pub status: Mutex<Folder>,
@@ -182,6 +184,7 @@ impl Shared {
             start_turn: tokio::sync::Mutex::new(()),
             own_workflows: Mutex::new(BTreeSet::new()),
             claude_codes_own: Mutex::new(BTreeMap::new()),
+            said_ignored: std::sync::atomic::AtomicBool::new(false),
             desk: Desk::default(),
             status: Mutex::new(status),
             status_files: Mutex::new(StatusFiles::default()),

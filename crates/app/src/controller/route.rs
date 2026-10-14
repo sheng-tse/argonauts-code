@@ -62,6 +62,7 @@ pub(crate) fn route(
         UiCommand::Submit {
             text,
             workflow_requested,
+            ..
         } => {
             let route = if leads_with_file(&text) {
                 plain(mode, text.trim().to_owned())
@@ -149,6 +150,7 @@ mod tests {
         UiCommand::Submit {
             text: text.to_owned(),
             workflow_requested: false,
+            pictures: Vec::new(),
         }
     }
 
@@ -181,6 +183,7 @@ mod tests {
         let asked = |text: &str| UiCommand::Submit {
             text: text.to_owned(),
             workflow_requested: true,
+            pictures: Vec::new(),
         };
         let workflow = Route::WorkflowRequest {
             text: "ultracode tidy the helpers".to_owned(),

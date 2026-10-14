@@ -88,7 +88,15 @@ impl ChatTurns {
                 worker,
                 continues,
                 ..
-            } => self.start(turn, text, worker, *continues, cx),
+            } => {
+                // A failure from before your next message no longer takes `r`. A turn that
+                // goes on without one, as the session's line about a failed run does, leaves
+                // `r` to the failure it follows.
+                if !*continues {
+                    cx.model.raw_failure = None;
+                }
+                self.start(turn, text, worker, *continues, cx);
+            }
             ChatEvent::Agent { turn, event } => {
                 if let Some(open) = self.open.as_mut().filter(|open| open.turn == *turn) {
                     agent_event(open, self.kinds, event, clock, cx);
@@ -168,7 +176,9 @@ impl ChatTurns {
         if let Some(mut stale) = self.open.take() {
             end_parts(&mut stale, ToolState::Stopped, cx);
         }
-        let message = UserMessage::new(text).with_keywords(cx.keywords_of(worker));
+        let message = UserMessage::new(text)
+            .with_keywords(cx.keywords_of(worker))
+            .with_pictures(cx.model.bottom.composer.picture_numbers_in(text));
         let replaying = cx.replaying();
         if !continues {
             if replaying {
@@ -275,7 +285,9 @@ fn echo(message: UserMessage, cx: &mut Cx<'_>) {
 fn joined(open: &mut OpenTurn, text: &str, cx: &mut Cx<'_>) {
     end_stream(open, cx);
     print_done(open, cx);
-    let message = UserMessage::new(text).with_keywords(cx.keywords_of(&open.worker));
+    let message = UserMessage::new(text)
+        .with_keywords(cx.keywords_of(&open.worker))
+        .with_pictures(cx.model.bottom.composer.picture_numbers_in(text));
     if open.replaying {
         cx.model.history.keep(message);
     } else {
@@ -363,6 +375,29 @@ fn agent_event(
                 }
             }
             print_done(open, cx);
+        }
+        AgentEvent::FilePatch {
+            id,
+            path,
+            hunks,
+            parent: None,
+        } => {
+            let key = Some(id.as_str());
+            let history = &mut cx.model.history;
+            for cell in &open.calls {
+                let call = match history.active_mut(*cell) {
+                    Some(Cell::Tool(call)) => Some(call).filter(|call| call.key.as_deref() == key),
+                    Some(Cell::Group(group)) => group
+                        .calls
+                        .iter_mut()
+                        .find(|call| call.key.as_deref() == key),
+                    _ => None,
+                };
+                if let Some(call) = call {
+                    tools::take_patch(call, path, hunks);
+                    break;
+                }
+            }
         }
         AgentEvent::ModOutput {
             kind,

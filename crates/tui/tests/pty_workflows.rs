@@ -92,8 +92,8 @@ fn run_tree_opens_with_slash_workflows_and_ctrl_t() {
     );
     for part in [
         "Phases",
-        "Build · 3 agents",
-        "\\d+/\\d+ agents · \\d+(h\\d+m|m\\d+s|s)",
+        "Build · 3 steps",
+        "\\d+/\\d+ steps · \\d+(h\\d+m|m\\d+s|s)",
         "✔ Goal",
     ] {
         assert!(
@@ -130,7 +130,7 @@ fn run_tree_navigation() {
         selected_phase(s).as_deref() == Some("Goal")
     });
     assert!(
-        row_of(&top, "Goal · 3 agents").is_some(),
+        row_of(&top, "Goal · 3 steps").is_some(),
         "{}",
         top.visible_text()
     );
@@ -216,7 +216,7 @@ fn open_collapsed_step_from_tree() {
     for _ in 0..3 {
         harness.press(Key::Up);
     }
-    let step = harness.wait_visible("Goal · 3 agents");
+    let step = harness.wait_visible("Goal · 3 steps");
     assert_eq!(count_rows(&step, "read:"), 3, "{}", step.visible_text());
     harness.press(Key::Right);
     harness.press(Key::Enter);

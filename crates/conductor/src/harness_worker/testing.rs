@@ -452,6 +452,7 @@ pub(crate) fn spec_in(workdir: &Path, session_dir: &Path, prompt: &str) -> Sessi
         env: Vec::new(),
         asking: None,
         cli_workflow: argonauts_core::worker::CliWorkflow::default(),
+        shell: argonauts_core::worker::SessionShell::None,
     }
 }
 

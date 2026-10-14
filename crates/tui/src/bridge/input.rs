@@ -103,6 +103,15 @@ impl InputRouter {
                 cx.model.bottom.composer.restore(texts);
                 cx.model.bottom.menus.text_changed();
             }
+            AppEvent::ChatCleared => cx.model.bottom.composer.start_conversation(),
+            AppEvent::ChatResumed { earlier, turns, .. } => {
+                let yours = earlier
+                    .iter()
+                    .chain(turns)
+                    .filter(|turn| matches!(turn.from, Party::User))
+                    .map(|turn| turn.text.as_str());
+                cx.model.bottom.composer.resume_conversation(yours);
+            }
             AppEvent::VendorCommands { set } => {
                 cx.model.bottom.menus.commands = command_items(Some(set));
                 cx.model.bottom.composer.keywords.clone_from(&set.keywords);
@@ -172,6 +181,8 @@ impl InputRouter {
         // The draft held the word `ultracode` and Opt+W didn't ignore it. Read for every
         // prompt, so one that goes elsewhere never leaves it for the next.
         let workflow = cx.model.bottom.composer.take_workflow_request();
+        // Taken for every prompt too, so a command never leaves its pictures for the next.
+        let pictures = cx.model.bottom.composer.take_sent_pictures();
         let parsed = parse_input_with(text, cx.state.vendor_commands.as_ref());
         // A mod of yours is a command by its name, when nothing else has that name.
         let parsed = match (
@@ -212,9 +223,9 @@ impl InputRouter {
         );
         match parsed {
             Ok(ParsedInput::Empty) => empty_enter(cx),
-            Ok(ParsedInput::Plain { text }) => plain(text, shown, workflow, cx),
+            Ok(ParsedInput::Plain { text }) => plain(text, shown, workflow, pictures, cx),
             Ok(ParsedInput::Mention { .. }) if cx.model.bottom.menus.leads_with_file(text) => {
-                plain(text.trim().to_owned(), shown, workflow, cx);
+                plain(text.trim().to_owned(), shown, workflow, pictures, cx);
             }
             Ok(ParsedInput::Mention {
                 target,
@@ -302,6 +313,7 @@ fn empty_enter(cx: &mut Cx<'_>) {
         cx.out.send(UiCommand::Submit {
             text: String::new(),
             workflow_requested: false,
+            pictures: Vec::new(),
         });
     }
 }
@@ -310,7 +322,13 @@ fn empty_enter(cx: &mut Cx<'_>) {
 /// With nothing going, it shows as your message at once, grey until its turn starts and prints
 /// it; otherwise it shows grey from state until it's delivered. `workflow_requested` says this
 /// one request goes through a workflow, which the engine reads.
-fn plain(text: String, shown: &str, workflow_requested: bool, cx: &mut Cx<'_>) {
+fn plain(
+    text: String,
+    shown: &str,
+    workflow_requested: bool,
+    pictures: Vec<argonauts_core::pictures::Picture>,
+    cx: &mut Cx<'_>,
+) {
     let idle = matches!(cx.state.mode, None | Some(AppMode::Idle)) && !cx.model.is_working();
     if idle {
         let keywords = cx.keywords();
@@ -329,12 +347,14 @@ fn plain(text: String, shown: &str, workflow_requested: bool, cx: &mut Cx<'_>) {
         }
         let echo = UserMessage::pending(shown.trim())
             .with_full(text.clone())
-            .with_keywords(keywords);
+            .with_keywords(keywords)
+            .with_pictures(pictures.iter().map(|picture| picture.number));
         history.push_active(echo);
     }
     cx.out.send(UiCommand::Submit {
         text,
         workflow_requested,
+        pictures,
     });
 }
 
@@ -888,6 +908,7 @@ mod tests {
             [UiCommand::Submit {
                 text: "look at line 1\nline 2\nline 3\nline 4".into(),
                 workflow_requested: false,
+                pictures: Vec::new(),
             }]
         );
         // Grey in the live region until its turn starts, which prints it once.
@@ -902,6 +923,38 @@ mod tests {
         let mut working = Screen::new(fixture::working_state());
         working.submit("keep the old API");
         assert!(working.model.history.cells().is_empty());
+    }
+
+    /// A picture dropped into the input goes out with the prompt, and its echo has a row for
+    /// it beneath, as in Claude Code.
+    #[test]
+    fn a_picture_goes_out_with_the_prompt_and_its_echo_has_a_row_for_it() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        std::fs::write(&path, [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+        let mut screen = Screen::idle();
+        let composer = &mut screen.model.bottom.composer;
+        composer.handle_paste("what's off here?");
+        composer.handle_paste(&path.display().to_string());
+        let crate::bottom::ComposerEvent::Submitted { text, shown } =
+            composer.handle_key(KeyEvent::from(KeyCode::Enter))
+        else {
+            panic!("not sent");
+        };
+        let out = screen.act(UiAction::Submit { text, shown });
+        let [UiCommand::Submit { text, pictures, .. }] = out.commands.as_slice() else {
+            panic!("{:?}", out.commands);
+        };
+        assert_eq!(text, "what's off here? [Image #1]", "parsed, so trimmed");
+        assert_eq!(pictures.len(), 1);
+        assert_eq!(pictures[0].path, path);
+        let echoes: Vec<_> = screen.model.history.active_cells().collect();
+        let [(_, Cell::User(echo))] = echoes.as_slice() else {
+            panic!("one echo");
+        };
+        assert_eq!(echo.pictures, [1]);
     }
 
     /// The typed word asks for a workflow for that one request, unless Opt+W
@@ -928,6 +981,7 @@ mod tests {
         let submit = |text: &str, workflow_requested: bool| UiCommand::Submit {
             text: text.into(),
             workflow_requested,
+            pictures: Vec::new(),
         };
         let asked = "ultracode fix the flaky export test";
         assert_eq!(send(&mut screen, asked, false), [submit(asked, true)]);
@@ -957,6 +1011,7 @@ mod tests {
             [UiCommand::Submit {
                 text: "please ultrathink about this".into(),
                 workflow_requested: false,
+                pictures: Vec::new(),
             }]
         );
         let echoes: Vec<_> = screen.model.history.active_cells().collect();
@@ -1002,6 +1057,7 @@ mod tests {
             [UiCommand::Submit {
                 text: "@README.md what is this?".into(),
                 workflow_requested: false,
+                pictures: Vec::new(),
             }]
         );
         assert_eq!(idle.notice(), None);
@@ -1015,6 +1071,7 @@ mod tests {
             [UiCommand::Submit {
                 text: "@src/ keep the API".into(),
                 workflow_requested: false,
+                pictures: Vec::new(),
             }]
         );
         assert!(matches!(
@@ -1086,6 +1143,7 @@ mod tests {
             [UiCommand::Submit {
                 text: "yes, merge it".into(),
                 workflow_requested: false,
+                pictures: Vec::new(),
             }]
         );
         assert!(screen.model.bottom.card.is_some());
@@ -1103,6 +1161,7 @@ mod tests {
             [UiCommand::Submit {
                 text: String::new(),
                 workflow_requested: false,
+                pictures: Vec::new(),
             }]
         );
     }

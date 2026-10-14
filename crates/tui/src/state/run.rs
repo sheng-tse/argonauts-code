@@ -183,8 +183,7 @@ impl RunState {
         // workflow one of its steps runs count as that workflow reports them, so one tried
         // again is one agent, and those still to start are counted before they do.
         let agents: Vec<&SessionState> = self
-            .sessions
-            .values()
+            .sessions_in_order()
             .filter(|session| is_workflow_agent(session.step, session.workflow_step.as_ref()))
             .filter(|session| {
                 !self
@@ -192,6 +191,7 @@ impl RunState {
                     .names(session.label.as_deref().unwrap_or_default())
             })
             .collect();
+        let agents = steps(agents);
         let (reported_done, reported) = self.reported.agents();
         let done = reported_done
             + agents
@@ -814,6 +814,26 @@ impl RunState {
             .iter_mut()
             .find(|workflow| workflow.id == *id)
     }
+}
+
+/// One session per step, oldest first: an earlier try at a step, one that failed or one a
+/// later session took over from under the same label, counts in the newer one.
+fn steps(sessions: Vec<&SessionState>) -> Vec<&SessionState> {
+    let tried_again = |at: usize, before: &SessionState| {
+        let label = before.label.as_deref().map(str::trim).unwrap_or_default();
+        !label.is_empty()
+            && sessions[at + 1..].iter().any(|after| {
+                after.label.as_deref().map(str::trim) == Some(label)
+                    && (before.status == SessionStatus::Failed
+                        || after.standing_in_for.as_ref() == Some(&before.worker))
+            })
+    };
+    sessions
+        .iter()
+        .enumerate()
+        .filter(|(at, before)| !tried_again(*at, before))
+        .map(|(_, session)| *session)
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq)]

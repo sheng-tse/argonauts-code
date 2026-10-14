@@ -379,7 +379,11 @@ pub(crate) async fn replay_next(
     }
     let evolution = Evolution::open(store)?;
     let spent = super::or_empty(evolution.spent_this_month(OffsetDateTime::now_utc()))?;
-    let left = settings.limits.evolution_usd_per_month - spent;
+    // Without a monthly limit, each replay run still keeps to its own budget.
+    let left = settings
+        .limits
+        .evolution_usd_per_month
+        .map_or(f64::INFINITY, |limit| limit - spent);
     if left <= 0.0 {
         return Ok(Turn::Idle(
             "the month's evolution limit is spent; candidates wait for next month".to_owned(),
@@ -502,7 +506,10 @@ static DRAINING: AtomicBool = AtomicBool::new(false);
 /// warning in the log, and the next kick tries again.
 pub(crate) fn kick(env: Arc<AppEnv>, settings: Arc<Settings>, policy: Arc<dyn ApprovalPolicy>) {
     if !matches!(evolution::stage(&settings), Stage::Evolve | Stage::Auto)
-        || settings.limits.evolution_usd_per_month <= 0.0
+        || settings
+            .limits
+            .evolution_usd_per_month
+            .is_some_and(|limit| limit <= 0.0)
     {
         return;
     }
@@ -848,7 +855,7 @@ mod tests {
     #[tokio::test]
     async fn a_replay_the_budget_stops_waits_without_a_verdict() {
         let mut world = World::new(3);
-        world.settings.limits.evolution_usd_per_month = 3.0;
+        world.settings.limits.evolution_usd_per_month = Some(3.0);
         let candidate = world.propose("critique.rounds", "2");
         let queued = world.propose("divide.max_tasks", "6");
         assert_eq!(queued.state, CandidateState::Queued);
@@ -874,7 +881,7 @@ mod tests {
         assert_eq!(fake.asked().len(), 2);
         assert_eq!(world.evolution().spent_this_month(now).unwrap(), 2.0);
 
-        world.settings.limits.evolution_usd_per_month = 100.0;
+        world.settings.limits.evolution_usd_per_month = Some(100.0);
         let turn = world.turn(&fake).await;
         assert!(
             matches!(&turn, Turn::Replayed { candidate: id, .. } if *id == candidate.id),
@@ -917,7 +924,7 @@ mod tests {
         .unwrap();
         assert!(matches!(turn, Turn::Idle(why) if why.contains("stage")));
         let mut settings = Settings::default();
-        settings.limits.evolution_usd_per_month = 0.0;
+        settings.limits.evolution_usd_per_month = Some(0.0);
         let turn = replay_next(
             &store,
             &settings,

@@ -7,6 +7,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::ops::Range;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use ratatui::text::Span;
@@ -118,6 +119,25 @@ impl LineHighlighter {
         Self::new(Some(info))
     }
 
+    /// A highlighter for a file by its name, as Claude Code picks the language of an edit: the
+    /// extension, else the whole name (`Makefile`), else the file's first line (`#!/bin/sh`).
+    pub fn for_file(path: &str, first_line: Option<&str>) -> Self {
+        let set = syntax_set();
+        let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+        let extension = name.rsplit_once('.').map(|(_, extension)| extension);
+        let by_name = |token: &str| {
+            syntax_for(token)
+                .and_then(|name| set.find_syntax_by_name(name))
+                .or_else(|| set.find_syntax_by_extension(token))
+        };
+        let syntax = extension
+            .and_then(by_name)
+            .or_else(|| by_name(name))
+            .or_else(|| first_line.and_then(|line| set.find_syntax_by_first_line(line)))
+            .filter(|syntax| syntax.name != "Plain Text");
+        Self::for_syntax(syntax)
+    }
+
     fn for_syntax(syntax: Option<&'static SyntaxReference>) -> Self {
         Self {
             state: syntax.map(|syntax| (ParseState::new(syntax), ScopeStack::new())),
@@ -144,6 +164,30 @@ impl LineHighlighter {
             }
         });
         spans
+    }
+
+    /// Whether a grammar still colors the lines, which stops at the size guards or on an error.
+    pub fn colors(&self) -> bool {
+        self.state.is_some()
+    }
+
+    /// One line's roles as byte ranges into it, for a caller that styles the pieces itself, such
+    /// as a diff row that keeps its own background. Plain pieces are [`Role::Text`].
+    pub fn roles(&mut self, text: &str) -> Vec<(Range<usize>, Role)> {
+        let shell = self.shell;
+        let mut out: Vec<(Range<usize>, Role)> = Vec::new();
+        // The pieces come in order and cover the line.
+        let mut at = 0;
+        self.parse(text, |piece, scopes| {
+            let role = role_for(scopes, piece, shell).unwrap_or(Role::Text);
+            let (start, end) = (at, at + piece.len());
+            at = end;
+            match out.last_mut() {
+                Some((range, last)) if *last == role && range.end == start => range.end = end,
+                _ => out.push((start..end, role)),
+            }
+        });
+        out
     }
 
     /// Moves past one line without coloring it, for a line that was already drawn.

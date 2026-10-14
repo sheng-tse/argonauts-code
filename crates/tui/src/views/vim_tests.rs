@@ -162,16 +162,20 @@ fn help_and_pagers_scroll() {
         ViewOutcome::Close
     ));
 
+    // The raw log moves its cursor by event, and the rows follow it at the next frame.
     let mut pager = raw();
     vim.draw(&mut pager);
-    vim.press(&mut pager, 'j');
-    assert_eq!(pager.offset, 1);
+    assert!(!is_ignored(&vim.press(&mut pager, 'j')));
     vim.press(&mut pager, 'G');
+    vim.draw(&mut pager);
     let bottom = pager.offset;
     assert!(bottom > 50, "{bottom}");
+    // One up from the last event is still in view, so nothing scrolls.
     vim.press(&mut pager, 'k');
-    assert_eq!(pager.offset, bottom - 1);
+    vim.draw(&mut pager);
+    assert_eq!(pager.offset, bottom);
     vim.press(&mut pager, 'g');
+    vim.draw(&mut pager);
     assert_eq!(pager.offset, 0);
     assert!(matches!(vim.press(&mut pager, 'h'), ViewOutcome::Close));
 
@@ -186,6 +190,39 @@ fn help_and_pagers_scroll() {
     vim.press(&mut help, 'g');
     assert_eq!(help.offset, 0);
     assert!(matches!(vim.press(&mut help, 'h'), ViewOutcome::Close));
+}
+
+/// A long session's raw log keeps all of it, draws as fast as a short one, and `/` finds what
+/// is near its start.
+#[test]
+fn a_long_raw_log_draws_quickly_and_search_finds_its_start() {
+    let off = Driver::new(false);
+    let mut pager = Pager::raw(RawView {
+        session: SessionKey::numbered(1),
+        lines: (0..5_000)
+            .map(|n| format!(r#"{{"type":"event","n":{n},"text":"step {n}"}}"#))
+            .collect(),
+        truncated: false,
+        path: PathBuf::from("raw.jsonl"),
+        vendor_transcript: None,
+    });
+    let started = Instant::now();
+    for _ in 0..20 {
+        off.draw(&mut pager);
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    off.press(&mut pager, '/');
+    for c in "step 10\"".chars() {
+        off.press(&mut pager, c);
+    }
+    off.key(&mut pager, KeyCode::Enter);
+    let shown = off.text(&mut pager);
+    assert!(shown.contains("step 10\""), "{shown}");
+    assert!(shown.contains("of 5000"), "{shown}");
 }
 
 #[test]

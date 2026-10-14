@@ -240,7 +240,7 @@ mod tests {
         assert!(!text.contains("content"), "{text}");
     }
 
-    /// With recordings up to 2.1.293: that version is checked, a later patch newer with one
+    /// With recordings up to 2.1.295: that version is checked, a later patch newer with one
     /// notice that holds across restarts, and the next minor not checked.
     #[test]
     fn a_newer_patch_is_noticed_once_per_version() {
@@ -248,24 +248,24 @@ mod tests {
 
         let adapter = ClaudeCodeAdapter;
         let tested = adapter.tested_versions();
-        assert_eq!(version_fit("2.1.293", tested), VersionFit::Tested);
-        assert_eq!(version_fit("2.1.295", tested), VersionFit::Newer);
+        assert_eq!(version_fit("2.1.295", tested), VersionFit::Tested);
+        assert_eq!(version_fit("2.1.297", tested), VersionFit::Newer);
         assert_eq!(version_fit("2.2.0", tested), VersionFit::Untested);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state/cli-versions.json");
-        assert!(CliVersions::notice_once(&path, &adapter, "2.1.293").is_none());
+        assert!(CliVersions::notice_once(&path, &adapter, "2.1.295").is_none());
         assert!(CliVersions::notice_once(&path, &adapter, "2.2.0").is_none());
-        let notice = CliVersions::notice_once(&path, &adapter, "2.1.295").unwrap();
+        let notice = CliVersions::notice_once(&path, &adapter, "2.1.297").unwrap();
         assert_eq!(
             notice,
-            "Claude Code 2.1.295 is newer than 2.1.293, the newest version Argonauts was \
+            "Claude Code 2.1.297 is newer than 2.1.295, the newest version Argonauts was \
              checked with. It should work. /doctor lists anything it sends that Argonauts \
              doesn't read yet."
         );
         // The file is read again each time, as after a restart.
-        assert!(CliVersions::notice_once(&path, &adapter, "2.1.295").is_none());
-        assert!(CliVersions::notice_once(&path, &adapter, "2.1.296").is_some());
+        assert!(CliVersions::notice_once(&path, &adapter, "2.1.297").is_none());
+        assert!(CliVersions::notice_once(&path, &adapter, "2.1.298").is_some());
     }
 
     /// Claude Code lists `/heapdump` as its own, which its table doesn't have; `/compact` and

@@ -18,12 +18,15 @@ mod keep_awake;
 mod learning;
 mod live_registry;
 mod mods;
+mod old_names;
+mod overview;
 mod prompts;
 mod repo_files;
 mod run_command;
 mod run_files;
 mod setup;
 mod startup;
+mod telemetry;
 mod trace;
 mod trust;
 mod usage_ledger;
@@ -46,12 +49,13 @@ pub use ancestry::refuse_inside_agent;
 pub use commands::{
     ApprovalsReport, DoctorExtras, ParkedReminder, StatusReport, approvals_report, auto_off,
     config_schema, config_set, config_show, current_settings, doctor_adapters, doctor_details,
-    doctor_extras, inbox, models, repo_root, status,
+    doctor_extras, inbox, models, repo_root, settings_warnings, status,
 };
 pub use learning::shell::{LearningShell, ShellOutput, learning, learning_inbox};
 pub use live_registry::{LiveSupervisor, live_supervisors};
 pub use mods::doctor_problems as mod_problems;
 pub use run_command::{RunCommand, RunCommandExit, run_command};
+pub use telemetry::{TelemetryAction, telemetry};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InteractiveOptions {

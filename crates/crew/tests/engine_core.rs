@@ -201,3 +201,26 @@ async fn shutdown_pauses_then_parks() -> anyhow::Result<()> {
     assert!(kinds.contains(&"run/pause_requested".to_owned()));
     Ok(())
 }
+
+/// A repository that ignores `.argonauts/` never stops a run: the run's own files stay on
+/// disk and out of the commits, and one line says so.
+#[tokio::test]
+async fn an_ignored_argonauts_folder_never_stops_a_run() -> anyhow::Result<()> {
+    let mut crew = Crew::new()?;
+    crew.repo.write(".gitignore", ".argonauts/\n")?;
+    crew.repo.commit_all("ignore .argonauts/")?;
+    crew.answering_worker("claude-code/opus", "claude");
+    crew.answering_worker("codex/gpt-x", "gpt");
+    let outcome = crew.start(RunMode::Solo, "add a --verbose flag").await?;
+    let failed = matches!(
+        outcome.exit,
+        EngineExit::Finished(argonauts_core::events::run::RunOutcome::Failed)
+    );
+    assert!(!failed, "{:?}", names(&outcome.events));
+    let said = outcome.events.iter().any(|event| {
+        matches!(&event.kind, RunEventKind::Note(note)
+            if note.text == argonauts_crew::integrate::conductor::IGNORED_LINE)
+    });
+    assert!(said, "{:?}", names(&outcome.events));
+    Ok(())
+}

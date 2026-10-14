@@ -118,6 +118,7 @@ pub(super) async fn script_for(
             resume: None,
             slot: 0,
             label: Some("plan:orchestrator".to_owned()),
+            reviews: false,
         };
         let end = host
             .run_session_in_turn(plan, None, StandIns::Allowed, &|_| Ok(()))

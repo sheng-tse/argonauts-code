@@ -635,8 +635,8 @@ mod tests {
 
     use super::*;
 
-    /// What Claude Code lists itself counts over the catalogs, a model it adds
-    /// can be picked at once, and the list comes back after a restart.
+    /// What Claude Code lists itself counts over the catalogs, a model it adds can be picked
+    /// at once, and the list comes back after a restart.
     #[test]
     fn the_models_claude_code_lists_are_mirrored_and_kept() {
         use argonauts_core::ReportedModel;

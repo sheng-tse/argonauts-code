@@ -415,7 +415,9 @@ impl Keymap {
             let key = self.keys(action).into_iter().next()?;
             Some(format!("{} {hint}", spaced(&key)))
         });
-        typed.into_iter().chain(bound).collect()
+        // The input box's own undo, which no setting rebinds.
+        let undo = "ctrl + _ to undo".to_owned();
+        typed.into_iter().chain(bound).chain([undo]).collect()
     }
 
     /// `(keys, action)` rows for the help view and the `?` panel.
@@ -795,6 +797,7 @@ mod tests {
             "ctrl + o for the transcript",
             "ctrl + g to edit in $EDITOR",
             "tab to answer",
+            "ctrl + _ to undo",
         ] {
             assert!(hints.iter().any(|h| h == hint), "{hint}: {hints:?}");
         }

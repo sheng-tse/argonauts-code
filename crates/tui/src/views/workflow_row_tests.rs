@@ -258,7 +258,7 @@ fn a_runs_row_follows_the_workflow_its_step_runs() {
     let (mut state, id, step) = run_with_a_step_workflow();
     // Before the workflow says anything, the run's own phase is all there is.
     let before = run_row_text(&state);
-    assert!(before.contains("2/3 agents · Work ·"), "{before}");
+    assert!(before.contains("2/3 steps · Work ·"), "{before}");
 
     let workflow = reported(
         &["Build", "Review"],
@@ -276,7 +276,7 @@ fn a_runs_row_follows_the_workflow_its_step_runs() {
         .workflow_reported(&step, &workflow);
     // The agent that wrote the steps, and the workflow's four: two done of five.
     let text = run_row_text(&state);
-    assert!(text.contains("2/5 agents · Build ·"), "{text}");
+    assert!(text.contains("2/5 steps · Build ·"), "{text}");
 
     // A newer report replaces the last one, and the row moves on with it.
     let later = reported(
@@ -291,7 +291,7 @@ fn a_runs_row_follows_the_workflow_its_step_runs() {
     let run = state.runs.get_mut(&id).unwrap();
     run.workflow_reported(&step, &later);
     let text = run_row_text(&state);
-    assert!(text.contains("4/5 agents · Review ·"), "{text}");
+    assert!(text.contains("4/5 steps · Review ·"), "{text}");
 }
 
 /// Twelve phases, two of one name, or none reported yet: the row names the one going on, and
@@ -321,13 +321,13 @@ fn a_runs_row_names_whatever_phase_its_steps_workflow_is_in() {
     run.workflow_reported(&step, &twice);
     // Between two agents, the phase of the last one that started.
     let text = run_row_text(&state);
-    assert!(text.contains("agents · Label ·"), "{text}");
+    assert!(text.contains("steps · Label ·"), "{text}");
 
     let nothing = reported(&[], &[]);
     let run = state.runs.get_mut(&id).unwrap();
     run.workflow_reported(&step, &nothing);
     let text = run_row_text(&state);
-    assert!(text.contains("2/3 agents · Work ·"), "{text}");
+    assert!(text.contains("2/3 steps · Work ·"), "{text}");
 }
 
 /// The runner's own event is all the row needs: as it arrives with the run's other events,
@@ -364,5 +364,5 @@ fn the_runners_report_event_reaches_the_runs_row() {
         }),
     });
     let text = run_row_text(&state);
-    assert!(text.contains("2/4 agents · Build ·"), "{text}");
+    assert!(text.contains("2/4 steps · Build ·"), "{text}");
 }

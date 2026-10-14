@@ -538,6 +538,14 @@ pub fn current_settings(repo: Option<&Path>, overrides: Vec<String>) -> anyhow::
     resolve_here(repo, overrides).map(|(_, resolved)| resolved.settings)
 }
 
+/// What reading the settings here warned of, such as a key that can't be used and so has its
+/// default, for Doctor to name.
+pub fn settings_warnings(repo: Option<&Path>, overrides: Vec<String>) -> Vec<String> {
+    resolve_here(repo, overrides)
+        .map(|(_, resolved)| resolved.warnings)
+        .unwrap_or_default()
+}
+
 /// The project holding `dir`, or the current directory: the top of its git repository, or the
 /// folder itself outside one.
 pub fn repo_root(dir: Option<&Path>) -> anyhow::Result<PathBuf> {

@@ -442,6 +442,7 @@ mod tests {
             env: Vec::new(),
             asking: None,
             cli_workflow: crate::worker::CliWorkflow::default(),
+            shell: crate::worker::SessionShell::None,
         }
     }
 

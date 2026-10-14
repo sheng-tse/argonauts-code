@@ -1,5 +1,5 @@
-//! Subagents as the main session's stream reports them, replayed from a live
-//! check on Claude Code 2.1.292: two background subagents, a message that
+//! Subagents as the main session's stream reports them, replayed from a live check on
+//! Claude Code 2.1.292: two background subagents, a message that
 //! reaches one through the main agent's `SendMessage`, and one stopped alone with `stop_task`.
 //! The recording keeps the task events, the `Agent` and `SendMessage` calls with their results,
 //! and the control replies, with paths and the session id scrubbed.

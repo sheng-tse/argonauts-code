@@ -703,6 +703,7 @@ impl Harness {
         self.send(UiCommand::Submit {
             text: text.to_owned(),
             workflow_requested: false,
+            pictures: Vec::new(),
         })
         .await;
     }

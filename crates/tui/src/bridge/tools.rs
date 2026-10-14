@@ -595,7 +595,7 @@ fn call_args(input: &Value) -> String {
 
 /// Worktrees sit at `<home>/worktrees/<repo>/<run>/<card>/`, and the block's header already
 /// names the card, so a path inside one starts after it.
-fn short_path(path: &str) -> String {
+pub(crate) fn short_path(path: &str) -> String {
     let path = path.strip_prefix("file://").unwrap_or(path);
     if let Some(at) = path.find("/worktrees/") {
         let mut parts = path[at + "/worktrees/".len()..].splitn(4, '/');
@@ -607,6 +607,18 @@ fn short_path(path: &str) -> String {
         }
     }
     path.to_owned()
+}
+
+/// Whether a path as a CLI named it, often absolute, and one relative to the repo name the same
+/// file.
+pub(crate) fn same_file(named: &str, relative: &str) -> bool {
+    let named = short_path(named);
+    let relative = relative.trim_start_matches("./");
+    !relative.is_empty()
+        && (named == relative
+            || named
+                .strip_suffix(relative)
+                .is_some_and(|folder| folder.ends_with('/')))
 }
 
 fn edit_preview(input: &Value) -> Option<ToolItem> {
@@ -624,6 +636,32 @@ fn edit_preview(input: &Value) -> Option<ToolItem> {
         .map(|path| short_path(&path))
         .unwrap_or_default();
     Some(ToolItem::Diff(view.updated(path, added, removed)))
+}
+
+/// Swaps the preview a call drew from its input for the patch its result reported, which has
+/// the file's line numbers and the lines around each change. An empty or unreadable patch
+/// leaves the preview.
+pub fn take_patch(call: &mut ToolCall, path: &str, hunks: &str) {
+    let Ok(view) = DiffView::from_unified(hunks) else {
+        return;
+    };
+    if view.is_empty() {
+        return;
+    }
+    let (added, removed) = view.stats();
+    let path = short_path(path);
+    // The preview's rows and its `… +N lines` go, and the patch takes their place. The patch
+    // of another file the same call changed stays.
+    let preview = |item: &ToolItem| match item {
+        ToolItem::Diff(diff) => diff.file().is_none_or(|file| file == path),
+        ToolItem::Text { .. } => true,
+        _ => false,
+    };
+    let at = call.body.iter().position(preview);
+    call.body.retain(|item| !preview(item));
+    let view = view.updated(path, added, removed);
+    let at = at.unwrap_or(call.body.len()).min(call.body.len());
+    call.body.insert(at, ToolItem::Diff(view));
 }
 
 fn write_preview(input: &Value) -> Vec<ToolItem> {
@@ -649,6 +687,28 @@ fn write_preview(input: &Value) -> Vec<ToolItem> {
         )));
     }
     items
+}
+
+/// The lines an edit or a write adds and removes, read off its input as its preview is. A
+/// written file counts every line as added, since the file it replaced isn't known.
+pub fn changed_lines(name: &str, input: &Value) -> (usize, usize) {
+    let tool = match normalize(name).as_str() {
+        "filechange" => file_change_tool(input),
+        _ => Tool::named(name),
+    };
+    match tool {
+        Tool::Update => edit_pairs(input)
+            .iter()
+            .map(|(old, new)| DiffView::between(old, new, 0).stats())
+            .fold((0, 0), |(added, removed), (more, fewer)| {
+                (added + more, removed + fewer)
+            }),
+        Tool::Write => (
+            string_field(input, CONTENT_KEYS).map_or(0, |content| content.lines().count()),
+            0,
+        ),
+        _ => (0, 0),
+    }
 }
 
 fn edit_pairs(input: &Value) -> Vec<(String, String)> {
@@ -1433,6 +1493,60 @@ mod tests {
         assert_eq!(
             rows(&call, 80),
             "● Update(a.rs)\n  ⎿  String to replace not found in file. …"
+        );
+    }
+
+    #[test]
+    fn an_edit_takes_the_patch_its_result_reported() {
+        let mut call = start_call(
+            "claude-code",
+            "Edit",
+            &json!({"file_path": "/w/src/a.rs", "old_string": "x", "new_string": "y"}),
+        );
+        assert_eq!(
+            rows(&call, 40),
+            "● Update(/w/src/a.rs)\n  ⎿  Added 1 line, removed 1 line\n        -x\n        +y"
+        );
+        take_patch(
+            &mut call,
+            "/w/src/a.rs",
+            "@@ -6,3 +6,3 @@\n a\n-x\n+y\n b\n",
+        );
+        finish_call(&mut call, true, Some("The file has been updated."));
+        assert_eq!(
+            rows(&call, 40),
+            "● Update(/w/src/a.rs)\n  ⎿  Added 1 line, removed 1 line\n      6  a\n      7 -x\n      7 +y\n      8  b"
+        );
+        // A write over a file swaps the whole new text for what changed.
+        let mut call = start_call(
+            "claude-code",
+            "Write",
+            &json!({"file_path": "/w/b.txt", "content": "one\ntwo\n"}),
+        );
+        take_patch(&mut call, "/w/b.txt", "@@ -1,2 +1,2 @@\n one\n-2\n+two\n");
+        assert_eq!(
+            rows(&call, 40),
+            "● Write(/w/b.txt)\n  ⎿  Added 1 line, removed 1 line\n      1  one\n      2 -2\n      2 +two"
+        );
+        // A patch that can't be read leaves the preview.
+        let before = rows(&call, 40);
+        take_patch(&mut call, "/w/b.txt", "nonsense");
+        assert_eq!(rows(&call, 40), before);
+    }
+
+    #[test]
+    fn a_codex_edit_of_two_files_keeps_both_patches() {
+        let changes = json!({"changes": [
+            {"path": "/w/a.txt", "kind": "update"},
+            {"path": "/w/b.txt", "kind": "update"},
+        ]});
+        let mut call = start_call("codex", "file_change", &changes);
+        take_patch(&mut call, "/w/a.txt", "@@ -1 +1 @@\n-1\n+one\n");
+        take_patch(&mut call, "/w/b.txt", "@@ -4 +4 @@\n-4\n+four\n");
+        finish_call(&mut call, true, None);
+        assert_eq!(
+            rows(&call, 40),
+            "● Update(/w/a.txt, /w/b.txt)\n  ⎿  Added 1 line, removed 1 line\n      1 -1\n      1 +one\n     Added 1 line, removed 1 line\n      4 -4\n      4 +four"
         );
     }
 

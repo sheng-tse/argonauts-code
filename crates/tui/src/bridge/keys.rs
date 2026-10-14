@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use argonauts_core::RunId;
+use argonauts_core::api::UsagePeriod;
 use argonauts_core::app::{AppMode, UiCommand, ViewRequest};
 use argonauts_core::events::session::SubagentStatus;
 use argonauts_core::input::{SlashCommand, ViewAction, WidgetsAction};
@@ -58,20 +59,19 @@ impl KeyActions {
                 let watch = cx.model.bottom.band.watch.clone();
                 let tab = Tab::showing(*name);
                 cx.out.open(OverviewView::new(tab, watch));
-                cx.out.send(match tab {
-                    Tab::Status => UiCommand::Request {
-                        view: ViewRequest::Status,
-                    },
-                    Tab::Context => UiCommand::Request {
-                        view: ViewRequest::Context,
-                    },
-                    _ => UiCommand::Slash {
-                        command: SlashCommand::Usage {
-                            period: None,
-                            action: ViewAction::Open,
-                        },
-                    },
-                });
+                // What the panel asks when its own tab opens, so the tab draws whole and
+                // nothing of it reaches the chat.
+                let ask = |view| UiCommand::Request { view };
+                match tab {
+                    Tab::Status => cx.out.send(ask(ViewRequest::StatusTab)),
+                    Tab::Context => cx.out.send(ask(ViewRequest::Context)),
+                    _ => {
+                        cx.out.send(ask(ViewRequest::Usage {
+                            period: UsagePeriod::default(),
+                        }));
+                        cx.out.send(ask(ViewRequest::ReadPlanUsage));
+                    }
+                }
             }
             UiAction::OpenCrewView => {
                 cx.out.open(CrewView::opened_left(cx.state));
@@ -627,7 +627,15 @@ mod tests {
         let request = |view| UiCommand::Request { view };
         let (out, _) = act(&state, &UiAction::OpenTab(WidgetName::Run));
         assert_eq!(out.views.len(), 1);
-        assert_eq!(out.commands, [request(ViewRequest::Status)]);
+        assert_eq!(out.commands, [request(ViewRequest::StatusTab)]);
+        // Never the old read, which printed "No runs in this repo yet." into the chat.
+        for pinned in [WidgetName::Run, WidgetName::Waiting, WidgetName::Recent] {
+            let (out, _) = act(&state, &UiAction::OpenTab(pinned));
+            assert!(
+                !out.commands.contains(&request(ViewRequest::Status)),
+                "{pinned:?}"
+            );
+        }
         let (out, _) = act(&state, &UiAction::OpenTab(WidgetName::Context));
         assert_eq!(out.commands, [request(ViewRequest::Context)]);
         let (out, _) = act(&state, &UiAction::OpenTab(WidgetName::Spend));
@@ -635,9 +643,14 @@ mod tests {
         assert!(
             matches!(
                 out.commands[..],
-                [UiCommand::Slash {
-                    command: SlashCommand::Usage { .. }
-                }]
+                [
+                    UiCommand::Request {
+                        view: ViewRequest::Usage { .. }
+                    },
+                    UiCommand::Request {
+                        view: ViewRequest::ReadPlanUsage
+                    }
+                ]
             ),
             "{:?}",
             out.commands

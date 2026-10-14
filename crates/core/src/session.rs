@@ -9,6 +9,7 @@ use crate::registry::LaunchHints;
 use crate::settings::context::ContextAsk;
 use crate::settings::sessions::{Compaction, NativeFanout};
 use crate::settings::workflows::WorkflowSize;
+use crate::worker::SessionShell;
 
 /// Whether a session may change files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -49,6 +50,9 @@ pub enum AuthMode {
 pub struct SessionRequest {
     pub workdir: PathBuf,
     pub prompt: String,
+    /// Pictures that go with the prompt, as files, for a CLI that takes them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pictures: Vec<crate::pictures::Picture>,
     /// `None` uses the CLI's default.
     pub model: Option<String>,
     /// Such as `low`. `None` uses the CLI's default.
@@ -127,6 +131,13 @@ pub struct SessionRequest {
     /// works as it does when you type it into the CLI itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub typed_by_you: bool,
+    /// No workflow or background agent of the CLI's own: its tools for them are left out and
+    /// switched off. See [`CliWorkflow::background_off`](crate::worker::CliWorkflow).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background_off: bool,
+    /// What a read-only session may run in a shell.
+    #[serde(default, skip_serializing_if = "SessionShell::is_none")]
+    pub shell: SessionShell,
     /// How big a workflow of the CLI's own may be, where it takes a guideline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_size: Option<WorkflowSize>,

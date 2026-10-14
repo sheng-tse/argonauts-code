@@ -100,7 +100,10 @@ pub async fn compare(host: &Host, call: &StepCall) -> EngineResult<Vec<(WorkerRe
             Err(error) if dropped(&error) => round::note(
                 host,
                 NoteLevel::Warn,
-                format!("Dropped {worker}'s comparison: {error}"),
+                format!(
+                    "Dropped {}'s comparison: {error}",
+                    crate::roles::display_name(&worker)
+                ),
             )?,
             Err(error) => {
                 fatal.get_or_insert(error);

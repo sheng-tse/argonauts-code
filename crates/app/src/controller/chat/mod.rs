@@ -27,6 +27,7 @@ mod crew;
 mod direct;
 #[cfg(test)]
 mod direct_tests;
+mod edits;
 mod excerpt;
 mod goal;
 mod handover;
@@ -42,12 +43,15 @@ mod mention_tests;
 mod mirror;
 mod offer;
 mod past;
+#[cfg(test)]
+mod picture_tests;
 mod prefs;
 #[cfg(test)]
 mod request_tests;
 #[cfg(test)]
 mod resume_tests;
 mod run_copy;
+mod run_news;
 #[cfg(test)]
 mod shared_tests;
 mod side;
@@ -79,6 +83,7 @@ use argonauts_core::events::run::{Party, RunMode};
 use argonauts_core::events::session::VendorWorkflow;
 use argonauts_core::input::SlashCommand;
 use argonauts_core::names::{ChatId, ChoiceId, SessionKey, TurnId, WorkerRef, WorkflowId};
+use argonauts_core::pictures::Picture;
 use argonauts_core::settings::workflows::RunStyle;
 use argonauts_core::steps::intake::ChangeEstimate;
 use argonauts_core::steps::{StepError, StepOutcome};
@@ -101,6 +106,9 @@ use self::past::PastChat;
 use self::prefs::Prefs;
 pub(crate) use self::prefs::{fast, output_style, plan};
 pub(crate) use self::run_copy::tidy_copies;
+pub(crate) use self::run_news::{
+    hear as hear_runs, run_not_started, run_started as run_started_here,
+};
 pub(crate) use self::side::{btw, compact, recap, rename, review};
 pub(crate) use self::talk::conversation_steps;
 #[cfg(test)]
@@ -169,6 +177,15 @@ pub(crate) struct ChatState {
     context_watch: Option<ContextDetail>,
     /// What the main session's setup, guide and lookup tools hold between calls.
     talk: talk::TalkState,
+    /// The runs the conversation started, which the main session hears of.
+    run_news: run_news::Watched,
+    /// The MCP servers the main session's CLI brought from its own settings, by name, once a
+    /// session has said.
+    mcp_servers: Option<Vec<String>>,
+    /// The pictures of the message just sent, for the turn that carries your words.
+    pictures: Vec<Picture>,
+    /// The files Codex's edits change, read around each edit for its patch.
+    edits: edits::Edits,
 }
 
 struct Turn {
@@ -194,9 +211,10 @@ struct Turn {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Queued {
-    Request(String),
+    /// Your words, with the pictures their chips name.
+    Request(String, Vec<Picture>),
     /// A request you typed `ultracode` in.
-    WorkflowRequest(String),
+    WorkflowRequest(String, Vec<Picture>),
     Ask(String),
     /// One of the main agent CLI's own commands.
     Vendor {
@@ -274,6 +292,10 @@ impl ChatState {
             direct: direct::DirectState::default(),
             context_watch: None,
             talk: talk::TalkState::default(),
+            run_news: run_news::Watched::default(),
+            mcp_servers: None,
+            pictures: Vec::new(),
+            edits: edits::Edits::default(),
         }
     }
 
@@ -318,6 +340,10 @@ impl ChatState {
             direct: direct::DirectState::default(),
             context_watch: None,
             talk: talk::TalkState::default(),
+            run_news: run_news::Watched::default(),
+            mcp_servers: None,
+            pictures: Vec::new(),
+            edits: edits::Edits::default(),
         }
     }
 
@@ -803,6 +829,40 @@ pub(crate) fn id(chat: &ChatState) -> &ChatId {
     &chat.id
 }
 
+/// When the conversation's first words were written, for the Status tab.
+pub(crate) fn started(chat: &ChatState) -> Option<time::OffsetDateTime> {
+    chat.store.started()
+}
+
+/// The tools a turn that starts now is offered, by name.
+pub(crate) fn main_tools(ctx: &Ctx, chat: &ChatState) -> Vec<String> {
+    tools::offered(ctx, chat)
+}
+
+/// The servers a session's tools come from, beside Argonauts' own: Claude Code names an MCP
+/// tool `mcp__<server>__<tool>`.
+pub(crate) fn own_mcp_servers(tools: &[String]) -> Vec<String> {
+    let mut servers: Vec<String> = tools
+        .iter()
+        .filter_map(|tool| tool.strip_prefix("mcp__")?.split_once("__"))
+        .map(|(server, _)| server.to_owned())
+        .filter(|server| !server.starts_with("argonauts"))
+        .collect();
+    servers.sort();
+    servers.dedup();
+    servers
+}
+
+/// The pictures of the message just sent, which the turn that carries it takes.
+pub(crate) fn send_pictures(chat: &mut ChatState, pictures: Vec<Picture>) {
+    chat.pictures = pictures;
+}
+
+/// The MCP servers the main session's CLI said it brought, once one has started.
+pub(crate) fn mcp_servers(chat: &ChatState) -> Option<Vec<String>> {
+    chat.mcp_servers.clone()
+}
+
 /// No step of this chat is still running.
 pub(crate) fn settled(chat: &ChatState) -> bool {
     chat.turn.is_none() && chat.stopping.is_empty()
@@ -902,14 +962,16 @@ pub(crate) fn queue_turn(
     chat: &mut ChatState,
     text: String,
 ) -> anyhow::Result<Vec<Effect>> {
+    let pictures = &chat.pictures;
     let joined = chat.turn.as_mut().is_some_and(|turn| {
         let trimmed = text.trim();
         !turn.step.own_session()
             && !trimmed.is_empty()
             && turn.live.takes_messages()
-            && turn.live.send(trimmed.to_owned())
+            && turn.live.send(trimmed.to_owned(), pictures.clone())
     });
     if joined {
+        chat.pictures.clear();
         return Ok(Vec::new());
     }
     request(ctx, chat, text)
@@ -999,12 +1061,12 @@ pub(crate) fn take_back(ctx: &mut Ctx, chat: &mut ChatState) {
         .queued
         .iter()
         .filter_map(|(queued, _)| match queued {
-            Queued::Request(text) | Queued::WorkflowRequest(text) => Some(text.clone()),
+            Queued::Request(text, _) | Queued::WorkflowRequest(text, _) => Some(text.clone()),
             _ => None,
         })
         .collect();
     chat.queued
-        .retain(|(queued, _)| !matches!(queued, Queued::Request(_) | Queued::WorkflowRequest(_)));
+        .retain(|(queued, _)| !matches!(queued, Queued::Request(..) | Queued::WorkflowRequest(..)));
     if let Some(turn) = chat.turn.as_mut() {
         turn.live.take_back();
     }
@@ -1043,11 +1105,17 @@ pub(crate) async fn workflow_request(
         return Ok(Vec::new());
     }
     if chat.turn.is_some() {
-        chat.queue(Queued::WorkflowRequest(text));
+        let pictures = std::mem::take(&mut chat.pictures);
+        chat.queue(Queued::WorkflowRequest(text, pictures));
         return Ok(Vec::new());
     }
     let direct = direct::preset_is_direct(ctx.settings()) || chat.place.is_some();
-    match ultra::route(ctx.settings(), true) {
+    // A turn that goes to the main session notes its own use as it starts.
+    let route = ultra::route(ctx.settings(), true);
+    if matches!(route, ultra::Route::Crew | ultra::Route::SameModel) {
+        crate::telemetry::used(&ctx.env.paths, crate::telemetry::Use::Ultracode);
+    }
+    match route {
         ultra::Route::Crew => start_workflow(ctx, chat, text).await,
         ultra::Route::SameModel => Ok(same_model_workflow(ctx, chat, text)),
         ultra::Route::MainSession(cli_workflow) if direct => {
@@ -1111,7 +1179,8 @@ fn request(ctx: &mut Ctx, chat: &mut ChatState, text: String) -> anyhow::Result<
         return Ok(Vec::new());
     }
     if chat.turn.is_some() {
-        chat.queue(Queued::Request(text));
+        let pictures = std::mem::take(&mut chat.pictures);
+        chat.queue(Queued::Request(text, pictures));
         return Ok(Vec::new());
     }
     let effects = name_the_chat(chat, &text);
@@ -1336,7 +1405,7 @@ pub(crate) fn cancel_turn(ctx: &mut Ctx, chat: &mut ChatState) -> anyhow::Result
         .queued
         .drain(..)
         .map(|(queued, _)| match queued {
-            Queued::Request(text) | Queued::WorkflowRequest(text) => text,
+            Queued::Request(text, _) | Queued::WorkflowRequest(text, _) => text,
             Queued::Ask(question) => format!("/ask {question}"),
             Queued::Vendor { name, args } if args.is_empty() => format!("/{name}"),
             Queued::Vendor { name, args } => format!("/{name} {args}"),
@@ -1564,13 +1633,15 @@ fn send_queued(chat: &mut ChatState) -> Vec<Effect> {
         .drain(..)
         .map(|(queued, typed_after)| {
             let command = match queued {
-                Queued::Request(text) => UiCommand::Submit {
+                Queued::Request(text, pictures) => UiCommand::Submit {
                     text,
                     workflow_requested: false,
+                    pictures,
                 },
-                Queued::WorkflowRequest(text) => UiCommand::Submit {
+                Queued::WorkflowRequest(text, pictures) => UiCommand::Submit {
                     text,
                     workflow_requested: true,
+                    pictures,
                 },
                 Queued::Ask(question) => UiCommand::Slash {
                     command: SlashCommand::Ask { question },

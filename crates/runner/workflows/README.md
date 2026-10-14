@@ -78,9 +78,12 @@ started this way can't start another, and `workflows.max_depth = 1` keeps every 
 starting any.
 
 A worker runs a workflow of its own only when you allow it: for one step with
-`own_workflow = true`, or for every worker with `roles.worker.native_fanout = "on"`. Its CLI
-then fans out as it sees fit, and what it starts shows nested under that worker. A CLI without
-workflows of its own works as it always does.
+`own_workflow = true`, or for every agent of the crew with `crew.worker_workflows = true`.
+Otherwise its CLI starts none, nor any agent in the background, since Argonauts already runs
+the crew and one inside a worker can't be watched or merged. When allowed, its CLI fans out as
+it sees fit, the worker's session stays open until what it started reports, and what it
+starts shows nested under that worker. A CLI without workflows of its own works as it always
+does.
 
 ## How big, how often, and who runs it
 

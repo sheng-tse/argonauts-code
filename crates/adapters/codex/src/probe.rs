@@ -1,11 +1,14 @@
-//! Reads your Codex plan's rate limits through `codex app-server`, which starts no turn and
-//! spends nothing. The exchange is JSON-RPC lines without the `jsonrpc` field: `initialize`,
-//! `initialized`, then `account/rateLimits/read`.
+//! Reads your Codex plan's rate limits through `codex app-server`, as Codex's own status
+//! screen does, which starts no turn and spends nothing. The exchange is JSON-RPC lines
+//! without the `jsonrpc` field: `initialize`, `initialized`, `account/read` for who is signed
+//! in, then `account/rateLimits/read`.
 
 use std::path::Path;
 
+use argonauts_core::hash::sha256_hex;
 use argonauts_core::limits::{QuotaAnswer, QuotaReading, QuotaSource, QuotaStatus};
 use argonauts_core::names::VendorId;
+use argonauts_core::plan_usage::{LiveUsage, LiveWindow, plan_name};
 use argonauts_core::{CommandSpec, env_remove_except};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -14,6 +17,10 @@ use time::OffsetDateTime;
 use crate::adapter::{ID, SUBSCRIPTION_ENV_VARS};
 
 const RATE_LIMITS_REQUEST_ID: u64 = 2;
+const ACCOUNT_REQUEST_ID: u64 = 3;
+
+/// The main Codex bucket's id in `rateLimitsByLimitId`; every other one is a model's own.
+const MAIN_BUCKET: &str = "codex";
 
 /// A share used from which the reading is a warning.
 pub const WARNING_FROM: f64 = 0.8;
@@ -44,6 +51,11 @@ fn request_lines() -> String {
         }),
         json!({ "method": "initialized" }),
         json!({
+            "id": ACCOUNT_REQUEST_ID,
+            "method": "account/read",
+            "params": { "refreshToken": false },
+        }),
+        json!({
             "id": RATE_LIMITS_REQUEST_ID,
             "method": "account/rateLimits/read",
             "params": { "excludeResetCreditDetails": true },
@@ -55,7 +67,7 @@ fn request_lines() -> String {
 /// The answer to the rate-limit request, as the most constraining window. An error answer
 /// reads as unknown, with the error kept for `doctor`. `None` until the answer arrives.
 pub fn parse(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaReading> {
-    let answer = answer(stdout, observed_at)?;
+    let answer = answer_at_end(stdout, observed_at)?;
     // Only the binding window carries the payload.
     answer
         .windows
@@ -63,16 +75,17 @@ pub fn parse(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaReading> 
         .find(|reading| reading.detail.is_some())
 }
 
-/// The answer to the rate-limit request, one reading for each window, and the plan. The
-/// binding window carries the account's own block and the payload. `None` until the answer
-/// arrives.
+/// The answer once both the account and the rate limits have replied. `None` until then.
 pub fn answer(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaAnswer> {
-    let answer = stdout
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
-        .find(|message| {
-            message.get("id").and_then(Value::as_u64) == Some(RATE_LIMITS_REQUEST_ID)
-        })?;
+    reply(stdout, ACCOUNT_REQUEST_ID)?;
+    answer_at_end(stdout, observed_at)
+}
+
+/// The answer to the rate-limit request, one reading for each window, the plan, and the whole
+/// reading with the account it is for. The binding window carries the payload. `None` until
+/// the rate limits reply.
+pub fn answer_at_end(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaAnswer> {
+    let answer = reply(stdout, RATE_LIMITS_REQUEST_ID)?;
     let unknown = QuotaReading {
         vendor: VendorId(ID.to_owned()),
         status: QuotaStatus::Unknown,
@@ -85,18 +98,26 @@ pub fn answer(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaAnswer> 
         wrap_up: false,
     };
     let Some(mut result) = answer.get("result").cloned() else {
-        let error = json!({ "error": answer.get("error").cloned().unwrap_or(Value::Null) });
+        let error = answer.get("error").cloned().unwrap_or(Value::Null);
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+            .unwrap_or("it answered with an error")
+            .to_owned();
         return Some(QuotaAnswer {
             windows: vec![QuotaReading {
-                detail: Some(error),
+                detail: Some(json!({ "error": error })),
                 ..unknown
             }],
-            plan: None,
+            ..QuotaAnswer::failed(message)
         });
     };
-    if let Some(fields) = result.as_object_mut() {
-        fields.remove("accountId");
-    }
+    let account_id = result
+        .as_object_mut()
+        .and_then(|fields| fields.remove("accountId"))
+        .and_then(|id| id.as_str().map(str::to_owned));
     let limits = RateLimits::deserialize(&result).unwrap_or_default();
     let snapshot = &limits.snapshot;
     let binding = snapshot.binding_window();
@@ -120,10 +141,47 @@ pub fn answer(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaAnswer> 
         binding.status = QuotaStatus::Rejected;
     }
     binding.detail = Some(result);
+    let account_reply = reply(stdout, ACCOUNT_REQUEST_ID);
+    let account = account_reply
+        .as_ref()
+        .and_then(|reply| reply.pointer("/result/account"));
+    let plan = snapshot
+        .plan
+        .as_deref()
+        .or_else(|| account.and_then(|account| account.get("planType")?.as_str()))
+        .and_then(plan_name);
+    let mut live = LiveUsage::new(VendorId(ID.to_owned()), QuotaSource::AppServer, observed_at);
+    live.account = account
+        .and_then(|account| account.get("email")?.as_str())
+        .map(str::trim)
+        .filter(|email| !email.is_empty())
+        .map(str::to_owned)
+        // Without an email the account's own id still tells two accounts apart. It is kept
+        // only as a hash, since nothing shows it.
+        .or_else(|| account_id.map(|id| format!("account {}", &sha256_hex(id.as_bytes())[..16])));
+    live.plan = plan.clone();
+    live.blocked = blocked;
+    live.windows = snapshot.live_windows(None);
+    for (id, bucket) in &limits.by_limit_id {
+        if id != MAIN_BUCKET {
+            live.windows
+                .extend(bucket.live_windows(bucket.name.as_deref()));
+        }
+    }
     Some(QuotaAnswer {
         windows,
-        plan: snapshot.plan.clone().filter(|plan| !plan.is_empty()),
+        plan,
+        live: Some(live),
+        failed: None,
     })
+}
+
+/// The reply to request `id`, once it has come.
+fn reply(stdout: &str, id: u64) -> Option<Value> {
+    stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+        .find(|message| message.get("id").and_then(Value::as_u64) == Some(id))
 }
 
 /// Such as `five_hour` or `weekly`, matching the names Claude Code uses where they overlap.
@@ -136,12 +194,30 @@ fn window_name(minutes: u64) -> String {
     }
 }
 
+/// The short label on a card and the title Codex's status screen gives the window.
+fn window_words(minutes: Option<u64>) -> (String, String) {
+    match minutes {
+        Some(300) => ("5-hour".to_owned(), "5h limit".to_owned()),
+        Some(1440) => ("daily".to_owned(), "Daily limit".to_owned()),
+        Some(10080) => ("weekly".to_owned(), "Weekly limit".to_owned()),
+        Some(minutes) if minutes % 60 == 0 => {
+            let hours = minutes / 60;
+            (format!("{hours}-hour"), format!("{hours}h limit"))
+        }
+        Some(minutes) => (format!("{minutes}-minute"), format!("{minutes}m limit")),
+        None => ("limit".to_owned(), "Limit".to_owned()),
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RateLimits {
-    /// The main Codex bucket. Other buckets, such as a model's reserve, stay in the detail.
+    /// The main Codex bucket.
     #[serde(rename = "rateLimits", default)]
     snapshot: Snapshot,
+    /// Every bucket by its id, the main one too, such as a model's reserve.
+    #[serde(rename = "rateLimitsByLimitId", default)]
+    by_limit_id: std::collections::BTreeMap<String, Snapshot>,
     ordinary_usage_allowed: Option<bool>,
 }
 
@@ -154,6 +230,8 @@ struct Snapshot {
     reached: Option<String>,
     #[serde(rename = "planType")]
     plan: Option<String>,
+    #[serde(rename = "limitName")]
+    name: Option<String>,
 }
 
 impl Snapshot {
@@ -172,6 +250,31 @@ impl Snapshot {
                 }
             })
     }
+
+    /// Its windows as the status screen lists them, a model's bucket under the bucket's name.
+    fn live_windows(&self, bucket: Option<&str>) -> Vec<LiveWindow> {
+        [self.primary.as_ref(), self.secondary.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(|window| {
+                let (label, title) = window_words(window.duration_mins);
+                let key = window
+                    .duration_mins
+                    .map_or_else(|| "limit".to_owned(), window_name);
+                let (key, label, title) = match bucket {
+                    Some(name) => (
+                        format!("{name}:{key}"),
+                        format!("{name} {label}"),
+                        format!("{name} {title}"),
+                    ),
+                    None => (key, label, title),
+                };
+                LiveWindow::new(key, label, title)
+                    .used(Some(f64::from(window.used_percent) / 100.0))
+                    .resets_at(window.reset_time())
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -185,6 +288,11 @@ struct Window {
 }
 
 impl Window {
+    fn reset_time(&self) -> Option<OffsetDateTime> {
+        self.resets_at
+            .and_then(|at| OffsetDateTime::from_unix_timestamp(at).ok())
+    }
+
     /// The window on its own, named by its length: a full one refuses work until its reset.
     fn reading(&self, blank: &QuotaReading) -> QuotaReading {
         let used = (f64::from(self.used_percent) / 100.0).clamp(0.0, 1.0);
@@ -198,9 +306,7 @@ impl Window {
         QuotaReading {
             status,
             used: Some(used),
-            resets_at: self
-                .resets_at
-                .and_then(|at| OffsetDateTime::from_unix_timestamp(at).ok()),
+            resets_at: self.reset_time(),
             window: self.duration_mins.map(window_name),
             ..blank.clone()
         }
@@ -235,6 +341,7 @@ mod tests {
             [
                 "\"initialize\"",
                 "\"initialized\"",
+                "\"account/read\"",
                 "\"account/rateLimits/read\""
             ]
         );
@@ -275,7 +382,7 @@ mod tests {
                 "planType": "team",
             },
         }));
-        let answer = answer(&stdout, NOW).unwrap();
+        let answer = answer_at_end(&stdout, NOW).unwrap();
         let windows: Vec<_> = answer
             .windows
             .iter()
@@ -288,7 +395,7 @@ mod tests {
                 ("weekly", 0.41, QuotaStatus::Allowed)
             ]
         );
-        assert_eq!(answer.plan.as_deref(), Some("team"));
+        assert_eq!(answer.plan.as_deref(), Some("Team"));
         assert_eq!(
             answer.binding().unwrap().window.as_deref(),
             Some("five_hour")
@@ -326,5 +433,97 @@ mod tests {
                 .to_string()
                 .contains("not logged in")
         );
+    }
+
+    fn recorded() -> String {
+        recording("plan_usage")
+    }
+
+    fn recording(name: &str) -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("fixtures/0.160.0/{name}.app-server.jsonl"));
+        std::fs::read_to_string(path).unwrap()
+    }
+
+    #[test]
+    fn reads_that_fail_say_why_and_name_no_account() {
+        let answer = answer(&recording("plan_usage_failed"), NOW).unwrap();
+        assert_eq!(
+            answer.failed.as_deref(),
+            Some("failed to fetch codex rate limits: application network policy is unavailable")
+        );
+        // No account, so no reading of whoever was signed in before is replaced.
+        assert!(answer.live.is_none() && answer.plan.is_none());
+        let kept = &answer.windows[0];
+        assert_eq!(kept.status, QuotaStatus::Unknown);
+        assert!(
+            kept.detail
+                .as_ref()
+                .unwrap()
+                .pointer("/error/code")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn the_answer_waits_for_the_account_and_ties_the_reading_to_it() {
+        let stdout = recorded();
+        let without_account: String = stdout
+            .lines()
+            .filter(|line| !line.starts_with(r#"{"id":3"#))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        assert!(answer(&without_account, NOW).is_none());
+        // At the end the rate limits answer alone, for no account.
+        let alone = answer_at_end(&without_account, NOW).unwrap().live.unwrap();
+        assert!(alone.account.unwrap().starts_with("account "));
+
+        let answer = answer(&stdout, NOW).unwrap();
+        let live = answer.live.unwrap();
+        assert_eq!(live.account.as_deref(), Some("user@example.com"));
+        assert_eq!(live.plan.as_deref(), Some("<plan>"));
+        let shown: Vec<(&str, &str, &str)> = live
+            .windows
+            .iter()
+            .map(|w| (w.key.as_str(), w.label.as_str(), w.title.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("five_hour", "5-hour", "5h limit"),
+                ("weekly", "weekly", "Weekly limit"),
+                (
+                    "gpt-reserve:weekly",
+                    "gpt-reserve weekly",
+                    "gpt-reserve Weekly limit"
+                ),
+            ]
+        );
+        assert_eq!(live.windows[0].used, Some(0.0));
+        assert_eq!(
+            live.windows[1].resets_at,
+            OffsetDateTime::from_unix_timestamp(1791259618).ok()
+        );
+        assert!(!live.blocked);
+        // The account's id never reaches the stored payload.
+        let detail = answer
+            .windows
+            .iter()
+            .find_map(|w| w.detail.clone())
+            .unwrap();
+        assert!(detail.get("accountId").is_none());
+    }
+
+    #[test]
+    fn an_account_read_that_fails_leaves_the_reading_unnamed_or_hashed() {
+        let stdout = answer_lines(json!({"rateLimits": {
+            "primary": {"usedPercent": 30, "windowDurationMins": 300, "resetsAt": 1790776800}}}));
+        let failed = json!({"id": 3, "error": {"code": -32603, "message": "failed to load workspace requirements"}});
+        let live = answer(&format!("{stdout}{failed}\n"), NOW)
+            .unwrap()
+            .live
+            .unwrap();
+        assert_eq!(live.account, None);
+        assert_eq!(live.windows.len(), 1);
     }
 }

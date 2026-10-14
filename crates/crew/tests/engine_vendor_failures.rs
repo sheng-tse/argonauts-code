@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::Context;
 use serde_json::{Value, json};
 
+use argonauts_core::ErrorCategory;
 use argonauts_core::engine::EngineExit;
 use argonauts_core::events::card::ReviewEvent;
 use argonauts_core::events::checkpoint::CheckpointEvent;
@@ -46,21 +47,27 @@ enum Design {
     Answers,
     /// A brief the rules turn down, so the lead is asked again.
     Rejected,
-    /// A 401 the CLI's own status contradicts.
-    Unauthorized,
+    /// The service is overloaded, which may pass.
+    Overloaded,
+    /// Codex refuses the answer format, which every retry would meet again.
+    RefusedFormat,
+    /// A sign-in error, which its CLI's own login check confirms or contradicts.
+    SignIn,
     /// The recorded session: Codex's reconnects, its errors, and its end.
     Recorded,
 }
 
 /// One agent of a crew: its lead designs after Understand by turn, the steps whose sessions
-/// end on a 401 its CLI contradicts and how many times, whether its reviews ask for changes,
+/// end on an overloaded service and how many times, whether its reviews ask for changes,
 /// and whether its CLI says it's logged out.
 #[derive(Clone, Default)]
 struct Agent {
     designs: Vec<Design>,
-    unauthorized: Vec<(StepName, usize)>,
-    /// Every one of its sessions ends on a 401.
-    always_unauthorized: bool,
+    overloaded: Vec<(StepName, usize)>,
+    /// Every one of its sessions ends on an overloaded service.
+    always_overloaded: bool,
+    /// Every one of its sessions ends on a sign-in error.
+    always_signed_out: bool,
     requests_changes: bool,
     logged_out: bool,
 }
@@ -73,10 +80,10 @@ impl Agent {
         }
     }
 
-    /// Its first `times` sessions of `step` end on a 401.
-    fn unauthorized(step: StepName, times: usize) -> Self {
+    /// Its first `times` sessions of `step` end on an overloaded service.
+    fn overloaded(step: StepName, times: usize) -> Self {
         Self {
-            unauthorized: vec![(step, times)],
+            overloaded: vec![(step, times)],
             ..Self::default()
         }
     }
@@ -159,7 +166,7 @@ fn family_of(worker: &str) -> &'static str {
 }
 
 /// One agent's answers. Its lead designs after Understand follow `plan`, then answer; the steps
-/// `plan` says end on a 401 do, as many times as it says, then answer.
+/// `plan` says end on an overloaded service do, as many times as it says, then answer.
 fn agent(
     plan: Agent,
     assignment: Assignment,
@@ -167,16 +174,19 @@ fn agent(
     let turn = Arc::new(AtomicUsize::new(0));
     let failed: Arc<std::sync::Mutex<Vec<StepName>>> = Arc::default();
     move |spec: &SessionSpec| {
-        if plan.always_unauthorized {
-            return unauthorized();
+        if plan.always_overloaded {
+            return overloaded();
+        }
+        if plan.always_signed_out {
+            return sign_in_error();
         }
         if let Some(step) = spec.step
-            && let Some((_, times)) = plan.unauthorized.iter().find(|(at, _)| *at == step)
+            && let Some((_, times)) = plan.overloaded.iter().find(|(at, _)| *at == step)
         {
             let mut failed = failed.lock().expect("the failure count");
             if failed.iter().filter(|done| **done == step).count() < *times {
                 failed.push(step);
-                return unauthorized();
+                return overloaded();
             }
         }
         if spec.step == Some(StepName::Build) {
@@ -196,7 +206,9 @@ fn agent(
                             "it fits",
                         ));
                     }
-                    Design::Unauthorized => return unauthorized(),
+                    Design::Overloaded => return overloaded(),
+                    Design::RefusedFormat => return refused_format(),
+                    Design::SignIn => return sign_in_error(),
                     Design::Recorded => return recorded_401(),
                 }
             }
@@ -249,10 +261,28 @@ fn agent(
     }
 }
 
-/// A 401 the CLI's own login check contradicts, as Codex gave it.
-fn unauthorized() -> FakeSession {
+/// An overloaded service, which may pass a moment later.
+fn overloaded() -> FakeSession {
+    FakeSession::ended(EndReason::VendorError {
+        category: ErrorCategory::Overloaded,
+        message: "Overloaded (529)".to_owned(),
+    })
+}
+
+/// A 401, as Codex gave one.
+fn sign_in_error() -> FakeSession {
     FakeSession::ended(EndReason::Auth {
         message: "workspace routing discovery unauthorized (401)".to_owned(),
+    })
+}
+
+/// Codex's refusal of an answer format, as it gave it.
+fn refused_format() -> FakeSession {
+    FakeSession::ended(EndReason::VendorError {
+        category: ErrorCategory::InvalidRequest,
+        message: "Invalid schema for response_format 'codex_output_schema': 'schema.required' is \
+                  required to include every key in properties. Missing 'summary'"
+            .to_owned(),
     })
 }
 
@@ -368,8 +398,8 @@ fn design_sessions(events: &[RunEvent]) -> Vec<(String, usize)> {
 }
 
 #[tokio::test]
-async fn a_401_on_the_leads_design_is_retried_and_the_run_goes_on() -> anyhow::Result<()> {
-    let crew = crew(&[(CODEX, vec![Design::Unauthorized])])?;
+async fn an_overload_on_the_leads_design_is_retried_and_the_run_goes_on() -> anyhow::Result<()> {
+    let crew = crew(&[(CODEX, vec![Design::Overloaded])])?;
     let outcome = drive(&crew).await?;
     assert_eq!(
         outcome.exit,
@@ -392,7 +422,7 @@ async fn a_401_on_the_leads_design_is_retried_and_the_run_goes_on() -> anyhow::R
         .collect();
     assert_eq!(
         retries,
-        [&"GPT 5.6 Luna on Codex got a sign-in error · trying again"],
+        [&"GPT 5.6 Luna on Codex couldn't be reached · trying again"],
         "{said:?}"
     );
     assert!(
@@ -402,9 +432,42 @@ async fn a_401_on_the_leads_design_is_retried_and_the_run_goes_on() -> anyhow::R
     Ok(())
 }
 
+/// An error a retry can't change goes to the next agent at once: no wait and no second try,
+/// and one line says so.
 #[tokio::test]
-async fn a_401_twice_hands_the_leads_role_to_another_agent() -> anyhow::Result<()> {
-    let crew = crew(&[(CODEX, vec![Design::Unauthorized, Design::Unauthorized])])?;
+async fn a_refused_answer_format_goes_straight_to_another_agent() -> anyhow::Result<()> {
+    let crew = crew(&[(CODEX, vec![Design::RefusedFormat])])?;
+    let outcome = drive(&crew).await?;
+    let said = notes(&outcome.events);
+    assert_eq!(
+        outcome.exit,
+        EngineExit::Finished(RunOutcome::Merged),
+        "{said:?}"
+    );
+    assert!(
+        !said.iter().any(|note| note.contains("trying again")),
+        "{said:?}"
+    );
+    assert_eq!(
+        designs_after_understand(&crew, CLAUDE),
+        1,
+        "the next on the crew"
+    );
+    let handed = said
+        .iter()
+        .find(|note| note.contains("takes over"))
+        .context("one line says who took over")?;
+    assert_eq!(
+        handed.to_string(),
+        "Haiku on Claude Code takes over as the main agent · no second try, this error repeats \
+         every time"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_overload_twice_hands_the_leads_role_to_another_agent() -> anyhow::Result<()> {
+    let crew = crew(&[(CODEX, vec![Design::Overloaded, Design::Overloaded])])?;
     let outcome = drive(&crew).await?;
     assert_eq!(
         outcome.exit,
@@ -427,7 +490,7 @@ async fn a_401_twice_hands_the_leads_role_to_another_agent() -> anyhow::Result<(
     let said = notes(&outcome.events);
     let retry = said
         .iter()
-        .position(|note| note.contains("got a sign-in error · trying again"))
+        .position(|note| note.contains("couldn't be reached · trying again"))
         .context("one line says Codex goes again")?;
     let handed = said
         .iter()
@@ -436,16 +499,17 @@ async fn a_401_twice_hands_the_leads_role_to_another_agent() -> anyhow::Result<(
     assert!(retry < handed, "{said:?}");
     assert_eq!(
         said[handed],
-        "Still a sign-in error · Haiku on Claude Code takes over as the main agent"
+        "Still unreachable · Haiku on Claude Code takes over as the main agent"
     );
     Ok(())
 }
 
 #[tokio::test]
 async fn when_every_agent_fails_the_run_parks_and_says_why() -> anyhow::Result<()> {
-    let twice = || vec![Design::Unauthorized, Design::Unauthorized];
+    // A sign-in error gets no second try, so each agent is asked once.
+    let once = || vec![Design::SignIn];
     let crew = crew_logged_out(
-        &[(CODEX, twice()), (CLAUDE, twice()), (GEMINI, twice())],
+        &[(CODEX, once()), (CLAUDE, once()), (GEMINI, once())],
         &[GEMINI],
     )?;
     let outcome = drive(&crew).await?;
@@ -491,12 +555,12 @@ async fn when_every_agent_fails_the_run_parks_and_says_why() -> anyhow::Result<(
         EngineExit::Finished(RunOutcome::Merged),
         "{said:?}"
     );
-    // Codex twice, Claude Code twice, Antigravity once, then Codex again after the resume.
+    // Codex, Claude Code and Antigravity once each, then Codex again after the resume.
     let sessions = design_sessions(&resumed.events);
     let again: Vec<_> = sessions.iter().filter(|(_, starts)| *starts > 1).collect();
     assert_eq!(again.len(), 1, "{sessions:?}");
-    assert_eq!(again[0].1, 6);
-    assert_eq!(designs_after_understand(&crew, CODEX), sessions.len() + 2);
+    assert_eq!(again[0].1, 4);
+    assert_eq!(designs_after_understand(&crew, CODEX), sessions.len() + 1);
     Ok(())
 }
 
@@ -543,7 +607,7 @@ async fn in_autopilot_a_failing_approver_never_leaves_a_card_to_you() -> anyhow:
         let answers = agent(Agent::default(), Assignment::default());
         fake.respond(move |spec| {
             if spec.step == Some(StepName::ModelApprover) {
-                return unauthorized();
+                return overloaded();
             }
             answers(spec)
         });
@@ -717,12 +781,12 @@ fn ran(crew: &Crew, worker: &str, step: StepName) -> usize {
     })
 }
 
-/// The first review round's 401 is asked again on its own session, in supervised mode and in
+/// The first review round's overload is asked again on its own session, in supervised mode and in
 /// full auto, so the reviewer you asked for reviews and the card merges.
 #[tokio::test]
-async fn a_first_round_review_401_is_asked_again() -> anyhow::Result<()> {
+async fn a_first_round_review_overload_is_asked_again() -> anyhow::Result<()> {
     for in_autopilot in [false, true] {
-        let gemini = Agent::unauthorized(StepName::Review, 1);
+        let gemini = Agent::overloaded(StepName::Review, 1);
         let agents = [
             (CODEX, Agent::default()),
             (CLAUDE, Agent::default()),
@@ -752,10 +816,10 @@ async fn a_first_round_review_401_is_asked_again() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The first adjudication's 401 is asked again, in supervised mode and in full auto, and the
+/// The first adjudication's overload is asked again, in supervised mode and in full auto, and the
 /// ruling goes under the adjudicator that gave it.
 #[tokio::test]
-async fn a_first_adjudication_401_is_asked_again() -> anyhow::Result<()> {
+async fn a_first_adjudication_overload_is_asked_again() -> anyhow::Result<()> {
     for in_autopilot in [false, true] {
         let agents = [
             (CODEX, Agent::default()),
@@ -767,7 +831,7 @@ async fn a_first_adjudication_401_is_asked_again() -> anyhow::Result<()> {
                     ..Agent::default()
                 },
             ),
-            (QWEN, Agent::unauthorized(StepName::Adjudicate, 1)),
+            (QWEN, Agent::overloaded(StepName::Adjudicate, 1)),
         ];
         let assignment = Assignment {
             owner: CODEX,
@@ -815,7 +879,7 @@ async fn a_reviewers_stand_in_never_doubles_up_or_comes_from_the_owners_company(
 -> anyhow::Result<()> {
     let agents = [
         (CODEX, Agent::default()),
-        (CLAUDE, Agent::unauthorized(StepName::Review, 2)),
+        (CLAUDE, Agent::overloaded(StepName::Review, 2)),
         (GEMINI, Agent::default()),
     ];
     let assignment = Assignment {
@@ -852,8 +916,8 @@ async fn a_reviewers_stand_in_never_doubles_up_or_comes_from_the_owners_company(
 async fn two_failing_reviewers_never_share_a_stand_in() -> anyhow::Result<()> {
     let agents = [
         (CODEX, Agent::default()),
-        (CLAUDE, Agent::unauthorized(StepName::Review, 2)),
-        (GEMINI, Agent::unauthorized(StepName::Review, 2)),
+        (CLAUDE, Agent::overloaded(StepName::Review, 2)),
+        (GEMINI, Agent::overloaded(StepName::Review, 2)),
         (QWEN, Agent::default()),
     ];
     let assignment = Assignment {
@@ -985,7 +1049,7 @@ async fn a_second_fallback_joins_the_one_that_took_a_reviewers_seat_midway() -> 
     let agents = [
         (CODEX, Agent::default()),
         (CLAUDE, Agent::default()),
-        (GEMINI, Agent::unauthorized(StepName::Review, 2)),
+        (GEMINI, Agent::overloaded(StepName::Review, 2)),
         (QWEN, Agent::default()),
     ];
     let mut crew = crew_of(&agents, &Assignment::default())?;
@@ -1021,7 +1085,7 @@ async fn a_blind_reviewers_stand_in_must_keep_your_plugins_out() -> anyhow::Resu
     let agents = [
         (CODEX, Agent::default()),
         (CLAUDE, Agent::default()),
-        (GEMINI, Agent::unauthorized(StepName::Review, 2)),
+        (GEMINI, Agent::overloaded(StepName::Review, 2)),
         (QWEN, Agent::default()),
     ];
     let assignment = Assignment {
@@ -1100,12 +1164,12 @@ async fn a_reviewer_that_loaded_your_plugins_hands_its_seat_to_one_that_keeps_th
     Ok(())
 }
 
-/// A 401 on the owner's build goes again on its own session, in full auto, and the card
+/// An overload on the owner's build goes again on its own session, in full auto, and the card
 /// carries on with its owner.
 #[tokio::test]
-async fn a_401_on_build_goes_again_on_its_own_session() -> anyhow::Result<()> {
+async fn an_overload_on_build_goes_again_on_its_own_session() -> anyhow::Result<()> {
     let agents = [
-        (CODEX, Agent::unauthorized(StepName::Build, 1)),
+        (CODEX, Agent::overloaded(StepName::Build, 1)),
         (CLAUDE, Agent::default()),
         (GEMINI, Agent::default()),
     ];
@@ -1126,12 +1190,12 @@ async fn a_401_on_build_goes_again_on_its_own_session() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A 401 on the owner's build twice, with its CLI saying it's logged in: in full auto the card
+/// An overload on the owner's build twice: in full auto the card
 /// goes on to the next agent, nothing says to log in, and nothing waits.
 #[tokio::test]
-async fn a_401_on_build_twice_hands_the_card_on_in_autopilot() -> anyhow::Result<()> {
+async fn an_overload_on_build_twice_hands_the_card_on_in_autopilot() -> anyhow::Result<()> {
     let agents = [
-        (CODEX, Agent::unauthorized(StepName::Build, 2)),
+        (CODEX, Agent::overloaded(StepName::Build, 2)),
         (CLAUDE, Agent::default()),
         (GEMINI, Agent::default()),
     ];
@@ -1166,7 +1230,7 @@ async fn a_401_on_build_twice_hands_the_card_on_in_autopilot() -> anyhow::Result
 #[tokio::test]
 async fn two_fallbacks_take_a_task_together_after_the_retry_thats_said() -> anyhow::Result<()> {
     let agents = [
-        (CODEX, Agent::unauthorized(StepName::Build, 2)),
+        (CODEX, Agent::overloaded(StepName::Build, 2)),
         (CLAUDE, Agent::default()),
         (GEMINI, Agent::default()),
         (QWEN, Agent::default()),
@@ -1187,13 +1251,13 @@ async fn two_fallbacks_take_a_task_together_after_the_retry_thats_said() -> anyh
         "{said:?}"
     );
     let at = |words: &str| said.iter().position(|note| note.contains(words));
-    let retry = at("got a sign-in error · trying again")
+    let retry = at("couldn't be reached · trying again")
         .with_context(|| format!("no line on the retry: {said:?}"))?;
     let both = at("both take").with_context(|| format!("no line on who takes it: {said:?}"))?;
     let passed = at("passed first").with_context(|| format!("no line on who passed: {said:?}"))?;
     assert!(retry < both && both < passed, "{said:?}");
     assert!(
-        said[both].starts_with("Still a sign-in error · ")
+        said[both].starts_with("Still unreachable · ")
             && said[both].ends_with("· the first to pass the checks wins · /fallback changes this"),
         "{}",
         said[both]
@@ -1211,7 +1275,7 @@ async fn two_fallbacks_take_a_task_together_after_the_retry_thats_said() -> anyh
 /// the CLI says it's logged in.
 #[tokio::test]
 async fn nobody_to_take_the_card_waits_and_tries_again_in_autopilot() -> anyhow::Result<()> {
-    let agents = [(CODEX, Agent::unauthorized(StepName::Build, 2))];
+    let agents = [(CODEX, Agent::overloaded(StepName::Build, 2))];
     let crew = crew_of(&agents, &Assignment::default())?;
     let outcome = autopilot_with(&crew, RunMode::Solo, true).await?;
     let said = notes(&outcome.events);
@@ -1227,7 +1291,7 @@ async fn nobody_to_take_the_card_waits_and_tries_again_in_autopilot() -> anyhow:
         .find(|note| note.starts_with("Nobody could take over"))
         .with_context(|| format!("one line says why: {said:?}"))?;
     assert!(
-        waits.contains("from GPT 5.6 Luna on Codex: its session ended early (a sign-in error)"),
+        waits.contains("from GPT 5.6 Luna on Codex: its session ended early (an agent error)"),
         "{waits}"
     );
     assert!(
@@ -1250,7 +1314,7 @@ async fn nobody_to_take_the_card_waits_and_tries_again_in_autopilot() -> anyhow:
 #[tokio::test]
 async fn an_agent_whose_cli_says_its_logged_out_is_out_for_the_run() -> anyhow::Result<()> {
     let codex = Agent {
-        always_unauthorized: true,
+        always_signed_out: true,
         logged_out: true,
         ..Agent::default()
     };
@@ -1348,7 +1412,7 @@ async fn an_agent_whose_vendor_is_down_is_never_started() -> anyhow::Result<()> 
 #[tokio::test]
 async fn a_stand_in_keeps_the_seat_for_the_same_agents_later_asks() -> anyhow::Result<()> {
     let codex = Agent {
-        always_unauthorized: true,
+        always_signed_out: true,
         logged_out: true,
         ..Agent::default()
     };

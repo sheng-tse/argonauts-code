@@ -984,7 +984,10 @@ fn end_text(reason: &EndReason) -> String {
         EndReason::Auth { message } => format!("logged out: {message}"),
         EndReason::Billing { message } => format!("billing: {message}"),
         EndReason::ContextFull => "context full".to_owned(),
-        EndReason::ModelUnavailable { model } => format!("{model} is unavailable"),
+        EndReason::ModelUnavailable { model } => format!(
+            "{} is unavailable",
+            argonauts_core::model_catalog::display_name_from_id(model)
+        ),
         EndReason::AdapterBroken { detail } => format!("adapter broken: {detail}"),
         EndReason::IsolationBroken { plugins, skills } => {
             format!("isolation broken: loaded {}", loaded_words(plugins, skills))

@@ -4,8 +4,10 @@
 use argonauts_core::app::AppMode;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::checkpoint::CheckpointKind;
-use argonauts_core::events::run::RunOutcome;
-use argonauts_core::events::{BudgetEvent, CheckpointEvent, RunEvent, RunLifecycle, SessionEvent};
+use argonauts_core::events::run::{ParkReason, RunOutcome};
+use argonauts_core::events::{
+    BudgetEvent, CheckpointEvent, RunEvent, RunLifecycle, SessionEvent, WorkflowEvent,
+};
 use argonauts_core::names::{CheckpointId, MessageId};
 use argonauts_core::settings::ui::ChatTrigger;
 
@@ -26,7 +28,27 @@ pub(super) struct Seen {
     pub status: bool,
     pub waiting: Option<Waiting>,
     pub finished: Option<RunOutcome>,
+    /// What the run's end recorded, which says why a failed run failed.
+    pub detail: Option<String>,
     pub delivered: Option<MessageId>,
+    /// The run is under way: an agent started, a step got through, or it waits for you.
+    pub began: bool,
+    /// It parked for its CLIs, out or down, with nothing running: why, in words.
+    pub held: Option<String>,
+}
+
+/// Why a run that parked for its CLIs waits, or `None` when it waits for you.
+fn held_words(reason: &ParkReason) -> Option<String> {
+    match reason {
+        ParkReason::Checkpoint | ParkReason::Paused => None,
+        ParkReason::AllVendorsOut { .. } => {
+            Some("every agent's CLI is out of plan usage or down until one comes back".to_owned())
+        }
+        ParkReason::WaitingForVendor { vendor, .. } => {
+            Some(format!("its tasks wait for {vendor} to come back"))
+        }
+        ParkReason::NoStandIn { detail, .. } => Some(detail.clone()),
+    }
 }
 
 pub(super) fn track(attached: &mut Attached, event: &RunEvent) -> Seen {
@@ -46,14 +68,20 @@ pub(super) fn track(attached: &mut Attached, event: &RunEvent) -> Seen {
             }
             RunLifecycle::Parked { reason, .. } => {
                 attached.stage = Stage::Parked;
+                // Parked for its CLIs, nothing runs; parked for you, it got under way.
+                match held_words(reason) {
+                    Some(words) => seen.held = Some(words),
+                    None => seen.began = true,
+                }
                 Some(AppMode::Parked {
                     run,
                     reason: reason.clone(),
                 })
             }
-            RunLifecycle::Finished { outcome, .. } => {
+            RunLifecycle::Finished { outcome, detail } => {
                 attached.stage = Stage::Finished(*outcome);
                 seen.finished = Some(*outcome);
+                seen.detail = detail.clone();
                 Some(AppMode::Idle)
             }
             RunLifecycle::ApprovalModeChanged { mode, .. } => {
@@ -77,10 +105,16 @@ pub(super) fn track(attached: &mut Attached, event: &RunEvent) -> Seen {
                 checkpoint: opened.id.clone(),
                 kind: opened.kind,
             });
+            seen.began = true;
             None
         }
         RunEventKind::Session(SessionEvent::Delivered { message, .. }) => {
             seen.delivered = Some(message.clone());
+            None
+        }
+        RunEventKind::Session(SessionEvent::Started(_))
+        | RunEventKind::Workflow(WorkflowEvent::StepFinished(_)) => {
+            seen.began = true;
             None
         }
         _ => None,

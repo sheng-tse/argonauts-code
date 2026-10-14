@@ -267,6 +267,7 @@ mod tests {
             context: None,
             standing_in_for: None,
             answered: None,
+            tries: Vec::new(),
         };
         // Another agent in the same session keeps its goal.
         board.remember_agent(&run, &row(&first, "build:other"), None);

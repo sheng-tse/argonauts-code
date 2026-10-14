@@ -649,7 +649,7 @@ on = ["needs_you"]
 
 #[test]
 fn chat_commands_are_safety_keys_only_your_global_config_may_set() {
-    assert_eq!(GLOBAL_ONLY_KEYS, ["notifications.chat.*"]);
+    assert_eq!(GLOBAL_ONLY_KEYS, ["notifications.chat.*", "telemetry.*"]);
     for key in GLOBAL_ONLY_KEYS {
         assert!(SAFETY_KEYS.contains(key), "{key}");
     }

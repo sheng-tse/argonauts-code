@@ -1,5 +1,5 @@
-//! The instruction checks, table by table, against a roster of agents made by hand. A last test
-//! hands what they apply to the real resolver, so every key and value they write resolves.
+//! The instruction checks, table by table, against a roster of agents made by hand. A last
+//! test hands what they apply to the real resolver, so every key and value they write resolves.
 
 use argonauts_core::events::run::{InstructionOutcome, RunMode};
 use argonauts_core::names::{RoleName, WorkerRef};
@@ -180,7 +180,7 @@ fn words_you_did_not_write_are_dropped() {
     );
 }
 
-/// The checks' table: each problem, and what the line says.
+/// Each problem, and what the line says.
 #[test]
 fn each_check_says_why() {
     let message = "Use grok to build, have kodiak plan, codex with opus reviews, claude review \

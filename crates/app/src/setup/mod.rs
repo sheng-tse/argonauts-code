@@ -115,6 +115,7 @@ impl Setup {
             Step::DefaultAgent,
             Step::Preset,
             Step::Approvals,
+            Step::Telemetry,
             Step::Trust,
             Step::ProjectFolder,
         ]);

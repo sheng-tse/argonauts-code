@@ -1,5 +1,6 @@
 mod parse;
 mod render;
+mod syntax;
 mod words;
 
 use std::fmt;
@@ -145,6 +146,15 @@ impl DiffView {
             line.new_line = None;
         }
         self
+    }
+
+    /// The file the caption names, whose name gives the rows their syntax colours.
+    pub fn file(&self) -> Option<&str> {
+        match self.caption.as_ref()? {
+            DiffCaption::Updated { path, .. } | DiffCaption::Wrote { path, .. } => {
+                Some(path.as_str()).filter(|path| !path.is_empty())
+            }
+        }
     }
 
     /// `(added, removed)` line counts.

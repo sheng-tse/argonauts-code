@@ -67,8 +67,7 @@ impl Artifacts {
     }
 
     /// What the bottom line's part says beside the mode: the newest artifact's name, and how
-    /// many more the conversation published. Claude Code names the one and counts several.
-    /// `None` until there is one.
+    /// many more the conversation published. `None` until there is one.
     pub fn line_part(&self) -> Option<(&str, u32)> {
         let latest = self.latest()?;
         let others = u32::try_from(self.published.len() - 1).unwrap_or(u32::MAX);

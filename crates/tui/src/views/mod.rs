@@ -24,6 +24,7 @@ pub mod list;
 pub mod pager;
 pub mod panes;
 pub mod prompts;
+mod raw_rows;
 pub mod resume;
 pub mod rewind;
 pub mod session;
@@ -39,6 +40,7 @@ pub mod workflow_page;
 mod workflow_row_tests;
 #[cfg(test)]
 mod workflow_tests;
+mod workflow_tries;
 
 use std::fmt;
 use std::time::Instant;
@@ -345,6 +347,8 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
             cx.out.open(learning::LearningPicker::new((**view).clone()));
         }
         // The state keeps it for the Usage tab and the cards above the input.
-        ViewData::Status { .. } | ViewData::Usage { .. } => {}
+        ViewData::Status { .. } | ViewData::Usage { .. } | ViewData::Overview { .. } => {}
+        // Only the Overview's Status tab draws it, and one that closed takes nothing.
+        ViewData::StatusTab { .. } => {}
     }
 }

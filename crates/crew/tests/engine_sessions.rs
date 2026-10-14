@@ -59,6 +59,7 @@ fn plan(worker: &WorkerRef, access: Access, host: &Host) -> SessionPlan {
         resume: None,
         slot: 0,
         label: None,
+        reviews: false,
     }
 }
 

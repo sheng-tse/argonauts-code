@@ -13,8 +13,8 @@ use argonauts_core::names::SessionKey;
 use argonauts_core::{CardId, DiffStat, RunId};
 use argonauts_crew::status::{self, Viewer};
 
-/// How much of a session's raw output a view holds.
-const RAW_LINES: usize = 400;
+/// How much of a session's raw output a view holds, as `RawView` says.
+const RAW_LINES: usize = 5_000;
 
 pub(crate) fn status(run_dir: &Path, run: &RunId) -> Result<StatusSummary, ApiError> {
     let events = events_of(run_dir)?;

@@ -135,6 +135,7 @@ fn crew(workflow: &str) -> anyhow::Result<(Crew, Arc<FakeWorker>)> {
         workers: vec![WORKER.parse()?],
         reviewers: vec![REVIEWER.parse()?],
         judge: vec![REVIEWER.parse()?],
+        worker_workflows: false,
     };
     crew.settings.workflow = workflow.to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;
@@ -505,6 +506,147 @@ return { built, accepted: Boolean(verdict && verdict.accept) }
         "{:?}",
         outcomes.last().map(|outcome| &outcome.exit)
     );
+    Ok(())
+}
+
+/// The judge who signs off the whole run reads what the checks said about every task, as
+/// each task's reviewer does, though the sign-off names no task.
+#[tokio::test]
+async fn the_sign_off_reads_every_tasks_checks() -> anyhow::Result<()> {
+    use argonauts_core::events::session::InputPartKind;
+    use argonauts_core::settings::protocol::GateCommand;
+
+    let (mut crew, _worker) = crew("ship")?;
+    write_workflow(&crew, "ship.toml", SHIP)?;
+    let judge = FakeWorker::harness("antigravity-cli/judge", "gemini").respond_with(|spec| {
+        if spec.json_schema.is_none() {
+            FakeSession::completed("Both tasks are done as asked.")
+        } else {
+            FakeSession::structured(json!({"accept": true, "findings": []}))
+        }
+    });
+    let judge = crew.services.workers.add(judge);
+    crew.settings.crew.judge = vec!["antigravity-cli/judge".parse()?];
+    crew.settings.checks.run = vec![GateCommand {
+        name: "tests".into(),
+        command: vec!["node".into(), "--test".into()],
+    }];
+    let _env = crew.repo.env_guard();
+    let outcomes = crew.run_to_end(RunMode::Crew, REQUEST, 3).await?;
+
+    let signed = judge.specs();
+    let asked = signed
+        .last()
+        .unwrap_or_else(|| panic!("no sign-off: {:#?}", started(all_events(&outcomes))));
+    let checks = asked
+        .prompt
+        .iter()
+        .find(|part| part.kind == InputPartKind::GateOutput)
+        .unwrap_or_else(|| panic!("no checks in the sign-off: {}", prompt(asked)));
+    for task in ["due-field", "due-docs"] {
+        assert!(
+            checks
+                .text
+                .contains(&format!("{task}: tests (node --test) passed")),
+            "{}",
+            checks.text
+        );
+    }
+    Ok(())
+}
+
+/// Builds when asked to, and accepts what it's asked to review.
+fn builds_and_reviews(spec: &SessionSpec) -> FakeSession {
+    if spec.step == Some(StepName::Build) {
+        std::fs::write(spec.workdir.join("due.rs"), "due\n").expect("writes its file");
+        FakeSession::structured(report("Wrote due.rs", "due.rs"))
+    } else if spec.json_schema.is_some() {
+        FakeSession::structured(json!({"accept": true, "findings": []}))
+    } else {
+        FakeSession::completed("Done.")
+    }
+}
+
+/// A review step given to the workers, as council's Cross-review is, still reads a change
+/// to judge it, so its session may run the checks and nothing else.
+#[tokio::test]
+async fn a_worker_that_reviews_a_task_may_run_only_the_checks() -> anyhow::Result<()> {
+    use argonauts_core::settings::protocol::GateCommand;
+    use argonauts_core::worker::SessionShell;
+
+    const CROSS: &str = r#"
+name  = "cross"
+about = "Build each task, and another worker reviews it."
+adapt = false
+
+[[step]]
+name = "Plan"
+role = "orchestrator"
+does = "Split the request into tasks: {request}"
+
+[[step]]
+name     = "Build"
+role     = "workers"
+for_each = "task"
+
+[[step]]
+name           = "Cross-review"
+role           = "workers"
+for_each       = "task"
+not_the_author = true
+send_back_to   = "Build"
+"#;
+    let mut crew = Crew::new()?;
+    crew.settings.evolution.propose_every = 0;
+    let main = FakeWorker::harness(MAIN, "claude").respond_with(|_| {
+        FakeSession::structured(json!({
+            "summary": "One task",
+            "tasks": [{"title": "Due field", "done_when": ["a task has a due date"]}],
+        }))
+    });
+    crew.services.workers.add(main);
+    let codex = crew
+        .services
+        .workers
+        .add(FakeWorker::harness(WORKER, "gpt").respond_with(builds_and_reviews));
+    let agy = crew
+        .services
+        .workers
+        .add(FakeWorker::harness(REVIEWER, "gemini").respond_with(builds_and_reviews));
+    crew.settings.main_agent = MAIN.parse()?;
+    crew.settings.crew = CrewSettings {
+        orchestrator: Orchestrator::Main,
+        workers: vec![WORKER.parse()?, REVIEWER.parse()?],
+        reviewers: vec![REVIEWER.parse()?],
+        judge: vec![REVIEWER.parse()?],
+        worker_workflows: false,
+    };
+    crew.settings.workflow = "cross".to_owned();
+    crew.settings.workflows.adapt_with = AdaptWith::Script;
+    crew.settings.checks.run = vec![GateCommand {
+        name: "tests".into(),
+        command: vec!["node".into(), "--test".into()],
+    }];
+    write_workflow(&crew, "cross.toml", CROSS)?;
+    let _env = crew.repo.env_guard();
+    let outcomes = crew.run_to_end(RunMode::Crew, REQUEST, 3).await?;
+
+    let specs: Vec<SessionSpec> = codex.specs().into_iter().chain(agy.specs()).collect();
+    let reviews: Vec<&SessionSpec> = specs
+        .iter()
+        .filter(|spec| spec.step != Some(StepName::Build) && spec.json_schema.is_some())
+        .collect();
+    assert!(
+        !reviews.is_empty(),
+        "no cross-review: {:#?}",
+        started(all_events(&outcomes))
+    );
+    for review in reviews {
+        assert_eq!(
+            review.shell,
+            SessionShell::Only(vec!["node --test".to_owned()])
+        );
+    }
     Ok(())
 }
 

@@ -94,7 +94,11 @@ pub fn build_command(program: &str, req: &SessionRequest) -> anyhow::Result<Comm
     // hooks have no per-run control either (see `tweaks`).
     spec = spec.args(&req.extra_args);
 
-    spec.stdin = Some(user_message_line(&req.prompt));
+    // Whether agy takes a picture in its stream input is unchecked, so each goes as its file's
+    // path, which agy's own tools can open.
+    let pictures: Vec<_> = req.pictures.iter().collect();
+    let prompt = argonauts_core::pictures::with_paths(&req.prompt, &pictures);
+    spec.stdin = Some(user_message_line(&prompt));
     spec.keep_stdin_open = req.keep_input_open;
     spec.env_remove = match req.auth {
         AuthMode::Subscription => env_remove_except(&[]),
@@ -567,3 +571,7 @@ mod tests {
         assert!(interactive_resume_command("agy", "-c", Path::new("/w")).is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "command_pictures_tests.rs"]
+mod pictures_tests;

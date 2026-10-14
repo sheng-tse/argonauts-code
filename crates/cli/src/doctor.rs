@@ -19,6 +19,12 @@ pub async fn run(args: &DoctorArgs, set: &[String]) -> anyhow::Result<ExitCode> 
         problems.push(format!("! your settings don't resolve: {err:#}"));
         Settings::default()
     });
+    // Warnings can quote key names from a repo's file.
+    problems.extend(
+        argonauts_app::settings_warnings(None, set.to_vec())
+            .iter()
+            .map(|warning| format!("! {}", sanitize_for_terminal(warning))),
+    );
     // The built-in four and every harness profile your settings turn on, such as Hermes.
     let adapters = argonauts_app::doctor_adapters(None, set.to_vec()).unwrap_or_else(|err| {
         problems.push(format!("! couldn't read your CLI profiles: {err:#}"));

@@ -330,6 +330,7 @@ async fn resolve_with(
         resume: None,
         slot: 0,
         label: None,
+        reviews: false,
     };
     plan.slot = host.slot_for(&plan);
     // A resolver that a pause or a crash cut off picks up its own half-done merge.

@@ -339,6 +339,60 @@ async fn the_controller_can_close_the_screen() {
         .unwrap();
 }
 
+/// A terminal that takes longer over every frame than a paste leaves between its keys, as a
+/// debug build's does with the commands list open under the input.
+struct SlowScreen(SharedScreen);
+
+impl Write for SlowScreen {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        std::thread::sleep(Duration::from_millis(15));
+        Ok(())
+    }
+}
+
+/// Terminal.app types a dropped picture's path out as keys in one read. However slow the
+/// frames, keys that came together are one paste, so the path becomes its chip.
+#[tokio::test]
+async fn keys_that_came_together_stay_one_paste_however_slow_the_frames() {
+    let (script, io, _, keys) = session();
+    let terminal = InlineTerminal::new(
+        SlowScreen(script.screen.clone()),
+        Size::new(COLUMNS, ROWS),
+        Position::new(0, 0),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let picture = dir.path().join("shot.png");
+    std::fs::write(&picture, b"\x89PNG\r\n\x1a\n").unwrap();
+    let typed = picture.display().to_string();
+    assert!(typed.starts_with('/'), "{typed}");
+
+    let run = run_with(io, inline(), terminal, keys);
+    let drive = async move {
+        script.settle().await;
+        for c in typed.chars() {
+            script.key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        for _ in 0..50 {
+            if script.screen.shows("❯ [Image #1]") {
+                break;
+            }
+            script.settle().await;
+        }
+        assert!(
+            script.screen.shows("❯ [Image #1]"),
+            "{:#?}",
+            script.screen.rows()
+        );
+        // Dropping the script's side ends the loop.
+    };
+    let (ran, ()) = tokio::join!(timeout(PATIENCE * 2, run), drive);
+    ran.expect("the loop ends").unwrap();
+}
+
 #[test]
 fn the_app_can_run_the_screen_on_its_own_task() {
     fn is_send<T: Send>(_: &T) {}

@@ -11,6 +11,7 @@ use argonauts_core::input::EFFORT_LEVELS;
 use argonauts_core::limits::{HealthState, QuotaStatus};
 use argonauts_core::names::{ChatId, RoleName, SessionKey, TurnId, WorkerRef};
 use argonauts_core::paths::create_private_dir_all;
+use argonauts_core::pictures::Picture;
 use argonauts_core::registry::{ModelRegistry, effort_to_run, known_efforts};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxChoice;
@@ -276,6 +277,9 @@ pub(crate) enum TurnStep {
         changes: String,
         other_provider: bool,
     },
+    /// Argonauts tells the main session, in the turn's text, what became of a run it started,
+    /// and the session says so to you in one line. Read-only, and it starts nothing.
+    Told,
 }
 
 impl TurnStep {
@@ -291,12 +295,13 @@ impl TurnStep {
             | Self::Title
             | Self::Compact { .. }
             | Self::Carry { .. }
-            | Self::Review { .. } => StepName::ChatAnswer,
+            | Self::Review { .. }
+            | Self::Told => StepName::ChatAnswer,
         }
     }
 
     /// Steps whose text is your own words, so the files they mention go along.
-    fn takes_mentions(&self) -> bool {
+    pub(crate) fn takes_mentions(&self) -> bool {
         matches!(
             self,
             Self::Triage { .. }
@@ -308,14 +313,15 @@ impl TurnStep {
     }
 
     /// A turn that goes on from the one before with the same session, which already has your
-    /// message, the files it mentions, and the `!` commands you ran.
+    /// message, the files it mentions, and the `!` commands you ran. Being told of a run is one
+    /// too: it has no message of yours to show.
     pub(crate) fn continues(&self) -> bool {
         matches!(
             self,
             Self::Direct {
                 go_ahead: Some(_),
                 ..
-            }
+            } | Self::Told
         )
     }
 
@@ -426,6 +432,13 @@ impl TurnStep {
             }
             // Your words, and that plan first is on, as Claude Code's plan mode tells its model.
             Self::Plan { .. } => ("plan first", format!("{}\n\n{PLAN_FIRST}", text.trim())),
+            Self::Told => (
+                "notice",
+                crate::prompts::chat_answer(&argonauts_core::steps::intake::ChatAnswerInput {
+                    question: text.to_owned(),
+                    run_status: None,
+                }),
+            ),
             Self::Side => (
                 "side question",
                 crate::prompts::chat_answer(&argonauts_core::steps::intake::ChatAnswerInput {
@@ -489,6 +502,8 @@ pub(crate) struct Launch<'a> {
     pub turn: &'a TurnId,
     pub step: &'a TurnStep,
     pub text: &'a str,
+    /// The pictures your message holds, as its `[Image #N]` chips name them.
+    pub pictures: Vec<Picture>,
     pub worker: WorkerRef,
     pub handle: Arc<dyn Worker>,
     /// The vendor session to resume, when it belongs to this worker.
@@ -526,6 +541,9 @@ pub(crate) fn launch(ctx: &Ctx, launch: Launch<'_>) -> anyhow::Result<Launched> 
     create_private_dir_all(&session_dir)
         .map_err(|err| anyhow::anyhow!("creating {}: {err}", session_dir.display()))?;
     let spec = session_spec(ctx, &launch, key.clone(), session_dir);
+    if spec.cli_workflow.ultracode || spec.cli_workflow.typed_keyword {
+        crate::telemetry::used(&ctx.env.paths, crate::telemetry::Use::Ultracode);
+    }
     let mut request = StepRequest::new(launch.handle, spec);
     let cancel = CancellationToken::new();
     request.cancel = cancel.clone();
@@ -687,6 +705,17 @@ fn chat_sandbox(choice: SandboxChoice, keeps_read_only: bool) -> SandboxMode {
     }
 }
 
+/// A picture as a part of the prompt: the file, which the CLI reads as an image, and no text.
+fn picture_part(picture: &Picture) -> InputPart {
+    InputPart {
+        kind: InputPartKind::Picture,
+        label: picture.label(),
+        text: String::new(),
+        approx_tokens: 0,
+        source: Some(picture.path.display().to_string()),
+    }
+}
+
 pub(crate) fn session_spec(
     ctx: &Ctx,
     launch: &Launch<'_>,
@@ -717,6 +746,7 @@ pub(crate) fn session_spec(
     let mut prompt: Vec<InputPart> = launch.excerpt.iter().cloned().collect();
     prompt.extend(launch.shell.iter().cloned());
     prompt.push(launch.step.prompt(launch.text));
+    prompt.extend(launch.pictures.iter().map(picture_part));
     if launch.step.takes_mentions() {
         let root = &launch.workdir;
         let mentioned = repo_files::mentioned(root, launch.text);
@@ -792,6 +822,7 @@ pub(crate) fn session_spec(
         env: Vec::new(),
         asking,
         cli_workflow: cli_workflow(settings, direct, words),
+        shell: argonauts_core::worker::SessionShell::None,
     }
 }
 
@@ -805,6 +836,7 @@ fn cli_workflow(settings: &Settings, direct: bool, words: Option<&DirectWords>) 
     CliWorkflow {
         ultracode: asked.ultracode || super::ultra::main_session(settings).ultracode,
         typed_keyword: asked.typed_keyword,
+        ..CliWorkflow::default()
     }
 }
 
@@ -1016,6 +1048,7 @@ mod tests {
             turn: &turn,
             step: &step,
             text: "what does main do?",
+            pictures: Vec::new(),
             worker: agent.parse().unwrap(),
             handle: Arc::new(argonauts_testkit::worker::FakeWorker::harness(
                 agent, "test",

@@ -260,6 +260,7 @@ impl Limits {
                 RecoveryAction::BudgetHit(self.settings.limits.budget.when_reached)
             }
             ErrorCategory::InvalidRequest
+            | ErrorCategory::AnswerMissed
             | ErrorCategory::Permission
             | ErrorCategory::Interrupted
             | ErrorCategory::Cli

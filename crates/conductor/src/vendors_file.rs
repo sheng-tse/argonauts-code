@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use argonauts_core::limits::{HealthState, QuotaReading, QuotaStatus, QuotaWindows, VendorHealth};
 use argonauts_core::names::VendorId;
+use argonauts_core::plan_usage::LiveUsage;
 use argonauts_core::{Paths, create_private_dir_all};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -26,6 +27,10 @@ pub struct VendorsFile {
     pub vendors: BTreeMap<String, VendorEntry>,
 }
 
+/// The accounts whose live readings are kept per CLI, so signing back in to one shows its
+/// numbers without the file growing for every account ever used.
+const LIVE_ACCOUNTS_KEPT: usize = 4;
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct VendorEntry {
     /// The window that binds soonest. It's what a file from before windows holds alone, and
@@ -37,6 +42,10 @@ pub struct VendorEntry {
     /// The account's plan, as the CLI names it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
+    /// The newest live reading of each account the CLI was signed in as, the account signed
+    /// in last at the end.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub live: Vec<LiveUsage>,
     pub health: Option<VendorHealth>,
     /// When the vendor last left `Down`, which wakes runs waiting for it.
     #[serde(default, with = "time::serde::rfc3339::option")]
@@ -100,6 +109,53 @@ impl VendorEntry {
         let kept = self.windows.observe(reading);
         self.quota = self.windows.binding().cloned();
         kept
+    }
+
+    /// Keeps `reading` as its account's, unless that account has a newer one. A reading of
+    /// another account than the last means the CLI was signed in again: the windows read
+    /// before, which name no account, are dropped with it, so they never speak for the new
+    /// one. Says whether it was kept.
+    pub fn observe_live(&mut self, reading: LiveUsage) -> bool {
+        if self
+            .live
+            .iter()
+            .any(|known| known.account == reading.account && known.read_at > reading.read_at)
+        {
+            return false;
+        }
+        self.live.retain(|known| known.account != reading.account);
+        // Read before the account signed in last, as another process may report late: it
+        // is kept for its account, and the last stays the one signed in.
+        if let Some(last) = self.live.last()
+            && last.read_at > reading.read_at
+        {
+            let at = self.live.len() - 1;
+            self.live.insert(at, reading);
+            self.keep_few_accounts();
+            return true;
+        }
+        let switched = self
+            .live
+            .last()
+            .is_some_and(|last| last.account != reading.account);
+        if switched {
+            self.windows = QuotaWindows::default();
+            self.quota = None;
+            self.plan = None;
+        }
+        self.live.push(reading);
+        self.keep_few_accounts();
+        true
+    }
+
+    fn keep_few_accounts(&mut self) {
+        let extra = self.live.len().saturating_sub(LIVE_ACCOUNTS_KEPT);
+        self.live.drain(..extra);
+    }
+
+    /// The live reading of the account signed in last.
+    pub fn signed_in(&self) -> Option<&LiveUsage> {
+        self.live.last()
     }
 
     /// Every window's newest reading. A file from before windows has its one reading.
@@ -631,5 +687,60 @@ mod tests {
         codex_entry.left_down_at = Some(now + Duration::seconds(1));
         assert!(file.vendor_back(&codex, now, now));
         assert!(!file.vendor_back(&codex, now + Duration::seconds(5), now));
+    }
+
+    fn live(account: Option<&str>, minute: i64) -> LiveUsage {
+        LiveUsage {
+            account: account.map(str::to_owned),
+            ..LiveUsage::new(
+                VendorId("codex".into()),
+                QuotaSource::AppServer,
+                OffsetDateTime::UNIX_EPOCH + Duration::minutes(minute),
+            )
+        }
+    }
+
+    #[test]
+    fn live_readings_are_kept_per_account_with_the_last_signed_in_at_the_end() {
+        let mut entry = VendorEntry::default();
+        entry.observe_quota(quota("codex", QuotaStatus::Allowed, None));
+        assert!(entry.observe_live(live(Some("a@example.com"), 1)));
+        // The same account's windows stay.
+        assert!(!entry.quota_windows().is_empty());
+        assert!(entry.observe_live(live(Some("b@example.com"), 2)));
+        assert_eq!(
+            entry.signed_in().unwrap().account.as_deref(),
+            Some("b@example.com")
+        );
+        // Signing in as another account drops the windows that named none.
+        assert!(entry.quota_windows().is_empty());
+        // A late reading of the first account is kept for it but doesn't sign it back in.
+        assert!(entry.observe_live(live(Some("a@example.com"), 1)));
+        assert_eq!(
+            entry.signed_in().unwrap().account.as_deref(),
+            Some("b@example.com")
+        );
+        // Nor does an older reading of an account replace its newer one.
+        assert!(!entry.observe_live(live(Some("b@example.com"), 0)));
+        // Signing back in to the first shows its own reading.
+        assert!(entry.observe_live(live(Some("a@example.com"), 3)));
+        assert_eq!(
+            entry.signed_in().unwrap().read_at,
+            OffsetDateTime::UNIX_EPOCH + Duration::minutes(3)
+        );
+        assert_eq!(entry.live.len(), 2);
+    }
+
+    #[test]
+    fn only_a_few_accounts_are_kept() {
+        let mut entry = VendorEntry::default();
+        for n in 0..6 {
+            entry.observe_live(live(Some(&format!("{n}@example.com")), n));
+        }
+        assert_eq!(entry.live.len(), LIVE_ACCOUNTS_KEPT);
+        assert_eq!(
+            entry.signed_in().unwrap().account.as_deref(),
+            Some("5@example.com")
+        );
     }
 }

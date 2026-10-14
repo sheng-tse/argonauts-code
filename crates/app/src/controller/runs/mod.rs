@@ -1,6 +1,7 @@
 //! The runs this app watches: starting and attaching, forwarding their events, noticing a
 //! crashed supervisor, and waking parked runs.
 
+mod alongside;
 mod track;
 
 #[cfg(test)]
@@ -17,6 +18,7 @@ use argonauts_core::api::{ApiError, RunState, RunSummary, StartRun};
 use argonauts_core::app::{AppEvent, AppMode};
 use argonauts_core::card::title_from_task;
 use argonauts_core::events::RunEvent;
+use argonauts_core::events::failure::run_failure_line;
 use argonauts_core::events::run::{RunMode, RunOutcome};
 use argonauts_core::names::{ChoiceId, MessageId, WorkerRef};
 use argonauts_core::policy::NarratorLine;
@@ -59,14 +61,29 @@ pub(crate) struct RunsState {
     shown: HashSet<RunId>,
     /// This conversation's runs: started or opened here, or brought back with the conversation,
     /// and replaced when another conversation comes on screen. Only they get panel rows and
-    /// count in the mode line, as Claude Code's panel holds only its own session's tasks.
-    /// Any other run in the repo, from an earlier conversation, another terminal,
+    /// count in the mode line, as Claude Code's panel holds only its own session's tasks
+    ///. Any other run in the repo, from an earlier conversation, another terminal,
     /// or a front end over MCP, is counted under the header at start, listed in /resume, and
     /// said in one line instead: when it needs you, wakes, or ends, and at start when it
     /// crashed.
     pub(super) ours: BTreeSet<RunId>,
     /// Runs that came on screen since the conversation last saved its runs.
     pub(super) opened: Vec<ChatRun>,
+    /// How the runs on screen got on since the loop last asked, oldest first.
+    news: Vec<(RunId, RunNews)>,
+    /// Runs that left the screen while working, and still stream into the chat.
+    streaming: alongside::Streaming,
+}
+
+/// How far a run got, which the main session that started it hears of.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RunNews {
+    /// It is under way: an agent started, a step got through, or it waits for you.
+    Began,
+    /// It parked for its CLIs before any agent started, so nothing runs. `line` says why.
+    Waiting { line: String },
+    /// It ended, before it began or after. `line` says why a failed run failed.
+    Ended { outcome: RunOutcome, line: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -141,8 +158,34 @@ impl RunsState {
             shown: HashSet::new(),
             ours: BTreeSet::new(),
             opened: Vec::new(),
+            news: Vec::new(),
+            streaming: alongside::Streaming::default(),
         }
     }
+}
+
+/// How the runs on screen got on since the last call.
+pub(crate) fn take_news(runs: &mut RunsState) -> Vec<(RunId, RunNews)> {
+    std::mem::take(&mut runs.news)
+}
+
+/// The run on screen gives way to another. One still working goes on streaming into the chat
+/// beside it; any other leaves the screen.
+pub(super) async fn give_way(ctx: &mut Ctx, runs: &mut RunsState, mut old: Attached) {
+    if alongside::keeps_working(&old) {
+        match alongside::follow(ctx, runs, &mut old).await {
+            Ok(()) => return,
+            Err(err) => tracing::warn!("{err:#}"),
+        }
+    }
+    ctx.send(AppEvent::Detached {
+        run: old.run.clone(),
+    });
+}
+
+/// A run that comes on screen streams there, and no longer beside it.
+pub(super) fn came_on_screen(runs: &mut RunsState, run: &RunId) {
+    alongside::on_screen(runs, run);
 }
 
 pub(crate) fn attached(runs: &RunsState) -> Option<&RunId> {
@@ -312,7 +355,9 @@ fn announce_background(ctx: &mut Ctx, runs: &RunsState, list: &[RunSummary]) {
                 format!("{} needs you · /resume {}", run_called(run), run.run)
             };
             (ChatTrigger::NeedsYou, kind, text)
-        } else if let (Some(_), Some(outcome)) = (before, outcome_of(run.state)) {
+        } else if let (Some(_), Some(outcome)) = (before, outcome_of(run.state))
+            && !alongside::ended_here(runs, &run.run)
+        {
             let open = if runs.ours.contains(&run.run) {
                 "/resume".to_owned()
             } else {
@@ -699,6 +744,7 @@ async fn on_event(
     event: RunEvent,
 ) -> Vec<Effect> {
     let Some(attached) = watching(runs, run) else {
+        alongside::on_event(ctx, runs, run, event).await;
         return Vec::new();
     };
     let history = !attached.replay_done;
@@ -719,6 +765,17 @@ async fn on_event(
         return Vec::new();
     }
     let spent = attached.spent;
+    if seen.began {
+        runs.news.push((run.clone(), RunNews::Began));
+    }
+    if let Some(line) = seen.held.clone() {
+        runs.news.push((run.clone(), RunNews::Waiting { line }));
+    }
+    if let Some(outcome) = seen.finished {
+        let line = run_failure_line(seen.detail.as_deref());
+        runs.news
+            .push((run.clone(), RunNews::Ended { outcome, line }));
+    }
     if let Some(delivered) = &seen.delivered {
         forget_queued(runs, run, delivered);
     }
@@ -773,19 +830,37 @@ async fn finished(ctx: &mut Ctx, runs: &mut RunsState, run: &RunId, outcome: Run
         return;
     };
     let spent = attached.spent;
-    if ctx.settings().ui.recaps {
-        let summary = attach::status_summary(ctx, run, &attached.events).await;
-        let closing = recap::closing_in(&attached.events);
-        let mut text = recap::recap_from_summary(&summary, Some(outcome), closing);
-        if text.trim().is_empty() {
-            text = format!(
-                "{} Ask for another change, or /resume an older run.",
-                track::outcome_sentence(run, outcome)
-            );
-        }
-        ctx.send(AppEvent::Recap { text, model: None });
-    }
+    send_recap(ctx, run, &attached.events, outcome).await;
     runs.queued.remove(run);
+    notify_finished(ctx, runs, run, outcome, spent);
+    ctx.set_mode(AppMode::Idle);
+}
+
+/// The run's recap, when recaps are on, from its events and its closing answer.
+async fn send_recap(ctx: &mut Ctx, run: &RunId, events: &[RunEvent], outcome: RunOutcome) {
+    // A failed run is said once, in its own block, which also says how many tasks got done.
+    if !ctx.settings().ui.recaps || outcome == RunOutcome::Failed {
+        return;
+    }
+    let summary = attach::status_summary(ctx, run, events).await;
+    let closing = recap::closing_in(events);
+    let mut text = recap::recap_from_summary(&summary, Some(outcome), closing);
+    if text.trim().is_empty() {
+        text = format!(
+            "{} Ask for another change, or /resume an older run.",
+            track::outcome_sentence(run, outcome)
+        );
+    }
+    ctx.send(AppEvent::Recap { text, model: None });
+}
+
+fn notify_finished(
+    ctx: &Ctx,
+    runs: &RunsState,
+    run: &RunId,
+    outcome: RunOutcome,
+    spent: Option<Spend>,
+) {
     let needs = NeedsYou {
         repo: repo_name(ctx),
         run: run.clone(),
@@ -795,7 +870,6 @@ async fn finished(ctx: &mut Ctx, runs: &mut RunsState, run: &RunId, outcome: Run
         trigger: ChatTrigger::Finished,
     };
     notify_if_away(ctx, runs, &needs);
-    ctx.set_mode(AppMode::Idle);
 }
 
 fn notify_if_away(ctx: &Ctx, runs: &RunsState, needs: &NeedsYou) {
@@ -818,6 +892,10 @@ fn on_live(ctx: &mut Ctx, runs: &mut RunsState, run: &RunId, live: bool) -> Vec<
     };
     attached.live = live;
     if attach::report_crash(ctx, attached) {
+        let line = "its supervisor exited before parking".to_owned();
+        let outcome = RunOutcome::Failed;
+        runs.news
+            .push((run.clone(), RunNews::Ended { outcome, line }));
         return vec![Effect::Status];
     }
     Vec::new()
@@ -825,6 +903,7 @@ fn on_live(ctx: &mut Ctx, runs: &mut RunsState, run: &RunId, live: bool) -> Vec<
 
 async fn on_ended(ctx: &mut Ctx, runs: &mut RunsState, run: &RunId) -> Vec<Effect> {
     let Some(attached) = watching(runs, run) else {
+        alongside::on_ended(runs, run);
         return Vec::new();
     };
     attached.ended = true;

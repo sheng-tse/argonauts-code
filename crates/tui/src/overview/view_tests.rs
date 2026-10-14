@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use argonauts_core::api::{StatusSummary, UsageSummary};
+use argonauts_core::api::UsageSummary;
 use argonauts_core::names::TurnId;
 
 use super::*;
@@ -58,8 +58,23 @@ fn key(view: &mut OverviewView, state: &AppState, code: KeyCode) -> ViewOutcome 
     view.handle_key(KeyEvent::from(code), &ctx)
 }
 
+/// ↓ from the tabs, through any sub-tabs, into the cards.
+fn into_the_cards(view: &mut OverviewView, state: &AppState) {
+    while view.level() != Level::Cards {
+        key(view, state, KeyCode::Down);
+    }
+}
+
+/// ↓ until the next card has the keys, past the rows of the one before.
+fn next_card(view: &mut OverviewView, state: &AppState) {
+    let before = view.focus;
+    while view.focus == before {
+        key(view, state, KeyCode::Down);
+    }
+}
+
 #[test]
-fn the_usage_tab_stacks_its_cards_under_the_tabs_and_takes_only_their_rows() {
+fn the_usage_tab_draws_a_card_per_cli_under_the_tabs_and_takes_only_their_rows() {
     let state = state(sample::usage());
     let mut usage = view(Tab::Usage);
     let rows = rows(&mut usage, &state, 110, 60);
@@ -68,30 +83,37 @@ fn the_usage_tab_stacks_its_cards_under_the_tabs_and_takes_only_their_rows() {
         rows[1].starts_with("  Overview   Status  [Usage]  Context   Limits   Stats"),
         "{rows:#?}"
     );
-    assert!(rows[1].ends_with("Today  Week  Month  All"), "{rows:#?}");
+    assert!(rows[1].ends_with("r reads again"), "{rows:#?}");
     assert!(
-        rows[2].starts_with(" Plan usage, spend and tokens across the crew"),
+        rows[2].starts_with("  All CLIs   Claude Code   Codex   Antigravity CLI   OpenRouter"),
         "{rows:#?}"
     );
-    assert!(rows[2].ends_with("~$1.86 today · 1.4M tokens"), "{rows:#?}");
     let at = |text: &str| {
         rows.iter()
             .position(|row| row.contains(text))
             .unwrap_or_else(|| panic!("{text}: {rows:#?}"))
     };
+    // Under 130 columns the cards stack, in the crew's order.
     let order = [
-        at("◆ plan usage"),
-        at("● Claude Code Max · in use · read 1m ago"),
-        at("◆ spend"),
-        at("◆ tokens"),
-        at("◆ workflows"),
+        at("● Claude Code"),
+        at("● Codex"),
+        at("● Antigravity CLI"),
+        at("● OpenRouter"),
     ];
     assert!(order.is_sorted(), "{order:?}: {rows:#?}");
-    assert_eq!(at("◆ tokens"), at("◆ history"), "side by side: {rows:#?}");
+    // Stored readings name no account, so none stands in for a live one.
     assert!(
-        rows.last().unwrap().starts_with(
-            " ←→ tab · d w m a period · tab next card · p pin above the input · u used or left"
-        ),
+        rows[at("● Codex") + 2].contains("no live reading yet"),
+        "{rows:#?}"
+    );
+    assert!(
+        rows[at("● OpenRouter") + 2].contains("pays per token"),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.last()
+            .unwrap()
+            .starts_with(" tab · ←→ tabs · ↓ CLIs · enter details · esc back"),
         "{rows:#?}"
     );
     assert!(
@@ -101,47 +123,14 @@ fn the_usage_tab_stacks_its_cards_under_the_tabs_and_takes_only_their_rows() {
 }
 
 #[test]
-fn a_narrow_panel_stacks_tokens_over_history_and_scrolls_what_does_not_fit() {
+fn the_keys_change_tab_units_and_pin_the_card_in_focus() {
     let state = state(sample::usage());
-    let mut usage = view(Tab::Usage);
-    let shown = rows(&mut usage, &state, 80, 24);
-    assert!(shown.len() <= 18, "{shown:#?}");
-    assert!(
-        shown.last().unwrap().starts_with(" ↑↓ scroll · "),
-        "{shown:#?}"
-    );
-    assert!(!shown.iter().any(|row| row.contains("◆ workflows")));
-    // ↓ moves a card at a time, and stops at the last.
-    for _ in 0..9 {
-        key(&mut usage, &state, KeyCode::Down);
-    }
-    let scrolled = rows(&mut usage, &state, 80, 24);
-    assert!(
-        scrolled.iter().any(|row| row.contains("◆ workflows")),
-        "{scrolled:#?}"
-    );
-}
-
-#[test]
-fn the_keys_change_tab_period_units_and_pin_the_card_in_focus() {
-    let state = state(sample::usage());
-    let mut overview = view(Tab::Usage);
-    assert!(matches!(
-        key(&mut overview, &state, KeyCode::Char('w')),
-        ViewOutcome::Request(ViewRequest::Usage {
-            period: UsagePeriod::Week
-        })
-    ));
-    // The week's numbers aren't in yet, and yesterday's totals never stand in for them.
-    let waiting = rows(&mut overview, &state, 110, 60);
-    assert!(waiting.iter().any(|row| row.contains("Reading usage…")));
-    key(&mut overview, &state, KeyCode::Char('d'));
-
+    let mut overview = view(Tab::Limits);
     key(&mut overview, &state, KeyCode::Char('u'));
     let left = rows(&mut overview, &state, 110, 60);
     assert!(left.iter().any(|row| row.contains(" 29%")), "{left:#?}");
 
-    key(&mut overview, &state, KeyCode::Tab);
+    into_the_cards(&mut overview, &state);
     let pinned = key(&mut overview, &state, KeyCode::Char('p'));
     let ViewOutcome::Send(UiCommand::Slash {
         command:
@@ -162,14 +151,35 @@ fn the_keys_change_tab_period_units_and_pin_the_card_in_focus() {
     );
 
     assert!(matches!(
-        key(&mut overview, &state, KeyCode::Right),
+        key(&mut overview, &state, KeyCode::Left),
         ViewOutcome::Request(ViewRequest::Context)
     ));
     assert_eq!(overview.tab(), Tab::Context);
-    for _ in 0..6 {
+    assert_eq!(
+        overview.level(),
+        Level::Tabs,
+        "the keys are on the tab they moved"
+    );
+    for _ in 0..3 {
         key(&mut overview, &state, KeyCode::Left);
     }
-    assert_eq!(overview.tab(), Tab::Overview, "← stops at the first tab");
+    assert_eq!(overview.tab(), Tab::Overview);
+    // The tabs wrap at both ends, and Tab and Shift+Tab go along them too.
+    key(&mut overview, &state, KeyCode::Left);
+    assert_eq!(
+        overview.tab(),
+        Tab::Stats,
+        "← on the first tab goes to the last"
+    );
+    key(&mut overview, &state, KeyCode::Tab);
+    assert_eq!(
+        overview.tab(),
+        Tab::Overview,
+        "tab on the last goes to the first"
+    );
+    key(&mut overview, &state, KeyCode::BackTab);
+    assert_eq!(overview.tab(), Tab::Stats);
+    key(&mut overview, &state, KeyCode::Right);
     assert!(matches!(
         key(&mut overview, &state, KeyCode::Esc),
         ViewOutcome::Close
@@ -182,25 +192,32 @@ fn status_shows_its_cards_under_its_tab_once_its_answer_comes() {
     let mut overview = view(Tab::Overview);
     assert!(matches!(
         key(&mut overview, &state, KeyCode::Right),
-        ViewOutcome::Request(ViewRequest::Status)
+        ViewOutcome::Request(ViewRequest::StatusTab)
     ));
     let waiting = rows(&mut overview, &state, 110, 60);
     assert!(waiting[1].contains("[Status]"), "{waiting:#?}");
-    assert!(waiting.iter().any(|row| row.contains("Reading status…")));
+    assert!(
+        !waiting.iter().any(|row| row.contains("Reading")),
+        "{waiting:#?}"
+    );
 
-    assert!(overview.accept(&ViewData::Status {
-        summary: StatusSummary::default(),
+    assert!(overview.accept(&ViewData::StatusTab {
+        view: Box::default(),
     }));
     let idle = rows(&mut overview, &state, 110, 60);
     assert!(
-        idle.iter().any(|row| row.contains("Nothing running")),
+        idle.iter().any(|row| row.contains("None yet.")),
         "{idle:#?}"
     );
 
-    assert!(overview.accept(&ViewData::Status {
-        summary: sample::status(),
+    assert!(overview.accept(&ViewData::StatusTab {
+        view: Box::new(argonauts_core::status_tab::StatusTabView {
+            run: Some(sample::status()),
+            ..Default::default()
+        }),
     }));
-    let shown = rows(&mut overview, &state, 110, 60);
+    // The run's cards come under the setup's, so a tall screen shows them all.
+    let shown = rows(&mut overview, &state, 110, 120);
     assert!(shown[2].ends_with("run-03 · $1.20"), "{shown:#?}");
     let at = |what: &str| {
         shown
@@ -216,12 +233,23 @@ fn status_shows_its_cards_under_its_tab_once_its_answer_comes() {
     assert!(at(" Recent  ") > at("◆ needs you"), "{shown:#?}");
     let keys = shown.last().unwrap();
     assert!(
-        keys.contains("↑↓ task · enter agent · tab next card · p pin above the input"),
+        keys.contains("tab · ←→ tabs · ↓ into the cards · enter open"),
+        "{keys}"
+    );
+    // Your CLIs, the settings and the runs come first, then the run's own cards.
+    into_the_cards(&mut overview, &state);
+    for _ in 0..3 {
+        next_card(&mut overview, &state);
+    }
+    let shown = rows(&mut overview, &state, 110, 60);
+    let keys = shown.last().unwrap();
+    assert!(
+        keys.contains("←→ tabs · ↑↓ task · enter agent · p pin above the input"),
         "{keys}"
     );
 
     // Narrow, the two stack.
-    let narrow = rows(&mut overview, &state, 80, 60);
+    let narrow = rows(&mut overview, &state, 80, 120);
     let at = |what: &str| narrow.iter().position(|row| row.contains(what)).unwrap();
     assert!(at("◆ spend") < at("◆ plan usage"), "{narrow:#?}");
 
@@ -271,6 +299,12 @@ fn on_status_the_arrows_pick_a_task_and_enter_opens_its_agent() {
     let state = following_the_run();
     let mut status = view(Tab::Status).with_status(sample::status());
     let shown = rows(&mut status, &state, 110, 60);
+    assert!(
+        !shown.iter().any(|row| row.contains("│ ❯ ")),
+        "no task is picked while the keys are on the tabs: {shown:#?}"
+    );
+    into_the_cards(&mut status, &state);
+    let shown = rows(&mut status, &state, 110, 60);
     let picked = |rows: &[String]| {
         let row = rows.iter().find(|row| row.contains("│ ❯ "));
         row.cloned().unwrap_or_default()
@@ -295,20 +329,19 @@ fn on_status_the_arrows_pick_a_task_and_enter_opens_its_agent() {
         }
         other => panic!("{other:?}"),
     }
-    // The arrows stop at the last task.
-    for _ in 0..9 {
+    for _ in 0..2 {
         key(&mut status, &state, KeyCode::Down);
     }
     let shown = rows(&mut status, &state, 110, 60);
     assert!(picked(&shown).contains("task-004  Review"), "{shown:#?}");
 
-    // On another card no task is picked, the rows stay where they were, and Enter opens
-    // the workflow.
+    // Past the last task ↓ goes to the next card, where no task is picked, the rows stay
+    // where they were, and Enter opens the workflow.
     let before = shown
         .iter()
         .position(|row| row.contains("task-002"))
         .unwrap();
-    key(&mut status, &state, KeyCode::Tab);
+    key(&mut status, &state, KeyCode::Down);
     let shown = rows(&mut status, &state, 110, 60);
     assert_eq!(picked(&shown), "");
     assert!(
@@ -348,29 +381,35 @@ fn on_status_p_pins_the_card_in_focus_and_tab_scrolls_to_it() {
         other => panic!("{other:?}"),
     };
     let mut seen = Vec::new();
-    for _ in 0..4 {
+    into_the_cards(&mut status, &state);
+    for at in 0..4 {
         seen.push(pinned(key(&mut status, &state, KeyCode::Char('p'))));
-        key(&mut status, &state, KeyCode::Tab);
+        if at < 3 {
+            next_card(&mut status, &state);
+        }
     }
     use WidgetName::{Budget, Quota, Run, Waiting};
     assert_eq!(seen, [Run, Budget, Quota, Waiting]);
 
-    // On a short screen the card Tab moved to scrolls into view.
+    // On a short screen the card ↓ moved to scrolls into view, and ↑ brings the first back.
     let mut status = view(Tab::Status).with_status(sample::status());
     let short = rows(&mut status, &state, 110, 24);
     assert!(
         !short.iter().any(|row| row.contains("◆ needs you")),
         "{short:#?}"
     );
+    into_the_cards(&mut status, &state);
     for _ in 0..3 {
-        key(&mut status, &state, KeyCode::Tab);
+        next_card(&mut status, &state);
     }
     let short = rows(&mut status, &state, 110, 24);
     assert!(
         short.iter().any(|row| row.contains("◆ needs you")),
         "{short:#?}"
     );
-    key(&mut status, &state, KeyCode::Tab);
+    for _ in 0..3 {
+        key(&mut status, &state, KeyCode::Up);
+    }
     let short = rows(&mut status, &state, 110, 24);
     assert!(
         short.iter().any(|row| row.contains("◆ run-03")),
@@ -395,6 +434,8 @@ fn context_shows_the_picked_session_over_the_list_and_the_arrows_pick() {
         "{shown:#?}"
     );
     assert!(shown.iter().any(|row| row.contains("❯ main · chat")));
+    into_the_cards(&mut overview, &state);
+    let shown = rows(&mut overview, &state, 120, 60);
     assert!(
         shown
             .last()
@@ -494,6 +535,8 @@ fn the_limits_tab_lists_the_limits_and_enter_opens_the_picked_one_to_change() {
         shown[list + 1].starts_with(" ❯ Spend for a run"),
         "{shown:#?}"
     );
+    into_the_cards(&mut overview, &state);
+    let shown = rows(&mut overview, &state, 120, 60);
     assert!(
         shown.last().unwrap().contains("↑↓ limit · enter change"),
         "{shown:#?}"
@@ -527,6 +570,7 @@ fn the_limits_tab_lists_the_limits_and_enter_opens_the_picked_one_to_change() {
     let mut short = view(Tab::Limits);
     let hidden = rows(&mut short, &state, 120, 20);
     assert!(!hidden.iter().any(|row| row.contains("❯")), "{hidden:#?}");
+    into_the_cards(&mut short, &state);
     key(&mut short, &state, KeyCode::Down);
     let found = rows(&mut short, &state, 120, 20);
     assert!(
@@ -546,9 +590,11 @@ fn the_limits_tab_lists_the_limits_and_enter_opens_the_picked_one_to_change() {
             .any(|row| row.contains("Enter opens the limits")),
         "{shown:#?}"
     );
+    into_the_cards(&mut overview, &state);
     assert_eq!(opened(key(&mut overview, &state, KeyCode::Enter)), None);
     // On the other usage tabs Enter has nothing to open.
-    let mut usage = view(Tab::Usage);
+    let mut usage = view(Tab::Overview);
+    into_the_cards(&mut usage, &state);
     assert!(matches!(
         key(&mut usage, &state, KeyCode::Enter),
         ViewOutcome::Ignored
@@ -658,19 +704,19 @@ fn mid_answer_the_keys_say_esc_closes_the_panel_and_not_the_answer() {
     state.mode = Some(AppMode::Answering {
         turn: TurnId::numbered(1),
     });
-    let mut overview = view(Tab::Overview);
+    let mut overview = view(Tab::Usage);
     // The way out shows whole at any width; the keys before it give way.
     for width in [200, 110, 80, 60] {
-        let shown = rows(&mut overview, &state, width, 40);
+        let shown = rows(&mut overview, &state, width, 120);
         let keys = shown.last().unwrap();
         assert!(
             keys.ends_with("esc closes this · the answer keeps running"),
             "{width}: {shown:#?}"
         );
-        assert!(keys.starts_with(" ←→ tab · "), "{width}: {shown:#?}");
+        assert!(keys.starts_with(" tab · ←→ tabs · "), "{width}: {shown:#?}");
     }
-    let shown = rows(&mut overview, &state, 200, 40);
-    assert!(shown.iter().any(|row| row.contains("◆ workflows")));
+    let shown = rows(&mut overview, &state, 200, 120);
+    assert!(shown.iter().any(|row| row.contains("● Claude Code")));
 }
 
 /// Your mods from `mods/` that name a tab sit under that tab's own cards, and nowhere else.
@@ -710,4 +756,99 @@ fn your_mods_show_under_the_tab_their_file_names() {
     assert!(titled(&usage), "{usage:#?}");
     let overview = rows(&mut view(Tab::Overview), &state, 110, 80);
     assert!(!titled(&overview), "{overview:#?}");
+}
+
+/// Stats has sub-tabs: ↓ goes to them, ←→ change them and the cards with them at once, ↓ goes
+/// into the cards and ↑ on the first row comes back up, a row at a time. Only fill says which
+/// row has the keys, so there are brackets on one row at a time and never a box.
+#[test]
+fn down_goes_to_the_sub_tabs_then_into_the_cards_and_up_comes_back() {
+    let state = state(sample::usage_with_stats());
+    let mut stats = view(Tab::Stats).with_period(UsagePeriod::Week);
+    let marked = |rows: &[String]| (rows[1].contains("[Stats]"), rows[2].contains("[By"));
+    let shown = rows(&mut stats, &state, 120, 60);
+    assert_eq!(marked(&shown), (true, false), "{shown:#?}");
+
+    key(&mut stats, &state, KeyCode::Down);
+    assert_eq!(stats.level(), Level::SubTabs);
+    let shown = rows(&mut stats, &state, 120, 60);
+    assert_eq!(marked(&shown), (false, true), "{shown:#?}");
+    assert!(shown[2].contains("[By CLI]"), "{shown:#?}");
+    assert!(
+        shown
+            .last()
+            .unwrap()
+            .starts_with(" ←→ choose · ↓ into the cards · ↑ tabs"),
+        "{shown:#?}"
+    );
+
+    key(&mut stats, &state, KeyCode::Right);
+    assert_eq!(
+        stats.stats.group,
+        StatsGroup::Model,
+        "the cards change at once"
+    );
+    assert_eq!(
+        stats.tab(),
+        Tab::Stats,
+        "→ on the sub-tabs stays on the tab"
+    );
+    key(&mut stats, &state, KeyCode::Left);
+    key(&mut stats, &state, KeyCode::Left);
+    assert_eq!(stats.stats.group, StatsGroup::Role, "the sub-tabs wrap too");
+
+    key(&mut stats, &state, KeyCode::Down);
+    assert_eq!(stats.level(), Level::Cards);
+    let shown = rows(&mut stats, &state, 120, 60);
+    assert_eq!(marked(&shown), (false, false), "{shown:#?}");
+    key(&mut stats, &state, KeyCode::Down);
+    key(&mut stats, &state, KeyCode::Up);
+    assert_eq!(
+        stats.level(),
+        Level::Cards,
+        "↑ from the second row goes to the first"
+    );
+    key(&mut stats, &state, KeyCode::Up);
+    assert_eq!(stats.level(), Level::SubTabs);
+    key(&mut stats, &state, KeyCode::Up);
+    assert_eq!(stats.level(), Level::Tabs);
+}
+
+/// With vim keys on: h and l along a row, j and k between rows, g and G the first and last,
+/// and q closes.
+#[test]
+fn vim_keys_move_through_the_panel() {
+    let mut state = state(sample::usage());
+    state.ui = list::keys_state(true).ui;
+    let mut overview = view(Tab::Usage);
+    let letter = |view: &mut OverviewView, c: char| key(view, &state, KeyCode::Char(c));
+    letter(&mut overview, 'l');
+    assert_eq!(overview.tab(), Tab::Context);
+    letter(&mut overview, 'h');
+    letter(&mut overview, 'h');
+    assert_eq!(overview.tab(), Tab::Status);
+    letter(&mut overview, 'l');
+    letter(&mut overview, 'j');
+    assert_eq!(overview.level(), Level::SubTabs);
+    letter(&mut overview, 'l');
+    assert_eq!(overview.cli, 1, "l goes along the CLIs' sub-tabs");
+    letter(&mut overview, 'h');
+    assert_eq!(overview.cli, 0);
+    letter(&mut overview, 'j');
+    assert_eq!(overview.level(), Level::Cards);
+    letter(&mut overview, 'G');
+    assert_eq!(overview.focus, Tab::Usage.cards().len() - 1);
+    letter(&mut overview, 'g');
+    assert_eq!(overview.focus, 0);
+    letter(&mut overview, 'k');
+    assert_eq!(overview.level(), Level::SubTabs);
+    letter(&mut overview, 'k');
+    assert_eq!(overview.level(), Level::Tabs);
+    assert!(matches!(letter(&mut overview, 'q'), ViewOutcome::Close));
+
+    // Without vim keys the letters do what they always did.
+    let state = self::state(sample::usage());
+    let mut overview = view(Tab::Usage);
+    key(&mut overview, &state, KeyCode::Char('l'));
+    assert_eq!(overview.tab(), Tab::Usage);
 }

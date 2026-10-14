@@ -91,9 +91,10 @@ pub(crate) fn options(kind: ChoiceKind) -> Vec<AnswerOption> {
             option('y', "Yes, go ahead", choose("yes"), true),
             option('n', "No, keep planning", choose("no"), false),
         ],
+        // A preview's answer is No unless you say otherwise.
         ChoiceKind::TryWorkflow => vec![
-            option('y', "Run it", AnswerAction::Approve, true),
-            option('e', "Edit it", choose(EDIT_IT), false),
+            option('y', "Yes, run it", AnswerAction::Approve, false),
+            option('n', "No", choose("no"), true),
         ],
         // Built for each question: they name the CLI, the command, and the turns.
         ChoiceKind::Init
@@ -403,7 +404,7 @@ mod tests {
             (ChoiceKind::HandOff, Vec::new(), OnSetAside::No),
             (
                 ChoiceKind::TryWorkflow,
-                vec![('y', "Run it", Approve), ('e', "Edit it", choose("edit"))],
+                vec![('y', "Yes, run it", Approve), ('n', "No", choose("no"))],
                 OnSetAside::NothingRan,
             ),
             (ChoiceKind::Setup, Vec::new(), OnSetAside::NotChanged),

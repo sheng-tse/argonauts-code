@@ -426,7 +426,7 @@ impl Loop {
                     .map(Some)
             }
             Err(err) => self
-                .finish(RunOutcome::Failed, Some(err.to_string()))
+                .finish(RunOutcome::Failed, Some(err.run_detail()))
                 .await
                 .map(Some),
         }

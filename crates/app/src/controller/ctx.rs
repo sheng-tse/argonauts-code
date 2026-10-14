@@ -77,6 +77,8 @@ pub(crate) enum Internal {
     },
     /// The check of the goal the main agent works toward alone came back.
     Goal(super::chat::GoalChecked),
+    /// A CLI's plan usage was read live, so the bottom line shows the new reading.
+    PlanUsageRead,
 }
 
 /// What one part of the controller asks of another. The loop applies them in order.
@@ -96,6 +98,12 @@ pub(crate) enum Effect {
     /// Save these `(key, TOML value)` settings where you picked, through the same confirming
     /// and trust steps as `/config`.
     SaveSettings {
+        pairs: Vec<(String, String)>,
+        scope: SettingScope,
+    },
+    /// Save these settings where you picked on a setup's card. The pick confirmed them, so a
+    /// safety key among them asks nothing more.
+    SaveConfirmedSettings {
         pairs: Vec<(String, String)>,
         scope: SettingScope,
     },
@@ -142,6 +150,8 @@ pub(crate) struct Ctx {
     pub agent_sessions: Arc<super::chat::SessionCache>,
     /// Holds the computer's sleep off while anything works, and for `/awake`.
     pub awake: crate::keep_awake::KeepAwake,
+    /// What the Status tab knows of the CLIs: Doctor's check, and who each is signed in as.
+    pub cli_facts: Arc<super::status_tab::CliFacts>,
 }
 
 /// Shared with whoever started the app, which outlives the controller.
@@ -168,6 +178,7 @@ impl Ctx {
             agent_sessions: Arc::default(),
             // The app's own start gives it this computer's way to hold sleep off.
             awake: crate::keep_awake::KeepAwake::never(),
+            cli_facts: Arc::default(),
         }
     }
 

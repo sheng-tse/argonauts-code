@@ -69,6 +69,7 @@ pub fn category_words(category: ErrorCategory) -> &'static str {
         ErrorCategory::ContextFull => "context full",
         ErrorCategory::ModelUnavailable => "model unavailable",
         ErrorCategory::InvalidRequest => "invalid request",
+        ErrorCategory::AnswerMissed => "missed the answer format",
         ErrorCategory::Permission => "permission denied",
         ErrorCategory::Budget => "native limit cap",
         ErrorCategory::Timeout => "timed out",

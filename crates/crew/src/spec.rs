@@ -10,9 +10,10 @@ use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxChoice;
 use argonauts_core::settings::sessions::{FanoutSwitch, NativeFanout, SessionLifetime};
+use argonauts_core::settings::shell::RoleShell;
 use argonauts_core::steps::StepName;
 use argonauts_core::worker::{
-    Access, SandboxMode, SandboxProfile, SessionLimits, SessionSpec, WorkerKind,
+    Access, SandboxMode, SandboxProfile, SessionLimits, SessionShell, SessionSpec, WorkerKind,
 };
 use argonauts_core::{CardId, RunId};
 
@@ -49,6 +50,8 @@ pub struct SpecInput {
     pub autopilot: bool,
     /// Paths the session must never read: the state directory, other worktrees, `~/.ssh`.
     pub deny_read: Vec<PathBuf>,
+    /// It reads a change to judge it, whatever its role, so by default it may run the checks.
+    pub reviews: bool,
 }
 
 pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec> {
@@ -67,9 +70,11 @@ pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec>
     sandbox.readable.extend(input.status_file.iter().cloned());
     sandbox.deny_read.extend(input.deny_read.iter().cloned());
     let role = settings.roles.get(&input.role);
+    let own_workflows = may_run_own_workflows(settings, &input);
+    let shell = reader_shell(settings, input.role, input.access, input.reviews);
     let native_fanout = if input.blind {
         NativeFanout::Switch(FanoutSwitch::Off)
-    } else if input.own_workflow {
+    } else if input.own_workflow || (own_workflows && builds) {
         // A workflow of its own starts agents of its own, so no cap of ours fits it.
         NativeFanout::Switch(FanoutSwitch::On)
     } else {
@@ -105,8 +110,79 @@ pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec>
         status_file: input.status_file,
         env: Vec::new(),
         asking: None,
-        cli_workflow: argonauts_core::worker::CliWorkflow::default(),
+        cli_workflow: argonauts_core::worker::CliWorkflow {
+            background_off: !own_workflows,
+            ..argonauts_core::worker::CliWorkflow::default()
+        },
+        shell,
     })
+}
+
+/// What a read-only session may run: the `checks.run` commands for a reviewer, a judge, or any
+/// session that reads a change to judge it, so it can run the tests it reads about, unless
+/// `[roles.<role>] shell` says otherwise.
+fn reader_shell(
+    settings: &Settings,
+    role: RoleName,
+    access: Access,
+    reviews: bool,
+) -> SessionShell {
+    if access != Access::ReadOnly {
+        return SessionShell::None;
+    }
+    let shell = settings
+        .roles
+        .get(&role)
+        .and_then(|role| role.shell)
+        .unwrap_or_else(|| {
+            if reviews {
+                RoleShell::Checks
+            } else {
+                RoleShell::default_for(role)
+            }
+        });
+    match shell {
+        RoleShell::None => SessionShell::None,
+        RoleShell::Full => SessionShell::Any,
+        RoleShell::Checks => {
+            let commands: Vec<String> = settings
+                .checks
+                .run
+                .iter()
+                .map(|check| command_line(&check.command))
+                .filter(|line| !line.is_empty())
+                .collect();
+            if commands.is_empty() {
+                SessionShell::None
+            } else {
+                SessionShell::Only(commands)
+            }
+        }
+    }
+}
+
+/// A command as it is typed, an argument with a space or a quote in single quotes.
+fn command_line(command: &[String]) -> String {
+    command
+        .iter()
+        .map(|arg| {
+            if arg.is_empty() || arg.contains(|c: char| c.is_whitespace() || "'\"$`\\".contains(c))
+            {
+                format!("'{}'", arg.replace('\'', "'\\''"))
+            } else {
+                arg.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A crew agent starts workflows and background agents of its CLI's own only when you allow
+/// it: every worker with `crew.worker_workflows`, or one step with `own_workflow`. Otherwise
+/// a crew would run inside one agent, where nothing can watch or merge it, and the agent's
+/// answer would come before that crew's.
+fn may_run_own_workflows(settings: &Settings, input: &SpecInput) -> bool {
+    !input.blind && (input.own_workflow || settings.crew.worker_workflows)
 }
 
 /// The parts go out concatenated, so each but the last ends in a blank line. Otherwise a card's
@@ -312,6 +388,7 @@ mod tests {
             own_workflow: false,
             autopilot: false,
             deny_read: Vec::new(),
+            reviews: false,
         };
         let settings = Settings::default();
         let blind = build(&settings, input(true)).unwrap();
@@ -335,6 +412,127 @@ mod tests {
             !seeing.isolated,
             "the CLI loads its own agents, skills, and servers"
         );
+        assert!(!free.cli_workflow.background_off);
+        assert!(still_blind.cli_workflow.background_off);
+    }
+
+    #[test]
+    fn reviewers_get_a_shell_for_the_checks_only() {
+        let mut settings: Settings = serde_json::from_value(serde_json::json!({"checks": {"run": [
+            {"name": "tests", "command": ["node", "--test"]},
+            {"name": "lint", "command": ["sh", "-c", "npm run lint"]},
+        ]}}))
+        .unwrap();
+        let only = SessionShell::Only(vec![
+            "node --test".to_owned(),
+            "sh -c 'npm run lint'".to_owned(),
+        ]);
+        assert_eq!(
+            reader_shell(&settings, RoleName::Reviewer, Access::ReadOnly, false),
+            only
+        );
+        assert_eq!(
+            reader_shell(&settings, RoleName::Judge, Access::ReadOnly, false),
+            only
+        );
+        assert_eq!(
+            reader_shell(&settings, RoleName::Orchestrator, Access::ReadOnly, false),
+            SessionShell::None
+        );
+        assert_eq!(
+            reader_shell(&settings, RoleName::Reviewer, Access::Build, false),
+            SessionShell::None,
+            "a session that builds keeps its CLI's own shell"
+        );
+        settings.roles.entry(RoleName::Reviewer).or_default().shell = Some(RoleShell::Full);
+        assert_eq!(
+            reader_shell(&settings, RoleName::Reviewer, Access::ReadOnly, false),
+            SessionShell::Any
+        );
+        settings.roles.entry(RoleName::Judge).or_default().shell = Some(RoleShell::None);
+        assert_eq!(
+            reader_shell(&settings, RoleName::Judge, Access::ReadOnly, false),
+            SessionShell::None
+        );
+        settings.checks.run.clear();
+        assert_eq!(
+            reader_shell(
+                &Settings::default(),
+                RoleName::Reviewer,
+                Access::ReadOnly,
+                false
+            ),
+            SessionShell::None,
+            "no checks, no shell"
+        );
+    }
+
+    /// A workflow's step may give a review to a worker seat; reading a change to judge it is
+    /// what earns the checks' shell, whatever the role is called.
+    #[test]
+    fn a_session_that_reviews_a_change_gets_the_checks_whatever_its_role() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({"checks": {"run": [
+            {"name": "tests", "command": ["node", "--test"]},
+        ]}}))
+        .unwrap();
+        assert_eq!(
+            reader_shell(&settings, RoleName::Worker, Access::ReadOnly, true),
+            SessionShell::Only(vec!["node --test".to_owned()])
+        );
+        assert_eq!(
+            reader_shell(&settings, RoleName::Worker, Access::ReadOnly, false),
+            SessionShell::None
+        );
+    }
+
+    #[test]
+    fn crew_agents_start_no_workflow_of_their_own_unless_allowed() {
+        let input = |role: RoleName, access: Access| SpecInput {
+            run: RunId::new("run-01").unwrap(),
+            key: SessionKey::parse("s-001").unwrap(),
+            role,
+            worker: WorkerRef::new("claude-code", None),
+            kind: WorkerKind::Harness,
+            card: Some(CardId::new("task-a").unwrap()),
+            step: None,
+            access,
+            workdir: PathBuf::from("/w"),
+            session_dir: PathBuf::from("/s"),
+            prompt: Vec::new(),
+            json_schema: None,
+            resume: None,
+            lifetime: SessionLifetime::Task,
+            limits: SessionLimits::default(),
+            goal_sha256: Some("ab".repeat(32)),
+            status_file: None,
+            blind: false,
+            own_workflow: false,
+            autopilot: false,
+            deny_read: Vec::new(),
+            reviews: false,
+        };
+        let mut settings = Settings {
+            ultracode: true,
+            ..Settings::default()
+        };
+        for (role, access) in [
+            (RoleName::Worker, Access::Build),
+            (RoleName::Reviewer, Access::ReadOnly),
+            (RoleName::Judge, Access::ReadOnly),
+        ] {
+            let spec = build(&settings, input(role, access)).unwrap();
+            assert!(spec.cli_workflow.background_off, "{role:?}");
+            assert!(
+                !spec.cli_workflow.ultracode,
+                "ultracode stays with the main session"
+            );
+            assert_ne!(spec.native_fanout, NativeFanout::Switch(FanoutSwitch::On));
+        }
+        settings.crew.worker_workflows = true;
+        let worker = build(&settings, input(RoleName::Worker, Access::Build)).unwrap();
+        assert!(!worker.cli_workflow.background_off);
+        assert_eq!(worker.native_fanout, NativeFanout::Switch(FanoutSwitch::On));
+        assert!(!worker.cli_workflow.ultracode);
     }
 
     #[test]

@@ -59,7 +59,7 @@ pub(crate) fn retry_reason(event: &Value) -> RetryReason {
 pub(crate) fn from_result(result: &Value, message: &str) -> ErrorCategory {
     match str_at(result, "subtype") {
         Some("error_max_budget_usd" | "error_max_turns") => return ErrorCategory::Budget,
-        Some("error_max_structured_output_retries") => return ErrorCategory::InvalidRequest,
+        Some("error_max_structured_output_retries") => return ErrorCategory::AnswerMissed,
         _ => {}
     }
     if let Some(category) = str_at(result, "terminal_reason").and_then(from_terminal_reason) {
@@ -95,7 +95,7 @@ fn from_terminal_reason(reason: &str) -> Option<ErrorCategory> {
         "prompt_too_long" => Some(ErrorCategory::ContextFull),
         "aborted_streaming" | "aborted_tools" => Some(ErrorCategory::Interrupted),
         "budget_exhausted" | "max_turns" => Some(ErrorCategory::Budget),
-        "structured_output_retry_exhausted" => Some(ErrorCategory::InvalidRequest),
+        "structured_output_retry_exhausted" => Some(ErrorCategory::AnswerMissed),
         _ => None,
     }
 }
@@ -301,6 +301,31 @@ mod tests {
         assert_eq!(
             category(json!({"subtype": "success"})),
             ErrorCategory::Unknown
+        );
+    }
+
+    #[test]
+    fn a_missed_answer_format_is_the_models_and_may_pass() {
+        let category = |v: Value| from_result(&v, "");
+        assert_eq!(
+            category(json!({"subtype": "error_max_structured_output_retries"})),
+            ErrorCategory::AnswerMissed
+        );
+        assert_eq!(
+            category(json!({
+                "subtype": "error_during_execution",
+                "terminal_reason": "structured_output_retry_exhausted"
+            })),
+            ErrorCategory::AnswerMissed
+        );
+        let missed = argonauts_core::events::session::EndReason::VendorError {
+            category: ErrorCategory::AnswerMissed,
+            message: String::new(),
+        };
+        assert!(missed.may_pass());
+        assert_eq!(
+            missed.plain_line("Claude Code").as_deref(),
+            Some("Claude Code didn't answer in the format Argonauts asked for")
         );
     }
 

@@ -74,6 +74,7 @@ fn agent(
         context: None,
         standing_in_for: None,
         answered: None,
+        tries: Vec::new(),
     }
 }
 
@@ -107,6 +108,8 @@ fn nested_row() -> NestedWorkflowRow {
         agents_total: 4,
         workers: vec![worker("claude-code/opus"), worker("codex/gpt-5.6")],
         elapsed_ms: 720_000,
+        parent: None,
+        owner: None,
     }
 }
 
@@ -510,10 +513,10 @@ fn workflow_view() {
     }
     let mut view = WorkflowView::new(ui_kit());
     let text = screen(&mut view, 100, 32, &state);
-    assert!(text.contains("8/12 agents · 2h44m"), "{text}");
+    assert!(text.contains("8/12 steps · 2h44m"), "{text}");
     assert!(!text.contains("$4.10"), "{text}");
     assert!(text.contains("❯ 2 Build"), "{text}");
-    assert!(text.contains("Build · 7 agents"), "{text}");
+    assert!(text.contains("Build · 7 steps"), "{text}");
     assert!(
         text.contains("↑↓ select · x stop workflow · p pause · esc back · s save"),
         "{text}"
@@ -820,7 +823,7 @@ fn nested_workflow_breadcrumb() {
     // The parent phase counts the nested workflow as one row.
     assert!(text.contains("❯ 2 Build    2/4"), "{text}");
     assert!(
-        text.contains("◇ build:c-demo-tests      workflow            · 2/4 agents    12m00s"),
+        text.contains("◇ build:c-demo-tests      workflow            · 2/4 steps     12m00s"),
         "{text}"
     );
 
@@ -845,7 +848,7 @@ fn nested_workflow_breadcrumb() {
         "{text}"
     );
     assert!(text.contains("Demo scenes and snapshot tests"), "{text}");
-    assert!(text.contains("2/4 agents · 12m00s"), "{text}");
+    assert!(text.contains("2/4 steps · 12m00s"), "{text}");
     assert!(!text.contains("$0.92"), "{text}");
     let buf = draw(&mut view, 100, 32, &state);
     let theme = theme();
@@ -865,7 +868,7 @@ fn nested_workflow_breadcrumb() {
         view: Box::new(fresher)
     }));
     assert_eq!(view.depth(), 2);
-    assert!(screen(&mut view, 100, 32, &state).contains("3/4 agents"));
+    assert!(screen(&mut view, 100, 32, &state).contains("3/4 steps"));
 
     // An agent opened from a nested level shows in the same frame.
     press(&mut view, KeyCode::Right, &state);
@@ -1176,6 +1179,7 @@ fn session(
         messages: Vec::new(),
         streaming: String::new(),
         diffs: Vec::new(),
+        patches: Vec::new(),
         subagents: Vec::new(),
         inputs: Vec::new(),
         queued: Vec::new(),
@@ -1557,7 +1561,7 @@ fn run_row_shows_front_end() {
     let text = panel_text(&panel, &AgentPanel::default(), 120);
     insta::assert_snapshot!("run_row_shows_front_end", text);
     assert!(
-        text.contains("1/3 agents · 4m12s · ↓ 54.3k tokens · via desktop-client"),
+        text.contains("1/3 steps · 4m12s · ↓ 54.3k tokens · via desktop-client"),
         "{text}"
     );
     // At 60 columns the bar goes before the front end does.

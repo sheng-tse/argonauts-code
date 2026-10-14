@@ -39,6 +39,7 @@ pub(crate) fn route(settings: &Settings, typed_keyword: bool) -> Route {
         return Route::MainSession(CliWorkflow {
             ultracode: settings.ultracode,
             typed_keyword,
+            ..CliWorkflow::default()
         });
     }
     if typed_keyword {
@@ -54,6 +55,7 @@ pub(crate) fn main_session(settings: &Settings) -> CliWorkflow {
     CliWorkflow {
         ultracode: solo(settings) && has_own_workflow(&settings.main_agent) && settings.ultracode,
         typed_keyword: false,
+        ..CliWorkflow::default()
     }
 }
 
@@ -140,6 +142,7 @@ mod tests {
         UiCommand::Submit {
             text: text.to_owned(),
             workflow_requested: true,
+            pictures: Vec::new(),
         }
     }
 
@@ -244,7 +247,8 @@ mod tests {
             route(&on, false),
             Route::MainSession(CliWorkflow {
                 ultracode: true,
-                typed_keyword: false
+                typed_keyword: false,
+                ..CliWorkflow::default()
             })
         );
         let off = settings(true, "claude-code", false);
@@ -252,7 +256,8 @@ mod tests {
             route(&off, true),
             Route::MainSession(CliWorkflow {
                 ultracode: false,
-                typed_keyword: true
+                typed_keyword: true,
+                ..CliWorkflow::default()
             })
         );
         assert_eq!(

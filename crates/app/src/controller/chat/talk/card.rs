@@ -35,7 +35,7 @@ const MODS_DIR: &str = "mods";
 /// Shows the card. The call waits until you pick.
 pub(super) fn open(ctx: &mut Ctx, chat: &mut ChatState, call: Call, proposal: Proposal) {
     let id = ctx.next_choice_id();
-    let mut body = rows(ctx, &proposal);
+    let mut body: Vec<String> = rows(ctx, &proposal).iter().map(Row::marked).collect();
     body.push(String::new());
     body.extend(what_each_place_writes(ctx, &proposal));
     let mut choice = choices::app_choice(
@@ -67,9 +67,9 @@ pub(super) fn keep_as_said(
 ) -> Vec<Effect> {
     let turn = call.turn.clone();
     let mut lines = vec![format!("{TITLE} · {}, as you said", label(place))];
-    lines.extend(rows(ctx, &proposal));
+    lines.extend(rows(ctx, &proposal).iter().map(Row::plain_text));
     ctx.notice(NoteLevel::Info, lines.join("\n"));
-    match apply(ctx, chat, &turn, &proposal, place) {
+    match apply(ctx, chat, &turn, &proposal, place, Picked::NoCard) {
         Ok((effects, told)) => {
             call.answer(told);
             effects
@@ -112,7 +112,14 @@ pub(super) fn answer(
         id,
         outcome: label(place).to_owned(),
     });
-    match apply(ctx, chat, &open.turn, &open.proposal, place) {
+    match apply(
+        ctx,
+        chat,
+        &open.turn,
+        &open.proposal,
+        place,
+        Picked::OnTheCard,
+    ) {
         Ok((effects, told)) => {
             open.call.answer(told);
             Ok(effects)
@@ -197,9 +204,13 @@ fn detail(ctx: &Ctx, proposal: &Proposal, place: Place) -> Option<String> {
                 Place::Repository => format!("{PROJECT_DIR}/"),
                 _ => ctx.env.display(ctx.env.paths.home()) + "/",
             };
-            Some(match files {
+            let writes = match files {
                 1 => format!("writes 1 file in {folder}"),
                 n => format!("writes {n} files in {folder}"),
+            };
+            Some(match place {
+                Place::Repository => format!("{writes} · d shows the diff"),
+                _ => writes,
             })
         }
     }
@@ -210,22 +221,24 @@ fn detail(ctx: &Ctx, proposal: &Proposal, place: Place) -> Option<String> {
 /// `crew  orchestrator  Fable 5.1 on Claude Code`, then a role's instructions, then the rest.
 /// A section is named once, and a note such as `follows the reviewers` stands in a column of
 /// its own.
-fn rows(ctx: &Ctx, proposal: &Proposal) -> Vec<String> {
+fn rows(ctx: &Ctx, proposal: &Proposal) -> Vec<Row> {
     let mut cells = crew_cells(ctx, proposal);
     for role in &proposal.roles {
         let verb = match role.mode {
             RoleFileMode::Add => "adds to",
             RoleFileMode::Replace => "replaces",
         };
-        cells.push(Cell::new(
+        let mut cell = Cell::new(
             role.readers.as_str(),
             format!(
-                "{verb} {}/{}.md   {}",
+                "{}/{}.md   {}",
                 prompt_files::ROLES_DIR,
                 role.readers.as_str(),
                 quoted(&role.text)
             ),
-        ));
+        );
+        cell.verb = Some(verb);
+        cells.push(cell);
     }
     for (key, value) in &proposal.settings {
         if Seat::of(key).is_some() || noted_on_its_seat(proposal, key) {
@@ -253,15 +266,17 @@ fn rows(ctx: &Ctx, proposal: &Proposal) -> Vec<String> {
         cells.push(Cell::new("mod", format!("{MODS_DIR}/{}.toml", file.name)));
     }
     for step in &proposal.steps {
-        cells.push(Cell::new(
+        let mut cell = Cell::new(
             "workflow",
             format!(
-                "adds to {}/{}   {}",
+                "{}/{}   {}",
                 project_files::WORKFLOWS,
                 required::FILE,
                 step_said(step)
             ),
-        ));
+        );
+        cell.verb = Some("adds to");
+        cells.push(cell);
     }
     let width = cells
         .iter()
@@ -274,7 +289,7 @@ fn rows(ctx: &Ctx, proposal: &Proposal) -> Vec<String> {
     let noted = cells
         .iter()
         .filter(|cell| cell.note.is_some())
-        .map(|cell| cell.text.width())
+        .map(Cell::width)
         .max()
         .unwrap_or(0)
         + 3;
@@ -287,10 +302,16 @@ fn rows(ctx: &Ctx, proposal: &Proposal) -> Vec<String> {
             } else {
                 &cell.section
             };
-            let mut row = format!("{shown}{}{}", " ".repeat(width - shown.width()), cell.text);
+            let mut row = Row::default();
+            row.plain(format!("{shown}{}", " ".repeat(width - shown.width())));
+            if let Some(verb) = cell.verb {
+                row.dim(verb.to_owned());
+                row.plain(" ".to_owned());
+            }
+            row.plain(cell.text.clone());
             if let Some(note) = &cell.note {
-                row.push_str(&" ".repeat(noted - cell.text.width()));
-                row.push_str(note);
+                row.plain(" ".repeat(noted - cell.width()));
+                row.dim(note.clone());
             }
             last = cell.section;
             row
@@ -301,6 +322,8 @@ fn rows(ctx: &Ctx, proposal: &Proposal) -> Vec<String> {
 /// One row of the card's table.
 struct Cell {
     section: String,
+    /// Said before the text and dim, such as `adds to`.
+    verb: Option<&'static str>,
     text: String,
     /// Said after it, such as `follows the reviewers`.
     note: Option<String>,
@@ -310,9 +333,49 @@ impl Cell {
     fn new(section: &str, text: String) -> Self {
         Self {
             section: section.to_owned(),
+            verb: None,
             text,
             note: None,
         }
+    }
+
+    fn width(&self) -> usize {
+        self.verb.map_or(0, |verb| verb.width() + 1) + self.text.width()
+    }
+}
+
+/// A row as the card draws it: the settings in plain text and only the notes dim.
+#[derive(Debug, Default)]
+struct Row {
+    /// Each part, and whether it's dim.
+    parts: Vec<(String, bool)>,
+}
+
+impl Row {
+    fn plain(&mut self, text: String) {
+        self.parts.push((text, false));
+    }
+
+    fn dim(&mut self, text: String) {
+        self.parts.push((text, true));
+    }
+
+    fn plain_text(&self) -> String {
+        self.parts.iter().map(|(text, _)| text.as_str()).collect()
+    }
+
+    /// Split by tabs into parts, plain then dim in turn, which is how the card tells a note.
+    fn marked(&self) -> String {
+        let mut out = String::new();
+        let mut dim = false;
+        for (text, is_dim) in &self.parts {
+            if *is_dim != dim {
+                out.push('\t');
+                dim = *is_dim;
+            }
+            out.push_str(text);
+        }
+        out
     }
 }
 
@@ -500,6 +563,7 @@ fn crew_cells(ctx: &Ctx, proposal: &Proposal) -> Vec<Cell> {
         .into_iter()
         .map(|(seat, agents, note)| Cell {
             section: CREW.to_owned(),
+            verb: None,
             text: format!("{:width$}{agents}", seat.word()),
             note,
         })
@@ -673,6 +737,7 @@ fn apply(
     turn: &TurnId,
     proposal: &Proposal,
     place: Place,
+    picked: Picked,
 ) -> anyhow::Result<(Vec<Effect>, String)> {
     match place {
         Place::Request => {
@@ -695,7 +760,7 @@ fn apply(
                 chat.talk.steps_for_conversation.push(step.clone());
             }
             let pairs = session_settings(ctx, proposal);
-            let effects = save(pairs, SettingScope::Session);
+            let effects = save(pairs, SettingScope::Session, picked);
             Ok((
                 effects,
                 format!(
@@ -716,7 +781,7 @@ fn apply(
                 Place::Repository => SettingScope::Project,
                 _ => SettingScope::Global,
             };
-            let effects = save(proposal.settings.clone(), scope);
+            let effects = save(proposal.settings.clone(), scope, picked);
             let mut shown: Vec<String> = written.iter().map(|path| ctx.env.shown(path)).collect();
             if !proposal.settings.is_empty() {
                 let config = match place {
@@ -741,11 +806,22 @@ fn apply(
     }
 }
 
-fn save(pairs: Vec<(String, String)>, scope: SettingScope) -> Vec<Effect> {
+/// How the place was chosen. A pick on the card is the confirmation, so a limit or other
+/// safety key asks nothing more; a place only your words named still asks for a safety key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Picked {
+    OnTheCard,
+    NoCard,
+}
+
+fn save(pairs: Vec<(String, String)>, scope: SettingScope, picked: Picked) -> Vec<Effect> {
     if pairs.is_empty() {
         return Vec::new();
     }
-    vec![Effect::SaveSettings { pairs, scope }]
+    match picked {
+        Picked::OnTheCard => vec![Effect::SaveConfirmedSettings { pairs, scope }],
+        Picked::NoCard => vec![Effect::SaveSettings { pairs, scope }],
+    }
 }
 
 fn left_out(proposal: &Proposal) -> &'static str {

@@ -130,12 +130,13 @@ pub(crate) fn new(
     let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
     match library(ctx).create(name, from, &taken) {
         Ok(path) => {
+            // What was written and where, then the three ways to use it. The folder's
+            // README.md, written with its first workflow, explains each key.
             ctx.notice(
                 NoteLevel::Info,
                 format!(
-                    "Wrote {}. /{name} <request> runs one request with it, /workflow {name} \
-                     makes it the one in use, and /workflow try {name} <request> shows what it \
-                     would run. README.md beside it explains each key.",
+                    "Wrote {name} · {}\n/{name} <request> runs it once · /workflow {name} uses \
+                     it · /workflow try previews it",
                     ctx.env.shown(&path)
                 ),
             );
@@ -172,12 +173,8 @@ pub(crate) fn try_out(
             // A step you require shows where it would run, marked with a star.
             let file = required.added_to(file);
             let dry = dry_run(&file, &|role| seats(ctx, role));
-            // The card indents its own body.
-            let mut body: Vec<String> = table(ctx, &dry)
-                .lines()
-                .map(|line| line.strip_prefix("  ").unwrap_or(line).to_owned())
-                .collect();
-            body.push(format!("✓ the file is valid · {}", dry.estimate.words()));
+            let mut body = plan(ctx, &file, &dry);
+            body.push(checks_then_merge(ctx));
             if !required.tasks.is_empty() {
                 body.push(format!(
                     "the tasks are the ones you fixed: {}",
@@ -215,12 +212,14 @@ pub(crate) fn try_out(
             body
         }
     };
+    let mut body = body;
+    body.push("Run it now? y/N".to_owned());
     let id = ctx.next_choice_id();
     ctx.send(AppEvent::Choice {
         choice: choices::app_choice(
             id.clone(),
             ChoiceKind::TryWorkflow,
-            format!("{name} for \"{request}\" · nothing runs"),
+            format!("{name} for \"{request}\" · a preview, nothing runs yet"),
             body,
             choices::options(ChoiceKind::TryWorkflow),
         ),
@@ -613,6 +612,133 @@ fn table(ctx: &Ctx, dry: &DryRun) -> String {
         .join("\n")
 }
 
+/// The whole plan, a step to a row: its number and name, its role, who would take it (one to
+/// a line when several would), and what it does with how it runs, such as `one per task · at
+/// most 3 rounds`.
+fn plan(ctx: &Ctx, file: &argonauts_runner::WorkflowFile, dry: &DryRun) -> Vec<String> {
+    let rows: Vec<[String; 2]> = dry
+        .rows
+        .iter()
+        .map(|row| {
+            let mark = row
+                .number
+                .map_or_else(|| "★".to_owned(), |number| number.to_string());
+            [format!("{mark} {}", row.step), row.role.to_string()]
+        })
+        .collect();
+    let who: Vec<Vec<String>> = dry
+        .rows
+        .iter()
+        .map(|row| {
+            let count = row.who.len();
+            row.who
+                .iter()
+                .enumerate()
+                .map(|(at, worker)| {
+                    let name = ctx.names.worker(worker);
+                    if at + 1 < count {
+                        format!("{name},")
+                    } else {
+                        name
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let widest = |column: usize| rows.iter().map(|row| row[column].width()).max();
+    let step_width = widest(0).unwrap_or(0);
+    let role_width = widest(1).unwrap_or(0);
+    let who_width = who
+        .iter()
+        .flatten()
+        .map(|name| name.width())
+        .max()
+        .unwrap_or(0);
+    let pad = |cell: &str, width: usize| format!("{cell}{}", " ".repeat(width - cell.width() + 3));
+    let mut lines = Vec::new();
+    for (index, (row, dry_row)) in rows.iter().zip(&dry.rows).enumerate() {
+        let does = file
+            .steps
+            .get(index)
+            .and_then(|step| step.does.as_deref())
+            .map(what_it_does)
+            .filter(|does| !does.is_empty());
+        let what = does.map_or_else(
+            || dry_row.how.clone(),
+            |does| format!("{does} · {}", dry_row.how),
+        );
+        let names = match who[index].as_slice() {
+            [] => vec![String::new()],
+            names => names.to_vec(),
+        };
+        for (at, name) in names.iter().enumerate() {
+            let (step, role, what) = if at == 0 {
+                (row[0].as_str(), row[1].as_str(), what.as_str())
+            } else {
+                ("", "", "")
+            };
+            let line = format!(
+                "{}{}{}{what}",
+                pad(step, step_width),
+                pad(role, role_width),
+                pad(name, who_width)
+            );
+            lines.push(line.trim_end().to_owned());
+        }
+    }
+    lines
+}
+
+/// A step's ask in a few words: its first sentence, with `the request` and `the task` for
+/// what each run fills in. A request pasted after a colon goes, since the preview's title
+/// already says it.
+fn what_it_does(does: &str) -> String {
+    const MOST: usize = 48;
+    let mut said = does.to_owned();
+    for (field, words) in [("{request}", "the request"), ("{task}", "the task")] {
+        said = said
+            .replace(&format!("for: {field}"), &format!("for {words}"))
+            .replace(&format!(": {field}"), "")
+            .replace(field, words);
+    }
+    let first = said
+        .split_inclusive(". ")
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches(['.', ':'])
+        .trim();
+    if first.width() <= MOST {
+        return first.to_owned();
+    }
+    let mut cut = String::new();
+    for c in first.chars() {
+        if cut.width() + c.to_string().width() >= MOST {
+            break;
+        }
+        cut.push(c);
+    }
+    format!("{}…", cut.trim_end())
+}
+
+/// What runs after the steps: the checks in your settings by name, then the merge.
+fn checks_then_merge(ctx: &Ctx) -> String {
+    let settings = ctx.settings();
+    let names: Vec<&str> = settings
+        .checks
+        .run
+        .iter()
+        .map(|check| check.name.trim())
+        .filter(|name| !name.is_empty())
+        .collect();
+    match names.as_slice() {
+        [] if settings.checks.run.is_empty() => "then merge".to_owned(),
+        [] => "then the checks in your settings · then merge".to_owned(),
+        few if few.len() <= 3 => format!("then the checks: {} · then merge", few.join(", ")),
+        _ => "then the checks in your settings · then merge".to_owned(),
+    }
+}
+
 /// Who would take a step: one by its full name, several by their models alone, since they
 /// share a cell.
 fn who_would_take(ctx: &Ctx, row: &Row) -> String {
@@ -670,13 +796,14 @@ mod tests {
         let mut harness = Harness::start().await;
         let (level, wrote) = said(&mut harness, new("spec-first", None)).await;
         assert_eq!(level, NoteLevel::Info, "{wrote}");
-        assert!(
-            wrote.starts_with("Wrote .argonauts/workflows/spec-first.toml."),
-            "{wrote}"
-        );
-        assert!(
-            wrote.contains("/spec-first <request> runs one request with it"),
-            "{wrote}"
+        // What was written and where, then the three commands, in two lines.
+        assert_eq!(
+            wrote.lines().collect::<Vec<_>>(),
+            [
+                "Wrote spec-first · .argonauts/workflows/spec-first.toml",
+                "/spec-first <request> runs it once · /workflow spec-first uses it · \
+                 /workflow try previews it",
+            ],
         );
         let file = harness
             .repo
@@ -759,31 +886,37 @@ mod tests {
         assert_eq!(card.kind, ChoiceKind::TryWorkflow);
         assert_eq!(
             card.title,
-            "spec-first for \"add due dates\" · nothing runs"
+            "spec-first for \"add due dates\" · a preview, nothing runs yet"
         );
+        // The whole plan: each step with its role, who would take it, what it does and how,
+        // then what runs after the steps, then the question.
         let lines = &card.body;
-        assert!(lines[0].starts_with("step"), "{lines:#?}");
-        assert!(lines[0].contains("who would take it"), "{lines:#?}");
-        assert!(lines[1].starts_with("1 Plan"), "{lines:#?}");
-        assert!(lines[1].ends_with("1 agent"), "{lines:#?}");
-        assert!(
-            lines[2].ends_with("one per task · at most 3 rounds"),
-            "{lines:#?}"
+        let step = |at: usize, starts: &str, role: &str, ends: &str| {
+            let line = &lines[at];
+            assert!(
+                line.starts_with(starts) && line.contains(role) && line.ends_with(ends),
+                "{lines:#?}"
+            );
+        };
+        step(0, "1 Plan", "orchestrator", "· 1 agent");
+        step(1, "2 Build", "workers", "one per task · at most 3 rounds");
+        step(
+            2,
+            "3 Review",
+            "reviewers",
+            "one per task · sends back to Build",
         );
         assert!(
-            lines[3].ends_with("one per task · sends back to Build"),
+            lines.iter().any(|line| line.ends_with("then merge")),
             "{lines:#?}"
         );
-        assert_eq!(
-            lines[4],
-            "✓ the file is valid · about 7 to 13 agents if Plan lists 3 tasks"
-        );
+        assert_eq!(lines.last().map(String::as_str), Some("Run it now? y/N"));
         let offered: Vec<(char, &str, bool)> = card
             .options
             .iter()
             .map(|option| (option.key, option.label.as_str(), option.recommended))
             .collect();
-        assert_eq!(offered, [('y', "Run it", true), ('e', "Edit it", false)]);
+        assert_eq!(offered, [('y', "Yes, run it", false), ('n', "No", true)]);
         assert!(harness.conductor.starts().is_empty(), "nothing runs");
 
         // Esc closes it, and still nothing ran.
@@ -908,7 +1041,7 @@ mod tests {
 
         harness.send(ask("other", "fix the median")).await;
         harness
-            .until(|event| matches!(event, AppEvent::Detached { run } if run.as_str() == "run-001"))
+            .until(|event| matches!(event, AppEvent::Attached { summary, .. } if summary.run.as_str() == "run-002"))
             .await;
         let rows = harness
             .until(|event| matches!(event, AppEvent::BackgroundRuns { runs } if !runs.is_empty()))
@@ -1233,5 +1366,18 @@ mod tests {
             matches!(saved, Ok(Some(Internal::WorkflowSaved { ref name })) if name == "sweep"),
             "the save was noticed"
         );
+    }
+
+    #[test]
+    fn a_steps_ask_reads_in_a_few_words() {
+        assert_eq!(
+            what_it_does("Split the request into tasks: {request}"),
+            "Split the request into tasks"
+        );
+        assert_eq!(
+            what_it_does("Write a short spec and acceptance tests for: {request}. List the tasks."),
+            "Write a short spec and acceptance tests for the…"
+        );
+        assert_eq!(what_it_does("Implement {task}."), "Implement the task");
     }
 }

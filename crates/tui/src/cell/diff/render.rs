@@ -7,6 +7,7 @@ use std::ops::Range;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use super::syntax::hunk_roles;
 use super::words::changed_words;
 use super::{DiffKind, DiffLine, DiffView};
 use crate::cell::layout::{indent, right_margin};
@@ -59,8 +60,9 @@ pub(super) fn rows(
             ]));
         }
         let changed = changed_words(&hunk.lines);
-        for (line, words) in hunk.lines.iter().zip(changed.iter()) {
-            out.extend(layout.line_rows(line, words, theme));
+        let roles = hunk_roles(&hunk.lines, view.file());
+        for ((line, words), roles) in hunk.lines.iter().zip(changed.iter()).zip(roles.iter()) {
+            out.extend(layout.line_rows(line, words, roles, theme));
         }
     }
     out
@@ -81,6 +83,7 @@ impl Layout {
         &self,
         line: &DiffLine,
         words: &[Range<usize>],
+        roles: &[(Range<usize>, Role)],
         theme: &Theme,
     ) -> Vec<Line<'static>> {
         let (marker, role, row, word) = match line.kind {
@@ -124,7 +127,13 @@ impl Layout {
         };
         let mark_style = fill.patch(theme.style(role));
         let text = sanitize_line(&line.text);
-        let spans = split_words(&text, words, text_style, word_style);
+        // A changed row without a fill is told apart by its text colour, so it keeps that.
+        let roles = if row.is_none() || self.fills {
+            roles
+        } else {
+            &[]
+        };
+        let spans = styled_spans(&text, roles, words, text_style, word_style, theme);
         let text_col = self.col + self.gutter + 2;
         let avail = self.end.saturating_sub(text_col).max(1);
         let number = line.number().map(|n| n.to_string()).unwrap_or_default();
@@ -159,30 +168,61 @@ impl Layout {
     }
 }
 
-/// `words` are byte ranges into `text`.
-fn split_words(
+/// The row's text in its syntax colours, on the row's background, with the changed `words` on
+/// theirs. `roles` and `words` are byte ranges into `text`, each in order.
+fn styled_spans(
     text: &str,
+    roles: &[(Range<usize>, Role)],
     words: &[Range<usize>],
     plain: Style,
     word: Style,
+    theme: &Theme,
 ) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    let mut at = 0;
-    for range in words {
-        let (start, end) = (range.start.min(text.len()), range.end.min(text.len()));
-        if start < at || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
-            continue;
+    let mut cuts: Vec<usize> = vec![0, text.len()];
+    let ranges = roles.iter().map(|(range, _)| range).chain(words);
+    cuts.extend(ranges.flat_map(|range| [range.start, range.end]));
+    cuts.retain(|&at| at <= text.len() && text.is_char_boundary(at));
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let (mut role_at, mut word_at) = (0, 0);
+    for piece in cuts.windows(2) {
+        let (start, end) = (piece[0], piece[1]);
+        while roles
+            .get(role_at)
+            .is_some_and(|(range, _)| range.end <= start)
+        {
+            role_at += 1;
         }
-        if start > at {
-            spans.push(Span::styled(text[at..start].to_owned(), plain));
+        while words.get(word_at).is_some_and(|range| range.end <= start) {
+            word_at += 1;
         }
-        if end > start {
-            spans.push(Span::styled(text[start..end].to_owned(), word));
+        let covers = |range: &Range<usize>| range.start <= start && end <= range.end;
+        let role = roles
+            .get(role_at)
+            .filter(|(range, _)| covers(range))
+            .map_or(Role::Text, |(_, role)| *role);
+        let base = if words.get(word_at).is_some_and(covers) {
+            word
+        } else {
+            plain
+        };
+        let style = if role == Role::Text {
+            base
+        } else {
+            // The row keeps its own background; the syntax gives the colour and the weight.
+            base.patch(Style {
+                bg: None,
+                ..theme.style(role)
+            })
+        };
+        match spans.last_mut() {
+            Some(last) if last.style == style => last.content.to_mut().push_str(&text[start..end]),
+            _ => spans.push(Span::styled(text[start..end].to_owned(), style)),
         }
-        at = end;
     }
-    if at < text.len() || spans.is_empty() {
-        spans.push(Span::styled(text[at..].to_owned(), plain));
+    if spans.is_empty() {
+        spans.push(Span::styled(String::new(), plain));
     }
     spans
 }

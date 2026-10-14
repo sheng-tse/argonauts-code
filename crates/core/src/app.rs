@@ -50,6 +50,9 @@ pub enum UiCommand {
         /// one request goes through a workflow. The screen sets it and the engine reads it.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         workflow_requested: bool,
+        /// The pictures whose `[Image #N]` chips the text holds, for the main session's CLI.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pictures: Vec<crate::pictures::Picture>,
     },
     /// Parsed with `input::parse_input`.
     Slash {
@@ -102,6 +105,11 @@ pub enum UiCommand {
         run: RunId,
         card: CardId,
         exit_code: Option<i32>,
+    },
+    /// The TUI took the terminal back from a command [`AppEvent::RunInTerminal`] ran, such
+    /// as a CLI's login.
+    TerminalReturned {
+        argv: Vec<String>,
     },
     /// From a picker; the slash form arrives as `Slash`.
     Reassign {
@@ -275,6 +283,9 @@ pub enum AnswerTarget {
 pub enum ViewRequest {
     Runs,
     Status,
+    /// The Overview's Status tab: what runs here and how it is set up. Answered with
+    /// `StatusTab`, which only the tab draws, so asking never writes into the chat.
+    StatusTab,
     /// Every resolved key and its layer, as a plain list. `/config` itself draws `Settings`.
     Config,
     Approvals,
@@ -326,6 +337,17 @@ pub enum ViewRequest {
     /// workflows. Answered with `Usage`.
     Usage {
         period: crate::api::UsagePeriod,
+    },
+    /// Reads every CLI's plan usage live again, as `r` on the Usage tab asks. The next
+    /// `Usage` answer carries the readings as they land.
+    ReadPlanUsage,
+    /// The Overview tab's numbers for a period, from the usage ledger and the imported
+    /// history. `import` answers the tab's question: yes starts the import, no remembers it.
+    /// Answered with `Overview`.
+    Overview {
+        period: crate::overview::OverviewPeriod,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        import: Option<bool>,
     },
     /// The crew view's "All repos" tab: runs in every repo with a live supervisor, read from
     /// `~/.argonauts/registry.json` and each repo's journal ends.
@@ -448,7 +470,7 @@ pub enum AppEvent {
         run: RunId,
     },
     /// Suspend the screen while an agent CLI's own command runs in the terminal, such as its
-    /// login, then come back. Nothing is sent when it ends.
+    /// login, then come back and send [`UiCommand::TerminalReturned`].
     RunInTerminal {
         argv: Vec<String>,
         cwd: PathBuf,
@@ -708,18 +730,15 @@ impl LineFacts {
 }
 
 /// A page a session published on claude.ai with Claude Code's Artifact tool, as the bottom
-/// line names it beside the mode: `⧉ weekly-usage-chart · 1 feedback draft`.
+/// line names it beside the mode: `⧉ release-notes +2 more`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublishedArtifact {
     /// The published file's name without its extension, else the page's title.
     pub name: String,
-    /// How many more the conversation published before it. Claude Code names one artifact
-    /// and counts several.
+    /// How many more the conversation published before it, which the line adds as
+    /// `+N more`.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub others: u32,
-    /// Comments that wait on the page.
-    #[serde(default)]
-    pub feedback_drafts: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -874,7 +893,8 @@ pub enum ChoiceKind {
     /// The main session's proposed setup: where it applies (this request, this conversation,
     /// this repository, all your repositories) or Not now `n`, and Show what would be written
     /// `d`. The body is the setup, then after a blank line what each place would write. Esc
-    /// means not now.
+    /// means not now. Each row of the setup is split by tabs into parts, plain then dim in
+    /// turn, so its notes show dim.
     Setup,
     /// `/git`: how this folder keeps history, one option per way with the one in use marked,
     /// then, for making it a repository, whether to go ahead once the body has shown what
@@ -916,6 +936,9 @@ pub enum ViewData {
     },
     Status {
         summary: StatusSummary,
+    },
+    StatusTab {
+        view: Box<crate::status_tab::StatusTabView>,
     },
     Config {
         entries: Vec<ConfigEntry>,
@@ -985,6 +1008,10 @@ pub enum ViewData {
     /// What `/usage` shows, and what the cards pinned above the input draw from.
     Usage {
         summary: Box<crate::api::UsageSummary>,
+    },
+    /// What the Overview tab draws.
+    Overview {
+        overview: Box<crate::overview::OverviewData>,
     },
     AllRepos {
         /// This repo first, then the others by their newest update.

@@ -49,6 +49,7 @@ pub fn from_error(
         | ErrorCategory::Server
         | ErrorCategory::Network
         | ErrorCategory::InvalidRequest
+        | ErrorCategory::AnswerMissed
         | ErrorCategory::Permission
         | ErrorCategory::Timeout
         | ErrorCategory::Interrupted => EndReason::VendorError { category, message },

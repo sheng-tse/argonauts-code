@@ -40,7 +40,7 @@ const TWO_WAY_CALLS: &[&str] = &[
     "checkup",
 ];
 
-/// The version installed when this was last checked, recorded as `ORIGINAL` was.
+/// A later installed version, recorded as `ORIGINAL` was.
 const INSTALLED: &str = "2.1.293";
 
 const STATUS_TOOL: &str = "mcp__argonauts_status__argonauts_status";

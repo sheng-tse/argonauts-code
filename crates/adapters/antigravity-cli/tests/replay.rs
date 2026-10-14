@@ -142,8 +142,8 @@ fn recordings_used_the_cheapest_model() {
     }
 }
 
-/// The version installed when this was last checked reads with nothing left unknown: an
-/// answer, a shell call, and a report under the schema, which the CLI still ends with a 503.
+/// A later installed version reads with nothing left unknown: an answer, a shell call, and a
+/// report under the schema, which the CLI still ends with a 503.
 #[test]
 fn the_installed_version_reads_cleanly() {
     const INSTALLED: &str = "1.3.1";

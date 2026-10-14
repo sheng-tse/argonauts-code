@@ -40,6 +40,7 @@ use super::list::{self, Nav};
 use super::panes::{self, Footer, Marks, Side};
 use super::session::{SessionView, Tab};
 use super::states;
+use super::workflow_tries;
 use super::{View, ViewCtx, ViewOutcome};
 
 /// Phase names and row labels past this are cut, so one long name can't take the pane.
@@ -134,6 +135,8 @@ struct Level {
     filter: Filter,
     /// When this data was first drawn, so a running workflow's times keep counting.
     seen_at: Option<Instant>,
+    /// The steps whose earlier tries are unfolded under their row, by the newest try's session.
+    unfolded: Vec<SessionKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +169,7 @@ impl Level {
             side: Side::Left,
             filter: Filter::All,
             seen_at: None,
+            unfolded: Vec::new(),
         }
     }
 
@@ -186,6 +190,37 @@ impl Level {
 
     fn row(&self) -> Option<&WorkflowRow> {
         self.rows().get(self.row).copied()
+    }
+
+    /// The selected step's newest session, when the step was tried more than once.
+    fn tried_row(&self) -> Option<SessionKey> {
+        match self.row() {
+            Some(WorkflowRow::Agent(agent)) if !agent.tries.is_empty() => {
+                Some(agent.session.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn is_unfolded(&self, session: &SessionKey) -> bool {
+        self.unfolded.contains(session)
+    }
+
+    /// Unfolds or folds the selected step's tries, and says whether it had any.
+    fn fold_tries(&mut self, unfold: bool) -> bool {
+        let Some(session) = self.tried_row() else {
+            return false;
+        };
+        let open = self.is_unfolded(&session);
+        if open == unfold {
+            return false;
+        }
+        if unfold {
+            self.unfolded.push(session);
+        } else {
+            self.unfolded.retain(|known| *known != session);
+        }
+        true
     }
 
     /// The cursor stays on the same phase, found by its name, when a phase is added above it
@@ -347,7 +382,7 @@ impl WorkflowView {
         // A workflow that has started no agent yet has none to count.
         let mut totals = if data.agents_total > 0 {
             format!(
-                "{}/{} agents · {}",
+                "{}/{} steps · {}",
                 data.agents_done,
                 data.agents_total,
                 panes::elapsed(elapsed_ms)
@@ -808,7 +843,7 @@ impl View for WorkflowView {
         let shown = level.rows();
         let right_title = level.phase().map_or_else(String::new, |phase| {
             let name = sanitize_line(&phase.name).trim().to_owned();
-            let agents = panes::count(agents_in_phase(phase), "agent");
+            let agents = panes::count(steps_in_phase(phase), "step");
             let mut title = match (level.filter.word(), phase.attempt) {
                 (Some(filter), _) => format!("{name} · {filter} · {agents}"),
                 (None, Some(attempt)) => format!("{name} · attempt {attempt} · {agents}"),
@@ -829,6 +864,7 @@ impl View for WorkflowView {
             .map(|phase| phase.detail.clone())
             .unwrap_or_default();
         let height = usize::from(panes.right.height);
+        let mut selected_line = level.row;
         let lines: Vec<Line<'static>> = match level.phase() {
             Some(_) if !shown.is_empty() => {
                 let cells: Vec<Cells> = shown
@@ -837,13 +873,25 @@ impl View for WorkflowView {
                     .collect();
                 let cells = with_pages(cells, &shown, &level.data.run, ctx);
                 let rows = RowColumns::fit(&cells, usize::from(panes.right.width), ctx);
-                cells
-                    .iter()
-                    .enumerate()
-                    .map(|(i, cells)| {
-                        rows.line(cells, level.side == Side::Right && i == level.row, theme)
-                    })
-                    .collect()
+                let mut lines = Vec::new();
+                for (i, (cells, row)) in cells.iter().zip(&shown).enumerate() {
+                    let selected = level.side == Side::Right && i == level.row;
+                    if i == level.row {
+                        selected_line = lines.len();
+                    }
+                    lines.push(rows.line(cells, selected, theme));
+                    if let WorkflowRow::Agent(agent) = row {
+                        let unfolded = level.is_unfolded(&agent.session);
+                        lines.extend(workflow_tries::lines(
+                            agent,
+                            selected,
+                            unfolded,
+                            &ctx.state.names,
+                            theme,
+                        ));
+                    }
+                }
+                lines
             }
             Some(_) if level.filter != Filter::All => {
                 vec![dim_line("No agents match this filter", theme)]
@@ -851,7 +899,7 @@ impl View for WorkflowView {
             Some(phase) => vec![dim_line(&empty_phase(phase, ctx.state, self.run()), theme)],
             None => vec![dim_line("No phases yet", theme)],
         };
-        let skip = (level.row + 1).saturating_sub(height);
+        let skip = (selected_line + 1).saturating_sub(height);
         let mark = dock::position(skip, height, lines.len(), theme);
         dock::draw_box(buf, &frame, ["Phases", &right_title], &mark, theme);
         dock::draw_title_note(buf, &frame, &title_note, str_width(&right_title), theme);
@@ -895,6 +943,12 @@ impl View for WorkflowView {
                     _ => Nav::Bottom,
                 };
                 self.move_selection(nav);
+                ViewOutcome::Consumed
+            }
+            KeyCode::Left if self.top().side == Side::Right && self.top_mut().fold_tries(false) => {
+                ViewOutcome::Consumed
+            }
+            KeyCode::Right if self.top().side == Side::Right && self.top_mut().fold_tries(true) => {
                 ViewOutcome::Consumed
             }
             KeyCode::Left | KeyCode::Esc => self.back(),
@@ -1306,8 +1360,20 @@ impl Cells {
                 (model, tokens, agent_markers(agent, ctx), cost)
             }
             WorkflowRow::Workflow(nested) => (
-                "workflow".to_owned(),
-                format!("{}/{} agents", nested.agents_done, nested.agents_total),
+                nested.owner.as_deref().map_or_else(
+                    || "workflow".to_owned(),
+                    |owner| format!("{}'s own", names.harness(owner)),
+                ),
+                format!(
+                    "{}/{} {}",
+                    nested.agents_done,
+                    nested.agents_total,
+                    if nested.owner.is_some() {
+                        "agents"
+                    } else {
+                        "steps"
+                    }
+                ),
                 Vec::new(),
                 String::new(),
             ),
@@ -1330,7 +1396,13 @@ impl Cells {
                 Some(goal) => goal_panel::row_words_brief(goal),
                 None => detail.clone(),
             },
-            label: row_label(row),
+            // A workflow an agent's own CLI runs hangs under that agent's row.
+            label: match row {
+                WorkflowRow::Workflow(nested) if nested.parent.is_some() => {
+                    format!("{} {}", ctx.theme.glyphs.result, row_label(row))
+                }
+                _ => row_label(row),
+            },
             // Only an agent's model runs on a CLI: a command or a nested workflow reads the
             // same either way.
             model_on_cli: match row {
@@ -1597,14 +1669,16 @@ fn phase_count(phase: &PhaseRow) -> String {
         .unwrap_or_default()
 }
 
-/// Every agent at work in a phase, a nested workflow's included, so the workflow view and the
-/// agent view title the phase alike.
-pub(super) fn agents_in_phase(phase: &PhaseRow) -> usize {
+/// Every step at work in a phase, a nested workflow's included, so the workflow view and the
+/// agent view title the phase alike. A step tried more than once is one, and commands don't
+/// count, as in Claude Code.
+pub(super) fn steps_in_phase(phase: &PhaseRow) -> usize {
     phase
         .rows
         .iter()
         .map(|row| match row {
             WorkflowRow::Agent(_) => 1,
+            WorkflowRow::Workflow(nested) if nested.parent.is_some() => 0,
             WorkflowRow::Workflow(nested) => nested.agents_total as usize,
             WorkflowRow::Command(_) => 0,
         })
@@ -1656,8 +1730,8 @@ fn agent_markers(agent: &AgentRow, ctx: &ViewCtx<'_>) -> Vec<Span<'static>> {
     markers
 }
 
-/// The page an agent published goes with its markers, named as on its row in the list:
-/// `⧉ test-report`.
+/// The page an agent published goes with its markers, named as on its row in the list
+///: `⧉ test-report`.
 fn with_pages(
     mut cells: Vec<Cells>,
     rows: &[&WorkflowRow],
@@ -1723,6 +1797,7 @@ mod tests {
             context: None,
             standing_in_for: None,
             answered: None,
+            tries: Vec::new(),
         }
     }
 
@@ -1781,6 +1856,8 @@ mod tests {
                     agents_total: 2,
                     workers: vec!["codex/gpt-5.6".parse().unwrap()],
                     elapsed_ms: 720_000,
+                    parent: None,
+                    owner: None,
                 }),
             ],
         )
@@ -1919,13 +1996,13 @@ mod tests {
         assert!(
             lines[2]
                 .trim_end()
-                .ends_with("6/7 agents · 4m31s · ↓ 2M tokens"),
+                .ends_with("6/7 steps · 4m31s · ↓ 2M tokens"),
             "{text}"
         );
         assert_eq!(lines[2].trim_end().chars().count(), 93, "{text}");
         assert!(lines[3].trim().is_empty(), "{text}");
         assert!(
-            lines[4].starts_with(" ╭ Phases ────────────┬ Fix · 2 agents ─"),
+            lines[4].starts_with(" ╭ Phases ────────────┬ Fix · 2 steps ─"),
             "{text}"
         );
         assert!(lines[4].trim_end().ends_with('╮'), "{text}");
@@ -2042,7 +2119,7 @@ mod tests {
         let mut view = WorkflowView::new(fixing());
         press(&mut view, KeyCode::Down);
         let text = draw_with(&mut view, 100, &theme(), &going());
-        assert!(text.contains("┬ Review · 0 agents ─"), "{text}");
+        assert!(text.contains("┬ Review · 0 steps ─"), "{text}");
         assert!(
             row_with(&text, "Understand").contains("│ Not started yet"),
             "{text}"
@@ -2128,14 +2205,14 @@ mod tests {
         let mut view = WorkflowView::new(fixing());
         press_in(&mut view, KeyCode::Char('f'), &state);
         let text = draw_with(&mut view, 100, &theme(), &state);
-        assert!(text.contains("Fix · running · 2 agents"), "{text}");
+        assert!(text.contains("Fix · running · 2 steps"), "{text}");
         assert!(!text.contains("fix:slugify"), "{text}");
         assert!(text.contains("fix:median"), "{text}");
         for _ in 0..3 {
             press_in(&mut view, KeyCode::Char('f'), &state);
         }
         let text = draw_with(&mut view, 100, &theme(), &state);
-        assert!(text.contains("Fix · 2 agents"), "{text}");
+        assert!(text.contains("Fix · 2 steps"), "{text}");
     }
 
     #[test]
@@ -2309,7 +2386,7 @@ mod tests {
         );
         let text = screen(&mut view);
         // Two agents of its own and the nested workflow's two, as the workflow view counts.
-        assert!(text.contains("Build · 4 agents"), "{text}");
+        assert!(text.contains("Build · 4 steps"), "{text}");
         assert!(text.contains("◐ Running"), "{text}");
         assert!(text.contains("Prompt · 1 line"), "{text}");
 
@@ -2576,7 +2653,7 @@ mod tests {
         state.runs.insert(run.id.clone(), run);
         let mut view = WorkflowView::new(workflow(1, "council", Vec::new()));
         let text = draw_with(&mut view, 120, &theme, &state);
-        assert!(text.contains("1/3 agents · 2m05s"), "{text}");
+        assert!(text.contains("1/3 steps · 2m05s"), "{text}");
         assert!(!text.contains('$'), "{text}");
 
         // A nested level keeps its own numbers.
@@ -2585,6 +2662,6 @@ mod tests {
         view.pending = Some(Pending::Workflow(nested.id.clone()));
         assert!(view.accept_workflow(&nested));
         let text = draw_with(&mut view, 120, &theme, &state);
-        assert!(text.contains("1/3 agents · 1m00s"), "{text}");
+        assert!(text.contains("1/3 steps · 1m00s"), "{text}");
     }
 }

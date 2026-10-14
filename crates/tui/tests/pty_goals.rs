@@ -224,9 +224,9 @@ fn the_workflow_view_shows_each_goal_and_g_opens_the_agent_on_it() {
         "{text}"
     );
     // The run's own clock times it, so only the counts are checked here.
-    expect_row(&view, "5/8 agents · \\S+ · ↓ 1\\.1M tokens$");
+    expect_row(&view, "5/8 steps · \\S+ · ↓ 1\\.1M tokens$");
     assert!(
-        text.contains("Build · 3 agents · each task worked as a goal"),
+        text.contains("Build · 3 steps · each task worked as a goal"),
         "{text}"
     );
     // From the phases, the panel previews the goal still running.
@@ -322,5 +322,5 @@ fn the_row_at_the_bottom_counts_the_goals_still_running() {
     // Back at the input, the row knows the goals the view was just told of.
     harness.press(Key::Esc);
     let screen = harness.wait_visible("2 goals running");
-    expect_row(&screen, "0/4 agents · 2 goals running · ");
+    expect_row(&screen, "0/4 steps · 2 goals running · ");
 }

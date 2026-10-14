@@ -9,6 +9,7 @@ mod quota;
 mod reported;
 mod run;
 mod session;
+mod talk_time;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -68,11 +69,16 @@ pub struct AppState {
     pub chat: ChatState,
     /// The artifacts the conversation and its agents have published.
     pub artifacts: Artifacts,
+    /// How long the conversation has gone on, and how much of it its agent worked.
+    pub talk: talk_time::TalkTime,
     /// Open app choices, oldest first.
     pub choices: Vec<AppChoice>,
     /// The `!` command that runs now, by its id, so Ctrl+C stops it.
     pub shell: Option<u32>,
     pub replay: Replay,
+    /// The event at hand is no part of the replay going on: another run's, streaming beside
+    /// the one replaying, or a recap, which no replay sends. It prints as it comes.
+    pub(crate) beside_replay: bool,
     /// The last `[ui]` section the controller sent.
     pub ui: Option<UiSettings>,
     /// Notices already shown, so a warning the controller repeats shows once.
@@ -167,6 +173,11 @@ enum Waiting {
 impl AppState {
     /// Folds one event in. Every event goes through here before anything draws it.
     pub fn apply(&mut self, event: &AppEvent) {
+        self.beside_replay = match (&self.replay, event) {
+            (Replay::Replaying { run }, AppEvent::Run { event }) => event.run_id != *run,
+            (Replay::Replaying { .. }, AppEvent::Recap { .. }) => true,
+            _ => false,
+        };
         match event {
             AppEvent::Welcome {
                 version,
@@ -228,7 +239,9 @@ impl AppState {
                 {
                     quota::record(&mut self.quotas, reading);
                 }
+                self.talk.count_edit(event, &self.chat.tools);
                 self.chat.apply(event);
+                self.talk.apply(event, crate::bottom::wall_now());
                 // A page the main agent just published, read off the call that finished.
                 if let ChatEvent::Agent {
                     event: AgentEvent::ToolFinished { id, .. },
@@ -326,7 +339,7 @@ impl AppState {
     }
 
     pub fn replaying(&self) -> bool {
-        matches!(self.replay, Replay::Replaying { .. })
+        matches!(self.replay, Replay::Replaying { .. }) && !self.beside_replay
     }
 
     pub fn attached_run(&self) -> Option<&RunState> {

@@ -195,7 +195,7 @@ impl RunScript {
         let parts: Vec<Value> = parts
             .iter()
             .map(|(label, text)| {
-                json!({"kind": "card", "label": label, "text": text,
+                json!({"kind": part_kind(label), "label": label, "text": text,
                        "approx_tokens": text.len() / 4, "source": null})
             })
             .collect();
@@ -520,4 +520,12 @@ fn checkpoint_title(kind: &str, run: &str) -> String {
         .flat_map(char::to_uppercase)
         .collect();
     format!("{first}{} approval · {run}", chars.as_str())
+}
+
+/// A part's kind by its label, as the engine sends them: the task goes as a card.
+fn part_kind(label: &str) -> &str {
+    match label {
+        "goal" | "notes" | "rules" | "status" => label,
+        _ => "card",
+    }
 }

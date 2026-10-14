@@ -153,6 +153,8 @@ pub enum InputPartKind {
     RoleFile,
     /// What your request said for the role.
     Request,
+    /// A picture sent with your message. Its `source` is the file; it adds no text.
+    Picture,
 }
 
 impl InputPartKind {
@@ -372,21 +374,27 @@ impl EndReason {
         }
     }
 
-    /// Whether the same agent may get past it a moment later. A spent plan or credit, a model
-    /// that's gone, a harness whose output changed, or a CLI that loads your plugins where it
-    /// mustn't stays that way, and an agent the watchdog found stuck was already nudged, so
-    /// only another agent helps.
+    /// Whether the same agent may get past it a moment later: a rate limit, a service that's
+    /// overloaded or failing, the network, or a process that died. Anything else comes back
+    /// the same on a retry, so only another agent helps: a request the service rejects as
+    /// invalid, such as an answer format it refuses, a sign-in error, a spent plan or credit, a
+    /// model that's gone, a CLI that couldn't start or whose output changed, one that loads
+    /// your plugins where it mustn't, and one the watchdog found stuck after its nudge.
     pub fn may_pass(&self) -> bool {
-        self.is_vendor_failure()
-            && !matches!(
-                self,
-                Self::UsageLimit { .. }
-                    | Self::Billing { .. }
-                    | Self::ModelUnavailable { .. }
-                    | Self::AdapterBroken { .. }
-                    | Self::IsolationBroken { .. }
-                    | Self::Stuck { .. }
-            )
+        match self {
+            Self::RateLimited | Self::Crashed { .. } => true,
+            Self::VendorError { category, .. } => matches!(
+                category,
+                ErrorCategory::RateLimit
+                    | ErrorCategory::Overloaded
+                    | ErrorCategory::Server
+                    | ErrorCategory::Network
+                    | ErrorCategory::Timeout
+                    | ErrorCategory::Interrupted
+                    | ErrorCategory::AnswerMissed
+            ),
+            _ => false,
+        }
     }
 }
 

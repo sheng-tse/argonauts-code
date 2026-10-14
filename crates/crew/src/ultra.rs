@@ -4,8 +4,6 @@
 use argonauts_core::names::WorkerRef;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::crew::CrewRole;
-use argonauts_core::settings::sessions::{FanoutSwitch, NativeFanout};
-use argonauts_core::worker::{Access, SessionSpec};
 
 use crate::roles;
 
@@ -16,24 +14,6 @@ pub const CLAUDE_CODE: &str = "claude-code";
 /// Antigravity CLI have none.
 pub fn has_own_workflow(worker: &WorkerRef) -> bool {
     worker.worker == CLAUDE_CODE
-}
-
-/// In solo, ultracode is the CLI's own: the solo task's build session on Claude
-/// Code runs with Claude Code's ultracode, free to start the workflow it plans. With fan-out
-/// off it stays as it is, since Claude Code then starts with workflows off.
-pub fn in_solo(settings: &Settings, spec: &mut SessionSpec) {
-    let fanout_off = matches!(
-        spec.native_fanout,
-        NativeFanout::Switch(FanoutSwitch::Off) | NativeFanout::Limit { max: 0 }
-    );
-    if settings.ultracode
-        && spec.access == Access::Build
-        && has_own_workflow(&spec.worker)
-        && !fanout_off
-    {
-        spec.cli_workflow.ultracode = true;
-        spec.native_fanout = NativeFanout::Switch(FanoutSwitch::On);
-    }
 }
 
 /// A crew whose workflow Claude Code runs as its own: the orchestrator plans it, and its
@@ -130,42 +110,6 @@ mod tests {
         assert!(claude_codes_own(&codex, &[]).is_none());
         // The default crew spreads its workers across three CLIs.
         assert!(claude_codes_own(&Settings::default(), &[]).is_none());
-    }
-
-    /// Solo on Claude Code with ultracode on: the solo task's build session runs Claude Code's
-    /// own ultracode, free to start its workflow. Codex, a reader, ultracode off, and fan-out
-    /// turned off each leave the session as it was.
-    #[test]
-    fn a_solo_build_on_claude_code_runs_its_own_ultracode() {
-        let spec = |worker: &str, access: Access| {
-            argonauts_testkit::worker::session_spec(
-                worker,
-                access,
-                std::path::Path::new("/tmp/work"),
-            )
-        };
-        let on = Settings {
-            ultracode: true,
-            ..Settings::default()
-        };
-        let mut build = spec("claude-code/opus-5-5", Access::Build);
-        in_solo(&on, &mut build);
-        assert!(build.cli_workflow.ultracode);
-        assert_eq!(build.native_fanout, NativeFanout::Switch(FanoutSwitch::On));
-
-        for (settings, worker, access) in [
-            (&Settings::default(), "claude-code/opus-5-5", Access::Build),
-            (&on, "codex", Access::Build),
-            (&on, "claude-code/opus-5-5", Access::ReadOnly),
-        ] {
-            let mut left = spec(worker, access);
-            in_solo(settings, &mut left);
-            assert!(!left.cli_workflow.ultracode, "{worker} {access:?}");
-        }
-        let mut off = spec("claude-code/opus-5-5", Access::Build);
-        off.native_fanout = NativeFanout::Switch(FanoutSwitch::Off);
-        in_solo(&on, &mut off);
-        assert!(!off.cli_workflow.ultracode);
     }
 
     #[test]

@@ -22,9 +22,9 @@ use super::agents::{AgentRef, ListRow, RowKind, more_line, window};
 use super::bar::{BAR_CELLS, MIN_BAR_CELLS, bar, run_fill};
 use super::{AgentPanel, PanelEvent};
 
-/// The name column's width, so every bar starts in one column. A longer name widens it only into
-/// room the row has to spare, so one long name can't push every bar off the row. This holds
-/// `council · add --json to export`.
+/// The name column's width, so every bar starts in one column. A longer name widens it only
+/// into room the row has to spare, so one long name can't
+/// push every bar off the row. This holds `council · add --json to export`.
 const MAX_NAME_CELLS: usize = 37;
 
 /// Names give up cells to keep the bar down to this, which holds a CLI and a short model.
@@ -69,6 +69,12 @@ pub struct WorkflowRow {
     pub phase: Option<String>,
     /// Goals its agents still work toward, for `2 goals running`.
     pub goals_running: usize,
+    /// The key of the agent whose own CLI runs this workflow, so the row sits under that
+    /// agent's rather than beside the run as a second one.
+    pub parent: Option<String>,
+    /// A CLI's own workflow, counted in agents as the CLI counts them. Argonauts' runs count
+    /// steps, a step tried again once.
+    pub vendor: bool,
 }
 
 impl WorkflowRow {
@@ -88,6 +94,8 @@ impl WorkflowRow {
             front_end: None,
             phase: None,
             goals_running: 0,
+            parent: None,
+            vendor: false,
         }
     }
 
@@ -234,7 +242,26 @@ impl WorkflowPanel {
                 placed[j] = true;
             }
         }
+        // A workflow an agent's own CLI runs goes under that agent's row while it's listed.
+        // Session keys start again in every run, so the agent must be of the workflow's run,
+        // which its key names before the `#`.
+        let under = |i: usize| {
+            let row = &self.rows[i];
+            let parent = row.parent.as_deref()?;
+            let run = row.key.split_once('#').map(|(run, _)| run);
+            agents
+                .rows
+                .iter()
+                .position(|agent| {
+                    agent.key.as_deref() == Some(parent)
+                        && run.is_none_or(|run| agent.run.as_deref() == Some(run))
+                })
+                .filter(|_| self.show_agents)
+        };
         for (i, row) in self.rows.iter().enumerate() {
+            if under(i).is_some() {
+                continue;
+            }
             entries.push(Entry::Run(i));
             if !self.show_agents {
                 continue;
@@ -243,6 +270,11 @@ impl WorkflowPanel {
                 if !placed[j] && agent.run.as_deref() == Some(row.key.as_str()) {
                     entries.push(Entry::Agent(j));
                     placed[j] = true;
+                    entries.extend(
+                        (0..self.rows.len())
+                            .filter(|&inner| under(inner) == Some(j))
+                            .map(Entry::Run),
+                    );
                 }
             }
         }
@@ -516,9 +548,21 @@ fn run_line(
     } else {
         vec![Span::raw("  ")]
     };
+    // Under its agent's row, a step further in than the agent.
+    let inner = if row.parent.is_some() {
+        AGENT_INDENT * 2
+    } else {
+        0
+    };
+    if inner > 0 {
+        spans.push(Span::raw(" ".repeat(inner)));
+    }
     spans.push(Span::styled(circle, theme.style(role)));
     spans.push(Span::raw(" "));
-    spans.push(Span::raw(left(&cells.name, columns.name_width)));
+    spans.push(Span::raw(left(
+        &cells.name,
+        columns.name_width.saturating_sub(inner),
+    )));
     if columns.bar_cells > 0 {
         let steps = (row.agents_total > 0).then_some((row.agents_done, row.agents_total));
         spans.push(Span::raw("  "));
@@ -543,8 +587,9 @@ fn run_stats(row: &WorkflowRow, ctx: &RenderCtx<'_>) -> Vec<Part> {
         ));
     };
     if row.agents_total > 0 {
+        let counted = if row.vendor { "agents" } else { "steps" };
         push(
-            format!("{}/{} agents", row.agents_done, row.agents_total),
+            format!("{}/{} {counted}", row.agents_done, row.agents_total),
             dim,
             4,
         );
@@ -969,7 +1014,7 @@ mod tests {
         assert_eq!(
             plain_text(&lines),
             format!(
-                "  ○ argonauts-ui-kit{pad}  {bar}  8/9 agents · 2h44m · ↓ 1.8M tokens · $4.10 · ! 85% of limit · /workflows to stop"
+                "  ○ argonauts-ui-kit{pad}  {bar}  8/9 steps · 2h44m · ↓ 1.8M tokens · $4.10 · ! 85% of limit · /workflows to stop"
             )
         );
         let fill: Vec<_> = lines[0]
@@ -1122,5 +1167,79 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_workflow_an_agents_cli_runs_sits_under_that_agent_counted_in_its_agents() {
+        let mut theme = Theme::dark().with_level(ColorLevel::None);
+        theme.glyphs = Glyphs::UNICODE;
+        let t0 = Instant::now();
+        let mut panel = runs(1);
+        panel.show_agents = true;
+        panel.max_rows = 8;
+        let mut inner = WorkflowRow::new(
+            "run-0#add-due-dates",
+            "add-due-dates",
+            WorkflowRowState::Running,
+        );
+        inner.parent = Some("s-002".into());
+        inner.vendor = true;
+        inner.agents_done = 1;
+        inner.agents_total = 3;
+        panel.rows.push(inner);
+        let mut agents = AgentPanel::default();
+        agents.rows.push(AgentRow::main());
+        for (key, label) in [
+            ("s-001", "plan:due-dates"),
+            ("s-002", "build:add-due-dates"),
+        ] {
+            let mut row = AgentRow::new("claude-code", "Working", AgentState::Working)
+                .with_label(label, label);
+            row.run = Some("run-0".into());
+            row.key = Some(key.into());
+            agents.rows.push(row);
+        }
+        let ctx = RenderCtx::new(100, &theme, Clock::still(t0));
+        let text = plain_text(&panel_lines(&panel, &agents, &ctx));
+        let rows: Vec<&str> = text.lines().collect();
+        assert!(rows[1].starts_with("  ○ workflow-0"), "{text}");
+        assert!(rows[1].contains("1/3 steps"), "a run counts steps: {text}");
+        assert!(rows[3].starts_with("    ○ build:add-due-dates"), "{text}");
+        assert!(
+            rows[4].starts_with("      ○ add-due-dates") && rows[4].contains("1/3 agents"),
+            "the agent's own workflow is under it, in its CLI's count: {text}"
+        );
+        assert_eq!(rows.len(), 5, "and listed once: {text}");
+    }
+
+    /// Two runs at once both have an `s-002`: a CLI's own workflow sits under its own run's.
+    #[test]
+    fn a_cli_workflow_sits_under_the_agent_of_its_own_run() {
+        let mut theme = Theme::dark().with_level(ColorLevel::None);
+        theme.glyphs = Glyphs::UNICODE;
+        let t0 = Instant::now();
+        let mut panel = runs(2);
+        panel.show_agents = true;
+        panel.max_rows = 12;
+        let mut inner =
+            WorkflowRow::new("run-1#fix-median", "fix-median", WorkflowRowState::Running);
+        inner.parent = Some("s-002".into());
+        inner.vendor = true;
+        panel.rows.push(inner);
+        let mut agents = AgentPanel::default();
+        agents.rows.push(AgentRow::main());
+        for (run, label) in [("run-0", "build:due-dates"), ("run-1", "build:median")] {
+            let mut row = AgentRow::new("claude-code", "Working", AgentState::Working)
+                .with_label(label, label);
+            row.run = Some(run.into());
+            row.key = Some("s-002".into());
+            agents.rows.push(row);
+        }
+        let ctx = RenderCtx::new(100, &theme, Clock::still(t0));
+        let text = plain_text(&panel_lines(&panel, &agents, &ctx));
+        let rows: Vec<&str> = text.lines().collect();
+        let at = |part: &str| rows.iter().position(|row| row.contains(part));
+        let median = at("build:median").expect("run-1's agent is listed");
+        assert_eq!(at("fix-median"), Some(median + 1), "{text}");
     }
 }

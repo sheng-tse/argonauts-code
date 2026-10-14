@@ -55,6 +55,18 @@ pub enum AgentEvent {
         output: Option<String>,
         parent: Option<String>,
     },
+    /// What a finished edit changed, as the CLI's own result says, with the file's line
+    /// numbers and the lines around each change: Claude Code's structured patch. It comes just
+    /// before the call's `ToolFinished`, so the call is drawn with it.
+    FilePatch {
+        /// The edit's tool call.
+        id: String,
+        /// As the CLI names the file.
+        path: String,
+        /// Unified hunks: `@@ -a,b +c,d @@` headers, then lines marked ` `, `-`, or `+`.
+        hunks: String,
+        parent: Option<String>,
+    },
     FileChanged {
         /// Relative to the workdir where the vendor gives one.
         path: String,
@@ -217,6 +229,7 @@ impl AgentEvent {
             Self::Reasoning { .. } => "reasoning",
             Self::ToolStarted { .. } => "tool_started",
             Self::ToolFinished { .. } => "tool_finished",
+            Self::FilePatch { .. } => "file_patch",
             Self::FileChanged { .. } => "file_changed",
             Self::Todo { .. } => "todo",
             Self::Usage { .. } => "usage",
@@ -374,6 +387,8 @@ pub enum ErrorCategory {
     ContextFull,
     ModelUnavailable,
     InvalidRequest,
+    /// The model missed an answer format the CLI had accepted. Another try may give it.
+    AnswerMissed,
     /// A tool or action was denied.
     Permission,
     /// A native budget cap was hit.
@@ -427,6 +442,12 @@ mod tests {
                 id: "t1".into(),
                 ok: true,
                 output: Some("a\nb".into()),
+                parent: None,
+            },
+            AgentEvent::FilePatch {
+                id: "t2".into(),
+                path: "/w/hello.txt".into(),
+                hunks: "@@ -1,1 +1,1 @@\n-hi\n+hello".into(),
                 parent: None,
             },
             AgentEvent::FileChanged {

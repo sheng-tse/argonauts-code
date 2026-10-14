@@ -14,6 +14,8 @@ mod keywords;
 mod models;
 mod mods;
 mod parser;
+mod patch;
+mod plan_usage;
 mod quota;
 mod script_meta;
 mod sessions;

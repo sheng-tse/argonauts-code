@@ -213,6 +213,9 @@ async fn greet(ctx: &mut Ctx) {
     crate::controller::names::send(ctx);
     let runs = run_counts(ctx.services.conductor.as_ref()).await;
     let report = doctor(&builtin_adapters(), ctx.settings()).await;
+    let found = crate::telemetry::found(Some(&ctx.env), &report);
+    crate::telemetry::send_when_due(&ctx.env.paths, ctx.settings(), found);
+    ctx.cli_facts.checked(report.clone());
     let hello = welcome_from(ctx, &report, runs);
     ctx.send(hello);
     for (level, text) in start_notices(ctx) {
@@ -352,8 +355,9 @@ fn agent_ready(check: &AgentCheck, settings: &Settings) -> AgentReady {
 /// What resolving the settings warned of, then the one-time notices: an edited preset file, the
 /// old settings file, a committed local file.
 pub(crate) fn start_notices(ctx: &mut Ctx) -> Vec<(NoteLevel, String)> {
+    let mut notices = crate::old_names::rename_in_your_files(ctx);
     let env = &ctx.env;
-    let mut notices = settings_warnings(&ctx.settings.resolved().warnings);
+    notices.extend(settings_warnings(&ctx.settings.resolved().warnings));
     notices.extend(preset_notices(&env.paths.global_presets()));
     if let Ok(old) = old_global_config_path()
         && let Some(notice) = old_config_notice(&old, env)

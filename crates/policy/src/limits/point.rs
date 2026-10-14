@@ -101,8 +101,10 @@ pub fn check(
             Vec::new(),
         ));
     }
-    let cap = settings.limits.auto_merges_per_day;
-    if merge && facts.auto_merges_today >= cap {
+    if merge
+        && let Some(cap) = settings.limits.auto_merges_per_day
+        && facts.auto_merges_today >= cap
+    {
         violations.push(violation(
             HardLimit::AutoMergeCap,
             format!(

@@ -175,7 +175,8 @@ impl ModelCatalog {
     pub fn label(&self, id: &WorkerRef) -> ModelLabel {
         let entry = self.entry(id);
         let name = entry
-            .and_then(|entry| entry.name.clone())
+            .and_then(|entry| entry.name.as_deref())
+            .map(spelled_one_way)
             .unwrap_or_else(|| match &id.model {
                 Some(model) => display_name_from_id(model),
                 None => "Default".to_owned(),
@@ -222,6 +223,15 @@ pub fn builtin_effort_note(level: &str) -> Option<&'static str> {
         "ultra" => "The deepest reasoning, and it hands parts of the task to helpers",
         _ => return None,
     })
+}
+
+/// A model's name as every place in Argonauts writes it, with its words apart: a CLI's own
+/// list may join them, as Codex's "GPT-5.6-Luna", and the same model then read two ways.
+pub fn spelled_one_way(name: &str) -> String {
+    name.split(|c: char| c.is_whitespace() || c == '-')
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A model's display name from its id: `claude-opus-5-5` reads "Opus 5.5",
@@ -460,7 +470,7 @@ mod tests {
         assert_eq!(catalog.version, 1);
 
         let sol = catalog.label(&id("codex/gpt-6.1-sol"));
-        assert_eq!(sol.name, "GPT-6.1-Sol");
+        assert_eq!(sol.name, "GPT 6.1 Sol");
         assert!(!sol.new);
 
         let fresh = catalog.label(&id("claude-code/claude-opus-6"));

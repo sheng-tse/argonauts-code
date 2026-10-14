@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model_catalog::{ModelCatalog, display_name_from_id};
+use crate::model_catalog::{ModelCatalog, display_name_from_id, spelled_one_way};
 use crate::names::WorkerRef;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -47,7 +47,9 @@ impl DisplayNames {
         let id = WorkerRef::new(harness.trim(), Some(model.to_owned()));
         // An alias reads as the model it runs, so `opus` names the model rather than itself.
         let entry = self.catalog.entry(&id);
-        let named = entry.and_then(|entry| entry.name.clone());
+        let named = entry
+            .and_then(|entry| entry.name.as_deref())
+            .map(spelled_one_way);
         let resolved = entry.and_then(|entry| entry.id.model.as_deref());
         Some(named.unwrap_or_else(|| display_name_from_id(resolved.unwrap_or(model))))
     }
@@ -154,6 +156,26 @@ mod tests {
         text.parse().unwrap()
     }
 
+    /// A CLI's list that joins a name's words reads the way the rest of Argonauts writes it.
+    #[test]
+    fn a_model_is_spelled_one_way_whoever_named_it() {
+        let mut luna = CatalogEntry::new(id("codex/gpt-5.6-luna"));
+        luna.name = Some("GPT-5.6-Luna".to_owned());
+        let names = DisplayNames {
+            catalog: ModelCatalog {
+                models: vec![luna],
+                ..ModelCatalog::default()
+            },
+            ..DisplayNames::default()
+        };
+        let from_the_cli = names.worker(&id("codex/gpt-5.6-luna"));
+        let from_its_id = DisplayNames::default().worker(&id("codex/gpt-5.6-luna"));
+        assert_eq!(from_the_cli, "GPT 5.6 Luna on Codex");
+        assert_eq!(from_its_id, from_the_cli);
+        let label = names.catalog.label(&id("codex/gpt-5.6-luna"));
+        assert_eq!(label.name, "GPT 5.6 Luna");
+    }
+
     fn names() -> DisplayNames {
         let mut opus = CatalogEntry::new(id("claude-code/claude-opus-5-5"));
         opus.aliases = Some(vec!["opus".to_owned()]);
@@ -176,7 +198,7 @@ mod tests {
         // Codex names no model, so it runs the one its settings give.
         assert_eq!(
             names.worker(&names.running(&id("codex"))),
-            "GPT-6.1 Sol on Codex"
+            "GPT 6.1 Sol on Codex"
         );
         // A model of its own wins, and a CLI without one in its settings runs its default.
         assert_eq!(names.running(&id("codex/gpt-5.6")), id("codex/gpt-5.6"));
@@ -189,7 +211,7 @@ mod tests {
     fn a_model_on_its_own_companys_cli_goes_by_its_name_alone() {
         let names = names();
         assert_eq!(names.short(&id("claude-code/claude-opus-5-5")), "Opus 5.5");
-        assert_eq!(names.short(&id("codex/gpt-6.1-sol")), "GPT-6.1 Sol");
+        assert_eq!(names.short(&id("codex/gpt-6.1-sol")), "GPT 6.1 Sol");
         assert_eq!(
             names.short(&id("antigravity-cli/claude-opus-5-5")),
             "Opus 5.5 on Antigravity CLI"
@@ -217,7 +239,7 @@ mod tests {
         assert!(names.by_default(&id("claude-code")));
         assert_eq!(
             names.worker(&names.running(&id("codex"))),
-            "GPT-6.1 Sol on Codex"
+            "GPT 6.1 Sol on Codex"
         );
         assert!(!names.by_default(&id("codex")));
         assert!(!names.by_default(&id("claude-code/claude-haiku-4-5")));
@@ -233,7 +255,7 @@ mod tests {
         );
         assert_eq!(
             names.worker(&id("codex/gpt-6.1-sol")),
-            "GPT-6.1 Sol on Codex"
+            "GPT 6.1 Sol on Codex"
         );
         assert_eq!(
             names.worker(&id("my-cli/some-model")),

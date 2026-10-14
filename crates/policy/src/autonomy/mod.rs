@@ -943,7 +943,7 @@ mod tests {
         let mut f = fixture();
         let merge = CheckpointKind::Merge;
         f.settings.approvals.merge.mode = ApprovalMode::Auto;
-        f.settings.limits.auto_merges_per_day = 1;
+        f.settings.limits.auto_merges_per_day = Some(1);
         let first = point("run-a", 1, merge);
         assert!(
             f.autonomy
@@ -979,7 +979,7 @@ mod tests {
         let merge = CheckpointKind::Merge;
         f.settings.approvals.merge.mode = ApprovalMode::Auto;
         f.settings.approvals.spot_check_sample = 1.0;
-        f.settings.limits.auto_merges_per_day = 1;
+        f.settings.limits.auto_merges_per_day = Some(1);
 
         let first = point("run-a", 7, merge);
         let reserved = f.autonomy.reserve(&first, &evidence(merge), &f.settings);

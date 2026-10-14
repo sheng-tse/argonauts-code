@@ -401,9 +401,8 @@ fn crew_example_question_card() -> anyhow::Result<()> {
     pty.send(REQUEST)?;
     pty.press(Key::Enter)?;
 
-    // The model-independent lines for a bigger task: three
-    // restaters and two differs, the detail adopted as an assumption, then the question. No
-    // Triage row comes first.
+    // The model-independent lines for a bigger task: three restaters and two differs, the
+    // detail adopted as an assumption, then the question. No Triage row comes first.
     pty.wait_for(
         r"(?m)^[●⏺] 3 agents started.*\n(?:\s+[├└] read:\S+ · .*\n){3}",
         STEPS_WAIT,
@@ -630,8 +629,8 @@ fn crew_merge_request_changes() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Full auto through the binary: every checkpoint, your rules deciding, and a
-/// budget that fits the plan. The example's scope question, which `goal.always_ask` keeps yours
+/// Full auto through the binary: every checkpoint auto, your rules deciding, and a budget
+/// that fits the plan. The example's scope question, which `goal.always_ask` keeps yours
 /// in auto, is the lead's to answer, and the run goes from request to merge without a card.
 #[test]
 fn crew_autopilot_runs_to_merge_without_a_card() -> anyhow::Result<()> {

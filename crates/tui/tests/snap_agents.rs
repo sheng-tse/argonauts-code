@@ -316,6 +316,7 @@ fn session_state(
         messages: Vec::new(),
         streaming: String::new(),
         diffs: Vec::new(),
+        patches: Vec::new(),
         subagents: Vec::new(),
         inputs: Vec::new(),
         queued: Vec::new(),
@@ -476,6 +477,66 @@ fn live_block_all_parts() {
     assert!(!text(&crew.printed(140)).contains("Next I'll add"));
 }
 
+/// Claude Code reports each edit's patch, which its call draws. The change Argonauts sees in the
+/// file after it is the same edit, so the live block draws it once.
+#[test]
+fn an_edit_its_call_drew_is_not_drawn_again_under_the_calls() {
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.card(3, "Middleware", Some(CardState::Running));
+    crew.start("s-001", "claude-code/opus", Some(3));
+    let file = format!("{WORKTREE}/src/config.js");
+    crew.at(10.0).tool(
+        "s-001",
+        "t1",
+        "Edit",
+        json!({"file_path": file, "old_string": "const pkg = \"api\";", "new_string": "const pkg = \"@acme/api\";"}),
+    );
+    let hunk = "@@ -2,3 +2,3 @@\n const registry = \"https://registry.npmjs.org\";\n-const pkg = \"api\";\n+const pkg = \"@acme/api\";\n \n";
+    crew.agent(
+        "s-001",
+        AgentEvent::FilePatch {
+            id: "t1".to_owned(),
+            path: file.clone(),
+            hunks: hunk.to_owned(),
+            parent: None,
+        },
+    );
+    crew.done("s-001", "t1", true, Some("The file has been updated."));
+    crew.at(12.0).send(
+        "s-001",
+        Some(3),
+        RunEventKind::Session(SessionEvent::FileDiff(FileDiff {
+            path: "src/config.js".to_owned(),
+            added: 1,
+            removed: 1,
+            hunk: hunk.to_owned(),
+            truncated: false,
+        })),
+    );
+    let live = text(&crew.live(120));
+    assert_eq!(
+        live.matches("Added 1 line, removed 1 line").count(),
+        1,
+        "{live}"
+    );
+    assert_eq!(live.matches("+const pkg").count(), 1, "{live}");
+
+    // A file no call drew still gets its preview.
+    crew.at(14.0).send(
+        "s-001",
+        Some(3),
+        RunEventKind::Session(SessionEvent::FileDiff(FileDiff {
+            path: "src/other.js".to_owned(),
+            added: 1,
+            removed: 0,
+            hunk: "@@ -1,0 +1,1 @@\n+export const other = 1;\n".to_owned(),
+            truncated: false,
+        })),
+    );
+    let live = text(&crew.live(120));
+    assert!(live.contains("export const other = 1;"), "{live}");
+}
+
 /// A CLI that missed its heartbeat may yet answer, so the stall reads as a dim note while an
 /// error keeps the error color.
 #[test]
@@ -510,6 +571,52 @@ fn a_stall_reads_dim_and_an_error_red() {
         style_of(&lines, "the stream broke").and_then(|s| s.fg),
         theme().style(Role::Error).fg
     );
+}
+
+/// The shape in which Codex passes on the service turning down an answer format.
+const CODEX_SCHEMA_ERROR: &str = r#"{"type":"error","message":"{\"error\":{\"message\":\"Invalid schema for response_format 'codex_output_schema': Missing 'summary'.\",\"type\":\"invalid_request_error\",\"code\":\"invalid_json_schema\"}}"}"#;
+
+/// An agent's error and the failed end that follows say it once, in words, with `r` for the
+/// CLI's own text; its JSON never reaches the chat.
+#[test]
+fn an_agent_error_then_its_failed_end_say_it_once_in_words() {
+    for width in WIDTHS {
+        let mut crew = Crew::new(Verbosity::Normal);
+        crew.start("s-001", "codex/gpt-5.6", None);
+        crew.at(1.0).agent(
+            "s-001",
+            AgentEvent::Error {
+                category: ErrorCategory::InvalidRequest,
+                message: CODEX_SCHEMA_ERROR.to_owned(),
+                retryable: false,
+            },
+        );
+        let reason = EndReason::VendorError {
+            category: ErrorCategory::InvalidRequest,
+            message: CODEX_SCHEMA_ERROR.to_owned(),
+        };
+        crew.at(2.0).end("s-001", reason, 2, 0);
+        let printed = text(&scrollback(&mut crew, width))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let said = "Codex refused the answer format Argonauts asked for";
+        assert_eq!(printed.matches(said).count(), 1, "{width}: {printed}");
+        assert_eq!(
+            printed.matches("r shows the raw error").count(),
+            1,
+            "{printed}"
+        );
+        assert!(!printed.contains("invalid_json_schema"), "{printed}");
+        assert!(!printed.contains('{'), "{printed}");
+        let raw = crew
+            .model
+            .raw_failure
+            .as_ref()
+            .expect("the raw text is kept");
+        assert_eq!(raw.text, CODEX_SCHEMA_ERROR);
+        assert!(raw.title.ends_with("· the raw error"), "{}", raw.title);
+    }
 }
 
 #[test]

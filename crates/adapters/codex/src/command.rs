@@ -63,6 +63,10 @@ pub fn build(program: &str, req: &SessionRequest) -> anyhow::Result<CommandSpec>
         spec.files.push(file);
     }
     spec = spec.args(req.extra_args.iter().cloned());
+    // Each picture as `codex exec` takes one, before `resume`, where its own flags go.
+    for picture in &req.pictures {
+        spec = spec.args(["--image", utf8(&picture.path)?]);
+    }
     // A resume takes every flag again, since Codex applies the new call's settings.
     if let Some(session) = &req.resume_session {
         spec = spec.args(["resume", flag_value("session id", session.trim())?]);
@@ -232,3 +236,7 @@ pub fn utf8(path: &Path) -> anyhow::Result<&str> {
 pub fn output_schema_path(scratch_dir: &Path) -> PathBuf {
     scratch_dir.join(OUTPUT_SCHEMA_FILE)
 }
+
+#[cfg(test)]
+#[path = "command_pictures_tests.rs"]
+mod pictures_tests;

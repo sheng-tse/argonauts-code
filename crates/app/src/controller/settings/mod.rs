@@ -293,6 +293,30 @@ pub(crate) fn save(
     begin(ctx, settings, Change::Set(pairs), scope)
 }
 
+/// Settings you confirmed already by picking where a setup applies on its card, so a safety
+/// key among them asks no second question. A project file you haven't trusted still asks.
+pub(crate) fn save_confirmed(
+    ctx: &mut Ctx,
+    settings: &mut SettingsState,
+    pairs: Vec<(String, String)>,
+    scope: SettingScope,
+) -> Handled {
+    settings.hold = None;
+    let pairs = pairs
+        .into_iter()
+        .map(|(key, value)| {
+            let value = args::check_known(ctx, &key, &value)?;
+            Ok((key, value))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let change = Change::Set(pairs);
+    refuse_unless_at_terminal(ctx, &change)?;
+    if hold_for_orchestrator(ctx, settings, &change, scope) {
+        return Ok(Vec::new());
+    }
+    trust_step(ctx, settings, change, scope)
+}
+
 /// `SettingScope`, `ConfirmSafetySetting`, `TrustProject`, and `DetectedGates`.
 pub(crate) async fn answer_choice(
     ctx: &mut Ctx,
@@ -521,12 +545,7 @@ fn begin(
     scope: SettingScope,
 ) -> Handled {
     refuse_unless_at_terminal(ctx, &change)?;
-    if needs_coordinator(ctx, &change) {
-        settings.hold = Some(scope);
-        let data = refresh::view(ctx, settings, Some(RoleName::Orchestrator));
-        ctx.send(AppEvent::View {
-            data: Box::new(data),
-        });
+    if hold_for_orchestrator(ctx, settings, &change, scope) {
         return Ok(Vec::new());
     }
     let changes: Vec<String> = match &change {
@@ -547,6 +566,24 @@ fn begin(
         return Ok(Vec::new());
     }
     trust_step(ctx, settings, change, scope)
+}
+
+/// A change that needs an orchestrator first opens the orchestrator's settings, and waits.
+fn hold_for_orchestrator(
+    ctx: &mut Ctx,
+    settings: &mut SettingsState,
+    change: &Change,
+    scope: SettingScope,
+) -> bool {
+    if !needs_coordinator(ctx, change) {
+        return false;
+    }
+    settings.hold = Some(scope);
+    let data = refresh::view(ctx, settings, Some(RoleName::Orchestrator));
+    ctx.send(AppEvent::View {
+        data: Box::new(data),
+    });
+    true
 }
 
 /// A project file you haven't trusted, which sets safety keys, asks first; anything else is
@@ -632,6 +669,13 @@ fn trust_at_start(
         .collect();
     let before = ctx.settings().clone();
     let env = ctx.env.clone();
+    // The settings must still read whole with the file trusted, as when you were asked: one
+    // of your files that broke since leaves the trust as it was.
+    if let Err(err) = ctx.settings.check_trust(&env, file) {
+        close(ctx, id, NOT_CHANGED);
+        ctx.notice(NoteLevel::Warn, cant_trust(&shown, &err));
+        return Ok(Vec::new());
+    }
     let recorded = ctx.settings.trust().recorded(file);
     let trusted = ctx
         .settings

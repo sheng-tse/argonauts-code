@@ -3,12 +3,13 @@
 use std::path::Path;
 
 use anyhow::{bail, ensure};
+use argonauts_core::worker::SessionShell;
 use argonauts_core::{
     Asks, AuthMode, CommandSpec, SessionRequest, SessionRole, SpecFile, env_remove_except,
 };
 
 use crate::settings::{
-    Allowed, CommandSandbox, LeftOut, OwnWorkflow, STATUS_SERVER, Style, session_settings,
+    Allowed, CommandSandbox, Commands, LeftOut, OwnWorkflow, STATUS_SERVER, Style, session_settings,
 };
 use crate::tweaks::{self, Fanout, SUBAGENT_TOOL, WORKFLOW_TOOL};
 use crate::{control, isolation};
@@ -17,10 +18,18 @@ use crate::{control, isolation};
 pub const SETTINGS_FILE: &str = "claude-settings.json";
 
 const READ_ONLY_TOOLS: &[&str] = &["Read", "Glob", "Grep"];
+const BASH_TOOL: &str = "Bash";
 const BUILD_TOOLS: &[&str] = &["Read", "Glob", "Grep", "Edit", "Write", "Bash"];
 /// Newer models only get these with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`, and `--tools` must name
 /// them too. They are how an owner's to-do list reaches the agent panel.
 const TODO_TOOLS: &[&str] = &["TaskCreate", "TaskGet", "TaskUpdate", "TaskList"];
+
+/// Claude Code's own workflows, and everything it would run in the background: a subagent or
+/// command sent there, and a long one moved there on its own (2.1.295).
+const BACKGROUND_SWITCHES: &[&str] = &[
+    "CLAUDE_CODE_DISABLE_WORKFLOWS",
+    "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS",
+];
 
 /// The tool on Argonauts' session server that Claude Code sends each permission prompt to.
 pub const APPROVE_TOOL: &str = "approve";
@@ -43,7 +52,7 @@ const SUBAGENT_MESSAGE_TOOL: &str = "SendMessage";
 const ISOLATED_SETTING_SOURCES: &str = "user";
 
 /// The key a subscription login may come as in headless setups, from `claude setup-token`.
-const SUBSCRIPTION_KEYS: &[&str] = &["CLAUDE_CODE_OAUTH_TOKEN"];
+pub(crate) const SUBSCRIPTION_KEYS: &[&str] = &["CLAUDE_CODE_OAUTH_TOKEN"];
 
 const API_KEYS: &[&str] = &[
     "ANTHROPIC_API_KEY",
@@ -119,7 +128,9 @@ pub fn build_command(program: &str, req: &SessionRequest) -> anyhow::Result<Comm
         } else {
             String::new()
         };
-        let first = if req.typed_by_you {
+        let first = if !req.pictures.is_empty() {
+            picture_message_line(&req.prompt, &req.pictures, req.typed_by_you)
+        } else if req.typed_by_you {
             typed_message_line(&req.prompt)
         } else {
             user_message_line(&req.prompt)
@@ -127,8 +138,10 @@ pub fn build_command(program: &str, req: &SessionRequest) -> anyhow::Result<Comm
         spec.stdin = Some(opening + &first);
         spec.keep_stdin_open = true;
     } else {
-        // On stdin, so a prompt never looks like a flag or shows in the process list.
-        spec.stdin = Some(req.prompt.clone());
+        // On stdin, so a prompt never looks like a flag or shows in the process list. Plain
+        // text can't hold a picture, so it names each one's file.
+        let pictures: Vec<_> = req.pictures.iter().collect();
+        spec.stdin = Some(argonauts_core::pictures::with_paths(&req.prompt, &pictures));
     }
     Ok(spec)
 }
@@ -163,6 +176,7 @@ fn with_settings(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<
         &left_out(req),
         &own,
         style,
+        reader_commands(req),
     )?;
     let Some(dir) = &req.scratch_dir else {
         return Ok(spec.args(["--settings".to_owned(), settings]));
@@ -180,6 +194,15 @@ fn with_settings(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<
     })
 }
 
+/// The commands a read-only session's Bash may run. A session with no Bash of its own has
+/// nothing to limit.
+fn reader_commands(req: &SessionRequest) -> Commands<'_> {
+    match (&req.shell, effective_role(req)) {
+        (SessionShell::Only(lines), SessionRole::ReadOnly) => Commands::Only(lines),
+        _ => Commands::Any,
+    }
+}
+
 /// Claude Code's own workflow, where the session may run one: a direct turn has the workflow
 /// tool unless fan-out is off, and a build session when it may fan out as it sees fit. Where no
 /// one is asked, a workflow runs without the review Claude Code otherwise asks for (2.1.293).
@@ -189,7 +212,7 @@ fn own_workflow(req: &SessionRequest, role: SessionRole, fanout: Fanout) -> OwnW
         SessionRole::Build => (fanout.offers_workflows(), false),
         SessionRole::ReadOnly => (false, false),
     };
-    if !may_run {
+    if !may_run || req.background_off {
         return OwnWorkflow::default();
     }
     OwnWorkflow {
@@ -241,7 +264,7 @@ fn with_permission_flags(
         SessionRole::ReadOnly | SessionRole::Build => spec
             .args(["--permission-mode", permission_mode(role)])
             .args(["--permission-prompts", "none"])
-            .args(["--tools".to_owned(), tool_list(role, fanout)]),
+            .args(["--tools".to_owned(), tool_list(role, fanout, req)]),
         SessionRole::Direct => {
             let asking = req.mcp_config.is_some() && req.asks != Asks::Never;
             let spec = match req.asks {
@@ -260,8 +283,11 @@ fn with_permission_flags(
             }
         }
     };
-    spec.arg("--disallowedTools")
-        .args(disallowed_tools(fanout, req.main_session))
+    spec.arg("--disallowedTools").args(disallowed_tools(
+        fanout,
+        req.main_session,
+        req.background_off,
+    ))
 }
 
 /// One stream-json user message, the way `--input-format stream-json` reads them.
@@ -284,6 +310,52 @@ pub fn typed_message_line(text: &str) -> String {
     format!("{message}\n")
 }
 
+/// A user line holding your words and your pictures, each as an image block, as Claude Code's
+/// own input sends a pasted picture. One that can't be sent goes as its file's path.
+pub fn picture_message_line(
+    text: &str,
+    pictures: &[argonauts_core::pictures::Picture],
+    typed: bool,
+) -> String {
+    let mut message = picture_message(text, pictures);
+    if typed {
+        message["origin"] = serde_json::json!({"kind": "human"});
+    }
+    format!("{message}\n")
+}
+
+/// The same with the uuid Claude Code's `command_lifecycle` lines name it by, for a message
+/// that joins a running turn.
+pub fn picture_message_line_with_uuid(
+    text: &str,
+    pictures: &[argonauts_core::pictures::Picture],
+    uuid: &str,
+) -> String {
+    let mut message = picture_message(text, pictures);
+    message["uuid"] = serde_json::json!(uuid);
+    format!("{message}\n")
+}
+
+fn picture_message(
+    text: &str,
+    pictures: &[argonauts_core::pictures::Picture],
+) -> serde_json::Value {
+    let (blocks, unsent): (Vec<_>, Vec<_>) = pictures
+        .iter()
+        .map(|picture| (picture, picture.image_block()))
+        .partition(|(_, block)| block.is_some());
+    let unsent: Vec<_> = unsent.into_iter().map(|(picture, _)| picture).collect();
+    let mut content = vec![serde_json::json!({
+        "type": "text",
+        "text": argonauts_core::pictures::with_paths(text, &unsent),
+    })];
+    content.extend(blocks.into_iter().filter_map(|(_, block)| block));
+    serde_json::json!({
+        "type": "user",
+        "message": {"role": "user", "content": content},
+    })
+}
+
 /// A user line with the uuid Claude Code's `command_lifecycle` lines name it by.
 pub fn user_message_line_with_uuid(text: &str, uuid: &str) -> String {
     let message = serde_json::json!({
@@ -302,15 +374,20 @@ fn permission_mode(role: SessionRole) -> &'static str {
     }
 }
 
-fn tool_list(role: SessionRole, fanout: Fanout) -> String {
+fn tool_list(role: SessionRole, fanout: Fanout, req: &SessionRequest) -> String {
+    let background_off = req.background_off;
     let mut tools: Vec<&str> = match role {
         SessionRole::ReadOnly => READ_ONLY_TOOLS.to_vec(),
         SessionRole::Build | SessionRole::Direct => [BUILD_TOOLS, TODO_TOOLS].concat(),
     };
+    // A reviewer that may run the checks, its settings holding Bash to them.
+    if role == SessionRole::ReadOnly && !req.shell.is_none() {
+        tools.push(BASH_TOOL);
+    }
     if role == SessionRole::Build && fanout.offers_subagents() {
         tools.push(SUBAGENT_TOOL);
     }
-    if role == SessionRole::Build && fanout.offers_workflows() {
+    if role == SessionRole::Build && fanout.offers_workflows() && !background_off {
         tools.push(WORKFLOW_TOOL);
     }
     tools.join(",")
@@ -320,8 +397,11 @@ fn tool_list(role: SessionRole, fanout: Fanout) -> String {
 /// the main agent passes your message on to one of them, and resumes one that finished
 /// (checked live on 2.1.292). It still can't list other sessions to write to,
 /// and every session Argonauts starts refuses messages from outside.
-fn disallowed_tools(fanout: Fanout, main_session: bool) -> Vec<&'static str> {
+fn disallowed_tools(fanout: Fanout, main_session: bool, background_off: bool) -> Vec<&'static str> {
     let mut tools = CROSS_SESSION_TOOLS.to_vec();
+    if background_off {
+        tools.push(WORKFLOW_TOOL);
+    }
     if fanout == Fanout::Off {
         tools.push(SUBAGENT_TOOL);
     } else if main_session {
@@ -415,6 +495,15 @@ fn env_vars(
     {
         vars.extend(tweaks::native_fanout(setting).env_set);
     }
+    if req.background_off {
+        // The session's answer is taken when its turn ends, and Claude Code stops what still
+        // runs once its input closes, so a workflow or background agent would be cut short.
+        for name in BACKGROUND_SWITCHES {
+            if !vars.iter().any(|(set, _)| set == name) {
+                vars.push(((*name).to_owned(), "1".to_owned()));
+            }
+        }
+    }
     let removed = removed_env_vars(req);
     for (name, value) in &req.env_set {
         ensure!(
@@ -506,3 +595,7 @@ fn is_uuid(value: &str) -> bool {
             .zip([8, 4, 4, 4, 12])
             .all(|(group, len)| group.len() == len && group.chars().all(|c| c.is_ascii_hexdigit()))
 }
+
+#[cfg(test)]
+#[path = "command_pictures_tests.rs"]
+mod pictures_tests;

@@ -163,6 +163,9 @@ pub struct SessionPlan {
     /// What its row is called when its step can't say, such as the label a workflow's script
     /// gave the agent. Made unique in the run like any other.
     pub label: Option<String>,
+    /// It reads a change to judge it, so it may run the checks as a reviewer does, whatever
+    /// its role.
+    pub reviews: bool,
 }
 
 /// A started session. Steer or stop it with [`Host::control`]; its events are recorded as
@@ -335,6 +338,8 @@ struct Launch {
     /// Asks always carry the status summary; a long session gets it only where its worker
     /// has no status tool to read it from.
     status_part: bool,
+    /// As [`SessionPlan::reviews`].
+    reviews: bool,
 }
 
 struct Launched {
@@ -645,6 +650,7 @@ impl Host {
             blind: ask.blind,
             label: ask.label,
             status_part: true,
+            reviews: false,
         })?;
         let Launched {
             key,
@@ -1068,6 +1074,7 @@ impl Host {
             blind: false,
             label: None,
             status_part: false,
+            reviews: plan.reviews,
         })?;
         let card = live.card.clone();
         let (sender, ended) = oneshot::channel();
@@ -1177,8 +1184,13 @@ impl Host {
         source: &str,
         key: &SessionKey,
         card: Option<&CardId>,
-        event: WorkerEvent,
+        mut event: WorkerEvent,
     ) -> EngineResult<()> {
+        if let WorkerEvent::Agent(argonauts_core::AgentEvent::Workflow { workflow }) = &mut event {
+            workflow.name = self.read(|state| {
+                crate::workflow::naming::inner_workflow_name(state, &workflow.id, &workflow.name)
+            });
+        }
         let kinds: Vec<RunEventKind> = match event {
             WorkerEvent::Agent(agent) => {
                 let now = self.now();
@@ -1387,6 +1399,7 @@ impl Host {
             blind,
             label,
             status_part,
+            reviews,
         } = launch;
         let worker = self.shared.services.workers.get(&identity.worker)?;
         let settings = self.shared.settings.clone();
@@ -1576,6 +1589,7 @@ impl Host {
                             .as_ref()
                             .is_some_and(|card| self.shared.may_run_its_own_workflow(card)),
                         autopilot: self.approval_mode() == ApprovalMode::Autopilot,
+                        reviews,
                     },
                 )?;
                 let mut spec = spec;
@@ -1585,17 +1599,6 @@ impl Host {
                     .and_then(|card| self.shared.claude_codes_own(card));
                 if let Some(own) = own.filter(|_| spec.access == Access::Build) {
                     own.apply(&mut spec);
-                }
-                let solo_task = identity.card.as_ref().is_some_and(|card| {
-                    self.read(|state| {
-                        state
-                            .cards
-                            .get(card)
-                            .is_some_and(|record| record.spec.kind == CardKind::Solo)
-                    })
-                });
-                if solo_task {
-                    crate::ultra::in_solo(&settings, &mut spec);
                 }
                 Ok((spec, deliveries))
             });

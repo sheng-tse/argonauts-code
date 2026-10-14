@@ -18,12 +18,15 @@ pub mod learning;
 pub mod limits_template;
 pub mod main_session;
 pub mod mods;
+pub mod overview;
 pub mod prompts;
 pub mod protocol;
 pub mod roles;
 pub mod sessions;
+pub mod shell;
 pub mod stats;
 pub mod switch;
+pub mod telemetry;
 pub mod ui;
 pub mod workflows;
 
@@ -139,6 +142,8 @@ pub struct Settings {
     pub registry: RegistrySettings,
     pub awake: AwakeSettings,
     pub main_session: main_session::MainSessionSettings,
+    pub telemetry: telemetry::TelemetrySettings,
+    pub overview: overview::OverviewSettings,
 }
 
 impl Default for Settings {
@@ -204,6 +209,8 @@ impl Default for Settings {
             awake: AwakeSettings::default(),
             registry: RegistrySettings::default(),
             main_session: main_session::MainSessionSettings::default(),
+            telemetry: telemetry::TelemetrySettings::default(),
+            overview: overview::OverviewSettings::default(),
         }
     }
 }
@@ -245,6 +252,7 @@ pub const SAFETY_KEYS: &[&str] = &[
     "limits.auto_merges_per_day",
     "limits.irreversible_allowlist",
     "limits.evolution_usd_per_month",
+    "telemetry.*",
     "sandbox.*",
     "approvals.*",
     "evolution.*",
@@ -278,7 +286,7 @@ pub const SAFETY_KEYS: &[&str] = &[
 
 /// Keys only your global config may set. A project file that sets one is refused, trusted or
 /// not, since it would name a program for Argonauts to run.
-pub const GLOBAL_ONLY_KEYS: &[&str] = &["notifications.chat.*"];
+pub const GLOBAL_ONLY_KEYS: &[&str] = &["notifications.chat.*", "telemetry.*"];
 
 /// Lowest first; a later layer wins key by key. `session` is the app's own overrides, which
 /// come after the `--set` flags. `request` holds what a request said about how to run it, for

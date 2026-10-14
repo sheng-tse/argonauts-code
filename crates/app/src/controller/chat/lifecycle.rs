@@ -286,6 +286,12 @@ fn attempt(
     if resume.is_some() && turn::chat_agent(ctx.settings(), &worker).0.model.is_none() {
         launch_worker.model = chat.carried_model.clone();
     }
+    // The turn that carries your words takes your pictures with them.
+    let pictures = if step.takes_mentions() {
+        std::mem::take(&mut chat.pictures)
+    } else {
+        Vec::new()
+    };
     let launched = turn::launch(
         ctx,
         Launch {
@@ -293,6 +299,7 @@ fn attempt(
             turn: &id,
             step: &step,
             text: &text,
+            pictures,
             worker: launch_worker,
             handle,
             resume,
@@ -398,6 +405,12 @@ pub(super) fn on_event(ctx: &mut Ctx, chat: &mut ChatState, id: &TurnId, event: 
             if !turn.step.own_session() && !live_event(ctx, chat, id, &event) {
                 return;
             }
+            // Each patch goes ahead of its edit's end, so the edit is drawn with it.
+            let folder = chat.folder(ctx).to_path_buf();
+            for patch in chat.edits.on_agent(&folder, &event) {
+                let turn = id.clone();
+                emit(ctx, chat, ChatEvent::Agent { turn, event: patch });
+            }
             let Some(turn) = chat.turn.as_mut().filter(|turn| &turn.id == id) else {
                 return;
             };
@@ -405,6 +418,11 @@ pub(super) fn on_event(ctx: &mut Ctx, chat: &mut ChatState, id: &TurnId, event: 
             let own = turn.step.own_session();
             if let Some(row) = chat.context.as_mut().filter(|_| !own) {
                 match &event {
+                    // A CLI left on its own default says which model that is, so the
+                    // ledger and Stats name the model rather than the CLI.
+                    AgentEvent::Init {
+                        model: Some(model), ..
+                    } if row.worker.model.is_none() => row.worker.model = Some(model.clone()),
                     AgentEvent::ToolStarted { .. } => row.tool_calls += 1,
                     AgentEvent::ContextFill { used, size, .. } => {
                         row.used = *used;
@@ -449,8 +467,13 @@ fn live_event(ctx: &mut Ctx, chat: &mut ChatState, id: &TurnId, event: &AgentEve
         AgentEvent::Init {
             capabilities,
             plugins,
+            tools,
             ..
         } => {
+            chat.mcp_servers = Some(super::own_mcp_servers(tools));
+            let Some(turn) = chat.turn.as_mut().filter(|turn| &turn.id == id) else {
+                return false;
+            };
             if !turn.live.on_init(capabilities, plugins, heads_up) {
                 // The mod is off, the CLI is another, or you turned heads-ups off here.
                 let nothing = AgentEvent::ScreenChanged {

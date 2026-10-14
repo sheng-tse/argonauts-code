@@ -196,14 +196,12 @@ impl Source<'_> {
             return Some(PartBody::Artifact {
                 name: name.to_owned(),
                 others,
-                feedback_drafts: 0,
             });
         }
         let artifact = self.facts.artifact.as_ref()?;
         Some(PartBody::Artifact {
             name: artifact.name.clone(),
             others: artifact.others,
-            feedback_drafts: artifact.feedback_drafts,
         })
     }
 

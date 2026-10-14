@@ -41,6 +41,12 @@ pub struct CardPrompt {
     pub chips: Vec<CardChip>,
     pub agent: Option<CardAgent>,
     pub detail: Vec<String>,
+    /// A table in plain text whose notes are dim, as the setup card shows a setup: each row is
+    /// split by tabs into parts, plain then dim in turn.
+    pub noted_rows: Vec<String>,
+    /// A letter that opens what the card is about without an option listed for it, with the
+    /// index that option has in the question, as the setup card's `d` shows the diff.
+    pub view_key: Option<(char, usize)>,
     /// What the card asks about at length goes into the conversation before the card opens,
     /// so this stays short.
     pub body: Vec<String>,
@@ -80,6 +86,10 @@ pub struct CardPrompt {
     /// Esc closes it with an answer, such as cancel or the recommended answers, instead of
     /// handing it on. Then only Esc on the focused card does that.
     pub esc_answers: bool,
+    /// Only an option's own key answers it: its number, or the first letter of its label, `y`
+    /// for `Yes`. Enter and Esc leave it as it is, so a key that slipped never runs what it
+    /// offers.
+    pub keys_only: bool,
     /// A run's card, which full auto settles, so its key line names Shift+Tab as Claude Code's
     /// prompts do.
     pub offers_shift_tab: bool,
@@ -283,6 +293,8 @@ impl CardPrompt {
             chips: Vec::new(),
             agent: None,
             detail: Vec::new(),
+            noted_rows: Vec::new(),
+            view_key: None,
             body: Vec::new(),
             question: None,
             options,
@@ -302,6 +314,7 @@ impl CardPrompt {
             footer: None,
             esc_hint: ESC_HINT.to_owned(),
             esc_answers: false,
+            keys_only: false,
             offers_shift_tab: false,
         };
         card.open_field();
@@ -451,10 +464,28 @@ impl CardPrompt {
         let plain = !key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        if let Some((letter, index)) = self.view_key
+            && plain
+            && !self.stray_typing
+            && key.code == KeyCode::Char(letter)
+        {
+            return CardEvent::OpenView { index };
+        }
+        if let KeyCode::Char(c) = key.code
+            && plain
+            && let Some(index) = self.option_for_letter(c)
+        {
+            return self.pick(index, true);
+        }
         if let Some(event) = self.stray_key(key, plain) {
             return event;
         }
         match key.code {
+            // A y/N question: Enter and Esc take the default, no, and only y says yes.
+            KeyCode::Enter | KeyCode::Esc if self.keys_only => match self.option_for_letter('n') {
+                Some(index) => self.pick(index, true),
+                None => CardEvent::Moved,
+            },
             KeyCode::Up => {
                 self.move_to(self.selected.saturating_sub(1));
                 CardEvent::Moved
@@ -834,6 +865,23 @@ impl CardPrompt {
     }
 
     /// Options answer to the numbers shown beside them, 1 to 9, and never to letters.
+    /// On a keys-only card, the option whose label starts with `c`, when one alone does.
+    fn option_for_letter(&self, c: char) -> Option<usize> {
+        if !self.keys_only || !c.is_alphabetic() {
+            return None;
+        }
+        let starts = |option: &CardOption| {
+            option
+                .label
+                .chars()
+                .next()
+                .is_some_and(|first| first.to_lowercase().eq(c.to_lowercase()))
+        };
+        let mut matching = self.options.iter().enumerate().filter(|(_, o)| starts(o));
+        let (index, _) = matching.next()?;
+        matching.next().is_none().then_some(index)
+    }
+
     fn option_for_digit(&self, c: char) -> Option<usize> {
         let index = c.to_digit(10).filter(|digit| *digit >= 1)? as usize - 1;
         (index < self.options.len()).then_some(index)

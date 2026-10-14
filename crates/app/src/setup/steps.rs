@@ -39,6 +39,8 @@ pub(crate) struct Answers {
     pub roles: BTreeMap<String, WorkerRef>,
     /// `None` keeps the modes your file has.
     pub approvals: Option<ApprovalMode>,
+    /// `None` leaves `telemetry.enabled` as your file has it.
+    pub telemetry: Option<bool>,
     pub trust_folder: bool,
     pub create_project_dir: bool,
 }
@@ -53,6 +55,7 @@ impl Default for Answers {
             coordinator: None,
             roles: BTreeMap::new(),
             approvals: Some(ApprovalMode::Auto),
+            telemetry: None,
             trust_folder: false,
             create_project_dir: false,
         }
@@ -112,6 +115,9 @@ pub(crate) fn keys(answers: &Answers, interactive: bool) -> Vec<(String, String)
             ));
         }
         keys.push(("approvals.autopilot".to_owned(), autopilot.to_string()));
+    }
+    if let Some(on) = answers.telemetry {
+        keys.push(("telemetry.enabled".to_owned(), on.to_string()));
     }
     if !interactive {
         keys.retain(|(key, value)| safety_keys_in(key, value).is_empty());
@@ -201,6 +207,25 @@ mod tests {
         assert_eq!(keys[2].1, r#""council""#);
         assert_eq!(keys[3].1, r#""auto""#);
         assert_eq!(keys[9].1, "false");
+    }
+
+    /// Usage counts are written only when the question was answered, and only by a person at a
+    /// terminal, since saying yes is theirs to do.
+    #[test]
+    fn the_usage_counts_answer_is_written_as_given() {
+        let mut answers = answers();
+        let telemetry = |answers: &Answers, interactive| {
+            keys(answers, interactive)
+                .into_iter()
+                .find(|(key, _)| key == "telemetry.enabled")
+                .map(|(_, value)| value)
+        };
+        assert_eq!(telemetry(&answers, true), None);
+        answers.telemetry = Some(true);
+        assert_eq!(telemetry(&answers, true).as_deref(), Some("true"));
+        assert_eq!(telemetry(&answers, false), None);
+        answers.telemetry = Some(false);
+        assert_eq!(telemetry(&answers, true).as_deref(), Some("false"));
     }
 
     /// Full auto turns the one switch on over auto, so turning it off later leaves auto.

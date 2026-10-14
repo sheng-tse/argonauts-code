@@ -590,7 +590,7 @@ mod tests {
         }
     }
 
-    /// A past regression: no Goal phase, no phase holding only a checkpoint, no nested goal.
+    /// No Goal phase, no phase holding only a checkpoint, no nested goal.
     #[test]
     fn no_goal_phase_no_lone_checkpoint_and_no_nested_goal() {
         for name in ["council", "orchestrator", "draft-and-vote"] {

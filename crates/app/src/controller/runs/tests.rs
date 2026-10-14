@@ -16,7 +16,7 @@ use serde_json::json;
 use time::OffsetDateTime;
 
 use super::rig::{Rig, finished, parked, question, resumed, run_id};
-use super::{RunUpdate, attached, focus, on_update, open, status_parts};
+use super::{RunNews, RunUpdate, attached, focus, on_update, open, status_parts};
 use crate::FirstView;
 use crate::chat_store::{ChatRun, ChatStore};
 use crate::client::test_support as log;
@@ -473,6 +473,29 @@ async fn the_mode_line_goes_by_the_run_on_screen() {
         attached.approval_mode = None;
     }
     assert_eq!(status_parts(&rig.runs).approval_mode, None);
+}
+
+/// A failed run is said once, in its own block: no recap follows to say it again.
+#[tokio::test]
+async fn a_failed_run_sends_no_recap() {
+    let mut harness = harness_on("run-004").await;
+    let run = run_id("run-004");
+    harness.conductor.push(&run, resumed(&run, 1)).await;
+    harness
+        .until(is_mode(AppMode::Working { run: run.clone() }))
+        .await;
+    harness
+        .conductor
+        .push(&run, finished(&run, 2, RunOutcome::Failed))
+        .await;
+    harness.until(is_mode(AppMode::Idle)).await;
+    harness.until(|event| matches!(event, AppEvent::Exit)).await;
+    let recaps = harness
+        .seen()
+        .iter()
+        .filter(|event| matches!(event, AppEvent::Recap { .. }))
+        .count();
+    assert_eq!(recaps, 0, "{:#?}", harness.seen());
 }
 
 /// `argonauts run` opens the app on its run, and the app closes once that run finishes.
@@ -1078,8 +1101,8 @@ async fn continuing_carries_on_a_conversation_that_only_opened_runs() {
     harness.exit().await;
 }
 
-/// The panel follows the conversation on screen, the way `argonauts -c` would bring it back:
-/// `/resume <chat>` shows that conversation's runs in place of the ones it left,
+/// The panel follows the conversation on screen, the way `argonauts -c` would bring it back
+///: `/resume <chat>` shows that conversation's runs in place of the ones it left,
 /// `/branch` keeps them in the copy, and `/clear` starts with none. Each conversation keeps its
 /// own runs on disk.
 #[tokio::test]
@@ -1421,4 +1444,122 @@ fn a_run_that_wont_resume_says_why_without_its_id() {
     );
     let gone = super::resume_error(ApiError::NoRun(run.clone())).to_string();
     assert!(!gone.contains(run.as_str()), "{gone}");
+}
+
+/// A run off screen that fails, or whose supervisor goes, is told to the conversation that
+/// started it once, as a run on screen is.
+#[tokio::test]
+async fn a_run_off_screen_that_fails_is_heard_once() {
+    for supervisor_went in [false, true] {
+        let mut rig = Rig::new();
+        open(&mut rig.ctx, &mut rig.runs, FirstView::Chat)
+            .await
+            .expect("the app opens");
+        rig.settle().await;
+        let first = rig.start("add due dates").await;
+        rig.conductor.push(&first, resumed(&first, 1)).await;
+        rig.settle().await;
+        let _ = super::take_news(&mut rig.runs);
+        let second = rig.start("fix the median").await;
+        rig.settle().await;
+        assert!(super::alongside::streams(&rig.runs, &first));
+        assert_eq!(attached(&rig.runs), Some(&second));
+        let _ = super::take_news(&mut rig.runs);
+
+        if supervisor_went {
+            rig.conductor.end(&first, true);
+        } else {
+            rig.conductor
+                .push(&first, finished(&first, 2, RunOutcome::Failed))
+                .await;
+        }
+        rig.settle().await;
+        let ended: Vec<(argonauts_core::RunId, RunNews)> = super::take_news(&mut rig.runs)
+            .into_iter()
+            .filter(|(run, _)| *run == first)
+            .collect();
+        assert_eq!(ended.len(), 1, "{ended:?}");
+        assert!(
+            matches!(
+                &ended[0].1,
+                RunNews::Ended {
+                    outcome: RunOutcome::Failed,
+                    ..
+                }
+            ),
+            "{ended:?}"
+        );
+    }
+}
+
+/// A second workflow takes the screen while the first works: the first goes on streaming into
+/// the chat beside it, and its finish still brings its recap there, while the mode stays with
+/// the run on screen. The listing then doesn't say again how it ended.
+#[tokio::test]
+async fn two_workflows_both_stream_and_the_one_off_screen_ends_in_the_chat() {
+    let mut rig = Rig::new();
+    open(&mut rig.ctx, &mut rig.runs, FirstView::Chat)
+        .await
+        .expect("the app opens");
+    rig.settle().await;
+    let first = rig.start("add due dates").await;
+    rig.conductor.push(&first, resumed(&first, 1)).await;
+    rig.settle().await;
+    rig.conductor
+        .set_runs(vec![summary(first.as_str(), RunState::Running, true)]);
+    super::refresh_background(&rig.ctx);
+    rig.settle().await;
+
+    let second = rig.start("fix the median").await;
+    assert_ne!(first, second);
+    let left = rig.settle().await;
+    assert!(
+        !left
+            .iter()
+            .any(|event| matches!(event, AppEvent::Detached { run } if *run == first)),
+        "{left:#?}"
+    );
+    assert!(super::alongside::streams(&rig.runs, &first));
+    assert_eq!(attached(&rig.runs), Some(&second));
+
+    // An event the old stream sent again is shown once.
+    rig.conductor.push(&first, resumed(&first, 1)).await;
+    rig.conductor
+        .push(&first, finished(&first, 2, RunOutcome::Merged))
+        .await;
+    let ended = rig.settle().await;
+    let shown: Vec<u64> = ended
+        .iter()
+        .filter_map(|event| match event {
+            AppEvent::Run { event } if event.run_id == first => Some(event.seq),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown, [2]);
+    assert!(
+        ended
+            .iter()
+            .any(|event| matches!(event, AppEvent::Recap { text, .. } if !text.is_empty())),
+        "{ended:#?}"
+    );
+    assert!(
+        !ended.iter().any(|event| matches!(
+            event,
+            AppEvent::Mode {
+                mode: AppMode::Idle
+            }
+        )),
+        "the run on screen keeps the mode: {ended:#?}"
+    );
+
+    rig.conductor.end(&first, false);
+    rig.settle().await;
+    assert!(!super::alongside::streams(&rig.runs, &first));
+    rig.conductor.set_runs(vec![
+        summary(first.as_str(), RunState::Merged, false),
+        summary(second.as_str(), RunState::Running, true),
+    ]);
+    super::refresh_background(&rig.ctx);
+    let listed = rig.settle().await;
+    assert!(notices(&listed).is_empty(), "{:?}", notices(&listed));
 }

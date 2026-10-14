@@ -47,11 +47,11 @@ impl Problem {
     }
 }
 
-/// Returns warnings. The first problem found is the error.
+/// Returns warnings. The first problem found is the error, with the key it's about.
 pub(crate) fn validate(
     settings: &Settings,
     context: &Context<'_>,
-) -> Result<Vec<String>, SettingsError> {
+) -> Result<Vec<String>, (String, SettingsError)> {
     let problems = [
         file_problems(settings),
         budget_lines(settings),
@@ -61,10 +61,11 @@ pub(crate) fn validate(
         handoff::check(settings),
     ];
     if let Some(problem) = problems.into_iter().flatten().next() {
-        return Err(SettingsError::Invalid {
+        let error = SettingsError::Invalid {
             layer: context.set_by.source(&problem.key),
             message: problem.message,
-        });
+        };
+        return Err((problem.key, error));
     }
     let workers = Workers::new(settings).resolving(context.harness_ids, turned_on(context));
     let mut warnings = roles::warnings(settings, &workers);
@@ -293,7 +294,7 @@ fn dollars(settings: &Settings) -> Vec<Problem> {
         ("limits.spend_per_day".to_owned(), limits.spend_per_day),
         (
             "limits.evolution_usd_per_month".to_owned(),
-            Some(limits.evolution_usd_per_month),
+            limits.evolution_usd_per_month,
         ),
     ];
     for (agent, table) in &settings.agents {
@@ -573,7 +574,7 @@ mod tests {
         settings.limits.budget.spend_per_run = Some(f64::NAN);
         settings.limits.budget.per_task_usd = Some(-1.0);
         settings.limits.spend_per_day = Some(f64::INFINITY);
-        settings.limits.evolution_usd_per_month = -5.0;
+        settings.limits.evolution_usd_per_month = Some(-5.0);
         settings.agents.insert(
             "codex".to_owned(),
             AgentSettings {
@@ -642,6 +643,7 @@ mod tests {
         .unwrap();
         let sources = crate::SettingsSources {
             global: Some(global),
+            strict: true,
             ..crate::SettingsSources::default()
         };
         let err = crate::resolve(&sources).unwrap_err().to_string();

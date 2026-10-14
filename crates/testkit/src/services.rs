@@ -521,6 +521,16 @@ impl HandoffPlanner for FakeHandoff {
 pub struct MemoryQuotaBoard {
     readings: Mutex<BTreeMap<VendorId, QuotaWindows>>,
     plans: Mutex<BTreeMap<VendorId, String>>,
+    live: Mutex<BTreeMap<VendorId, argonauts_core::plan_usage::LiveUsage>>,
+    doubted: Mutex<BTreeMap<VendorId, time::OffsetDateTime>>,
+    probed: Mutex<Vec<VendorId>>,
+}
+
+impl MemoryQuotaBoard {
+    /// The CLIs probed so far, in order.
+    pub fn probed(&self) -> Vec<VendorId> {
+        lock(&self.probed).clone()
+    }
 }
 
 impl QuotaBoard for MemoryQuotaBoard {
@@ -557,7 +567,24 @@ impl QuotaBoard for MemoryQuotaBoard {
         lock(&self.plans).insert(vendor.clone(), plan);
     }
 
+    fn observe_live(&self, reading: argonauts_core::plan_usage::LiveUsage) {
+        lock(&self.live).insert(reading.vendor.clone(), reading);
+    }
+
+    fn live(&self, vendor: &VendorId) -> Option<argonauts_core::plan_usage::LiveUsage> {
+        lock(&self.live).get(vendor).cloned()
+    }
+
+    fn doubted_at(&self, vendor: &VendorId) -> Option<time::OffsetDateTime> {
+        lock(&self.doubted).get(vendor).copied()
+    }
+
+    fn doubt(&self, vendor: &VendorId) {
+        lock(&self.doubted).insert(vendor.clone(), time::OffsetDateTime::now_utc());
+    }
+
     fn probe(&self, vendor: &VendorId) -> BoxFuture<'_, Option<QuotaReading>> {
+        lock(&self.probed).push(vendor.clone());
         let reading = self.get(vendor);
         Box::pin(async move { reading })
     }

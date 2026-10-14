@@ -84,7 +84,10 @@ pub async fn restate(
             Err(error) if dropped(&error) => round::note(
                 host,
                 NoteLevel::Warn,
-                format!("Dropped {worker}'s restatement: {error}"),
+                format!(
+                    "Dropped {}'s restatement: {error}",
+                    crate::roles::display_name(&worker)
+                ),
             )?,
             Err(error) => {
                 fatal.get_or_insert(error);

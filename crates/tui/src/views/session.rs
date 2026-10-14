@@ -15,7 +15,9 @@ use argonauts_core::agent_goal::AgentGoal;
 use argonauts_core::api::DiffScope;
 use argonauts_core::app::{UiCommand, ViewRequest};
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::session::{Delivery, QueuedMessage, SubagentStatus, SubagentUpdate};
+use argonauts_core::events::session::{
+    Delivery, QueuedMessage, SubagentKind, SubagentStatus, SubagentUpdate,
+};
 use argonauts_core::names::SessionKey;
 use argonauts_core::steps::is_own_tool;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -25,7 +27,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use time::OffsetDateTime;
 
-use crate::bridge::tools;
+use crate::bridge::{tools, vendor_workflow};
 use crate::cell::{AssistantMessage, DiffCell, DiffView, HistoryCell, ToolItem};
 use crate::format::{self, WallClock};
 use crate::render::{Clock, RenderCtx};
@@ -809,7 +811,24 @@ fn output_lines(
             }
             continue;
         }
+        if vendor_workflow::is_call(&session.vendor, &tool.name) {
+            let reported = session
+                .workflows
+                .iter()
+                .find(|workflow| workflow.call.as_deref() == Some(tool.id.as_str()));
+            let call = match reported {
+                Some(workflow) => vendor_workflow::row(workflow),
+                None => {
+                    vendor_workflow::before_report(&tool.input, tool.ok, tool.output.as_deref())
+                }
+            };
+            blocks.push(call.lines(&ctx));
+            continue;
+        }
         let mut call = tools::start_call(&session.vendor, &tool.name, &tool.input);
+        for (_, path, hunks) in session.patches.iter().filter(|(id, ..)| *id == tool.id) {
+            tools::take_patch(&mut call, path, hunks);
+        }
         if let Some(ok) = tool.ok {
             tools::finish_call(&mut call, ok, tool.output.as_deref());
             let shell = tools::kind_of(&session.vendor, &tool.name) == crate::cell::ToolKind::Shell;
@@ -823,7 +842,16 @@ fn output_lines(
         }
         blocks.push(call.lines(&ctx));
     }
+    // What Argonauts saw change after the calls, for a file no call's own patch drew, such as
+    // one a shell command changed.
     for diff in &session.diffs {
+        let drawn = session
+            .patches
+            .iter()
+            .any(|(_, path, _)| tools::same_file(path, &diff.path));
+        if drawn {
+            continue;
+        }
         let path = clean(&diff.path);
         let view = DiffView::from_unified(&diff.hunk).unwrap_or_default();
         let view = view.updated(path.clone(), diff.added as usize, diff.removed as usize);
@@ -850,7 +878,19 @@ fn output_lines(
     if !session.streaming.trim().is_empty() {
         blocks.push(said(&session.streaming));
     }
-    blocks.push(subagent_tree(&session.subagents, usize::from(width), theme));
+    // A workflow drawn as its call's row isn't listed again among the subagents.
+    let as_rows: Vec<SubagentUpdate> = session
+        .subagents
+        .iter()
+        .filter(|sub| {
+            sub.kind != SubagentKind::Workflow
+                || !session.tools.iter().any(|tool| {
+                    tool.id == sub.id && vendor_workflow::is_call(&session.vendor, &tool.name)
+                })
+        })
+        .cloned()
+        .collect();
+    blocks.push(subagent_tree(&as_rows, usize::from(width), theme));
     blocks.push(queued_lines(
         &session.queued,
         sent,

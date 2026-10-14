@@ -108,6 +108,7 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
             show(ctx, ViewData::AllRepos { repos });
         }
         ViewRequest::Crew => anyhow::bail!("the crew panel isn't one run's view"),
+        ViewRequest::StatusTab => anyhow::bail!("the Status tab isn't one run's view"),
         ViewRequest::Mods { .. } => anyhow::bail!("the mods aren't a run's"),
         ViewRequest::Config
         | ViewRequest::Settings { .. }
@@ -117,6 +118,8 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
         }
         ViewRequest::WorkflowLibrary => anyhow::bail!("the workflow files aren't a run's"),
         ViewRequest::Usage { .. } => anyhow::bail!("usage isn't one run's view"),
+        ViewRequest::ReadPlanUsage => anyhow::bail!("plan usage isn't one run's"),
+        ViewRequest::Overview { .. } => anyhow::bail!("the Overview isn't one run's view"),
         ViewRequest::RepoFiles => anyhow::bail!("the repo's files aren't a run's"),
         ViewRequest::AgentSessions { .. } => {
             anyhow::bail!("a run's agents' sessions are the chat's to list")
@@ -210,13 +213,14 @@ pub(super) fn asks_for_status(question: &str) -> bool {
         || PHRASES.iter().any(|phrase| question.contains(phrase))
 }
 
-/// `/context`: every live session's context, including the chat's own row.
+/// `/context`: every live session's context, including the chat's own row. The tab asks again
+/// while work runs, so a list that fails only leaves the other runs out.
 pub(crate) async fn context(
     ctx: &mut Ctx,
     runs: &mut RunsState,
     chat: Option<ContextRow>,
 ) -> Handled {
-    let rows = context_rows(ctx, runs, chat).await;
+    let (rows, _) = context_rows(ctx, runs, chat).await;
     show(
         ctx,
         ViewData::Context {
@@ -232,7 +236,13 @@ pub(crate) async fn context_report(
     runs: &mut RunsState,
     chat: Option<ContextRow>,
 ) -> Handled {
-    let rows = context_rows(ctx, runs, chat).await;
+    let (rows, left_out) = context_rows(ctx, runs, chat).await;
+    if let Some(err) = left_out {
+        ctx.notice(
+            NoteLevel::Warn,
+            format!("Other runs' sessions are left out: {err}"),
+        );
+    }
     let mut lines: Vec<String> = rows.iter().map(|row| context_line(ctx, row)).collect();
     if lines.is_empty() {
         lines.push("No live sessions".to_owned());
@@ -265,12 +275,12 @@ fn context_line(ctx: &Ctx, row: &ContextRow) -> String {
 }
 
 /// Every live session's context: the chat's own, the run on screen, then the other runs
-/// that work now.
+/// that work now, with why the other runs are missing when they couldn't be listed.
 async fn context_rows(
     ctx: &mut Ctx,
     runs: &mut RunsState,
     chat: Option<ContextRow>,
-) -> Vec<ContextRow> {
+) -> (Vec<ContextRow>, Option<anyhow::Error>) {
     let rotate_at = ctx.settings().sessions.rotate_at.clone();
     let mut rows: Vec<ContextRow> = chat.into_iter().collect();
     let attached = runs::attached(runs).cloned();
@@ -283,22 +293,18 @@ async fn context_rows(
             rows.extend(capped_rows(&run_events(ctx, runs, run), run, &rotate_at));
         }
     }
-    match ctx.services.conductor.list().await {
-        Ok(list) => {
-            for other in list
-                .iter()
-                .filter(|summary| summary.live && Some(&summary.run) != attached.as_ref())
-            {
-                let events = run_events(ctx, runs, &other.run);
-                rows.extend(capped_rows(&events, &other.run, &rotate_at));
-            }
-        }
-        Err(err) => ctx.notice(
-            NoteLevel::Warn,
-            format!("Other runs' sessions are left out: {err}"),
-        ),
+    let list = match ctx.services.conductor.list().await {
+        Ok(list) => list,
+        Err(err) => return (rows, Some(err.into())),
+    };
+    for other in list
+        .iter()
+        .filter(|summary| summary.live && Some(&summary.run) != attached.as_ref())
+    {
+        let events = run_events(ctx, runs, &other.run);
+        rows.extend(capped_rows(&events, &other.run, &rotate_at));
     }
-    rows
+    (rows, None)
 }
 
 /// A run's live sessions, each capped where it rotates. A share of the window gives each

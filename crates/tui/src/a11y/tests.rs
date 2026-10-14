@@ -148,6 +148,7 @@ fn submit(text: &str) -> Vec<UiCommand> {
     vec![UiCommand::Submit {
         text: text.into(),
         workflow_requested: false,
+        pictures: Vec::new(),
     }]
 }
 

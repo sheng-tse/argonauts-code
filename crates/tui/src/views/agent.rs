@@ -35,7 +35,7 @@ use super::panes::{self, Footer, Marks};
 use super::session::{SessionView, Tab};
 use super::states;
 use super::structured;
-use super::workflow::agents_in_phase;
+use super::workflow::steps_in_phase;
 use super::{View, ViewCtx, ViewOutcome};
 
 /// Lines a section shows until it's expanded.
@@ -172,7 +172,7 @@ impl AgentView {
             view.siblings[index] = view.data.row.clone();
             view.selected = index;
         }
-        view.phase = Some((phase.name.clone(), agents_in_phase(phase)));
+        view.phase = Some((phase.name.clone(), steps_in_phase(phase)));
         view
     }
 
@@ -220,10 +220,10 @@ impl AgentView {
         let seen_at = *self.seen_at.get_or_insert(ctx.now);
         let marks = Marks::for_theme(theme);
         let phase_title = match &self.phase {
-            Some((phase, agents)) => format!(
+            Some((phase, steps)) => format!(
                 "{} · {}",
                 sanitize_line(phase).trim(),
-                panes::count(*agents, "agent")
+                panes::count(*steps, "step")
             ),
             None => String::new(),
         };
@@ -1294,6 +1294,7 @@ mod tests {
                 context: None,
                 standing_in_for: None,
                 answered: None,
+                tries: Vec::new(),
             },
             prompt: "Build the history cells.".into(),
             activity: Vec::new(),
@@ -1718,6 +1719,7 @@ mod tests {
             context: None,
             standing_in_for: None,
             answered: None,
+            tries: Vec::new(),
         }
     }
 
@@ -1881,6 +1883,8 @@ mod tests {
             agents_total: 4,
             workers: Vec::new(),
             elapsed_ms: 0,
+            parent: None,
+            owner: None,
         };
         let rows = vec![
             WorkflowRow::Agent(data.row.clone()),
@@ -1890,7 +1894,7 @@ mod tests {
         // The nested workflow isn't a row to switch to, but its four agents count.
         assert_eq!(view.siblings.len(), 1);
         let text = draw(&mut view, 100);
-        assert!(text.contains("Build · 5 agents"), "{text}");
+        assert!(text.contains("Build · 5 steps"), "{text}");
     }
 
     #[test]

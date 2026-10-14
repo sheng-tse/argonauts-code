@@ -9,6 +9,7 @@ use argonauts_core::app::ConfigEntry;
 use argonauts_core::events::run::OverrideRecord;
 use argonauts_core::layout::{project_files, user_files};
 use argonauts_core::names::RoleName;
+use argonauts_core::settings::approvals::{ApprovalMode, ApprovalSettings};
 use argonauts_core::settings::evolution::FIXED_CORE_KEYS;
 use argonauts_core::settings::protocol::UNDERSTAND_RENAMES;
 use argonauts_core::settings::ui::{BadValue, drop_bad_values};
@@ -21,18 +22,20 @@ use crate::presets::DEFAULT_PRESET;
 use crate::settings::budget_units::{BudgetUnits, other_units};
 use crate::settings::crew;
 use crate::settings::handoff::{drop_entry_billing, entry_billing, merge_top_level};
+use crate::settings::old_names;
+use crate::settings::passing_over::{PassedOver, Stop, drop_odd_keys, from_a_file, narrowed};
 use crate::settings::plain;
 use crate::settings::preset_layer::{PresetLayer, preset_layer};
 use crate::settings::roles::fill_fresh_sessions;
 use crate::settings::set_by::SetBy;
-use crate::settings::validate::{Context, type_error, validate};
+use crate::settings::validate::{Context, type_error, type_message, validate};
 use crate::{ResolvedSettings, SettingsError, SettingsSources};
 
 const BUILT_IN: &str = "built-in";
-const GLOBAL: &str = "global";
-const PROJECT: &str = "project";
-const PROJECT_LOCAL: &str = "project-local";
-const PRESET: &str = "workflow";
+pub(crate) const GLOBAL: &str = "global";
+pub(crate) const PROJECT: &str = "project";
+pub(crate) const PROJECT_LOCAL: &str = "project-local";
+pub(crate) const PRESET: &str = "workflow";
 const FLAG: &str = "flag";
 const REQUEST: &str = "request";
 
@@ -44,6 +47,24 @@ pub(crate) const SESSION_ENV: &str = "ARGONAUTS_SESSION";
 pub(crate) const UNSET: &str = "unset";
 
 pub fn resolve(sources: &SettingsSources) -> Result<ResolvedSettings, SettingsError> {
+    let mut passed_over = PassedOver::default();
+    loop {
+        match resolve_once(sources, &passed_over) {
+            Ok(mut resolved) => {
+                resolved.warnings.splice(0..0, passed_over.warnings());
+                return Ok(resolved);
+            }
+            Err(stop) if !sources.strict && passed_over.add(&stop) => {}
+            Err(stop) => return Err(stop.error),
+        }
+    }
+}
+
+/// One pass over the layers, leaving out of the files the keys an earlier pass stopped at.
+fn resolve_once(
+    sources: &SettingsSources,
+    passed_over: &PassedOver,
+) -> Result<ResolvedSettings, Stop> {
     let defaults = to_table(&Settings::default(), BUILT_IN)?;
     let mut merged = defaults.clone();
     let mut set_by = SetBy::default();
@@ -63,12 +84,39 @@ pub fn resolve(sources: &SettingsSources) -> Result<ResolvedSettings, SettingsEr
     ];
     let repo = repo_root(sources);
     let mut file_tables = Vec::new();
+    let mut skipped_a_file = false;
     for (layer, path, trusted) in files {
         let Some(path) = path else { continue };
         let source = shown(path, repo.as_deref());
-        let Some(table) = read_file_layer(layer, path, &source, trusted, &mut warnings)? else {
+        let Some(text) = read_text(path)? else {
             continue;
         };
+        let parsed = match text.parse::<Table>() {
+            Ok(table) => table,
+            Err(err) if !sources.strict => {
+                warnings.push(skipped_file(&source, &text, &err));
+                skipped_a_file = true;
+                continue;
+            }
+            Err(err) => {
+                return Err(Stop::from(SettingsError::Invalid {
+                    layer: source,
+                    message: plain::syntax_message(&text, &err),
+                }));
+            }
+        };
+        let Some(mut table) = read_file_layer(
+            layer,
+            parsed,
+            &source,
+            trusted,
+            sources.strict,
+            &mut warnings,
+        )?
+        else {
+            continue;
+        };
+        passed_over.leave_out(&mut table);
         set_by.record(&table, layer, &source);
         budget_units.note(layer, &source, &table)?;
         file_tables.push((layer, table.clone()));
@@ -83,8 +131,16 @@ pub fn resolve(sources: &SettingsSources) -> Result<ResolvedSettings, SettingsEr
 
     // The files and flags pick the preset, and a preset can't pick another, so the resolved
     // `preset` always names the preset applied.
-    let choice = preset_choice(&merged, &flags, &set_by)?;
-    let (mut preset, preset_warnings) = preset_layer(&choice.name, &choice.source, sources)?;
+    let choice = preset_choice(&merged, &flags, &set_by).map_err(|error| {
+        let in_a_file = !flags
+            .iter()
+            .any(|(_, table)| table.contains_key("workflow"))
+            && set_by.layer("workflow").is_some_and(from_a_file);
+        Stop::at("workflow", in_a_file, error)
+    })?;
+    let (mut preset, preset_warnings) = preset_layer(&choice.name, &choice.source, sources)
+        .map_err(|error| Stop::at("workflow", from_a_file(choice.layer), error))?;
+    passed_over.leave_out(&mut preset.table);
     warnings.extend(preset_warnings);
     // What you set in the file that picks the preset, or in a later file, is what you meant:
     // the preset fills in the rest and sits above only the files before it. The built-in
@@ -107,7 +163,8 @@ pub fn resolve(sources: &SettingsSources) -> Result<ResolvedSettings, SettingsEr
     merge(&mut merged, preset.table);
     if let Some(recipe) = &sources.recipe {
         match recipe_layer(recipe, &merged) {
-            Ok(table) => {
+            Ok(mut table) => {
+                passed_over.leave_out(&mut table);
                 set_by.record(&table, PRESET, &recipe.label);
                 budget_units.note(PRESET, &recipe.label, &table)?;
                 merge(&mut merged, table);
@@ -118,6 +175,10 @@ pub fn resolve(sources: &SettingsSources) -> Result<ResolvedSettings, SettingsEr
 
     for (source, mut table) in flags {
         warnings.extend(moved_keys(&mut table, &source));
+        let old = old_names::read_as_new(&mut table);
+        if !old.is_empty() {
+            warnings.push(old_names::warning(&source, &old));
+        }
         crew::spell_out(&mut table);
         set_by.record(&table, FLAG, &source);
         budget_units.note(FLAG, &source, &table)?;
@@ -146,10 +207,24 @@ pub fn resolve(sources: &SettingsSources) -> Result<ResolvedSettings, SettingsEr
     let bad_values = drop_bad_values(&mut merged, &defaults);
     warnings.extend(bad_values.iter().map(|bad| ui_warning(bad, &set_by)));
 
-    let mut settings: Settings = Value::Table(merged.clone())
-        .try_into()
-        .map_err(|err: toml::de::Error| type_error(&err, &set_by, &merged))?;
+    let mut settings: Settings =
+        Value::Table(merged.clone())
+            .try_into()
+            .map_err(|err: toml::de::Error| {
+                let error = type_error(&err, &set_by, &merged);
+                match type_message(&err, &merged).0 {
+                    Some(key) => {
+                        let key = narrowed(key, &merged);
+                        let in_a_file = set_by.layer_around(&key).is_some_and(from_a_file);
+                        Stop::at(&key, in_a_file, error)
+                    }
+                    None => Stop::from(error),
+                }
+            })?;
     let cleared = budget_units.apply(&mut settings.limits.budget, &mut set_by);
+    if skipped_a_file {
+        hold_supervised(&mut settings.approvals);
+    }
     warnings.extend(
         settings
             .ui
@@ -166,7 +241,10 @@ pub fn resolve(sources: &SettingsSources) -> Result<ResolvedSettings, SettingsEr
         set_by: &set_by,
         harness_ids: &harness_ids,
     };
-    warnings.extend(validate(&settings, &context)?);
+    warnings.extend(validate(&settings, &context).map_err(|(key, error)| {
+        let in_a_file = set_by.layer_around(&key).is_some_and(from_a_file);
+        Stop::at(&key, in_a_file, error)
+    })?);
 
     // Serde drops keys it doesn't know, so anything a layer set that didn't survive is unknown.
     let known: BTreeSet<&str> = resolved.iter().map(|(key, _)| key.as_str()).collect();
@@ -223,9 +301,11 @@ pub fn resolve(sources: &SettingsSources) -> Result<ResolvedSettings, SettingsEr
             }),
     );
 
-    let json = serde_json::to_value(&settings).map_err(|err| SettingsError::Invalid {
-        layer: "the merged settings".to_owned(),
-        message: err.to_string(),
+    let json = serde_json::to_value(&settings).map_err(|err| {
+        Stop::from(SettingsError::Invalid {
+            layer: "the merged settings".to_owned(),
+            message: err.to_string(),
+        })
     })?;
     Ok(ResolvedSettings {
         sha256: sha256_hex(canonical_json(&json).as_bytes()),
@@ -258,28 +338,42 @@ fn to_table(settings: &Settings, layer: &str) -> Result<Table, SettingsError> {
 /// repo can't loosen them.
 fn read_file_layer(
     layer: &str,
-    path: &Path,
+    mut table: Table,
     source: &str,
     trusted: bool,
+    strict: bool,
     warnings: &mut Vec<String>,
 ) -> Result<Option<Table>, SettingsError> {
-    let Some(mut table) = read_layer(path, source)? else {
-        return Ok(None);
-    };
     warnings.extend(moved_keys(&mut table, source));
+    let old = old_names::read_as_new(&mut table);
+    if !old.is_empty() {
+        warnings.push(old_names::warning(source, &old));
+    }
     crew::spell_out(&mut table);
+    if !strict {
+        warnings.extend(drop_odd_keys(&mut table, source));
+    }
     check_plain_keys(&table, source)?;
-    if layer != GLOBAL
-        && let Some((key, _)) = leaves(&table).into_iter().find(|(key, _)| {
-            GLOBAL_ONLY_KEYS
-                .iter()
-                .any(|pattern| key_matches(pattern, key))
+    let global_only: Vec<String> = leaves(&table)
+        .into_iter()
+        .map(|(key, _)| key)
+        .filter(|key| {
+            layer != GLOBAL
+                && GLOBAL_ONLY_KEYS
+                    .iter()
+                    .any(|pattern| key_matches(pattern, key))
         })
-    {
-        return Err(SettingsError::Refused(format!(
+        .collect();
+    for key in global_only {
+        let why = format!(
             "{key} in {source} can only be set in your global config, since it names a program \
              for Argonauts to run"
-        )));
+        );
+        if strict {
+            return Err(SettingsError::Refused(why));
+        }
+        remove_leaf(&mut table, &key);
+        warnings.push(format!("{why}; it is ignored"));
     }
     if !trusted {
         for (key, _) in leaves(&table) {
@@ -376,23 +470,46 @@ fn shown(path: &Path, repo: Option<&Path>) -> String {
         .to_string()
 }
 
-fn read_layer(path: &Path, source: &str) -> Result<Option<Table>, SettingsError> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(SettingsError::Io {
-                path: path.to_owned(),
-                message: err.to_string(),
-            });
-        }
+/// A settings file's text, or `None` when there's no such file.
+fn read_text(path: &Path) -> Result<Option<String>, SettingsError> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(SettingsError::Io {
+            path: path.to_owned(),
+            message: err.to_string(),
+        }),
+    }
+}
+
+/// A file the TOML parser stops on is left out at start rather than stopping the app. Leaving
+/// it out could loosen what it set, so approvals stay with you until it reads again.
+fn skipped_file(source: &str, text: &str, err: &toml::de::Error) -> String {
+    let place = match plain::syntax_place(text, err) {
+        Some((line, column)) => format!(" at line {line}, column {column}"),
+        None => String::new(),
     };
-    text.parse::<Table>()
-        .map(Some)
-        .map_err(|err| SettingsError::Invalid {
-            layer: source.to_owned(),
-            message: plain::syntax_message(&text, &err),
-        })
+    let detail = plain::syntax_message(text, err);
+    format!(
+        "{source} doesn't read as TOML{place}, so it is skipped until fixed ({detail}); until \
+         then approvals stay supervised and autopilot is off"
+    )
+}
+
+/// Every checkpoint waits for you and autopilot is off.
+fn hold_supervised(approvals: &mut ApprovalSettings) {
+    approvals.autopilot = false;
+    for checkpoint in [
+        &mut approvals.goal,
+        &mut approvals.plan,
+        &mut approvals.merge,
+        &mut approvals.escalation,
+        &mut approvals.budget,
+        &mut approvals.change_request,
+    ] {
+        checkpoint.mode = ApprovalMode::Supervised;
+    }
+    approvals.workflow_promotion.mode = ApprovalMode::Supervised;
 }
 
 /// A `--set` flag as a table, with its source for `/config`. A safety key, or a fallback entry
@@ -434,7 +551,7 @@ fn read_request(entry: &str, merged: &Table) -> Result<Table, SettingsError> {
 }
 
 /// The value at a dotted key, if every table on the way is there.
-fn value_at<'a>(table: &'a Table, key: &str) -> Option<&'a Value> {
+pub(crate) fn value_at<'a>(table: &'a Table, key: &str) -> Option<&'a Value> {
     let mut segments = key.split('.');
     let mut value = table.get(segments.next()?)?;
     for segment in segments {
@@ -773,7 +890,7 @@ pub(crate) fn is_plain_key(name: &str) -> bool {
 
 /// Removes `key`, and the tables it leaves empty: an empty `[gates.run]` left behind would
 /// stand where the built-in list goes, and fail as if the built-ins were wrong.
-fn remove_leaf(table: &mut Table, key: &str) {
+pub(crate) fn remove_leaf(table: &mut Table, key: &str) {
     match key.split_once('.') {
         Some((head, rest)) => {
             if let Some(Value::Table(inner)) = table.get_mut(head) {
@@ -1047,10 +1164,25 @@ mod tests {
         let project = write(dir.path(), "project.toml", "[ui\n");
         let err = resolve(&SettingsSources {
             project: Some(project.clone()),
+            strict: true,
             ..SettingsSources::default()
         })
         .unwrap_err();
         assert!(err.to_string().contains("project.toml"), "{err}");
+        // As the app starts, the file is left out and the warning names it.
+        let resolved = resolve(&SettingsSources {
+            project: Some(project.clone()),
+            ..SettingsSources::default()
+        })
+        .unwrap();
+        assert!(
+            resolved
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("project.toml doesn't read as TOML")),
+            "{:?}",
+            resolved.warnings
+        );
         let err = resolve(&SettingsSources {
             overrides: vec!["no-equals".into()],
             ..SettingsSources::default()
@@ -1185,6 +1317,7 @@ mod tests {
             let err = resolve(&SettingsSources {
                 project: Some(dotted.clone()),
                 project_trusted: trusted,
+                strict: true,
                 ..SettingsSources::default()
             })
             .unwrap_err();
@@ -1205,7 +1338,11 @@ mod tests {
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(dot.join("workflows")).unwrap();
         let refused = |sources: &SettingsSources, file: &str, name: &str| {
-            let err = resolve(sources).unwrap_err();
+            let strict = SettingsSources {
+                strict: true,
+                ..sources.clone()
+            };
+            let err = resolve(&strict).unwrap_err();
             assert!(
                 matches!(&err, SettingsError::Invalid { layer, message }
                     if layer.contains(file) && message.contains(name)),

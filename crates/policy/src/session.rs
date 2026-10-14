@@ -133,6 +133,7 @@ pub fn no_tools_spec(session: NoToolsSession<'_>) -> io::Result<SessionSpec> {
         env: Vec::new(),
         asking: None,
         cli_workflow: argonauts_core::worker::CliWorkflow::default(),
+        shell: argonauts_core::worker::SessionShell::None,
     })
 }
 

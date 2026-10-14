@@ -270,11 +270,12 @@ async fn guided_setup_enter_through_writes_exactly_the_recommended_keys_each_com
             "How the crew works",
             "Who does what",
             "Approvals",
+            "Usage counts",
             "This folder",
         ]
     );
     let text = fixture.global();
-    let mut expected = vec!["crew", "main_agent", "workflow"];
+    let mut expected = vec!["crew", "main_agent", "workflow", "telemetry.enabled"];
     expected.extend([
         "approvals.goal.mode",
         "approvals.plan.mode",

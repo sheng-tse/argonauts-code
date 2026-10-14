@@ -1,5 +1,5 @@
 //! The chat on the main screen: history in the terminal's scrollback, the input pinned to the
-//! bottom, streaming answers, Esc, and the screen's shape against Claude Code's.
+//! bottom, streaming answers, Esc, and the screen's shape as Claude Code draws its own.
 
 mod pty_support;
 
@@ -282,7 +282,7 @@ fn busy_screen_keeps_its_layout() {
             // under it, each by its name, what it's doing, and how long and how many tokens.
             // This recording is from before agents had labels, so each goes by its task.
             "^  ● main$",
-            "^  ○ council · Add a --json flag to export +0/3 agents · ",
+            "^  ○ council · Add a --json flag to export +0/3 steps · ",
             &format!(
                 "^    ○ task-002 +Update\\(src/export\\.rs\\) +{LISTED_FOR} · ↓ [\\d.]+k tokens$"
             ),

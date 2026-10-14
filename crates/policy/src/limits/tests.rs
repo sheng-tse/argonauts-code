@@ -815,6 +815,7 @@ fn decision_points_check_every_limit_the_evidence_shows() {
     let mut settings = sandboxed();
     settings.limits.dependency_allowlist = vec!["serde".to_owned(), "lodash@4.17.21".to_owned()];
     settings.limits.spend_per_day = Some(40.0);
+    settings.limits.auto_merges_per_day = Some(3);
     let merge = |facts: EvidenceFacts| check_point(settings.clone(), CheckpointKind::Merge, facts);
 
     assert_eq!(merge(good_merge()), Vec::new());
@@ -910,6 +911,19 @@ fn decision_points_check_every_limit_the_evidence_shows() {
         let kinds = kinds(&found);
         assert!(kinds.contains(&limit), "{limit:?}: {found:?}");
     }
+
+    // Unset, nothing caps the day's automatic merges.
+    let mut uncapped = settings.clone();
+    uncapped.limits.auto_merges_per_day = None;
+    let found = check_point(
+        uncapped,
+        CheckpointKind::Merge,
+        EvidenceFacts {
+            auto_merges_today: 500,
+            ..good_merge()
+        },
+    );
+    assert_eq!(found, Vec::new());
 
     let allowed = EvidenceFacts {
         new_dependencies: vec![

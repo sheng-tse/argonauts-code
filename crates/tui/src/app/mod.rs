@@ -568,6 +568,10 @@ impl<W: Write> Ui<W> {
         if let Some(at) = self.model.bottom.composer.paste_burst_due() {
             sooner(at);
         }
+        // A picture Ctrl+V is saving goes in as soon as it lands.
+        if self.model.bottom.composer.pictures_arriving() {
+            sooner(now + std::time::Duration::from_millis(50));
+        }
         next
     }
 

@@ -769,6 +769,7 @@ mod tests {
             cost,
             estimated: false,
             partial: false,
+            hour: None,
         };
         let here = test.ctx.env.repo_root.display().to_string();
         UsageLedger::new(&test.ctx.env.paths)

@@ -472,7 +472,13 @@ impl Stats<'_> {
             return vec![kit.dim("pays per token")];
         }
         if plan.windows.is_empty() {
-            return vec![kit.dim("no plan reading yet")];
+            // The Usage tab's own words; its page says why.
+            let why = if plan.failed.is_some() {
+                "failed to load usage data"
+            } else {
+                "no plan reading yet"
+            };
+            return vec![kit.dim(why)];
         }
         let shown = &plan.windows[..plan.windows.len().min(2)];
         // `5h ` and ` 56%` around each meter, two cells between windows.

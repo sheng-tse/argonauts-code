@@ -11,7 +11,7 @@ mod tweaks;
 use std::path::Path;
 
 use argonauts_core::keywords::Keyword;
-use argonauts_core::limits::QuotaReading;
+use argonauts_core::limits::{QuotaAnswer, QuotaReading};
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
 use argonauts_core::{
     Adapter, Capabilities, CommandSpec, LaunchTweak, SessionRequest, SetupHints, StopPlan,
@@ -115,6 +115,10 @@ impl Adapter for AntigravityCli {
 
     fn parse_quota_probe(&self, stdout: &str) -> Option<QuotaReading> {
         probe::parse_usage(self.id(), stdout)
+    }
+
+    fn parse_quota_probe_answer(&self, stdout: &str) -> Option<QuotaAnswer> {
+        probe::usage_answer(self.id(), stdout)
     }
 
     fn compaction(&self, setting: Compaction) -> LaunchTweak {

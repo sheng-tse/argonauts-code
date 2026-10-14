@@ -212,8 +212,14 @@ fn vim_slash_searches_history_and_enter_only_fills_the_input() {
     assert_eq!(bottom.composer.text(), "fix the export test");
     assert_eq!(bottom.mode.vim, Some(VimMode::Normal));
 
-    // Ctrl+R opens it too; Esc closes it with the input as it was, and a paste filters.
-    assert_eq!(chord(&mut ui, 'r', t0), [UiAction::SearchHistory]);
+    // In NORMAL Ctrl+R redoes, as in vim, so `/` opens it again; Esc closes it with the
+    // input as it was, and a paste filters.
+    assert!(chord(&mut ui, 'r', t0).is_empty());
+    assert_eq!(ui.model().bottom.composer.text(), "fix the export test");
+    assert_eq!(
+        press(&mut ui, KeyCode::Char('/'), t0),
+        [UiAction::SearchHistory]
+    );
     open_search(&mut ui);
     ui.handle_event(Event::Paste("READ".into()), t0);
     let search = ui.model().bottom.history_search.as_ref().unwrap();
@@ -274,6 +280,21 @@ fn a_paste_typed_out_as_keys_goes_in_whole_and_never_sends() {
     );
 }
 
+/// A picture dropped into a terminal that types the path out as keys, as Terminal.app does,
+/// becomes its chip as a pasted one does, though the path starts with `/`.
+#[test]
+fn a_picture_path_typed_out_as_keys_becomes_a_chip() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shot.png");
+    std::fs::write(&path, b"\x89PNG\r\n\x1a\n").unwrap();
+    let (mut ui, t0) = ui();
+    ui.time_keys(true);
+    let typed = path.display().to_string();
+    assert!(type_at(&mut ui, &typed, t0, 1).is_empty());
+    ui.frame(t0 + Duration::from_millis(600)).unwrap();
+    assert_eq!(ui.model().bottom.composer.text(), "[Image #1] ");
+}
+
 /// A `?` in a paste typed out as keys is part of the text, not the key that opens the shortcuts,
 /// though the draft looks empty while the paste is held back.
 #[test]
@@ -290,6 +311,38 @@ fn a_question_mark_in_a_paste_typed_out_as_keys_stays_in_it() {
     ui.time_keys(true);
     assert!(type_at(&mut ui, "?", t0, 0).is_empty());
     assert!(ui.model().bottom.menus.shortcuts_open);
+}
+
+/// After a failure, `r` in the empty input opens the text behind it once, as its hint says,
+/// and Esc comes back. Then `r` is a letter again, so a message such as "retry" types as it
+/// is.
+#[test]
+fn r_after_a_failure_shows_its_raw_text_once() {
+    let (mut ui, t0) = ui();
+    let raw = crate::bridge::failure::RawFailure {
+        title: "The run failed".into(),
+        text: "fatal: one\nhint: two".into(),
+    };
+    ui.model_mut().raw_failure = Some(raw);
+    press(&mut ui, KeyCode::Char('r'), t0);
+    assert!(ui.is_overlay_open());
+    assert_eq!(ui.model().bottom.composer.text(), "");
+    press(&mut ui, KeyCode::Esc, t0);
+    assert!(!ui.is_overlay_open());
+    assert_eq!(ui.model().raw_failure, None);
+
+    type_text(&mut ui, "retry", t0);
+    assert!(!ui.is_overlay_open());
+    assert_eq!(ui.model().bottom.composer.text(), "retry");
+}
+
+/// With no failure behind it, `r` is only ever a letter.
+#[test]
+fn r_with_no_failure_is_a_letter() {
+    let (mut ui, t0) = ui();
+    type_text(&mut ui, "r", t0);
+    assert!(!ui.is_overlay_open());
+    assert_eq!(ui.model().bottom.composer.text(), "r");
 }
 
 #[test]
@@ -717,9 +770,8 @@ fn a_card_with_the_keys_holds_off_the_search_and_shell_mode() {
     );
     open_search(&mut ui);
     assert!(press(&mut ui, KeyCode::Esc, t0).is_empty());
-    assert_eq!(chord(&mut ui, 'r', t0), [UiAction::SearchHistory]);
-    open_search(&mut ui);
-    assert!(press(&mut ui, KeyCode::Esc, t0).is_empty());
+    // Ctrl+R in NORMAL redoes, so it opens no search.
+    assert!(chord(&mut ui, 'r', t0).is_empty());
     assert_eq!(ui.model().bottom.mode.vim, Some(VimMode::Normal));
     type_text(&mut ui, "i!", t0);
     assert!(ui.model().bottom.composer.is_shell());

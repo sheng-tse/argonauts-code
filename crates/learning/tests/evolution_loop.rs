@@ -1123,7 +1123,7 @@ fn stages_of_autonomy_table() {
 fn evolution_budget_queues_candidates() {
     let world = World::new();
     let mut settings = settings();
-    settings.limits.evolution_usd_per_month = 100.0;
+    settings.limits.evolution_usd_per_month = Some(100.0);
     let evolution = world.evolution();
 
     let first = evolution
@@ -1187,7 +1187,7 @@ fn evolution_budget_queues_candidates() {
 
     // A budget of 0 spends nothing.
     let world = World::new();
-    settings.limits.evolution_usd_per_month = 0.0;
+    settings.limits.evolution_usd_per_month = Some(0.0);
     let actions = world
         .evolution()
         .after_run(

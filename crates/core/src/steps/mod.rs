@@ -193,6 +193,85 @@ pub fn output_schema<S: Step>() -> Value {
     strict_schema(schemars::schema_for!(S::Output).to_value())
 }
 
+impl StepName {
+    /// Every step, so a check can hold each one's answer format to the same rules.
+    pub const ALL: [StepName; 32] = [
+        Self::TriageEstimate,
+        Self::ChatAnswer,
+        Self::Restate,
+        Self::Differ,
+        Self::AnswerQuestions,
+        Self::Draft,
+        Self::Map,
+        Self::Critique,
+        Self::Revise,
+        Self::ProposeSpike,
+        Self::SpikeReport,
+        Self::Judge,
+        Self::PlanToCards,
+        Self::Predict,
+        Self::Build,
+        Self::AcceptanceTests,
+        Self::Review,
+        Self::Adjudicate,
+        Self::ResolveConflict,
+        Self::Coordinate,
+        Self::Retro,
+        Self::CloseRun,
+        Self::ModelApprover,
+        Self::Narrate,
+        Self::DesignWorkflow,
+        Self::HandoffSummary,
+        Self::PickAttempt,
+        Self::PlanAttempt,
+        Self::CheckGoal,
+        Self::VendorCommand,
+        Self::Direct,
+        Self::WriteInstructions,
+    ];
+
+    /// The answer format a CLI is asked for in this step, or `None` where the answer is plain
+    /// text: a CLI's own command and a direct turn. No arm is a catch-all, so a new step can't
+    /// be left out.
+    pub fn output_schema(self) -> Option<Value> {
+        let schema = match self {
+            Self::TriageEstimate => output_schema::<intake::TriageEstimate>(),
+            Self::ChatAnswer => output_schema::<intake::ChatAnswer>(),
+            Self::Restate => output_schema::<goal::Restate>(),
+            Self::Differ => output_schema::<goal::Differ>(),
+            Self::AnswerQuestions => output_schema::<goal::AnswerQuestions>(),
+            Self::Draft => output_schema::<plan::Draft>(),
+            Self::Map => output_schema::<plan::Map>(),
+            Self::Critique => output_schema::<plan::Critique>(),
+            Self::Revise => output_schema::<plan::Revise>(),
+            Self::ProposeSpike => output_schema::<plan::ProposeSpike>(),
+            Self::SpikeReport => output_schema::<plan::SpikeReportStep>(),
+            Self::Judge => output_schema::<plan::Judge>(),
+            Self::PlanToCards => output_schema::<plan::PlanToCards>(),
+            Self::Predict => output_schema::<card::Predict>(),
+            Self::Build => output_schema::<card::Build>(),
+            Self::AcceptanceTests => output_schema::<card::AcceptanceTests>(),
+            Self::Review => output_schema::<judgment::Review>(),
+            Self::Adjudicate => output_schema::<judgment::Adjudicate>(),
+            Self::ResolveConflict => output_schema::<card::ResolveConflict>(),
+            Self::Coordinate => output_schema::<plan::Coordinate>(),
+            Self::Retro => output_schema::<card::Retro>(),
+            Self::CloseRun => output_schema::<card::CloseRun>(),
+            Self::ModelApprover => output_schema::<judgment::ModelApprover>(),
+            Self::Narrate => output_schema::<narrate::Narrate>(),
+            // The first brief and its fix answer in the same shape.
+            Self::DesignWorkflow => output_schema::<design::DesignWorkflow>(),
+            Self::HandoffSummary => output_schema::<handoff::HandoffSummary>(),
+            Self::PickAttempt => output_schema::<handoff::PickAttempt>(),
+            Self::PlanAttempt => output_schema::<pursue::PlanAttempt>(),
+            Self::CheckGoal => output_schema::<pursue::CheckGoal>(),
+            Self::WriteInstructions => output_schema::<instructions::WriteInstructions>(),
+            Self::VendorCommand | Self::Direct => return None,
+        };
+        Some(schema)
+    }
+}
+
 /// Rewrites a schema into the subset every vendor's strict mode accepts.
 ///
 /// Every object lists all its properties as required and gets `additionalProperties: false`
@@ -239,10 +318,10 @@ struct Strict {
 impl Strict {
     fn node(&mut self, node: &Value) -> Value {
         let Value::Object(map) = node else {
-            // `true` means any value, which strict modes can't express; an empty schema is the
-            // closest they accept. `false` never validates and never appears in step outputs.
+            // `true` means any value, which strict modes can't express. `false` never
+            // validates and never appears in step outputs.
             return match node {
-                Value::Bool(true) => json!({}),
+                Value::Bool(true) => any_value(None),
                 other => other.clone(),
             };
         };
@@ -313,6 +392,12 @@ impl Strict {
             out.insert("required".to_owned(), Value::Array(names));
             out.insert("additionalProperties".to_owned(), Value::Bool(false));
         }
+        if !["type", "enum", "anyOf", "$ref"]
+            .iter()
+            .any(|key| out.contains_key(*key))
+        {
+            return any_value(out.get("description").and_then(Value::as_str));
+        }
         Value::Object(out)
     }
 
@@ -320,8 +405,8 @@ impl Strict {
     fn inline(&mut self, reference: &str, map: &Map<String, Value>) -> Value {
         let name = reference.rsplit('/').next().unwrap_or(reference).to_owned();
         let Some(target) = self.defs.get(&name).cloned() else {
-            // A reference to nothing we know can't be inlined; drop it rather than send it.
-            return json!({});
+            // A reference to nothing we know can't be inlined, so it takes any value.
+            return any_value(map.get("description").and_then(Value::as_str));
         };
         if self.expanding.contains(&name) {
             if !self.recursive.contains_key(&name) {
@@ -344,6 +429,16 @@ impl Strict {
         self.expanding.pop();
         out
     }
+}
+
+/// A field that takes any value, as strict modes accept one: the value written as JSON text,
+/// which `answer_format::as_written` reads back.
+fn any_value(description: Option<&str>) -> Value {
+    let description = match description {
+        Some(description) => format!("{description} Written as JSON text."),
+        None => "JSON text".to_owned(),
+    };
+    json!({"type": "string", "description": description})
 }
 
 fn is_object_schema(map: &Map<String, Value>) -> bool {
@@ -679,6 +774,44 @@ mod tests {
         ] {
             assert!(jsonschema::validator_for(&schema).is_ok());
         }
+    }
+
+    /// The names serde writes for every step, read from the enum's own schema.
+    fn names_in(node: &Value, names: &mut Vec<String>) {
+        match node {
+            Value::Object(map) => {
+                for (key, value) in map {
+                    match (key.as_str(), value) {
+                        ("const", Value::String(name)) => names.push(name.clone()),
+                        ("enum", Value::Array(values)) => {
+                            names.extend(values.iter().filter_map(Value::as_str).map(str::to_owned))
+                        }
+                        _ => names_in(value, names),
+                    }
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|item| names_in(item, names)),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn every_step_is_listed_once() {
+        let mut names = Vec::new();
+        names_in(&schemars::schema_for!(StepName).to_value(), &mut names);
+        names.sort();
+        let mut listed: Vec<String> = StepName::ALL
+            .iter()
+            .map(|name| {
+                serde_json::to_value(name)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        listed.sort();
+        assert_eq!(listed, names);
     }
 
     #[test]

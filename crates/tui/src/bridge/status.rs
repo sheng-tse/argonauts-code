@@ -721,7 +721,7 @@ mod tests {
         );
     }
 
-    /// The model by name alone, the workflow first when it isn't solo, and
+    /// The rule's label: the model by name alone, the workflow first when it isn't solo, and
     /// ultracode as the rule's own tag, never a word in the label.
     #[test]
     fn the_input_rule_names_the_main_model_with_the_workflow_first() {

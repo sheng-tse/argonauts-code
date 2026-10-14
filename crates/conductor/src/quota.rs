@@ -1,6 +1,7 @@
 //! The quota board: the latest reading per vendor, in `vendors.json`, so the app's status line
-//! and every supervisor agree. Probes never spend: agy's free `/usage`, and Codex's rate-limit
-//! read over `codex app-server`. Claude Code needs none, since its stream reports quota.
+//! and every supervisor agree. Probes never spend: agy's free `/usage`, Codex's rate-limit
+//! read over `codex app-server`, and Claude Code's `get_usage` asked before any message. Each
+//! answers with a live reading kept for the account it names.
 //!
 //! Probes run at app start, after each session of a vendor that has one, and at most once every
 //! [`PROBE_EVERY`] while such a session runs. Every process claims a probe in `vendors.json`
@@ -17,6 +18,7 @@ use std::time::Duration;
 use argonauts_core::future::BoxFuture;
 use argonauts_core::limits::{QuotaAnswer, QuotaBoard, QuotaReading};
 use argonauts_core::names::VendorId;
+use argonauts_core::plan_usage::LiveUsage;
 use argonauts_core::{
     Adapter, CommandSpec, PARENT_SESSION_ENV_VARS, Paths, create_private_dir_all,
     write_private_file,
@@ -204,6 +206,16 @@ pub async fn try_probe_answer(
     prober: &Prober,
     timeout: Duration,
 ) -> Result<QuotaAnswer, ProbeError> {
+    try_probe_answer_early(prober, timeout, &mut |_| {}).await
+}
+
+/// Like [`try_probe_answer`], handing `early` the first part of the answer the adapter can
+/// read before the rest, once.
+async fn try_probe_answer_early(
+    prober: &Prober,
+    timeout: Duration,
+    early: &mut (dyn FnMut(QuotaAnswer) + Send),
+) -> Result<QuotaAnswer, ProbeError> {
     let adapter = prober.adapter.as_ref();
     let folder = ProbeFolder::new(&prober.workdir).map_err(|detail| ProbeError::Run {
         program: adapter.binary().to_owned(),
@@ -257,7 +269,12 @@ pub async fn try_probe_answer(
     let mut child = command.spawn().map_err(|err| run_error(err.to_string()))?;
     let group = child.id();
 
-    let answer = tokio::time::timeout(timeout, exchange(&mut child, &spec, adapter)).await;
+    let mut text = String::new();
+    let answer = tokio::time::timeout(
+        timeout,
+        exchange(&mut child, &spec, adapter, &mut text, early),
+    )
+    .await;
     if let Some(group) = group.and_then(|id| i32::try_from(id).ok()) {
         // The group may be gone already, which is what we want.
         let _ = killpg(Pid::from_raw(group), Signal::SIGKILL);
@@ -270,10 +287,14 @@ pub async fn try_probe_answer(
             program: name,
             status,
         }),
-        Err(_) => Err(ProbeError::TimedOut {
-            program: name,
-            seconds: timeout.as_secs_f64().ceil() as u64,
-        }),
+        // What came before the time ran out may still answer, as Claude Code's windows do
+        // while its slower scan goes on.
+        Err(_) => adapter
+            .parse_quota_probe_end(&text)
+            .ok_or(ProbeError::TimedOut {
+                program: name,
+                seconds: timeout.as_secs_f64().ceil() as u64,
+            }),
     }
 }
 
@@ -299,12 +320,14 @@ impl Drop for ProbeFolder {
     }
 }
 
-/// Sends the probe's stdin, then reads stdout until the adapter can parse it. The error is the
-/// exit status, for the message.
+/// Sends the probe's stdin, then reads stdout until the adapter can parse it, handing `early`
+/// the first part it can read before then. The error is the exit status, for the message.
 async fn exchange(
     child: &mut Child,
     spec: &CommandSpec,
     adapter: &dyn Adapter,
+    text: &mut String,
+    early: &mut (dyn FnMut(QuotaAnswer) + Send),
 ) -> Result<QuotaAnswer, String> {
     // An app server answers only while its stdin stays open, so it's held until the end.
     let mut input_pipe = child.stdin.take();
@@ -323,19 +346,23 @@ async fn exchange(
         .take()
         .ok_or_else(|| "its output was not captured".to_owned())?;
     let mut lines = BufReader::new(stdout).lines();
-    let mut text = String::new();
+    let mut handed_early = false;
     while let Ok(Some(line)) = lines.next_line().await {
         text.push_str(&line);
         text.push('\n');
-        if let Some(answer) = adapter.parse_quota_probe_answer(&text) {
+        if let Some(answer) = adapter.parse_quota_probe_answer(text) {
             return Ok(answer);
+        }
+        if !handed_early && let Some(part) = adapter.parse_quota_probe_early(text) {
+            handed_early = true;
+            early(part);
         }
     }
     let status = child
         .wait()
         .await
         .map_or_else(|err| err.to_string(), |status| status.to_string());
-    adapter.parse_quota_probe_answer(&text).ok_or(status)
+    adapter.parse_quota_probe_end(text).ok_or(status)
 }
 
 fn write_spec_files(spec: &CommandSpec) -> Result<(), String> {
@@ -361,6 +388,11 @@ pub struct FileQuotaBoard {
     store: VendorsStore,
     probers: BTreeMap<String, Prober>,
     probe_timeout: Duration,
+    /// Why each CLI's last probe got no reading, and when. Only this process shows it, so it
+    /// isn't kept.
+    failed: Mutex<BTreeMap<String, (String, OffsetDateTime)>>,
+    /// When each CLI was last signed in or out from Argonauts.
+    signed: Mutex<BTreeMap<String, OffsetDateTime>>,
 }
 
 impl FileQuotaBoard {
@@ -369,6 +401,23 @@ impl FileQuotaBoard {
             store: VendorsStore::new(paths),
             probers: BTreeMap::new(),
             probe_timeout: PROBE_TIMEOUT,
+            failed: Mutex::new(BTreeMap::new()),
+            signed: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn note_failure(&self, vendor: &VendorId, why: Option<String>) {
+        let mut failed = self
+            .failed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match why {
+            Some(why) => {
+                failed.insert(vendor.0.clone(), (why, OffsetDateTime::now_utc()));
+            }
+            None => {
+                failed.remove(&vendor.0);
+            }
         }
     }
 
@@ -448,16 +497,84 @@ impl QuotaBoard for FileQuotaBoard {
         }
     }
 
+    fn observe_live(&self, reading: LiveUsage) {
+        let stored = self.store.update(|file| {
+            let entry = file.vendors.entry(reading.vendor.0.clone()).or_default();
+            entry.observe_live(reading);
+        });
+        if let Err(err) = stored {
+            tracing::warn!("the plan usage board could not write vendors.json: {err}");
+        }
+    }
+
+    fn live(&self, vendor: &VendorId) -> Option<LiveUsage> {
+        self.read()?.vendors.remove(&vendor.0)?.live.pop()
+    }
+
+    fn failed(&self, vendor: &VendorId) -> Option<String> {
+        let failed = self
+            .failed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        failed.get(&vendor.0).map(|(why, _)| why.clone())
+    }
+
+    fn doubted_at(&self, vendor: &VendorId) -> Option<OffsetDateTime> {
+        let failed = self
+            .failed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&vendor.0)
+            .map(|(_, at)| *at);
+        let signed = self
+            .signed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&vendor.0)
+            .copied();
+        failed.max(signed)
+    }
+
+    fn doubt(&self, vendor: &VendorId) {
+        self.signed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(vendor.0.clone(), OffsetDateTime::now_utc());
+    }
+
     /// Runs this board's prober for `vendor`, else the registered one, and records each window
     /// it reads and the plan. Gives the window that binds soonest. `None` means unknown, which
-    /// the status line shows as `?`.
+    /// the status line shows as `?`, and [`QuotaBoard::failed`] says why.
     fn probe(&self, vendor: &VendorId) -> BoxFuture<'_, Option<QuotaReading>> {
         let prober = self.prober(vendor);
         let vendor = vendor.clone();
         Box::pin(async move {
-            let mut answer = run_probe_answer(&prober?, self.probe_timeout).await?;
+            // What shows first, as Claude Code's windows before its slower scan, so the card
+            // isn't left waiting for the rest.
+            let mut early = |part: QuotaAnswer| {
+                if let Some(mut live) = part.live {
+                    live.vendor = vendor.clone();
+                    self.observe_live(live);
+                }
+            };
+            let read = try_probe_answer_early(&prober?, self.probe_timeout, &mut early).await;
+            let mut answer = match read {
+                Ok(answer) => answer,
+                Err(err) => {
+                    tracing::warn!("plan usage probe: {err}");
+                    self.note_failure(&vendor, failure_words(&err));
+                    return None;
+                }
+            };
+            self.note_failure(&vendor, answer.failed.clone());
             for reading in &mut answer.windows {
                 reading.vendor = vendor.clone();
+            }
+            // First, so a reading of a new account clears the old account's windows before
+            // the new ones land.
+            if let Some(mut live) = answer.live.take() {
+                live.vendor = vendor.clone();
+                self.observe_live(live);
             }
             if let Some(plan) = answer.plan.take() {
                 self.observe_plan(&vendor, plan);
@@ -467,6 +584,19 @@ impl QuotaBoard for FileQuotaBoard {
             }
             answer.binding().cloned()
         })
+    }
+}
+
+/// Why a probe got no reading, said after "failed to load usage data:". A CLI with no free
+/// read failed at nothing, so it has none.
+fn failure_words(err: &ProbeError) -> Option<String> {
+    match err {
+        ProbeError::NoProbe(_) => None,
+        ProbeError::Run { detail, .. } => Some(format!("couldn't start it: {detail}")),
+        ProbeError::TimedOut { seconds, .. } => Some(format!("no answer within {seconds}s")),
+        ProbeError::Unreadable { status, .. } => {
+            Some(format!("it ended without an answer ({status})"))
+        }
     }
 }
 
@@ -644,6 +774,9 @@ mod tests {
         script: Option<String>,
         stdin: Option<String>,
         keep_stdin_open: bool,
+        /// Answers with a live reading of the account in its `account=` line, once a `done`
+        /// line follows, or at the end with what came.
+        live: bool,
     }
 
     impl ProbeAdapter {
@@ -652,7 +785,35 @@ mod tests {
                 script: Some(script.to_owned()),
                 stdin: None,
                 keep_stdin_open: false,
+                live: false,
             }
+        }
+
+        fn live(script: &str) -> Self {
+            Self {
+                live: true,
+                ..Self::new(script)
+            }
+        }
+
+        fn live_answer(&self, stdout: &str) -> Option<QuotaAnswer> {
+            let reading = self.parse_quota_probe(stdout)?;
+            let mut live =
+                LiveUsage::new(reading.vendor.clone(), reading.source, reading.observed_at);
+            live.account = stdout
+                .lines()
+                .find_map(|line| line.strip_prefix("account="))
+                .map(str::to_owned);
+            live.windows = vec![
+                argonauts_core::plan_usage::LiveWindow::new("five_hour", "5-hour", "5h")
+                    .used(reading.used),
+            ];
+            Some(QuotaAnswer {
+                windows: live.quota_readings(),
+                plan: None,
+                live: Some(live),
+                failed: None,
+            })
         }
 
         fn prober(self, dir: &Path) -> Prober {
@@ -724,6 +885,34 @@ mod tests {
                 .parse()
                 .ok()?;
             Some(reading("probe-fake", used, OffsetDateTime::now_utc()))
+        }
+        fn parse_quota_probe_answer(&self, stdout: &str) -> Option<QuotaAnswer> {
+            if let Some(error) = stdout.lines().find_map(|line| line.strip_prefix("error=")) {
+                return Some(QuotaAnswer::failed(error));
+            }
+            if !self.live {
+                let reading = self.parse_quota_probe(stdout)?;
+                return Some(QuotaAnswer {
+                    windows: vec![reading],
+                    plan: None,
+                    live: None,
+                    failed: None,
+                });
+            }
+            stdout.lines().any(|line| line == "done").then_some(())?;
+            self.live_answer(stdout)
+        }
+        fn parse_quota_probe_end(&self, stdout: &str) -> Option<QuotaAnswer> {
+            if self.live {
+                self.live_answer(stdout)
+            } else {
+                self.parse_quota_probe_answer(stdout)
+            }
+        }
+        /// The live reading so far, once an `early` line says it's worth showing.
+        fn parse_quota_probe_early(&self, stdout: &str) -> Option<QuotaAnswer> {
+            stdout.lines().any(|line| line == "early").then_some(())?;
+            self.live_answer(stdout)
         }
     }
 
@@ -856,6 +1045,142 @@ mod tests {
                 ("codex".to_owned(), Some(0.5))
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_live_reading_is_kept_for_its_account_and_a_new_account_clears_the_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().join("home"));
+        let first = ProbeAdapter::live("echo account=one@example.com; echo used=0.6; echo done");
+        let board = FileQuotaBoard::new(&paths)
+            .with_prober(&vendor("probe-live"), first.prober(dir.path()));
+        board.probe(&vendor("probe-live")).await.unwrap();
+        let live = board.live(&vendor("probe-live")).unwrap();
+        assert_eq!(live.account.as_deref(), Some("one@example.com"));
+        assert_eq!(live.vendor, vendor("probe-live"));
+        assert_eq!(board.windows(&vendor("probe-live")).len(), 1);
+
+        let second = ProbeAdapter::live("echo account=two@example.com; echo used=0.1; echo done");
+        let board = FileQuotaBoard::new(&paths)
+            .with_prober(&vendor("probe-live"), second.prober(dir.path()));
+        board.probe(&vendor("probe-live")).await.unwrap();
+        let live = board.live(&vendor("probe-live")).unwrap();
+        assert_eq!(live.account.as_deref(), Some("two@example.com"));
+        // Only the new account's window speaks for the CLI now.
+        let windows = board.windows(&vendor("probe-live"));
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].used, Some(0.1));
+    }
+
+    #[tokio::test]
+    async fn a_failed_read_says_why_until_a_reading_lands_and_keeps_the_last_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().join("home"));
+        let said = dir.path().join("said.txt");
+        let answers = |text: &str| std::fs::write(&said, text).unwrap();
+        let cli = vendor("probe-failing");
+        let script = format!("cat '{}'", said.display());
+        let board = FileQuotaBoard::new(&paths)
+            .with_prober(&cli, ProbeAdapter::live(&script).prober(dir.path()))
+            .with_probe_timeout(Duration::from_secs(5));
+
+        answers("account=one@example.com\nused=0.4\ndone\n");
+        assert!(board.probe(&cli).await.is_some());
+        assert_eq!(board.failed(&cli), None);
+
+        answers("error=failed to fetch codex rate limits\n");
+        assert!(board.probe(&cli).await.is_none());
+        assert_eq!(
+            board.failed(&cli).as_deref(),
+            Some("failed to fetch codex rate limits")
+        );
+        // The error names no account, so the reading before it is kept, but it no longer
+        // stands as the CLI's own: the account may have changed since.
+        let kept = board.live(&cli).unwrap();
+        assert_eq!(kept.account.as_deref(), Some("one@example.com"));
+        let now = OffsetDateTime::now_utc();
+        assert!(!kept.current_at(now, board.doubted_at(&cli)));
+        assert!(argonauts_core::plan_usage::current_live(&board, &cli, now).is_none());
+
+        answers("nothing useful\n");
+        assert!(board.probe(&cli).await.is_none());
+        assert_eq!(
+            board.failed(&cli).as_deref(),
+            Some("it ended without an answer (exit status: 0)")
+        );
+
+        answers("account=one@example.com\nused=0.5\ndone\n");
+        assert!(board.probe(&cli).await.is_some());
+        assert_eq!(board.failed(&cli), None);
+        let now = OffsetDateTime::now_utc();
+        assert!(argonauts_core::plan_usage::current_live(&board, &cli, now).is_some());
+
+        // Signing in again casts the same doubt until the next reading.
+        board.doubt(&cli);
+        let now = OffsetDateTime::now_utc();
+        assert!(argonauts_core::plan_usage::current_live(&board, &cli, now).is_none());
+        answers("account=two@example.com\nused=0.1\ndone\n");
+        assert!(board.probe(&cli).await.is_some());
+        let now = OffsetDateTime::now_utc();
+        let live = argonauts_core::plan_usage::current_live(&board, &cli, now).unwrap();
+        assert_eq!(live.account.as_deref(), Some("two@example.com"));
+    }
+
+    #[tokio::test]
+    async fn the_first_part_of_an_answer_shows_before_the_rest_comes() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().join("home"));
+        let go = dir.path().join("go");
+        let cli = vendor("probe-early");
+        // The rest waits until the first part was seen on the board.
+        let script = format!(
+            "echo account=one@example.com; echo used=0.3; echo early; \
+             while [ ! -f '{}' ]; do sleep 0.05; done; echo done",
+            go.display()
+        );
+        let board = FileQuotaBoard::new(&paths)
+            .with_prober(&cli, ProbeAdapter::live(&script).prober(dir.path()))
+            .with_probe_timeout(Duration::from_secs(20));
+        let watch = async {
+            wait_for("the first part", || board.live(&cli).is_some()).await;
+            std::fs::write(&go, "").unwrap();
+        };
+        let (read, ()) = tokio::join!(board.probe(&cli), watch);
+        assert_eq!(read.unwrap().used, Some(0.3));
+        let live = board.live(&cli).unwrap();
+        assert_eq!(live.account.as_deref(), Some("one@example.com"));
+        // The whole answer took the first part's place for the same account.
+        let file = board.read().unwrap();
+        assert_eq!(file.vendors[&cli.0].live.len(), 1);
+    }
+
+    #[test]
+    fn a_cli_with_no_free_read_has_no_failure_to_show() {
+        assert_eq!(failure_words(&ProbeError::NoProbe("OpenCode".into())), None);
+        let timed_out = ProbeError::TimedOut {
+            program: "/usr/local/bin/claude".into(),
+            seconds: 15,
+        };
+        assert_eq!(
+            failure_words(&timed_out).as_deref(),
+            Some("no answer within 15s")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_probe_out_of_time_answers_with_what_came_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().join("home"));
+        // The slow part never says `done`.
+        let slow = ProbeAdapter::live("echo account=one@example.com; echo used=0.3; sleep 30");
+        let board = FileQuotaBoard::new(&paths)
+            .with_prober(&vendor("probe-slow-live"), slow.prober(dir.path()))
+            .with_probe_timeout(Duration::from_millis(500));
+        let started = Instant::now();
+        let read = board.probe(&vendor("probe-slow-live")).await.unwrap();
+        assert_eq!(read.used, Some(0.3));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(board.live(&vendor("probe-slow-live")).is_some());
     }
 
     #[tokio::test]

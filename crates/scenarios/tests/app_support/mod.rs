@@ -470,6 +470,20 @@ pub fn invocations_of(scenario: &Scenario, program: &str) -> anyhow::Result<Vec<
 /// Invocations that ran a model session: every one but `--version`, the `--help` doctor reads
 /// for flags, login checks, the model lists `/model` refreshes, and the quota reads
 /// (`codex app-server`, `agy -p /usage`), which start no turn.
+/// How Claude Code is asked for its plan usage live: initialize and get_usage on stdin, and no
+/// prompt, so no model runs.
+const CLAUDE_USAGE_PROBE: &[&str] = &[
+    "-p",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--strict-mcp-config",
+    "--setting-sources",
+    "",
+];
+
 pub fn sessions_of(scenario: &Scenario, program: &str) -> anyhow::Result<Vec<Invocation>> {
     Ok(invocations_of(scenario, program)?
         .into_iter()
@@ -478,9 +492,15 @@ pub fn sessions_of(scenario: &Scenario, program: &str) -> anyhow::Result<Vec<Inv
             let model_list =
                 args == &["debug", "models"] || args == &["--output-format", "json", "models"];
             let quota_read = args.first().is_some_and(|arg| arg == "app-server")
-                || has_flag(args, "-p", "/usage");
+                || has_flag(args, "-p", "/usage")
+                || args
+                    .iter()
+                    .map(String::as_str)
+                    .eq(CLAUDE_USAGE_PROBE.iter().copied());
+            let login_check = args == &["auth", "status"];
             !model_list
                 && !quota_read
+                && !login_check
                 && !args
                     .iter()
                     .any(|arg| matches!(arg.as_str(), "--version" | "--help" | "login"))

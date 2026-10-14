@@ -15,7 +15,9 @@ use argonauts_core::steps::intake::{Instruction, InstructionKind};
 use serde_json::Value;
 
 use super::{Call, MainTool};
-use crate::controller::chat::{ChatState, handover, keep, planned, run_request, standing};
+use crate::controller::chat::{
+    ChatState, handover, keep, planned, run_news, run_request, standing,
+};
 use crate::controller::instructions::{self, Applied, Roster};
 use crate::controller::recap::mode_name;
 use crate::controller::{Ctx, Effect, ultra};
@@ -100,26 +102,32 @@ fn call(ctx: &mut Ctx, chat: &mut ChatState, call: Call) -> Vec<Effect> {
         start
             .request_settings
             .extend(ultra::same_model(ctx.settings()));
+        crate::telemetry::used(&ctx.env.paths, crate::telemetry::Use::Ultracode);
     }
     super::super::goal::carry(chat, &mut start);
     if plan_first {
         start = planned(start);
     }
     keep::offer(ctx, chat, &applied);
-    let started = match in_use {
-        Some(workflow) => format!("The {workflow} workflow started on this."),
-        None if same_model => "A workflow on your own model started on this, since ultracode is \
-                               on."
-        .to_owned(),
-        None => format!(
-            "A {} run started on this, as the user asked.",
-            mode_name(mode)
+    let (what, began) = match in_use {
+        Some(workflow) => (
+            format!("The {workflow} workflow"),
+            format!("The {workflow} workflow started on this."),
+        ),
+        None if same_model => (
+            "The workflow on your own model".to_owned(),
+            "A workflow on your own model started on this, since ultracode is on.".to_owned(),
+        ),
+        None => (
+            format!("The {} run", mode_name(mode)),
+            format!(
+                "A {} run started on this, as the user asked.",
+                mode_name(mode)
+            ),
         ),
     };
-    call.answer(format!(
-        "{started} Say so in one line and stop: its agents do the work, the user watches it, \
-         and its closing answer lands in this conversation."
-    ));
+    // The answer waits until the run is under way or has failed, so it tells the truth.
+    run_news::hold(chat, call.reply, what, began);
     vec![handover::start(start)]
 }
 

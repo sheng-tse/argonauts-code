@@ -292,6 +292,8 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
             lines
         }
         ViewData::Usage { summary } => crate::overview::cards::spoken(summary, names),
+        ViewData::StatusTab { view } => crate::overview::status_tab::spoken(view, names),
+        ViewData::Overview { overview } => crate::overview::spoken_overview(overview, names),
         ViewData::Context { view } => view
             .rows
             .iter()
@@ -675,6 +677,7 @@ mod tests {
             context: None,
             standing_in_for: None,
             answered: Some("asked through Argonauts".into()),
+            tries: Vec::new(),
         };
         let read = agent_row(&row, &Default::default());
         assert!(

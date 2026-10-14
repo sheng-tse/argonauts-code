@@ -1,0 +1,5 @@
+{"id":1,"result":{"userAgent":"argonauts/0.160.0 (Mac OS 15.0.0; arm64) xterm-256color (argonauts; 0.0.1)","codexHome":"/Users/user/.codex","platformFamily":"unix","platformOs":"macos"}}
+{"method":"configWarning","params":{"summary":"Invalid configuration; using defaults.","details":"Failed to synchronize managed preferences"},"emittedAtMs":1791520648590}
+{"method":"remoteControl/status/changed","params":{"status":"disabled","serverName":"Mac","installationId":"00000000-0000-0000-0000-000000000000","environmentId":null},"emittedAtMs":1791520648590}
+{"error":{"code":-32603,"message":"failed to load workspace requirements"},"id":3}
+{"error":{"code":-32603,"message":"failed to fetch codex rate limits: application network policy is unavailable"},"id":2}

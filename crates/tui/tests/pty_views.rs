@@ -155,10 +155,10 @@ fn session_view_output_and_input() {
     // folded to one line under them.
     harness.press(Key::Tab);
     let input = harness.wait_visible("Launched as .* exec --json");
-    for (label, _) in PARTS {
-        let heading = format!("{}{}", label[..1].to_uppercase(), &label[1..]);
+    // The goal file is what you asked for, so it reads as the request.
+    for heading in ["Task", "Request", "Notes"] {
         assert!(
-            row_of(&input, &heading).is_some(),
+            row_of(&input, heading).is_some(),
             "{heading}:\n{}",
             input.visible_text()
         );

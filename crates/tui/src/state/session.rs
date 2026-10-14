@@ -51,6 +51,9 @@ pub struct SessionState {
     /// The text streaming now, since the last whole message.
     pub streaming: String,
     pub diffs: Vec<FileDiff>,
+    /// Each patch an edit reported: the edit's call id, the file as the CLI names it, and its
+    /// hunks with the file's line numbers.
+    pub patches: Vec<(String, String, String)>,
     /// The latest update per child, in first-seen order.
     pub subagents: Vec<SubagentUpdate>,
     /// Workflows the agent's own CLI runs, the latest state of each, in first-seen order.
@@ -164,6 +167,7 @@ impl SessionState {
             messages: Vec::new(),
             streaming: String::new(),
             diffs: Vec::new(),
+            patches: Vec::new(),
             subagents: Vec::new(),
             workflows: Vec::new(),
             inputs: Vec::new(),
@@ -296,14 +300,18 @@ impl SessionState {
                 parent,
             } => {
                 self.finish_streaming();
-                self.tools.push(ToolRecord {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
-                    parent: parent.clone(),
-                    ok: None,
-                    output: None,
-                });
+                // A call shows once by its id, however many copies of it the stream carries.
+                let known = !id.is_empty() && self.tools.iter().any(|tool| tool.id == *id);
+                if !known {
+                    self.tools.push(ToolRecord {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: input.clone(),
+                        parent: parent.clone(),
+                        ok: None,
+                        output: None,
+                    });
+                }
                 self.doing = Doing::RunningTool;
             }
             AgentEvent::ToolFinished { id, ok, output, .. } => {
@@ -317,6 +325,9 @@ impl SessionState {
                 }
             }
             AgentEvent::FileChanged { .. } => {}
+            AgentEvent::FilePatch {
+                id, path, hunks, ..
+            } => self.patches.push((id.clone(), path.clone(), hunks.clone())),
             AgentEvent::Todo { items } => self.todos.clone_from(items),
             AgentEvent::Usage {
                 input_tokens,

@@ -11,9 +11,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use argonauts_core::adapter::Transport;
+use argonauts_core::answer_format;
 use argonauts_core::driver::McpServerSpec;
+use argonauts_core::events::session::{InputPart, InputPartKind};
 use argonauts_core::layout::{self, session_files};
 use argonauts_core::names::{SessionKey, WorkerRef};
+use argonauts_core::pictures::Picture;
 use argonauts_core::registry::{ModelAccess, ModelRegistry, RegistryKind, effort_to_run};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::UserHooks;
@@ -130,11 +133,13 @@ pub fn session_request(
     Ok(SessionRequest {
         workdir: spec.workdir.clone(),
         prompt,
+        pictures: pictures(&spec.prompt),
         model,
         effort,
         role: session_role(spec.access),
         auth: agent.map(|agent| agent.auth).unwrap_or_default(),
-        json_schema: spec.json_schema.clone(),
+        // Codex refuses any other shape, and every CLI takes this one.
+        json_schema: spec.json_schema.as_ref().map(answer_format::strict),
         resume_session: spec.resume.clone(),
         // Claude Code's cap ignores what earlier runs of a resumed session spent, so it gets only
         // what's left.
@@ -175,6 +180,8 @@ pub fn session_request(
         main_session: is_main_session(spec),
         ultracode: spec.cli_workflow.ultracode,
         typed_by_you: spec.cli_workflow.typed_keyword,
+        background_off: spec.cli_workflow.background_off,
+        shell: spec.shell.clone(),
         workflow_size: Some(settings.workflow_size),
         standing_note: standing.filter(|_| takes_a_note),
         autopilot: spec.autopilot,
@@ -447,6 +454,24 @@ fn apply_env(
     }
 }
 
+/// The pictures sent with your message, numbered as their chips were.
+fn pictures(parts: &[InputPart]) -> Vec<Picture> {
+    parts
+        .iter()
+        .filter(|part| part.kind == InputPartKind::Picture)
+        .filter_map(|part| {
+            let number = part
+                .label
+                .trim_start_matches("[Image #")
+                .trim_end_matches(']')
+                .parse()
+                .ok()?;
+            let path = part.source.as_ref()?.into();
+            Some(Picture { number, path })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,6 +501,27 @@ mod tests {
             spec.access = access;
             assert_eq!(request_for(&adapter, &spec).role, role, "{access:?}");
         }
+    }
+
+    /// A format that leaves a field optional goes out with every field required and the
+    /// optional one allowed to be null, which Codex's strict mode needs.
+    #[test]
+    fn the_answer_format_goes_out_strict() {
+        let dir = tempfile::tempdir().unwrap();
+        let adapter = TestAdapter::new("true");
+        let mut spec = spec_in(dir.path(), dir.path(), "review it");
+        spec.json_schema = Some(json!({
+            "type": "object",
+            "properties": {"accept": {"type": "boolean"}, "summary": {"type": "string"}},
+            "required": ["accept"],
+        }));
+        let sent = request_for(&adapter, &spec).json_schema.unwrap();
+        assert_eq!(answer_format::codex_problems(&sent), Vec::<String>::new());
+        assert_eq!(sent["required"], json!(["accept", "summary"]));
+        assert_eq!(
+            sent["properties"]["summary"]["type"],
+            json!(["string", "null"])
+        );
     }
 
     /// The main session's tools go to its server by name, and the standing lines go where the
@@ -1001,3 +1047,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "request_pictures_tests.rs"]
+mod pictures_tests;

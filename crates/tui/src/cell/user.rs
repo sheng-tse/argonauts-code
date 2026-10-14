@@ -24,6 +24,9 @@ pub struct UserMessage {
     pub command: bool,
     /// The keywords of the CLI the message went to that it draws in its echo too.
     pub keywords: Vec<Keyword>,
+    /// The numbers of the pictures sent with it, a `⎿ [Image #N]` row each beneath, as in
+    /// Claude Code.
+    pub pictures: Vec<u32>,
 }
 
 impl UserMessage {
@@ -34,6 +37,7 @@ impl UserMessage {
             pending: false,
             command: false,
             keywords: Vec::new(),
+            pictures: Vec::new(),
         }
     }
 
@@ -57,6 +61,11 @@ impl UserMessage {
             .filter(|keyword| keyword.echoed)
             .cloned()
             .collect();
+        self
+    }
+
+    pub fn with_pictures(mut self, pictures: impl IntoIterator<Item = u32>) -> Self {
+        self.pictures = pictures.into_iter().collect();
         self
     }
 
@@ -98,7 +107,7 @@ impl HistoryCell for UserMessage {
         let width = usize::from(ctx.width);
         let mut lines = wrap_spans(&spans, width, &first, &rest);
         fit_lines(&mut lines, width);
-        lines
+        let mut lines: Vec<Line<'static>> = lines
             .into_iter()
             .map(|line| {
                 if self.command {
@@ -107,7 +116,16 @@ impl HistoryCell for UserMessage {
                     line.style(band)
                 }
             })
-            .collect()
+            .collect();
+        for number in &self.pictures {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                marks::decorative(theme.glyphs.result, theme.style(Role::Dim)),
+                Span::raw(" "),
+                Span::styled(argonauts_core::pictures::label(*number), theme.style(role)),
+            ]));
+        }
+        lines
     }
 }
 
@@ -162,6 +180,17 @@ mod tests {
         let mut theme = Theme::dark();
         theme.glyphs = Glyphs::UNICODE;
         theme
+    }
+
+    #[test]
+    fn each_picture_sent_has_a_row_beneath_the_prompt() {
+        let theme = theme();
+        let ctx = RenderCtx::new(60, &theme, Clock::still(Instant::now()));
+        let message = UserMessage::new("what's off on this screen? [Image #1]").with_pictures([1]);
+        assert_eq!(
+            plain_text(&message.lines(&ctx)),
+            "❯ what's off on this screen? [Image #1]\n  ⎿ [Image #1]"
+        );
     }
 
     #[test]

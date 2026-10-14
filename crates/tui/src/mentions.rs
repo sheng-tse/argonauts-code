@@ -367,6 +367,7 @@ pub(crate) mod fixture {
             messages: Vec::new(),
             streaming: String::new(),
             diffs: Vec::new(),
+            patches: Vec::new(),
             subagents: Vec::new(),
             workflows: Vec::new(),
             inputs: Vec::new(),

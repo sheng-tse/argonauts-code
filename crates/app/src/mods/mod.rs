@@ -124,7 +124,7 @@ impl ModDirs {
         load::stamp(&[Some(self.yours.as_path()), Some(self.project.as_path())])
     }
 
-    fn load(&self) -> ModSet {
+    pub(crate) fn load(&self) -> ModSet {
         ModSet::load(Some(&self.yours), Some(&self.project))
     }
 }
@@ -1112,6 +1112,11 @@ fn save_origin(origin: ModOrigin) -> ModOrigin {
 }
 
 /// What Doctor says about mod files: nothing when all load, else each file with why not.
+/// Every mod in use, the built-in ones first.
+pub(crate) fn loaded(env: &AppEnv) -> ModSet {
+    ModDirs::of(env).load()
+}
+
 pub(crate) fn doctor_lines(env: &AppEnv) -> Vec<String> {
     let set = ModDirs::of(env).load();
     problem_lines(&set, |path| env.shown(path))

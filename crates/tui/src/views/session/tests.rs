@@ -536,3 +536,143 @@ fn a_goal_that_is_over_offers_no_keys_on_it() {
         ViewOutcome::Notice(_)
     ));
 }
+
+/// A worker that ran Claude Code's own workflow: the call, the workflow's report, and the
+/// workflow as Claude Code also lists it among the subagents.
+fn with_its_own_workflow() -> (AppState, RunId, SessionView) {
+    use argonauts_core::events::session::{
+        SubagentKind, SubagentStatus, SubagentUpdate, VendorAgent, VendorAgentState, VendorPhase,
+        VendorWorkflow,
+    };
+    let (mut state, run, view) = opened();
+    let session = agent(&mut state, &run);
+    session.vendor = "claude-code".to_owned();
+    session.tools.push(ToolRecord {
+        id: "toolu_wf".to_owned(),
+        name: "Workflow".to_owned(),
+        input: json!({"script": "export const meta = {name: 'add-due-dates'}"}),
+        parent: None,
+        ok: Some(true),
+        output: None,
+    });
+    let phase = |index: u32, title: &str| VendorPhase {
+        index,
+        title: title.to_owned(),
+        detail: String::new(),
+    };
+    let worker = |index: u32, state: VendorAgentState| VendorAgent {
+        index,
+        label: format!("step:{index}"),
+        phase: Some(index),
+        model: None,
+        state,
+        tokens: 0,
+        tool_calls: 0,
+        duration_ms: 0,
+        started_at_ms: None,
+        attempt: 1,
+        prompt: None,
+        result: None,
+    };
+    session.workflows.push(VendorWorkflow {
+        id: "w7k2".to_owned(),
+        call: Some("toolu_wf".to_owned()),
+        name: "add-due-dates".to_owned(),
+        description: String::new(),
+        phases: vec![phase(1, "build"), phase(2, "review"), phase(3, "judge")],
+        agents: vec![
+            worker(1, VendorAgentState::Done),
+            worker(2, VendorAgentState::Running),
+            worker(3, VendorAgentState::Queued),
+        ],
+        status: SubagentStatus::Running,
+        tokens: 0,
+        tool_calls: 0,
+        duration_ms: 0,
+        summary: Some("Build, review, and judge".to_owned()),
+        started_at_ms: None,
+    });
+    session.subagents.push(SubagentUpdate {
+        id: "toolu_wf".to_owned(),
+        parent: None,
+        kind: SubagentKind::Workflow,
+        label: Some("add-due-dates".to_owned()),
+        prompt: None,
+        status: SubagentStatus::Running,
+        last_message: Some("Review: step:2".to_owned()),
+        log_uri: None,
+        steps_visible: false,
+        tokens: None,
+    });
+    (state, run, view)
+}
+
+#[test]
+fn claude_codes_own_workflow_is_one_row_with_its_steps_beneath() {
+    let (state, _, mut view) = with_its_own_workflow();
+    let text = screen_of(&mut view, &state, 100, 40);
+    let rows: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains("Workflow(") || line.contains("build"))
+        .map(str::trim)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "● Workflow(add-due-dates) · Claude Code's own · 3 agents",
+            "⎿  ✔ build · ◐ review · ○ judge"
+        ],
+        "{text}"
+    );
+    assert!(!text.contains("subagent"), "{text}");
+}
+
+#[test]
+fn an_edit_is_drawn_from_the_patch_it_reported_with_the_files_line_numbers() {
+    let (mut state, run, mut view) = opened();
+    let session = agent(&mut state, &run);
+    session.tools = vec![reported(
+        "Edit",
+        json!({"file_path": "/w/src/a.rs", "old_string": "x", "new_string": "y"}),
+    )];
+    session.patches = vec![(
+        "Edit".to_owned(),
+        "/w/src/a.rs".to_owned(),
+        "@@ -41,3 +41,3 @@\n a\n-x\n+y\n b\n".to_owned(),
+    )];
+    let text = screen(&mut view, &state, 100);
+    assert!(text.contains("41  a"), "{text}");
+    assert!(text.contains("42 -x"), "{text}");
+    assert!(text.contains("42 +y"), "{text}");
+}
+
+/// Argonauts also notes how each file stands after the session's calls. A file whose call drew
+/// its own patch is shown once, from the patch; one no call drew, as a shell command's, still
+/// shows.
+#[test]
+fn a_file_its_call_drew_is_not_drawn_again_from_the_change_seen_after() {
+    let (mut state, run, mut view) = opened();
+    let session = agent(&mut state, &run);
+    session.tools = vec![reported(
+        "Edit",
+        json!({"file_path": "/w/src/a.rs", "old_string": "x", "new_string": "y"}),
+    )];
+    session.patches = vec![(
+        "Edit".to_owned(),
+        "/w/src/a.rs".to_owned(),
+        "@@ -41,3 +41,3 @@\n a\n-x\n+y\n b\n".to_owned(),
+    )];
+    let seen = |path: &str, line: &str| argonauts_core::events::session::FileDiff {
+        path: path.to_owned(),
+        added: 1,
+        removed: 1,
+        hunk: format!("@@ -1,1 +1,1 @@\n-old {line}\n+new {line}\n"),
+        truncated: false,
+    };
+    session.diffs = vec![seen("src/a.rs", "a"), seen("src/b.rs", "b")];
+    let text = screen(&mut view, &state, 100);
+    assert_eq!(text.matches("42 +y").count(), 1, "{text}");
+    assert!(!text.contains("new a"), "{text}");
+    assert!(text.contains("Update(src/b.rs)"), "{text}");
+    assert!(text.contains("new b"), "{text}");
+}

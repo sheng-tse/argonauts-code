@@ -4,9 +4,9 @@ expression: "screen(&mut view, width, height, &state)"
 ---
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  argonauts-ui-kit
- Build a standalone Rust UI kit prototype that matches Claude Code: inline c… 8/12 agents · 2h44m · ↓ 1.4M tokens
+ Build a standalone Rust UI kit prototype that matches Claude Code: inline ch… 8/12 steps · 2h44m · ↓ 1.4M tokens
 
- ╭ Build · 7 agents ──────────┬ build:a-terminal-bottom ────────────────────────────────────────────────────────╮
+ ╭ Build · 7 steps ───────────┬ build:a-terminal-bottom ────────────────────────────────────────────────────────╮
  │ ❯✔ build:a-terminal-bottom │ ✔ Completed · Opus on Claude Code · 6m02s                                       │
  │  ✔ build:b-history-cells   │ claude-code/opus · run-01 · 381k tok · $0.84                                    │
  │  ✗ build:d-plain-mode      │                                                                                 │

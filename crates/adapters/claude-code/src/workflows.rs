@@ -282,6 +282,21 @@ fn shorten(text: &str, max_chars: usize) -> String {
     }
 }
 
+/// The tool that starts a workflow script.
+pub const TOOL: &str = "Workflow";
+
+/// How 2.1.289 to 2.1.295 begin the tool's answer once the script runs, here or remotely.
+const LAUNCHED: &str = "Workflow launched";
+
+/// Whether a `Workflow` call's result only says the script started. Its task id, run id, paths
+/// and resume hints are for the model; the workflow's own reports draw it, and the raw log
+/// keeps the text.
+pub fn launched(structured: Option<&Value>, output: Option<&str>) -> bool {
+    let status = structured.and_then(|result| str_at(result, "status"));
+    matches!(status, Some("async_launched" | "remote_launched"))
+        || output.is_some_and(|text| text.trim_start().starts_with(LAUNCHED))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

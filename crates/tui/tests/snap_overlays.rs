@@ -166,7 +166,7 @@ fn session_input(parts: &[(&str, &str)]) -> SessionInput {
     let parts: Vec<serde_json::Value> = parts
         .iter()
         .map(|(label, text)| {
-            json!({"kind": "card", "label": label, "text": text,
+            json!({"kind": part_kind(label), "label": label, "text": text,
                    "approx_tokens": text.len() / 4, "source": null})
         })
         .collect();
@@ -1504,5 +1504,13 @@ fn rewind_picker() {
             format!("rewind_picker_{width}"),
             screen(&mut view, width, height, &state)
         );
+    }
+}
+
+/// A part's kind by its label, as the engine sends them: the task goes as a card.
+fn part_kind(label: &str) -> &str {
+    match label {
+        "goal" | "notes" | "rules" | "status" => label,
+        _ => "card",
     }
 }

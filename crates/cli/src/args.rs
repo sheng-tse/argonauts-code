@@ -56,6 +56,9 @@ pub enum Command {
     /// Show, explain, or change your settings.
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// The one anonymous event a day about how you use Argonauts, off until you turn it on.
+    #[command(subcommand)]
+    Telemetry(TelemetryCommand),
     /// The models Argonauts knows about.
     Models {
         /// Ask each CLI and local server which models it has first. Never calls a model.
@@ -210,6 +213,16 @@ pub struct DoctorArgs {
     /// Print the report as JSON.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, Clone, Copy, Subcommand)]
+pub enum TelemetryCommand {
+    /// Print the event as it would be sent, and whether it is.
+    Show,
+    /// Send it once a day from now on.
+    On,
+    /// Send nothing.
+    Off,
 }
 
 #[derive(Debug, Clone, Subcommand)]

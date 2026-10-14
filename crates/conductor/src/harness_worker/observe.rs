@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use argonauts_core::answer_format;
 use argonauts_core::events::VendorEvent;
 use argonauts_core::events::context::ContextDetail;
 use argonauts_core::events::session::{LimitEvent, SessionEvent, loaded_words};
@@ -424,8 +425,11 @@ impl Observer {
                 if text.is_some() {
                     facts.result_text = text.clone();
                 }
-                if structured.is_some() {
-                    facts.structured = structured.clone();
+                if let Some(answer) = structured {
+                    facts.structured = Some(match &self.ctx.spec.json_schema {
+                        Some(format) => answer_format::as_written(format, answer.clone()),
+                        None => answer.clone(),
+                    });
                 }
                 if !is_error {
                     self.signal(HealthSignal::Success {

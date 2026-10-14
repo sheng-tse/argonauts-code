@@ -531,18 +531,18 @@ async fn codex_names_its_models_and_your_models_toml_wins() {
     assert_eq!(
         names,
         [
-            "GPT-6-Astra",
-            "GPT-6-Sol",
-            "GPT-6-Luna",
-            "GPT-5.6-Sol",
-            "GPT-5.6-Terra",
-            "GPT-5.6-Luna",
-            "GPT-5.5"
+            "GPT 6 Astra",
+            "GPT 6 Sol",
+            "GPT 6 Luna",
+            "GPT 5.6 Sol",
+            "GPT 5.6 Terra",
+            "GPT 5.6 Luna",
+            "GPT 5.5"
         ]
     );
     assert_eq!(
         level.default.as_ref().unwrap().runs.as_deref(),
-        Some("GPT-6-Astra")
+        Some("GPT 6 Astra")
     );
     let luna = offered(&choices, "codex/gpt-6-luna");
     assert_eq!(
@@ -649,6 +649,7 @@ fn chat_session(fixture: &Fixture, fast: bool) -> argonauts_core::worker::Sessio
         turn: &turn,
         step: &step,
         text: "what does main do?",
+        pictures: Vec::new(),
         handle: Arc::new(FakeWorker::harness(&worker.to_string(), "gemini")),
         worker,
         resume: None,

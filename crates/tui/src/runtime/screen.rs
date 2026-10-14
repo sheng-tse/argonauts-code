@@ -5,6 +5,7 @@ use std::future::Future;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitStatus;
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use argonauts_core::KeyScheme;
@@ -42,7 +43,8 @@ const NOTICE_FOR: Duration = Duration::from_secs(5);
 const SIZE_POLL: Duration = Duration::from_secs(1);
 /// With nothing scheduled the loop sleeps until input or an app event.
 const IDLE_WAIT: Duration = Duration::from_secs(3600);
-/// App events handled before a frame, so a burst costs one frame and keys still get a turn.
+/// App events, or keys, handled before a frame, so a burst costs one frame and the other side
+/// still gets a turn.
 const EVENT_BURST: usize = 256;
 
 /// Work that takes the terminal away, done between events.
@@ -205,20 +207,44 @@ impl<W: Write> Screen<W> {
                         self.exit.get_or_insert_with(Vec::new);
                     }
                 },
-                key = keys.next(), if keys_open => match key {
-                    Some(Ok(event)) => self.on_terminal_event(event).await,
-                    Some(Err(error)) => {
-                        self.gone = self.gone_check.is_some();
-                        return Err(error.into());
+                key = keys.next(), if keys_open => {
+                    // Keys the terminal already holds came in the same read as this one, as a
+                    // paste typed out as keys does. They're all handled before the next frame
+                    // and as having come when it did, so drawing between them can't space
+                    // them out like typing.
+                    let arrived = Instant::now();
+                    let mut key = key;
+                    let mut taken = 0;
+                    loop {
+                        match key {
+                            Some(Ok(event)) => self.on_terminal_event(event, arrived).await,
+                            Some(Err(error)) => {
+                                self.gone = self.gone_check.is_some();
+                                return Err(error.into());
+                            }
+                            // A test's keys can run out while the screen goes on; the
+                            // terminal's only end when it goes away.
+                            None if self.gone_check.is_some() => {
+                                self.gone = true;
+                                return Ok(());
+                            }
+                            None => {
+                                keys_open = false;
+                                break;
+                            }
+                        }
+                        taken += 1;
+                        // A handover runs before the keys after it.
+                        if taken == EVENT_BURST || self.exit.is_some() || !self.handovers.is_empty()
+                        {
+                            break;
+                        }
+                        match futures::poll!(keys.next()) {
+                            Poll::Ready(next) => key = next,
+                            Poll::Pending => break,
+                        }
                     }
-                    // A test's keys can run out while the screen goes on; the terminal's only
-                    // end when it goes away.
-                    None if self.gone_check.is_some() => {
-                        self.gone = true;
-                        return Ok(());
-                    }
-                    None => keys_open = false,
-                },
+                }
                 Some(returned) = self.returns.recv() => self.on_returned(returned).await,
                 () = tokio::time::sleep_until(sleep_until), if wake.is_some() => {}
                 () = tick(&mut self.size_poll), if self.size_poll.is_some() => self.check_size(),
@@ -273,14 +299,16 @@ impl<W: Write> Screen<W> {
         }
     }
 
-    async fn on_terminal_event(&mut self, event: Event) {
+    /// `arrived` is when the terminal handed the event over, which the input's paste detection
+    /// measures by.
+    async fn on_terminal_event(&mut self, event: Event, arrived: Instant) {
         if let Event::Resize(columns, rows) = event {
             // Asking where the cursor went would race the event stream for stdin.
             self.ui.resize(Size::new(columns, rows), None);
             return;
         }
+        let actions = self.ui.handle_event_in(event, arrived, &self.bridge.state);
         let now = Instant::now();
-        let actions = self.ui.handle_event_in(event, now, &self.bridge.state);
         for action in actions {
             let effects = self.bridge.on_action(self.ui.model_mut(), &action, now);
             self.apply(effects).await;
@@ -453,7 +481,10 @@ impl<W: Write> Screen<W> {
         keys: &mut K,
     ) -> anyhow::Result<()> {
         let shown = job.argv.join(" ");
-        match self.handed_over(keys, run_here(job.argv, job.cwd)).await? {
+        let argv = job.argv.clone();
+        let ran = self.handed_over(keys, run_here(job.argv, job.cwd)).await?;
+        self.send(UiCommand::TerminalReturned { argv }).await;
+        match ran {
             Ok(status) if status.success() => {
                 self.report(format!("Back from `{shown}`."), Tone::Dim);
             }

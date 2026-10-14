@@ -28,6 +28,7 @@ pub use group::CollapsedGroup;
 pub use header::{AgentReady, SessionHeader};
 pub use notice::{ExitNote, HungLine, Notice, ResultLine};
 pub use shell::{ShellEnd, ShellRun};
+pub use tool::StepMark;
 pub use tool::{
     BLINK_PERIOD, PhaseLine, Todo, TodoState, ToolCall, ToolItem, ToolKind, ToolState, ToolStats,
     ToolTitle,

@@ -16,6 +16,7 @@ use argonauts_core::events::session::{
     Delivery, EndReason, LaunchRecord, PromptVia, QueuedMessage, SessionEnd, SessionEvent,
     WrapUpVia,
 };
+use argonauts_core::pictures::Picture;
 use argonauts_core::worker::{SessionControl, SteerSupport};
 use argonauts_core::{
     AgentEvent, BudgetDimension, ErrorCategory, MessageStage, StopSignal, StreamParser,
@@ -464,7 +465,11 @@ impl Lines {
                 self.stop_after_tool_if_idle();
             }
             Some(SessionControl::Stop) => self.begin_stop(StopCause::Stopped),
-            Some(SessionControl::Send { text, uuid }) => self.send_message(&text, uuid),
+            Some(SessionControl::Send {
+                text,
+                uuid,
+                pictures,
+            }) => self.send_message(&text, &pictures, uuid),
             // From the agent view, which names no message: what waits for the tool call.
             Some(SessionControl::SendNow { uuid }) if uuid.is_empty() => self.steer_held_now(),
             Some(SessionControl::SendNow { uuid }) => {
@@ -687,8 +692,12 @@ impl Lines {
     /// Your message, written at once for a CLI that holds it until the model can read it.
     /// Between turns it starts the next one; mid-turn it joins the running one. One that
     /// can't go out says so, and goes as the conversation's next turn instead.
-    fn send_message(&mut self, text: &str, uuid: String) {
-        let line = self.ctx.adapter.message_line(text, &uuid);
+    fn send_message(&mut self, text: &str, pictures: &[Picture], uuid: String) {
+        let line = if pictures.is_empty() {
+            self.ctx.adapter.message_line(text, &uuid)
+        } else {
+            self.ctx.adapter.picture_line(text, pictures, &uuid)
+        };
         let between_turns = self.turn_done();
         if !self.write_control(line) {
             self.out.agent(AgentEvent::MessageState {

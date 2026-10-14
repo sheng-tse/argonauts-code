@@ -97,7 +97,8 @@ fn saved(effects: &[Effect]) -> Vec<(Vec<(String, String)>, SettingScope)> {
     effects
         .iter()
         .filter_map(|effect| match effect {
-            Effect::SaveSettings { pairs, scope } => Some((pairs.clone(), *scope)),
+            Effect::SaveSettings { pairs, scope }
+            | Effect::SaveConfirmedSettings { pairs, scope } => Some((pairs.clone(), *scope)),
             _ => None,
         })
         .collect()
@@ -120,7 +121,7 @@ fn a_valid_setup_is_one_card_and_nothing_is_written_yet() {
     assert_eq!(
         table,
         [
-            "reviewers     adds to roles/reviewers.md   \"Treat a missing test as a required change.\"",
+            "reviewers     \tadds to\t roles/reviewers.md   \"Treat a missing test as a required change.\"",
             "agents        codex.effort = \"high\"",
             "ui            theme = \"light\"",
         ]
@@ -139,7 +140,7 @@ fn a_valid_setup_is_one_card_and_nothing_is_written_yet() {
     assert!(card.options[0].recommended);
     assert_eq!(
         card.options[1].detail.as_deref(),
-        Some("writes 2 files in .argonauts/")
+        Some("writes 2 files in .argonauts/ · d shows the diff")
     );
     assert_eq!(card.options[4].action, AnswerAction::ShowDiff);
     let shown = card.body.join("\n");
@@ -215,11 +216,11 @@ fn a_crew_said_in_words_reads_with_who_follows_whom_and_how_each_task_is_kept() 
         table,
         [
             "crew          orchestrator   Fable 5.1 on Claude Code",
-            "              workers        GPT 5.6 on Codex       each task as Codex's own goal",
+            "              workers        GPT 5.6 on Codex       \teach task as Codex's own goal",
             "              reviewers      GPT 6 Astra on Codex",
-            "              judge          GPT 6 Astra on Codex   follows the reviewers",
-            "reviewers     adds to roles/reviewers.md   \"Treat a missing test as a required change.\"",
-            "limits        spend_per_day = 5.0                   when reached: fallback",
+            "              judge          GPT 6 Astra on Codex   \tfollows the reviewers",
+            "reviewers     \tadds to\t roles/reviewers.md   \"Treat a missing test as a required change.\"",
+            "limits        spend_per_day = 5.0                   \twhen reached: fallback",
         ]
     );
 }
@@ -243,7 +244,7 @@ fn saving_for_the_repository_writes_its_files() {
     let card = rig.card();
     assert_eq!(
         card.options[1].detail.as_deref(),
-        Some("writes 4 files in .argonauts/")
+        Some("writes 4 files in .argonauts/ · d shows the diff")
     );
     let effects = rig.pick(&card, "repository");
     assert_eq!(
@@ -424,12 +425,12 @@ fn a_required_step_is_a_row_and_a_save_writes_always_toml() {
     let card = rig.card();
     assert_eq!(
         card.body[0],
-        "workflow      adds to workflows/always.toml   \"Benchmark\" before sign-off, by the \
+        "workflow      \tadds to\t workflows/always.toml   \"Benchmark\" before sign-off, by the \
          workers"
     );
     assert_eq!(
         card.options[1].detail.as_deref(),
-        Some("writes 1 file in .argonauts/")
+        Some("writes 1 file in .argonauts/ · d shows the diff")
     );
     let effects = rig.pick(&card, "repository");
     assert!(saved(&effects).is_empty(), "no setting changes");
@@ -499,5 +500,56 @@ fn a_wrong_step_goes_back_and_you_see_nothing() {
         !rig.events()
             .iter()
             .any(|event| matches!(event, AppEvent::Choice { .. }))
+    );
+}
+
+/// Picking where a setup applies is the confirmation: a limit saved from the card asks no
+/// second "change a safety setting?" question. A place only your words named still asks.
+#[test]
+fn the_cards_pick_confirms_a_limit_and_a_named_place_still_asks() {
+    let with_limit = || {
+        let mut setup = the_setup();
+        setup["settings"] = json!({"limits.spend_per_day": 5.0});
+        setup
+    };
+    let mut rig = Rig::new();
+    let (_, _answered) = rig.call(with_limit(), SAID);
+    let card = rig.card();
+    let effects = rig.pick(&card, "conversation");
+    assert!(
+        matches!(effects.as_slice(), [Effect::SaveConfirmedSettings { pairs, .. }]
+            if pairs[0].0 == "limits.spend_per_day"),
+        "{effects:?}"
+    );
+
+    let mut rig = Rig::new();
+    let mut setup = with_limit();
+    setup["keep"] = json!("conversation");
+    setup["keep_says"] = json!("for this conversation");
+    let (effects, _answered) = rig.call(setup, "never more than $5 a day, for this conversation");
+    assert!(
+        matches!(effects.as_slice(), [Effect::SaveSettings { .. }]),
+        "{effects:?}"
+    );
+}
+
+#[test]
+fn a_confirmed_limit_is_written_with_no_safety_question() {
+    let mut rig = Rig::new();
+    let ctx = &mut rig.test.ctx;
+    let mut settings = crate::controller::settings::SettingsState::new(ctx);
+    crate::controller::settings::save_confirmed(
+        ctx,
+        &mut settings,
+        vec![("limits.spend_per_day".to_owned(), "5.0".to_owned())],
+        SettingScope::Global,
+    )
+    .unwrap();
+    let global = std::fs::read_to_string(rig.test.repo.global_config()).unwrap();
+    assert!(global.contains("spend_per_day = 5.0"), "{global}");
+    assert!(
+        !rig.events().iter().any(|event| matches!(event,
+            AppEvent::Choice { choice } if choice.kind == ChoiceKind::ConfirmSafetySetting)),
+        "no second question"
     );
 }

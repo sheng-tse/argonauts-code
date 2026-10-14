@@ -355,6 +355,7 @@ fn said_text(text: &str) -> UiCommand {
     UiCommand::Submit {
         text: text.to_owned(),
         workflow_requested: false,
+        pictures: Vec::new(),
     }
 }
 
@@ -935,7 +936,7 @@ async fn vendor_set(harness: &mut Harness) -> VendorCommandSet {
 
 /// A carried-on session's turn works in the run's copy, so `/rewind` puts back what it changed
 /// there, and the ignored file its tool calls wrote is named as one nothing kept, while your
-/// checkout keeps its own files (`/rewind` with carried-on sessions).
+/// checkout keeps its own files.
 #[tokio::test]
 async fn rewind_puts_back_a_carried_on_turns_files_in_the_copy() {
     use argonauts_core::app::{AnswerTarget, ChoiceKind};
